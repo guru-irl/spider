@@ -1,0 +1,84 @@
+// spider-ui skeleton. All spider visual output flows through this kit.
+// Honors pi active theme tokens; signature glyph is 🕸 (never color-only).
+
+export interface Component {
+  render(width: number): string[];
+  handleInput?(key: string): boolean;
+  invalidate?(): void;
+}
+
+// Phase 0 keeps a static token table; Phase 5/8 wire pi's live theme.
+// The lookup is intentionally a function so later phases can swap the source
+// without changing call sites.
+const DEFAULT_TOKENS: Record<string, string> = {
+  accent: "\x1b[36m",   // cyan
+  muted: "\x1b[2m",
+  reset: "\x1b[0m",
+  rule: "─",
+};
+
+export const theme = {
+  glyph: "🕸" as const,
+  token(name: string): string {
+    return DEFAULT_TOKENS[name] ?? "";
+  },
+};
+
+function clamp(s: string, width: number): string {
+  return s.length <= width ? s : s.slice(0, Math.max(0, width - 1)) + "…";
+}
+
+export function SectionRule(title?: string): Component {
+  return {
+    render(width: number): string[] {
+      const glyph = theme.glyph;
+      const label = title ? ` ${glyph} ${title} ` : ` ${glyph} `;
+      const fill = theme.token("rule");
+      const remaining = Math.max(0, width - label.length);
+      return [clamp(label + fill.repeat(remaining), width)];
+    },
+  };
+}
+
+export function Panel(opts: { title?: string; body: string[] }): Component {
+  return {
+    render(width: number): string[] {
+      const out: string[] = [];
+      if (opts.title) out.push(...SectionRule(opts.title).render(width));
+      for (const line of opts.body) out.push(clamp(line, width));
+      return out;
+    },
+  };
+}
+
+export function StatusLine(opts: { left?: string; right?: string }): Component {
+  return {
+    render(width: number): string[] {
+      const left = opts.left ?? "";
+      const right = opts.right ?? "";
+      const gap = Math.max(1, width - left.length - right.length);
+      return [clamp(left + " ".repeat(gap) + right, width)];
+    },
+  };
+}
+
+export function LiveWidget(
+  source: { subscribe(fn: () => void): () => void },
+  render: (width: number) => string[],
+): Component {
+  let dirty = true;
+  let last: string[] = [];
+  let lastWidth = 0;
+  source.subscribe(() => { dirty = true; });
+  return {
+    render(width: number): string[] {
+      if (dirty || width !== lastWidth) {
+        last = render(width);
+        lastWidth = width;
+        dirty = false;
+      }
+      return last;
+    },
+    invalidate() { dirty = true; },
+  };
+}

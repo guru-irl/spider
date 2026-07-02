@@ -4,6 +4,7 @@
 // attach action handlers via registerAction (re-exported below).
 import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch.js";
 import { registerHooks } from "./hooks.js";
+import { registerContextActions } from "@spider/context";
 import { toToolResult } from "./result.js";
 import { controlDoctor, controlConfig } from "./control.js";
 import * as models from "@spider/models";
@@ -126,6 +127,9 @@ export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: strin
 export default function spiderExtension(pi: PiToolAPI): void {
   // control is owned by the host from Phase 0; ctx is threaded for memory routing.
   registerAction("control", (args, ctx) => handleControl(args as SpiderArgs, ctx));
+
+  // in-process exec/exec_file/batch handlers (Phase 2 Task 4).
+  registerContextActions(registerAction);
 
   // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.
   registerAction("remember", async (args, ctx) => {

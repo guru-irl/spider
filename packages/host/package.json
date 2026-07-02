@@ -5,6 +5,7 @@
   "main": "./src/extension.ts",
   "exports": { ".": "./src/extension.ts" },
   "dependencies": {
+    "@spider/context": "0.0.0",
     "@spider/db-core": "0.0.0",
     "@spider/ui": "0.0.0",
     "@spider/models": "0.0.0",

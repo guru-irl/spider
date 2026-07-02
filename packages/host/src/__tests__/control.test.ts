@@ -28,6 +28,8 @@ describe("control config", () => {
     const dir = join(scratch, "cfg"); mkdirSync(dir, { recursive: true });
     controlConfig("set", dir, "ui.footer", true);
     expect(controlConfig("get", dir, "ui.footer")).toBe(true);
+    controlConfig("set", dir, "ui.footer", false);
+    expect(controlConfig("get", dir, "ui.footer")).toBe(false);
   });
 
   it("get with no key returns the merged config object", () => {

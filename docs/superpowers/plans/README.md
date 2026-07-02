@@ -205,6 +205,17 @@ export const bus: { on(fn: (e: RunEvent) => void): () => void; emit(e: RunEvent)
 
 // Paths (zero temp-dir)
 export const paths: { globalRoot: string; projectRoot(cwd: string): string; scratch(scope): string; models: string; logs(scope): string; };
+
+// Routing/tracking event log (Phase 3 producer + tracking consumer)
+export interface EventRow {
+  sessionId: string; ts: number; phase: "before" | "after";
+  tool: string; description?: string | null;
+  added?: number | null; removed?: number | null;
+  flagged?: string[] | null; payload?: unknown;
+}
+export function appendEvent(db: Db, e: EventRow): void;                 // INSERT INTO events (+ bus.emit)
+export function listEvents(db: Db, opts?: { tool?: string; phase?: "before"|"after"; limit?: number }): EventRow[];
+export function eventCountsByTool(db: Db): Array<{ tool: string; count: number }>;
 ```
 
 ---
@@ -247,8 +258,9 @@ export function LiveWidget(source, render): Component;   // diffs; only repaints
 ## Hook wiring (Phase 0 registers empty handlers; phases fill)
 
 - `before_agent_start` → memory snapshot append (Phase 1), active-agents (Phase 5).
-- `beforeToolCall` → intent log (Phase 3).
-- `afterToolCall` → scrub/scan/auto-index (Phase 3).
+- `beforeToolCall` (= pi event `tool_call`) → intent log (Phase 3).
+- `afterToolCall` (= pi event `tool_result`) → scrub/scan/auto-index (Phase 3).
+- Phase 0's placeholder `beforeToolCall`/`afterToolCall` no-op handlers are replaced by real `tool_call`/`tool_result` handlers in Phase 3 (owned by `registerRouting`).
 - `session_before_compact` + `session_shutdown` → organism drain (Phase 6).
 - `session_start` → session upsert + self-name schedule (Phase 1/6).
 - `resources_discover` → contribute skills dirs + config hot-reload (Phase 0/7).
@@ -327,7 +339,7 @@ CREATE TABLE model_stats (      -- Q24 lightweight learned-routing signal
 ```
 
 ### A5 — edit/write override handles (Phase 3)
-There is NO executable `getTool`; override built-in `edit`/`write` by delegating to the exported `createEditToolDefinition` / `createWriteToolDefinition` (pi-agent-core), wrapping to (a) require a 1-line `description`, (b) capture `{description, +added/-removed}` from the unified patch, (c) omit `renderResult` so pi's native diff renderer is inherited. `scrubSecrets` + injection-scan live in `@spider/memory` (exported), wired into `afterToolCall` by Phase 3.
+There is NO executable `getTool`; override built-in `edit`/`write` by delegating to the exported `createEditToolDefinition` / `createWriteToolDefinition` (pi-agent-core), wrapping to (a) require a 1-line `description`, (b) capture `{description, +added/-removed}` from the unified patch, (c) omit `renderResult` so pi's native diff renderer is inherited. `scrubSecrets` + injection-scan live in `@spider/memory` (exported), wired into `afterToolCall` by Phase 3. Phase 3 adds `scrubSecrets(text)` + exports `SECRET_PATTERNS`/`INJECTION_NOTE` from `@spider/memory` scanner (secret redaction for tool-result safety).
 
 ### A6 — VALIDATE-FIRST open items (resolve during execution, not blockers)
 - pi session transcript on-disk format (Phase 2 `import`, Phase 6 digest) — confirm against a real `session.jsonl` before parsing.

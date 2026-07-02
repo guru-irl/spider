@@ -4,6 +4,7 @@ import { firstThreatMessage } from "./scanner.js";
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
 import { addMemory, setStatus, isDuplicate, getMemory } from "./store.js";
 import { tableFor, mapRow } from "./internal.js";
+import { shouldCapture } from "./guardrails.js";
 
 export interface StageResult {
   status: "staged" | "active" | "rejected";
@@ -11,15 +12,11 @@ export interface StageResult {
   reason?: string;
 }
 
-// TODO(Task 6): replace with guardrails.shouldCapture
-function shouldCapture(_input: AddMemoryInput): boolean {
-  return true;
-}
-
 /**
  * Fail-closed write-approval pipeline. Order matters:
  *   1. Scan (strict) — reject before any insert.
- *   2. Guardrail (Task 6 placeholder) — reject if not captured.
+ *   2. Guardrail (anti-poisoning) — reject background (auto/import) writes that
+ *      fail shouldCapture; USER writes bypass the guardrail entirely.
  *   3. Duplicate check — reject without inserting a new row.
  *   4. Decide staged vs active. source auto/import (or autoStage) always staged.
  * Cap enforcement on active inserts propagates (never swallowed).
@@ -36,9 +33,12 @@ export function stageWrite(
     return { status: "rejected", reason: threat };
   }
 
-  // 2. GUARDRAIL (placeholder until Task 6).
-  if (!shouldCapture(input)) {
-    return { status: "rejected", reason: "guardrail: not captured" };
+  // 2. GUARDRAIL (anti-poisoning) — background writes only. User writes bypass.
+  if (input.source === "auto" || input.source === "import") {
+    const v = shouldCapture(input.category, input.content);
+    if (!v.capture) {
+      return { status: "rejected", reason: v.reason };
+    }
   }
 
   // 3. DUPLICATE — no new row.

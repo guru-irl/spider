@@ -10,6 +10,7 @@ export * from "./actions/index-fetch.js";
 export * from "./chunker.js";
 export * from "./fts-query.js";
 export * from "./content-store.js";
+export * from "./freshness.js";
 export * from "./fusion.js";
 export * from "./search.js";
 export * from "./actions/search.js";

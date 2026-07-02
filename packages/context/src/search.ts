@@ -5,6 +5,7 @@
 
 import type { Db } from "@spider/db-core";
 import { ContentStore } from "./content-store.js";
+import { refreshStaleContent } from "./freshness.js";
 import { rrfFuse, proximityRerank } from "./fusion.js";
 import { sanitizeQuery } from "./fts-query.js";
 import { resolveEmbedder, knn } from "@spider/memory";
@@ -39,6 +40,14 @@ export async function unifiedSearch(
   const limit = opts.limit ?? 10;
   const m = sanitizeQuery(opts.query, "OR");
   if (!m.trim()) return [];
+
+  if (kinds.includes("content")) {
+    try {
+      refreshStaleContent(new ContentStore(db));
+    } catch {
+      /* freshness is best-effort; never break search */
+    }
+  }
 
   const ftsLists: Item[][] = [];
 

@@ -6,6 +6,7 @@ export * from "./truncate.js";
 export * from "./actions/exec.js";
 export * from "./chunker.js";
 export * from "./fts-query.js";
+export * from "./content-store.js";
 
 export function registerContextActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {
   registerExecActions(register);

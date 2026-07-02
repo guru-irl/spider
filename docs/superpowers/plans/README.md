@@ -338,3 +338,28 @@ There is NO executable `getTool`; override built-in `edit`/`write` by delegating
 
 ### A7 — config: add `models` group
 `models`: `{ autoSelect: bool=true, defaults: { <role|kind>: "<provider/id>" }, tierOverrides: {}, budgetCaps: {} }`.
+
+### A8 — `@spider/models` v2: 3 tiers + preference-order + orthogonal THINKING lever (SUPERSEDES A1's tier model)
+
+Rationale (validated against the live GitHub Copilot catalog + this account's `availableModelIds`): "reasoning" is not a tier — modern models expose a **thinking toggle**. Model selection has **two orthogonal levers**: (1) model quality = `Tier`, (2) `ThinkingLevel`. They form one cost/quality ladder: `light@any < standard(sonnet-5)@medium < heavy(opus-4.8)@low < heavy@medium < heavy@high < heavy@xhigh` (opus-low beats sonnet-high for ~equal cost).
+
+```ts
+export type Tier = "light" | "standard" | "heavy";                       // was nano|mini|standard|capable|reasoning
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export interface ModelEntry { provider: string; id: string; tier: Tier; thinking: boolean; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean; }  // reasoning -> thinking
+// Ordered copilot ids; pick() returns the FIRST AVAILABLE per tier (auto-handles a model missing from this account, e.g. no *-nano):
+export const TIER_PREFERENCE: Record<Tier, string[]> = {
+  light:    ["mai-code-1-flash-picker", "claude-haiku-4.5", "gpt-5.4-nano", "gpt-5-mini", "gemini-3.5-flash"],
+  standard: ["claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "gpt-5.4"],
+  heavy:    ["claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "gpt-5.5"],
+};
+export function deriveTier(id: string): Tier;  // family heuristic: opus->heavy, sonnet->standard, haiku|mai|nano|mini|flash->light, gpt-5.5->heavy, else standard. NO reasoning tier.
+export interface PickProfile { role?: string; tier?: Tier; complexity?: "low"|"med"|"high"; budget?: "cheap"|"normal"|"premium"; needsVision?: boolean; thinkingLevel?: ThinkingLevel; model?: string; }
+export interface PickResult { entry: ModelEntry; thinkingLevel: ThinkingLevel; }  // pick returns BOTH levers
+export function pick(entries: ModelEntry[], profile: PickProfile, cfg?: Partial<ModelsConfig>): PickResult;
+// default thinking per tier (heavy defaults LOW): light->low, standard->medium, heavy->low; profile.thinkingLevel / cfg overrides.
+export interface ModelsConfig { autoSelect: boolean; defaults: Record<string,string>; tierOverrides: Record<string,Tier>; tierPreference: Record<Tier,string[]>; thinkingDefaults: Record<string,ThinkingLevel>; }
+```
+- `pick` order: explicit `profile.model` (if available) > role `cfg.defaults[role]` (if available) > walk `(cfg.tierPreference||TIER_PREFERENCE)[targetTier]` first-available (vision-filtered if `needsVision`) > any available of that tier > degrade to adjacent tier (heavy<->standard<->light). `thinkingLevel = profile.thinkingLevel ?? cfg.thinkingDefaults[tier] ?? DEFAULT_THINKING[tier]`.
+- `targetTier`: `profile.tier` > (`premium`|`high`)->heavy, (`cheap`|`low`)->light, else standard.
+- **Copilot sync** (`scripts/sync-copilot-models.mjs`): query `api.githubcopilot.com/models` (auth.json copilot token), diff vs pi-ai `GITHUB_COPILOT_MODELS` built-in catalog + `~/.pi/agent/models.json`, and additively inject any exposed-but-missing id into models.json `providers["github-copilot"].models[]` with the correct `api` (claude->anthropic-messages, gpt/mai->openai-responses, gemini->openai-completions) + the copilot IDE `headers` (Editor-Version etc.) + baseUrl. Idempotent; preserves existing `modelOverrides`/entries. (Validated 2026-07-02: sonnet-5 + mai-code-1-flash-picker added this way both run.)

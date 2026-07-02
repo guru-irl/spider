@@ -9,5 +9,5 @@ export {
   resolveProject, registerProject, openGlobal, openProject, openDbAt, openProjectByPath, setGlobalDbPathForTests,
 } from "./registry.js";
 export type { ProjectInfo } from "./registry.js";
-export { appendRunEvent, bus } from "./events.js";
-export type { RunEvent } from "./events.js";
+export { appendRunEvent, bus, appendEvent, listEvents, eventCountsByTool } from "./events.js";
+export type { RunEvent, EventRow } from "./events.js";

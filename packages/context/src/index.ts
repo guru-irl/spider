@@ -15,6 +15,7 @@ export * from "./fusion.js";
 export * from "./search.js";
 export * from "./actions/search.js";
 export * from "./digest.js";
+export * from "./transcript.js";
 
 export function registerContextActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {
   registerExecActions(register);

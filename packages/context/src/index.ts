@@ -9,6 +9,7 @@ export * from "./actions/index-fetch.js";
 export * from "./chunker.js";
 export * from "./fts-query.js";
 export * from "./content-store.js";
+export * from "./fusion.js";
 
 export function registerContextActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {
   registerExecActions(register);

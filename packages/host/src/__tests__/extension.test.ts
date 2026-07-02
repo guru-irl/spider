@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests } from "@spider/db-core";
-import spiderExtension, { buildActionCtx, sessionIdOf } from "../extension.js";
+import spiderExtension, { buildActionCtx, sessionIdOf, cwdOf } from "../extension.js";
 import { HOOK_NAMES } from "../hooks.js";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ext-${process.pid}`);
@@ -65,6 +65,24 @@ describe("spider extension entry", () => {
     expect(sessionIdOf({ sessionManager: { getSessionId: () => "sess-42" } })).toBe("sess-42");
     expect(sessionIdOf(undefined)).toBe("");
     expect(sessionIdOf({})).toBe("");
+  });
+
+  it("cwdOf reads ExtensionContext.cwd (string only)", () => {
+    expect(cwdOf({ cwd: "/x" })).toBe("/x");
+    expect(cwdOf(undefined)).toBeUndefined();
+    expect(cwdOf({})).toBeUndefined();
+  });
+
+  it("buildActionCtx prefers args.cwd, else the ExtensionContext cwd hint", () => {
+    mkdirSync(scratch, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-cwd-${Date.now()}.db`));
+    const dirA = join(scratch, "cwd-a"); mkdirSync(dirA, { recursive: true });
+    const dirB = join(scratch, "cwd-b"); mkdirSync(dirB, { recursive: true });
+    const pi = fakePi(); spiderExtension(pi as never);
+    const c1 = buildActionCtx(pi as never, { action: "recall", cwd: dirA }, "s", dirB);
+    expect(c1.cwd).toBe(dirA); c1.db.close(); c1.globalDb.close();
+    const c2 = buildActionCtx(pi as never, { action: "recall" }, "s", dirB);
+    expect(c2.cwd).toBe(dirB); c2.db.close(); c2.globalDb.close();
   });
 
   it("an unregistered action returns the not-implemented stub", async () => {

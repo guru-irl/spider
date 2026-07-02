@@ -72,11 +72,17 @@ export function sessionIdOf(ctx: unknown): string {
   return sm?.getSessionId?.() ?? "";
 }
 
+/** The authoritative working directory from a tool-execute ExtensionContext (types.d.ts:216). */
+export function cwdOf(ctx: unknown): string | undefined {
+  const c = (ctx as { cwd?: unknown } | undefined)?.cwd;
+  return typeof c === "string" ? c : undefined;
+}
+
 /** Build ONE ActionCtx per dispatch (A2): both DBs, the resolved project, and the
  *  @spider/models router. A handler routes via
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
-export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: string): ActionCtx {
-  const cwd = String((args as { cwd?: unknown }).cwd ?? process.cwd());
+export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd?: string): ActionCtx {
+  const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   const project = resolveProject(cwd);
   return { db: openProject(project.projectKey), globalDb: openGlobal(), project, sessionId, cwd, pi, models };
 }
@@ -92,7 +98,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       "spider 🕸 — unified memory, context/search, todos, subagents, and skills on one shared DB. Use `action` for everyday verbs; `action:'control'` + `command` for admin.",
     parameters: SPIDER_PARAMETERS,
     async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
-      return dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx)));
+      return dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx)));
     },
   });
 

@@ -92,15 +92,27 @@ function matchesAny(content: string, patterns: RegExp[]): boolean {
  *
  * Ported from background_review.py negative-lesson policy. Returns
  * `{ capture:false, reason }` when the content matches one of the four
- * "Do NOT capture" rules, otherwise `{ capture:true }`. The `category` is
- * accepted for parity with the review policy (durable categories like
- * convention/preference/insight are never auto-rejected on category alone —
- * only the content heuristics reject), but the decision is content-driven so a
- * failure-category note that is actually durable still passes and a
- * durable-category note that is actually a transient narrative still rejects.
+ * "Do NOT capture" rules, otherwise `{ capture:true }`.
+ *
+ * The four rules are FAILURE lessons — they only make sense applied to
+ * failure-oriented categories ("failure", "tool-quirk"). Durable categories
+ * ("preference", "convention", "correction", "insight") are always captured
+ * without running the content heuristics, because incidental failure-words
+ * inside genuinely durable statements (e.g. a convention that mentions
+ * "cannot use force-push") must not be rejected.
+ *
+ * Accepted Phase-1 tradeoff: Rule 4 (one-off task narratives) is therefore
+ * under-covered for durable categories — a durable-labelled note that is
+ * actually a one-off task narrative will still be captured. This fail-safe
+ * favors under-rejection of durable memory over over-rejection.
  */
 export function shouldCapture(category: MemoryCategory, content: string): CaptureVerdict {
   const text = content ?? "";
+
+  // Negative-lesson rules only apply to failure-oriented categories.
+  if (category !== "failure" && category !== "tool-quirk") {
+    return { capture: true };
+  }
 
   // Rule 2: negative claims about tools/features.
   if (matchesAny(text, NEGATIVE_TOOL_CLAIM)) {
@@ -123,6 +135,5 @@ export function shouldCapture(category: MemoryCategory, content: string): Captur
   }
 
   // Durable: conventions, preferences, insights that don't match the above.
-  void category;
   return { capture: true };
 }

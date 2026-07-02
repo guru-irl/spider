@@ -1,5 +1,3 @@
-import type {} from "./types.js";
-
 // ---------------------------------------------------------------------------
 // Aux-model digest routing — ported 1:1 from hermes-agent
 // `agent/background_review.py` `_resolve_review_runtime` (L46) and

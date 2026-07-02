@@ -44,7 +44,7 @@ export function pick(entries: ModelEntry[], profile: PickProfile, cfg: Partial<M
     const tier = TIER_ORDER[ti];
     const prefs = cfg.tierPreference?.[tier] ?? TIER_PREFERENCE[tier];
     for (const id of prefs) {
-      const hit = avail.find((e) => matches(e, id));
+      const hit = avail.find((e) => matches(e, id) && effectiveTier(e, cfg) === tier);
       if (hit) return result(hit, tier);
     }
     const anyOfTier = avail.find((e) => effectiveTier(e, cfg) === tier);

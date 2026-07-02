@@ -47,4 +47,14 @@ describe("pick (A8: tier + thinking levers)", () => {
     const r = pick(lightOnly, { tier: "heavy" });
     expect(r.entry.available).toBe(true);
   });
+  it("preference-walk respects tierOverrides: a relocated model is not matched under its natural tier", () => {
+    // Move sonnet-5 standard->heavy. A 'standard' target must skip it and pick the next standard pref.
+    const cfg = { tierOverrides: { "github-copilot/claude-sonnet-5": "heavy" as const } };
+    expect(pick(entries, { tier: "standard" }, cfg).entry.id).toBe("claude-sonnet-4.6");
+  });
+  it("tierOverride relocates a model UP a tier (found via any-of-tier fallback)", () => {
+    const noOpus = entries.filter((e) => !e.id.includes("opus"));
+    const cfg = { tierOverrides: { "github-copilot/claude-sonnet-5": "heavy" as const } };
+    expect(pick(noOpus, { tier: "heavy" }, cfg).entry.id).toBe("claude-sonnet-5");
+  });
 });

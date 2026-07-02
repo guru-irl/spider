@@ -1,4 +1,5 @@
 import type { ModelEntry } from "./catalog.js";
+import type { PickResult } from "./pick.js";
 import type { Db } from "@spider/db-core";
 export interface CompleteOpts { system?: string; thinkingLevel?: string; maxTokens?: number }
 export interface CompleteDeps {
@@ -7,10 +8,14 @@ export interface CompleteDeps {
 }
 // Default runner wires @earendil-works/pi-ai (getModel + streamProxy). Kept lazy + injectable so
 // unit tests never hit the network; VALIDATE the streamProxy arg shape against the installed dep.
-export async function complete(model: ModelEntry, prompt: string, opts: CompleteOpts = {}, deps?: CompleteDeps): Promise<string> {
+// Accepts a bare ModelEntry OR a pick() PickResult — when given a PickResult, pick's resolved
+// thinkingLevel is threaded into the runner automatically (explicit opts.thinkingLevel still wins).
+export async function complete(model: ModelEntry | PickResult, prompt: string, opts: CompleteOpts = {}, deps?: CompleteDeps): Promise<string> {
+  const entry = "entry" in model ? model.entry : model;
+  const pickedThinking = "entry" in model ? model.thinkingLevel : undefined;
   const d = deps ?? (await defaultDeps());
-  const handle = d.getModel(model.provider, model.id);
-  return d.run(handle, prompt, opts);
+  const handle = d.getModel(entry.provider, entry.id);
+  return d.run(handle, prompt, { ...opts, thinkingLevel: opts.thinkingLevel ?? pickedThinking });
 }
 async function defaultDeps(): Promise<CompleteDeps> {
   const ai = await import("@earendil-works/pi-ai");

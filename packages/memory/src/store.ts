@@ -1,6 +1,7 @@
 import type { Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types.js";
+import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
 
 function mapRow(row: {
   id: number;
@@ -58,7 +59,7 @@ function mapGlobalRow(row: {
   };
 }
 
-export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput): MemoryRecord {
+export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number = DEFAULT_MEMORY_CHAR_CAP): MemoryRecord {
   const uuid = randomUUID();
   const createdAt = Date.now();
   const status = input.status ?? "active";
@@ -66,6 +67,11 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput): Me
   const link = input.link ?? null;
   const confidence = input.confidence ?? null;
   const sessionId = input.sessionId ?? null;
+
+  // Guard against overflow for active writes
+  if (status === "active") {
+    assertWithinCap(db, scope, input.content.length, cap);
+  }
 
   if (scope === "project") {
     const insertRecord = db.transaction(() => {

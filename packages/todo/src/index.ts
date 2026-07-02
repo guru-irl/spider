@@ -24,7 +24,10 @@ export interface TodoPiApi {
  */
 export function registerTodo(pi: TodoPiApi, deps: TodoDeps): void {
   pi.registerAction("todo", makeTodo(deps));
-  pi.registerCommand?.("todos", makeTodosCommand(deps));
+  pi.registerCommand?.(
+    "todos",
+    makeTodosCommand({ getDb: () => deps.projectDb, getSessionId: () => deps.getSessionId() })
+  );
 }
 
 // Re-export for consumers that only need the Db type at the wiring boundary.

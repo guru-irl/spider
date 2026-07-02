@@ -3,8 +3,9 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setGlobalDbPathForTests } from "@spider/db-core";
+import { setGlobalDbPathForTests, openDbAt } from "@spider/db-core";
 import spiderExtension, { buildActionCtx, sessionIdOf, cwdOf } from "../extension.js";
+import { getAction } from "../dispatch.js";
 import { HOOK_NAMES } from "../hooks.js";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ext-${process.pid}`);
@@ -13,11 +14,12 @@ afterEach(() => { setGlobalDbPathForTests(null); rmSync(scratch, { recursive: tr
 function fakePi() {
   const tools: Record<string, unknown> = {};
   const hooks: Record<string, unknown> = {};
+  const commands: Record<string, unknown> = {};
   return {
     registerTool: (t: { name: string }) => { tools[t.name] = t; },
-    registerCommand: () => {},
+    registerCommand: (name: string, def: unknown) => { commands[name] = def; },
     on: (name: string, fn: unknown) => { hooks[name] = fn; },
-    _tools: tools, _hooks: hooks,
+    _tools: tools, _hooks: hooks, _commands: commands,
   };
 }
 
@@ -83,6 +85,36 @@ describe("spider extension entry", () => {
     expect(c1.cwd).toBe(dirA); c1.db.close(); c1.globalDb.close();
     const c2 = buildActionCtx(pi as never, { action: "recall" }, "s", dirB);
     expect(c2.cwd).toBe(dirB); c2.db.close(); c2.globalDb.close();
+  });
+
+  it("registers a ctx-native 'todo' action that round-trips add\u2192list against ctx.db", async () => {
+    mkdirSync(scratch, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-todo-${Date.now()}.db`));
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const todo = getAction("todo");
+    expect(todo).toBeTypeOf("function");
+    const dbPath = join(scratch, `todo-${Date.now()}.db`);
+    const db = openDbAt(dbPath, "project");
+    await todo!({ action: "todo", op: "add", text: "write plan" } as never, { db, sessionId: "s1" } as never);
+    const res = await todo!({ action: "todo", op: "list" } as never, { db, sessionId: "s1" } as never) as { details: unknown };
+    expect(JSON.stringify(res.details)).toContain("write plan");
+    db.close();
+  });
+
+  it("registers a real-contract '/todos' command that notifies via ctx.ui.notify", async () => {
+    mkdirSync(scratch, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-cmd-${Date.now()}.db`));
+    const dir = join(scratch, "proj-cmd"); mkdirSync(dir, { recursive: true });
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const cmd = pi._commands["todos"] as { description: string; handler: (a: string, c: unknown) => Promise<void> };
+    expect(cmd).toBeTruthy();
+    expect(cmd.description).toBeTypeOf("string");
+    expect(cmd.handler).toBeTypeOf("function");
+    const notified: string[] = [];
+    await cmd.handler("", { cwd: dir, sessionManager: { getSessionId: () => "s-fresh" }, hasUI: true, ui: { notify: (m: string) => notified.push(m) } });
+    expect(notified.join("\n")).toContain("(no todos)");
   });
 
   it("an unregistered action returns the not-implemented stub", async () => {

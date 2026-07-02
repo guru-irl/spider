@@ -25,10 +25,11 @@ export interface ActionResult {
  * the runtime ctx (supplied by the host) and fall back to the closure deps
  * (used by the fakePi test, which passes an empty ctx).
  */
-export function makeTodo(deps: TodoDeps) {
+export function makeTodo(deps?: TodoDeps) {
   return async (args: any, ctx: any): Promise<ActionResult> => {
-    const sessionId = ctx?.sessionId ?? deps.getSessionId();
-    const db: Db = ctx?.db ?? deps.projectDb;
+    const db: Db | undefined = ctx?.db ?? deps?.projectDb;
+    const sessionId: string = ctx?.sessionId ?? deps?.getSessionId?.() ?? "";
+    if (!db) throw new Error("todo action: no db available (ctx.db or deps.projectDb required)");
     const op = args?.op ?? "list";
 
     switch (op) {

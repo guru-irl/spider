@@ -12,6 +12,7 @@ import {
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
   renderRememberResult, renderRecallResult, renderPending,
 } from "@spider/memory";
+import { makeTodo, makeTodosCommand } from "@spider/todo";
 
 export { registerAction };
 
@@ -146,6 +147,17 @@ export default function spiderExtension(pi: PiToolAPI): void {
     });
     return { display: renderRecallResult(recs), details: recs };
   });
+
+  // todos (ctx-native): dispatch always supplies ctx.db + ctx.sessionId, so the
+  // action needs no closure deps; the /todos command resolves db+session per call.
+  registerAction("todo", makeTodo());
+  pi.registerCommand?.(
+    "todos",
+    makeTodosCommand({
+      getDb: (ctx) => openProject(resolveProject(cwdOf(ctx) ?? process.cwd()).projectKey),
+      getSessionId: (ctx) => sessionIdOf(ctx),
+    })
+  );
 
   // NOTE: the background embed worker is intentionally NOT started here (no eager
   // DB opens / lingering timers at registration). recall degrades to FTS when no

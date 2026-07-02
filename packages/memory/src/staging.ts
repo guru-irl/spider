@@ -1,8 +1,9 @@
 import type { Db } from "@spider/db-core";
-import type { MemoryScope, MemoryRecord, MemoryCategory, MemoryStatus, AddMemoryInput } from "./types.js";
+import type { MemoryScope, MemoryRecord, AddMemoryInput } from "./types.js";
 import { firstThreatMessage } from "./scanner.js";
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
 import { addMemory, setStatus, isDuplicate, getMemory } from "./store.js";
+import { tableFor, mapRow } from "./internal.js";
 
 export interface StageResult {
   status: "staged" | "active" | "rejected";
@@ -60,51 +61,24 @@ export function stageWrite(
   return { status: "active", uuid: rec.uuid };
 }
 
-function mapPendingRow(row: {
-  id: number;
-  uuid: string;
-  category: string;
-  content: string;
-  link: string | null;
-  status: string;
-  source: string;
-  confidence: number | null;
-  session_id: string | null;
-  created_at: number;
-  updated_at: number | null;
-}): MemoryRecord {
-  return {
-    id: row.id,
-    uuid: row.uuid,
-    category: row.category as MemoryCategory,
-    content: row.content,
-    link: row.link,
-    status: row.status as MemoryStatus,
-    source: row.source as MemoryRecord["source"],
-    confidence: row.confidence,
-    sessionId: row.session_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
 export function listPending(db: Db, scope: MemoryScope): MemoryRecord[] {
+  const table = tableFor(scope);
   if (scope === "project") {
     const rows = db.prepare(`
       SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
-      FROM memory
+      FROM ${table}
       WHERE status = 'staged'
       ORDER BY created_at DESC
     `).all() as any[];
-    return rows.map(mapPendingRow);
+    return rows.map((row) => mapRow(scope, row));
   } else {
     const rows = db.prepare(`
       SELECT id, uuid, category, content, link, status, source, confidence, created_at, updated_at
-      FROM global_memory
+      FROM ${table}
       WHERE status = 'staged'
       ORDER BY created_at DESC
     `).all() as any[];
-    return rows.map((row) => mapPendingRow({ ...row, session_id: null }));
+    return rows.map((row) => mapRow(scope, row));
   }
 }
 

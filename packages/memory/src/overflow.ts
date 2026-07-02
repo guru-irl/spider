@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
 import type { MemoryScope, MemoryRecord } from "./types.js";
-import { activeCharTotal, listActive } from "./store.js";
+import { activeCharTotal, listActive } from "./internal.js";
 
 export const DEFAULT_MEMORY_CHAR_CAP = 8000;
 

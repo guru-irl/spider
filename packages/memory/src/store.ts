@@ -2,62 +2,9 @@ import type { Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types.js";
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
+import { mapRow } from "./internal.js";
 
-function mapRow(row: {
-  id: number;
-  uuid: string;
-  category: string;
-  content: string;
-  link: string | null;
-  status: string;
-  source: string;
-  confidence: number | null;
-  session_id: string | null;
-  created_at: number;
-  updated_at: number | null;
-}): MemoryRecord {
-  return {
-    id: row.id,
-    uuid: row.uuid,
-    category: row.category as MemoryCategory,
-    content: row.content,
-    link: row.link,
-    status: row.status as MemoryStatus,
-    source: row.source as any,
-    confidence: row.confidence,
-    sessionId: row.session_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function mapGlobalRow(row: {
-  id: number;
-  uuid: string;
-  category: string;
-  content: string;
-  link: string | null;
-  scope: string;
-  status: string;
-  source: string;
-  confidence: number | null;
-  created_at: number;
-  updated_at: number | null;
-}): MemoryRecord {
-  return {
-    id: row.id,
-    uuid: row.uuid,
-    category: row.category as MemoryCategory,
-    content: row.content,
-    link: row.link,
-    status: row.status as MemoryStatus,
-    source: row.source as any,
-    confidence: row.confidence,
-    sessionId: null, // global_memory has no session_id
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
+export { activeCharTotal, listActive } from "./internal.js";
 
 export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number = DEFAULT_MEMORY_CHAR_CAP): MemoryRecord {
   const uuid = randomUUID();
@@ -135,7 +82,7 @@ export function getMemory(db: Db, scope: MemoryScope, uuid: string): MemoryRecor
       WHERE uuid = ?
     `).get(uuid) as any;
 
-    return row ? mapRow(row) : null;
+    return row ? mapRow("project", row) : null;
   } else {
     const row = db.prepare(`
       SELECT id, uuid, category, content, link, scope, status, source, confidence, created_at, updated_at
@@ -143,62 +90,7 @@ export function getMemory(db: Db, scope: MemoryScope, uuid: string): MemoryRecor
       WHERE uuid = ?
     `).get(uuid) as any;
 
-    return row ? mapGlobalRow(row) : null;
-  }
-}
-
-export function listActive(
-  db: Db,
-  scope: MemoryScope,
-  opts?: { category?: MemoryCategory; limit?: number }
-): MemoryRecord[] {
-  const category = opts?.category;
-  const limit = opts?.limit;
-
-  if (scope === "project") {
-    let sql = `
-      SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
-      FROM memory
-      WHERE status = 'active'
-    `;
-    const params: any[] = [];
-
-    if (category) {
-      sql += ` AND category = ?`;
-      params.push(category);
-    }
-
-    sql += ` ORDER BY created_at DESC`;
-
-    if (limit) {
-      sql += ` LIMIT ?`;
-      params.push(limit);
-    }
-
-    const rows = db.prepare(sql).all(...params) as any[];
-    return rows.map(mapRow);
-  } else {
-    let sql = `
-      SELECT id, uuid, category, content, link, scope, status, source, confidence, created_at, updated_at
-      FROM global_memory
-      WHERE status = 'active'
-    `;
-    const params: any[] = [];
-
-    if (category) {
-      sql += ` AND category = ?`;
-      params.push(category);
-    }
-
-    sql += ` ORDER BY created_at DESC`;
-
-    if (limit) {
-      sql += ` LIMIT ?`;
-      params.push(limit);
-    }
-
-    const rows = db.prepare(sql).all(...params) as any[];
-    return rows.map(mapGlobalRow);
+    return row ? mapRow("global", row) : null;
   }
 }
 
@@ -232,7 +124,7 @@ export function searchMemoryFts(
     params.push(limit);
 
     const rows = db.prepare(sql).all(...params) as any[];
-    return rows.map(mapRow);
+    return rows.map((row) => mapRow("project", row));
   } else {
     // Global scope: fallback to LIKE (no FTS table)
     let sql = `
@@ -252,7 +144,7 @@ export function searchMemoryFts(
     params.push(limit);
 
     const rows = db.prepare(sql).all(...params) as any[];
-    return rows.map(mapGlobalRow);
+    return rows.map((row) => mapRow("global", row));
   }
 }
 
@@ -327,26 +219,6 @@ export function removeMemory(db: Db, scope: MemoryScope, uuid: string): void {
       SET status = 'archived', updated_at = ?
       WHERE uuid = ?
     `).run(updatedAt, uuid);
-  }
-}
-
-export function activeCharTotal(db: Db, scope: MemoryScope): number {
-  if (scope === "project") {
-    const result = db.prepare(`
-      SELECT COALESCE(SUM(LENGTH(content)), 0) as total
-      FROM memory
-      WHERE status = 'active'
-    `).get() as { total: number };
-
-    return result.total;
-  } else {
-    const result = db.prepare(`
-      SELECT COALESCE(SUM(LENGTH(content)), 0) as total
-      FROM global_memory
-      WHERE status = 'active'
-    `).get() as { total: number };
-
-    return result.total;
   }
 }
 

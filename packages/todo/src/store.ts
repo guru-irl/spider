@@ -88,18 +88,25 @@ export function sessionSummaries(db: Db, currentSessionId: string): SessionSumma
 }
 
 export function resolveSession(db: Db, selector: string): string | null {
-  const exact = db.prepare("SELECT id FROM sessions WHERE id = ?").get(selector) as { id: string } | undefined;
-  if (exact) return exact.id;
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT t.session_id AS session, s.name AS name
+       FROM todos t
+       LEFT JOIN sessions s ON s.id = t.session_id`
+    )
+    .all() as Array<{ session: string; name: string | null }>;
 
-  const prefixMatches = db
-    .prepare("SELECT id FROM sessions WHERE id LIKE ? || '%'")
-    .all(selector) as Array<{ id: string }>;
-  if (prefixMatches.length === 1) return prefixMatches[0].id;
+  const exact = rows.find((r) => r.session === selector);
+  if (exact) return exact.session;
 
-  const nameMatches = db
-    .prepare("SELECT id FROM sessions WHERE name = ?")
-    .all(selector) as Array<{ id: string }>;
-  if (nameMatches.length === 1) return nameMatches[0].id;
+  const nameMatches = rows.filter(
+    (r) => r.name != null && r.name.toLowerCase() === selector.toLowerCase()
+  );
+  if (nameMatches.length === 1) return nameMatches[0].session;
+  if (nameMatches.length > 1) return null;
+
+  const prefixMatches = rows.filter((r) => r.session.startsWith(selector));
+  if (prefixMatches.length === 1) return prefixMatches[0].session;
 
   return null;
 }

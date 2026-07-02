@@ -6,6 +6,7 @@
     { "path": "./packages/models" },
     { "path": "./packages/memory" },
     { "path": "./packages/todo" },
+    { "path": "./packages/context" },
     { "path": "./packages/host" }
   ]
 }

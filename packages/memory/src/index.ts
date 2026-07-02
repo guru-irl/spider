@@ -7,3 +7,4 @@ export * from "./staging.js";
 export * from "./guardrails.js";
 export * from "./aux.js";
 export * from "./snapshot.js";
+export * from "./embeddings/embedder.js";

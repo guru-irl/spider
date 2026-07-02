@@ -4,7 +4,7 @@
 // attach action handlers via registerAction (re-exported below).
 import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch.js";
 import { registerHooks } from "./hooks.js";
-import { registerContextActions } from "@spider/context";
+import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result.js";
 import { controlDoctor, controlConfig } from "./control.js";
 import * as models from "@spider/models";
@@ -87,6 +87,10 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
           return { error: `control memory sub '${String(args.sub)}' unknown` };
       }
     }
+    case "migrate": {
+      if (!ctx) return { error: "migrate requires an action context" };
+      return runImport(args as any, ctx as any);
+    }
     default:
       return { error: `control command '${command}' is not yet implemented (Phase 0)` };
   }
@@ -129,6 +133,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   registerAction("control", (args, ctx) => handleControl(args as SpiderArgs, ctx));
 
   // in-process exec/exec_file/batch handlers (Phase 2 Task 4).
+  // Strangler: spider owns exec/exec_file/batch/index/fetch/search/import in-process; legacy context-mode ctx_* MCP tools are deprecated (spider does not register them).
   registerContextActions(registerAction);
 
   // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.

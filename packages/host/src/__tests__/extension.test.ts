@@ -50,6 +50,18 @@ describe("spider extension entry", () => {
     expect(res.content[0].text).toMatch(/spider doctor/);
   });
 
+  it("control migrate routes to the import action (empty list → 0 imported)", async () => {
+    mkdirSync(scratch, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-mig-${Date.now()}.db`));
+    const dir = join(scratch, "proj-mig"); mkdirSync(dir, { recursive: true });
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
+    const res = await tool.execute("cm", { action: "control", command: "migrate", sessions: [], cwd: dir }, {}) as { content: { text: string }[]; details: { imported?: number } };
+    expect(res.details.imported).toBe(0);
+    expect(res.content[0].text.toLowerCase()).toContain("import");
+  });
+
   it("builds an ActionCtx that carries the models router", () => {
     mkdirSync(scratch, { recursive: true });
     setGlobalDbPathForTests(join(scratch, `g-ctx-${Date.now()}.db`));

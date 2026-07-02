@@ -10,7 +10,7 @@ const src = readFileSync(OUT, "utf-8");
 
 // Native modules must be require()'d at runtime, not inlined. If esbuild
 // inlined better-sqlite3's JS, the bindings.gyp/prebuild loader string leaks in.
-const mustBeExternal = ["better-sqlite3", "sqlite-vec", "onnxruntime-node", "fastembed"];
+const mustBeExternal = ["better-sqlite3", "sqlite-vec", "onnxruntime-node", "onnxruntime-web", "fastembed", "@xenova/transformers"];
 const leaks = mustBeExternal.filter((m) => src.includes(`node_modules/${m}/`));
 if (leaks.length) {
   console.error(`assert-bundle: native module(s) inlined (should be external): ${leaks.join(", ")}`);

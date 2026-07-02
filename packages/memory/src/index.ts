@@ -8,3 +8,4 @@ export * from "./guardrails.js";
 export * from "./aux.js";
 export * from "./snapshot.js";
 export * from "./embeddings/embedder.js";
+export * from "./embeddings/vectors.js";

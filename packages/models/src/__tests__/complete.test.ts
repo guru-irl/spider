@@ -5,7 +5,7 @@ import { scratchDbPath } from "@spider/db-core/testutil";
 
 describe("complete", () => {
   it("runs a completion via the injected runner and returns text", async () => {
-    const model = { provider: "github-copilot", id: "gpt-5-mini", tier: "mini" as const, reasoning: false, vision: false, ctx: 128000, speed: 4, costHint: 0.15, available: true };
+    const model = { provider: "github-copilot", id: "gpt-5-mini", tier: "light" as const, thinking: false, vision: false, ctx: 128000, speed: 4, costHint: 0.15, available: true };
     const out = await complete(model, "say hi", {}, { getModel: (() => ({})) as any, run: async (_m, p) => `echo:${p}` });
     expect(out).toBe("echo:say hi");
   });

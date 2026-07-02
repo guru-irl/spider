@@ -1,18 +1,25 @@
 import { deriveTier } from "./tiers.js";
-export type Tier = "nano" | "mini" | "standard" | "capable" | "reasoning";
+export type Tier = "light" | "standard" | "heavy";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export interface ModelEntry {
   provider: string; id: string; tier: Tier;
-  reasoning: boolean; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean;
+  thinking: boolean; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean;
 }
-export type EnumeratedModel = { provider: string; id: string; available: boolean; reasoning?: boolean; vision?: boolean; ctx?: number };
-const SPEED: Record<Tier, number> = { nano: 5, mini: 4, standard: 3, capable: 2, reasoning: 1 };
-const COST: Record<Tier, number> = { nano: 0.05, mini: 0.15, standard: 0.5, capable: 1, reasoning: 1.5 };
+export type EnumeratedModel = { provider: string; id: string; available: boolean; thinking?: boolean; reasoning?: boolean; vision?: boolean; ctx?: number };
+// Ordered copilot ids per tier; pick() returns the FIRST AVAILABLE (A8). Host may override via cfg.tierPreference.
+export const TIER_PREFERENCE: Record<Tier, string[]> = {
+  light:    ["mai-code-1-flash-picker", "claude-haiku-4.5", "gpt-5.4-nano", "gpt-5-mini", "gemini-3.5-flash"],
+  standard: ["claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "gpt-5.4"],
+  heavy:    ["claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "gpt-5.5"],
+};
+const SPEED: Record<Tier, number> = { light: 3, standard: 2, heavy: 1 };
+const COST: Record<Tier, number> = { light: 0.1, standard: 0.5, heavy: 1 };
 export function catalog(enumerate: () => EnumeratedModel[], overrides: Record<string, Partial<ModelEntry>> = {}): ModelEntry[] {
   return enumerate().map((m) => {
-    const tier = deriveTier(m.id, { reasoning: m.reasoning });
+    const tier = deriveTier(m.id);
     const base: ModelEntry = {
       provider: m.provider, id: m.id, tier,
-      reasoning: !!m.reasoning || tier === "reasoning", vision: !!m.vision,
+      thinking: !!(m.thinking ?? m.reasoning), vision: !!m.vision,
       ctx: m.ctx ?? 128_000, speed: SPEED[tier], costHint: COST[tier], available: m.available,
     };
     return { ...base, ...overrides[`${m.provider}/${m.id}`] };

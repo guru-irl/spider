@@ -5,6 +5,7 @@
     { "path": "./packages/ui" },
     { "path": "./packages/models" },
     { "path": "./packages/memory" },
+    { "path": "./packages/todo" },
     { "path": "./packages/host" }
   ]
 }

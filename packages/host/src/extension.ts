@@ -7,8 +7,23 @@ import { registerHooks } from "./hooks.js";
 import { controlDoctor, controlConfig } from "./control.js";
 import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject } from "@spider/db-core";
+import {
+  stageWrite, recall, listPending, approvePending, rejectPending,
+  activeCharTotal, listActive, resolveEmbedder, type Embedder,
+  renderRememberResult, renderRecallResult, renderPending,
+} from "@spider/memory";
 
 export { registerAction };
+
+// Lazily-cached embedder shared across recall calls (avoids re-resolving the
+// model per dispatch). resolveEmbedder degrades to null → recall falls back to FTS.
+let _emb: Promise<Embedder | null> | undefined;
+const getEmbedder = () => (_emb ??= resolveEmbedder());
+
+// scope + per-call DB selection (ctx-native: reuse the DBs buildActionCtx resolved).
+const scopeOf = (a: any) => (a?.scope === "global" ? "global" : "project");
+const dbFor = (scope: "global" | "project", ctx: ActionCtx | undefined) =>
+  scope === "global" ? ctx!.globalDb : ctx!.db;
 
 interface PiToolAPI {
   registerTool(tool: {
@@ -39,8 +54,8 @@ const SPIDER_PARAMETERS = {
   additionalProperties: true,
 };
 
-/** control routing lives in-host (doctor/config work in Phase 0). */
-async function handleControl(args: SpiderArgs): Promise<unknown> {
+/** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
+async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown> {
   const command = String(args.command ?? "");
   const cwd = String(args.cwd ?? process.cwd());
   switch (command) {
@@ -49,6 +64,25 @@ async function handleControl(args: SpiderArgs): Promise<unknown> {
     case "config": {
       const op = (args.op as "get" | "set") ?? "get";
       return controlConfig(op, cwd, args.key as string | undefined, args.value);
+    }
+    case "memory": {
+      const scope = scopeOf(args);
+      const db = dbFor(scope, ctx);
+      switch (args.sub) {
+        case "pending": {
+          const recs = listPending(db, scope);
+          return { display: renderPending(recs), details: recs };
+        }
+        case "approve":
+          return { details: approvePending(db, scope, args.uuid as string) };
+        case "reject":
+          rejectPending(db, scope, args.uuid as string);
+          return { details: { ok: true, uuid: args.uuid } };
+        case "consolidate":
+          return { details: { entries: listActive(db, scope), usage: activeCharTotal(db, scope) } };
+        default:
+          return { error: `control memory sub '${String(args.sub)}' unknown` };
+      }
     }
     default:
       return { error: `control command '${command}' is not yet implemented (Phase 0)` };
@@ -88,8 +122,34 @@ export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: strin
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
-  // control is owned by the host from Phase 0.
-  registerAction("control", (args) => handleControl(args as SpiderArgs));
+  // control is owned by the host from Phase 0; ctx is threaded for memory routing.
+  registerAction("control", (args, ctx) => handleControl(args as SpiderArgs, ctx));
+
+  // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.
+  registerAction("remember", async (args, ctx) => {
+    const scope = scopeOf(args);
+    const r = stageWrite(dbFor(scope, ctx), scope, {
+      category: args.category as any,
+      content: args.content as string,
+      link: (args.link as string | null) ?? null,
+      source: args.auto ? "auto" : "user",
+    });
+    return { display: renderRememberResult(r), details: r };
+  });
+
+  registerAction("recall", async (args, ctx) => {
+    const scope = scopeOf(args);
+    const embedder = await getEmbedder();
+    const recs = await recall(dbFor(scope, ctx), scope, args.query as string, embedder, {
+      category: args.category as any,
+      limit: args.limit as number | undefined,
+    });
+    return { display: renderRecallResult(recs), details: recs };
+  });
+
+  // NOTE: the background embed worker is intentionally NOT started here (no eager
+  // DB opens / lingering timers at registration). recall degrades to FTS when no
+  // vectors exist; the embed worker is wired in a later integration task.
 
   pi.registerTool({
     name: "spider",

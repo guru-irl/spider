@@ -92,7 +92,7 @@ describe("spider extension entry", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
-    const res = await tool.execute("c2", { action: "remember", cwd: dir }, {}) as { error: string };
+    const res = await tool.execute("c2", { action: "skill", cwd: dir }, {}) as { error: string };
     expect(res.error).toMatch(/not.*implemented/i);
   });
 });

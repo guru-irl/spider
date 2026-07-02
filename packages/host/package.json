@@ -8,6 +8,7 @@
     "@spider/db-core": "0.0.0",
     "@spider/ui": "0.0.0",
     "@spider/models": "0.0.0",
+    "@spider/memory": "0.0.0",
     "fastembed": "^1.14.1"
   },
   "peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.80.0" }

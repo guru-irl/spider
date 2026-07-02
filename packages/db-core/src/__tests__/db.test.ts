@@ -1,6 +1,6 @@
 // packages/db-core/src/__tests__/db.test.ts
 import { describe, it, expect, afterEach } from "vitest";
-import { openDb } from "../db.js";
+import { openDb, withRetry } from "../db.js";
 import { scratchDbPath, cleanupScratch } from "../testutil.js";
 
 const opened: { close(): void }[] = [];
@@ -33,5 +33,47 @@ describe("Db wrapper", () => {
   it("withRetry returns the value on success", () => {
     const db = openDb(scratchDbPath("retry2")); opened.push(db);
     expect(db.withRetry(() => 42)).toBe(42);
+  });
+
+  it("withRetry retries on SQLITE_BUSY then succeeds", () => {
+    let callCount = 0;
+    const fn = () => {
+      callCount++;
+      if (callCount < 3) throw new Error("SQLITE_BUSY: database is locked");
+      return 42;
+    };
+    const result = withRetry(fn);
+    expect(result).toBe(42);
+    expect(callCount).toBe(3);
+  });
+
+  it("withRetry throws after bounded retries", () => {
+    let callCount = 0;
+    const fn = () => {
+      callCount++;
+      throw new Error("SQLITE_BUSY: database is locked");
+    };
+    // withRetry default delays = [100, 500, 2000], so max attempts = delays.length + 1 = 4
+    expect(() => withRetry(fn)).toThrow(/SQLITE_BUSY after 3 retries/);
+    expect(callCount).toBe(4);
+  });
+
+  it("withRetry rethrows non-SQLITE_BUSY error immediately", () => {
+    let callCount = 0;
+    const fn = () => {
+      callCount++;
+      throw new Error("boom");
+    };
+    expect(() => withRetry(fn)).toThrow("boom");
+    expect(callCount).toBe(1);
+  });
+
+  it("loadVec loads sqlite-vec extension", () => {
+    const db = openDb(scratchDbPath("vec")); opened.push(db);
+    db.loadVec();
+    // Verify the extension loaded by calling vec_version()
+    const row = db.prepare("SELECT vec_version() AS v").get() as { v: string };
+    expect(row.v).toBeTruthy();
+    expect(typeof row.v).toBe("string");
   });
 });

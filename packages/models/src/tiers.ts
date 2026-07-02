@@ -1,4 +1,5 @@
-import type { Tier } from "./catalog.js";
+// Tier is owned here (leaf) so catalog->tiers stays one-directional (no cycle).
+export type Tier = "light" | "standard" | "heavy";
 // Family heuristic id -> Tier (A8). Tier = model-quality lever; ThinkingLevel is orthogonal.
 // Per-id override via models.tierOverrides (A7). NOT a hardcoded whitelist.
 export function deriveTier(id: string): Tier {

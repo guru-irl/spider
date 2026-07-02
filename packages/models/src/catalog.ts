@@ -1,5 +1,5 @@
-import { deriveTier } from "./tiers.js";
-export type Tier = "light" | "standard" | "heavy";
+import { deriveTier, type Tier } from "./tiers.js";
+export type { Tier }; // re-export so consumers (pick.ts) keep importing Tier from catalog
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export interface ModelEntry {
   provider: string; id: string; tier: Tier;

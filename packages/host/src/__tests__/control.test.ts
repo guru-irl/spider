@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests } from "@spider/db-core";
 import { controlDoctor, controlConfig } from "../control.js";
 
-const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch");
+const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ctrl-${process.pid}`);
 beforeEach(() => { mkdirSync(scratch, { recursive: true }); setGlobalDbPathForTests(join(scratch, `g-${Date.now()}.db`)); });
 afterEach(() => { setGlobalDbPathForTests(null); rmSync(scratch, { recursive: true, force: true }); });
 

@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/db-core" },
+    { "path": "./packages/ui" },
+    { "path": "./packages/models" },
+    { "path": "./packages/host" }
+  ]
+}

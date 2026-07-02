@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "./dist", "rootDir": "./src" },
+  "references": [{ "path": "../db-core" }, { "path": "../ui" }, { "path": "../models" }],
+  "include": ["src/**/*.ts"]
+}

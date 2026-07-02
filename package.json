@@ -1,0 +1,41 @@
+{
+  "name": "@guru-irl/spider",
+  "version": "0.0.0",
+  "description": "spider — all-in-one pi coding-agent extension (memory, context, todos, subagents, skills) on one shared SQLite database.",
+  "type": "module",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "keywords": ["pi-package", "pi-extension", "spider"],
+  "engines": { "node": ">=22.19.0" },
+  "pi": {
+    "extensions": ["./dist/extension.js"],
+    "skills": ["./packages/superpowers/skills"]
+  },
+  "files": ["dist", "scripts/postinstall.mjs", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -b && node esbuild.config.mjs && node scripts/assert-bundle.mjs",
+    "bundle": "node esbuild.config.mjs",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "postinstall": "node scripts/postinstall.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "sqlite-vec": "^0.1.6",
+    "fastembed": "^1.14.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.0",
+    "@earendil-works/pi-tui": ">=0.80.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.2",
+    "@earendil-works/pi-tui": "^0.80.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.19.11",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
+  }
+}

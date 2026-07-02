@@ -1,0 +1,11 @@
+{
+  "name": "@spider/db-core",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts", "./testutil": "./src/testutil.ts" },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "sqlite-vec": "^0.1.6"
+  }
+}

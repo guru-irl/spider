@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests } from "@spider/db-core";
-import spiderExtension from "../extension.js";
+import spiderExtension, { buildActionCtx } from "../extension.js";
 import { HOOK_NAMES } from "../hooks.js";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ext-${process.pid}`);
@@ -47,11 +47,28 @@ describe("spider extension entry", () => {
     expect(res.lines.join("\n")).toMatch(/spider doctor/);
   });
 
+  it("builds an ActionCtx that carries the models router", () => {
+    mkdirSync(scratch, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-ctx-${Date.now()}.db`));
+    const dir = join(scratch, "proj-ctx"); mkdirSync(dir, { recursive: true });
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const ctx = buildActionCtx(pi as never, { action: "recall", cwd: dir }, "s-1");
+    expect(typeof ctx.models.catalog).toBe("function");
+    expect(typeof ctx.models.pick).toBe("function");
+    expect(typeof ctx.models.complete).toBe("function");
+    expect(ctx.sessionId).toBe("s-1");
+    ctx.db.close(); ctx.globalDb.close();
+  });
+
   it("an unregistered action returns the not-implemented stub", async () => {
+    mkdirSync(scratch, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-unreg-${Date.now()}.db`));
+    const dir = join(scratch, "proj-unreg"); mkdirSync(dir, { recursive: true });
     const pi = fakePi();
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
-    const res = await tool.execute("c2", { action: "remember" }, {}) as { error: string };
+    const res = await tool.execute("c2", { action: "remember", cwd: dir }, {}) as { error: string };
     expect(res.error).toMatch(/not.*implemented/i);
   });
 });

@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS insights (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
   a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
 `;
 
 export const PROJECT_SCHEMA = `

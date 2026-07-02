@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests } from "@spider/db-core";
-import spiderExtension, { buildActionCtx } from "../extension.js";
+import spiderExtension, { buildActionCtx, sessionIdOf } from "../extension.js";
 import { HOOK_NAMES } from "../hooks.js";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ext-${process.pid}`);
@@ -59,6 +59,12 @@ describe("spider extension entry", () => {
     expect(typeof ctx.models.complete).toBe("function");
     expect(ctx.sessionId).toBe("s-1");
     ctx.db.close(); ctx.globalDb.close();
+  });
+
+  it("sessionIdOf reads ExtensionContext.sessionManager.getSessionId() (real pi tool-ctx shape)", () => {
+    expect(sessionIdOf({ sessionManager: { getSessionId: () => "sess-42" } })).toBe("sess-42");
+    expect(sessionIdOf(undefined)).toBe("");
+    expect(sessionIdOf({})).toBe("");
   });
 
   it("an unregistered action returns the not-implemented stub", async () => {

@@ -16,7 +16,7 @@ interface PiToolAPI {
     label?: string;
     description: string;
     parameters: unknown;
-    execute(toolCallId: string, args: SpiderArgs, ctx: unknown): Promise<unknown>;
+    execute(toolCallId: string, params: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
   }): void;
   registerCommand?(name: string, def: unknown): void;
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -64,6 +64,14 @@ export function enumerate(pi: PiToolAPI) {
   }));
 }
 
+/** Extract the pi native session id from a tool-execute ExtensionContext. Real pi
+ *  `ToolDefinition.execute(toolCallId, params, signal, onUpdate, ctx)` passes ExtensionContext
+ *  as its 5th arg; its read-only `sessionManager.getSessionId()` is the session id source (A6). */
+export function sessionIdOf(ctx: unknown): string {
+  const sm = (ctx as { sessionManager?: { getSessionId?: () => string } } | undefined)?.sessionManager;
+  return sm?.getSessionId?.() ?? "";
+}
+
 /** Build ONE ActionCtx per dispatch (A2): both DBs, the resolved project, and the
  *  @spider/models router. A handler routes via
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
@@ -83,9 +91,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     description:
       "spider 🕸 — unified memory, context/search, todos, subagents, and skills on one shared DB. Use `action` for everyday verbs; `action:'control'` + `command` for admin.",
     parameters: SPIDER_PARAMETERS,
-    async execute(_toolCallId, args, ctx) {
-      const sessionId = String((ctx as { sessionId?: unknown })?.sessionId ?? "");
-      return dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionId));
+    async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
+      return dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx)));
     },
   });
 

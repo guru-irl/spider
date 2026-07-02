@@ -10,3 +10,4 @@ export * from "./snapshot.js";
 export * from "./embeddings/embedder.js";
 export * from "./embeddings/vectors.js";
 export * from "./embeddings/queue.js";
+export * from "./recall.js";

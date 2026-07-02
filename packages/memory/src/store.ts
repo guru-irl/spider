@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types.js";
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
 import { mapRow } from "./internal.js";
+import { enqueueEmbed } from "./embeddings/queue.js";
 
 export { activeCharTotal, listActive } from "./internal.js";
 
@@ -50,6 +51,8 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
       };
     })();
 
+    if (status === "active" || status === "staged") enqueueEmbed(db, "memory", uuid, input.content);
+
     return insertRecord;
   } else {
     // Global scope: no session_id, no FTS, must set scope='global'
@@ -58,7 +61,7 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(uuid, input.category, input.content, link, "global", status, source, confidence, createdAt, null);
 
-    return {
+    const record: MemoryRecord = {
       id: Number(result.lastInsertRowid),
       uuid,
       category: input.category,
@@ -71,6 +74,10 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
       createdAt,
       updatedAt: null,
     };
+
+    if (status === "active" || status === "staged") enqueueEmbed(db, "memory", uuid, input.content);
+
+    return record;
   }
 }
 

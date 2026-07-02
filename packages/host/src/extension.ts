@@ -4,6 +4,7 @@
 // attach action handlers via registerAction (re-exported below).
 import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch.js";
 import { registerHooks } from "./hooks.js";
+import { toToolResult } from "./result.js";
 import { controlDoctor, controlConfig } from "./control.js";
 import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject } from "@spider/db-core";
@@ -170,7 +171,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
       "spider 🕸 — unified memory, context/search, todos, subagents, and skills on one shared DB. Use `action` for everyday verbs; `action:'control'` + `command` for admin.",
     parameters: SPIDER_PARAMETERS,
     async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
-      return dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx)));
+      // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
+      // text blocks, details = structured payload). TUI Component rendering is separate
+      // (renderResult, wired in the UI phase).
+      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx)));
+      return toToolResult(r);
     },
   });
 

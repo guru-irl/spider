@@ -45,8 +45,9 @@ describe("spider extension entry", () => {
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, ctx: unknown): Promise<unknown>;
     };
-    const res = await tool.execute("c1", { action: "control", command: "doctor", cwd: dir }, {}) as { lines: string[] };
-    expect(res.lines.join("\n")).toMatch(/spider doctor/);
+    const res = await tool.execute("c1", { action: "control", command: "doctor", cwd: dir }, {}) as { content: { text: string }[]; details: { lines?: string[] } };
+    // execute() now normalizes to pi's AgentToolResult: model-facing text in content[0].text.
+    expect(res.content[0].text).toMatch(/spider doctor/);
   });
 
   it("builds an ActionCtx that carries the models router", () => {
@@ -124,7 +125,8 @@ describe("spider extension entry", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
-    const res = await tool.execute("c2", { action: "skill", cwd: dir }, {}) as { error: string };
-    expect(res.error).toMatch(/not.*implemented/i);
+    const res = await tool.execute("c2", { action: "skill", cwd: dir }, {}) as { content: { text: string }[] };
+    // normalized boundary: the stub message surfaces as the model-facing content text.
+    expect(res.content[0].text).toMatch(/not.*implemented/i);
   });
 });

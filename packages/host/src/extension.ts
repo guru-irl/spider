@@ -247,7 +247,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     return undefined;
   });
 
-  // Mount the live agents UI (footer + Ctrl+G grid + /agents) on session_start.
+  // Mount the live agents UI (footer + Ctrl+Shift+G grid + /agents) on session_start.
   // pi.on chains, so this runs alongside the currentSessionId updater above. The
   // mount is best-effort — never break the session if the UI can't initialize.
   let disposeAgentsUI: (() => void) | undefined;

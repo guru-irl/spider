@@ -32,6 +32,9 @@ describe("installAgentsUI", () => {
     
     // Check if shortcut was registered
     expect(pi.registerShortcut).toHaveBeenCalledTimes(1);
+    // regression guard: must use a non-conflicting chord (ctrl+g alone is pi's
+    // built-in app.editor.external, which makes pi SKIP our registration).
+    expect(pi.registerShortcut.mock.calls[0][0]).toBe("ctrl+shift+g");
     const handler = pi.registerShortcut.mock.calls[0][1].handler;
     
     // Second install with ui2 (simulating session_start re-fire with same pi)

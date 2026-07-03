@@ -6,7 +6,7 @@ import { openGlobal, resolveProject, paths } from "@spider/db-core";
 // ── config (plain JSON; precedence defaults < global < project) ──
 const DEFAULTS: Record<string, unknown> = {
   "ui.footer": true,
-  "ui.grid_hotkey": "ctrl+g",
+  "ui.grid_hotkey": "ctrl+shift+g",
   "organism.enabled": true,
   "embeddings.provider": "fastembed",
   "embeddings.model": "BGE-small-en-v1.5",

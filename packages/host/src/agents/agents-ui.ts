@@ -106,11 +106,12 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   // Update the mutable ref to point to this install's openGrid.
   current = { openGrid };
 
-  // Ctrl+G — toggle the grid overlay. (NOTE: overrides pi's built-in external-editor Ctrl+G.)
+  // Ctrl+Shift+G — toggle the grid overlay. (ctrl+g alone is pi's built-in
+  // external-editor binding, so we use ctrl+shift+g to avoid the conflict.)
   // Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
   if (!registered) {
     registered = true;
-    pi.registerShortcut("ctrl+g", {
+    pi.registerShortcut("ctrl+shift+g", {
       description: "Toggle spider agents grid",
       handler: () => { void current?.openGrid(); },
     });

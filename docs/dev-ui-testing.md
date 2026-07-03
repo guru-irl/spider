@@ -1,6 +1,6 @@
 # Spider — realtime dev loop + manual UI test plan
 
-A live loop for iterating on the subagents UI (footer + Ctrl+G grid) against a real pi.
+A live loop for iterating on the subagents UI (footer + Ctrl+Shift+G grid) against a real pi.
 
 ## How the loop works
 - **Bundler:** Vite 8 (Rolldown + Oxc) builds `packages/host/src/extension.ts` → `dist/extension.js`
@@ -33,8 +33,8 @@ edit a UI file → vite rebuilds (Terminal 1 shows `built in NNms`) → in pi ty
 ### B. Grid overlay (no agents required)
 - [ ] Type `/agents` → the agents **grid overlay** opens (empty "no agents" state is fine).
 - [ ] Press `q` or `Esc` → it closes.
-- [ ] Press **Ctrl+G** → grid toggles. NOTE: Ctrl+G also maps to pi's external-editor binding; if it
-      conflicts, `/agents` is the reliable trigger (this is the documented fallback).
+- [ ] Press **Ctrl+Shift+G** → grid toggles. (`ctrl+g` alone is pi's built-in external-editor
+      binding; we use `ctrl+shift+g` to avoid the conflict. `/agents` is the always-available fallback.)
 
 ### C. Footer + grid with a LIVE agent
 - [ ] Ask pi: *"use spider to run a subagent — action run, a single scout agent whose task is to list the

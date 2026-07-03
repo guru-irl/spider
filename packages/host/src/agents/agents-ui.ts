@@ -24,6 +24,9 @@ const WIDGET = "spider-agents";
 // session_start fires again (pi.on chains; installAgentsUI may be re-invoked).
 let registered = false;
 
+// Mutable ref to the current install's openGrid to avoid stale closure captures.
+let current: { openGrid: () => void | Promise<void> } | undefined;
+
 export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): () => void {
   const { db, sessionId } = deps;
   const width = deps.width ?? (() => process.stdout.columns || 80);
@@ -100,17 +103,20 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     }, { overlay: true });
   };
 
+  // Update the mutable ref to point to this install's openGrid.
+  current = { openGrid };
+
   // Ctrl+G — toggle the grid overlay. (NOTE: overrides pi's built-in external-editor Ctrl+G.)
   // Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
   if (!registered) {
     registered = true;
     pi.registerShortcut("ctrl+g", {
       description: "Toggle spider agents grid",
-      handler: () => { void openGrid(); },
+      handler: () => { void current?.openGrid(); },
     });
     pi.registerCommand?.("agents", {
       description: "Open the spider agents grid",
-      handler: () => { void openGrid(); },
+      handler: () => { void current?.openGrid(); },
     });
   }
 
@@ -120,5 +126,9 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     if (ticker !== null) { clearInterval(ticker); ticker = null; }
     store.stop();
     if (mounted) { ctx.ui.setWidget(WIDGET, undefined); mounted = false; }
+    // Clear the current ref if it points to this install's openGrid.
+    if (current?.openGrid === openGrid) {
+      current = undefined;
+    }
   };
 }

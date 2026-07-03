@@ -3,7 +3,6 @@ import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
 import { statusToken } from "./types";
-import { pink } from "./ansi";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -47,7 +46,7 @@ export class AgentFooter implements Component {
     if (model !== "—") parts.push(sep, t.fg("muted", model));
     parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
     if (a.activity) parts.push(sep, t.fg("dim", a.activity));
-    return truncateToWidth(`${pink(t.glyph)}  ${parts.join(" ")}`, width, "…");
+    return truncateToWidth(`${t.fg("accent", t.glyph)}  ${parts.join(" ")}`, width, "…");
   }
 
   private build(width: number): string[] {

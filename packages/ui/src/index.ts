@@ -4,13 +4,10 @@
 import type { Component } from "./component";
 export type { Component } from "./component";
 
-// Phase 0 keeps a static token table; Phase 5/8 wire pi's live theme.
-// The lookup is intentionally a function so later phases can swap the source
-// without changing call sites.
+// Phase 0 kept a static ANSI token table; that is gone. Colour is NEVER hardcoded here —
+// all spider colouring flows through pi's live theme tokens via the ThemeAdapter (piTheme).
+// The only "token" left is the box-drawing rule char used by SectionRule (not a colour).
 const DEFAULT_TOKENS: Record<string, string> = {
-  accent: "\x1b[36m",   // cyan
-  muted: "\x1b[2m",
-  reset: "\x1b[0m",
   rule: "─",
 };
 
@@ -91,7 +88,6 @@ export { AgentFooter, formatDuration } from "./agents/footer";
 export { Grid } from "./agents/grid";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
-export { pink } from "./agents/ansi";
 export { Spinner, BRAILLE_FRAMES } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
 export { renderDiffView } from "./components/diff-view";

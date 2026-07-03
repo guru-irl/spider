@@ -6,7 +6,6 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { pink } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -133,6 +132,6 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   } else if (args?.sub || args?.command) {
     suffix = `${action} · ${args.sub ?? args.command}`;
   }
-  const line = `${pink("🕸  spider")} ${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
+  const line = `${t.fg("accent", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }

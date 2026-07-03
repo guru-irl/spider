@@ -1,11 +1,8 @@
 // spider-ui skeleton. All spider visual output flows through this kit.
 // Honors pi active theme tokens; signature glyph is 🕸 (never color-only).
 
-export interface Component {
-  render(width: number): string[];
-  handleInput?(key: string): boolean;
-  invalidate?(): void;
-}
+import type { Component } from "./component.js";
+export type { Component } from "./component.js";
 
 // Phase 0 keeps a static token table; Phase 5/8 wire pi's live theme.
 // The lookup is intentionally a function so later phases can swap the source

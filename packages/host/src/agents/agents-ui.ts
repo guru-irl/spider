@@ -1,8 +1,7 @@
 // packages/host/src/agents/agents-ui.ts
 import type { Db } from "@spider/db-core";
-import { AgentStore, AgentFooter, Grid, AgentDetail } from "@spider/ui";
+import { AgentStore, AgentFooter, AgentList, AgentDetail, type ThemeAdapter } from "@spider/ui";
 import { createRunSource } from "./run-source";
-import { createAgentActions } from "./actions";
 import { piTheme } from "./theme-adapter";
 
 interface HostUi {
@@ -34,10 +33,39 @@ function selfTick(tui: unknown, store: AgentStore): () => void {
   return () => { clearInterval(timer); off(); };
 }
 
+export interface OverlayComponent {
+  render(w: number): string[];
+  invalidate(): void;
+  handleInput(data: string): void;
+  dispose(): void;
+}
+
+/** Build the interactive agents overlay: a frame-less AgentList; Enter drills to an AgentDetail
+ *  panel rendered ABOVE the list (which sits just above the editor). Exported for testing. */
+export function buildAgentsOverlay(
+  store: AgentStore, th: ThemeAdapter, tui: { requestRender?: () => void }, done: () => void,
+): OverlayComponent {
+  const list = new AgentList(store, th);
+  let detail: AgentDetail | undefined;
+  const rr = () => tui.requestRender?.();
+  list.onClose(() => done());
+  list.onDrill((runId) => {
+    const d = new AgentDetail(store, runId, th);
+    d.onBack(() => { detail = undefined; rr(); });
+    detail = d; rr();
+  });
+  const stop = selfTick(tui, store);
+  return {
+    render: (w) => (detail ? [...detail.render(w), "", ...list.render(w)] : list.render(w)),
+    invalidate: () => list.invalidate(),
+    handleInput: (data) => { (detail ?? list).handleInput(data); rr(); },
+    dispose: () => stop(),
+  };
+}
+
 export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): () => void {
   const { db, sessionId } = deps;
   const store = new AgentStore(createRunSource(db, sessionId));
-  const actions = createAgentActions(pi as never, ctx as never);
   store.start();
 
   let mounted = false;
@@ -66,29 +94,11 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   const offChange = store.onChange(syncWidget);
   syncWidget();
 
-  // Single overlay that switches between the grid and a drilled-in detail view. Using ONE
-  // overlay (instead of nesting ctx.ui.custom calls) avoids the blank/detached screen that
-  // nested overlays produced on drill-in.
   const openOverlay = async () => {
-    await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-      const th = piTheme(theme as never);
-      const grid = new Grid(store, actions, th);
-      let detail: AgentDetail | undefined;
-      const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
-      grid.onClose(() => done());
-      grid.setDrillHandler((runId) => {
-        const d = new AgentDetail(store, runId, th);
-        d.onBack(() => { detail = undefined; rr(); });
-        detail = d; rr();
-      });
-      const stop = selfTick(tui, store);
-      return {
-        render: (w: number) => (detail ?? grid).render(w),
-        invalidate: () => grid.invalidate(),
-        handleInput: (data: string) => { (detail ?? grid).handleInput(data); rr(); },
-        dispose: () => stop(),
-      };
-    }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
+    await ctx.ui.custom<void>(
+      (tui, theme, _kb, done) => buildAgentsOverlay(store, piTheme(theme as never), tui as never, () => done()),
+      { overlay: true, overlayOptions: { anchor: "bottom-center", width: "100%", maxHeight: "50%", margin: { bottom: 1 } } },
+    );
   };
 
   current = { openOverlay };

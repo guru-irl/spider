@@ -2,7 +2,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { installAgentsUI } from "../agents/agents-ui";
+import { installAgentsUI, buildAgentsOverlay } from "../agents/agents-ui";
+import { AgentStore } from "@spider/ui";
+import { createRunSource } from "../agents/run-source";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
@@ -121,4 +123,46 @@ describe("installAgentsUI", () => {
     dispose1();
     dispose2();
   });
+});
+
+const th = { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
+
+it("overlay lists agents and drills to a detail panel rendered above the list (#37)", () => {
+  const db = openDb(scratchDbPath("aui-overlay")); opened.push(db); migrate(db, "project");
+  db.prepare(`INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at)
+              VALUES ('r1','s','scout','one','running',1,0,0),('r2','s','worker','two','running',1,0,0)`).run();
+  const store = new AgentStore(createRunSource(db, "s")); store.start();
+  let closed = false;
+  const comp = buildAgentsOverlay(store, th as never, { requestRender() {} }, () => { closed = true; });
+
+  const listed = comp.render(120).join("\n");
+  expect(listed).toContain("one");
+  expect(listed).toContain("two");
+  expect(listed).not.toContain("╭"); // no detail yet
+
+  comp.handleInput("\x1b[B"); // Down → focus row 2
+  comp.handleInput("\r");     // Enter → drill
+  const drilled = comp.render(120).join("\n");
+  expect(drilled).toContain("╭"); // AgentDetail frame now present, above the list
+  expect(drilled).toContain("two"); // list still shown below
+
+  comp.dispose();
+  store.stop();
+});
+
+it("openOverlay anchors the selector at the bottom (not full-page)", async () => {
+  const db = openDb(scratchDbPath("aui-anchor")); opened.push(db); migrate(db, "project");
+  const ui = fakeUi();
+  const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
+  const dispose = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
+  // trigger the (module-guarded) shortcut/command handler if reachable
+  const calls = pi.registerShortcut.mock.calls;
+  if (calls.length) {
+    calls.at(-1)![1].handler({});
+    await new Promise((r) => setImmediate(r));
+    expect(ui.custom).toHaveBeenCalled();
+    const opts = ui.custom.mock.calls.at(-1)![1];
+    expect(opts.overlayOptions.anchor).toBe("bottom-center");
+  }
+  dispose();
 });

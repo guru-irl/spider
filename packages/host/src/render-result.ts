@@ -18,12 +18,13 @@ import { renderSearchResult, renderImportResult } from "@spider/context";
 const ANSI = /\x1b\[[0-9;]*m/g;
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; }
+interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; }
 function mkTheme(theme: any): T {
   return {
     fg: (tok, s) => (typeof theme?.fg === "function" ? theme.fg(tok, s) : s),
     bold: (s) => (typeof theme?.bold === "function" ? theme.bold(s) : s),
     italic: (s) => (typeof theme?.italic === "function" ? theme.italic(s) : s),
+    bg: (tok, s) => (typeof theme?.bg === "function" ? theme.bg(tok, s) : s),
   };
 }
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
@@ -151,30 +152,36 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }
 
-/** Transcript renderer for the async `spider.subagent_done` message. Shows the UI-standard
- *  headline (italic `subagent` verb + italic status) and the curated output collapsed to the
- *  first few lines; ctrl+o (options.expanded) reveals the COMPLETE output. */
+/** Transcript renderer for the async `spider.subagent_done` message, styled to look like the
+ *  spider TOOL CALL: the green (or red) tool shell + the tool title
+ *  "🕸  spider · *subagent* · <name> · <status>", with the curated output rendered like
+ *  truncated tool output. ctrl+o (options.expanded) reveals the COMPLETE output. */
 export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {
   const t = mkTheme(theme);
   const d = message?.details ?? {};
   const name = String(d.name ?? "subagent");
   const agent = String(d.agent ?? "worker");
+  const model = d.model as string | null | undefined;
   const status = String(d.status ?? "done");
   const output = String(d.output ?? "").replace(/\s+$/, "");
-  const sep = t.fg("dim", "·");
-  const statusTok = status === "failed" ? "error" : status === "cancelled" ? "warning" : "muted";
-  const headline = `${t.fg("toolTitle", "🕸")} ${t.italic(t.fg("toolTitle", "subagent"))} ${t.fg("toolTitle", `"${name}"`)} ${sep} ${t.fg("muted", agent)} ${sep} ${t.italic(t.fg(statusTok, status))}`;
+  const bgTok = status === "done" ? "toolSuccessBg" : status === "running" || status === "queued" || status === "paused" ? "toolPendingBg" : "toolErrorBg";
+  const sep = t.fg("toolTitle", "·");
+  // Exact spider tool-title format: glyph + two spaces + bold "spider" + italic verb + name + status.
+  // Footer/run-block format: glyph + bold "spider" + name + italic agent + model + status.
+  const header = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${sep} ${t.fg("toolTitle", name)} ${sep} ${t.italic(t.fg("toolTitle", agent))} ${sep} ${t.fg("muted", shortModel(model))} ${sep} ${t.fg("toolTitle", status)}`;
   const lines = output ? output.split("\n") : [];
   const CAP = 6;
   const expanded = options?.expanded === true;
   const shown = expanded ? lines : lines.slice(0, CAP);
+  const pad = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - visibleWidth(s)));
   return {
     render(w: number): string[] {
-      const out = [clip(headline, w)];
-      if (shown.length) { out.push(""); for (const l of shown) out.push("  " + clip(l, Math.max(1, w - 2))); }
-      else out.push("", t.fg("dim", "  (no output)"));
-      if (!expanded && lines.length > CAP) out.push(t.fg("dim", `  … (+${lines.length - CAP} more lines) · ctrl+o to expand`));
-      return out;
+      const rows: string[] = [header];
+      if (shown.length) for (const l of shown) rows.push("  " + t.fg("toolOutput", clip(l, Math.max(1, w - 2))));
+      else rows.push("  " + t.fg("toolOutput", "(no output)"));
+      if (!expanded && lines.length > CAP) rows.push("  " + t.fg("dim", `… (+${lines.length - CAP} more lines) · ctrl+o to expand`));
+      // Paint the tool shell across the full width so it reads as a spider tool block.
+      return rows.map((r) => t.bg(bgTok, pad(r, w)));
     },
     invalidate() {},
   };

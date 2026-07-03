@@ -31,7 +31,7 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
           customType: "spider.subagent_done",
           content,
           display: true,
-          details: { runId: run?.id, name, agent: run?.agent, status, output },
+          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output },
         },
         { triggerTurn: true },
       );

@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { paths } from "@spider/db-core";
-import { readTranscript } from "../transcript.js";
+import { readTranscript } from "../transcript";
 
 let f = "";
 afterEach(() => {

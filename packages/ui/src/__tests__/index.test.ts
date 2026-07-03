@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import * as ui from "../index.js";
+import * as ui from "../index";
 
 describe("@spider/ui Phase 5 surface", () => {
   it("re-exports agent UI symbols", () => {

@@ -1,11 +1,11 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component } from "../component.js";
-import { buildFooterModel } from "./footer-model.js";
-import { diffLines, hasChanges } from "./diff.js";
-import { Spinner } from "../components/spinner.js";
-import { STATUS_GLYPH, statusToken } from "./types.js";
-import type { AgentSnapshot, ThemeAdapter } from "./types.js";
-import type { AgentStore } from "./store.js";
+import type { Component } from "../component";
+import { buildFooterModel } from "./footer-model";
+import { diffLines, hasChanges } from "./diff";
+import { Spinner } from "../components/spinner";
+import { STATUS_GLYPH, statusToken } from "./types";
+import type { AgentSnapshot, ThemeAdapter } from "./types";
+import type { AgentStore } from "./store";
 
 export function formatDuration(ms: number): string {
   if (ms < 0) ms = 0;

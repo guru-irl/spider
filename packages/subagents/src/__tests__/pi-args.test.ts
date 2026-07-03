@@ -7,7 +7,7 @@ import {
   SUBAGENT_ORCHESTRATOR_TARGET_ENV,
   SUBAGENT_CHILD_AGENT_ENV,
   SUBAGENT_CHILD_INDEX_ENV,
-} from "../pi-args.js";
+} from "../pi-args";
 
 const base = {
   runId: "r1",

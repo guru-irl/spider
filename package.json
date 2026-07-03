@@ -32,7 +32,10 @@
   "scripts": {
     "build": "vite build && node scripts/assert-bundle.mjs",
     "bundle": "vite build",
-    "typecheck": "tsgo -b",
+    "dev": "vite build --watch",
+    "dev:link": "node scripts/dev-link.mjs",
+    "dev:unlink": "node scripts/dev-link.mjs --unlink",
+    "typecheck": "tsgo -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "node scripts/postinstall.mjs",

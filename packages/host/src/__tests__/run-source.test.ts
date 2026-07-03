@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { openDb, migrate, appendRunEvent } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil"; // exported test helper (Phase 0 Task 3)
-import { createRunSource } from "../agents/run-source.js";
+import { createRunSource } from "../agents/run-source";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });

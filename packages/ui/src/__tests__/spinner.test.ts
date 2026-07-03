@@ -1,6 +1,6 @@
 // packages/ui/src/__tests__/spinner.test.ts
 import { describe, it, expect } from "vitest";
-import { Spinner, BRAILLE_FRAMES } from "../components/spinner.js";
+import { Spinner, BRAILLE_FRAMES } from "../components/spinner";
 
 describe("Spinner", () => {
   it("advances by wall-clock, not by call count", () => {

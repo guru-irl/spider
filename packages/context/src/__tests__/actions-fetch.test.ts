@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { makeContentDb } from "./helpers/tmpdb.js";
-import { runFetch } from "../actions/index-fetch.js";
-import { ContentStore } from "../content-store.js";
+import { makeContentDb } from "./helpers/tmpdb";
+import { runFetch } from "../actions/index-fetch";
+import { ContentStore } from "../content-store";
 
 let ctx: ReturnType<typeof makeContentDb>;
 const realFetch = globalThis.fetch;

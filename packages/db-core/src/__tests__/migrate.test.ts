@@ -1,8 +1,8 @@
 // packages/db-core/src/__tests__/migrate.test.ts
 import { describe, it, expect, afterEach } from "vitest";
-import { openDb } from "../db.js";
-import { migrate, SCHEMA_VERSION } from "../migrate.js";
-import { scratchDbPath, cleanupScratch } from "../testutil.js";
+import { openDb } from "../db";
+import { migrate, SCHEMA_VERSION } from "../migrate";
+import { scratchDbPath, cleanupScratch } from "../testutil";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });

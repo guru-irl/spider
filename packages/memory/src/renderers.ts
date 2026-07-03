@@ -1,6 +1,6 @@
 import { Panel, type Component } from "@spider/ui";
-import type { MemoryRecord } from "./types.js";
-import type { StageResult } from "./staging.js";
+import type { MemoryRecord } from "./types";
+import type { StageResult } from "./staging";
 
 const GLYPH = "🕸";
 

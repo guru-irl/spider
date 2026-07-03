@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths, listEvents } from "@spider/db-core";
-import { registerRouting, DEFAULT_ROUTING_CONFIG } from "../routing/index.js";
+import { registerRouting, DEFAULT_ROUTING_CONFIG } from "../routing/index";
 
 let dbPath = "";
 afterEach(() => { for (const s of ["", "-wal", "-shm"]) { try { rmSync(`${dbPath}${s}`, { force: true }); } catch {} } });

@@ -1,5 +1,5 @@
 import type { Db } from "@spider/db-core";
-import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord } from "./types.js";
+import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord } from "./types";
 
 export function tableFor(scope: MemoryScope): "memory" | "global_memory" {
   return scope === "project" ? "memory" : "global_memory";

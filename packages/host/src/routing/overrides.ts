@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { createEditToolDefinition, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { recordResult } from "./tracking.js";
+import { recordResult } from "./tracking";
 import type { Db } from "@spider/db-core";
 
 export function validateDescription(desc: unknown): string | null {

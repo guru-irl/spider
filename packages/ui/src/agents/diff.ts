@@ -1,4 +1,4 @@
-import type { LineChange, LineDiff } from "./types.js";
+import type { LineChange, LineDiff } from "./types";
 
 export function diffLines(prev: string[], next: string[]): LineDiff {
   const changed: LineChange[] = [];

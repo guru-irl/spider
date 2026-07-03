@@ -1,3 +1,3 @@
-export { runSingle } from "./single.js";
-export { runChain } from "./chain.js";
-export { runParallel } from "./parallel.js";
+export { runSingle } from "./single";
+export { runChain } from "./chain";
+export { runParallel } from "./parallel";

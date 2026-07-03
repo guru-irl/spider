@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import * as dbcore from "../index.js";
+import * as dbcore from "../index";
 
 describe("@spider/db-core public API", () => {
   it("exports the canonical symbols", () => {

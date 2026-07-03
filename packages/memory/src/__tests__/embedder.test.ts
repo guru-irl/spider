@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveEmbedder, EMBED_DIM } from "../embeddings/embedder.js";
+import { resolveEmbedder, EMBED_DIM } from "../embeddings/embedder";
 
 describe("embedder", () => {
   it("never throws and reports dim=384 when available (else null → FTS degrade)", async () => {

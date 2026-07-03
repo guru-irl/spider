@@ -1,4 +1,4 @@
-import type { GridLayout } from "./types.js";
+import type { GridLayout } from "./types";
 
 export function layoutGrid(count: number, page = 0): GridLayout {
   if (count <= 0) return { rows: 0, cols: 0, perPage: 0, pages: 1, page: 0 };

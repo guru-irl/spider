@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { defaultDigest } from "../digest.js";
+import { defaultDigest } from "../digest";
 
 describe("defaultDigest (Phase 2 stub)", () => {
   it("produces zero candidates and a truncated summary without calling a model", async () => {

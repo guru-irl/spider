@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { runExec, runBatch } from "../actions/exec.js";
+import { runExec, runBatch } from "../actions/exec";
 
 const ctx = { cwd: process.cwd() };
 

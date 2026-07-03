@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { STATUS_GLYPH, statusToken } from "../agents/types.js";
+import { STATUS_GLYPH, statusToken } from "../agents/types";
 
 describe("agent status vocabulary", () => {
   it("has a glyph for every status", () => {

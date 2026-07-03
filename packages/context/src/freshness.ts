@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { openSync, fstatSync, readFileSync, closeSync } from "node:fs";
-import { ContentStore } from "./content-store.js";
+import { ContentStore } from "./content-store";
 
 export function refreshStaleContent(store: ContentStore, opts?: { maxSources?: number }): number {
   const stale = store.listStaleSources();

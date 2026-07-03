@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeMemDb } from "./helpers/tmpdb.js";
-import { registerMemory } from "../index.js";
+import { makeMemDb } from "./helpers/tmpdb";
+import { registerMemory } from "../index";
 
 function fakePi() {
   const actions: Record<string, Function> = {};

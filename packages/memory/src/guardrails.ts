@@ -1,4 +1,4 @@
-import type { MemoryCategory } from "./types.js";
+import type { MemoryCategory } from "./types";
 
 export interface CaptureVerdict {
   capture: boolean;

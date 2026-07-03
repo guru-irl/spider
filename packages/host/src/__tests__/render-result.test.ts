@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderSpiderResult } from "../render-result.js";
+import { renderSpiderResult } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
 // Minimal fakes for pi's renderResult call shape. We only exercise the fields the

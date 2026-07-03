@@ -3,8 +3,8 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { resolveProject, registerProject, openGlobal, openProject, openDbAt, openProjectByPath, setGlobalDbPathForTests } from "../registry.js";
-import { scratchDbPath, cleanupScratch } from "../testutil.js";
+import { resolveProject, registerProject, openGlobal, openProject, openDbAt, openProjectByPath, setGlobalDbPathForTests } from "../registry";
+import { scratchDbPath, cleanupScratch } from "../testutil";
 
 beforeEach(() => setGlobalDbPathForTests(scratchDbPath("global-registry")));
 afterEach(() => { setGlobalDbPathForTests(null); cleanupScratch(); });

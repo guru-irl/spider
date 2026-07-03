@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { getAction } from "../dispatch.js";
-import spiderExtension from "../extension.js";
+import { getAction } from "../dispatch";
+import spiderExtension from "../extension";
 import { setGlobalDbPathForTests, paths } from "@spider/db-core";
 import { registerSubagentActions } from "@spider/subagents";
 

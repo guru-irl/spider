@@ -6,7 +6,7 @@ import {
   buildCommand,
   type RuntimeMap,
   type Language,
-} from "./runtime.js";
+} from "./runtime";
 import { paths } from "@spider/db-core";
 
 export interface ExecResult {

@@ -1,5 +1,5 @@
-import type { RunEventTailer } from "./event-tailer.js";
-import type { PipelineCoordinator } from "./pipeline.js";
+import type { RunEventTailer } from "./event-tailer";
+import type { PipelineCoordinator } from "./pipeline";
 
 export interface SessionCoordinators { tailer: RunEventTailer; pipelines: PipelineCoordinator[]; }
 

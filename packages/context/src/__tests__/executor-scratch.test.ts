@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { tmpdir } from "node:os";
-import { PolyglotExecutor } from "../executor.js";
+import { PolyglotExecutor } from "../executor";
 import { paths } from "@spider/db-core";
 
 describe("executor zero-temp-dir", () => {

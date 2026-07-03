@@ -1,23 +1,23 @@
-export * from "./run-store.js";
-export * from "./run-events.js";
-export * from "./pi-args.js";
-export * from "./pi-spawn.js";
-export * from "./child-reporter.js";
-export * from "./event-tailer.js";
-export * from "./runner.js";
-export * from "./modes-index.js";
-export * from "./intercom.js";
-export * from "./schemas.js";
-export * from "./pipeline.js";
-export * from "./wait.js";
-export * from "./coordinators.js";
-export * from "./spawn-default.js";
+export * from "./run-store";
+export * from "./run-events";
+export * from "./pi-args";
+export * from "./pi-spawn";
+export * from "./child-reporter";
+export * from "./event-tailer";
+export * from "./runner";
+export * from "./modes-index";
+export * from "./intercom";
+export * from "./schemas";
+export * from "./pipeline";
+export * from "./wait";
+export * from "./coordinators";
+export * from "./spawn-default";
 
-import { attachChildReporter, isSubagentChild } from "./child-reporter.js";
-import { makeRunHandler } from "./actions/run.js";
-import { makeWaitHandler } from "./actions/wait.js";
-import { makeMessageHandler } from "./actions/message.js";
-import { teardownAll } from "./coordinators.js";
+import { attachChildReporter, isSubagentChild } from "./child-reporter";
+import { makeRunHandler } from "./actions/run";
+import { makeWaitHandler } from "./actions/wait";
+import { makeMessageHandler } from "./actions/message";
+import { teardownAll } from "./coordinators";
 
 export { makeRunHandler, makeWaitHandler, makeMessageHandler };
 

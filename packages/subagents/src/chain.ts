@@ -1,5 +1,5 @@
-import type { Runner } from "./runner.js";
-import type { RunRow } from "./run-store.js";
+import type { Runner } from "./runner";
+import type { RunRow } from "./run-store";
 
 function interpolate(tmpl: string, vars: { task: string; previous: string }): string {
   return tmpl.replace(/\{task\}/g, vars.task).replace(/\{previous\}/g, vars.previous);

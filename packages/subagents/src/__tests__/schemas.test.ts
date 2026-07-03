@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RunParams, WaitParams, MessageParams } from "../schemas.js";
+import { RunParams, WaitParams, MessageParams } from "../schemas";
 import { Value } from "typebox/value";
 
 describe("schemas", () => {

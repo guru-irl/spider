@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { bus } from "@spider/db-core";
-import { emitStatus, emitHandoff, emitToolResult } from "../run-events.js";
-import { freshDb } from "./helpers/testutil.js";
+import { emitStatus, emitHandoff, emitToolResult } from "../run-events";
+import { freshDb } from "./helpers/testutil";
 
 describe("run-events emit helpers", () => {
   it("emitStatus appends a status run_event and emits it on the bus", () => {

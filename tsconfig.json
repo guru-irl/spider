@@ -1,13 +1,4 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./packages/db-core" },
-    { "path": "./packages/ui" },
-    { "path": "./packages/models" },
-    { "path": "./packages/memory" },
-    { "path": "./packages/todo" },
-    { "path": "./packages/context" },
-    { "path": "./packages/subagents" },
-    { "path": "./packages/host" }
-  ]
+  "extends": "./tsconfig.base.json",
+  "include": ["packages/*/src/**/*.ts"]
 }

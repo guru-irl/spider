@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths, bus } from "@spider/db-core";
-import { PipelineCoordinator } from "../pipeline.js";
-import { RunStore } from "../run-store.js";
-import { freshDb } from "./helpers/testutil.js";
+import { PipelineCoordinator } from "../pipeline";
+import { RunStore } from "../run-store";
+import { freshDb } from "./helpers/testutil";
 
 function freshGlobal() {
   return openDbAt(join(paths.scratch("global"), `pg-${randomUUID()}.db`), "global");

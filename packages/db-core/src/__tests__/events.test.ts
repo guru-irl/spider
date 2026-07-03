@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { openDb } from "../db.js";
-import { migrate } from "../migrate.js";
-import { appendRunEvent, bus, type RunEvent } from "../events.js";
-import { scratchDbPath, cleanupScratch } from "../testutil.js";
+import { openDb } from "../db";
+import { migrate } from "../migrate";
+import { appendRunEvent, bus, type RunEvent } from "../events";
+import { scratchDbPath, cleanupScratch } from "../testutil";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });

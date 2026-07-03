@@ -1,6 +1,6 @@
 // packages/host/src/__tests__/embeddings.test.ts
 import { describe, it, expect } from "vitest";
-import { embeddingConfig, isEmbedderLoaded } from "../embeddings.js";
+import { embeddingConfig, isEmbedderLoaded } from "../embeddings";
 
 describe("embeddings wiring (lazy, no download in Phase 0)", () => {
   it("reports the default provider/model/dim", () => {

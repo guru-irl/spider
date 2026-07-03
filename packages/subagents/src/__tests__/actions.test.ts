@@ -2,13 +2,13 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths } from "@spider/db-core";
-import { makeRunHandler } from "../actions/run.js";
-import { makeWaitHandler } from "../actions/wait.js";
-import { makeMessageHandler } from "../actions/message.js";
-import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom.js";
-import { RunStore } from "../run-store.js";
-import { teardownAll } from "../coordinators.js";
-import { freshDb } from "./helpers/testutil.js";
+import { makeRunHandler } from "../actions/run";
+import { makeWaitHandler } from "../actions/wait";
+import { makeMessageHandler } from "../actions/message";
+import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
+import { RunStore } from "../run-store";
+import { teardownAll } from "../coordinators";
+import { freshDb } from "./helpers/testutil";
 
 function fakeEvents() {
   const listeners = new Map<string, Array<(p: any) => void>>();

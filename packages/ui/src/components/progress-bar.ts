@@ -1,5 +1,5 @@
 // packages/ui/src/components/progress-bar.ts
-import type { ThemeAdapter } from "../agents/types.js";
+import type { ThemeAdapter } from "../agents/types";
 
 export function renderProgressBar(
   theme: ThemeAdapter,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { pick, catalog } from "../index.js";
+import { pick, catalog } from "../index";
 
 const entries = catalog(() => [
   { provider: "github-copilot", id: "mai-code-1-flash-picker", available: true },

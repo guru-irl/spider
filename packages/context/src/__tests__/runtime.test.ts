@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectRuntimes, getAvailableLanguages } from "../runtime.js";
+import { detectRuntimes, getAvailableLanguages } from "../runtime";
 
 describe("runtime detection", () => {
   it("always reports javascript + shell available (node + sh present)", () => {

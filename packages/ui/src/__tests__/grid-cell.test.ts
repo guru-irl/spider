@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { renderGridCell } from "../agents/grid-cell.js";
-import { Spinner } from "../components/spinner.js";
-import type { AgentSnapshot, ThemeAdapter } from "../agents/types.js";
+import { renderGridCell } from "../agents/grid-cell";
+import { Spinner } from "../components/spinner";
+import type { AgentSnapshot, ThemeAdapter } from "../agents/types";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };

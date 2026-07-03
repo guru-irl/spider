@@ -7,7 +7,7 @@ import {
   validateDescription,
   countPatchLines,
   registerEditWriteOverrides,
-} from "../routing/overrides.js";
+} from "../routing/overrides";
 
 let dbPath: string;
 afterEach(() => {

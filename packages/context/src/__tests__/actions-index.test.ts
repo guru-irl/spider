@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeContentDb } from "./helpers/tmpdb.js";
-import { runIndex } from "../actions/index-fetch.js";
+import { makeContentDb } from "./helpers/tmpdb";
+import { runIndex } from "../actions/index-fetch";
 
 let ctx: ReturnType<typeof makeContentDb>;
 

@@ -1,11 +1,11 @@
 import type { Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
-import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types.js";
-import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
-import { mapRow } from "./internal.js";
-import { enqueueEmbed } from "./embeddings/queue.js";
+import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types";
+import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow";
+import { mapRow } from "./internal";
+import { enqueueEmbed } from "./embeddings/queue";
 
-export { activeCharTotal, listActive } from "./internal.js";
+export { activeCharTotal, listActive } from "./internal";
 
 export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number = DEFAULT_MEMORY_CHAR_CAP): MemoryRecord {
   const uuid = randomUUID();

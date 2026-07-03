@@ -1,5 +1,5 @@
-import type { Runner } from "./runner.js";
-import type { RunRow } from "./run-store.js";
+import type { Runner } from "./runner";
+import type { RunRow } from "./run-store";
 
 export function runSingle(
   runner: Runner,

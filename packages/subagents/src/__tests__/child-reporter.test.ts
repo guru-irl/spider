@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { makeChildReporter } from "../child-reporter.js";
-import { RunStore } from "../run-store.js";
-import { freshDb } from "./helpers/testutil.js";
+import { makeChildReporter } from "../child-reporter";
+import { RunStore } from "../run-store";
+import { freshDb } from "./helpers/testutil";
 
 describe("child reporter", () => {
   it("appends run_events and writes terminal run status", () => {

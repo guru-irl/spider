@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeMemDb } from "./helpers/tmpdb.js";
-import { addMemory } from "../store.js";
-import { MemoryOverflowError } from "../overflow.js";
+import { makeMemDb } from "./helpers/tmpdb";
+import { addMemory } from "../store";
+import { MemoryOverflowError } from "../overflow";
 
 let ctx: ReturnType<typeof makeMemDb>;
 afterEach(() => ctx?.cleanup());

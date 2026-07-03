@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { rrfFuse } from "../fusion.js";
+import { rrfFuse } from "../fusion";
 
 describe("rrfFuse", () => {
   it("ranks an item appearing high in BOTH lists above one winning a single list", () => {

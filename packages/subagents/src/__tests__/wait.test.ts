@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { waitForRuns } from "../wait.js";
-import { RunStore } from "../run-store.js";
-import { emitStatus } from "../run-events.js";
-import { freshDb } from "./helpers/testutil.js";
+import { waitForRuns } from "../wait";
+import { RunStore } from "../run-store";
+import { emitStatus } from "../run-events";
+import { freshDb } from "./helpers/testutil";
 
 describe("waitForRuns", () => {
   it("resolves immediately if the targeted run is already terminal", async () => {

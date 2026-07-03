@@ -4,8 +4,8 @@
 // an @spider/ui Component (Panel). The host renderResult dispatcher wraps them to add
 // pi's required invalidate(). REAL ANSI is emitted by @spider/ui.
 import { Panel, type Component } from "@spider/ui";
-import type { SearchResultRow } from "./search.js";
-import type { ImportSummary } from "./import.js";
+import type { SearchResultRow } from "./search";
+import type { ImportSummary } from "./import";
 
 const GLYPH = "🕸";
 

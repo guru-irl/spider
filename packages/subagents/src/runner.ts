@@ -1,8 +1,8 @@
 import type { Db } from "@spider/db-core";
-import { RunStore, type RunRow, type RunStatus } from "./run-store.js";
-import { RunEventTailer } from "./event-tailer.js";
-import { emitStatus } from "./run-events.js";
-import { buildChildSpawnSpec, type ChildSpawnSpec } from "./pi-args.js";
+import { RunStore, type RunRow, type RunStatus } from "./run-store";
+import { RunEventTailer } from "./event-tailer";
+import { emitStatus } from "./run-events";
+import { buildChildSpawnSpec, type ChildSpawnSpec } from "./pi-args";
 
 export interface ChildHandle {
   pid?: number;

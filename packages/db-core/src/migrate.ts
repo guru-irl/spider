@@ -1,5 +1,5 @@
-import type { Db } from "./db.js";
-import { GLOBAL_SCHEMA, PROJECT_SCHEMA } from "./schema.js";
+import type { Db } from "./db";
+import { GLOBAL_SCHEMA, PROJECT_SCHEMA } from "./schema";
 
 export const SCHEMA_VERSION = 1;
 

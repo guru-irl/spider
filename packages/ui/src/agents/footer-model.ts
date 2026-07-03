@@ -1,4 +1,4 @@
-import type { AgentSnapshot, AgentStatus, FooterModel } from "./types.js";
+import type { AgentSnapshot, AgentStatus, FooterModel } from "./types";
 
 const PRIORITY: Record<AgentStatus, number> = {
   running: 0, queued: 1, paused: 2, failed: 3, cancelled: 3, done: 4,

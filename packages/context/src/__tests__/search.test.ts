@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeContentDb } from "./helpers/tmpdb.js";
-import { unifiedSearch } from "../search.js";
-import { ContentStore } from "../content-store.js";
+import { makeContentDb } from "./helpers/tmpdb";
+import { unifiedSearch } from "../search";
+import { ContentStore } from "../content-store";
 
 let ctx: ReturnType<typeof makeContentDb>;
 

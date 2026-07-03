@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { AgentStore, projectRow } from "../agents/store.js";
-import type { RunRow, RunSource, RunEvent } from "../agents/types.js";
+import { AgentStore, projectRow } from "../agents/store";
+import type { RunRow, RunSource, RunEvent } from "../agents/types";
 import { openDb, migrate, appendRunEvent } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import type { Db } from "@spider/db-core";

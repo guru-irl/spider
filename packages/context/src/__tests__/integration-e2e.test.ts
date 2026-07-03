@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeContentDb } from "./helpers/tmpdb.js";
-import { registerContextActions } from "../index.js";
+import { makeContentDb } from "./helpers/tmpdb";
+import { registerContextActions } from "../index";
 
 function fakeHost() {
   const map = new Map<string, any>();

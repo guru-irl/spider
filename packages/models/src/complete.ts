@@ -1,5 +1,5 @@
-import type { ModelEntry } from "./catalog.js";
-import type { PickResult } from "./pick.js";
+import type { ModelEntry } from "./catalog";
+import type { PickResult } from "./pick";
 import type { Db } from "@spider/db-core";
 export interface CompleteOpts { system?: string; thinkingLevel?: string; maxTokens?: number }
 export interface CompleteDeps {

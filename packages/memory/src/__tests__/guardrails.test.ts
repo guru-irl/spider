@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldCapture } from "../guardrails.js";
+import { shouldCapture } from "../guardrails";
 describe("anti-poisoning guardrails", () => {
   it("rejects negative tool claims", () => {
     expect(shouldCapture("failure", "the browser tools don't work here").capture).toBe(false);

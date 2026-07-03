@@ -1,13 +1,13 @@
-export * from "./types.js";
-export * from "./store.js";
-export * from "./actions.js";
-export * from "./renderers.js";
-export * from "./command.js";
+export * from "./types";
+export * from "./store";
+export * from "./actions";
+export * from "./renderers";
+export * from "./command";
 
 import type { Db } from "@spider/db-core";
-import type { TodoDeps } from "./actions.js";
-import { makeTodo } from "./actions.js";
-import { makeTodosCommand } from "./command.js";
+import type { TodoDeps } from "./actions";
+import { makeTodo } from "./actions";
+import { makeTodosCommand } from "./command";
 
 export type { TodoDeps };
 

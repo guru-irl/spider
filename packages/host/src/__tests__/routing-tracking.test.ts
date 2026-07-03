@@ -3,7 +3,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths, listEvents } from "@spider/db-core";
-import { recordIntent, recordResult, isExempt } from "../routing/tracking.js";
+import { recordIntent, recordResult, isExempt } from "../routing/tracking";
 
 let dbPath: string;
 afterEach(() => {

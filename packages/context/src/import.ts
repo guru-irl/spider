@@ -1,8 +1,8 @@
 import type { Db } from "@spider/db-core";
 import { stageWrite, approvePending, enqueueEmbed, type MemoryCategory } from "@spider/memory";
-import { readTranscript, selectSessionFiles } from "./transcript.js";
-import { defaultDigest, type SessionDigest } from "./digest.js";
-import { ContentStore } from "./content-store.js";
+import { readTranscript, selectSessionFiles } from "./transcript";
+import { defaultDigest, type SessionDigest } from "./digest";
+import { ContentStore } from "./content-store";
 
 export interface ImportCtx {
   db: Db;

@@ -1,9 +1,9 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { renderProgressBar } from "../components/progress-bar.js";
-import { Spinner } from "../components/spinner.js";
-import { formatDuration } from "./footer.js";
-import { STATUS_GLYPH, statusToken } from "./types.js";
-import type { AgentSnapshot, ThemeAdapter } from "./types.js";
+import { renderProgressBar } from "../components/progress-bar";
+import { Spinner } from "../components/spinner";
+import { formatDuration } from "./footer";
+import { STATUS_GLYPH, statusToken } from "./types";
+import type { AgentSnapshot, ThemeAdapter } from "./types";
 
 function fit(line: string, width: number): string {
   return visibleWidth(line) > width ? truncateToWidth(line, width, "…") : line;

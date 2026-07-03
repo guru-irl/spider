@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { paths } from "@spider/db-core";
-import { makeContentDb } from "./helpers/tmpdb.js";
-import { ContentStore } from "../content-store.js";
-import { refreshStaleContent } from "../freshness.js";
+import { makeContentDb } from "./helpers/tmpdb";
+import { ContentStore } from "../content-store";
+import { refreshStaleContent } from "../freshness";
 
 let ctx: ReturnType<typeof makeContentDb>;
 let file: string;

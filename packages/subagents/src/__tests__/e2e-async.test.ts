@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import { openDb, migrate, bus, type Db } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { RunEventTailer } from "../event-tailer.js";
+import { RunEventTailer } from "../event-tailer";
 
 const opened: Db[] = [];
 afterAll(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });

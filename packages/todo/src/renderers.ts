@@ -1,6 +1,6 @@
 import type { Component } from "@spider/ui";
 import { Panel, StatusLine, type Component as UIComponent } from "@spider/ui";
-import type { SessionGroup, SessionSummary, Todo } from "./types.js";
+import type { SessionGroup, SessionSummary, Todo } from "./types";
 
 const GLYPH = "🕸";
 

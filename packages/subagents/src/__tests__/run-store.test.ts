@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { RunStore, deriveRunName } from "../run-store.js";
-import { freshDb } from "./helpers/testutil.js";
+import { RunStore, deriveRunName } from "../run-store";
+import { freshDb } from "./helpers/testutil";
 
 describe("deriveRunName", () => {
   it("is deterministic for the same input", () => {

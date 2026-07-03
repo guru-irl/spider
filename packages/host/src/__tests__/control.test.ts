@@ -4,7 +4,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests } from "@spider/db-core";
-import { controlDoctor, controlConfig } from "../control.js";
+import { controlDoctor, controlConfig } from "../control";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ctrl-${process.pid}`);
 beforeEach(() => { mkdirSync(scratch, { recursive: true }); setGlobalDbPathForTests(join(scratch, `g-${Date.now()}.db`)); });

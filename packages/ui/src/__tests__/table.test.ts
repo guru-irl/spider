@@ -1,7 +1,7 @@
 // packages/ui/src/__tests__/table.test.ts
 import { describe, it, expect } from "vitest";
-import { renderTable } from "../components/table.js";
-import type { ThemeAdapter } from "../agents/types.js";
+import { renderTable } from "../components/table";
+import type { ThemeAdapter } from "../agents/types";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import * as pkg from "../index.js";
+import * as pkg from "../index";
 
 describe("@spider/subagents", () => {
   it("exports registerSubagentActions", () => {

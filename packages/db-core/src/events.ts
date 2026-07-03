@@ -1,4 +1,4 @@
-import type { Db } from "./db.js";
+import type { Db } from "./db";
 
 export type RunEvent = {
   runId?: string;

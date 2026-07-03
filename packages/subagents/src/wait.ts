@@ -1,6 +1,6 @@
 import { bus } from "@spider/db-core";
 import type { Db, RunEvent } from "@spider/db-core";
-import { RunStore, type RunRow } from "./run-store.js";
+import { RunStore, type RunRow } from "./run-store";
 
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
 export interface WaitResult { finished: RunRow[]; stillActive: RunRow[]; timedOut: boolean; }

@@ -1,4 +1,4 @@
-import { deriveTier, type Tier } from "./tiers.js";
+import { deriveTier, type Tier } from "./tiers";
 export type { Tier }; // re-export so consumers (pick.ts) keep importing Tier from catalog
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export interface ModelEntry {

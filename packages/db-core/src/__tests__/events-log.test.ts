@@ -2,8 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths } from "../index.js";
-import { appendEvent, listEvents, eventCountsByTool, bus, type RunEvent } from "../events.js";
+import { openDbAt, paths } from "../index";
+import { appendEvent, listEvents, eventCountsByTool, bus, type RunEvent } from "../events";
 
 let dbPath: string;
 afterEach(() => { for (const s of ["", "-wal", "-shm"]) rmSync(`${dbPath}${s}`, { force: true }); });

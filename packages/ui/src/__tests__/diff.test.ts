@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffLines, hasChanges } from "../agents/diff.js";
+import { diffLines, hasChanges } from "../agents/diff";
 
 describe("diffLines", () => {
   it("reports no change for identical arrays", () => {

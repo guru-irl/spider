@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { registerHooks, HOOK_NAMES, type PiLikeAPI } from "../hooks.js";
+import { registerHooks, HOOK_NAMES, type PiLikeAPI } from "../hooks";
 
 describe("registerHooks (Phase 0 empty handlers)", () => {
   it("registers a handler for every contract hook name", () => {

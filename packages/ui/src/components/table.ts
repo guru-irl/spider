@@ -1,6 +1,6 @@
 // packages/ui/src/components/table.ts
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { ThemeAdapter } from "../agents/types.js";
+import type { ThemeAdapter } from "../agents/types";
 
 interface Col { header: string; align?: "left" | "right"; token?: string }
 

@@ -1,7 +1,7 @@
 import { readFileSync, statSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import type { NormalizedTranscript } from "./digest.js";
+import type { NormalizedTranscript } from "./digest";
 
 function extractText(content: unknown): string {
   if (typeof content === "string") return content;

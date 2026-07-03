@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getCoordinators, teardownCoordinators } from "../coordinators.js";
+import { getCoordinators, teardownCoordinators } from "../coordinators";
 
 describe("coordinators registry", () => {
   it("creates once per session and tears down", () => {

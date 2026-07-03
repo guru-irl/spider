@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { openSync, fstatSync, readFileSync, closeSync } from "node:fs";
 import type { Db } from "@spider/db-core";
-import { chunkMarkdown, detectContentType } from "./chunker.js";
-import { sanitizeQuery } from "./fts-query.js";
+import { chunkMarkdown, detectContentType } from "./chunker";
+import { sanitizeQuery } from "./fts-query";
 
 export interface IndexResult {
   source: string;

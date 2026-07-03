@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
-import { listTodos, viewSession } from "./store.js";
-import type { SessionGroup, Todo } from "./types.js";
+import { listTodos, viewSession } from "./store";
+import type { SessionGroup, Todo } from "./types";
 
 const GLYPH = "🕸";
 

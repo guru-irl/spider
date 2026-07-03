@@ -4,10 +4,10 @@
 // ─────────────────────────────────────────────────────────
 
 import type { Db } from "@spider/db-core";
-import { ContentStore } from "./content-store.js";
-import { refreshStaleContent } from "./freshness.js";
-import { rrfFuse, proximityRerank } from "./fusion.js";
-import { sanitizeQuery } from "./fts-query.js";
+import { ContentStore } from "./content-store";
+import { refreshStaleContent } from "./freshness";
+import { rrfFuse, proximityRerank } from "./fusion";
+import { sanitizeQuery } from "./fts-query";
 import { resolveEmbedder, knn } from "@spider/memory";
 
 export type SearchKind = "memory" | "content" | "session" | "todo";

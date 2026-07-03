@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { ContentStore } from "../content-store.js";
-import { makeContentDb } from "./helpers/tmpdb.js";
+import { ContentStore } from "../content-store";
+import { makeContentDb } from "./helpers/tmpdb";
 
 describe("ContentStore", () => {
   const cleanups: Array<() => void> = [];

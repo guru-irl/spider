@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveAuxRuntime, digestHistory } from "../aux.js";
+import { resolveAuxRuntime, digestHistory } from "../aux";
 describe("aux routing + digest", () => {
   it("marks routed when aux model differs from parent", () => {
     const rt = resolveAuxRuntime({ auxiliary: { background_review: { provider: "openai", model: "gpt-4o-mini" } } }, "claude-sonnet");

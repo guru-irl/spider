@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.js";
-import { getPiSpawnCommand } from "./pi-spawn.js";
+import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist";
+import { getPiSpawnCommand } from "./pi-spawn";
 
 // Vendored locally from pi-subagents' structured-output module: these are just
 // the two env-name constants (the full structured-output runtime is not ported).

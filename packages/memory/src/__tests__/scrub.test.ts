@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scrubSecrets, INJECTION_NOTE, SECRET_PATTERNS } from "../scanner.js";
+import { scrubSecrets, INJECTION_NOTE, SECRET_PATTERNS } from "../scanner";
 
 describe("scrubSecrets", () => {
   it("redacts a GitHub token and reports the id", () => {

@@ -1,6 +1,6 @@
 // packages/host/src/__tests__/dispatch.test.ts
 import { describe, it, expect, beforeEach } from "vitest";
-import { registerAction, dispatch, clearActions, type ActionCtx } from "../dispatch.js";
+import { registerAction, dispatch, clearActions, type ActionCtx } from "../dispatch";
 
 // Handlers under test only read `args`; a minimal stub ctx satisfies the type.
 const ctx = {} as unknown as ActionCtx;

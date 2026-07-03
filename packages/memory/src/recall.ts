@@ -1,9 +1,9 @@
 import type { Db } from "@spider/db-core";
-import type { MemoryCategory, MemoryScope, MemoryRecord } from "./types.js";
-import type { Embedder } from "./embeddings/embedder.js";
-import { knn } from "./embeddings/vectors.js";
-import { listActive } from "./internal.js";
-import { getMemory, searchMemoryFts } from "./store.js";
+import type { MemoryCategory, MemoryScope, MemoryRecord } from "./types";
+import type { Embedder } from "./embeddings/embedder";
+import { knn } from "./embeddings/vectors";
+import { listActive } from "./internal";
+import { getMemory, searchMemoryFts } from "./store";
 
 export interface RecallOpts {
   category?: MemoryCategory;

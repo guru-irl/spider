@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { openDb } from "../db.js";
-import { scratchDbPath, cleanupScratch } from "../testutil.js";
+import { openDb } from "../db";
+import { scratchDbPath, cleanupScratch } from "../testutil";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });

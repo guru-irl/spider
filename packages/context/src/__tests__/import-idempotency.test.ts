@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { paths } from "@spider/db-core";
-import { makeContentDb } from "./helpers/tmpdb.js";
-import { importSessions } from "../import.js";
+import { makeContentDb } from "./helpers/tmpdb";
+import { importSessions } from "../import";
 
 let cx: ReturnType<typeof makeContentDb>;
 let f = "";

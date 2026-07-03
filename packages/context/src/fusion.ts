@@ -3,7 +3,7 @@
 // context-mode's store.ts). Pure — no DB/executor/store imports.
 // ─────────────────────────────────────────────────────────
 
-import { STOPWORDS, findAllPositions, findMinSpan, countAdjacentPairs } from "./fts-query.js";
+import { STOPWORDS, findAllPositions, findMinSpan, countAdjacentPairs } from "./fts-query";
 
 export interface Ranked {
   key: string;

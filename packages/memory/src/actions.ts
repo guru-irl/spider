@@ -1,11 +1,11 @@
 import type { Db } from "@spider/db-core";
 import type { Component } from "@spider/ui";
-import type { MemoryScope } from "./types.js";
-import type { Embedder } from "./embeddings/embedder.js";
-import { stageWrite, listPending, approvePending, rejectPending } from "./staging.js";
-import { recall } from "./recall.js";
-import { activeCharTotal, listActive } from "./internal.js";
-import { renderRememberResult, renderRecallResult, renderPending } from "./renderers.js";
+import type { MemoryScope } from "./types";
+import type { Embedder } from "./embeddings/embedder";
+import { stageWrite, listPending, approvePending, rejectPending } from "./staging";
+import { recall } from "./recall";
+import { activeCharTotal, listActive } from "./internal";
+import { renderRememberResult, renderRecallResult, renderPending } from "./renderers";
 
 export interface MemoryConfig {
   snapshotCharCap?: number;

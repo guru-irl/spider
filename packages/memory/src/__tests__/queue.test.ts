@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeMemDb } from "./helpers/tmpdb.js";
-import { enqueueEmbed, drainEmbedQueue } from "../embeddings/queue.js";
-import { knn } from "../embeddings/vectors.js";
-import type { Embedder } from "../embeddings/embedder.js";
+import { makeMemDb } from "./helpers/tmpdb";
+import { enqueueEmbed, drainEmbedQueue } from "../embeddings/queue";
+import { knn } from "../embeddings/vectors";
+import type { Embedder } from "../embeddings/embedder";
 
 let ctx: ReturnType<typeof makeMemDb>;
 afterEach(() => ctx?.cleanup());

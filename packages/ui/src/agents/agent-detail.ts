@@ -1,10 +1,10 @@
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { Component } from "../component.js";
-import { renderTable } from "../components/table.js";
-import { formatDuration } from "./footer.js";
-import { STATUS_GLYPH, statusToken } from "./types.js";
-import type { ThemeAdapter } from "./types.js";
-import type { AgentStore } from "./store.js";
+import type { Component } from "../component";
+import { renderTable } from "../components/table";
+import { formatDuration } from "./footer";
+import { STATUS_GLYPH, statusToken } from "./types";
+import type { ThemeAdapter } from "./types";
+import type { AgentStore } from "./store";
 
 export class AgentDetail implements Component {
   private now: () => number;

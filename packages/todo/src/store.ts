@@ -1,5 +1,5 @@
 import type { Db } from "@spider/db-core";
-import type { SessionGroup, SessionSummary, Todo } from "./types.js";
+import type { SessionGroup, SessionSummary, Todo } from "./types";
 
 interface TodoRow {
   id: number;

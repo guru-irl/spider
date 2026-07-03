@@ -1,5 +1,5 @@
-import type { ModelEntry, Tier, ThinkingLevel } from "./catalog.js";
-import { TIER_PREFERENCE } from "./catalog.js";
+import type { ModelEntry, Tier, ThinkingLevel } from "./catalog";
+import { TIER_PREFERENCE } from "./catalog";
 export interface PickProfile { role?: string; tier?: Tier; complexity?: "low"|"med"|"high"; budget?: "cheap"|"normal"|"premium"; needsVision?: boolean; thinkingLevel?: ThinkingLevel; model?: string; }
 export interface PickResult { entry: ModelEntry; thinkingLevel: ThinkingLevel; }
 export interface ModelsConfig { autoSelect: boolean; defaults: Record<string,string>; tierOverrides: Record<string,Tier>; tierPreference: Record<Tier,string[]>; thinkingDefaults: Record<string,ThinkingLevel>; }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { renderSearchResult, renderImportResult } from "../renderers.js";
-import type { SearchResultRow } from "../search.js";
-import type { ImportSummary } from "../import.js";
+import { renderSearchResult, renderImportResult } from "../renderers";
+import type { SearchResultRow } from "../search";
+import type { ImportSummary } from "../import";
 
 function assertComponent(c: any) {
   expect(typeof c.render).toBe("function");

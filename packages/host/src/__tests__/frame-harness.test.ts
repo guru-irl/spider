@@ -13,7 +13,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { openDb, migrate, appendRunEvent, type Db } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import { AgentStore, AgentFooter, type ThemeAdapter } from "@spider/ui";
-import { createRunSource } from "../agents/run-source.js";
+import { createRunSource } from "../agents/run-source";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const strip = (s: string) => s.replace(ANSI, "");

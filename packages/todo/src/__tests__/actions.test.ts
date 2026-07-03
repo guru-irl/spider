@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeTodoDb } from "./helpers/tmpdb.js";
-import { registerTodo } from "../index.js";
+import { makeTodoDb } from "./helpers/tmpdb";
+import { registerTodo } from "../index";
 
 function fakePi() { const a: Record<string, Function> = {}; return { registerAction: (n: string, h: Function) => { a[n] = h; }, registerCommand: () => {}, on: () => {}, _a: a } as any; }
 let ctx: ReturnType<typeof makeTodoDb>;

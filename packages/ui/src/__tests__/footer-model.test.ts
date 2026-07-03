@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildFooterModel } from "../agents/footer-model.js";
-import type { AgentSnapshot, AgentStatus } from "../agents/types.js";
+import { buildFooterModel } from "../agents/footer-model";
+import type { AgentSnapshot, AgentStatus } from "../agents/types";
 
 function a(runId: string, status: AgentStatus, endedAt?: number): AgentSnapshot {
   return { runId, name: runId, status, stepCount: 0, tokenCount: 0, recentActivity: [], endedAt };

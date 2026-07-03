@@ -6,3 +6,8 @@ dist/
 **/.spider/project.db*
 **/.spider/logs/
 .DS_Store
+
+# local pi dev extension discovery (dev loop)
+.pi/
+.pi-subagents/
+.scratch/

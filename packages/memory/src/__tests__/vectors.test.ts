@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeMemDb } from "./helpers/tmpdb.js";
-import { upsertVector, knn, cosine, f32ToBlob, blobToF32 } from "../embeddings/vectors.js";
+import { makeMemDb } from "./helpers/tmpdb";
+import { upsertVector, knn, cosine, f32ToBlob, blobToF32 } from "../embeddings/vectors";
 
 let ctx: ReturnType<typeof makeMemDb>;
 afterEach(() => ctx?.cleanup());

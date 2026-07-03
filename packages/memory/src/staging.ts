@@ -1,10 +1,10 @@
 import type { Db } from "@spider/db-core";
-import type { MemoryScope, MemoryRecord, AddMemoryInput } from "./types.js";
-import { firstThreatMessage } from "./scanner.js";
-import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow.js";
-import { addMemory, setStatus, isDuplicate, getMemory } from "./store.js";
-import { tableFor, mapRow } from "./internal.js";
-import { shouldCapture } from "./guardrails.js";
+import type { MemoryScope, MemoryRecord, AddMemoryInput } from "./types";
+import { firstThreatMessage } from "./scanner";
+import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow";
+import { addMemory, setStatus, isDuplicate, getMemory } from "./store";
+import { tableFor, mapRow } from "./internal";
+import { shouldCapture } from "./guardrails";
 
 export interface StageResult {
   status: "staged" | "active" | "rejected";

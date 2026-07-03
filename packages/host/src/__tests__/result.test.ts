@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toToolResult } from "../result.js";
+import { toToolResult } from "../result";
 
 describe("toToolResult — pi AgentToolResult normalization", () => {
   it("always yields a content array of text blocks + details", () => {

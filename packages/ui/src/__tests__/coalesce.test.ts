@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { FrameScheduler } from "../agents/coalesce.js";
+import { FrameScheduler } from "../agents/coalesce";
 
 describe("FrameScheduler", () => {
   it("collapses many requests in one window into a single flush", () => {

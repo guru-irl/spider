@@ -1,8 +1,8 @@
 // spider-ui skeleton. All spider visual output flows through this kit.
 // Honors pi active theme tokens; signature glyph is 🕸 (never color-only).
 
-import type { Component } from "./component.js";
-export type { Component } from "./component.js";
+import type { Component } from "./component";
+export type { Component } from "./component";
 
 // Phase 0 keeps a static token table; Phase 5/8 wire pi's live theme.
 // The lookup is intentionally a function so later phases can swap the source
@@ -81,17 +81,17 @@ export function LiveWidget(
 }
 
 // ---- Phase 5: subagents footer + live grid ----
-export * from "./agents/types.js";
-export { AgentStore, projectRow, applyEvent } from "./agents/store.js";
-export { FrameScheduler } from "./agents/coalesce.js";
-export { diffLines, hasChanges } from "./agents/diff.js";
-export { layoutGrid } from "./agents/grid-layout.js";
-export { buildFooterModel } from "./agents/footer-model.js";
-export { AgentFooter, formatDuration } from "./agents/footer.js";
-export { Grid } from "./agents/grid.js";
-export { renderGridCell } from "./agents/grid-cell.js";
-export { AgentDetail } from "./agents/agent-detail.js";
-export { Spinner, BRAILLE_FRAMES } from "./components/spinner.js";
-export { renderProgressBar } from "./components/progress-bar.js";
-export { renderDiffView } from "./components/diff-view.js";
-export { renderTable } from "./components/table.js";
+export * from "./agents/types";
+export { AgentStore, projectRow, applyEvent } from "./agents/store";
+export { FrameScheduler } from "./agents/coalesce";
+export { diffLines, hasChanges } from "./agents/diff";
+export { layoutGrid } from "./agents/grid-layout";
+export { buildFooterModel } from "./agents/footer-model";
+export { AgentFooter, formatDuration } from "./agents/footer";
+export { Grid } from "./agents/grid";
+export { renderGridCell } from "./agents/grid-cell";
+export { AgentDetail } from "./agents/agent-detail";
+export { Spinner, BRAILLE_FRAMES } from "./components/spinner";
+export { renderProgressBar } from "./components/progress-bar";
+export { renderDiffView } from "./components/diff-view";
+export { renderTable } from "./components/table";

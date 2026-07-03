@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { complete, recordModelStat } from "../index.js";
+import { complete, recordModelStat } from "../index";
 import { openDbAt } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 

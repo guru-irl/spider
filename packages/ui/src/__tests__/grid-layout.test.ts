@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { layoutGrid } from "../agents/grid-layout.js";
+import { layoutGrid } from "../agents/grid-layout";
 
 describe("layoutGrid", () => {
   it("1 → 1x1 full", () => expect(layoutGrid(1)).toMatchObject({ rows: 1, cols: 1, perPage: 1, pages: 1 }));

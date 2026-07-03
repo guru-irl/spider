@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveTier, catalog } from "../index.js";
+import { deriveTier, catalog } from "../index";
 
 describe("deriveTier (A8: 3 tiers)", () => {
   it("maps model families to light|standard|heavy", () => {

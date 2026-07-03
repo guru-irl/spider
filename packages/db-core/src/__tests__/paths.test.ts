@@ -2,7 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { paths } from "../paths.js";
+import { paths } from "../paths";
 
 describe("paths (zero temp-dir)", () => {
   it("roots the global tree under ~/.pi/agent/spider", () => {

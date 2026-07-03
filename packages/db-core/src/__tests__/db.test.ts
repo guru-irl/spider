@@ -1,7 +1,7 @@
 // packages/db-core/src/__tests__/db.test.ts
 import { describe, it, expect, afterEach } from "vitest";
-import { openDb, withRetry } from "../db.js";
-import { scratchDbPath, cleanupScratch } from "../testutil.js";
+import { openDb, withRetry } from "../db";
+import { scratchDbPath, cleanupScratch } from "../testutil";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });

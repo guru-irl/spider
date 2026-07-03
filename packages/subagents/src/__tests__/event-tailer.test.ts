@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { bus } from "@spider/db-core";
-import { RunEventTailer } from "../event-tailer.js";
-import { freshDb } from "./helpers/testutil.js";
+import { RunEventTailer } from "../event-tailer";
+import { freshDb } from "./helpers/testutil";
 
 describe("RunEventTailer", () => {
   it("re-emits only new rows for tracked runs on poll", () => {

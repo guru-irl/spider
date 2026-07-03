@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { processToolContent } from "../routing/safety.js";
+import { processToolContent } from "../routing/safety";
 
 const CFG = { secretScrub: true, injectionScan: true };
 

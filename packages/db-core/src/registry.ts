@@ -3,9 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join, isAbsolute, resolve, dirname } from "node:path";
-import { openDb, type Db } from "./db.js";
-import { migrate } from "./migrate.js";
-import { paths, type Scope } from "./paths.js";
+import { openDb, type Db } from "./db";
+import { migrate } from "./migrate";
+import { paths, type Scope } from "./paths";
 
 export interface ProjectInfo {
   projectKey: string;

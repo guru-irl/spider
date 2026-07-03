@@ -1,6 +1,6 @@
 // packages/ui/src/__tests__/ui.test.ts
 import { describe, it, expect } from "vitest";
-import { theme, Panel, SectionRule, StatusLine, LiveWidget } from "../index.js";
+import { theme, Panel, SectionRule, StatusLine, LiveWidget } from "../index";
 
 describe("@spider/ui skeleton", () => {
   it("theme exposes the 🕸 glyph and a token() lookup", () => {

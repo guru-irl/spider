@@ -7,8 +7,8 @@ import {
   clearTodos,
   sessionSummaries,
   viewSession,
-} from "./store.js";
-import { renderTodos, renderSessions, renderView } from "./renderers.js";
+} from "./store";
+import { renderTodos, renderSessions, renderView } from "./renderers";
 
 export interface TodoDeps {
   projectDb: Db;

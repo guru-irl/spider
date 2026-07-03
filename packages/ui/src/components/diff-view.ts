@@ -1,6 +1,6 @@
 // packages/ui/src/components/diff-view.ts
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { ThemeAdapter } from "../agents/types.js";
+import type { ThemeAdapter } from "../agents/types";
 
 interface Hunk { kind: "add" | "remove" | "context"; text: string }
 const PREFIX = { add: "+", remove: "-", context: " " } as const;

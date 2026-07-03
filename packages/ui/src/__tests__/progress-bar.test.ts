@@ -1,7 +1,7 @@
 // packages/ui/src/__tests__/progress-bar.test.ts
 import { describe, it, expect } from "vitest";
-import { renderProgressBar } from "../components/progress-bar.js";
-import type { ThemeAdapter } from "../agents/types.js";
+import { renderProgressBar } from "../components/progress-bar";
+import type { ThemeAdapter } from "../agents/types";
 
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 

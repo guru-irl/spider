@@ -1,10 +1,10 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component } from "../component.js";
-import { Spinner } from "../components/spinner.js";
-import { layoutGrid } from "./grid-layout.js";
-import { renderGridCell } from "./grid-cell.js";
-import type { AgentActions, AgentSnapshot, ThemeAdapter } from "./types.js";
-import type { AgentStore } from "./store.js";
+import type { Component } from "../component";
+import { Spinner } from "../components/spinner";
+import { layoutGrid } from "./grid-layout";
+import { renderGridCell } from "./grid-cell";
+import type { AgentActions, AgentSnapshot, ThemeAdapter } from "./types";
+import type { AgentStore } from "./store";
 
 const CELL_HEIGHT = 5;
 

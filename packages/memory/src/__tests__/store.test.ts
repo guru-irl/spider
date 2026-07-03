@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeMemDb } from "./helpers/tmpdb.js";
-import { addMemory, getMemory, listActive, searchMemoryFts, setStatus, removeMemory, activeCharTotal, isDuplicate } from "../store.js";
+import { makeMemDb } from "./helpers/tmpdb";
+import { addMemory, getMemory, listActive, searchMemoryFts, setStatus, removeMemory, activeCharTotal, isDuplicate } from "../store";
 
 let ctx: ReturnType<typeof makeMemDb>;
 afterEach(() => ctx?.cleanup());

@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { runChain, runParallel } from "../modes-index.js";
-import { Runner } from "../runner.js";
-import { RunStore } from "../run-store.js";
-import { RunEventTailer } from "../event-tailer.js";
-import { freshDb } from "./helpers/testutil.js";
+import { runChain, runParallel } from "../modes-index";
+import { Runner } from "../runner";
+import { RunStore } from "../run-store";
+import { RunEventTailer } from "../event-tailer";
+import { freshDb } from "./helpers/testutil";
 
 function makeRunner(db: ReturnType<typeof freshDb>, capture: Array<Record<string, unknown>>) {
   const store = new RunStore(db);

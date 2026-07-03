@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { StreamingContextScrubber, sanitizeContext, buildMemoryContextBlock } from "../scrubber.js";
+import { StreamingContextScrubber, sanitizeContext, buildMemoryContextBlock } from "../scrubber";
 
 describe("StreamingContextScrubber", () => {
   it("scrubs a span split across deltas", () => {

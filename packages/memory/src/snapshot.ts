@@ -1,7 +1,7 @@
 import type { Db } from "@spider/db-core";
-import type { MemoryCategory, MemoryRecord, MemoryScope } from "./types.js";
-import { listActive } from "./store.js";
-import { buildMemoryContextBlock } from "./scrubber.js";
+import type { MemoryCategory, MemoryRecord, MemoryScope } from "./types";
+import { listActive } from "./store";
+import { buildMemoryContextBlock } from "./scrubber";
 
 export interface SnapshotOpts {
   charCap?: number;

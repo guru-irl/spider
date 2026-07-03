@@ -1,4 +1,4 @@
-import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource } from "./types.js";
+import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource } from "./types";
 
 const RETENTION_MS = 10_000;
 const TAIL_CAP = 5;

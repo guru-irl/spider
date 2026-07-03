@@ -3,7 +3,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths } from "@spider/db-core";
-import { autoIndexOutput } from "../routing/autoindex.js";
+import { autoIndexOutput } from "../routing/autoindex";
 
 let dbPath: string;
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { chunkMarkdown, MAX_CHUNK_BYTES } from "../chunker.js";
+import { chunkMarkdown, MAX_CHUNK_BYTES } from "../chunker";
 
 describe("chunkMarkdown", () => {
   it("splits by markdown headings, keeping code blocks intact", () => {

@@ -1,9 +1,9 @@
 // packages/host/src/agents/agents-ui.ts
 import type { Db } from "@spider/db-core";
 import { AgentStore, AgentFooter, Grid, AgentDetail, FrameScheduler } from "@spider/ui";
-import { createRunSource } from "./run-source.js";
-import { createAgentActions } from "./actions.js";
-import { piTheme } from "./theme-adapter.js";
+import { createRunSource } from "./run-source";
+import { createAgentActions } from "./actions";
+import { piTheme } from "./theme-adapter";
 
 interface HostUi {
   setWidget(key: string, value: unknown, opts?: { placement?: "aboveEditor" | "belowEditor" }): void;

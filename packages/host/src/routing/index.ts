@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Db } from "@spider/db-core";
-import { recordIntent, recordResult, isExempt } from "./tracking.js";
-import { processToolContent, sanitizeIntentPayload } from "./safety.js";
-import { autoIndexOutput } from "./autoindex.js";
-import { registerEditWriteOverrides } from "./overrides.js";
+import { recordIntent, recordResult, isExempt } from "./tracking";
+import { processToolContent, sanitizeIntentPayload } from "./safety";
+import { autoIndexOutput } from "./autoindex";
+import { registerEditWriteOverrides } from "./overrides";
 
 export interface RoutingConfig {
   tracking: boolean;

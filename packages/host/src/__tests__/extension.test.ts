@@ -4,9 +4,9 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests, openDbAt } from "@spider/db-core";
-import spiderExtension, { buildActionCtx, sessionIdOf, cwdOf } from "../extension.js";
-import { getAction } from "../dispatch.js";
-import { HOOK_NAMES } from "../hooks.js";
+import spiderExtension, { buildActionCtx, sessionIdOf, cwdOf } from "../extension";
+import { getAction } from "../dispatch";
+import { HOOK_NAMES } from "../hooks";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ext-${process.pid}`);
 afterEach(() => { setGlobalDbPathForTests(null); rmSync(scratch, { recursive: true, force: true }); });

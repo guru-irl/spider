@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
-import { deriveRunName } from "./self-name.js";
+import { deriveRunName } from "./self-name";
 
 export { deriveRunName };
 

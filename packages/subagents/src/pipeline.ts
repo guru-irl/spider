@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { bus } from "@spider/db-core";
 import type { Db, RunEvent } from "@spider/db-core";
-import { RunStore, type RunRow } from "./run-store.js";
-import { emitHandoff } from "./run-events.js";
-import { sendIntercom } from "./intercom.js";
-import type { PipelineStage, RunPipelineArgs } from "./schemas.js";
+import { RunStore, type RunRow } from "./run-store";
+import { emitHandoff } from "./run-events";
+import { sendIntercom } from "./intercom";
+import type { PipelineStage, RunPipelineArgs } from "./schemas";
 
 /**
  * First-class pipeline auto-wake coordinator for `run {pipeline, handoff:"intercom"}`.

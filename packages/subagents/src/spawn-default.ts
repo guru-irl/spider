@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { Spawner, ChildHandle } from "./runner.js";
+import type { Spawner, ChildHandle } from "./runner";
 
 /** Real child-process spawner (production). NOT exercised in unit tests, which inject a fake. */
 export const defaultSpawner: Spawner = (spec): ChildHandle => {

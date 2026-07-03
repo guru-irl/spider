@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { makeTodoDb } from "./helpers/tmpdb.js";
-import { listTodos, addTodo, toggleTodo, clearTodos, sessionSummaries } from "../store.js";
+import { makeTodoDb } from "./helpers/tmpdb";
+import { listTodos, addTodo, toggleTodo, clearTodos, sessionSummaries } from "../store";
 
 let ctx: ReturnType<typeof makeTodoDb>;
 afterEach(() => ctx?.cleanup());

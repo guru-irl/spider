@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { scanForThreats, firstThreatMessage } from "../scanner.js";
+import { scanForThreats, firstThreatMessage } from "../scanner";
 
 describe("scanner", () => {
   it("flags classic injection at all scopes", () => {

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { Runner, type Spawner, type ChildHandle } from "../runner.js";
-import { RunStore } from "../run-store.js";
-import { RunEventTailer } from "../event-tailer.js";
-import { freshDb } from "./helpers/testutil.js";
+import { Runner, type Spawner, type ChildHandle } from "../runner";
+import { RunStore } from "../run-store";
+import { RunEventTailer } from "../event-tailer";
+import { freshDb } from "./helpers/testutil";
 
 function fakeSpawn(result: { exitCode: number; result?: string }): Spawner {
   return () => {

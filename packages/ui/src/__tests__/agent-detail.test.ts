@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { AgentDetail } from "../agents/agent-detail.js";
-import { AgentStore } from "../agents/store.js";
-import type { RunRow, RunSource, RunEvent, ThemeAdapter } from "../agents/types.js";
+import { AgentDetail } from "../agents/agent-detail";
+import { AgentStore } from "../agents/store";
+import type { RunRow, RunSource, RunEvent, ThemeAdapter } from "../agents/types";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };

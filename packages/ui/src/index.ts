@@ -86,6 +86,7 @@ export { layoutGrid } from "./agents/grid-layout";
 export { buildFooterModel } from "./agents/footer-model";
 export { AgentFooter, formatDuration, formatAgentLine } from "./agents/footer";
 export { Grid } from "./agents/grid";
+export { AgentList } from "./agents/agent-list";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
 export { Spinner, BRAILLE_FRAMES } from "./components/spinner";

@@ -58,10 +58,13 @@ export class AgentFooter implements Component {
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
+    const selecting = this.store.isSelecting();
+    const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", "▸ ") : "  ") : "";
+    const cw = visibleWidth(cursor);
     const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
     const pin = this.store.isPinned(a.runId) ? " 📌" : "";
-    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin)), this.now(), lead);
-    return pin ? line + this.theme.fg("warning", pin) : line;
+    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now(), lead);
+    return cursor + (pin ? line + this.theme.fg("warning", pin) : line);
   }
 
   private build(width: number): string[] {

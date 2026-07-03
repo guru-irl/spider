@@ -1,6 +1,6 @@
 // packages/host/src/agents/agents-ui.ts
 import type { Db } from "@spider/db-core";
-import { AgentStore, AgentFooter, AgentList, AgentDetail, type ThemeAdapter } from "@spider/ui";
+import { AgentStore, AgentFooter, AgentDetail, type ThemeAdapter } from "@spider/ui";
 import { createRunSource } from "./run-source";
 import { piTheme } from "./theme-adapter";
 
@@ -38,28 +38,48 @@ export interface OverlayComponent {
   invalidate(): void;
   handleInput(data: string): void;
   dispose(): void;
+  /** True while an AgentDetail panel is drilled open (used to size the floating overlay). */
+  isDrilled(): boolean;
 }
 
-/** Build the interactive agents overlay: a frame-less AgentList; Enter drills to an AgentDetail
- *  panel rendered ABOVE the list (which sits just above the editor). Exported for testing. */
-export function buildAgentsOverlay(
+const isDown = (d: string): boolean => d === "\x1b[B" || d === "\x1bOB" || d === "j";
+const isUp = (d: string): boolean => d === "\x1b[A" || d === "\x1bOA" || d === "k";
+const isEnter = (d: string): boolean => d === "\r" || d === "\n";
+const isEsc = (d: string): boolean => d === "\x1b" || d === "\x1b\x1b";
+
+/** The ctrl+shift+g selector. The FOOTER widget stays mounted and static and renders the ▸
+ *  cursor on the selected row (driven by AgentStore selection state); this overlay is a key sink
+ *  floating over the chat that moves the cursor and drills into an AgentDetail on Enter — so the
+ *  footer and the chat/editor never move. Exported for testing. */
+export function buildAgentsSelector(
   store: AgentStore, th: ThemeAdapter, tui: { requestRender?: () => void }, done: () => void,
 ): OverlayComponent {
-  const list = new AgentList(store, th);
   let detail: AgentDetail | undefined;
   const rr = () => tui.requestRender?.();
-  list.onClose(() => done());
-  list.onDrill((runId) => {
-    const d = new AgentDetail(store, runId, th);
+  store.beginSelect();
+  const stop = selfTick(tui, store);
+  const openDetail = () => {
+    const id = store.selectedRunId();
+    if (!id) return;
+    const d = new AgentDetail(store, id, th);
     d.onBack(() => { detail = undefined; rr(); });
     detail = d; rr();
-  });
-  const stop = selfTick(tui, store);
+  };
   return {
-    render: (w) => (detail ? [...detail.render(w), "", ...list.render(w)] : list.render(w)),
-    invalidate: () => list.invalidate(),
-    handleInput: (data) => { (detail ?? list).handleInput(data); rr(); },
-    dispose: () => stop(),
+    // While selecting, render only a faint hint (floats over the chat, not the footer); when
+    // drilled, render the detail panel. The selection cursor itself lives in the footer.
+    render: (w) => (detail ? detail.render(w) : [th.fg("dim", "↑↓ select agent · enter open · esc close")]),
+    invalidate: () => detail?.invalidate(),
+    handleInput: (data) => {
+      if (detail) { detail.handleInput(data); rr(); return; }
+      if (isDown(data)) store.moveSelect(1);
+      else if (isUp(data)) store.moveSelect(-1);
+      else if (isEnter(data)) openDetail();
+      else if (isEsc(data)) done();
+      rr();
+    },
+    dispose: () => { stop(); store.endSelect(); },
+    isDrilled: () => detail !== undefined,
   };
 }
 
@@ -69,12 +89,9 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   store.start();
 
   let mounted = false;
-  let selectorOpen = false;
 
   const syncWidget = () => {
-    // While the ctrl+shift+g selector is open it REUSES the footer's position (rendered as an
-    // interactive overlay), so suppress the passive footer widget to avoid a double render.
-    const active = store.snapshot().length > 0 && !selectorOpen;
+    const active = store.snapshot().length > 0;
     if (active && !mounted) {
       ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
         const footer = new AgentFooter(store, piTheme(theme as never));
@@ -98,29 +115,33 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   syncWidget();
 
   const openOverlay = async () => {
-    // Reuse the footer: hide the passive footer widget and render the interactive selector
-    // flush at the bottom (the same spot), with the ▸ cursor to the LEFT of the one-liners.
-    selectorOpen = true;
-    syncWidget();
-    try {
-      await ctx.ui.custom<void>(
-        (tui, theme, _kb, done) => buildAgentsOverlay(store, piTheme(theme as never), tui as never, () => done()),
-        { overlay: true, overlayOptions: { anchor: "bottom-left", width: "100%", maxHeight: "50%" } },
-      );
-    } finally {
-      selectorOpen = false;
-      syncWidget();
-    }
+    // The footer widget stays mounted and static and shows the ▸ cursor itself; this overlay is
+    // a key sink floating over the chat (never over the footer/editor). It renders a 1-line hint
+    // while selecting and grows to a centred panel when a detail is drilled open.
+    let selector: OverlayComponent | undefined;
+    await ctx.ui.custom<void>(
+      (tui, theme, _kb, done) => {
+        selector = buildAgentsSelector(store, piTheme(theme as never), tui as never, () => done());
+        return selector;
+      },
+      {
+        overlay: true,
+        overlayOptions: () =>
+          selector?.isDrilled()
+            ? { anchor: "center", width: "80%", maxHeight: "70%" }
+            : { anchor: "top-center", width: "60%", maxHeight: 1 },
+      },
+    );
   };
 
   current = { openOverlay };
 
-  // ctrl+g is pi's built-in external-editor binding, so we use ctrl+shift+g. Plus a
-  // rebind-safe /agents slash command fallback. Register both ONCE per process.
+  // ctrl+g is pi's built-in external-editor binding; the user prefers ctrl+up for the agents
+  // selector. Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
   if (!registered) {
     registered = true;
-    pi.registerShortcut("ctrl+shift+g", {
-      description: "Toggle the spider agents selector",
+    pi.registerShortcut("ctrl+up", {
+      description: "Open the spider agents selector",
       handler: () => { void current?.openOverlay(); },
     });
     pi.registerCommand?.("agents", {

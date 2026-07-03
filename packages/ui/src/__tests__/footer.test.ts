@@ -85,3 +85,23 @@ describe("AgentFooter", () => {
     expect(noT).not.toContain("high");
     store2.stop();
   });
+
+import { AgentFooter as _AF } from "../agents/footer";
+import { AgentStore as _Store } from "../agents/store";
+describe("AgentFooter selection cursor", () => {
+  it("renders a ▸ cursor on the selected row while the store is selecting", () => {
+    const rows = [
+      { id: "a", session_id: "x", agent: "worker", name: "alpha", status: "running", step_count: 0, token_count: 0, started_at: 0 },
+      { id: "b", session_id: "x", agent: "worker", name: "beta", status: "running", step_count: 0, token_count: 0, started_at: 0 },
+    ];
+    const src: any = { listActive: () => rows, getRun: (id: string) => rows.find((r) => r.id === id), subscribe: () => () => {} };
+    const store = new _Store(src); store.start();
+    const theme = { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
+    const footer = new _AF(store, theme as never, { now: () => 0 });
+    expect(footer.render(200).join("\n")).not.toContain("▸"); // no cursor when not selecting
+    store.beginSelect();
+    const out = footer.render(200);
+    expect(out.join("\n")).toContain("▸"); // cursor appears on the selected row
+    expect(out[0].startsWith("▸")).toBe(true); // row 0 is selected first
+  });
+});

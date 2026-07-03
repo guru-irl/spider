@@ -54,6 +54,8 @@ export class AgentStore {
   private listeners = new Set<Listener>();
   private off?: () => void;
   private now: () => number;
+  private selecting = false;
+  private sel = 0;
 
   constructor(private src: RunSource, now: () => number = Date.now) { this.now = now; }
 
@@ -90,6 +92,21 @@ export class AgentStore {
   }
 
   edges(): HandoffEdge[] { return this.handoffs; }
+
+  /** Footer selection (ctrl+shift+g): the footer widget itself renders a ▸ cursor on the
+   *  selected row while a key-capturing overlay drives the index — so the footer stays put
+   *  (the chat/editor never move). Selection runs over the current snapshot() order. */
+  beginSelect(): void { const n = this.snapshot().length; if (n === 0) return; this.selecting = true; if (this.sel < 0 || this.sel >= n) this.sel = 0; this.emit(); }
+  endSelect(): void { this.selecting = false; this.emit(); }
+  isSelecting(): boolean { return this.selecting; }
+  moveSelect(delta: number): void {
+    if (!this.selecting) return;
+    const n = this.snapshot().length;
+    if (n === 0) { this.sel = 0; return; }
+    this.sel = Math.max(0, Math.min(n - 1, this.sel + delta));
+    this.emit();
+  }
+  selectedRunId(): string | undefined { if (!this.selecting) return undefined; return this.snapshot()[this.sel]?.runId; }
 
   /** Full chronological event log for one run (assistant text + tool calls/results). */
   events(runId: string): RunEvent[] { return this.src.listEvents?.(runId) ?? []; }

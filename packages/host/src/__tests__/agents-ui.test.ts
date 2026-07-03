@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { installAgentsUI, buildAgentsOverlay } from "../agents/agents-ui";
+import { installAgentsUI, buildAgentsSelector } from "../agents/agents-ui";
 import { AgentStore } from "@spider/ui";
 import { createRunSource } from "../agents/run-source";
 
@@ -36,7 +36,7 @@ describe("installAgentsUI", () => {
     expect(pi.registerShortcut).toHaveBeenCalledTimes(1);
     // regression guard: must use a non-conflicting chord (ctrl+g alone is pi's
     // built-in app.editor.external, which makes pi SKIP our registration).
-    expect(pi.registerShortcut.mock.calls[0][0]).toBe("ctrl+shift+g");
+    expect(pi.registerShortcut.mock.calls[0][0]).toBe("ctrl+up");
     const handler = pi.registerShortcut.mock.calls[0][1].handler;
     
     // Second install with ui2 (simulating session_start re-fire with same pi)
@@ -127,26 +127,32 @@ describe("installAgentsUI", () => {
 
 const th = { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
 
-it("overlay lists agents and drills to a detail panel rendered above the list (#37)", () => {
+it("selector drives the footer cursor (store selection), drills on enter, closes on esc (#50)", () => {
   const db = openDb(scratchDbPath("aui-overlay")); opened.push(db); migrate(db, "project");
   db.prepare(`INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at)
               VALUES ('r1','s','scout','one','running',1,0,0),('r2','s','worker','two','running',1,0,0)`).run();
   const store = new AgentStore(createRunSource(db, "s")); store.start();
   let closed = false;
-  const comp = buildAgentsOverlay(store, th as never, { requestRender() {} }, () => { closed = true; });
+  const sel = buildAgentsSelector(store, th as never, { requestRender() {} }, () => { closed = true; });
 
-  const listed = comp.render(120).join("\n");
-  expect(listed).toContain("one");
-  expect(listed).toContain("two");
-  expect(listed).not.toContain("╭"); // no detail yet
+  expect(store.isSelecting()).toBe(true);
+  const first = store.selectedRunId();
+  expect(sel.render(120).join("\n")).not.toContain("╭"); // hint only, no detail yet
 
-  comp.handleInput("\x1b[B"); // Down → focus row 2
-  comp.handleInput("\r");     // Enter → drill
-  const drilled = comp.render(120).join("\n");
-  expect(drilled).toContain("╭"); // AgentDetail frame now present, above the list
-  expect(drilled).toContain("two"); // list still shown below
+  sel.handleInput("\x1b[B");                    // Down → move the footer cursor
+  expect(store.selectedRunId()).not.toBe(first);
 
-  comp.dispose();
+  sel.handleInput("\r");                        // Enter → drill
+  expect(sel.isDrilled()).toBe(true);
+  expect(sel.render(120).join("\n")).toContain("╭"); // detail panel now floats
+
+  sel.handleInput("\u001b");                    // Esc → back to selection
+  expect(sel.isDrilled()).toBe(false);
+  sel.handleInput("\u001b");                    // Esc → close
+  expect(closed).toBe(true);
+
+  sel.dispose();
+  expect(store.isSelecting()).toBe(false);      // selection cleared on dispose
   store.stop();
 });
 
@@ -162,12 +168,13 @@ it("openOverlay anchors the selector at the bottom (not full-page)", async () =>
     await new Promise((r) => setImmediate(r));
     expect(ui.custom).toHaveBeenCalled();
     const opts = ui.custom.mock.calls.at(-1)![1];
-    expect(opts.overlayOptions.anchor).toBe("bottom-left");
+    const oo = typeof opts.overlayOptions === "function" ? opts.overlayOptions() : opts.overlayOptions;
+    expect(oo.anchor).toBe("top-center");
   }
   dispose();
 });
 
-it("opening the selector suppresses the footer widget and restores it on close (reuses the footer position)", async () => {
+it("keeps the footer mounted while the selector is open (footer stays static, no suppression) (#50)", async () => {
   const db = openDb(scratchDbPath("aui-suppress")); opened.push(db); migrate(db, "project");
   db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
               VALUES ('r1','s','worker','running',1,0,0)`).run();
@@ -178,9 +185,9 @@ it("opening the selector suppresses the footer widget and restores it on close (
   const dispose: any = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
   expect(ui.widgets.has("spider-agents")).toBe(true);   // footer mounted while an agent is active
   const p = dispose.openOverlay();
-  expect(ui.widgets.has("spider-agents")).toBe(false);  // suppressed while the selector is open
+  expect(ui.widgets.has("spider-agents")).toBe(true);   // STILL mounted while the selector is open (static)
   resolveCustom();
   await p;
-  expect(ui.widgets.has("spider-agents")).toBe(true);   // restored after the selector closes
+  expect(ui.widgets.has("spider-agents")).toBe(true);   // and after it closes
   dispose();
 });

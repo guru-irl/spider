@@ -266,7 +266,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
       link: (args.link as string | null) ?? null,
       source: args.auto ? "auto" : "user",
     });
-    return { display: renderRememberResult(r), details: r };
+    // Carry the saved content/category/scope on BOTH the rendered panel and the serialized
+    // details payload, so a programmatic caller gets back what was actually remembered.
+    const details = { ...r, content: args.content as string, category: args.category as any, scope };
+    return { display: renderRememberResult(details), details };
   });
 
   registerAction("recall", async (args, ctx) => {

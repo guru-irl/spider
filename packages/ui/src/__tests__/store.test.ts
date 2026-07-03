@@ -191,3 +191,26 @@ describe("AgentStore", () => {
     const snap = projectRow(row({ id: "r", session_id: "s", agent: "worker", name: "n", role: null, status: "running", phase: null, model: "m", task: null, thinking: "medium", step_count: 0, token_count: 0, started_at: 0, ended_at: null, result: null }));
     expect(snap.thinking).toBe("medium");
   });
+
+import { AgentStore as _AS } from "../agents/store";
+describe("AgentStore footer selection", () => {
+  function mk(rows: any[]) {
+    const src: any = { listActive: () => rows, getRun: (id: string) => rows.find((r) => r.id === id), subscribe: () => () => {} };
+    const s = new _AS(src); s.start(); return s;
+  }
+  it("begin/move/selectedRunId/end run over snapshot order", () => {
+    const s = mk([
+      { id: "a", session_id: "x", agent: "worker", name: "a", status: "running", step_count: 0, token_count: 0, started_at: 0 },
+      { id: "b", session_id: "x", agent: "worker", name: "b", status: "running", step_count: 0, token_count: 0, started_at: 0 },
+    ]);
+    expect(s.isSelecting()).toBe(false);
+    expect(s.selectedRunId()).toBeUndefined();
+    s.beginSelect();
+    expect(s.isSelecting()).toBe(true);
+    expect(s.selectedRunId()).toBe("a");
+    s.moveSelect(1); expect(s.selectedRunId()).toBe("b");
+    s.moveSelect(5); expect(s.selectedRunId()).toBe("b"); // clamped
+    s.moveSelect(-10); expect(s.selectedRunId()).toBe("a"); // clamped
+    s.endSelect(); expect(s.isSelecting()).toBe(false);
+  });
+});

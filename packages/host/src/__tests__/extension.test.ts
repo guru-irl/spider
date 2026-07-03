@@ -24,16 +24,31 @@ function fakePi() {
 }
 
 describe("spider extension entry", () => {
-  it("registers exactly one tool named 'spider'", () => {
+  it("registers the 'spider' tool (with the 🕸 description) alongside the edit/write overrides", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
-    expect(Object.keys(pi._tools)).toEqual(["spider"]);
+    // Routing wires edit/write overrides at load, so there are now three tools.
+    expect(new Set(Object.keys(pi._tools))).toEqual(new Set(["spider", "edit", "write"]));
+    const spider = pi._tools["spider"] as { description: string };
+    expect(spider.description).toContain("🕸");
   });
 
   it("registers a handler for every contract hook", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
+    // tool_call/tool_result are NOT in HOOK_NAMES anymore (routing owns them).
+    expect(HOOK_NAMES).not.toContain("tool_call");
+    expect(HOOK_NAMES).not.toContain("tool_result");
     for (const name of HOOK_NAMES) expect(pi._hooks[name]).toBeTypeOf("function");
+  });
+
+  it("wires routing at load: tool_call/tool_result hooks + edit/write tool overrides", () => {
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    expect(pi._hooks["tool_call"]).toBeTypeOf("function");
+    expect(pi._hooks["tool_result"]).toBeTypeOf("function");
+    expect(pi._tools["edit"]).toBeTruthy();
+    expect(pi._tools["write"]).toBeTruthy();
   });
 
   it("the spider tool routes control doctor", async () => {

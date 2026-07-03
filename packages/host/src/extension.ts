@@ -7,8 +7,11 @@ import { registerHooks } from "./hooks.js";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result.js";
 import { controlDoctor, controlConfig } from "./control.js";
+import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index.js";
+import { ContentStore } from "@spider/context";
+import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, type Db } from "@spider/db-core";
 import {
   stageWrite, recall, listPending, approvePending, rejectPending,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
@@ -22,6 +25,45 @@ export { registerAction };
 // model per dispatch). resolveEmbedder degrades to null → recall falls back to FTS.
 let _emb: Promise<Embedder | null> | undefined;
 const getEmbedder = () => (_emb ??= resolveEmbedder());
+
+// Routing owns tool_call/tool_result, which carry NO sessionId — so we keep a
+// mutable ref updated at session_start and hand routing a getter over it.
+let currentSessionId = "";
+
+/** DEFAULT_ROUTING_CONFIG merged with any overrides stored under routing.* keys.
+ *  Best-effort: never throws; on any doubt returns a fresh default clone. */
+function readRoutingConfig(cwd: string): RoutingConfig {
+  const cfg: RoutingConfig = { ...DEFAULT_ROUTING_CONFIG };
+  try {
+    const tracking = controlConfig("get", cwd, "routing.tracking");
+    if (typeof tracking === "boolean") cfg.tracking = tracking;
+    const secretScrub = controlConfig("get", cwd, "routing.secret_scrub");
+    if (typeof secretScrub === "boolean") cfg.secretScrub = secretScrub;
+    const injectionScan = controlConfig("get", cwd, "routing.injection_scan");
+    if (typeof injectionScan === "boolean") cfg.injectionScan = injectionScan;
+    const threshold = controlConfig("get", cwd, "routing.auto_index_threshold");
+    if (typeof threshold === "number" && Number.isFinite(threshold)) cfg.autoIndexThreshold = threshold;
+  } catch {
+    return { ...DEFAULT_ROUTING_CONFIG };
+  }
+  return cfg;
+}
+
+/** Large-output indexer handed to routing: store chunks in the content KB and
+ *  enqueue their embeddings. Best-effort; swallows all errors. */
+function makeIndexer(db: Db) {
+  return (text: string, source: string) => {
+    try {
+      const store = new ContentStore(db);
+      const r = store.indexContent({ content: text, source });
+      const sel = db.prepare("SELECT chunk FROM content WHERE id = ?");
+      for (const id of r.ids) {
+        const row = sel.get(id) as { chunk?: string } | undefined;
+        if (row?.chunk) enqueueEmbed(db, "content", String(id), row.chunk);
+      }
+    } catch {}
+  };
+}
 
 // scope + per-call DB selection (ctx-native: reuse the DBs buildActionCtx resolved).
 const scopeOf = (a: any) => (a?.scope === "global" ? "global" : "project");
@@ -189,4 +231,29 @@ export default function spiderExtension(pi: PiToolAPI): void {
   });
 
   registerHooks(pi);
+
+  // Keep the mutable session id fresh: tool_call/tool_result events carry no
+  // sessionId, so routing reads it via getSessionId() over this ref. pi.on
+  // chains, so hooks.ts's own session_start handler still runs too.
+  pi.on("session_start", (event: any) => {
+    currentSessionId = String(event?.sessionId ?? currentSessionId);
+    return undefined;
+  });
+
+  // Wire routing/safety at LOAD: the edit/write tool overrides must be registered
+  // before pi builds its tool registry (registering them later would be too late).
+  // Best-effort — never break extension load.
+  try {
+    const routingCwd = process.cwd();
+    const routingDb = openProject(resolveProject(routingCwd).projectKey);
+    registerRouting(pi as any, {
+      db: routingDb,
+      getSessionId: () => currentSessionId,
+      getCwd: () => routingCwd,
+      config: readRoutingConfig(routingCwd),
+      indexLargeOutput: makeIndexer(routingDb),
+    });
+  } catch {
+    /* routing is best-effort; never break extension load */
+  }
 }

@@ -9,13 +9,15 @@
 // @earendil-works/pi-coding-agent .../core/extensions/types.d.ts. We register the
 // REAL event names so Phase 0 handlers actually fire; Phase 3 fills their bodies.
 //   - before_agent_start     -> memory snapshot (Phase 1), active-agents (Phase 5)
-//   - tool_call              -> intent log (Phase 3)   [deny-only: may return {block?,reason?}]
-//   - tool_result            -> scrub/scan/auto-index (Phase 3) [may replace {content?,details?,isError?}]
 //   - session_start          -> session upsert + self-name (Phase 1/6)
 //   - session_before_compact -> organism drain (Phase 6)
 //   - session_compact        -> bookkeeping (Phase 6)
 //   - session_shutdown       -> organism final consolidation (Phase 6)
 //   - resources_discover     -> contribute skills dirs + config hot-reload (Phase 0/7)
+//
+// Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
+// (packages/host/src/routing/index.ts, wired in extension.ts). They are
+// intentionally NOT registered here to avoid double-registration.
 import { resolveProject, openGlobal, openProject } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
 
@@ -25,8 +27,6 @@ export interface PiLikeAPI {
 
 export const HOOK_NAMES = [
   "before_agent_start",
-  "tool_call",
-  "tool_result",
   "session_start",
   "session_before_compact",
   "session_compact",

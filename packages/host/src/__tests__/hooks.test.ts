@@ -10,9 +10,11 @@ describe("registerHooks (Phase 0 empty handlers)", () => {
     expect(registered).toHaveLength(HOOK_NAMES.length);
   });
 
-  it("uses pi's real tool-hook event names (tool_call/tool_result), not the draft beforeToolCall/afterToolCall", () => {
-    expect(HOOK_NAMES).toContain("tool_call");
-    expect(HOOK_NAMES).toContain("tool_result");
+  it("no longer owns the tool-hook events (tool_call/tool_result moved to routing in Task 7b), and never used the draft beforeToolCall/afterToolCall names", () => {
+    // Ownership of tool_call/tool_result transferred to packages/host/src/routing
+    // (wired in extension.ts) to avoid double-registration.
+    expect(HOOK_NAMES as readonly string[]).not.toContain("tool_call");
+    expect(HOOK_NAMES as readonly string[]).not.toContain("tool_result");
     expect(HOOK_NAMES as readonly string[]).not.toContain("beforeToolCall");
     expect(HOOK_NAMES as readonly string[]).not.toContain("afterToolCall");
   });

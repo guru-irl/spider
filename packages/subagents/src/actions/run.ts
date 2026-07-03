@@ -33,7 +33,7 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
           display: true,
           details: { runId: run?.id, name, agent: run?.agent, status, output },
         },
-        { triggerTurn: true, deliverAs: "nextTurn" },
+        { triggerTurn: true },
       );
     } catch { /* best-effort */ }
   };

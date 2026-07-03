@@ -16,8 +16,10 @@ describe("makeAsyncNotifier", () => {
     expect(msg.customType).toBe("spider.subagent_done");
     expect(msg.content).toContain("FINAL OUTPUT: 3 TODOs");
     expect(msg.details.output).toBe("FINAL OUTPUT: 3 TODOs");
-    expect(opts.deliverAs).toBe("nextTurn");
-    expect(opts.triggerTurn).toBe(true); // auto-wake an idle main agent so the convo continues
+    // Wake the idle main agent to respond NOW (matches pi's file-trigger pattern). A passive
+    // deliverAs:"nextTurn" would only surface on the user's next message — that was the bug.
+    expect(opts.triggerTurn).toBe(true);
+    expect(opts.deliverAs).toBeUndefined();
   });
 
   it("falls back to the result arg when the run produced no message events", () => {

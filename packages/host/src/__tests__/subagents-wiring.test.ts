@@ -12,13 +12,20 @@ function fakePi(): any {
 
 describe("host wires subagent actions", () => {
   it("registers run/wait/message actions on activation", () => {
-    const scratch = paths.scratch("global");
-    mkdirSync(scratch, { recursive: true });
-    setGlobalDbPathForTests(join(scratch, `g-sub-${Date.now()}.db`));
-    spiderExtension(fakePi());
-    expect(getAction("run")).toBeTypeOf("function");
-    expect(getAction("wait")).toBeTypeOf("function");
-    expect(getAction("message")).toBeTypeOf("function");
+    const prev = process.env.PI_SUBAGENT_CHILD;
+    delete process.env.PI_SUBAGENT_CHILD;
+    try {
+      const scratch = paths.scratch("global");
+      mkdirSync(scratch, { recursive: true });
+      setGlobalDbPathForTests(join(scratch, `g-sub-${Date.now()}.db`));
+      spiderExtension(fakePi());
+      expect(getAction("run")).toBeTypeOf("function");
+      expect(getAction("wait")).toBeTypeOf("function");
+      expect(getAction("message")).toBeTypeOf("function");
+    } finally {
+      if (prev === undefined) delete process.env.PI_SUBAGENT_CHILD;
+      else process.env.PI_SUBAGENT_CHILD = prev;
+    }
   });
 
   it("does NOT register orchestration actions in a subagent child (PI_SUBAGENT_CHILD=1)", () => {

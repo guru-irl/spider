@@ -1,0 +1,44 @@
+import { describe, it, expect } from "vitest";
+import { AgentFooter } from "../agents/footer.js";
+import { AgentStore } from "../agents/store.js";
+import type { RunRow, RunSource, RunEvent, ThemeAdapter } from "../agents/types.js";
+import { visibleWidth } from "@earendil-works/pi-tui";
+
+const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
+function row(o: Partial<RunRow>): RunRow {
+  return { id: "r1", session_id: "s", agent: "worker", status: "running", step_count: 3, token_count: 120,
+    started_at: 0, ...o };
+}
+class Src implements RunSource {
+  rows = new Map<string, RunRow>(); private fn?: (e: RunEvent) => void;
+  listActive() { return [...this.rows.values()]; }
+  getRun(id: string) { return this.rows.get(id); }
+  subscribe(fn: (e: RunEvent) => void) { this.fn = fn; return () => {}; }
+  emit(e: RunEvent) { this.fn?.(e); }
+}
+
+describe("AgentFooter", () => {
+  it("renders empty when no agents", () => {
+    const src = new Src(); const store = new AgentStore(src); store.start();
+    const f = new AgentFooter(store, id, { now: () => 1000 });
+    expect(f.render(40)).toEqual([]);
+  });
+  it("renders one agent line with glyph, name, steps/tokens, within width", () => {
+    const src = new Src(); src.rows.set("r1", row({ name: "scribe" }));
+    const store = new AgentStore(src); store.start();
+    const f = new AgentFooter(store, id, { now: () => 5000 });
+    const lines = f.render(60);
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    expect(lines.join("\n")).toContain("🕸");
+    expect(lines.join("\n")).toContain("scribe");
+    expect(lines.join("\n")).toMatch(/3.*120|120.*3/);
+    for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
+  });
+  it("hasVisibleChange is false when nothing changed between frames", () => {
+    const src = new Src(); src.rows.set("r1", row({ name: "scribe" }));
+    const store = new AgentStore(src); store.start();
+    const f = new AgentFooter(store, id, { now: () => 5000 });
+    expect(f.hasVisibleChange(60)).toBe(true);   // first paint
+    expect(f.hasVisibleChange(60)).toBe(false);  // no change
+  });
+});

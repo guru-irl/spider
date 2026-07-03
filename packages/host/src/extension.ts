@@ -20,6 +20,7 @@ import {
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
 import { installAgentsUI } from "./agents/agents-ui.js";
+import { renderSpiderResult } from "./render-result.js";
 
 export { registerAction };
 
@@ -78,6 +79,7 @@ interface PiToolAPI {
     label?: string;
     description: string;
     parameters: unknown;
+    renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => unknown;
     execute(toolCallId: string, params: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
   }): void;
   registerCommand?(name: string, def: unknown): void;
@@ -225,6 +227,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     description:
       "spider 🕸 — unified memory, context/search, todos, subagents, and skills on one shared DB. Use `action` for everyday verbs; `action:'control'` + `command` for admin.",
     parameters: SPIDER_PARAMETERS,
+    renderResult: renderSpiderResult,
     async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate

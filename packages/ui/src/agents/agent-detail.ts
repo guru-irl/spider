@@ -1,4 +1,4 @@
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
 import { formatDuration, shortModel } from "./footer";
 import { wrapText } from "./grid-cell";
@@ -20,35 +20,48 @@ export class AgentDetail implements Component {
   }
 
   render(width: number): string[] {
-    const a = this.store.snapshot().find((x) => x.runId === this.runId);
+    const a = this.store.getById(this.runId);
     const t = this.theme;
-    if (!a) return [truncateToWidth(t.fg("muted", `${t.glyph} run ${this.runId} not found`), width, "…")];
-    const fit = (s: string) => truncateToWidth(s, width, "…");
+    const title = `${t.glyph} ${a ? a.name : "agent"}`;
+    if (!a) return this.frame(title, [t.fg("muted", `  run ${this.runId} not found`)], width);
+    const inner = Math.max(4, width - 2);
+    const fit = (s: string) => truncateToWidth(s, inner, "…");
     const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
     const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
 
-    // Header: status glyph, spider, NAME, status word.
-    const head = fit(`${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.glyph} ${t.bold(a.name)}  ${t.fg(statusToken(a.status), a.status)}`);
+    const head = fit(`${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.bold(a.name)}  ${t.fg(statusToken(a.status), a.status)}`);
     const meta = fit("  " + t.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`));
     const idLine = fit("  " + t.fg("dim", `#${a.runId}`));
 
     const instructions = (a.task ?? "").trim()
-      ? wrapText(a.task!.trim(), Math.max(1, width - 2), 8).map((l) => "  " + t.fg("muted", l))
+      ? wrapText(a.task!.trim(), Math.max(1, inner - 2), 8).map((l) => "  " + t.fg("muted", l))
       : ["  " + t.fg("dim", "(no instructions)")];
 
-    // Live activity feed — the current tool prominently, then recent history (newest last).
     const cur = a.activity ? [fit("  " + t.fg("accent", "▸ " + a.activity))] : [];
     const feed = a.recentActivity.length
       ? a.recentActivity.map((s) => fit("  " + t.fg("muted", "· " + s)))
       : ["  " + t.fg("dim", "(waiting for activity…)")];
 
-    const lines = [
+    const body = [
       head, meta, idLine, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
       t.fg("dim", `${t.glyph} activity`), ...cur, ...feed,
       "", fit(t.fg("dim", "esc back to grid")),
     ];
-    return lines;
+    return this.frame(title, body, width);
+  }
+
+  /** Rounded, width-exact panel so the detail reads as a bounded view (never a blank overlay). */
+  private frame(title: string, body: string[], width: number): string[] {
+    const t = this.theme;
+    const inner = Math.max(4, width - 2);
+    const bar = t.fg("muted", "│");
+    const ttl = truncateToWidth(title, Math.max(1, inner - 4), "…");
+    const k = Math.max(0, width - 5 - visibleWidth(ttl));
+    const top = t.fg("muted", "╭─ ") + t.fg("accent", ttl) + t.fg("muted", " " + "─".repeat(k) + "╮");
+    const bottom = t.fg("muted", "╰" + "─".repeat(inner) + "╯");
+    const pad = (l: string) => { const d = inner - visibleWidth(l); return bar + (d > 0 ? l + " ".repeat(d) : truncateToWidth(l, inner, "")) + bar; };
+    return [top, ...body.map(pad), bottom];
   }
 
   invalidate(): void { /* stateless render */ }

@@ -69,6 +69,15 @@ export class AgentStore {
     return [...this.agents.values()];
   }
 
+  /** Look up one run even if it has been evicted from the live snapshot (reads the row).
+   *  The detail view uses this so drilling into a just-finished run isn't a blank screen. */
+  getById(id: string): AgentSnapshot | undefined {
+    const cached = this.agents.get(id);
+    if (cached) return cached;
+    const row = this.src.getRun(id);
+    return row ? projectRow(row) : undefined;
+  }
+
   edges(): HandoffEdge[] { return this.handoffs; }
 
   hasRunning(): boolean {

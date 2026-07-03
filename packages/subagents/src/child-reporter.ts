@@ -22,6 +22,11 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     onTurn(turns: number): void {
       store.updateProgress(ctx.runId, { stepCount: turns });
     },
+    /** Record the child's actual model once (subagents spawned without an explicit
+     *  model would otherwise show '—' in the UI). */
+    onModel(model: string): void {
+      store.updateProgress(ctx.runId, { model });
+    },
     onShutdown(status: "done" | "error" | "interrupted", result?: string): void {
       const runStatus = status === "done" ? "done" : status === "error" ? "failed" : "cancelled";
       store.finish(ctx.runId, { status: runStatus, result });
@@ -56,7 +61,7 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
   }
   const rep = makeChildReporter(db, { runId, sessionId });
   const offs: Array<() => void> = [];
-  const wire = (evt: string, fn: (e: any) => void) => {
+  const wire = (evt: string, fn: (e: any, ctx?: any) => void) => {
     try {
       const off = pi.on(evt, fn);
       if (typeof off === "function") offs.push(off);
@@ -64,10 +69,18 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
       // ignore wiring failures
     }
   };
+  let modelSeen = false;
+  const captureModel = (evtCtx: any) => {
+    if (modelSeen) return;
+    try {
+      const m = typeof evtCtx?.getModel === "function" ? evtCtx.getModel() : undefined;
+      if (m?.id) { rep.onModel(String(m.id)); modelSeen = true; }
+    } catch { /* model not resolvable yet */ }
+  };
   wire("tool_execution_start", (e) => rep.onToolStart(e?.toolName, { id: e?.toolCallId }));
   wire("tool_execution_end", (e) => rep.onToolEnd(e?.toolName, { id: e?.toolCallId }));
-  wire("turn_start", (e) => rep.onTurn((e?.turnIndex ?? 0) + 1));
-  wire("agent_start", () => rep.onStatus("running"));
+  wire("turn_start", (e, ctx) => { rep.onTurn((e?.turnIndex ?? 0) + 1); captureModel(ctx); });
+  wire("agent_start", (_e, ctx) => { rep.onStatus("running"); captureModel(ctx); });
   wire("session_shutdown", () => {
     try {
       rep.onShutdown("done");

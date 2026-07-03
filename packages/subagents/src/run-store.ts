@@ -72,13 +72,14 @@ export class RunStore {
       .run({ id, now: Date.now() });
   }
 
-  updateProgress(id: string, patch: { stepCount?: number; tokenCount?: number; phase?: string }): void {
+  updateProgress(id: string, patch: { stepCount?: number; tokenCount?: number; phase?: string; model?: string }): void {
     this.db
       .prepare(
         `UPDATE runs SET
            step_count = COALESCE(@stepCount, step_count),
            token_count = COALESCE(@tokenCount, token_count),
-           phase = COALESCE(@phase, phase)
+           phase = COALESCE(@phase, phase),
+           model = COALESCE(@model, model)
          WHERE id = @id`
       )
       .run({
@@ -86,6 +87,7 @@ export class RunStore {
         stepCount: patch.stepCount ?? null,
         tokenCount: patch.tokenCount ?? null,
         phase: patch.phase ?? null,
+        model: patch.model ?? null,
       });
   }
 

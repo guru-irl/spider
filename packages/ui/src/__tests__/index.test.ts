@@ -4,8 +4,8 @@ import * as ui from "../index";
 describe("@spider/ui Phase 5 surface", () => {
   it("re-exports agent UI symbols", () => {
     for (const name of [
-      "AgentStore", "AgentFooter", "Grid", "AgentDetail", "FrameScheduler",
-      "diffLines", "hasChanges", "layoutGrid", "buildFooterModel",
+      "AgentStore", "AgentFooter", "AgentList", "AgentDetail", "FrameScheduler",
+      "diffLines", "hasChanges", "buildFooterModel",
       "renderGridCell", "renderProgressBar", "renderDiffView", "renderTable", "Spinner",
       "STATUS_GLYPH", "statusToken", "formatDuration",
     ]) {
@@ -15,5 +15,11 @@ describe("@spider/ui Phase 5 surface", () => {
     for (const name of ["Panel", "SectionRule", "StatusLine", "LiveWidget", "theme"]) {
       expect(ui).toHaveProperty(name);
     }
+  });
+
+  it("no longer exports the removed full-page Grid / layoutGrid", () => {
+    expect((ui as Record<string, unknown>).Grid).toBeUndefined();
+    expect((ui as Record<string, unknown>).layoutGrid).toBeUndefined();
+    expect(ui.AgentList).toBeDefined();
   });
 });

@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "type": "module",
   "main": "./src/extension.ts",
-  "exports": { ".": "./src/extension.ts" },
+  "exports": {
+    ".": "./src/extension.ts"
+  },
   "dependencies": {
     "@spider/context": "0.0.0",
     "@spider/db-core": "0.0.0",
@@ -12,7 +14,10 @@
     "@spider/memory": "0.0.0",
     "@spider/todo": "0.0.0",
     "fastembed": "^1.14.1",
-    "typebox": "^1.1.38"
+    "typebox": "^1.1.38",
+    "@spider/subagents": "0.0.0"
   },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.80.0" }
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.0"
+  }
 }

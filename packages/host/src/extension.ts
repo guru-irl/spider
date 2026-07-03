@@ -18,6 +18,7 @@ import {
   renderRememberResult, renderRecallResult, renderPending,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
+import { registerSubagentActions } from "@spider/subagents";
 
 export { registerAction };
 
@@ -177,6 +178,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // in-process exec/exec_file/batch handlers (Phase 2 Task 4).
   // Strangler: spider owns exec/exec_file/batch/index/fetch/search/import in-process; legacy context-mode ctx_* MCP tools are deprecated (spider does not register them).
   registerContextActions(registerAction);
+  // subagents runtime: run/wait/message (child-guard + shutdown teardown handled inside).
+  registerSubagentActions({ registerAction }, pi);
 
   // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.
   registerAction("remember", async (args, ctx) => {

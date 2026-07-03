@@ -30,7 +30,7 @@ export function applyEvent(snap: AgentSnapshot, e: RunEvent): AgentSnapshot {
     next.activityTool = e.tool ?? next.activityTool;
     feedLine = e.summary ?? e.tool;
     if (feedLine) next.activity = feedLine;
-  } else if ((e.type === "tool_result" || e.type === "log" || e.type === "message") && e.summary) {
+  } else if ((e.type === "tool_result" || e.type === "log") && e.summary) {
     feedLine = e.summary;
     next.activity = e.summary;
   }
@@ -89,6 +89,9 @@ export class AgentStore {
   }
 
   edges(): HandoffEdge[] { return this.handoffs; }
+
+  /** Full chronological event log for one run (assistant text + tool calls/results). */
+  events(runId: string): RunEvent[] { return this.src.listEvents?.(runId) ?? []; }
 
   hasRunning(): boolean {
     for (const a of this.agents.values()) if (a.status === "running" || a.status === "queued") return true;

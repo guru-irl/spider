@@ -12,13 +12,24 @@ describe("child reporter", () => {
     const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
     store.start(runId);
     const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
-    rep.onToolStart("bash", { cmd: "ls" });
-    rep.onToolEnd("bash", { exit: 0 });
+    rep.onToolStart("bash", "bash ls", { cmd: "ls" });
+    rep.onToolEnd("bash", "✓ bash", { exit: 0 });
     rep.onShutdown("done", "finished");
-    const events = db.prepare(`SELECT type FROM run_events WHERE run_id=? ORDER BY id`).all(runId) as any[];
+    const events = db.prepare(`SELECT type, summary FROM run_events WHERE run_id=? ORDER BY id`).all(runId) as any[];
     expect(events.map((e) => e.type)).toEqual(["tool_intent", "tool_result", "status"]);
+    expect(events[0].summary).toBe("bash ls");
     expect(store.get(runId)!.status).toBe("done");
     expect(store.get(runId)!.result).toBe("finished");
+  });
+
+  it("records assistant prose as message events (conversation capture)", () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+    const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
+    rep.onMessage("Analyzing the ui package now.");
+    const events = db.prepare(`SELECT type, summary FROM run_events WHERE run_id=? ORDER BY id`).all(runId) as any[];
+    expect(events).toEqual([{ type: "message", summary: "Analyzing the ui package now." }]);
   });
 
   it("survives a throwing getSessionName in headless child mode and still emits run_events", () => {

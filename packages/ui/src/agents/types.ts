@@ -24,6 +24,8 @@ export interface RunSource {
   listActive(): RunRow[];
   getRun(runId: string): RunRow | undefined;
   subscribe(fn: (e: RunEvent) => void): () => void;
+  /** All run_events for one run, chronological — powers the detail conversation view. */
+  listEvents?(runId: string): RunEvent[];
 }
 
 export interface AgentActions {

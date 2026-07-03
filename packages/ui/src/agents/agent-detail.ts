@@ -37,15 +37,28 @@ export class AgentDetail implements Component {
       ? wrapText(a.task!.trim(), Math.max(1, inner - 2), 8).map((l) => "  " + t.fg("muted", l))
       : ["  " + t.fg("dim", "(no instructions)")];
 
-    const cur = a.activity ? [fit("  " + t.fg("accent", "▸ " + a.activity))] : [];
-    const feed = a.recentActivity.length
-      ? a.recentActivity.map((s) => fit("  " + t.fg("muted", "· " + s)))
-      : ["  " + t.fg("dim", "(waiting for activity…)")];
+    // Full live conversation: assistant prose + tool calls + results, chronological.
+    const convo: string[] = [];
+    for (const e of this.store.events(this.runId)) {
+      if (e.type === "message" && e.summary) {
+        for (const l of wrapText(e.summary, Math.max(1, inner - 2), 60)) convo.push(fit("  " + t.fg("text", l)));
+        convo.push("");
+      } else if (e.type === "tool_intent") {
+        convo.push(fit("  " + t.fg("accent", "→ " + (e.summary ?? e.tool ?? "tool"))));
+      } else if (e.type === "tool_result" && e.summary) {
+        convo.push(fit("    " + t.fg("muted", e.summary)));
+      } else if (e.type === "handoff" && e.summary) {
+        convo.push(fit("  " + t.fg("accent", "⇢ " + e.summary)));
+      }
+    }
+    if (a.status === "running" && a.activity) convo.push(fit("  " + t.fg("accent", "▸ " + a.activity)));
+    // Tail to the most recent lines (the overlay is scroll-free; keep it bounded).
+    const convoTail = convo.length ? convo.slice(-120) : ["  " + t.fg("dim", "(waiting for the agent…)")];
 
     const body = [
       head, meta, idLine, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
-      t.fg("dim", `${t.glyph} activity`), ...cur, ...feed,
+      t.fg("dim", `${t.glyph} conversation`), ...convoTail,
       "", fit(t.fg("dim", "esc back to grid")),
     ];
     return this.frame(title, body, width);
@@ -58,7 +71,7 @@ export class AgentDetail implements Component {
     const bar = t.fg("muted", "│");
     const ttl = truncateToWidth(title, Math.max(1, inner - 4), "…");
     const k = Math.max(0, width - 5 - visibleWidth(ttl));
-    const top = t.fg("muted", "╭─ ") + t.fg("accent", ttl) + t.fg("muted", " " + "─".repeat(k) + "╮");
+    const top = t.fg("muted", "╭─ ") + t.fg("toolTitle", ttl) + t.fg("muted", " " + "─".repeat(k) + "╮");
     const bottom = t.fg("muted", "╰" + "─".repeat(inner) + "╯");
     const pad = (l: string) => { const d = inner - visibleWidth(l); return bar + (d > 0 ? l + " ".repeat(d) : truncateToWidth(l, inner, "")) + bar; };
     return [top, ...body.map(pad), bottom];

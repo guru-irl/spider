@@ -24,6 +24,16 @@ function fakePi() {
 }
 
 describe("spider extension entry", () => {
+  it("advertises run/query params in the tool schema so the model passes them (regression: empty tasks/0 tool calls)", () => {
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
+    for (const k of ["agent", "task", "tasks", "chain", "async", "query", "content"]) {
+      expect(props[k], `schema must advertise '${k}'`).toBeTruthy();
+    }
+    expect(props.tasks.items.required).toEqual(expect.arrayContaining(["agent", "task"]));
+  });
+
   it("registers the 'spider' tool (with the 🕸 description) alongside the edit/write overrides", () => {
     const pi = fakePi();
     spiderExtension(pi as never);

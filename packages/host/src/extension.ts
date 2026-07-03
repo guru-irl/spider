@@ -97,7 +97,77 @@ const SPIDER_PARAMETERS = {
       ],
       description: "The spider verb to run.",
     },
-    command: { type: "string", description: "Sub-command when action='control'." },
+    // control
+    command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory')." },
+    op: { type: "string", enum: ["get", "set"], description: "control config op." },
+    key: { type: "string", description: "control config key." },
+    value: { description: "control config value (for op='set')." },
+    sub: { type: "string", description: "control memory sub-command." },
+    uuid: { type: "string", description: "pending-memory uuid for approve/reject." },
+    // scope / cwd (most actions)
+    scope: { type: "string", enum: ["global", "project"], description: "Memory/registry scope (default project)." },
+    cwd: { type: "string", description: "Working-directory override." },
+    // search / recall
+    query: { type: "string", description: "Query text for action 'search' or 'recall'." },
+    category: { type: "string", description: "Memory category (remember) or filter (recall)." },
+    limit: { type: "number", description: "Max results (search/recall)." },
+    // remember
+    content: { type: "string", description: "Text to store for action 'remember' (or index/fetch body)." },
+    link: { type: "string", description: "Optional link/url to attach to a remembered item." },
+    auto: { type: "boolean", description: "Mark a remembered item as auto-captured." },
+    // run / subagents
+    agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
+    task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
+    tasks: {
+      type: "array",
+      description: "PARALLEL-mode: subagents to run concurrently.",
+      items: {
+        type: "object",
+        properties: {
+          agent: { type: "string" },
+          task: { type: "string" },
+          count: { type: "integer", minimum: 1 },
+          model: { type: "string" },
+          context: { type: "string", enum: ["fresh", "fork"] },
+        },
+        required: ["agent", "task"],
+      },
+    },
+    chain: {
+      type: "array",
+      description: "CHAIN-mode: sequential steps ({previous} passed forward).",
+      items: {
+        type: "object",
+        properties: {
+          agent: { type: "string" },
+          task: { type: "string" },
+          model: { type: "string" },
+          context: { type: "string", enum: ["fresh", "fork"] },
+        },
+      },
+    },
+    pipeline: { type: "array", description: "PIPELINE-mode stages (advanced push-based auto-wake).", items: { type: "object" } },
+    concurrency: { type: "integer", minimum: 1, description: "PARALLEL max concurrent (default 4)." },
+    model: { type: "string", description: "Model override for spawned subagent(s)." },
+    skill: { type: "string", description: "Skill the spawned subagent should follow." },
+    context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
+    async: { type: "boolean", description: "Run subagent(s) in the background and return immediately." },
+    // wait
+    id: { type: "string", description: "Run id/prefix for action 'wait' (also a todo id)." },
+    all: { type: "boolean", description: "action 'wait': wait for ALL active runs." },
+    timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (wait/message)." },
+    // message
+    to: { type: "string", description: "Target session name/id for action 'message'." },
+    message: { type: "string", description: "Message body for action 'message'." },
+    // todo
+    text: { type: "string", description: "Todo text for action 'todo' (add)." },
+    // exec
+    code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
+    language: { type: "string", description: "Language for action 'exec'." },
+    // index / fetch
+    url: { type: "string", description: "URL for action 'fetch'." },
+    source: { type: "string", description: "Source label for action 'index'/'fetch'." },
+    path: { type: "string", description: "File/dir path for action 'index'/'exec_file'." },
   },
   required: ["action"],
   additionalProperties: true,
@@ -225,7 +295,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, subagents, and skills on one shared DB. Use `action` for everyday verbs; `action:'control'` + `command` for admin.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}, plus async:true to run in the background; wait→id|all; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderResult: renderSpiderResult,
     async execute(_toolCallId, args, _signal, _onUpdate, ctx) {

@@ -34,7 +34,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string }
+    private deps: { store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -100,6 +100,9 @@ export class Runner {
         const status: RunStatus = exitCode === 0 ? "done" : "failed";
         this.deps.store.finish(run.id, { status, result });
         emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status, summary: run.name ?? undefined });
+        // Async completion notification: let the parent agent (and human) know a
+        // background subagent finished, since async runs return before completing.
+        this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, status, result);
       }
     }).catch(() => { /* best-effort finalize */ });
     handle.detach();

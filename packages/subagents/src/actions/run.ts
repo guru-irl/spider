@@ -9,6 +9,28 @@ import { runParallel } from "../parallel";
 import { runSingle } from "../single";
 import { defaultSpawner } from "../spawn-default";
 
+/** Async-completion notifier: injects a message the parent agent sees next turn (so it
+ *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
+function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
+  return (run, status, result) => {
+    try {
+      const name = run?.name ?? run?.agent ?? "subagent";
+      const preview = String(result ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+      const headline = `🕸 subagent "${name}" (${run?.agent ?? "worker"}) finished: ${status}`;
+      ctx.ui?.notify?.(headline, status === "failed" ? "error" : "info");
+      ctx.pi?.sendMessage?.(
+        {
+          customType: "spider.subagent_done",
+          content: `${headline}. run id ${run?.id}.${preview ? "\nResult: " + preview : ""}`,
+          display: true,
+          details: { runId: run?.id, name, agent: run?.agent, status, result: preview },
+        },
+        { deliverAs: "nextTurn" },
+      );
+    } catch { /* best-effort */ }
+  };
+}
+
 interface RunDeps {
   makeStore?: (db: any) => RunStore;
   makeRunner?: (db: any, sessionId: string, cwd: string, deps: any) => any;
@@ -32,9 +54,11 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const spawn = overrides.spawner ?? defaultSpawner;
     const scratchRoot = paths.scratch("project", ctx.cwd);
     const dbPath = ctx.project?.dbPath ?? "";
+    const onComplete = makeAsyncNotifier(ctx);
+    const runnerDeps = { store, tailer, spawn, scratchRoot, dbPath, onComplete };
     const runner = overrides.makeRunner
-      ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, { store, tailer, spawn, scratchRoot, dbPath })
-      : new Runner(ctx.db, ctx.sessionId, ctx.cwd, { store, tailer, spawn, scratchRoot, dbPath });
+      ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
+      : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);
 
     if (Array.isArray(args.pipeline)) {
       const coord = overrides.makePipeline

@@ -68,4 +68,38 @@ describe("Runner", () => {
     expect(run.started_at).toBeTruthy();
     expect(trackSpy).toHaveBeenCalledWith(run.id);
   });
+
+  it("runAsync: fires onComplete with the finished run when the child exits", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const tailer = new RunEventTailer(db);
+    const onComplete = vi.fn();
+    const runner = new Runner(db, "sess1", "/repo", {
+      store, tailer, onComplete, ...deps(fakeSpawn({ exitCode: 0, result: "done-result" })),
+    });
+
+    const run = runner.runAsync({ agent: "worker", name: "todo-hunt", task: "do it", context: "fresh" });
+    expect(run.status).toBe("running");
+
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    const [finished, status, result] = onComplete.mock.calls[0];
+    expect(status).toBe("done");
+    expect(result).toBe("done-result");
+    expect(finished.id).toBe(run.id);
+    expect(finished.name).toBe("todo-hunt");
+    expect(finished.status).toBe("done");
+  });
+
+  it("runAsync: onComplete reports failed on non-zero exit", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const tailer = new RunEventTailer(db);
+    const onComplete = vi.fn();
+    const runner = new Runner(db, "sess1", "/repo", {
+      store, tailer, onComplete, ...deps(fakeSpawn({ exitCode: 1, result: "boom" })),
+    });
+    runner.runAsync({ agent: "worker", task: "do it", context: "fresh" });
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    expect(onComplete.mock.calls[0][1]).toBe("failed");
+  });
 });

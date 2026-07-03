@@ -132,6 +132,6 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   } else if (args?.sub || args?.command) {
     suffix = `${action} · ${args.sub ?? args.command}`;
   }
-  const line = `${t.fg("accent", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
+  const line = `${t.fg("accent", "🕸")}  ${t.fg("accent", t.bold("spider"))} ${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }

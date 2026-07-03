@@ -2,7 +2,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
-import { statusToken } from "./types";
+import { Spinner } from "../components/spinner";
+import { STATUS_GLYPH, statusToken } from "./types";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -22,14 +23,16 @@ export class AgentFooter implements Component {
   private theme: ThemeAdapter;
   private maxVisible: number;
   private now: () => number;
+  private spinner: Spinner;
   private cachedWidth?: number;
   private cachedLines: string[] = [];
 
   constructor(private store: AgentStore, theme: ThemeAdapter,
-    opts: { maxVisible?: number; now?: () => number } = {}) {
+    opts: { maxVisible?: number; now?: () => number; spinner?: Spinner } = {}) {
     this.theme = theme;
     this.maxVisible = opts.maxVisible ?? 4;
     this.now = opts.now ?? Date.now;
+    this.spinner = opts.spinner ?? new Spinner();
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
@@ -46,7 +49,10 @@ export class AgentFooter implements Component {
     if (model !== "—") parts.push(sep, t.fg("muted", model));
     parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
     if (a.activity) parts.push(sep, t.fg("dim", a.activity));
-    return truncateToWidth(`${t.fg("accent", t.glyph)}  ${parts.join(" ")}`, width, "…");
+    // Progress indicator to the LEFT of the spider glyph: animated spinner while running,
+    // otherwise the terminal status glyph. Both coloured by status.
+    const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
+    return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("accent", t.glyph)}  ${parts.join(" ")}`, width, "…");
   }
 
   private build(width: number): string[] {

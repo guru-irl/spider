@@ -209,8 +209,8 @@ describe("AgentStore footer selection", () => {
     expect(s.isSelecting()).toBe(true);
     expect(s.selectedRunId()).toBe("a");
     s.moveSelect(1); expect(s.selectedRunId()).toBe("b");
-    s.moveSelect(5); expect(s.selectedRunId()).toBe("b"); // clamped
-    s.moveSelect(-10); expect(s.selectedRunId()).toBe("a"); // clamped
+    s.moveSelect(1); expect(s.selectedRunId()).toBe("a"); // wraps bottom → top
+    s.moveSelect(-1); expect(s.selectedRunId()).toBe("b"); // wraps top → bottom
     s.endSelect(); expect(s.isSelecting()).toBe(false);
   });
 });

@@ -103,7 +103,8 @@ export class AgentStore {
     if (!this.selecting) return;
     const n = this.snapshot().length;
     if (n === 0) { this.sel = 0; return; }
-    this.sel = Math.max(0, Math.min(n - 1, this.sel + delta));
+    // Wrap around: up from the top row lands on the bottom, and vice-versa.
+    this.sel = (((this.sel + delta) % n) + n) % n;
     this.emit();
   }
   selectedRunId(): string | undefined { if (!this.selecting) return undefined; return this.snapshot()[this.sel]?.runId; }

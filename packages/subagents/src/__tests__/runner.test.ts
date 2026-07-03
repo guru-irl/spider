@@ -147,4 +147,20 @@ describe("Runner", () => {
     const [finished] = onComplete.mock.calls[0];
     expect(finished.id).toBe(run.id);
   });
+
+  it("runAsync: still fires onComplete when the child finalized its own row before exit is observed (fast clean-exit race)", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const tailer = new RunEventTailer(db);
+    const onComplete = vi.fn();
+    let resolveWait!: (v: { exitCode: number; result?: string }) => void;
+    const spawn: Spawner = () => ({ pid: 1, wait: () => new Promise((r) => { resolveWait = r; }), kill: () => {}, detach: () => {} });
+    const runner = new Runner(db, "sess-race", "/repo", { store, tailer, onComplete, ...deps(spawn) });
+    const row = runner.runAsync({ agent: "worker", task: "t", context: "fresh", async: true });
+    // Simulate the detached child's session_shutdown finalizing the row BEFORE the parent sees exit:
+    store.finish(row.id, { status: "done", result: "CHILD-FINAL" });
+    resolveWait({ exitCode: 0, result: "CHILD-FINAL" });
+    await vi.waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    expect(onComplete.mock.calls[0][1]).toBe("done");
+  });
 });

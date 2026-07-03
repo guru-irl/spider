@@ -99,14 +99,21 @@ export class Runner {
     // (headless/killed children) — otherwise the run is stuck "running" in the UI.
     void handle.wait().then(({ exitCode, result }) => {
       const cur = this.deps.store.get(run.id);
+      let status: RunStatus;
       if (cur && (cur.status === "running" || cur.status === "queued")) {
-        const status: RunStatus = exitCode === 0 ? "done" : "failed";
+        // Child never finalized its own row (headless/killed) — the parent finalizes it.
+        status = exitCode === 0 ? "done" : "failed";
         this.deps.store.finish(run.id, { status, result });
         emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status, summary: run.name ?? undefined });
-        // Async completion notification: let the parent agent (and human) know a
-        // background subagent finished, since async runs return before completing.
-        this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, status, result);
+      } else {
+        // Child already finalized the row (fast clean exit) — honour its terminal status.
+        status = (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed");
       }
+      // Async completion notification: let the parent agent (and human) know a background
+      // subagent finished. Fired EXACTLY ONCE per child exit, whether the parent or the child
+      // finalized the row — previously this lived inside the guard, so fast clean-exit children
+      // (child-reporter finished the row before the parent observed exit) never notified.
+      this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, status, result);
     }).catch(() => { /* best-effort finalize */ });
     handle.detach();
     return this.deps.store.get(run.id)!;

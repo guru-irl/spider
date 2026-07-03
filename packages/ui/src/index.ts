@@ -79,3 +79,19 @@ export function LiveWidget(
     invalidate() { dirty = true; },
   };
 }
+
+// ---- Phase 5: subagents footer + live grid ----
+export * from "./agents/types.js";
+export { AgentStore, projectRow, applyEvent } from "./agents/store.js";
+export { FrameScheduler } from "./agents/coalesce.js";
+export { diffLines, hasChanges } from "./agents/diff.js";
+export { layoutGrid } from "./agents/grid-layout.js";
+export { buildFooterModel } from "./agents/footer-model.js";
+export { AgentFooter, formatDuration } from "./agents/footer.js";
+export { Grid } from "./agents/grid.js";
+export { renderGridCell } from "./agents/grid-cell.js";
+export { AgentDetail } from "./agents/agent-detail.js";
+export { Spinner, BRAILLE_FRAMES } from "./components/spinner.js";
+export { renderProgressBar } from "./components/progress-bar.js";
+export { renderDiffView } from "./components/diff-view.js";
+export { renderTable } from "./components/table.js";

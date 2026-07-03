@@ -18,6 +18,10 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     onStatus(status: string, summary?: string): void {
       emitStatus(db, { ...ctx, status, summary });
     },
+    /** pi fires turn_start with a 0-based turnIndex; persist turns as step_count. */
+    onTurn(turns: number): void {
+      store.updateProgress(ctx.runId, { stepCount: turns });
+    },
     onShutdown(status: "done" | "error" | "interrupted", result?: string): void {
       const runStatus = status === "done" ? "done" : status === "error" ? "failed" : "cancelled";
       store.finish(ctx.runId, { status: runStatus, result });
@@ -60,6 +64,7 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
   };
   wire("tool_execution_start", (e) => rep.onToolStart(e?.toolName, { id: e?.toolCallId }));
   wire("tool_execution_end", (e) => rep.onToolEnd(e?.toolName, { id: e?.toolCallId }));
+  wire("turn_start", (e) => rep.onTurn((e?.turnIndex ?? 0) + 1));
   wire("agent_start", () => rep.onStatus("running"));
   wire("session_shutdown", () => {
     try {

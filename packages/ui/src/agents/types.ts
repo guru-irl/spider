@@ -11,7 +11,7 @@ export interface RunRow {
 }
 
 export interface AgentSnapshot {
-  runId: string; parentRunId?: string; name: string; role?: string;
+  runId: string; parentRunId?: string; name: string; agent: string; role?: string;
   status: AgentStatus; phase?: string; model?: string; task?: string;
   startedAt?: number; endedAt?: number;
   activity?: string; activityTool?: string;

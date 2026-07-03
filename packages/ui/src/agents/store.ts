@@ -1,7 +1,7 @@
 import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource } from "./types";
 
 const RETENTION_MS = 10_000;
-const TAIL_CAP = 5;
+const TAIL_CAP = 20;
 const MAX_HANDOFFS = 64;
 
 export function projectRow(row: RunRow): AgentSnapshot {
@@ -9,6 +9,7 @@ export function projectRow(row: RunRow): AgentSnapshot {
     runId: row.id,
     parentRunId: row.parent_run_id ?? undefined,
     name: row.name ?? row.role ?? row.agent,
+    agent: row.agent,
     role: row.role ?? undefined,
     status: row.status,
     phase: row.phase ?? undefined,
@@ -24,13 +25,21 @@ export function projectRow(row: RunRow): AgentSnapshot {
 
 export function applyEvent(snap: AgentSnapshot, e: RunEvent): AgentSnapshot {
   const next = { ...snap, recentActivity: [...snap.recentActivity] };
+  let feedLine: string | undefined;
   if (e.type === "tool_intent") {
     next.activityTool = e.tool ?? next.activityTool;
-    next.activity = e.summary ?? e.tool ?? next.activity;
-  } else if (e.summary) {
-    next.recentActivity.push(e.summary);
-    if (next.recentActivity.length > TAIL_CAP) next.recentActivity.shift();
+    feedLine = e.summary ?? e.tool;
+    if (feedLine) next.activity = feedLine;
+  } else if ((e.type === "tool_result" || e.type === "log" || e.type === "message") && e.summary) {
+    feedLine = e.summary;
     next.activity = e.summary;
+  }
+  // NOTE: status/handoff events deliberately do NOT feed the activity tail. They
+  // carry the run *name* as their summary, which previously flooded recentActivity
+  // (and the footer's activity column) with the agent name repeated over and over.
+  if (feedLine) {
+    next.recentActivity.push(feedLine);
+    if (next.recentActivity.length > TAIL_CAP) next.recentActivity.shift();
   }
   return next;
 }

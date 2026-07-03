@@ -114,13 +114,13 @@ describe("AgentStore", () => {
     expect(store.snapshot().length).toBe(1);
     expect(store.snapshot()[0].recentActivity).toEqual([]);
     
-    // Emit a summary-bearing event (first event for this run)
-    // Using "status" type which will push summary to recentActivity
+    // Emit a summary-bearing activity event (first event for this run).
+    // tool_result/log/message feed the activity tail (status/handoff intentionally do not).
     const event: RunEvent = {
       runId: "r1",
       sessionId: "s1",
       ts: Date.now(),
-      type: "status",
+      type: "tool_result",
       summary: "analyzing context",
     };
     appendRunEvent(db, event);

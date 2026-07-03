@@ -6,6 +6,7 @@ export * from "./child-reporter.js";
 export * from "./event-tailer.js";
 export * from "./runner.js";
 export * from "./modes-index.js";
+export * from "./intercom.js";
 
 export function registerSubagentActions(_host: unknown, _pi: unknown): void {
   // run/wait/message actions registered in later tasks

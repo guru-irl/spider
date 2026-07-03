@@ -51,14 +51,14 @@ function textComponent(result: any): Component {
 
 interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; status?: string; task?: string }
 
-/** One run block: `◆ name  status · #id` + `type · model` + expandable instructions. */
+/** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] {
   const status = r.status ?? "running";
   const glyph = t.fg(STOK[status] ?? "muted", SG[status] ?? "•");
   const name = t.bold(r.name ?? r.agent ?? "agent");
-  const id = t.fg("dim", "#" + String(r.id ?? "").slice(0, 8));
-  const lines = [clip(`  ${glyph} ${name}  ${t.fg(STOK[status] ?? "muted", status)} ${t.fg("dim", "·")} ${id}`, width)];
-  lines.push(clip(`    ${t.fg("dim", `${r.agent ?? "worker"} · ${shortModel(r.model)}`)}`, width));
+  const sep = t.fg("dim", "·");
+  const head = `  ${glyph} ${name} ${sep} ${t.fg("accent", r.agent ?? "worker")} ${sep} ${t.fg("muted", shortModel(r.model))} ${sep} ${t.fg(STOK[status] ?? "muted", status)}`;
+  const lines = [clip(head, width)];
   const task = (r.task ?? "").trim();
   if (task) {
     const body = expanded ? wrap(task, width - 6, 12) : [clip(task, width - 6)];
@@ -67,13 +67,12 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   return lines;
 }
 
-function renderRun(t: T, details: any, expanded: boolean, summary: string): Component {
+function renderRun(t: T, details: any, expanded: boolean): Component {
   const runs: RunLike[] = Array.isArray(details?.runs) ? details.runs : details?.run ? [details.run] : [];
   return {
     render(width: number): string[] {
+      if (runs.length === 0) return [t.fg("muted", "  (no runs)")];
       const lines: string[] = [];
-      if (summary) lines.push(clip(t.fg("dim", summary), width));
-      if (runs.length === 0) { lines.push(t.fg("muted", "  (no runs)")); return lines; }
       const multi = runs.length > 1;
       for (const r of runs) { lines.push(...runBlock(t, r, width, expanded)); if (multi) lines.push(""); }
       const anyTask = runs.some((r) => (r.task ?? "").trim());
@@ -102,14 +101,8 @@ export function renderSpiderResult(
   const details = result?.details;
 
   switch (action) {
-    case "run": {
-      const mode = Array.isArray(context?.args?.pipeline) ? "pipeline"
-        : Array.isArray(context?.args?.chain) ? "chain"
-        : Array.isArray(context?.args?.tasks) ? "parallel" : "single";
-      const n = Array.isArray(details?.runs) ? details.runs.length : details?.run ? 1 : 0;
-      const summary = mode === "single" ? "" : `${mode} · ${n} ${context?.args?.async ? "started" : "run(s)"}`;
-      return renderRun(t, details, expanded, summary);
-    }
+    case "run":
+      return renderRun(t, details, expanded);
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));
     case "search": return wrapBespoke(renderSearchResult(details as any));
@@ -120,4 +113,25 @@ export function renderSpiderResult(
     default:
       return textComponent(result);
   }
+}
+
+/** In-progress CALL title suffix. Under renderShell:"default" pi prepends the tool label
+ *  ("🕸 spider"), so this returns just `· <mode> · N started` → "🕸 spider · parallel · 3 started". */
+export function renderSpiderCall(args: any, theme: any, _context: any): Component {
+  const t = mkTheme(theme);
+  const action = String(args?.action ?? "");
+  let suffix = action || "run";
+  if (action === "run") {
+    const mode = Array.isArray(args?.pipeline) ? "pipeline"
+      : Array.isArray(args?.chain) ? "chain"
+      : Array.isArray(args?.tasks) ? "parallel" : "single";
+    const n = Array.isArray(args?.tasks) ? args.tasks.length
+      : Array.isArray(args?.chain) ? args.chain.length
+      : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
+    suffix = mode === "single" ? "run" : `${mode} · ${n} ${args?.async ? "started" : "run(s)"}`;
+  } else if (args?.sub || args?.command) {
+    suffix = `${action} · ${args.sub ?? args.command}`;
+  }
+  const line = `${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
+  return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }

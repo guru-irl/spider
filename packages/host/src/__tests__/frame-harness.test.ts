@@ -56,7 +56,7 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
     // (a) running frame contains the agent name AND the activity/summary tail
     expect(runningFrame).toContain("scout-alpha");
     expect(runningFrame).toContain("grepping repo for RunEventTailer");
-    // running glyph is the spinner, never the terminal check
+    // footer has NO status glyph anymore (status is colour-only)
     expect(runningFrame).not.toContain("✓");
 
     // --- lifecycle: terminal (done) ---
@@ -64,9 +64,9 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
     appendRunEvent(db, { runId, sessionId, ts: now + 10, type: "status", summary: "done" });
 
     const doneFrame = frame();
-    // (b) terminal frame reflects done -> ✓ (AgentStatus done->✓) and keeps the name
+    // (b) terminal frame keeps the name (agent stays during the retention window)
     expect(doneFrame).toContain("scout-alpha");
-    expect(doneFrame).toContain("✓");
+    expect(doneFrame.length).toBeGreaterThan(0);
 
     store.stop();
   });

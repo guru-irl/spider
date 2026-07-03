@@ -2,8 +2,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
-import { Spinner } from "../components/spinner";
-import { STATUS_GLYPH, statusToken } from "./types";
+import { statusToken } from "./types";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -23,29 +22,24 @@ export class AgentFooter implements Component {
   private theme: ThemeAdapter;
   private maxVisible: number;
   private now: () => number;
-  private spinner: Spinner;
   private cachedWidth?: number;
   private cachedLines: string[] = [];
 
   constructor(private store: AgentStore, theme: ThemeAdapter,
-    opts: { maxVisible?: number; now?: () => number; spinner?: Spinner } = {}) {
+    opts: { maxVisible?: number; now?: () => number } = {}) {
     this.theme = theme;
     this.maxVisible = opts.maxVisible ?? 4;
     this.now = opts.now ?? Date.now;
-    this.spinner = opts.spinner ?? new Spinner();
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
     const t = this.theme;
     const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
-    const glyph = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
     const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
     const model = shortModel(a.model);
     const sep = t.fg("dim", "·");
-    // Compact, colour-coded: spinner (status) · 🕸 · name (status) · type (accent) · model · turns · dur.
+    // Compact, colour-coded, NO glyph: name (status) · type (accent) · model · turns · dur.
     const parts = [
-      t.fg(statusToken(a.status), glyph),
-      t.fg("accent", t.glyph),
       t.fg(statusToken(a.status), t.bold(a.name)),
       sep, t.fg("accent", a.role ?? a.agent),
     ];

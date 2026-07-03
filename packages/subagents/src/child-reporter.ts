@@ -73,7 +73,9 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
   const captureModel = (evtCtx: any) => {
     if (modelSeen) return;
     try {
-      const m = typeof evtCtx?.getModel === "function" ? evtCtx.getModel() : undefined;
+      // Event handlers get an ExtensionContext whose CURRENT model is the `.model` property
+      // (getModel() lives on a different ctx shape); fall back to getModel() defensively.
+      const m = evtCtx?.model ?? (typeof evtCtx?.getModel === "function" ? evtCtx.getModel() : undefined);
       if (m?.id) { rep.onModel(String(m.id)); modelSeen = true; }
     } catch { /* model not resolvable yet */ }
   };

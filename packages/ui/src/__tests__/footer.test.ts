@@ -23,13 +23,13 @@ describe("AgentFooter", () => {
     const f = new AgentFooter(store, id, { now: () => 1000 });
     expect(f.render(40)).toEqual([]);
   });
-  it("renders one agent line with glyph, name, turns, within width", () => {
+  it("renders one agent line without any glyph, with name, turns, within width", () => {
     const src = new Src(); src.rows.set("r1", row({ name: "scribe" }));
     const store = new AgentStore(src); store.start();
     const f = new AgentFooter(store, id, { now: () => 5000 });
     const lines = f.render(60);
     expect(lines.length).toBeGreaterThanOrEqual(1);
-    expect(lines.join("\n")).toContain("🕸");
+    expect(lines.join("\n")).not.toContain("🕸"); // no spider glyph in the footer
     expect(lines.join("\n")).toContain("scribe");
     expect(lines.join("\n")).toContain("3 turns");
     expect(lines.join("\n")).not.toContain("#"); // the useless run-id hash is gone

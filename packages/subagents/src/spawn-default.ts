@@ -8,7 +8,10 @@ export const defaultSpawner: Spawner = (spec): ChildHandle => {
   return {
     pid: child.pid,
     wait() {
-      return (exit ??= new Promise((res) => child.on("exit", (code) => res({ exitCode: code ?? 0 }))));
+      return (exit ??= new Promise((res) => {
+        child.on("exit", (code) => res({ exitCode: code ?? 0 }));
+        child.on("error", () => res({ exitCode: 1 }));
+      }));
     },
     kill() { child.kill(); },
     detach() { child.unref(); },

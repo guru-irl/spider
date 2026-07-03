@@ -1,8 +1,32 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { openDbAt, paths } from "@spider/db-core";
 import { makeRunHandler } from "../actions/run.js";
+import { makeWaitHandler } from "../actions/wait.js";
+import { makeMessageHandler } from "../actions/message.js";
+import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom.js";
 import { RunStore } from "../run-store.js";
 import { teardownAll } from "../coordinators.js";
 import { freshDb } from "./helpers/testutil.js";
+
+function fakeEvents() {
+  const listeners = new Map<string, Array<(p: any) => void>>();
+  return {
+    on(evt: string, fn: (p: any) => void) {
+      const arr = listeners.get(evt) ?? [];
+      arr.push(fn);
+      listeners.set(evt, arr);
+      return () => {
+        const cur = listeners.get(evt) ?? [];
+        listeners.set(evt, cur.filter((f) => f !== fn));
+      };
+    },
+    emit(evt: string, payload: any) {
+      for (const fn of [...(listeners.get(evt) ?? [])]) fn(payload);
+    },
+  };
+}
 
 describe("run action routing", () => {
   afterEach(() => teardownAll());
@@ -75,5 +99,53 @@ describe("run action routing", () => {
     expect(disposeSpy).not.toHaveBeenCalled();
     teardownAll();
     expect(disposeSpy).toHaveBeenCalled();
+  });
+});
+
+describe("wait action handler", () => {
+  it("resolves promptly for an already-terminal run addressed by id", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const { id } = store.create({ sessionId: "w1", agent: "worker" });
+    store.start(id);
+    store.finish(id, { status: "done", result: "ok" });
+    const handler = makeWaitHandler();
+    const ctx: any = { db, sessionId: "w1" };
+    const res: any = await handler({ id }, ctx);
+    expect(res.content).toContain("1 finished");
+    expect(res.content).not.toContain("timed out");
+    expect(res.details.finished.map((r: any) => r.id)).toContain(id);
+    expect(res.details.finished[0].status).toBe("done");
+  });
+});
+
+describe("message action handler", () => {
+  function globalDb() {
+    return openDbAt(join(paths.scratch("project", process.cwd()), `msg-${randomUUID()}.db`), "global");
+  }
+
+  it("reports NOT delivered + isError when intercom delivery times out", async () => {
+    const gdb = globalDb();
+    const handler = makeMessageHandler();
+    const ctx: any = { pi: { events: fakeEvents() }, globalDb: gdb, sessionId: "from-sess" };
+    const res: any = await handler({ to: "nobody", message: "hi", timeoutMs: 20 }, ctx);
+    expect(res.content).toContain("message NOT delivered");
+    expect(res.isError).toBe(true);
+    const row = gdb.prepare(`SELECT * FROM message_mirror ORDER BY id DESC LIMIT 1`).get() as any;
+    expect(row.to_session).toBe("nobody");
+  });
+
+  it("reports delivered when the broker acknowledges delivery", async () => {
+    const gdb = globalDb();
+    const events = fakeEvents();
+    // Auto-acknowledge: when the request is emitted, echo back a successful delivery.
+    events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (p: any) => {
+      events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, { requestId: p.requestId, delivered: true });
+    });
+    const handler = makeMessageHandler();
+    const ctx: any = { pi: { events }, globalDb: gdb, sessionId: "from-sess" };
+    const res: any = await handler({ to: "peer", message: "hi", timeoutMs: 1000 }, ctx);
+    expect(res.content).toContain("message delivered to peer");
+    expect(res.isError).toBe(false);
   });
 });

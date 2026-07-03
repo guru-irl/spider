@@ -49,7 +49,7 @@ function textComponent(result: any): Component {
   };
 }
 
-interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string }
+interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
 
 /** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] {
@@ -65,6 +65,14 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
     const body = expanded ? wrap(task, width - 6, 12) : [clip(task, width - 6)];
     for (let i = 0; i < body.length; i++) lines.push(`    ${t.fg("muted", (i === 0 ? "↳ " : "  ") + body[i])}`);
   }
+  // Subagent output: collapsed to the first 2 lines by default, full on ctrl+o (expanded).
+  const out = (r.result ?? "").trim();
+  if (out) {
+    const outLines = out.split("\n");
+    const shown = expanded ? outLines : outLines.slice(0, 2);
+    for (let i = 0; i < shown.length; i++) lines.push(`    ${t.fg("dim", (i === 0 ? "⤴ " : "  ") + clip(shown[i], width - 6))}`);
+    if (!expanded && outLines.length > 2) lines.push(`    ${t.fg("dim", `  … (+${outLines.length - 2} more lines)`)}`);
+  }
   return lines;
 }
 
@@ -77,7 +85,8 @@ function renderRun(t: T, details: any, expanded: boolean): Component {
       const multi = runs.length > 1;
       for (const r of runs) { lines.push(...runBlock(t, r, width, expanded)); if (multi) lines.push(""); }
       const anyTask = runs.some((r) => (r.task ?? "").trim());
-      if (!expanded && anyTask) lines.push(t.fg("dim", "  ctrl+o to expand instructions"));
+      const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
+      if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", `  ctrl+o to expand${anyOut ? " output" : " instructions"}`));
       return ["", ...lines.map((l) => (l === "" ? l : " " + l))];
     },
     invalidate() {},

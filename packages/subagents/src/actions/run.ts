@@ -18,9 +18,16 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
     try {
       const output = latestRunOutput(ctx.db, run.id, result);
       const name = run?.name ?? run?.agent ?? "subagent";
-      const headline = `🕸 subagent "${name}" (${run?.agent ?? "worker"}) finished: ${status}`;
-      ctx.ui?.notify?.(headline, status === "failed" ? "error" : "info");
-      const content = `${headline}\n\n${output || "(no output)"}`;      
+      const agent = run?.agent ?? "worker";
+      // UI standard: italic verb (`subagent`) + italic status, mirroring the tool titles.
+      const headline = `🕸 *subagent* "${name}" · ${agent} · *${status}*`;
+      ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
+      // Truncate the output; the full transcript lives in the agent detail (ctrl+up).
+      const lines = (output || "").split("\n");
+      const CAP = 8;
+      const shown = lines.slice(0, CAP).join("\n");
+      const more = lines.length > CAP ? `\n… (+${lines.length - CAP} more lines — ctrl+up to open the agent)` : "";
+      const content = output ? `${headline}\n\n${shown}${more}` : `${headline}\n\n(no output)`;
       ctx.pi?.sendMessage?.(
         {
           customType: "spider.subagent_done",

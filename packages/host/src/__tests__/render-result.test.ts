@@ -130,3 +130,17 @@ describe("renderSpiderCall verb italics (UI standard)", () => {
     expect(call({ action: "control", command: "memory" })).toContain("«control»");
   });
 });
+
+describe("run block output truncation (ctrl+o)", () => {
+  it("collapses subagent output to 2 lines with an expand hint, shows all when expanded", () => {
+    const details = { run: { name: "a", agent: "worker", status: "done", result: "line1\nline2\nline3\nline4" } };
+    const collapsed = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(200).join("\n");
+    expect(collapsed).toContain("line1");
+    expect(collapsed).toContain("line2");
+    expect(collapsed).not.toContain("line4");
+    expect(collapsed).toContain("more lines");
+    expect(collapsed).toContain("ctrl+o to expand");
+    const expanded = renderSpiderResult({ details }, { expanded: true }, marker, { args: { action: "run" } }).render(200).join("\n");
+    expect(expanded).toContain("line4");
+  });
+});

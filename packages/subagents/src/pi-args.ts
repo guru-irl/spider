@@ -30,6 +30,10 @@ export const SUBAGENT_INTERCOM_SESSION_NAME_ENV = "PI_SUBAGENT_INTERCOM_SESSION_
 
 /** Path to the spider run database, threaded to every child process. */
 export const SPIDER_DB_PATH_ENV = "PI_SPIDER_DB_PATH";
+// The owning spider session id. Passed to the child so its run_events are tagged with
+// the PARENT session (headless children can't resolve getSessionName() and would
+// otherwise fall back to the runId, which the UI's per-session bus filter drops).
+export const SPIDER_SESSION_ID_ENV = "PI_SPIDER_SESSION_ID";
 
 interface BuildPiArgsInput {
 	baseArgs: string[];
@@ -287,6 +291,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	}
 	env[SUBAGENT_CHILD_ENV] = "1";
 	env[SPIDER_DB_PATH_ENV] = input.dbPath;
+	env[SPIDER_SESSION_ID_ENV] = input.sessionId;
 	env[SUBAGENT_RUN_ID_ENV] = input.runId;
 	env[SUBAGENT_CHILD_AGENT_ENV] = input.agent;
 	env[SUBAGENT_CHILD_INDEX_ENV] = String(input.childIndex);

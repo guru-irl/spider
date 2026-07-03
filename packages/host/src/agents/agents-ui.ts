@@ -85,14 +85,17 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   // Shared drilled-detail state: the footer widget renders it ABOVE the rows; the overlay owns
   // the AgentDetail instance and forwards input to it. One instance, two readers, one TUI.
   let detail: AgentDetail | undefined;
-  let footerTui: { requestRender?: () => void } | undefined;
-  const repaint = () => footerTui?.requestRender?.();
+  let footerTui: { requestRender?: (force?: boolean) => void } | undefined;
+  // force:true so that when the drilled detail COLLAPSES, pi clears the freed rows (clearOnShrink)
+  // and the chat flows back down with the editor staying pinned at the bottom — otherwise the
+  // shrunk widget leaves the chat bar stranded in the middle of the screen.
+  const repaint = () => footerTui?.requestRender?.(true);
 
   const syncWidget = () => {
     const active = store.snapshot().length > 0;
     if (active && !mounted) {
       ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
-        footerTui = tui as { requestRender?: () => void };
+        footerTui = tui as { requestRender?: (force?: boolean) => void };
         const footer = new AgentFooter(store, piTheme(theme as never));
         const stop = selfTick(tui, store);
         return {
@@ -122,7 +125,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     await ctx.ui.custom<void>(
       (tui, theme, _kb, done) => {
         const th = piTheme(theme as never);
-        footerTui ??= tui as { requestRender?: () => void };
+        footerTui ??= tui as { requestRender?: (force?: boolean) => void };
         const ctrl: SelectorController = {
           moveSelect: (d) => store.moveSelect(d),
           drill: () => {

@@ -59,7 +59,7 @@ export class AgentDetail implements Component {
       head, meta, idLine, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
       t.fg("dim", `${t.glyph} conversation`), ...convoTail,
-      "", fit(t.fg("dim", "esc back to grid")),
+      "", fit(t.fg("dim", "esc back to list")),
     ];
     return this.frame(title, body, width);
   }

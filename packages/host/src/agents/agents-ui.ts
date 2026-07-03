@@ -108,11 +108,11 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   if (!registered) {
     registered = true;
     pi.registerShortcut("ctrl+shift+g", {
-      description: "Toggle spider agents grid",
+      description: "Toggle the spider agents selector",
       handler: () => { void current?.openOverlay(); },
     });
     pi.registerCommand?.("agents", {
-      description: "Open the spider agents grid",
+      description: "Open the spider agents selector",
       handler: () => { void current?.openOverlay(); },
     });
   }

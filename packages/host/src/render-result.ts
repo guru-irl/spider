@@ -118,11 +118,13 @@ export function renderSpiderResult(
 
 /** In-progress CALL title. renderCall REPLACES the title (pi does NOT prepend the tool
  *  label), so this renders the FULL header using the SAME 'toolTitle' colour pi uses for its
- *  own tool titles (glyph + all text); the mode word (parallel/chain/…) is italicised. */
+ *  own tool titles (glyph + all text). UI STANDARD: the action VERB (run/parallel/remember/
+ *  recall/search/exec/…) is always italicised; separators, counts, and sub-commands are not. */
 export function renderSpiderCall(args: any, theme: any, _context: any): Component {
   const t = mkTheme(theme);
   const action = String(args?.action ?? "");
-  let suffix = t.fg("toolTitle", action || "run");
+  const verb = (v: string) => t.italic(t.fg("toolTitle", v)); // universal: verbs are italicised
+  let suffix = verb(action || "run");
   if (action === "run") {
     const mode = Array.isArray(args?.pipeline) ? "pipeline"
       : Array.isArray(args?.chain) ? "chain"
@@ -131,10 +133,10 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
       : Array.isArray(args?.chain) ? args.chain.length
       : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
     suffix = mode === "single"
-      ? t.fg("toolTitle", "run")
-      : `${t.italic(t.fg("toolTitle", mode))} ${t.fg("toolTitle", `· ${n} ${args?.async ? "started" : "run(s)"}`)}`;
+      ? verb("run")
+      : `${verb(mode)} ${t.fg("toolTitle", `· ${n} ${args?.async ? "started" : "run(s)"}`)}`;
   } else if (args?.sub || args?.command) {
-    suffix = t.fg("toolTitle", `${action} · ${args.sub ?? args.command}`);
+    suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
   }
   const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };

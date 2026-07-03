@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderSpiderResult } from "../render-result";
+import { renderSpiderResult, renderSpiderCall } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
 // Minimal fakes for pi's renderResult call shape. We only exercise the fields the
@@ -117,3 +117,16 @@ describe("run block colors (#36)", () => {
     const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(200).join("\n");
     expect(out).toContain("high");
   });
+
+describe("renderSpiderCall verb italics (UI standard)", () => {
+  const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»` };
+  const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
+  it("italicises the action verb for every command", () => {
+    expect(call({ action: "remember" })).toContain("«remember»");
+    expect(call({ action: "recall" })).toContain("«recall»");
+    expect(call({ action: "search" })).toContain("«search»");
+    expect(call({ action: "run" })).toContain("«run»");           // single
+    expect(call({ action: "run", tasks: [{}, {}], async: true })).toContain("«parallel»");
+    expect(call({ action: "control", command: "memory" })).toContain("«control»");
+  });
+});

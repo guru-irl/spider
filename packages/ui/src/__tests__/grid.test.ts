@@ -42,11 +42,4 @@ describe("Grid", () => {
     expect(g.handleInput("\u001b")).toBe(true); // actual escape key is \u001b
     expect(close).toHaveBeenCalled();
   });
-
-  it("Ctrl+O toggles instructions expansion (hint reflects state)", () => {
-    const g = new Grid(makeStore(2), actions, id, { now: () => 1 });
-    expect(g.render(80).join("\n")).toContain("ctrl+o instructions");
-    expect(g.handleInput("\x0f")).toBe(true); // Ctrl+O control code
-    expect(g.render(80).join("\n")).toContain("ctrl+o collapse");
-  });
 });

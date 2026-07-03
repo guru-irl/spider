@@ -7,13 +7,16 @@ import type { AgentActions, AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
 const CELL_HEIGHT = 6;
-const CELL_HEIGHT_EXPANDED = 10;
+
+function padTo(s: string, w: number): string {
+  const fill = w - visibleWidth(s);
+  return fill > 0 ? s + " ".repeat(fill) : truncateToWidth(s, w, "");
+}
 
 export class Grid implements Component {
   private focus = 0;
   private page = 0;
   private pinned = new Set<string>();
-  private expanded = false;
   private spinner: Spinner;
   private now: () => number;
   private drill?: (runId: string) => void;
@@ -50,8 +53,6 @@ export class Grid implements Component {
     if (matchesKey(data, Key.up)) { this.focus = Math.max(0, this.focus - l.cols); return true; }
     if (data === "]" || matchesKey(data, "pageDown")) { this.page = Math.min(l.pages - 1, this.page + 1); this.focus = 0; return true; }
     if (data === "[" || matchesKey(data, "pageUp")) { this.page = Math.max(0, this.page - 1); this.focus = 0; return true; }
-    // Ctrl+O — expand/collapse each cell's instructions (task). \x0f = Ctrl+O control code.
-    if (data === "\x0f") { this.expanded = !this.expanded; return true; }
     const id = this.focusedRunId();
     if (!id) return false;
     if (data === "m") { void this.actions.message(id); return true; }
@@ -61,47 +62,53 @@ export class Grid implements Component {
     return false;
   }
 
+  /** Draw a rounded box around `body`, with an accented title in the top rule. */
+  private frame(title: string, body: string[], width: number): string[] {
+    const t = this.theme;
+    const inner = Math.max(4, width - 2);
+    const bar = t.fg("muted", "│");
+    const dashes = Math.max(0, inner - visibleWidth(title) - 3); // "─ " + title + " "
+    const top = t.fg("muted", "╭─ ") + t.fg("accent", title) + t.fg("muted", " " + "─".repeat(dashes) + "╮");
+    const bottom = t.fg("muted", "╰" + "─".repeat(inner) + "╯");
+    return [top, ...body.map((l) => bar + padTo(l, inner) + bar), bottom];
+  }
+
   render(width: number): string[] {
     const all = this.store.snapshot();
     const l = layoutGrid(all.length, this.page);
     const cells = this.pageAgents();
+    const title = `${this.theme.glyph} agents · ${all.length}${l.pages > 1 ? ` · pg ${l.page + 1}/${l.pages}` : ""}`;
     if (cells.length === 0) {
-      return [truncateToWidth(this.theme.fg("muted", `${this.theme.glyph} no active agents`), width, "…")];
+      return this.frame(title, [this.theme.fg("muted", "  no active agents")], width);
     }
+    const inner = Math.max(4, width - 2);
     const cols = Math.max(1, l.cols);
-    const cellH = this.expanded ? CELL_HEIGHT_EXPANDED : CELL_HEIGHT;
-    const cellW = Math.max(3, Math.floor((width - (cols - 1)) / cols));
-    const lines: string[] = [];
+    const cellW = Math.max(3, Math.floor((inner - (cols - 1)) / cols));
+    const body: string[] = [];
     for (let r = 0; r < l.rows; r++) {
       const rowCells = cells.slice(r * cols, r * cols + cols);
       if (rowCells.length === 0) break;
       const rendered = rowCells.map((a, ci) =>
         renderGridCell(this.theme, {
-          agent: a, width: cellW, height: cellH,
+          agent: a, width: cellW, height: CELL_HEIGHT,
           focused: r * cols + ci === this.focus, pinned: this.pinned.has(a.runId),
-          now: this.now(), spinner: this.spinner, expanded: this.expanded,
+          now: this.now(), spinner: this.spinner,
         }),
       );
-      for (let li = 0; li < cellH; li++) {
-        const joined = rendered.map((c) => padTo(c[li] ?? "", cellW)).join(" ");
-        lines.push(truncateToWidth(joined, width, ""));
+      for (let li = 0; li < CELL_HEIGHT; li++) {
+        body.push(truncateToWidth(rendered.map((c) => padTo(c[li] ?? "", cellW)).join(" "), inner, ""));
       }
-      lines.push("");
+      if (r < l.rows - 1) body.push("");
     }
     // Pipeline handoff edges (pipeline-aware).
     const edges = this.store.edges();
     if (edges.length) {
       const e = edges[edges.length - 1];
-      lines.push(truncateToWidth(this.theme.fg("accent", `${this.theme.glyph} ${e.from} →${e.phase ? e.phase : ""}→ ${e.to}`), width, "…"));
+      body.push(truncateToWidth(this.theme.fg("accent", `${this.theme.glyph} ${e.from} →${e.phase ? e.phase : ""}→ ${e.to}`), inner, "…"));
     }
-    const hint = `↑↓←→ focus · enter drill · ${this.expanded ? "ctrl+o collapse" : "ctrl+o instructions"} · m msg · i interrupt · r resume · f pin${l.pages > 1 ? " · [ ] page" : ""} · esc close`;
-    lines.push(truncateToWidth(this.theme.fg("dim", hint), width, "…"));
-    return lines;
-
-    function padTo(s: string, w: number): string {
-      const fill = w - visibleWidth(s);
-      return fill > 0 ? s + " ".repeat(fill) : s;
-    }
+    const hint = `↑↓←→ focus · enter drill · m msg · i interrupt · r resume · f pin${l.pages > 1 ? " · [ ] page" : ""} · esc close`;
+    body.push(truncateToWidth(this.theme.fg("dim", hint), inner, "…"));
+    return this.frame(title, body, width);
   }
 
   invalidate(): void { /* stateless render; nothing cached */ }

@@ -6,6 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
+import { pink } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -115,8 +116,8 @@ export function renderSpiderResult(
   }
 }
 
-/** In-progress CALL title suffix. Under renderShell:"default" pi prepends the tool label
- *  ("🕸 spider"), so this returns just `· <mode> · N started` → "🕸 spider · parallel · 3 started". */
+/** In-progress CALL title. renderCall REPLACES the title (pi does NOT prepend the tool
+ *  label), so this renders the FULL header: `🕸  spider · parallel · 3 started`. */
 export function renderSpiderCall(args: any, theme: any, _context: any): Component {
   const t = mkTheme(theme);
   const action = String(args?.action ?? "");
@@ -132,6 +133,6 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   } else if (args?.sub || args?.command) {
     suffix = `${action} · ${args.sub ?? args.command}`;
   }
-  const line = `${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
+  const line = `${pink("🕸  spider")} ${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }

@@ -91,6 +91,7 @@ export { AgentFooter, formatDuration } from "./agents/footer";
 export { Grid } from "./agents/grid";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
+export { pink } from "./agents/ansi";
 export { Spinner, BRAILLE_FRAMES } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
 export { renderDiffView } from "./components/diff-view";

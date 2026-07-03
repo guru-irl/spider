@@ -3,6 +3,7 @@ import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
 import { statusToken } from "./types";
+import { pink } from "./ansi";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -38,7 +39,7 @@ export class AgentFooter implements Component {
     const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
     const model = shortModel(a.model);
     const sep = t.fg("dim", "·");
-    // Compact, colour-coded, NO glyph: name (status) · type (accent) · model · turns · dur.
+    // Compact, colour-coded: 🕸  name (status) · type (accent) · model · turns · dur · activity.
     const parts = [
       t.fg(statusToken(a.status), t.bold(a.name)),
       sep, t.fg("accent", a.role ?? a.agent),
@@ -46,7 +47,7 @@ export class AgentFooter implements Component {
     if (model !== "—") parts.push(sep, t.fg("muted", model));
     parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
     if (a.activity) parts.push(sep, t.fg("dim", a.activity));
-    return truncateToWidth(parts.join(" "), width, "…");
+    return truncateToWidth(`${pink(t.glyph)}  ${parts.join(" ")}`, width, "…");
   }
 
   private build(width: number): string[] {

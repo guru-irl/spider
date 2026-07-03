@@ -21,6 +21,7 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     onShutdown(status: "done" | "error" | "interrupted", result?: string) {
       const runStatus = status === "done" ? "done" : status === "error" ? "failed" : "cancelled";
       store.finish(ctx.runId, { status: runStatus, result });
+      emitStatus(db, { ...ctx, status: runStatus, summary: result });
     },
   };
 }

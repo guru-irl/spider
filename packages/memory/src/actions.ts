@@ -44,7 +44,8 @@ export function makeRemember(deps: MemoryDeps) {
       { category: args.category, content: args.content, link: args.link ?? null, source },
       {},
     );
-    return { display: renderRememberResult(r), details: r };
+    const details = { ...r, content: args.content, category: args.category, scope, source };
+    return { display: renderRememberResult(details), details };
   };
 }
 

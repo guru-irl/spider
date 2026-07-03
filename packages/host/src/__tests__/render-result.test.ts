@@ -21,13 +21,14 @@ function assertComponent(c: any) {
 }
 
 describe("renderSpiderResult dispatcher", () => {
-  it("remember → remember panel (title + status)", () => {
-    const details: StageResult = { status: "staged", uuid: "abc-123" };
+  it("remember → shows saved content + status, no duplicate glyph/rule header", () => {
+    const details = { status: "active", uuid: "abc-123", content: "remember to hydrate", category: "reminder" } as StageResult;
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "remember" }));
     assertComponent(c);
     const text = c.render(80).join("\n");
-    expect(text).toContain("remember");
-    expect(text).toContain("staged");
+    expect(text).toContain("remember to hydrate");
+    expect(text).toContain("active");
+    expect(text).not.toMatch(/─{3,}/);
   });
 
   it("recall → recall panel with count", () => {

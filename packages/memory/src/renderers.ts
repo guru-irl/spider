@@ -4,11 +4,23 @@ import type { StageResult } from "./staging";
 
 const GLYPH = "🕸";
 
-export function renderRememberResult(r: StageResult): Component {
-  const body: string[] = [`status: ${r.status}`];
-  if (r.uuid) body.push(`uuid: ${r.uuid}`);
-  if (r.reason) body.push(`reason: ${r.reason}`);
-  return Panel({ title: `${GLYPH} remember`, body });
+export function renderRememberResult(
+  r: StageResult & { content?: string; category?: string; scope?: string; source?: string },
+): Component {
+  const body: string[] = [];
+  if (r.content) {
+    const preview = r.content.trim().replace(/\s+/g, " ");
+    body.push(preview.length > 160 ? preview.slice(0, 159) + "…" : preview);
+  }
+  const meta: string[] = [`status: ${r.status}`];
+  if (r.category) meta.push(`category: ${r.category}`);
+  if (r.scope) meta.push(`scope: ${r.scope}`);
+  if (r.uuid) meta.push(`uuid: ${r.uuid.slice(0, 8)}`);
+  if (r.reason) meta.push(`reason: ${r.reason}`);
+  body.push(meta.join("  ·  "));
+  // No Panel title — the tool call already renders "🕸 spider · remember"; a second
+  // glyph+rule header here was redundant noise.
+  return Panel({ body });
 }
 
 export function renderRecallResult(recs: MemoryRecord[]): Component {

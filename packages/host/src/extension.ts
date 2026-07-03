@@ -117,14 +117,16 @@ const SPIDER_PARAMETERS = {
     auto: { type: "boolean", description: "Mark a remembered item as auto-captured." },
     // run / subagents
     agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
+    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task)." },
     task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
     tasks: {
       type: "array",
-      description: "PARALLEL-mode: subagents to run concurrently.",
+      description: "PARALLEL-mode: subagents to run concurrently. Give each a short descriptive `name`.",
       items: {
         type: "object",
         properties: {
           agent: { type: "string" },
+          name: { type: "string", description: "Short display name surfaced in the UI." },
           task: { type: "string" },
           count: { type: "integer", minimum: 1 },
           model: { type: "string" },
@@ -140,6 +142,7 @@ const SPIDER_PARAMETERS = {
         type: "object",
         properties: {
           agent: { type: "string" },
+          name: { type: "string", description: "Short display name surfaced in the UI." },
           task: { type: "string" },
           model: { type: "string" },
           context: { type: "string", enum: ["fresh", "fork"] },

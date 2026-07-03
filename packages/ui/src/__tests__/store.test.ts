@@ -45,6 +45,10 @@ describe("projectRow", () => {
     expect(projectRow(row({ name: null, role: "reviewer" })).name).toBe("reviewer");
     expect(projectRow(row({ name: null, role: null, agent: "worker" })).name).toBe("worker");
   });
+  it("maps the task/instructions onto the snapshot", () => {
+    expect(projectRow(row({ task: "summarize packages/ui" })).task).toBe("summarize packages/ui");
+    expect(projectRow(row({ task: null })).task).toBeUndefined();
+  });
 });
 
 describe("AgentStore", () => {

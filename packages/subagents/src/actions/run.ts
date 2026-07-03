@@ -52,7 +52,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       const rows = await runParallel(runner, args.tasks, { concurrency: args.concurrency, context: args.context ?? "fresh" });
       return { content: `parallel complete: ${rows.length} runs`, details: { runs: rows } };
     }
-    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, model: args.model, skill: args.skill, context: args.context ?? "fresh", async: args.async });
+    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: args.model, skill: args.skill, context: args.context ?? "fresh", async: args.async });
     return { content: `run ${row?.id} ${row?.status}`, details: { run: row } };
   };
 }

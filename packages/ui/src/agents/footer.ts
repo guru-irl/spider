@@ -44,6 +44,7 @@ export class AgentFooter implements Component {
     const parts = [
       this.glyphFor(a),
       `${t.glyph} ${t.bold(a.name)}`,
+      t.fg("dim", "#" + a.runId.slice(0, 8)),
       t.fg("muted", formatDuration(elapsedMs)),
     ];
     if (a.activity) parts.push(t.fg("muted", "· " + a.activity));

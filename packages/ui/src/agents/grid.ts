@@ -6,12 +6,14 @@ import { renderGridCell } from "./grid-cell";
 import type { AgentActions, AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
-const CELL_HEIGHT = 5;
+const CELL_HEIGHT = 6;
+const CELL_HEIGHT_EXPANDED = 10;
 
 export class Grid implements Component {
   private focus = 0;
   private page = 0;
   private pinned = new Set<string>();
+  private expanded = false;
   private spinner: Spinner;
   private now: () => number;
   private drill?: (runId: string) => void;
@@ -48,6 +50,8 @@ export class Grid implements Component {
     if (matchesKey(data, Key.up)) { this.focus = Math.max(0, this.focus - l.cols); return true; }
     if (data === "]" || matchesKey(data, "pageDown")) { this.page = Math.min(l.pages - 1, this.page + 1); this.focus = 0; return true; }
     if (data === "[" || matchesKey(data, "pageUp")) { this.page = Math.max(0, this.page - 1); this.focus = 0; return true; }
+    // Ctrl+O — expand/collapse each cell's instructions (task). \x0f = Ctrl+O control code.
+    if (data === "\x0f") { this.expanded = !this.expanded; return true; }
     const id = this.focusedRunId();
     if (!id) return false;
     if (data === "m") { void this.actions.message(id); return true; }
@@ -65,6 +69,7 @@ export class Grid implements Component {
       return [truncateToWidth(this.theme.fg("muted", `${this.theme.glyph} no active agents`), width, "…")];
     }
     const cols = Math.max(1, l.cols);
+    const cellH = this.expanded ? CELL_HEIGHT_EXPANDED : CELL_HEIGHT;
     const cellW = Math.max(3, Math.floor((width - (cols - 1)) / cols));
     const lines: string[] = [];
     for (let r = 0; r < l.rows; r++) {
@@ -72,12 +77,12 @@ export class Grid implements Component {
       if (rowCells.length === 0) break;
       const rendered = rowCells.map((a, ci) =>
         renderGridCell(this.theme, {
-          agent: a, width: cellW, height: CELL_HEIGHT,
+          agent: a, width: cellW, height: cellH,
           focused: r * cols + ci === this.focus, pinned: this.pinned.has(a.runId),
-          now: this.now(), spinner: this.spinner,
+          now: this.now(), spinner: this.spinner, expanded: this.expanded,
         }),
       );
-      for (let li = 0; li < CELL_HEIGHT; li++) {
+      for (let li = 0; li < cellH; li++) {
         const joined = rendered.map((c) => padTo(c[li] ?? "", cellW)).join(" ");
         lines.push(truncateToWidth(joined, width, ""));
       }
@@ -89,7 +94,7 @@ export class Grid implements Component {
       const e = edges[edges.length - 1];
       lines.push(truncateToWidth(this.theme.fg("accent", `${this.theme.glyph} ${e.from} →${e.phase ? e.phase : ""}→ ${e.to}`), width, "…"));
     }
-    const hint = `↑↓←→ focus · enter drill · m msg · i interrupt · r resume · f pin${l.pages > 1 ? " · [ ] page" : ""} · esc close`;
+    const hint = `↑↓←→ focus · enter drill · ${this.expanded ? "ctrl+o collapse" : "ctrl+o instructions"} · m msg · i interrupt · r resume · f pin${l.pages > 1 ? " · [ ] page" : ""} · esc close`;
     lines.push(truncateToWidth(this.theme.fg("dim", hint), width, "…"));
     return lines;
 

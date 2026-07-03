@@ -16,6 +16,7 @@ export type Spawner = (spec: ChildSpawnSpec) => ChildHandle;
 export interface RunOpts {
   agent: string;
   role?: string;
+  name?: string;
   task: string;
   model?: string;
   skill?: string;
@@ -42,6 +43,7 @@ export class Runner {
       parentRunId: opts.parentRunId,
       agent: opts.agent,
       role: opts.role,
+      name: opts.name,
       phase: opts.phase,
       model: opts.model,
       task: opts.task,

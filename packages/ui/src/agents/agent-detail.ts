@@ -2,6 +2,7 @@ import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
 import { renderTable } from "../components/table";
 import { formatDuration } from "./footer";
+import { wrapText } from "./grid-cell";
 import { STATUS_GLYPH, statusToken } from "./types";
 import type { ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
@@ -27,6 +28,11 @@ export class AgentDetail implements Component {
     const rule = truncateToWidth(
       `${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.glyph} ${t.bold(a.name)} ` +
         t.fg("muted", `${a.role ?? a.status}`), width, "…");
+    // grey run-id subheading under the name
+    const idLine = truncateToWidth(t.fg("dim", `#${a.runId}`), width, "…");
+    const instructions = (a.task ?? "").trim()
+      ? wrapText(a.task!.trim(), Math.max(1, width - 2), 8).map((l) => "  " + t.fg("muted", l))
+      : ["  " + t.fg("dim", "(no instructions)")];
     const table = renderTable(t, {
       columns: [{ header: "field" }, { header: "value" }],
       rows: [
@@ -40,7 +46,7 @@ export class AgentDetail implements Component {
       width,
     });
     const activity = a.recentActivity.map((s) => truncateToWidth("  " + t.fg("muted", s), width, "…"));
-    const lines = [rule, "", ...table, "", t.fg("dim", `${t.glyph} recent activity`), ...activity];
+    const lines = [rule, idLine, "", t.fg("dim", `${t.glyph} instructions`), ...instructions, "", ...table, "", t.fg("dim", `${t.glyph} recent activity`), ...activity];
     lines.push("", truncateToWidth(t.fg("dim", "esc back to grid"), width, "…"));
     return lines;
   }

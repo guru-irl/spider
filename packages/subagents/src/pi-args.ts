@@ -14,8 +14,11 @@ type JsonSchemaObject = Record<string, unknown>;
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const TASK_ARG_LIMIT = 8000;
-const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
-const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", "fanout-child.ts");
+// The spider subagent CHILD loads the spider extension bundle itself; in child mode
+// (PI_SUBAGENT_CHILD=1) it self-attaches the run-event reporter (see subagents/index.ts).
+// When bundled, every module collapses into dist/extension.js, so import.meta.url here IS
+// the extension entry. (The upstream subagent-prompt-runtime.ts / fanout-child.ts helper
+// extensions were never ported into spider — referencing them made every child fail to start.)
 
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
@@ -134,9 +137,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		}
 	}
 
-	const runtimeExtensions = fanoutAuthorized
-		? [PROMPT_RUNTIME_EXTENSION_PATH, FANOUT_CHILD_EXTENSION_PATH]
-		: [PROMPT_RUNTIME_EXTENSION_PATH];
+	// Spider children do not load the upstream helper extensions (not ported); the child
+	// extension (the spider bundle) is supplied via input.extensions by buildChildSpawnSpec.
+	const runtimeExtensions: string[] = [];
 	if (input.extensions !== undefined) {
 		args.push("--no-extensions");
 		for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths, ...input.extensions, ...(input.subagentOnlyExtensions ?? [])])]) {
@@ -230,6 +233,9 @@ export interface BuildChildSpawnSpecInput {
 	scratchRoot: string;
 	orchestratorTarget?: string;
 	intercomSessionName?: string;
+	/** Extension the child loads (the spider bundle). Defaults to this module's own
+	 * bundled entry (dist/extension.js). Injectable for tests. */
+	childExtensionPath?: string;
 }
 
 /**
@@ -248,6 +254,9 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	}
 
 	const isFork = input.context === "fork";
+	// The child loads ONLY the spider bundle (child-mode → run-event reporter); disable
+	// pi's extension auto-discovery so nothing else is pulled in.
+	const spiderExtension = input.childExtensionPath ?? fileURLToPath(import.meta.url);
 	// --session is threaded through baseArgs (not the sessionFile input) so
 	// buildPiArgs does not hard-mkdir the session dir; buildChildSpawnSpec owns
 	// that best-effort mkdir above.
@@ -264,6 +273,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		childIndex: input.childIndex,
 		scratchRoot: input.scratchRoot,
 		dbPath: input.dbPath,
+		extensions: [spiderExtension],
 		intercomSessionName: input.intercomSessionName,
 		orchestratorIntercomTarget: input.orchestratorTarget,
 	});

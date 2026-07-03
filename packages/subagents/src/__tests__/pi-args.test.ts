@@ -52,4 +52,23 @@ describe("buildChildSpawnSpec", () => {
     expect(spec.env[SUBAGENT_CHILD_AGENT_ENV]).toBe("worker");
     expect(spec.env[SUBAGENT_CHILD_INDEX_ENV]).toBe("0");
   });
+
+  it("loads the injected spider bundle as the child extension with discovery disabled", () => {
+    const spec = buildChildSpawnSpec({ ...base, childExtensionPath: "/abs/dist/extension.js" });
+    expect(spec.argv).toContain("--no-extensions");
+    const i = spec.argv.indexOf("--extension");
+    expect(i).toBeGreaterThan(-1);
+    expect(spec.argv[i + 1]).toBe("/abs/dist/extension.js");
+  });
+
+  it("never references the unported upstream helper extensions (regression: child failed to start)", () => {
+    const spec = buildChildSpawnSpec({ ...base });
+    const joined = spec.argv.join(" ");
+    expect(joined).not.toContain("subagent-prompt-runtime.ts");
+    expect(joined).not.toContain("fanout-child.ts");
+    // and it DOES load a child extension (defaulted to this module's own bundled entry)
+    const i = spec.argv.indexOf("--extension");
+    expect(i).toBeGreaterThan(-1);
+    expect(spec.argv[i + 1]).toBeTruthy();
+  });
 });

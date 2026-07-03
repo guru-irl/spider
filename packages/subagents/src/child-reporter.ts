@@ -37,7 +37,17 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
   } catch {
     return undefined;
   }
-  const sessionId = (typeof pi?.getSessionName === "function" ? pi.getSessionName() : undefined) ?? runId;
+  // getSessionName() can THROW in headless/child (-p --mode json) mode. The old
+  // guard only checked `typeof === "function"` and called it unguarded, so the throw
+  // aborted the whole reporter (silently swallowed upstream) — no run_events were ever
+  // written for children. Wrap it and fall back to the run id.
+  let sessionId = runId;
+  try {
+    const n = typeof pi?.getSessionName === "function" ? pi.getSessionName() : undefined;
+    if (n) sessionId = n;
+  } catch {
+    // no resolvable session in child mode; runId is a fine stable key
+  }
   const rep = makeChildReporter(db, { runId, sessionId });
   const offs: Array<() => void> = [];
   const wire = (evt: string, fn: (e: any) => void) => {

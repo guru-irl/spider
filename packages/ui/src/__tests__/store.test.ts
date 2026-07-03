@@ -1,6 +1,29 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { AgentStore, projectRow } from "../agents/store.js";
 import type { RunRow, RunSource, RunEvent } from "../agents/types.js";
+import { openDb, migrate, appendRunEvent } from "@spider/db-core";
+import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
+import type { Db } from "@spider/db-core";
+
+const opened: { close(): void }[] = [];
+afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
+
+function createRunSource(db: Db, sessionId: string): RunSource {
+  return {
+    listActive: () => {
+      const stmt = db.prepare(`SELECT * FROM runs WHERE session_id = ? AND status IN ('queued','running','paused')`);
+      return stmt.all(sessionId) as RunRow[];
+    },
+    getRun: (id: string) => {
+      const stmt = db.prepare(`SELECT * FROM runs WHERE id = ?`);
+      return stmt.get(id) as RunRow | undefined;
+    },
+    subscribe: (fn: (e: RunEvent) => void) => {
+      // Simplified: no real event bus subscription for this test
+      return () => {};
+    },
+  };
+}
 
 function row(over: Partial<RunRow>): RunRow {
   return { id: "r1", session_id: "s", agent: "worker", status: "running",
@@ -68,6 +91,44 @@ describe("AgentStore", () => {
     const store = new AgentStore(src);
     store.start();
     expect(store.hasRunning()).toBe(false);
+    store.stop();
+  });
+
+  it("retains first-event activity in recentActivity", () => {
+    // This test uses a real DB to ensure events are properly folded even on first sight
+    const db = openDb(scratchDbPath("store-first-event")); opened.push(db); migrate(db, "project");
+    
+    // Insert a run
+    db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+                VALUES ('r1','s1','worker','running',0,0,?)`).run(Date.now());
+    
+    const src = createRunSource(db, "s1");
+    const store = new AgentStore(src);
+    store.start();
+    
+    // Verify the run is in the store but has no activity yet
+    expect(store.snapshot().length).toBe(1);
+    expect(store.snapshot()[0].recentActivity).toEqual([]);
+    
+    // Emit a summary-bearing event (first event for this run)
+    // Using "status" type which will push summary to recentActivity
+    const event: RunEvent = {
+      runId: "r1",
+      sessionId: "s1",
+      ts: Date.now(),
+      type: "status",
+      summary: "analyzing context",
+    };
+    appendRunEvent(db, event);
+    
+    // Manually trigger ingest (simulate what would happen via subscribe)
+    (store as any).ingest(event);
+    
+    // The first event's summary should be retained in recentActivity
+    const snap = store.snapshot()[0];
+    expect(snap.recentActivity).toContain("analyzing context");
+    expect(snap.activity).toBe("analyzing context");
+    
     store.stop();
   });
 });

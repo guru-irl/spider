@@ -73,17 +73,18 @@ export class AgentStore {
     const id = e.runId;
     if (id) {
       const existing = this.agents.get(id);
-      const merged = existing ? applyEvent(existing, e) : undefined;
       const row = this.src.getRun(id);
       if (row) {
-        const base = row ? projectRow(row) : undefined;
-        if (base) {
-          base.activity = merged?.activity ?? base.activity;
-          base.activityTool = merged?.activityTool ?? base.activityTool;
-          base.recentActivity = merged?.recentActivity ?? [];
-          this.agents.set(id, base);
-        }
-      } else if (merged) {
+        // Fold the event even on first sight (when existing is undefined)
+        const merged = applyEvent(existing ?? projectRow(row), e);
+        const base = projectRow(row);
+        base.activity = merged.activity ?? base.activity;
+        base.activityTool = merged.activityTool ?? base.activityTool;
+        base.recentActivity = merged.recentActivity;
+        this.agents.set(id, base);
+      } else if (existing) {
+        // Row deleted but we have a cached snapshot; apply event to it
+        const merged = applyEvent(existing, e);
         this.agents.set(id, merged);
       }
     }

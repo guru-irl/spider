@@ -3,6 +3,7 @@ import { RunStore } from "../run-store.js";
 import { RunEventTailer } from "../event-tailer.js";
 import { Runner, type Spawner } from "../runner.js";
 import { PipelineCoordinator } from "../pipeline.js";
+import { getCoordinators, type SessionCoordinators } from "../coordinators.js";
 import { runChain } from "../chain.js";
 import { runParallel } from "../parallel.js";
 import { runSingle } from "../single.js";
@@ -13,14 +14,21 @@ interface RunDeps {
   makeRunner?: (db: any, sessionId: string, cwd: string, deps: any) => any;
   makePipeline?: (deps: any) => any;
   spawner?: Spawner;
+  getCoordinators?: (ctx: any) => SessionCoordinators;
 }
 
 /** The `run` action handler. Routes by args shape: pipeline > chain > tasks > single. */
 export function makeRunHandler(overrides: RunDeps = {}) {
   return async function runHandler(args: any, ctx: any) {
     const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db);
-    const tailer = new RunEventTailer(ctx.db);
-    tailer.start();
+    const coords =
+      overrides.getCoordinators?.(ctx) ??
+      getCoordinators(ctx.sessionId, () => {
+        const t = new RunEventTailer(ctx.db);
+        t.start();
+        return { tailer: t, pipelines: [] };
+      });
+    const tailer = coords.tailer;
     const spawn = overrides.spawner ?? defaultSpawner;
     const scratchRoot = paths.scratch("project", ctx.cwd);
     const dbPath = ctx.project?.dbPath ?? "";
@@ -32,6 +40,7 @@ export function makeRunHandler(overrides: RunDeps = {}) {
       const coord = overrides.makePipeline
         ? overrides.makePipeline({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId })
         : new PipelineCoordinator({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId });
+      coords.pipelines.push(coord);
       const { pipelineId, firstRunId } = coord.start({ pipeline: args.pipeline, handoff: args.handoff ?? "intercom", async: true });
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: { pipelineId, firstRunId } };
     }

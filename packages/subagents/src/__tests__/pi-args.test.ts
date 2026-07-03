@@ -72,3 +72,19 @@ describe("buildChildSpawnSpec", () => {
     expect(spec.argv[i + 1]).toBeTruthy();
   });
 });
+
+import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
+describe("thinking suffix parsing", () => {
+  it("thinkingFromModel extracts a whitelisted level, else undefined", () => {
+    expect(thinkingFromModel("github-copilot/claude-opus-4.8:high")).toBe("high");
+    expect(thinkingFromModel("prov/m:low")).toBe("low");
+    expect(thinkingFromModel("github-copilot/claude-opus-4.8")).toBeUndefined();
+    expect(thinkingFromModel("prov/m:notalevel")).toBeUndefined();
+    expect(thinkingFromModel(undefined)).toBeUndefined();
+  });
+  it("stripThinkingSuffix removes only a whitelisted level suffix", () => {
+    expect(stripThinkingSuffix("github-copilot/claude-opus-4.8:high")).toBe("github-copilot/claude-opus-4.8");
+    expect(stripThinkingSuffix("prov/m:notalevel")).toBe("prov/m:notalevel");
+    expect(stripThinkingSuffix("prov/m")).toBe("prov/m");
+  });
+});

@@ -7,7 +7,7 @@ function interpolate(tmpl: string, vars: { task: string; previous: string }): st
 
 export async function runChain(
   runner: Runner,
-  steps: Array<{ agent?: string; task?: string; name?: string; model?: string; context?: "fresh" | "fork" }>,
+  steps: Array<{ agent?: string; task?: string; name?: string; model?: string; thinking?: string; context?: "fresh" | "fork" }>,
   base: { task: string; context: "fresh" | "fork" }
 ): Promise<RunRow[]> {
   const out: RunRow[] = [];
@@ -21,6 +21,7 @@ export async function runChain(
       task,
       name: s.name,
       model: s.model,
+      thinking: s.thinking,
       context: s.context ?? base.context,
       phase: `step-${i + 1}`,
     });

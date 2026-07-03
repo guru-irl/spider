@@ -1,6 +1,7 @@
 import { openDbAt, type Db } from "@spider/db-core";
 import { RunStore } from "./run-store";
 import { emitIntent, emitToolResult, emitStatus, emitMessage } from "./run-events";
+import { thinkingFromModel, stripThinkingSuffix } from "./pi-args";
 
 export function isSubagentChild(): boolean {
   return process.env.PI_SUBAGENT_CHILD === "1";
@@ -57,7 +58,10 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     /** Record the child's actual model once (subagents spawned without an explicit
      *  model would otherwise show '—' in the UI). */
     onModel(model: string): void {
-      store.updateProgress(ctx.runId, { model });
+      // The reported id may carry a thinking suffix (e.g. "prov/opus:high"); keep the model
+      // column clean and record the child's real thinking level when present.
+      const th = thinkingFromModel(model);
+      store.updateProgress(ctx.runId, { model: stripThinkingSuffix(model), ...(th ? { thinking: th } : {}) });
     },
     onShutdown(status: "done" | "error" | "interrupted", result?: string): void {
       const runStatus = status === "done" ? "done" : status === "error" ? "failed" : "cancelled";

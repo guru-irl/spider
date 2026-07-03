@@ -87,6 +87,23 @@ export function applyThinkingSuffix(model: string | undefined, thinking: string 
 	return `${model}:${thinking}`;
 }
 
+/** Extract a thinking-level suffix from a model id (e.g. "prov/model:high" → "high"), or undefined.
+ *  Only recognises whitelisted levels so a stray colon in a base id is never mistaken for one. */
+export function thinkingFromModel(model: string | undefined): string | undefined {
+	if (!model) return undefined;
+	const colonIdx = model.lastIndexOf(":");
+	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model.substring(colonIdx + 1);
+	return undefined;
+}
+
+/** Return the base model id with any thinking-level suffix removed. */
+export function stripThinkingSuffix(model: string | undefined): string | undefined {
+	if (!model) return model;
+	const colonIdx = model.lastIndexOf(":");
+	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model.slice(0, colonIdx);
+	return model;
+}
+
 function mkdtempInScratch(scratchRoot: string | undefined): string {
 	if (!scratchRoot) {
 		throw new Error("buildPiArgs requires scratchRoot to spill oversized task/prompt args (the system temp dir is not permitted).");

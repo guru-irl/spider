@@ -45,6 +45,28 @@ it("does not register a synchronous 'wait' action (subagents are async-only)", (
 
 describe("run action routing", () => {
   afterEach(() => teardownAll());
+  it("stamps the parent's model + thinking on runs that don't name one; parses thinking from a model suffix; explicit wins", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const seen: any[] = [];
+    const fakeRunner = () => ({
+      runForeground: async (o: any) => { seen.push(o); const { id } = store.create({ sessionId: "s1", agent: o.agent, model: o.model, thinking: o.thinking, task: o.task }); store.start(id); store.finish(id, { status: "done" }); return store.get(id); },
+      runAsync: (o: any) => { seen.push(o); const { id } = store.create({ sessionId: "s1", agent: o.agent, model: o.model, thinking: o.thinking }); return store.get(id); },
+    });
+    const handler = makeRunHandler({ makeRunner: fakeRunner as any, makeStore: () => store });
+    // parent is on opus:low → children inherit base model 'opus' + thinking 'low'
+    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: "/x/db" }, pi: { events: { on() {}, emit() {} } }, model: { id: "github-copilot/claude-opus-4.8:low" } };
+    await handler({ agent: "worker", task: "x" } as any, ctx);
+    expect(seen[0].model).toBe("github-copilot/claude-opus-4.8");
+    expect(seen[0].thinking).toBe("low");
+    // explicit model suffix parsed into base + thinking
+    await handler({ agent: "worker", task: "y", model: "prov/m:high" } as any, ctx);
+    expect(seen[1].model).toBe("prov/m");
+    expect(seen[1].thinking).toBe("high");
+    // explicit thinking param wins over the suffix
+    await handler({ agent: "worker", task: "z", model: "prov/m:high", thinking: "minimal" } as any, ctx);
+    expect(seen[2].thinking).toBe("minimal");
+  });
   it("routes a single {agent,task} to a single foreground run", async () => {
     const db = freshDb();
     const store = new RunStore(db);

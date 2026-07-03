@@ -7,6 +7,7 @@ import { getCoordinators, type SessionCoordinators } from "../coordinators";
 import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
+import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
 
@@ -62,6 +63,16 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
       : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);
 
+    // Stamp the parent's current model + thinking level on runs that don't name one, so the
+    // (static) run block and footer show them immediately instead of "—". Thinking is often
+    // encoded as a model suffix (e.g. "prov/opus:high"); split it out so the model column stays
+    // clean and the thinking level renders as its own segment. spawnFor re-applies the suffix.
+    const parentModel: string | undefined = ctx.model?.id;
+    const resolveMT = (m?: string, th?: string): { model?: string; thinking?: string } => {
+      const full = m ?? parentModel;
+      return { model: stripThinkingSuffix(full), thinking: th ?? thinkingFromModel(full) };
+    };
+
     if (Array.isArray(args.pipeline)) {
       const coord = overrides.makePipeline
         ? overrides.makePipeline({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId })
@@ -71,16 +82,19 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: { pipelineId, firstRunId } };
     }
     if (Array.isArray(args.chain)) {
-      const rows = await runChain(runner, args.chain, { task: args.task ?? "", context: args.context ?? "fresh" });
+      const chain = args.chain.map((c: any) => ({ ...c, ...resolveMT(c.model, c.thinking) }));
+      const rows = await runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh" });
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
       return { content: `chain complete: ${rows.length} step(s)\n${list}`, details: { runs: rows } };
     }
     if (Array.isArray(args.tasks)) {
-      const rows = await runParallel(runner, args.tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: args.async });
+      const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking) }));
+      const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: args.async });
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
       return { content: `parallel ${args.async ? "started" : "complete"}: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
     }
-    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: args.model, skill: args.skill, thinking: args.thinking, context: args.context ?? "fresh", async: args.async });
+    const { model: singleModel, thinking: singleThinking } = resolveMT(args.model, args.thinking);
+    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill: args.skill, thinking: singleThinking, context: args.context ?? "fresh", async: args.async });
     return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: { run: row } };
   };
 }

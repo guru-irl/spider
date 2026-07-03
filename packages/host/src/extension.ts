@@ -19,6 +19,7 @@ import {
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
+import { installAgentsUI } from "./agents/agents-ui.js";
 
 export { registerAction };
 
@@ -240,6 +241,26 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // chains, so hooks.ts's own session_start handler still runs too.
   pi.on("session_start", (event: any) => {
     currentSessionId = String(event?.sessionId ?? currentSessionId);
+    return undefined;
+  });
+
+  // Mount the live agents UI (footer + Ctrl+G grid + /agents) on session_start.
+  // pi.on chains, so this runs alongside the currentSessionId updater above. The
+  // mount is best-effort — never break the session if the UI can't initialize.
+  let disposeAgentsUI: (() => void) | undefined;
+  pi.on("session_start", (_event: any, ctx: any) => {
+    try {
+      if (!ctx?.hasUI) return undefined;
+      disposeAgentsUI?.();
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const db = openProject(resolveProject(cwd).projectKey);
+      const sessionId = sessionIdOf(ctx) || currentSessionId;
+      disposeAgentsUI = installAgentsUI(pi as any, ctx as any, { db, sessionId });
+    } catch { /* UI mount best-effort; never break the session */ }
+    return undefined;
+  });
+  pi.on("session_shutdown", () => {
+    try { disposeAgentsUI?.(); disposeAgentsUI = undefined; } catch {}
     return undefined;
   });
 

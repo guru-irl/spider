@@ -92,3 +92,14 @@ describe("renderSpiderResult dispatcher", () => {
     assertComponent(c);
   });
 });
+
+const marker = { fg: (t: string, s: string) => `⟨${t}|${s}⟩`, bold: (s: string) => s, italic: (s: string) => s };
+
+describe("run block colors (#36)", () => {
+  it("does not status-color the glyph, type, or status word", () => {
+    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running", task: "" }] };
+    const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120).join("\n");
+    expect(out).not.toMatch(/⟨(success|error|warning|accent)\|/);
+    expect(out).toContain("⟨toolTitle|");
+  });
+});

@@ -17,7 +17,6 @@ import { renderSearchResult, renderImportResult } from "@spider/context";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
-const STOK: Record<string, string> = { done: "success", failed: "error", cancelled: "warning", running: "accent", queued: "muted", paused: "muted" };
 
 interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; }
 function mkTheme(theme: any): T {
@@ -55,10 +54,10 @@ interface RunLike { id?: string; name?: string; agent?: string; model?: string |
 /** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] {
   const status = r.status ?? "running";
-  const glyph = t.fg(STOK[status] ?? "muted", SG[status] ?? "•");
+  const glyph = t.fg("toolTitle", SG[status] ?? "•");
   const name = t.bold(r.name ?? r.agent ?? "agent");
   const sep = t.fg("dim", "·");
-  const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("accent", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))} ${sep} ${t.fg(STOK[status] ?? "muted", status)}`;
+  const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))} ${sep} ${t.fg("muted", status)}`;
   const lines = [clip(head, width)];
   const task = (r.task ?? "").trim();
   if (task) {

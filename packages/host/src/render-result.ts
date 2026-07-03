@@ -49,7 +49,7 @@ function textComponent(result: any): Component {
   };
 }
 
-interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; status?: string; task?: string }
+interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string }
 
 /** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] {
@@ -57,7 +57,8 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   const glyph = t.fg("toolTitle", SG[status] ?? "•");
   const name = t.bold(r.name ?? r.agent ?? "agent");
   const sep = t.fg("dim", "·");
-  const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))} ${sep} ${t.fg("muted", status)}`;
+  const thinkSeg = r.thinking ? ` ${sep} ${t.fg("muted", r.thinking)}` : "";
+  const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
   const lines = [clip(head, width)];
   const task = (r.task ?? "").trim();
   if (task) {

@@ -186,3 +186,8 @@ describe("AgentStore", () => {
     store.stop();
   });
 });
+
+  it("projectRow maps the thinking level", () => {
+    const snap = projectRow(row({ id: "r", session_id: "s", agent: "worker", name: "n", role: null, status: "running", phase: null, model: "m", task: null, thinking: "medium", step_count: 0, token_count: 0, started_at: 0, ended_at: null, result: null }));
+    expect(snap.thinking).toBe("medium");
+  });

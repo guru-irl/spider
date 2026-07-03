@@ -14,6 +14,7 @@ export function projectRow(row: RunRow): AgentSnapshot {
     status: row.status,
     phase: row.phase ?? undefined,
     model: row.model ?? undefined,
+    thinking: row.thinking ?? undefined,
     task: row.task ?? undefined,
     startedAt: row.started_at ?? undefined,
     endedAt: row.ended_at ?? undefined,

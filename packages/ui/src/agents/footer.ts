@@ -33,6 +33,7 @@ export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number
     sep, ital(t.fg("accent", a.role ?? a.agent)),
   ];
   if (model !== "—") parts.push(sep, t.fg("muted", model));
+  if (a.thinking) parts.push(sep, t.fg("dim", a.thinking));
   parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
   if (a.activity) parts.push(sep, t.fg("dim", a.activity));
   // ONLY the leading status marker (spinner while running, glyph otherwise) is status-coloured;

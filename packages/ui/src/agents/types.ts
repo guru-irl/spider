@@ -5,14 +5,14 @@ export type AgentStatus = "queued" | "running" | "paused" | "done" | "failed" | 
 export interface RunRow {
   id: string; session_id: string; parent_run_id?: string | null;
   agent: string; role?: string | null; name?: string | null;
-  status: AgentStatus; phase?: string | null; model?: string | null; task?: string | null;
+  status: AgentStatus; phase?: string | null; model?: string | null; thinking?: string | null; task?: string | null;
   started_at?: number | null; ended_at?: number | null;
   step_count: number; token_count: number; result?: string | null;
 }
 
 export interface AgentSnapshot {
   runId: string; parentRunId?: string; name: string; agent: string; role?: string;
-  status: AgentStatus; phase?: string; model?: string; task?: string;
+  status: AgentStatus; phase?: string; model?: string; thinking?: string; task?: string;
   startedAt?: number; endedAt?: number;
   activity?: string; activityTool?: string;
   stepCount: number; tokenCount: number; recentActivity: string[];

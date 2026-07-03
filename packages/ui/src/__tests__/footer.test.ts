@@ -66,3 +66,22 @@ describe("AgentFooter", () => {
     expect(overflowLine).toContain("cancelled");
   });
 });
+
+  it("footer line includes the thinking level when set and omits it when absent", () => {
+    const src = new Src();
+    const th: ThemeAdapter = { fg: (t, s) => s, bg: (t, s) => s, bold: (s) => s, glyph: "◆" };
+    src.rows.set("a1", row({ id: "a1", model: "openai/gpt-5", thinking: "high" }));
+    const store1 = new AgentStore(src); store1.start();
+    const f1 = new AgentFooter(store1, th, { now: () => 200 });
+    const withT = f1.render(200).join("\n");
+    expect(withT).toContain("high");
+    store1.stop();
+
+    src.rows.clear();
+    src.rows.set("a1", row({ id: "a1", model: "openai/gpt-5" }));
+    const store2 = new AgentStore(src); store2.start();
+    const f2 = new AgentFooter(store2, th, { now: () => 200 });
+    const noT = f2.render(200).join("\n");
+    expect(noT).not.toContain("high");
+    store2.stop();
+  });

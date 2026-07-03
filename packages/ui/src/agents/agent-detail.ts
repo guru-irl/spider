@@ -30,7 +30,7 @@ export class AgentDetail implements Component {
     const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
 
     const head = fit(`${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.bold(a.name)}  ${t.fg(statusToken(a.status), a.status)}`);
-    const meta = fit("  " + t.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`));
+    const meta = fit("  " + t.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)}${a.thinking ? ` · ${a.thinking}` : ""} · ${turns} · ${formatDuration(elapsedMs)}`));
     const idLine = fit("  " + t.fg("dim", `#${a.runId}`));
 
     const instructions = (a.task ?? "").trim()

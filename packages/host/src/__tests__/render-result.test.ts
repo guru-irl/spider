@@ -110,3 +110,9 @@ describe("run block colors (#36)", () => {
     expect(lines[1].startsWith("   ")).toBe(true); // 3-space indent (runBlock's 2 + the global 1)
   });
 });
+
+  it("run block shows the thinking level after the model when present", () => {
+    const details = { run: { name: "a", agent: "worker", model: "openai/gpt-5", thinking: "high", status: "running", task: "" } };
+    const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(200).join("\n");
+    expect(out).toContain("high");
+  });

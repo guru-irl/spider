@@ -120,12 +120,18 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   syncWidget();
 
   const openOverlay = async () => {
+    // Don't open an invisible key-sink when there's nothing to select — it would silently
+    // capture input (the user can't type, with no visible reason) until they hit escape.
+    if (store.snapshot().length === 0) { ctx.ui.notify("No active spider agents", "info"); return; }
     store.beginSelect();
     detail = undefined;
     await ctx.ui.custom<void>(
       (tui, theme, _kb, done) => {
         const th = piTheme(theme as never);
         footerTui ??= tui as { requestRender?: (force?: boolean) => void };
+        // Auto-close when the last agent finishes and disappears: an invisible overlay must
+        // never keep capturing input once the footer it drives is gone.
+        const offEmpty = store.onChange(() => { if (store.snapshot().length === 0) done(); });
         const ctrl: SelectorController = {
           moveSelect: (d) => store.moveSelect(d),
           drill: () => {
@@ -146,7 +152,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
           render: (w: number) => comp.render(w),
           invalidate: () => comp.invalidate(),
           handleInput: (data: string) => comp.handleInput(data),
-          dispose: () => { detail = undefined; store.endSelect(); repaint(); },
+          dispose: () => { offEmpty(); detail = undefined; store.endSelect(); repaint(); },
         };
       },
       // Pure key sink: renders nothing, so anchor/size are irrelevant; onHandle guarantees it

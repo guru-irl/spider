@@ -24,6 +24,8 @@ function fakeUi() {
 describe("installAgentsUI", () => {
   it("shortcut and command target the current install, not a stale closure", async () => {
     const db = openDb(scratchDbPath("aui-reinst")); opened.push(db); migrate(db, "project");
+    db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+                VALUES ('r1','s2','worker','running',1,0,0)`).run();
     
     // Shared pi mock to capture the handler (module-level guard means it's registered once)
     const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
@@ -85,6 +87,8 @@ describe("installAgentsUI", () => {
 
   it("shortcut and command target the current install, not a stale closure", () => {
     const db = openDb(scratchDbPath("aui-reinst")); opened.push(db); migrate(db, "project");
+    db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+                VALUES ('r1','s2','worker','running',1,0,0)`).run();
     
     // Shared pi mock to capture the handler (module-level guard means it's registered once)
     const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
@@ -222,5 +226,16 @@ it("renders the drilled detail ABOVE the static footer rows in the same widget (
   // row can change between renders, so don't compare row strings byte-for-byte.)
   expect(afterLines[0]).toContain("╭");
   expect(afterLines[afterLines.length - 1]).toMatch(/one|two/);
+  dispose();
+});
+
+it("does not open the selector (input trap) when there are no agents (#trap)", async () => {
+  const db = openDb(scratchDbPath("aui-noagents")); opened.push(db); migrate(db, "project");
+  const ui = fakeUi();
+  const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
+  const dispose: any = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
+  await dispose.openOverlay();               // no agents inserted
+  expect(ui.custom).not.toHaveBeenCalled();  // never opens a key-sink over an empty footer
+  expect(ui.notify).toHaveBeenCalled();
   dispose();
 });

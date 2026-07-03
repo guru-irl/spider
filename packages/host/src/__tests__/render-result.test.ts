@@ -149,16 +149,17 @@ describe("run block output truncation (ctrl+o)", () => {
 describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»`, bg: (tok: string, s: string) => `[${tok}]${s}` };
   const msg = { customType: "spider.subagent_done", details: { name: "bravo-worker", agent: "worker", model: "github-copilot/claude-opus-4.8", status: "done", output: "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8" } };
-  it("uses the footer-style title (name · italic agent · model · status), tool shell, collapsed output + ctrl+o", () => {
+  it("uses the run-result-style layout (spider header + ⤴ tool output), tool shell, collapsed + ctrl+o", () => {
     const out = renderSubagentDone(msg, { expanded: false }, th).render(200).join("\n");
     expect(out).toContain("spider");
     expect(out).toContain("bravo-worker");       // run name
     expect(out).toContain("«worker»");             // agent italicised (footer style)
     expect(out).toContain("opus-4.8");            // shortModel
     expect(out).toContain("[toolSuccessBg]");     // green tool shell painted
+    expect(out).toContain("⤴");                    // output marker like a real run result
     expect(out).toContain("l1");
     expect(out).not.toContain("l8");              // collapsed (CAP=6)
-    expect(out).toContain("ctrl+o to expand");
+    expect(out).toContain("ctrl+o to expand output");
   });
   it("paints the error shell on failure", () => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, status: "failed" } }, { expanded: false }, th).render(200).join("\n");

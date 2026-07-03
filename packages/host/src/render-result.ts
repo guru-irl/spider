@@ -161,14 +161,15 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   const d = message?.details ?? {};
   const name = String(d.name ?? "subagent");
   const agent = String(d.agent ?? "worker");
-  const model = d.model as string | null | undefined;
   const status = String(d.status ?? "done");
   const output = String(d.output ?? "").replace(/\s+$/, "");
   const bgTok = status === "done" ? "toolSuccessBg" : status === "running" || status === "queued" || status === "paused" ? "toolPendingBg" : "toolErrorBg";
-  const sep = t.fg("toolTitle", "·");
-  // Exact spider tool-title format: glyph + two spaces + bold "spider" + italic verb + name + status.
-  // Footer/run-block format: glyph + bold "spider" + name + italic agent + model + status.
-  const header = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${sep} ${t.fg("toolTitle", name)} ${sep} ${t.italic(t.fg("toolTitle", agent))} ${sep} ${t.fg("muted", shortModel(model))} ${sep} ${t.fg("toolTitle", status)}`;
+  const sep = t.fg("dim", "·");
+  const thinkSeg = d.thinking ? ` ${sep} ${t.fg("muted", String(d.thinking))}` : "";
+  // Same layout as a real spider run result (see renderRun): a 3-space header, `⤴` output at
+  // 5/7 spaces, a 3-space ctrl+o hint — but the header leads with the spider identity in place
+  // of the run-block status glyph, and the whole block is painted in the tool shell.
+  const header = `   ${t.fg("toolTitle", "🕸")} ${t.fg("toolTitle", t.bold("spider"))} ${sep} ${t.fg("toolTitle", name)} ${sep} ${t.italic(t.fg("toolTitle", agent))} ${sep} ${t.fg("muted", shortModel(d.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
   const lines = output ? output.split("\n") : [];
   const CAP = 6;
   const expanded = options?.expanded === true;
@@ -177,11 +178,18 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   return {
     render(w: number): string[] {
       const rows: string[] = [header];
-      if (shown.length) for (const l of shown) rows.push("  " + t.fg("toolOutput", clip(l, Math.max(1, w - 2))));
-      else rows.push("  " + t.fg("toolOutput", "(no output)"));
-      if (!expanded && lines.length > CAP) rows.push("  " + t.fg("dim", `… (+${lines.length - CAP} more lines) · ctrl+o to expand`));
-      // Paint the tool shell across the full width so it reads as a spider tool block.
-      return rows.map((r) => t.bg(bgTok, pad(r, w)));
+      if (shown.length) {
+        shown.forEach((l, i) => rows.push(t.fg("dim", (i === 0 ? "     ⤴ " : "       ") + clip(l, Math.max(1, w - 8)))));
+      } else {
+        rows.push(t.fg("dim", "     (no output)"));
+      }
+      if (!expanded && lines.length > CAP) {
+        rows.push(t.fg("dim", `       … (+${lines.length - CAP} more lines)`));
+        rows.push(t.fg("dim", "   ctrl+o to expand output"));
+      }
+      // Blank separator (no shell), then the green/red tool shell painted full-width so the
+      // completion reads as a spider tool block with the same padding as a real run result.
+      return ["", ...rows.map((r) => t.bg(bgTok, pad(r, w)))];
     },
     invalidate() {},
   };

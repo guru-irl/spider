@@ -46,13 +46,15 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     }
     if (Array.isArray(args.chain)) {
       const rows = await runChain(runner, args.chain, { task: args.task ?? "", context: args.context ?? "fresh" });
-      return { content: `chain complete: ${rows.length} steps`, details: { runs: rows } };
+      const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
+      return { content: `chain complete: ${rows.length} step(s)\n${list}`, details: { runs: rows } };
     }
     if (Array.isArray(args.tasks)) {
-      const rows = await runParallel(runner, args.tasks, { concurrency: args.concurrency, context: args.context ?? "fresh" });
-      return { content: `parallel complete: ${rows.length} runs`, details: { runs: rows } };
+      const rows = await runParallel(runner, args.tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: args.async });
+      const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
+      return { content: `parallel ${args.async ? "started" : "complete"}: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
     }
     const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: args.model, skill: args.skill, context: args.context ?? "fresh", async: args.async });
-    return { content: `run ${row?.id} ${row?.status}`, details: { run: row } };
+    return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: { run: row } };
   };
 }

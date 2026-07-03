@@ -74,6 +74,9 @@ export class Runner {
   async runForeground(opts: RunOpts): Promise<RunRow> {
     const run = this.makeRun(opts);
     this.deps.store.start(run.id);
+    // Track even foreground runs so the child's tool activity (written to the DB in the
+    // child process) is tailed back onto the in-process bus → the live UI feed.
+    this.deps.tailer.track(run.id);
     emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
     const handle = this.spawnFor(run, opts);
     const { exitCode, result } = await handle.wait();
@@ -89,6 +92,16 @@ export class Runner {
     this.deps.tailer.track(run.id);
     emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
     const handle = this.spawnFor(run, opts);
+    // Finalize the row on child EXIT even if the child-reporter missed session_shutdown
+    // (headless/killed children) — otherwise the run is stuck "running" in the UI.
+    void handle.wait().then(({ exitCode, result }) => {
+      const cur = this.deps.store.get(run.id);
+      if (cur && (cur.status === "running" || cur.status === "queued")) {
+        const status: RunStatus = exitCode === 0 ? "done" : "failed";
+        this.deps.store.finish(run.id, { status, result });
+        emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status, summary: run.name ?? undefined });
+      }
+    }).catch(() => { /* best-effort finalize */ });
     handle.detach();
     return this.deps.store.get(run.id)!;
   }

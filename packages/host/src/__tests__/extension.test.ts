@@ -28,9 +28,11 @@ describe("spider extension entry", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
     const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
-    for (const k of ["agent", "task", "tasks", "chain", "async", "query", "content"]) {
+    for (const k of ["agent", "task", "tasks", "chain", "query", "content"]) {
       expect(props[k], `schema must advertise '${k}'`).toBeTruthy();
     }
+    // async-only: there is NO synchronous option, so the schema must NOT advertise `async`.
+    expect(props.async).toBeUndefined();
     expect(props.tasks.items.required).toEqual(expect.arrayContaining(["agent", "task"]));
   });
 

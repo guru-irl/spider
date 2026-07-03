@@ -17,6 +17,7 @@ describe("makeAsyncNotifier", () => {
     expect(msg.content).toContain("FINAL OUTPUT: 3 TODOs");
     expect(msg.details.output).toBe("FINAL OUTPUT: 3 TODOs");
     expect(opts.deliverAs).toBe("nextTurn");
+    expect(opts.triggerTurn).toBe(true); // auto-wake an idle main agent so the convo continues
   });
 
   it("falls back to the result arg when the run produced no message events", () => {

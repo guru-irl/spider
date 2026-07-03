@@ -67,20 +67,16 @@ describe("run action routing", () => {
     await handler({ agent: "worker", task: "z", model: "prov/m:high", thinking: "minimal" } as any, ctx);
     expect(seen[2].thinking).toBe("minimal");
   });
-  it("routes a single {agent,task} to a single foreground run", async () => {
+  it("routes a single {agent,task} to a single async run (async-only)", async () => {
     const db = freshDb();
     const store = new RunStore(db);
     const calls: string[] = [];
     const fakeRunnerFactory = () => ({
-      runForeground: async (o: any) => {
+      runForeground: async () => { throw new Error("must not run foreground — subagents are async-only"); },
+      runAsync: (o: any) => {
         calls.push(`single:${o.agent}`);
         const { id } = store.create({ sessionId: "s1", agent: o.agent, task: o.task });
         store.start(id);
-        store.finish(id, { status: "done", result: "ok" });
-        return store.get(id);
-      },
-      runAsync: (o: any) => {
-        const { id } = store.create({ sessionId: "s1", agent: o.agent });
         return store.get(id);
       },
     });
@@ -89,7 +85,7 @@ describe("run action routing", () => {
     const res = await handler({ agent: "worker", task: "do it" } as any, ctx);
     expect(calls).toContain("single:worker");
     expect((res as any).isError).not.toBe(true);
-    expect((res as any).content).toContain("done");
+    expect((res as any).content).toContain("worker");
   });
 
   it("routes {pipeline,handoff} to the pipeline coordinator", async () => {
@@ -110,7 +106,7 @@ describe("run action routing", () => {
     const db = freshDb();
     const store = new RunStore(db);
     const tailers: any[] = [];
-    const fakeRunner = { runForeground: async () => { const { id } = store.create({ sessionId: "reuse", agent: "worker" }); store.start(id); store.finish(id, { status: "done" }); return store.get(id); } };
+    const fakeRunner = { runAsync: (o: any) => { const { id } = store.create({ sessionId: "reuse", agent: o.agent }); store.start(id); return store.get(id); } };
     const handler = makeRunHandler({
       makeStore: () => store,
       makeRunner: (_db: any, _sid: string, _cwd: string, deps: any) => { tailers.push(deps.tailer); return fakeRunner as any; },

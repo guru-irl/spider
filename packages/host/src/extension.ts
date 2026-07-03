@@ -20,7 +20,7 @@ import {
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
 import { installAgentsUI } from "./agents/agents-ui";
-import { renderSpiderResult, renderSpiderCall } from "./render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "./render-result";
 
 export { registerAction };
 
@@ -85,6 +85,7 @@ interface PiToolAPI {
     execute(toolCallId: string, params: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
   }): void;
   registerCommand?(name: string, def: unknown): void;
+  registerMessageRenderer?(customType: string, renderer: (message: unknown, options: unknown, theme: unknown) => unknown): void;
   on(name: string, fn: (...args: unknown[]) => unknown): void;
 }
 
@@ -156,7 +157,6 @@ const SPIDER_PARAMETERS = {
     model: { type: "string", description: "Model override for spawned subagent(s)." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
-    async: { type: "boolean", description: "Run subagent(s) in the background and return immediately." },
     id: { type: "string", description: "Run id/prefix (also a todo id)." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
     // message
@@ -301,7 +301,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}, plus async:true to run in the background; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
@@ -313,6 +313,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
       return toToolResult(r);
     },
   });
+
+  // The async subagent_done message is expandable in the transcript: collapsed by default,
+  // ctrl+o reveals the COMPLETE curated output. Best-effort — older hosts may lack the API.
+  pi.registerMessageRenderer?.("spider.subagent_done", (message: any, options: any, theme: any) =>
+    renderSubagentDone(message, options, theme),
+  );
 
   registerHooks(pi);
 

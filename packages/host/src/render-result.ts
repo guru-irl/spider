@@ -143,10 +143,39 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
       : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
     suffix = mode === "single"
       ? verb("run")
-      : `${verb(mode)} ${t.fg("toolTitle", `· ${n} ${args?.async ? "started" : "run(s)"}`)}`;
+      : `${verb(mode)} ${t.fg("toolTitle", `· ${n} started`)}`;
   } else if (args?.sub || args?.command) {
     suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
   }
   const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
+}
+
+/** Transcript renderer for the async `spider.subagent_done` message. Shows the UI-standard
+ *  headline (italic `subagent` verb + italic status) and the curated output collapsed to the
+ *  first few lines; ctrl+o (options.expanded) reveals the COMPLETE output. */
+export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {
+  const t = mkTheme(theme);
+  const d = message?.details ?? {};
+  const name = String(d.name ?? "subagent");
+  const agent = String(d.agent ?? "worker");
+  const status = String(d.status ?? "done");
+  const output = String(d.output ?? "").replace(/\s+$/, "");
+  const sep = t.fg("dim", "·");
+  const statusTok = status === "failed" ? "error" : status === "cancelled" ? "warning" : "muted";
+  const headline = `${t.fg("toolTitle", "🕸")} ${t.italic(t.fg("toolTitle", "subagent"))} ${t.fg("toolTitle", `"${name}"`)} ${sep} ${t.fg("muted", agent)} ${sep} ${t.italic(t.fg(statusTok, status))}`;
+  const lines = output ? output.split("\n") : [];
+  const CAP = 6;
+  const expanded = options?.expanded === true;
+  const shown = expanded ? lines : lines.slice(0, CAP);
+  return {
+    render(w: number): string[] {
+      const out = [clip(headline, w)];
+      if (shown.length) { out.push(""); for (const l of shown) out.push("  " + clip(l, Math.max(1, w - 2))); }
+      else out.push("", t.fg("dim", "  (no output)"));
+      if (!expanded && lines.length > CAP) out.push(t.fg("dim", `  … (+${lines.length - CAP} more lines) · ctrl+o to expand`));
+      return out;
+    },
+    invalidate() {},
+  };
 }

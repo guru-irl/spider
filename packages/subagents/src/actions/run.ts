@@ -22,12 +22,10 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
       // UI standard: italic verb (`subagent`) + italic status, mirroring the tool titles.
       const headline = `🕸 *subagent* "${name}" · ${agent} · *${status}*`;
       ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
-      // Truncate the output; the full transcript lives in the agent detail (ctrl+up).
-      const lines = (output || "").split("\n");
-      const CAP = 8;
-      const shown = lines.slice(0, CAP).join("\n");
-      const more = lines.length > CAP ? `\n… (+${lines.length - CAP} more lines — ctrl+up to open the agent)` : "";
-      const content = output ? `${headline}\n\n${shown}${more}` : `${headline}\n\n(no output)`;
+      // Carry the COMPLETE curated output in the transcript; the registered renderer collapses
+      // it and ctrl+o expands the whole thing. triggerTurn wakes an idle main agent so the
+      // conversation continues automatically instead of waiting for the user to send a message.
+      const content = output ? `${headline}\n\n${output}` : `${headline}\n\n(no output)`;
       ctx.pi?.sendMessage?.(
         {
           customType: "spider.subagent_done",
@@ -35,7 +33,7 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
           display: true,
           details: { runId: run?.id, name, agent: run?.agent, status, output },
         },
-        { deliverAs: "nextTurn" },
+        { triggerTurn: true, deliverAs: "nextTurn" },
       );
     } catch { /* best-effort */ }
   };
@@ -89,19 +87,26 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: { pipelineId, firstRunId } };
     }
     if (Array.isArray(args.chain)) {
+      // Async by design: kick the chain off in the background and report back when the last
+      // step finishes (each step feeds the next). The tool returns immediately.
       const chain = args.chain.map((c: any) => ({ ...c, ...resolveMT(c.model, c.thinking) }));
-      const rows = await runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh" });
-      const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
-      return { content: `chain complete: ${rows.length} step(s)\n${list}`, details: { runs: rows } };
+      void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh" })
+        .then((rows: any[]) => {
+          const last = rows[rows.length - 1];
+          if (last) onComplete(last, last.status, last.result ?? undefined);
+        })
+        .catch(() => { /* best-effort */ });
+      const first = chain[0] ?? {};
+      return { content: `chain started: ${chain.length} step(s)`, details: { chain: chain.length, first: first.name ?? first.agent } };
     }
     if (Array.isArray(args.tasks)) {
       const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking) }));
-      const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: args.async });
+      const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: true });
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
-      return { content: `parallel ${args.async ? "started" : "complete"}: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
+      return { content: `parallel started: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
     }
     const { model: singleModel, thinking: singleThinking } = resolveMT(args.model, args.thinking);
-    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill: args.skill, thinking: singleThinking, context: args.context ?? "fresh", async: args.async });
+    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill: args.skill, thinking: singleThinking, context: args.context ?? "fresh", async: true });
     return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: { run: row } };
   };
 }

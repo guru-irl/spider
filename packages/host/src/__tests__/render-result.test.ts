@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderSpiderResult, renderSpiderCall } from "../render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
 // Minimal fakes for pi's renderResult call shape. We only exercise the fields the
@@ -143,5 +143,22 @@ describe("run block output truncation (ctrl+o)", () => {
     expect(collapsed).toContain("ctrl+o to expand");
     const expanded = renderSpiderResult({ details }, { expanded: true }, marker, { args: { action: "run" } }).render(200).join("\n");
     expect(expanded).toContain("line4");
+  });
+});
+
+describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
+  const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»` };
+  const msg = { customType: "spider.subagent_done", details: { name: "sleep-B", agent: "worker", status: "done", output: "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8" } };
+  it("collapses output with a ctrl+o hint, italicises the subagent verb", () => {
+    const out = renderSubagentDone(msg, { expanded: false }, th).render(200).join("\n");
+    expect(out).toContain("«subagent»");        // UI-standard italic verb
+    expect(out).toContain("l1");
+    expect(out).not.toContain("l8");             // collapsed (CAP=6)
+    expect(out).toContain("ctrl+o to expand");
+  });
+  it("shows the COMPLETE output when expanded", () => {
+    const out = renderSubagentDone(msg, { expanded: true }, th).render(200).join("\n");
+    expect(out).toContain("l8");
+    expect(out).not.toContain("ctrl+o to expand");
   });
 });

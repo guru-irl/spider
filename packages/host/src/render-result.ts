@@ -71,13 +71,13 @@ function renderRun(t: T, details: any, expanded: boolean): Component {
   const runs: RunLike[] = Array.isArray(details?.runs) ? details.runs : details?.run ? [details.run] : [];
   return {
     render(width: number): string[] {
-      if (runs.length === 0) return [t.fg("muted", "  (no runs)")];
+      if (runs.length === 0) return ["", t.fg("muted", "   (no runs)")];
       const lines: string[] = [];
       const multi = runs.length > 1;
       for (const r of runs) { lines.push(...runBlock(t, r, width, expanded)); if (multi) lines.push(""); }
       const anyTask = runs.some((r) => (r.task ?? "").trim());
       if (!expanded && anyTask) lines.push(t.fg("dim", "  ctrl+o to expand instructions"));
-      return lines;
+      return ["", ...lines.map((l) => (l === "" ? l : " " + l))];
     },
     invalidate() {},
   };

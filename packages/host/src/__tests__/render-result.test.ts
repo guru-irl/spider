@@ -102,4 +102,11 @@ describe("run block colors (#36)", () => {
     expect(out).not.toMatch(/⟨(success|error|warning|accent)\|/);
     expect(out).toContain("⟨toolTitle|");
   });
+
+  it("run result body starts with a blank gap line and is indented one space further", () => {
+    const details = { runs: [{ name: "a", agent: "worker", model: "x", status: "running", task: "" }] };
+    const lines = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120);
+    expect(lines[0]).toBe("");                    // gap line under the title
+    expect(lines[1].startsWith("   ")).toBe(true); // 3-space indent (runBlock's 2 + the global 1)
+  });
 });

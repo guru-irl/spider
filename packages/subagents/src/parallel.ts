@@ -1,0 +1,26 @@
+import type { Runner } from "./runner.js";
+import type { RunRow } from "./run-store.js";
+
+export async function runParallel(
+  runner: Runner,
+  tasks: Array<{ agent: string; task: string; count?: number; model?: string; context?: "fresh" | "fork" }>,
+  opts: { concurrency?: number; context: "fresh" | "fork" }
+): Promise<RunRow[]> {
+  const expanded: Array<{ agent: string; task: string; model?: string; context: "fresh" | "fork"; childIndex: number }> = [];
+  let idx = 0;
+  for (const t of tasks)
+    for (let c = 0; c < (t.count ?? 1); c++)
+      expanded.push({ agent: t.agent, task: t.task, model: t.model, context: t.context ?? opts.context, childIndex: idx++ });
+  const limit = Math.max(1, opts.concurrency ?? 4);
+  const results: RunRow[] = new Array(expanded.length);
+  let next = 0;
+  async function worker() {
+    while (next < expanded.length) {
+      const i = next++;
+      const e = expanded[i];
+      results[i] = await runner.runForeground({ agent: e.agent, task: e.task, model: e.model, context: e.context, childIndex: e.childIndex });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, expanded.length) }, () => worker()));
+  return results;
+}

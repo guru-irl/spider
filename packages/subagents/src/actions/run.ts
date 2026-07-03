@@ -8,22 +8,24 @@ import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
 import { defaultSpawner } from "../spawn-default";
+import { latestRunOutput } from "../completion-output";
 
 /** Async-completion notifier: injects a message the parent agent sees next turn (so it
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
-function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
+export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
   return (run, status, result) => {
     try {
+      const output = latestRunOutput(ctx.db, run.id, result);
       const name = run?.name ?? run?.agent ?? "subagent";
-      const preview = String(result ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
       const headline = `🕸 subagent "${name}" (${run?.agent ?? "worker"}) finished: ${status}`;
       ctx.ui?.notify?.(headline, status === "failed" ? "error" : "info");
+      const content = `${headline}\n\n${output || "(no output)"}`;      
       ctx.pi?.sendMessage?.(
         {
           customType: "spider.subagent_done",
-          content: `${headline}. run id ${run?.id}.${preview ? "\nResult: " + preview : ""}`,
+          content,
           display: true,
-          details: { runId: run?.id, name, agent: run?.agent, status, result: preview },
+          details: { runId: run?.id, name, agent: run?.agent, status, output },
         },
         { deliverAs: "nextTurn" },
       );

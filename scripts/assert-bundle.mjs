@@ -13,7 +13,7 @@ const src = readFileSync(OUT, "utf-8");
 //  - pi host-provided peers (pi-coding-agent/pi-tui/typebox/...) — pi provides these
 //    at runtime; inlining them bloats the bundle (~6.5mb) and risks duplicate modules.
 const mustBeExternal = [
-  "better-sqlite3", "sqlite-vec", "onnxruntime-node", "onnxruntime-web", "fastembed", "@xenova/transformers",
+  "better-sqlite3", "sqlite-vec", "onnxruntime-node", "onnxruntime-web", "fastembed", "@xenova/transformers", "turndown",
   "@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox",
 ];
 const leaks = mustBeExternal.filter((m) => src.includes(`node_modules/${m}/`));

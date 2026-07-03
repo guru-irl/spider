@@ -23,11 +23,12 @@ const GLYPH = "🕸";
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 const STOK: Record<string, string> = { done: "success", failed: "error", cancelled: "warning", running: "accent", queued: "muted", paused: "muted" };
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; }
+interface T { fg(tok: string, s: string): string; bold(s: string): string; bg(tok: string, s: string): string; }
 function mkTheme(theme: any): T {
   return {
     fg: (tok, s) => (typeof theme?.fg === "function" ? theme.fg(tok, s) : s),
     bold: (s) => (typeof theme?.bold === "function" ? theme.bold(s) : s),
+    bg: (tok, s) => (typeof theme?.bg === "function" ? theme.bg(tok, s) : s),
   };
 }
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
@@ -47,10 +48,26 @@ function headerLine(t: T, action: string, summary: string): string {
   return `${t.fg("accent", GLYPH)} ${t.bold("spider")} ${t.fg("dim", "·")} ${t.fg("accent", action)}${summary ? t.fg("muted", " · " + summary) : ""}`;
 }
 
-/** Compose a 🕸 header above any body component so EVERY spider result is glyphed. */
-function withHeader(t: T, action: string, summary: string, body: Component): Component {
+/** Full-width coloured header bar — restores the tool "shell" background that renderShell:"self"
+ *  otherwise drops (mirrors the builtin edit/bash tools' toolPendingBg/Success/Error). */
+function headerBar(t: T, action: string, summary: string, width: number, bgTok: string): string {
+  const s = headerLine(t, action, summary);
+  const padded = s + " ".repeat(Math.max(0, width - visibleWidth(s)));
+  return t.bg(bgTok, padded);
+}
+
+/** Pick the header bg from the run states: any failed → error, all done → success, else pending. */
+function runBg(details: any): string {
+  const runs: RunLike[] = Array.isArray(details?.runs) ? details.runs : details?.run ? [details.run] : [];
+  if (runs.some((r) => r.status === "failed" || r.status === "cancelled")) return "toolErrorBg";
+  if (runs.length > 0 && runs.every((r) => r.status === "done")) return "toolSuccessBg";
+  return "toolPendingBg";
+}
+
+/** Compose a coloured 🕸 header bar above any body component so EVERY spider result is glyphed. */
+function withHeader(t: T, action: string, summary: string, body: Component, bgTok: string = "toolSuccessBg"): Component {
   return {
-    render: (w: number) => [clip(headerLine(t, action, summary), w), ...body.render(w)],
+    render: (w: number) => [headerBar(t, action, summary, w, bgTok), ...body.render(w)],
     invalidate: () => body.invalidate?.(),
   };
 }
@@ -118,7 +135,7 @@ export function renderSpiderResult(
         : Array.isArray(context?.args?.tasks) ? "parallel" : "single";
       const n = Array.isArray(details?.runs) ? details.runs.length : details?.run ? 1 : 0;
       const summary = mode === "single" ? "" : `${mode} · ${n} ${context?.args?.async ? "started" : "run(s)"}`;
-      return withHeader(t, "run", summary, renderRun(t, details, expanded));
+      return withHeader(t, "run", summary, renderRun(t, details, expanded), runBg(details));
     }
     case "remember": return withHeader(t, "remember", "", wrapBespoke(renderRememberResult(details as StageResult)));
     case "recall": return withHeader(t, "recall", "", wrapBespoke(renderRecallResult(details as MemoryRecord[])));
@@ -159,7 +176,7 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   else if (a.command) summary = String(a.command);
   else if (a.to) summary = String(a.to);
   return {
-    render: (w: number) => [clip(headerLine(t, action, summary), w), ...body.map((l) => clip(l, w))],
+    render: (w: number) => [headerBar(t, action, summary, w, "toolPendingBg"), ...body.map((l) => clip(l, w))],
     invalidate() {},
   };
 }

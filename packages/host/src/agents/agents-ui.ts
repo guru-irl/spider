@@ -1,6 +1,6 @@
 // packages/host/src/agents/agents-ui.ts
 import type { Db } from "@spider/db-core";
-import { AgentStore, AgentFooter, Grid, AgentDetail, FrameScheduler } from "@spider/ui";
+import { AgentStore, AgentFooter, Grid, AgentDetail } from "@spider/ui";
 import { createRunSource } from "./run-source";
 import { createAgentActions } from "./actions";
 import { piTheme } from "./theme-adapter";
@@ -8,7 +8,6 @@ import { piTheme } from "./theme-adapter";
 interface HostUi {
   setWidget(key: string, value: unknown, opts?: { placement?: "aboveEditor" | "belowEditor" }): void;
   custom<T>(factory: (tui: unknown, theme: unknown, kb: unknown, done: (v: T) => void) => unknown, opts?: unknown): Promise<T>;
-  requestRender?(): void;
   notify(text: string, level: "info" | "error"): void;
   theme?: unknown;
 }
@@ -20,16 +19,23 @@ interface Deps { db: Db; sessionId: string; width?: () => number }
 
 const WIDGET = "spider-agents";
 
-// Register the ctrl+g shortcut and /agents command only ONCE per process even if
-// session_start fires again (pi.on chains; installAgentsUI may be re-invoked).
+// Register the ctrl+shift+g shortcut and /agents command only ONCE per process.
 let registered = false;
+let current: { openOverlay: () => void | Promise<void> } | undefined;
 
-// Mutable ref to the current install's openGrid to avoid stale closure captures.
-let current: { openGrid: () => void | Promise<void> } | undefined;
+/** Wall-clock ticker that repaints via the given `tui` while any agent runs. Returns a
+ *  disposer. This is the ONLY reliable animation driver: ctx.ui has no requestRender;
+ *  each widget/overlay must self-tick through the `tui` handed to its factory. */
+function selfTick(tui: unknown, store: AgentStore): () => void {
+  const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
+  const off = store.onChange(rr);
+  const timer = setInterval(() => { if (store.hasRunning()) rr(); }, 100);
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return () => { clearInterval(timer); off(); };
+}
 
 export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): () => void {
   const { db, sessionId } = deps;
-  const width = deps.width ?? (() => process.stdout.columns || 80);
   const store = new AgentStore(createRunSource(db, sessionId));
   const actions = createAgentActions(pi as never, ctx as never);
   store.start();
@@ -39,8 +45,14 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   const syncWidget = () => {
     const active = store.snapshot().length > 0;
     if (active && !mounted) {
-      ctx.ui.setWidget(WIDGET, (_tui: unknown, theme: unknown) => {
-        return new AgentFooter(store, piTheme(theme as never));
+      ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
+        const footer = new AgentFooter(store, piTheme(theme as never));
+        const stop = selfTick(tui, store);
+        return {
+          render: (w: number) => footer.render(w),
+          invalidate: () => footer.invalidate(),
+          dispose: () => stop(),
+        };
       }, { placement: "aboveEditor" });
       mounted = true;
     } else if (!active && mounted) {
@@ -49,95 +61,56 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     }
   };
 
-  const scheduler = new FrameScheduler(() => {
-    const before = mounted;
-    syncWidget();
-    // Repaint every frame while any agent runs (spinner/elapsed are time-derived), plus
-    // on mount/unmount. We intentionally do NOT gate on a widget-ref change check: pi may
-    // re-create the footer instance after an overlay closes, and a stale ref froze it.
-    if (store.hasRunning() || before !== mounted) ctx.ui.requestRender?.();
-    ensureTicker();
-  });
+  // Mount/unmount the footer as agents come and go. Repaint-while-running is handled by
+  // the footer widget's own self-tick (above), not here.
+  const offChange = store.onChange(syncWidget);
+  syncWidget();
 
-  const offChange = store.onChange(() => scheduler.request());
-  syncWidget(); // initial mount if agents already active
-
-  // Wall-clock animation ticker — only runs while an agent is running.
-  let ticker: ReturnType<typeof setInterval> | null = null;
-  const ensureTicker = () => {
-    if (store.hasRunning() && ticker === null) {
-      ticker = setInterval(() => scheduler.request(), 100);
-      (ticker as unknown as { unref?: () => void }).unref?.();
-    } else if (!store.hasRunning() && ticker !== null) {
-      clearInterval(ticker); ticker = null;
-    }
-  };
-  ensureTicker();
-
-  const openGrid = async () => {
+  // Single overlay that switches between the grid and a drilled-in detail view. Using ONE
+  // overlay (instead of nesting ctx.ui.custom calls) avoids the blank/detached screen that
+  // nested overlays produced on drill-in.
+  const openOverlay = async () => {
     await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-      const grid = new Grid(store, actions, piTheme(theme as never));
+      const th = piTheme(theme as never);
+      const grid = new Grid(store, actions, th);
+      let detail: AgentDetail | undefined;
+      const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
       grid.onClose(() => done());
-      grid.setDrillHandler((runId) => { done(); void openDetail(runId); });
-      const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
-      const off = store.onChange(rr);
-      // Overlays are NOT repainted by the outer ctx.ui.requestRender, so the spinner/
-      // elapsed only animate if the overlay drives its own render loop.
-      const timer = setInterval(() => { if (store.hasRunning()) rr(); }, 100);
-      (timer as unknown as { unref?: () => void }).unref?.();
+      grid.setDrillHandler((runId) => {
+        const d = new AgentDetail(store, runId, th);
+        d.onBack(() => { detail = undefined; rr(); });
+        detail = d; rr();
+      });
+      const stop = selfTick(tui, store);
       return {
-        render: (w: number) => grid.render(w),
+        render: (w: number) => (detail ?? grid).render(w),
         invalidate: () => grid.invalidate(),
-        handleInput: (data: string) => { grid.handleInput(data); rr(); },
-        dispose: () => { clearInterval(timer); off(); },
+        handleInput: (data: string) => { (detail ?? grid).handleInput(data); rr(); },
+        dispose: () => stop(),
       };
     }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
   };
 
-  const openDetail = async (runId: string) => {
-    await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-      const detail = new AgentDetail(store, runId, piTheme(theme as never));
-      detail.onBack(() => { done(); void openGrid(); });
-      const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
-      const off = store.onChange(rr);
-      const timer = setInterval(() => { if (store.hasRunning()) rr(); }, 100);
-      (timer as unknown as { unref?: () => void }).unref?.();
-      return {
-        render: (w: number) => detail.render(w),
-        invalidate: () => {},
-        handleInput: (data: string) => { detail.handleInput(data); rr(); },
-        dispose: () => { clearInterval(timer); off(); },
-      };
-    }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
-  };
+  current = { openOverlay };
 
-  // Update the mutable ref to point to this install's openGrid.
-  current = { openGrid };
-
-  // Ctrl+Shift+G — toggle the grid overlay. (ctrl+g alone is pi's built-in
-  // external-editor binding, so we use ctrl+shift+g to avoid the conflict.)
-  // Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
+  // ctrl+g is pi's built-in external-editor binding, so we use ctrl+shift+g. Plus a
+  // rebind-safe /agents slash command fallback. Register both ONCE per process.
   if (!registered) {
     registered = true;
     pi.registerShortcut("ctrl+shift+g", {
       description: "Toggle spider agents grid",
-      handler: () => { void current?.openGrid(); },
+      handler: () => { void current?.openOverlay(); },
     });
     pi.registerCommand?.("agents", {
       description: "Open the spider agents grid",
-      handler: () => { void current?.openGrid(); },
+      handler: () => { void current?.openOverlay(); },
     });
   }
 
   return function dispose() {
     offChange();
-    scheduler.dispose();
-    if (ticker !== null) { clearInterval(ticker); ticker = null; }
     store.stop();
     if (mounted) { ctx.ui.setWidget(WIDGET, undefined); mounted = false; }
-    // Clear the current ref if it points to this install's openGrid.
-    if (current?.openGrid === openGrid) {
-      current = undefined;
-    }
+    if (current?.openOverlay === openOverlay) current = undefined;
   };
 }

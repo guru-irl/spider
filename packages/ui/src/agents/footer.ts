@@ -16,11 +16,8 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h${m % 60}m`;
 }
 
-/** Width-aware right/left pad + model shortening for aligned footer columns. */
-function padEndVis(s: string, w: number): string { const d = w - visibleWidth(s); return d > 0 ? s + " ".repeat(d) : truncateToWidth(s, w, "…"); }
-function padStartVis(s: string, w: number): string { const d = w - visibleWidth(s); return d > 0 ? " ".repeat(d) + s : truncateToWidth(s, w, "…"); }
+/** Short model label (drop provider prefix + redundant 'claude-'). */
 export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
-function clamp(n: number, lo: number, hi: number): number { return Math.max(lo, Math.min(hi, n)); }
 
 export class AgentFooter implements Component {
   private theme: ThemeAdapter;
@@ -38,38 +35,31 @@ export class AgentFooter implements Component {
     this.spinner = opts.spinner ?? new Spinner();
   }
 
-  private agentLine(a: AgentSnapshot, width: number, w: { name: number; type: number; model: number }): string {
+  private agentLine(a: AgentSnapshot, width: number): string {
     const t = this.theme;
     const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
-    const statusGlyph = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
+    const glyph = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
     const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
-    const cols = [
-      t.glyph,
-      t.bold(padEndVis(a.name, w.name)),
-      t.fg("muted", padEndVis(a.role ?? a.agent, w.type)),
-      t.fg("dim", padEndVis(shortModel(a.model), w.model)),
-      t.fg("dim", padStartVis(turns, 8)),
-      t.fg("muted", padStartVis(formatDuration(elapsedMs), 6)),
-      t.fg(statusToken(a.status), statusGlyph),
+    const model = shortModel(a.model);
+    const sep = t.fg("dim", "·");
+    // Compact, colour-coded: spinner (status) · 🕸 · name (status) · type (accent) · model · turns · dur.
+    const parts = [
+      t.fg(statusToken(a.status), glyph),
+      t.fg("accent", t.glyph),
+      t.fg(statusToken(a.status), t.bold(a.name)),
+      sep, t.fg("accent", a.role ?? a.agent),
     ];
-    const head = cols.join("  ");
-    if (a.activity) {
-      const rem = width - visibleWidth(head) - 1;
-      if (rem > 4) return head + " " + t.fg("muted", truncateToWidth("· " + a.activity, rem, "…"));
-    }
-    return truncateToWidth(head, width, "…");
+    if (model !== "—") parts.push(sep, t.fg("muted", model));
+    parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
+    if (a.activity) parts.push(sep, t.fg("dim", a.activity));
+    return truncateToWidth(parts.join(" "), width, "…");
   }
 
   private build(width: number): string[] {
     const agents = this.store.snapshot();
     if (agents.length === 0) return [];
     const model = buildFooterModel(agents, this.maxVisible);
-    const w = {
-      name: clamp(Math.max(...model.visible.map((a) => visibleWidth(a.name))), 6, 22),
-      type: clamp(Math.max(...model.visible.map((a) => visibleWidth(a.role ?? a.agent))), 4, 10),
-      model: clamp(Math.max(...model.visible.map((a) => visibleWidth(shortModel(a.model)))), 3, 18),
-    };
-    const lines = model.visible.map((a) => this.agentLine(a, width, w));
+    const lines = model.visible.map((a) => this.agentLine(a, width));
     if (model.overflow) {
       const o = model.overflow;
       const seg: string[] = [];

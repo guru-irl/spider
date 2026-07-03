@@ -30,6 +30,7 @@ export const RunParams: TObject = Type.Object({
   async: Type.Optional(Type.Boolean({ description: "Run in background" })) as TOptional<TBoolean>,
   model: Type.Optional(Type.String()) as TOptional<TString>,
   skill: Type.Optional(Type.String()) as TOptional<TString>,
+  thinking: Type.Optional(Type.String({ description: "Reasoning/thinking level, e.g. low|medium|high" })) as TOptional<TString>,
 });
 
 export const MessageParams: TObject = Type.Object({

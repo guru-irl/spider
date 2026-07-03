@@ -80,7 +80,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
       return { content: `parallel ${args.async ? "started" : "complete"}: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
     }
-    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: args.model, skill: args.skill, context: args.context ?? "fresh", async: args.async });
+    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: args.model, skill: args.skill, thinking: args.thinking, context: args.context ?? "fresh", async: args.async });
     return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: { run: row } };
   };
 }

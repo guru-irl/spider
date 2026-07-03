@@ -78,4 +78,13 @@ describe("RunStore", () => {
     const child = store.get(childId)!;
     expect(child.parent_run_id).toBe(parentId);
   });
+
+  it("persists and updates the thinking level on a run", () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const { id } = store.create({ sessionId: "s", agent: "worker", thinking: "medium" });
+    expect(store.get(id)!.thinking).toBe("medium");
+    store.updateProgress(id, { thinking: "high" });
+    expect(store.get(id)!.thinking).toBe("high");
+  });
 });

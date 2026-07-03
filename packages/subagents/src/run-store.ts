@@ -15,6 +15,7 @@ export interface NewRun {
   phase?: string;
   model?: string;
   task?: string;
+  thinking?: string;
 }
 
 export interface RunRow {
@@ -28,6 +29,7 @@ export interface RunRow {
   phase: string | null;
   model: string | null;
   task: string | null;
+  thinking: string | null;
   started_at: number | null;
   ended_at: number | null;
   step_count: number;
@@ -47,6 +49,7 @@ function toRow(r: NewRun & { id: string; name: string; status: RunStatus }) {
     phase: r.phase ?? null,
     model: r.model ?? null,
     task: r.task ?? null,
+    thinking: r.thinking ?? null,
   };
 }
 
@@ -59,8 +62,8 @@ export class RunStore {
     const row = toRow({ ...r, id, name, status: "queued" });
     this.db
       .prepare(
-        `INSERT INTO runs (id, session_id, parent_run_id, agent, role, name, status, phase, model, task, step_count, token_count)
-         VALUES (@id, @session_id, @parent_run_id, @agent, @role, @name, @status, @phase, @model, @task, 0, 0)`
+        `INSERT INTO runs (id, session_id, parent_run_id, agent, role, name, status, phase, model, task, thinking, step_count, token_count)
+         VALUES (@id, @session_id, @parent_run_id, @agent, @role, @name, @status, @phase, @model, @task, @thinking, 0, 0)`
       )
       .run(row);
     return { id, name };
@@ -72,14 +75,15 @@ export class RunStore {
       .run({ id, now: Date.now() });
   }
 
-  updateProgress(id: string, patch: { stepCount?: number; tokenCount?: number; phase?: string; model?: string }): void {
+  updateProgress(id: string, patch: { stepCount?: number; tokenCount?: number; phase?: string; model?: string; thinking?: string }): void {
     this.db
       .prepare(
         `UPDATE runs SET
            step_count = COALESCE(@stepCount, step_count),
            token_count = COALESCE(@tokenCount, token_count),
            phase = COALESCE(@phase, phase),
-           model = COALESCE(@model, model)
+           model = COALESCE(@model, model),
+           thinking = COALESCE(@thinking, thinking)
          WHERE id = @id`
       )
       .run({
@@ -88,6 +92,7 @@ export class RunStore {
         tokenCount: patch.tokenCount ?? null,
         phase: patch.phase ?? null,
         model: patch.model ?? null,
+        thinking: patch.thinking ?? null,
       });
   }
 

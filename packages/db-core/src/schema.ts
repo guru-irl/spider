@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
   agent TEXT NOT NULL, role TEXT, name TEXT,
   status TEXT NOT NULL,
-  phase TEXT, model TEXT, task TEXT,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
   started_at INTEGER, ended_at INTEGER,
   step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
   result TEXT

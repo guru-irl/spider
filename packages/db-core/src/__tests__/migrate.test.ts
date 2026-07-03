@@ -49,3 +49,25 @@ describe("migrate", () => {
     expect(row).toEqual({ status: "active", source: "user" });
   });
 });
+
+describe("migrate — thinking column (v1\u2192v2)", () => {
+  it("adds runs.thinking to an existing v1 db without the column", () => {
+    const db = openDb(scratchDbPath("mig-v1")); opened.push(db);
+    // Simulate an OLD v1 db: runs table WITHOUT thinking, user_version=1.
+    db.exec(`CREATE TABLE runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent TEXT NOT NULL,
+             status TEXT NOT NULL, phase TEXT, model TEXT, task TEXT, step_count INTEGER DEFAULT 0,
+             token_count INTEGER DEFAULT 0)`);
+    db.raw.pragma("user_version = 1");
+    migrate(db, "project");
+    const cols = (db.raw.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain("thinking");
+    expect(Number(db.pragma("user_version"))).toBe(2);
+  });
+
+  it("a fresh db gets thinking via the full schema", () => {
+    const db = openDb(scratchDbPath("mig-fresh")); opened.push(db);
+    migrate(db, "project");
+    const cols = (db.raw.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain("thinking");
+  });
+});

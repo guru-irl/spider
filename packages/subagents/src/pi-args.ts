@@ -229,6 +229,7 @@ export interface BuildChildSpawnSpecInput {
 	role?: string;
 	task: string;
 	model?: string;
+	thinking?: string;
 	context: "fresh" | "fork";
 	parentSessionId: string;
 	childIndex: number;
@@ -270,6 +271,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		sessionEnabled: true,
 		forkFromSessionId: isFork ? input.parentSessionId : undefined,
 		model: input.model,
+		thinking: input.thinking,
 		inheritProjectContext: true,
 		inheritSkills: true,
 		runId: input.runId,

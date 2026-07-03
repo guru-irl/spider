@@ -20,6 +20,7 @@ export interface RunOpts {
   task: string;
   model?: string;
   skill?: string;
+  thinking?: string;
   context: "fresh" | "fork";
   phase?: string;
   parentRunId?: string;
@@ -47,6 +48,7 @@ export class Runner {
       phase: opts.phase,
       model: opts.model,
       task: opts.task,
+      thinking: opts.thinking,
     });
     return this.deps.store.get(id)!;
   }
@@ -59,6 +61,7 @@ export class Runner {
       role: opts.role,
       task: opts.task,
       model: opts.model,
+      thinking: opts.thinking,
       context: opts.context,
       parentSessionId: this.sessionId,
       childIndex: opts.childIndex ?? 0,

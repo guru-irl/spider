@@ -41,4 +41,27 @@ describe("AgentFooter", () => {
     expect(f.hasVisibleChange(60)).toBe(true);   // first paint
     expect(f.hasVisibleChange(60)).toBe(false);  // no change
   });
+
+  it("includes queued and paused in footer overflow counts", () => {
+    // Create more than maxVisible agents with various statuses including queued and paused
+    const src = new Src();
+    src.rows.set("r1", row({ id: "r1", status: "running", name: "runner" }));
+    src.rows.set("r2", row({ id: "r2", status: "queued", name: "queued1" }));
+    src.rows.set("r3", row({ id: "r3", status: "paused", name: "paused1" }));
+    src.rows.set("r4", row({ id: "r4", status: "done", name: "done1" }));
+    src.rows.set("r5", row({ id: "r5", status: "failed", name: "failed1" }));
+    src.rows.set("r6", row({ id: "r6", status: "cancelled", name: "cancelled1" }));
+    const store = new AgentStore(src); store.start();
+    const f = new AgentFooter(store, id, { maxVisible: 2, now: () => 5000 });
+    const lines = f.render(100);
+    const overflowLine = lines[lines.length - 1];
+    // The overflow line should mention queued and paused
+    expect(overflowLine).toContain("queued");
+    expect(overflowLine).toContain("paused");
+    // And the traditional statuses
+    expect(overflowLine).toContain("running");
+    expect(overflowLine).toContain("done");
+    expect(overflowLine).toContain("failed");
+    expect(overflowLine).toContain("cancelled");
+  });
 });

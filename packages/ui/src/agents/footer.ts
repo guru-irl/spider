@@ -60,6 +60,8 @@ export class AgentFooter implements Component {
       const o = model.overflow;
       const seg: string[] = [];
       if (o.running) seg.push(`${o.running} running`);
+      if (o.queued) seg.push(`${o.queued} queued`);
+      if (o.paused) seg.push(`${o.paused} paused`);
       if (o.done) seg.push(`${o.done} done`);
       if (o.failed) seg.push(`${o.failed} failed`);
       if (o.cancelled) seg.push(`${o.cancelled} cancelled`);

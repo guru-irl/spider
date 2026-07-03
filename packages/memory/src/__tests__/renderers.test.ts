@@ -15,6 +15,9 @@ describe("renderRememberResult", () => {
     expect(text).toContain("dark mode");
     expect(text).toContain("category: preference");
     expect(text).toContain("status: active");
+    // uuid is internal noise — it must NOT be shown to the user
+    expect(text).not.toContain("uuid");
+    expect(text).not.toContain("8578541f");
     // no second "🕸 remember" header / section rule (the tool title already carries the glyph)
     expect(text).not.toContain("🕸 remember");
     expect(text).not.toMatch(/─{3,}/);

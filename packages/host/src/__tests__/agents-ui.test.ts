@@ -17,7 +17,7 @@ function fakeUi() {
     custom: vi.fn(),
     requestRender: vi.fn(),
     notify: vi.fn(),
-    theme: { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s },
+    theme: { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s },
   };
 }
 
@@ -127,36 +127,34 @@ describe("installAgentsUI", () => {
 
 const th = { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
 
-it("selector drives the footer cursor (store selection), drills on enter, closes on esc (#50)", () => {
-  const db = openDb(scratchDbPath("aui-overlay")); opened.push(db); migrate(db, "project");
-  db.prepare(`INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at)
-              VALUES ('r1','s','scout','one','running',1,0,0),('r2','s','worker','two','running',1,0,0)`).run();
-  const store = new AgentStore(createRunSource(db, "s")); store.start();
-  let closed = false;
-  const sel = buildAgentsSelector(store, th as never, { requestRender() {} }, () => { closed = true; });
+it("selector routes keys via matchesKey: arrows move, enter drills, esc steps back then releases, ctrl+c always releases (#56)", () => {
+  const calls: string[] = [];
+  let drilled = false;
+  const ctrl = {
+    moveSelect: (d: number) => calls.push("move" + d),
+    drill: () => { drilled = true; calls.push("drill"); },
+    isDrilled: () => drilled,
+    closeDetail: () => { drilled = false; calls.push("closeDetail"); },
+    forwardToDetail: (_d: string) => calls.push("fwd"),
+    close: () => calls.push("close"),
+    repaint: () => {},
+  };
+  const sel = buildAgentsSelector(ctrl as never);
+  expect(sel.render(120)).toEqual([]);            // pure key sink — renders nothing
 
-  expect(store.isSelecting()).toBe(true);
-  const first = store.selectedRunId();
-  expect(sel.render(120).join("\n")).not.toContain("╭"); // hint only, no detail yet
+  sel.handleInput("\x1b[B"); expect(calls).toContain("move1");   // Down
+  sel.handleInput("\x1b[A"); expect(calls).toContain("move-1");  // Up
+  sel.handleInput("\r");     expect(drilled).toBe(true);         // Enter drills
+  sel.handleInput("k");      expect(calls).toContain("fwd");     // forwarded to the detail while drilled
+  sel.handleInput("\u001b"); expect(drilled).toBe(false);       // Esc steps back to selection
+  sel.handleInput("\u001b"); expect(calls).toContain("close");  // Esc again releases to chat
 
-  sel.handleInput("\x1b[B");                    // Down → move the footer cursor
-  expect(store.selectedRunId()).not.toBe(first);
-
-  sel.handleInput("\r");                        // Enter → drill
-  expect(sel.isDrilled()).toBe(true);
-  expect(sel.render(120).join("\n")).toContain("╭"); // detail panel now floats
-
-  sel.handleInput("\u001b");                    // Esc → back to selection
-  expect(sel.isDrilled()).toBe(false);
-  sel.handleInput("\u001b");                    // Esc → close
-  expect(closed).toBe(true);
-
-  sel.dispose();
-  expect(store.isSelecting()).toBe(false);      // selection cleared on dispose
-  store.stop();
+  // Ctrl+C always releases — both while selecting and while drilled
+  calls.length = 0; sel.handleInput("\x03"); expect(calls).toContain("close");
+  drilled = true; calls.length = 0; sel.handleInput("\x03"); expect(calls).toContain("close");
 });
 
-it("openOverlay anchors the selector at the bottom (not full-page)", async () => {
+it("openOverlay opens a pure key-sink overlay and focuses it via onHandle (#56)", async () => {
   const db = openDb(scratchDbPath("aui-anchor")); opened.push(db); migrate(db, "project");
   const ui = fakeUi();
   const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
@@ -168,8 +166,11 @@ it("openOverlay anchors the selector at the bottom (not full-page)", async () =>
     await new Promise((r) => setImmediate(r));
     expect(ui.custom).toHaveBeenCalled();
     const opts = ui.custom.mock.calls.at(-1)![1];
-    const oo = typeof opts.overlayOptions === "function" ? opts.overlayOptions() : opts.overlayOptions;
-    expect(oo.anchor).toBe("top-center");
+    expect(opts.overlay).toBe(true);
+    expect(typeof opts.onHandle).toBe("function");        // focuses the overlay so it owns input
+    const focus = vi.fn();
+    opts.onHandle({ focus });
+    expect(focus).toHaveBeenCalled();
   }
   dispose();
 });
@@ -189,5 +190,34 @@ it("keeps the footer mounted while the selector is open (footer stays static, no
   resolveCustom();
   await p;
   expect(ui.widgets.has("spider-agents")).toBe(true);   // and after it closes
+  dispose();
+});
+
+it("renders the drilled detail ABOVE the static footer rows in the same widget (#57)", () => {
+  const db = openDb(scratchDbPath("aui-detail")); opened.push(db); migrate(db, "project");
+  db.prepare(`INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at)
+              VALUES ('r1','s','scout','one','running',1,0,0),('r2','s','worker','two','running',1,0,0)`).run();
+  const ui = fakeUi();
+  let overlay: any;
+  ui.custom.mockImplementation((factory: any) => new Promise<void>(() => {
+    overlay = factory({ requestRender() {} }, ui.theme, {}, () => {});
+  }));
+  const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
+  const dispose: any = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
+
+  // render the mounted footer widget
+  const widgetFactory = ui.widgets.get("spider-agents") as any;
+  const footerComp = widgetFactory({ requestRender() {} }, ui.theme);
+
+  dispose.openOverlay();                       // beginSelect + open the key-sink overlay (captured)
+  const beforeLines = footerComp.render(120);  // selecting, cursor, NO detail
+  expect(beforeLines.join("\n")).not.toContain("╭");
+
+  overlay.handleInput("\r");                    // Enter → drill the selected run
+  const afterLines = footerComp.render(120);
+  expect(afterLines.join("\n")).toContain("╭"); // detail frame now present
+  expect(afterLines.length).toBeGreaterThan(beforeLines.length);
+  // footer rows stay put at the BOTTOM; the detail floats ABOVE them (same static widget)
+  expect(afterLines.slice(-beforeLines.length)).toEqual(beforeLines);
   dispose();
 });

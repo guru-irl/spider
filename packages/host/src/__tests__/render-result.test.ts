@@ -31,7 +31,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(text).not.toMatch(/─{3,}/);
   });
 
-  it("recall → recall panel with count", () => {
+  it("recall → list of matches with a count, no duplicate glyph header", () => {
     const recs = [
       { uuid: "u1", category: "fact", content: "the sky is blue", link: null },
       { uuid: "u2", category: "fact", content: "grass is green", link: null },
@@ -39,8 +39,9 @@ describe("renderSpiderResult dispatcher", () => {
     const c = renderSpiderResult(mkResult(recs), opts, theme, mkCtx({ action: "recall" }));
     assertComponent(c);
     const text = c.render(80).join("\n");
-    expect(text).toContain("recall");
+    expect(text).not.toContain("🕸 recall"); // the tool title already carries the glyph
     expect(text).toContain("the sky is blue");
+    expect(text).toContain("2 matches");
   });
 
   it("control sub=pending → pending panel", () => {

@@ -15,7 +15,6 @@ export function renderRememberResult(
   const meta: string[] = [`status: ${r.status}`];
   if (r.category) meta.push(`category: ${r.category}`);
   if (r.scope) meta.push(`scope: ${r.scope}`);
-  if (r.uuid) meta.push(`uuid: ${r.uuid.slice(0, 8)}`);
   if (r.reason) meta.push(`reason: ${r.reason}`);
   body.push(meta.join("  ·  "));
   // No Panel title — the tool call already renders "🕸 spider · remember"; a second
@@ -27,7 +26,10 @@ export function renderRecallResult(recs: MemoryRecord[]): Component {
   const body = recs.length
     ? recs.map((r) => `[${r.category}] ${r.content}${r.link ? ` (${r.link})` : ""}`)
     : ["(no matches)"];
-  return Panel({ title: `${GLYPH} recall (${recs.length})`, body });
+  if (recs.length) body.push(`${recs.length} match${recs.length === 1 ? "" : "es"}`);
+  // No Panel title — the tool call already renders "🕸 spider · recall"; a second glyph header
+  // here duplicated it (matches the remember treatment).
+  return Panel({ body });
 }
 
 export function renderPending(recs: MemoryRecord[]): Component {

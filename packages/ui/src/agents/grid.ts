@@ -1,21 +1,20 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
 import { Spinner } from "../components/spinner";
-import { layoutGrid } from "./grid-layout";
-import { renderGridCell } from "./grid-cell";
+import { formatAgentLine } from "./footer";
+import { STATUS_GLYPH } from "./types";
 import type { AgentActions, AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
-
-const CELL_HEIGHT = 6;
 
 function padTo(s: string, w: number): string {
   const fill = w - visibleWidth(s);
   return fill > 0 ? s + " ".repeat(fill) : truncateToWidth(s, w, "");
 }
 
+/** The Ctrl+Shift+G overlay: a vertical LIST of one-line agent rows (same format as the
+ *  footer) inside a rounded frame. One line per agent → dense, readable, no tall boxes. */
 export class Grid implements Component {
   private focus = 0;
-  private page = 0;
   private pinned = new Set<string>();
   private spinner: Spinner;
   private now: () => number;
@@ -31,28 +30,18 @@ export class Grid implements Component {
   setDrillHandler(fn: (runId: string) => void): void { this.drill = fn; }
   onClose(fn: () => void): void { this.close = fn; }
 
-  private pageAgents(): AgentSnapshot[] {
-    const all = this.store.snapshot();
-    const l = layoutGrid(all.length, this.page);
-    this.page = l.page;
-    const start = l.page * l.perPage;
-    return all.slice(start, start + l.perPage);
-  }
-
-  private focusedRunId(): string | undefined { return this.pageAgents()[this.focus]?.runId; }
+  private agents(): AgentSnapshot[] { return this.store.snapshot(); }
+  private clampFocus(n: number): void { this.focus = Math.max(0, Math.min(Math.max(0, n - 1), this.focus)); }
+  private focusedRunId(): string | undefined { return this.agents()[this.focus]?.runId; }
 
   handleInput(data: string): boolean {
-    const all = this.store.snapshot();
-    const l = layoutGrid(all.length, this.page);
-    const onPage = this.pageAgents().length;
+    const all = this.agents();
+    const n = all.length;
+    this.clampFocus(n);
     if (matchesKey(data, Key.escape)) { this.close?.(); return true; }
     if (matchesKey(data, Key.enter)) { const id = this.focusedRunId(); if (id) this.drill?.(id); return true; }
-    if (matchesKey(data, Key.right)) { this.focus = Math.min(onPage - 1, this.focus + 1); return true; }
-    if (matchesKey(data, Key.left)) { this.focus = Math.max(0, this.focus - 1); return true; }
-    if (matchesKey(data, Key.down)) { this.focus = Math.min(onPage - 1, this.focus + l.cols); return true; }
-    if (matchesKey(data, Key.up)) { this.focus = Math.max(0, this.focus - l.cols); return true; }
-    if (data === "]" || matchesKey(data, "pageDown")) { this.page = Math.min(l.pages - 1, this.page + 1); this.focus = 0; return true; }
-    if (data === "[" || matchesKey(data, "pageUp")) { this.page = Math.max(0, this.page - 1); this.focus = 0; return true; }
+    if (matchesKey(data, Key.down)) { this.focus = Math.min(n - 1, this.focus + 1); return true; }
+    if (matchesKey(data, Key.up)) { this.focus = Math.max(0, this.focus - 1); return true; }
     const id = this.focusedRunId();
     if (!id) return false;
     if (data === "m") { void this.actions.message(id); return true; }
@@ -67,8 +56,6 @@ export class Grid implements Component {
     const t = this.theme;
     const inner = Math.max(4, width - 2);
     const bar = t.fg("muted", "│");
-    // Width-exact: top = "╭─ "(3) + title + " "(1) + dashes(k) + "╮"(1); solve k so every
-    // rule/body line is exactly `width` columns — avoids the right-border bleed.
     const ttl = truncateToWidth(title, Math.max(1, inner - 4), "…");
     const k = Math.max(0, width - 5 - visibleWidth(ttl));
     const top = t.fg("muted", "╭─ ") + t.fg("accent", ttl) + t.fg("muted", " " + "─".repeat(k) + "╮");
@@ -77,40 +64,30 @@ export class Grid implements Component {
   }
 
   render(width: number): string[] {
-    const all = this.store.snapshot();
-    const l = layoutGrid(all.length, this.page);
-    const cells = this.pageAgents();
-    const title = `${this.theme.glyph} agents · ${all.length}${l.pages > 1 ? ` · pg ${l.page + 1}/${l.pages}` : ""}`;
-    if (cells.length === 0) {
-      return this.frame(title, [this.theme.fg("muted", "  no active agents")], width);
-    }
+    const all = this.agents();
+    const t = this.theme;
+    const title = `${t.glyph} agents · ${all.length}`;
+    if (all.length === 0) return this.frame(title, [t.fg("muted", "  no active agents")], width);
+    this.clampFocus(all.length);
     const inner = Math.max(4, width - 2);
-    const cols = Math.max(1, l.cols);
-    const cellW = Math.max(3, Math.floor((inner - (cols - 1)) / cols));
     const body: string[] = [];
-    for (let r = 0; r < l.rows; r++) {
-      const rowCells = cells.slice(r * cols, r * cols + cols);
-      if (rowCells.length === 0) break;
-      const rendered = rowCells.map((a, ci) =>
-        renderGridCell(this.theme, {
-          agent: a, width: cellW, height: CELL_HEIGHT,
-          focused: r * cols + ci === this.focus, pinned: this.pinned.has(a.runId),
-          now: this.now(), spinner: this.spinner,
-        }),
-      );
-      for (let li = 0; li < CELL_HEIGHT; li++) {
-        body.push(truncateToWidth(rendered.map((c) => padTo(c[li] ?? "", cellW)).join(" "), inner, ""));
-      }
-      if (r < l.rows - 1) body.push("");
-    }
-    // Pipeline handoff edges (pipeline-aware).
+    all.forEach((a, i) => {
+      const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
+      const marker = i === this.focus ? "▸ " : "  ";
+      const pin = this.pinned.has(a.runId) ? " 📌" : "";
+      const lineW = Math.max(4, inner - visibleWidth(marker) - visibleWidth(pin));
+      const line = formatAgentLine(t, a, lineW, this.now(), lead);
+      body.push(truncateToWidth(`${t.fg("accent", marker)}${line}${pin ? t.fg("warning", pin) : ""}`, inner, "…"));
+    });
+    // Pipeline handoff edge (latest), if any.
     const edges = this.store.edges();
     if (edges.length) {
       const e = edges[edges.length - 1];
-      body.push(truncateToWidth(this.theme.fg("accent", `${this.theme.glyph} ${e.from} →${e.phase ? e.phase : ""}→ ${e.to}`), inner, "…"));
+      body.push(truncateToWidth(t.fg("accent", `${t.glyph} ${e.from} →${e.phase ? e.phase : ""}→ ${e.to}`), inner, "…"));
     }
-    const hint = `↑↓←→ focus · enter drill · m msg · i interrupt · r resume · f pin${l.pages > 1 ? " · [ ] page" : ""} · esc close`;
-    body.push(truncateToWidth(this.theme.fg("dim", hint), inner, "…"));
+    body.push("");
+    const hint = "↑↓ focus · enter drill · m msg · i interrupt · r resume · f pin · esc close";
+    body.push(truncateToWidth(t.fg("dim", hint), inner, "…"));
     return this.frame(title, body, width);
   }
 

@@ -84,7 +84,7 @@ export { FrameScheduler } from "./agents/coalesce";
 export { diffLines, hasChanges } from "./agents/diff";
 export { layoutGrid } from "./agents/grid-layout";
 export { buildFooterModel } from "./agents/footer-model";
-export { AgentFooter, formatDuration } from "./agents/footer";
+export { AgentFooter, formatDuration, formatAgentLine } from "./agents/footer";
 export { Grid } from "./agents/grid";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";

@@ -19,6 +19,24 @@ export function formatDuration(ms: number): string {
 /** Short model label (drop provider prefix + redundant 'claude-'). */
 export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 
+/** Shared one-line agent summary used by BOTH the footer and the grid list:
+ *  `<lead> 🕸  name · type · model · turns · dur · activity`. `lead` is the caller's status
+ *  marker (animated spinner while running, terminal glyph otherwise), coloured by status. */
+export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number, lead: string): string {
+  const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
+  const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
+  const model = shortModel(a.model);
+  const sep = t.fg("dim", "·");
+  const parts = [
+    t.fg(statusToken(a.status), t.bold(a.name)),
+    sep, t.fg("accent", a.role ?? a.agent),
+  ];
+  if (model !== "—") parts.push(sep, t.fg("muted", model));
+  parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
+  if (a.activity) parts.push(sep, t.fg("dim", a.activity));
+  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("accent", t.glyph)}  ${parts.join(" ")}`, width, "…");
+}
+
 export class AgentFooter implements Component {
   private theme: ThemeAdapter;
   private maxVisible: number;
@@ -36,23 +54,8 @@ export class AgentFooter implements Component {
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
-    const t = this.theme;
-    const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
-    const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
-    const model = shortModel(a.model);
-    const sep = t.fg("dim", "·");
-    // Compact, colour-coded: 🕸  name (status) · type (accent) · model · turns · dur · activity.
-    const parts = [
-      t.fg(statusToken(a.status), t.bold(a.name)),
-      sep, t.fg("accent", a.role ?? a.agent),
-    ];
-    if (model !== "—") parts.push(sep, t.fg("muted", model));
-    parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
-    if (a.activity) parts.push(sep, t.fg("dim", a.activity));
-    // Progress indicator to the LEFT of the spider glyph: animated spinner while running,
-    // otherwise the terminal status glyph. Both coloured by status.
     const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
-    return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("accent", t.glyph)}  ${parts.join(" ")}`, width, "…");
+    return formatAgentLine(this.theme, a, width, this.now(), lead);
   }
 
   private build(width: number): string[] {

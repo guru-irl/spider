@@ -69,9 +69,12 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   store.start();
 
   let mounted = false;
+  let selectorOpen = false;
 
   const syncWidget = () => {
-    const active = store.snapshot().length > 0;
+    // While the ctrl+shift+g selector is open it REUSES the footer's position (rendered as an
+    // interactive overlay), so suppress the passive footer widget to avoid a double render.
+    const active = store.snapshot().length > 0 && !selectorOpen;
     if (active && !mounted) {
       ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
         const footer = new AgentFooter(store, piTheme(theme as never));
@@ -95,10 +98,19 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   syncWidget();
 
   const openOverlay = async () => {
-    await ctx.ui.custom<void>(
-      (tui, theme, _kb, done) => buildAgentsOverlay(store, piTheme(theme as never), tui as never, () => done()),
-      { overlay: true, overlayOptions: { anchor: "bottom-center", width: "100%", maxHeight: "50%", margin: { bottom: 1 } } },
-    );
+    // Reuse the footer: hide the passive footer widget and render the interactive selector
+    // flush at the bottom (the same spot), with the ▸ cursor to the LEFT of the one-liners.
+    selectorOpen = true;
+    syncWidget();
+    try {
+      await ctx.ui.custom<void>(
+        (tui, theme, _kb, done) => buildAgentsOverlay(store, piTheme(theme as never), tui as never, () => done()),
+        { overlay: true, overlayOptions: { anchor: "bottom-left", width: "100%", maxHeight: "50%" } },
+      );
+    } finally {
+      selectorOpen = false;
+      syncWidget();
+    }
   };
 
   current = { openOverlay };
@@ -117,10 +129,13 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     });
   }
 
-  return function dispose() {
+  const dispose = function dispose() {
     offChange();
     store.stop();
     if (mounted) { ctx.ui.setWidget(WIDGET, undefined); mounted = false; }
     if (current?.openOverlay === openOverlay) current = undefined;
   };
+  // Testability hook: expose openOverlay on the disposer (non-breaking — callers still call dispose()).
+  (dispose as unknown as { openOverlay: () => void | Promise<void> }).openOverlay = openOverlay;
+  return dispose;
 }

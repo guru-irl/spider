@@ -162,7 +162,25 @@ it("openOverlay anchors the selector at the bottom (not full-page)", async () =>
     await new Promise((r) => setImmediate(r));
     expect(ui.custom).toHaveBeenCalled();
     const opts = ui.custom.mock.calls.at(-1)![1];
-    expect(opts.overlayOptions.anchor).toBe("bottom-center");
+    expect(opts.overlayOptions.anchor).toBe("bottom-left");
   }
+  dispose();
+});
+
+it("opening the selector suppresses the footer widget and restores it on close (reuses the footer position)", async () => {
+  const db = openDb(scratchDbPath("aui-suppress")); opened.push(db); migrate(db, "project");
+  db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+              VALUES ('r1','s','worker','running',1,0,0)`).run();
+  const ui = fakeUi();
+  let resolveCustom!: () => void;
+  ui.custom.mockReturnValue(new Promise<void>((r) => { resolveCustom = () => r(); }));
+  const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
+  const dispose: any = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
+  expect(ui.widgets.has("spider-agents")).toBe(true);   // footer mounted while an agent is active
+  const p = dispose.openOverlay();
+  expect(ui.widgets.has("spider-agents")).toBe(false);  // suppressed while the selector is open
+  resolveCustom();
+  await p;
+  expect(ui.widgets.has("spider-agents")).toBe(true);   // restored after the selector closes
   dispose();
 });

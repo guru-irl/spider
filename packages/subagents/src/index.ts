@@ -8,6 +8,7 @@ export * from "./runner.js";
 export * from "./modes-index.js";
 export * from "./intercom.js";
 export * from "./schemas.js";
+export * from "./pipeline.js";
 
 export function registerSubagentActions(_host: unknown, _pi: unknown): void {
   // run/wait/message actions registered in later tasks

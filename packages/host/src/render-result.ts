@@ -31,6 +31,7 @@ function mkTheme(theme: any): T {
   };
 }
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
+function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 function wrap(text: string, w: number, max: number): string[] {
   const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
   const out: string[] = []; let cur = "";
@@ -63,9 +64,9 @@ function textComponent(result: any): Component {
   };
 }
 
-interface RunLike { id?: string; name?: string; agent?: string; status?: string; task?: string }
+interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; status?: string; task?: string }
 
-/** Render one run's block: `▸ name  status · #id` + expandable instructions. */
+/** Render one run's block: `▸ name  status · #id` + type·model + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean, indent: string): string[] {
   const status = r.status ?? "running";
   const glyph = t.fg(STOK[status] ?? "muted", SG[status] ?? "•");
@@ -73,6 +74,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean, indent: st
   const id = t.fg("dim", "#" + String(r.id ?? "").slice(0, 8));
   const head = clip(`${indent}${glyph} ${name}  ${t.fg(STOK[status] ?? "muted", status)} ${t.fg("dim", "·")} ${id}`, width);
   const lines = [head];
+  lines.push(clip(`${indent}  ${t.fg("dim", `${r.agent ?? "worker"} · ${shortModel(r.model)}`)}`, width));
   const task = (r.task ?? "").trim();
   if (task) {
     const body = expanded ? wrap(task, width - indent.length - 4, 12) : [clip(task, width - indent.length - 4)];
@@ -133,4 +135,31 @@ export function renderSpiderResult(
 /** @spider/ui Components return { render } only; add invalidate for pi. */
 function wrapBespoke(c: Component): Component {
   return { render: (w: number) => c.render(w), invalidate: () => c.invalidate?.() };
+}
+
+/** In-progress call display (renderShell:"self" means pi draws no standard label line,
+ *  so this owns the single '🕸 spider · <action>' header while the tool runs). */
+export function renderSpiderCall(args: any, theme: any, _context: any): Component {
+  const t = mkTheme(theme);
+  const a = args ?? {};
+  const action = String(a.action ?? "spider");
+  let summary = "";
+  const body: string[] = [];
+  if (action === "run") {
+    if (Array.isArray(a.pipeline)) summary = `pipeline · ${a.pipeline.length} stage(s)`;
+    else if (Array.isArray(a.chain)) summary = `chain · ${a.chain.length} step(s)`;
+    else if (Array.isArray(a.tasks)) {
+      summary = `parallel · ${a.tasks.length} task(s)${a.async ? " · async" : ""}`;
+      for (const tk of a.tasks) body.push("  " + t.fg("muted", `• ${tk?.name ?? tk?.agent ?? "agent"}${tk?.task ? " — " + tk.task : ""}`));
+    } else {
+      summary = a.async ? "async" : "";
+      if (a.agent || a.task) body.push("  " + t.fg("muted", `${a.name ?? a.agent ?? "worker"}${a.task ? " — " + a.task : ""}`));
+    }
+  } else if (a.query) summary = String(a.query);
+  else if (a.command) summary = String(a.command);
+  else if (a.to) summary = String(a.to);
+  return {
+    render: (w: number) => [clip(headerLine(t, action, summary), w), ...body.map((l) => clip(l, w))],
+    invalidate() {},
+  };
 }

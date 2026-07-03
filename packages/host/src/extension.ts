@@ -20,7 +20,7 @@ import {
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
 import { installAgentsUI } from "./agents/agents-ui";
-import { renderSpiderResult } from "./render-result";
+import { renderSpiderResult, renderSpiderCall } from "./render-result";
 
 export { registerAction };
 
@@ -80,6 +80,8 @@ interface PiToolAPI {
     description: string;
     parameters: unknown;
     renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => unknown;
+    renderCall?: (args: unknown, theme: unknown, context: unknown) => unknown;
+    renderShell?: "default" | "self";
     execute(toolCallId: string, params: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
   }): void;
   registerCommand?(name: string, def: unknown): void;
@@ -300,6 +302,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     description:
       "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}, plus async:true to run in the background; wait→id|all; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
+    renderShell: "self",
+    renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
     async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing

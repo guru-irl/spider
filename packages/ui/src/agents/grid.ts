@@ -67,8 +67,11 @@ export class Grid implements Component {
     const t = this.theme;
     const inner = Math.max(4, width - 2);
     const bar = t.fg("muted", "│");
-    const dashes = Math.max(0, inner - visibleWidth(title) - 3); // "─ " + title + " "
-    const top = t.fg("muted", "╭─ ") + t.fg("accent", title) + t.fg("muted", " " + "─".repeat(dashes) + "╮");
+    // Width-exact: top = "╭─ "(3) + title + " "(1) + dashes(k) + "╮"(1); solve k so every
+    // rule/body line is exactly `width` columns — avoids the right-border bleed.
+    const ttl = truncateToWidth(title, Math.max(1, inner - 4), "…");
+    const k = Math.max(0, width - 5 - visibleWidth(ttl));
+    const top = t.fg("muted", "╭─ ") + t.fg("accent", ttl) + t.fg("muted", " " + "─".repeat(k) + "╮");
     const bottom = t.fg("muted", "╰" + "─".repeat(inner) + "╯");
     return [top, ...body.map((l) => bar + padTo(l, inner) + bar), bottom];
   }

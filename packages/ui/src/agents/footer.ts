@@ -16,6 +16,12 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h${m % 60}m`;
 }
 
+/** Width-aware right/left pad + model shortening for aligned footer columns. */
+function padEndVis(s: string, w: number): string { const d = w - visibleWidth(s); return d > 0 ? s + " ".repeat(d) : truncateToWidth(s, w, "…"); }
+function padStartVis(s: string, w: number): string { const d = w - visibleWidth(s); return d > 0 ? " ".repeat(d) + s : truncateToWidth(s, w, "…"); }
+export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
+function clamp(n: number, lo: number, hi: number): number { return Math.max(lo, Math.min(hi, n)); }
+
 export class AgentFooter implements Component {
   private theme: ThemeAdapter;
   private maxVisible: number;
@@ -32,31 +38,38 @@ export class AgentFooter implements Component {
     this.spinner = opts.spinner ?? new Spinner();
   }
 
-  private glyphFor(a: AgentSnapshot): string {
-    const g = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
-    return this.theme.fg(statusToken(a.status), g);
-  }
-
-  private agentLine(a: AgentSnapshot, width: number): string {
+  private agentLine(a: AgentSnapshot, width: number, w: { name: number; type: number; model: number }): string {
     const t = this.theme;
-    const elapsedMs = a.startedAt === undefined ? 0
-      : (a.endedAt ?? this.now()) - a.startedAt;
-    const parts = [
-      this.glyphFor(a),
-      `${t.glyph} ${t.bold(a.name)}`,
-      t.fg("dim", "#" + a.runId.slice(0, 8)),
-      t.fg("muted", formatDuration(elapsedMs)),
+    const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
+    const statusGlyph = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
+    const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
+    const cols = [
+      t.glyph,
+      t.bold(padEndVis(a.name, w.name)),
+      t.fg("muted", padEndVis(a.role ?? a.agent, w.type)),
+      t.fg("dim", padEndVis(shortModel(a.model), w.model)),
+      t.fg("dim", padStartVis(turns, 8)),
+      t.fg("muted", padStartVis(formatDuration(elapsedMs), 6)),
+      t.fg(statusToken(a.status), statusGlyph),
     ];
-    if (a.activity) parts.push(t.fg("muted", "· " + a.activity));
-    parts.push(t.fg("dim", `· ${a.stepCount}⋯${a.tokenCount}t`));
-    return truncateToWidth(parts.join(" "), width, "…");
+    const head = cols.join("  ");
+    if (a.activity) {
+      const rem = width - visibleWidth(head) - 1;
+      if (rem > 4) return head + " " + t.fg("muted", truncateToWidth("· " + a.activity, rem, "…"));
+    }
+    return truncateToWidth(head, width, "…");
   }
 
   private build(width: number): string[] {
     const agents = this.store.snapshot();
     if (agents.length === 0) return [];
     const model = buildFooterModel(agents, this.maxVisible);
-    const lines = model.visible.map((a) => this.agentLine(a, width));
+    const w = {
+      name: clamp(Math.max(...model.visible.map((a) => visibleWidth(a.name))), 6, 22),
+      type: clamp(Math.max(...model.visible.map((a) => visibleWidth(a.role ?? a.agent))), 4, 10),
+      model: clamp(Math.max(...model.visible.map((a) => visibleWidth(shortModel(a.model)))), 3, 18),
+    };
+    const lines = model.visible.map((a) => this.agentLine(a, width, w));
     if (model.overflow) {
       const o = model.overflow;
       const seg: string[] = [];
@@ -82,7 +95,9 @@ export class AgentFooter implements Component {
   }
 
   render(width: number): string[] {
-    if (this.cachedWidth === width && this.cachedLines.length) return this.cachedLines;
+    // Always rebuild: the spinner/elapsed are time-derived, and pi may re-create the
+    // widget instance (e.g. after an overlay closes) — a cached short-circuit would
+    // then freeze the animation permanently. Rebuilding a few lines each paint is cheap.
     this.cachedLines = this.build(width);
     this.cachedWidth = width;
     return this.cachedLines;

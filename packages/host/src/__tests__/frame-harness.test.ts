@@ -38,7 +38,7 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
     const footer = new AgentFooter(store, idTheme);
     const frame = (): string => {
       footer.invalidate(); // render() caches per width; force a rebuild each call
-      return strip(footer.render(80).join("\n"));
+      return strip(footer.render(120).join("\n"));
     };
 
     // --- lifecycle: start (running) ---

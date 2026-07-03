@@ -1,7 +1,6 @@
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
-import { renderTable } from "../components/table";
-import { formatDuration } from "./footer";
+import { formatDuration, shortModel } from "./footer";
 import { wrapText } from "./grid-cell";
 import { STATUS_GLYPH, statusToken } from "./types";
 import type { ThemeAdapter } from "./types";
@@ -24,30 +23,31 @@ export class AgentDetail implements Component {
     const a = this.store.snapshot().find((x) => x.runId === this.runId);
     const t = this.theme;
     if (!a) return [truncateToWidth(t.fg("muted", `${t.glyph} run ${this.runId} not found`), width, "…")];
+    const fit = (s: string) => truncateToWidth(s, width, "…");
     const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
-    const rule = truncateToWidth(
-      `${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.glyph} ${t.bold(a.name)} ` +
-        t.fg("muted", `${a.role ?? a.status}`), width, "…");
-    // grey run-id subheading under the name
-    const idLine = truncateToWidth(t.fg("dim", `#${a.runId}`), width, "…");
+    const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
+
+    // Header: status glyph, spider, NAME, status word.
+    const head = fit(`${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.glyph} ${t.bold(a.name)}  ${t.fg(statusToken(a.status), a.status)}`);
+    const meta = fit("  " + t.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`));
+    const idLine = fit("  " + t.fg("dim", `#${a.runId}`));
+
     const instructions = (a.task ?? "").trim()
       ? wrapText(a.task!.trim(), Math.max(1, width - 2), 8).map((l) => "  " + t.fg("muted", l))
       : ["  " + t.fg("dim", "(no instructions)")];
-    const table = renderTable(t, {
-      columns: [{ header: "field" }, { header: "value" }],
-      rows: [
-        ["status", a.status],
-        ["model", a.model ?? "—"],
-        ["phase", a.phase ?? "—"],
-        ["steps", String(a.stepCount)],
-        ["tokens", String(a.tokenCount)],
-        ["elapsed", formatDuration(elapsedMs)],
-      ],
-      width,
-    });
-    const activity = a.recentActivity.map((s) => truncateToWidth("  " + t.fg("muted", s), width, "…"));
-    const lines = [rule, idLine, "", t.fg("dim", `${t.glyph} instructions`), ...instructions, "", ...table, "", t.fg("dim", `${t.glyph} recent activity`), ...activity];
-    lines.push("", truncateToWidth(t.fg("dim", "esc back to grid"), width, "…"));
+
+    // Live activity feed — the current tool prominently, then recent history (newest last).
+    const cur = a.activity ? [fit("  " + t.fg("accent", "▸ " + a.activity))] : [];
+    const feed = a.recentActivity.length
+      ? a.recentActivity.map((s) => fit("  " + t.fg("muted", "· " + s)))
+      : ["  " + t.fg("dim", "(waiting for activity…)")];
+
+    const lines = [
+      head, meta, idLine, "",
+      t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
+      t.fg("dim", `${t.glyph} activity`), ...cur, ...feed,
+      "", fit(t.fg("dim", "esc back to grid")),
+    ];
     return lines;
   }
 

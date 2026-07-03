@@ -23,7 +23,7 @@ describe("AgentFooter", () => {
     const f = new AgentFooter(store, id, { now: () => 1000 });
     expect(f.render(40)).toEqual([]);
   });
-  it("renders one agent line with glyph, name, steps/tokens, within width", () => {
+  it("renders one agent line with glyph, name, turns, within width", () => {
     const src = new Src(); src.rows.set("r1", row({ name: "scribe" }));
     const store = new AgentStore(src); store.start();
     const f = new AgentFooter(store, id, { now: () => 5000 });
@@ -31,7 +31,8 @@ describe("AgentFooter", () => {
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(lines.join("\n")).toContain("🕸");
     expect(lines.join("\n")).toContain("scribe");
-    expect(lines.join("\n")).toMatch(/3.*120|120.*3/);
+    expect(lines.join("\n")).toContain("3 turns");
+    expect(lines.join("\n")).not.toContain("#"); // the useless run-id hash is gone
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
   it("hasVisibleChange is false when nothing changed between frames", () => {

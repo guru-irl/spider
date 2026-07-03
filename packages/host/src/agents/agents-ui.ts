@@ -35,27 +35,27 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   store.start();
 
   let mounted = false;
-  let footer: AgentFooter | undefined;
 
   const syncWidget = () => {
     const active = store.snapshot().length > 0;
     if (active && !mounted) {
       ctx.ui.setWidget(WIDGET, (_tui: unknown, theme: unknown) => {
-        footer = new AgentFooter(store, piTheme(theme as never));
-        return footer;
+        return new AgentFooter(store, piTheme(theme as never));
       }, { placement: "aboveEditor" });
       mounted = true;
     } else if (!active && mounted) {
       ctx.ui.setWidget(WIDGET, undefined);
-      mounted = false; footer = undefined;
+      mounted = false;
     }
   };
 
   const scheduler = new FrameScheduler(() => {
     const before = mounted;
     syncWidget();
-    const changed = footer?.hasVisibleChange(width()) ?? false;
-    if (changed || before !== mounted) ctx.ui.requestRender?.();
+    // Repaint every frame while any agent runs (spinner/elapsed are time-derived), plus
+    // on mount/unmount. We intentionally do NOT gate on a widget-ref change check: pi may
+    // re-create the footer instance after an overlay closes, and a stale ref froze it.
+    if (store.hasRunning() || before !== mounted) ctx.ui.requestRender?.();
     ensureTicker();
   });
 
@@ -79,28 +79,36 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
       const grid = new Grid(store, actions, piTheme(theme as never));
       grid.onClose(() => done());
       grid.setDrillHandler((runId) => { done(); void openDetail(runId); });
-      const off = store.onChange(() => (tui as { requestRender?: () => void }).requestRender?.());
+      const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
+      const off = store.onChange(rr);
+      // Overlays are NOT repainted by the outer ctx.ui.requestRender, so the spinner/
+      // elapsed only animate if the overlay drives its own render loop.
+      const timer = setInterval(() => { if (store.hasRunning()) rr(); }, 100);
+      (timer as unknown as { unref?: () => void }).unref?.();
       return {
         render: (w: number) => grid.render(w),
         invalidate: () => grid.invalidate(),
-        handleInput: (data: string) => { grid.handleInput(data); (tui as { requestRender?: () => void }).requestRender?.(); },
-        dispose: () => off(),
+        handleInput: (data: string) => { grid.handleInput(data); rr(); },
+        dispose: () => { clearInterval(timer); off(); },
       };
-    }, { overlay: true });
+    }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
   };
 
   const openDetail = async (runId: string) => {
     await ctx.ui.custom<void>((tui, theme, _kb, done) => {
       const detail = new AgentDetail(store, runId, piTheme(theme as never));
       detail.onBack(() => { done(); void openGrid(); });
-      const off = store.onChange(() => (tui as { requestRender?: () => void }).requestRender?.());
+      const rr = () => (tui as { requestRender?: () => void }).requestRender?.();
+      const off = store.onChange(rr);
+      const timer = setInterval(() => { if (store.hasRunning()) rr(); }, 100);
+      (timer as unknown as { unref?: () => void }).unref?.();
       return {
         render: (w: number) => detail.render(w),
         invalidate: () => {},
-        handleInput: (data: string) => { detail.handleInput(data); (tui as { requestRender?: () => void }).requestRender?.(); },
-        dispose: () => off(),
+        handleInput: (data: string) => { detail.handleInput(data); rr(); },
+        dispose: () => { clearInterval(timer); off(); },
       };
-    }, { overlay: true });
+    }, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%" } });
   };
 
   // Update the mutable ref to point to this install's openGrid.

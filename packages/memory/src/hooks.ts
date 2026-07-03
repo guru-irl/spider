@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
-import { assembleSnapshot } from "./snapshot.js";
-import type { MemoryConfig } from "./actions.js";
+import { assembleSnapshot } from "./snapshot";
+import type { MemoryConfig } from "./actions";
 
 export interface HookDeps {
   projectDb: Db;
@@ -13,7 +13,7 @@ export interface HookDeps {
  * Defensive: only mutates when a non-empty snapshot exists and the event
  * carries a string systemPrompt.
  */
-export function makeBeforeAgentStart(deps: HookDeps) {
+export function makeBeforeAgentStart(deps: HookDeps): (event: any) => any {
   return (event: any) => {
     const snap = assembleSnapshot(
       { global: deps.globalDb, project: deps.projectDb },
@@ -30,7 +30,7 @@ export function makeBeforeAgentStart(deps: HookDeps) {
  * session_start: upsert a row into the project sessions table. Guards a missing
  * session id and never overwrites an existing row.
  */
-export function makeSessionStart(deps: HookDeps) {
+export function makeSessionStart(deps: HookDeps): (event: any) => any {
   return (event: any) => {
     const id = event?.sessionId;
     if (typeof id !== "string" || id.length === 0) return event;

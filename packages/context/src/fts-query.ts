@@ -2,7 +2,7 @@
 // FTS query helpers (ported from context-mode's store.ts)
 // ─────────────────────────────────────────────────────────
 
-export const STOPWORDS = new Set([
+export const STOPWORDS: Set<string> = new Set([
   "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
   "her", "was", "one", "our", "out", "has", "his", "how", "its", "may",
   "new", "now", "old", "see", "way", "who", "did", "get", "got", "let",

@@ -1,5 +1,5 @@
-import { PolyglotExecutor } from "../executor.js";
-import { capBytes } from "../truncate.js";
+import { PolyglotExecutor } from "../executor";
+import { capBytes } from "../truncate";
 
 export interface ExecCtx {
   cwd: string;
@@ -12,7 +12,7 @@ const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd }
 const shape = (r: any) =>
   capBytes(r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : ""), MAX_EXEC_OUTPUT_BYTES);
 
-export async function runExec(args: any, ctx: ExecCtx) {
+export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
   const res = await mk(ctx).execute({
     language: args.language,
     code: args.code,
@@ -22,7 +22,7 @@ export async function runExec(args: any, ctx: ExecCtx) {
   return { text: shape(res), details: res, isError: res.exitCode !== 0 && !res.backgrounded };
 }
 
-export async function runExecFile(args: any, ctx: ExecCtx) {
+export async function runExecFile(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
   const res = await mk(ctx).executeFile({
     path: args.path,
     language: args.language,
@@ -32,7 +32,7 @@ export async function runExecFile(args: any, ctx: ExecCtx) {
   return { text: shape(res), details: res, isError: res.exitCode !== 0 };
 }
 
-export async function runBatch(args: any, ctx: ExecCtx) {
+export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string; details: any[]; isError: boolean }> {
   const ex = mk(ctx);
   const parts: string[] = [];
   let anyErr = false;
@@ -46,7 +46,7 @@ export async function runBatch(args: any, ctx: ExecCtx) {
   return { text: capBytes(parts.join("\n\n"), MAX_EXEC_OUTPUT_BYTES), details: all, isError: anyErr };
 }
 
-export function registerExecActions(register: (name: string, handler: (a: any, c: any) => any) => void) {
+export function registerExecActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {
   register("exec", runExec);
   register("exec_file", runExecFile);
   register("batch", runBatch);

@@ -1,6 +1,6 @@
 import { openDbAt, type Db } from "@spider/db-core";
-import { RunStore } from "./run-store.js";
-import { emitIntent, emitToolResult, emitStatus } from "./run-events.js";
+import { RunStore } from "./run-store";
+import { emitIntent, emitToolResult, emitStatus } from "./run-events";
 
 export function isSubagentChild(): boolean {
   return process.env.PI_SUBAGENT_CHILD === "1";
@@ -9,16 +9,16 @@ export function isSubagentChild(): boolean {
 export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: string }) {
   const store = new RunStore(db);
   return {
-    onToolStart(tool: string, payload?: unknown) {
+    onToolStart(tool: string, payload?: unknown): void {
       emitIntent(db, { ...ctx, tool, payload });
     },
-    onToolEnd(tool: string, payload?: unknown) {
+    onToolEnd(tool: string, payload?: unknown): void {
       emitToolResult(db, { ...ctx, tool, payload });
     },
-    onStatus(status: string, summary?: string) {
+    onStatus(status: string, summary?: string): void {
       emitStatus(db, { ...ctx, status, summary });
     },
-    onShutdown(status: "done" | "error" | "interrupted", result?: string) {
+    onShutdown(status: "done" | "error" | "interrupted", result?: string): void {
       const runStatus = status === "done" ? "done" : status === "error" ? "failed" : "cancelled";
       store.finish(ctx.runId, { status: runStatus, result });
       emitStatus(db, { ...ctx, status: runStatus, summary: result });

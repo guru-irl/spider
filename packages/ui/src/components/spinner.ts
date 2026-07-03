@@ -1,5 +1,5 @@
 // packages/ui/src/components/spinner.ts
-export const BRAILLE_FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+export const BRAILLE_FRAMES: string[] = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 
 export class Spinner {
   private frames: string[];

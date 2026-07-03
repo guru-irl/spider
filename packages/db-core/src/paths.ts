@@ -16,14 +16,20 @@ function rootFor(scope: Scope, cwd?: string): string {
   return projectRoot(cwd);
 }
 
-export const paths = {
+export const paths: {
+  globalRoot: string;
+  models: string;
+  projectRoot: (cwd: string) => string;
+  scratch: (scope: Scope, cwd?: string) => string;
+  logs: (scope: Scope, cwd?: string) => string;
+} = {
   globalRoot: GLOBAL_ROOT,
   models: join(GLOBAL_ROOT, "models"),
-  projectRoot,
-  scratch(scope: Scope, cwd?: string): string {
+  projectRoot: projectRoot,
+  scratch: (scope: Scope, cwd?: string): string => {
     return join(rootFor(scope, cwd), "scratch");
   },
-  logs(scope: Scope, cwd?: string): string {
+  logs: (scope: Scope, cwd?: string): string => {
     return join(rootFor(scope, cwd), "logs");
   },
 };

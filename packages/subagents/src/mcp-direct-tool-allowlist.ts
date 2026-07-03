@@ -89,7 +89,7 @@ interface MetadataCache {
 	servers: Record<string, ServerCacheEntry>;
 }
 
-export function resolveMcpDirectToolNames(mcpDirectTools: string[] | undefined, cwd = process.cwd()): string[] {
+export function resolveMcpDirectToolNames(mcpDirectTools: string[] | undefined, cwd: string = process.cwd()): string[] {
 	if (!mcpDirectTools?.length) return [];
 
 	try {

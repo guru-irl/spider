@@ -1,13 +1,13 @@
 import { paths } from "@spider/db-core";
-import { RunStore } from "../run-store.js";
-import { RunEventTailer } from "../event-tailer.js";
-import { Runner, type Spawner } from "../runner.js";
-import { PipelineCoordinator } from "../pipeline.js";
-import { getCoordinators, type SessionCoordinators } from "../coordinators.js";
-import { runChain } from "../chain.js";
-import { runParallel } from "../parallel.js";
-import { runSingle } from "../single.js";
-import { defaultSpawner } from "../spawn-default.js";
+import { RunStore } from "../run-store";
+import { RunEventTailer } from "../event-tailer";
+import { Runner, type Spawner } from "../runner";
+import { PipelineCoordinator } from "../pipeline";
+import { getCoordinators, type SessionCoordinators } from "../coordinators";
+import { runChain } from "../chain";
+import { runParallel } from "../parallel";
+import { runSingle } from "../single";
+import { defaultSpawner } from "../spawn-default";
 
 interface RunDeps {
   makeStore?: (db: any) => RunStore;
@@ -18,7 +18,7 @@ interface RunDeps {
 }
 
 /** The `run` action handler. Routes by args shape: pipeline > chain > tasks > single. */
-export function makeRunHandler(overrides: RunDeps = {}) {
+export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) => Promise<{ content: string; details: any }> {
   return async function runHandler(args: any, ctx: any) {
     const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db);
     const coords =

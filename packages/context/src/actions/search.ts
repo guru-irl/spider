@@ -1,12 +1,12 @@
 import type { Db } from "@spider/db-core";
-import { unifiedSearch, type SearchResultRow } from "../search.js";
+import { unifiedSearch, type SearchResultRow } from "../search";
 
 export interface SearchCtx {
   db: Db;
   cwd: string;
 }
 
-export async function runSearch(args: any, ctx: SearchCtx) {
+export async function runSearch(args: any, ctx: SearchCtx): Promise<{ text: string; details: SearchResultRow[] }> {
   const rows: SearchResultRow[] = await unifiedSearch(ctx.db, {
     query: String(args.query ?? ""),
     limit: args.limit,

@@ -2,12 +2,12 @@
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
-import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch.js";
-import { registerHooks } from "./hooks.js";
+import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch";
+import { registerHooks } from "./hooks";
 import { registerContextActions, runImport } from "@spider/context";
-import { toToolResult } from "./result.js";
-import { controlDoctor, controlConfig } from "./control.js";
-import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index.js";
+import { toToolResult } from "./result";
+import { controlDoctor, controlConfig } from "./control";
+import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
@@ -19,8 +19,8 @@ import {
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
-import { installAgentsUI } from "./agents/agents-ui.js";
-import { renderSpiderResult } from "./render-result.js";
+import { installAgentsUI } from "./agents/agents-ui";
+import { renderSpiderResult } from "./render-result";
 
 export { registerAction };
 
@@ -143,7 +143,7 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
 }
 
 // enumerate = pi's model surface ∩ availability (VALIDATE-FIRST A6: confirm listModels/availableModels).
-export function enumerate(pi: PiToolAPI) {
+export function enumerate(pi: PiToolAPI): Array<{ provider: string; id: string; available: boolean; reasoning: boolean; vision: boolean; ctx: number }> {
   const list = (pi as any).listModels?.() ?? (pi as any).availableModels ?? [];
   return list.map((m: any) => ({
     provider: m.provider ?? m.providerId, id: m.id,

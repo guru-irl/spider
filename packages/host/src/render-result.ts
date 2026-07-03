@@ -17,8 +17,7 @@ import {
   type StageResult,
   type MemoryRecord,
 } from "@spider/memory";
-// Item 2 wires context renderers here:
-// import { renderSearchResult, renderImportResult } from "@spider/context";
+import { renderSearchResult, renderImportResult } from "@spider/context";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 
@@ -68,9 +67,10 @@ export function renderSpiderResult(
       return wrap(renderRememberResult(details as StageResult));
     case "recall":
       return wrap(renderRecallResult(details as MemoryRecord[]));
-    // Item 2 hooks:
-    // case "search": return wrap(renderSearchResult(details as any));
-    // case "import": return wrap(renderImportResult(details as any));
+    case "search":
+      return wrap(renderSearchResult(details as any));
+    case "import":
+      return wrap(renderImportResult(details as any));
     case "control":
       if (sub === "pending") return wrap(renderPending(details as MemoryRecord[]));
       return textComponent(result);

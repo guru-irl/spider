@@ -54,6 +54,26 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(80).join("\n")).toContain("pending item");
   });
 
+  it("search → search panel with hit count", () => {
+    const rows = [
+      { key: "k1", kind: "memory", id: "1", title: "fact", snippet: "hello world" },
+    ];
+    const c = renderSpiderResult(mkResult(rows), opts, theme, mkCtx({ action: "search" }));
+    assertComponent(c);
+    const text = c.render(80).join("\n");
+    expect(text).toContain("search");
+    expect(text).toContain("hello world");
+  });
+
+  it("import → import summary panel", () => {
+    const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
+    const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "import" }));
+    assertComponent(c);
+    const text = c.render(80).join("\n");
+    expect(text).toContain("import");
+    expect(text).toContain("3");
+  });
+
   it("DEFAULT (unmatched action) → text fallback from result.content", () => {
     const c = renderSpiderResult(
       mkResult({ anything: true }, "exec output line 1\nexec output line 2"),

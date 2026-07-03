@@ -20,6 +20,7 @@ export * from "./digest.js";
 export * from "./transcript.js";
 export * from "./import.js";
 export * from "./actions/import.js";
+export * from "./renderers.js";
 
 export function registerContextActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {
   registerExecActions(register);

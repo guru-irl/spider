@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths } from "@spider/db-core";
 import { makeRunHandler } from "../actions/run";
-import { makeWaitHandler } from "../actions/wait";
 import { makeMessageHandler } from "../actions/message";
 import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
 import { RunStore } from "../run-store";
 import { teardownAll } from "../coordinators";
 import { freshDb } from "./helpers/testutil";
+import { registerSubagentActions } from "../index";
 
 function fakeEvents() {
   const listeners = new Map<string, Array<(p: any) => void>>();
@@ -27,6 +27,21 @@ function fakeEvents() {
     },
   };
 }
+
+it("does not register a synchronous 'wait' action (subagents are async-only)", () => {
+  const registered = new Map<string, unknown>();
+  const host = { registerAction: (name: string, h: unknown) => registered.set(name, h) };
+  const savedEnv = process.env.PI_SUBAGENT_CHILD;
+  try {
+    delete process.env.PI_SUBAGENT_CHILD;
+    registerSubagentActions(host as never, {} as never);
+    expect(registered.has("run")).toBe(true);
+    expect(registered.has("message")).toBe(true);
+    expect(registered.has("wait")).toBe(false);
+  } finally {
+    if (savedEnv !== undefined) process.env.PI_SUBAGENT_CHILD = savedEnv;
+  }
+});
 
 describe("run action routing", () => {
   afterEach(() => teardownAll());
@@ -99,23 +114,6 @@ describe("run action routing", () => {
     expect(disposeSpy).not.toHaveBeenCalled();
     teardownAll();
     expect(disposeSpy).toHaveBeenCalled();
-  });
-});
-
-describe("wait action handler", () => {
-  it("resolves promptly for an already-terminal run addressed by id", async () => {
-    const db = freshDb();
-    const store = new RunStore(db);
-    const { id } = store.create({ sessionId: "w1", agent: "worker" });
-    store.start(id);
-    store.finish(id, { status: "done", result: "ok" });
-    const handler = makeWaitHandler();
-    const ctx: any = { db, sessionId: "w1" };
-    const res: any = await handler({ id }, ctx);
-    expect(res.content).toContain("1 finished");
-    expect(res.content).not.toContain("timed out");
-    expect(res.details.finished.map((r: any) => r.id)).toContain(id);
-    expect(res.details.finished[0].status).toBe("done");
   });
 });
 

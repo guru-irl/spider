@@ -32,12 +32,6 @@ export const RunParams: TObject = Type.Object({
   skill: Type.Optional(Type.String()) as TOptional<TString>,
 });
 
-export const WaitParams: TObject = Type.Object({
-  id: Type.Optional(Type.String({ description: "Run id/prefix to wait for one run; omit to wait across all active async runs" })) as TOptional<TString>,
-  all: Type.Optional(Type.Boolean({ description: "Wait for ALL active runs (default false = first-finish)" })) as TOptional<TBoolean>,
-  timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Give up after ms (default 1800000)" })) as TOptional<TInteger>,
-});
-
 export const MessageParams: TObject = Type.Object({
   to: Type.String({ description: "Target session name/id" }) as TString,
   message: Type.String({ description: "Message body" }) as TString,

@@ -95,7 +95,7 @@ const SPIDER_PARAMETERS = {
       type: "string",
       enum: [
         "search", "remember", "recall", "exec", "exec_file", "batch",
-        "index", "fetch", "run", "wait", "todo", "skill", "import", "message", "control",
+        "index", "fetch", "run", "todo", "skill", "import", "message", "control",
       ],
       description: "The spider verb to run.",
     },
@@ -157,10 +157,8 @@ const SPIDER_PARAMETERS = {
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
     async: { type: "boolean", description: "Run subagent(s) in the background and return immediately." },
-    // wait
-    id: { type: "string", description: "Run id/prefix for action 'wait' (also a todo id)." },
-    all: { type: "boolean", description: "action 'wait': wait for ALL active runs." },
-    timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (wait/message)." },
+    id: { type: "string", description: "Run id/prefix (also a todo id)." },
+    timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
     message: { type: "string", description: "Message body for action 'message'." },
@@ -256,7 +254,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // in-process exec/exec_file/batch handlers (Phase 2 Task 4).
   // Strangler: spider owns exec/exec_file/batch/index/fetch/search/import in-process; legacy context-mode ctx_* MCP tools are deprecated (spider does not register them).
   registerContextActions(registerAction);
-  // subagents runtime: run/wait/message (child-guard + shutdown teardown handled inside).
+  // subagents runtime: run/message (child-guard + shutdown teardown handled inside).
   registerSubagentActions({ registerAction }, pi);
 
   // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.
@@ -300,7 +298,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}, plus async:true to run in the background; wait→id|all; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}, plus async:true to run in the background; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,

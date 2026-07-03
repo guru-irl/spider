@@ -11,7 +11,7 @@ function fakePi(): any {
 }
 
 describe("host wires subagent actions", () => {
-  it("registers run/wait/message actions on activation", () => {
+  it("registers run/message actions on activation", () => {
     const prev = process.env.PI_SUBAGENT_CHILD;
     delete process.env.PI_SUBAGENT_CHILD;
     try {
@@ -20,7 +20,7 @@ describe("host wires subagent actions", () => {
       setGlobalDbPathForTests(join(scratch, `g-sub-${Date.now()}.db`));
       spiderExtension(fakePi());
       expect(getAction("run")).toBeTypeOf("function");
-      expect(getAction("wait")).toBeTypeOf("function");
+      expect(getAction("wait")).toBeUndefined();
       expect(getAction("message")).toBeTypeOf("function");
     } finally {
       if (prev === undefined) delete process.env.PI_SUBAGENT_CHILD;

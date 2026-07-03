@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { RunParams, WaitParams, MessageParams } from "../schemas";
+import { RunParams, MessageParams } from "../schemas";
 import { Value } from "typebox/value";
 
 describe("schemas", () => {
@@ -14,8 +14,5 @@ describe("schemas", () => {
     expect(Value.Check(MessageParams, { to: "reviewer", message: "hi" })).toBe(true);
     expect(Value.Check(MessageParams, { to: "reviewer" })).toBe(false);
   });
-  it("WaitParams accepts empty (wait-any) and {all:true}", () => {
-    expect(Value.Check(WaitParams, {})).toBe(true);
-    expect(Value.Check(WaitParams, { all: true, timeoutMs: 1000 })).toBe(true);
-  });
+
 });

@@ -27,4 +27,12 @@ describe("scrubSecrets", () => {
     expect(SECRET_PATTERNS.length).toBeGreaterThan(0);
     expect(INJECTION_NOTE).toMatch(/untrusted DATA/);
   });
+
+  it("redacts a secret located BEYOND 64KB (no unscrubbed tail leaks) [P3 review M1]", () => {
+    const token = "ghp_" + "z".repeat(20);
+    const r = scrubSecrets("x".repeat(70_000) + "\n" + token + "\n" + "y".repeat(1000));
+    expect(r.text).not.toContain(token);
+    expect(r.text).toContain("[REDACTED:github_personal_token]");
+    expect(r.flagged).toContain("github_personal_token");
+  });
 });

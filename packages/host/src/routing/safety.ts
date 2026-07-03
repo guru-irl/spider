@@ -36,3 +36,28 @@ export function processToolContent(content: string, cfg: SafetyConfig): SafetyRe
   }
   return { content: out, changed: out !== content, flagged: [...flagged] };
 }
+
+/**
+ * Sanitize a tool-call input before it is persisted as an intent payload in the
+ * `events` log. Content-bearing fields are replaced with size/count metadata
+ * (write `content` -> `contentBytes`, edit `edits` -> `editCount`) and every other
+ * string value is secret-scrubbed. The events log therefore stores WHAT/where a
+ * tool ran (path, counts, scrubbed args) — never full file contents or command
+ * secrets. Never throws.
+ */
+export function sanitizeIntentPayload(input: unknown): unknown {
+  try {
+    if (input === null || typeof input !== "object") {
+      return typeof input === "string" ? scrubSecrets(input).text : input;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+      if (k === "content" && typeof v === "string") { out.contentBytes = v.length; continue; }
+      if (k === "edits" && Array.isArray(v)) { out.editCount = v.length; continue; }
+      out[k] = typeof v === "string" ? scrubSecrets(v).text : v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}

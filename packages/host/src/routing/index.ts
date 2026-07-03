@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Db } from "@spider/db-core";
 import { recordIntent, recordResult, isExempt } from "./tracking.js";
-import { processToolContent } from "./safety.js";
+import { processToolContent, sanitizeIntentPayload } from "./safety.js";
 import { autoIndexOutput } from "./autoindex.js";
 import { registerEditWriteOverrides } from "./overrides.js";
 
@@ -40,7 +40,7 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
   pi.on("tool_call", (event: any) => {
     const tool = event?.toolName;
     if (!tool || isExempt(tool) || !deps.config.tracking) return;
-    recordIntent(deps.db, { sessionId: deps.getSessionId(), tool, payload: event.input });
+    recordIntent(deps.db, { sessionId: deps.getSessionId(), tool, payload: sanitizeIntentPayload(event.input) });
     return; // never block
   });
 
@@ -49,8 +49,10 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
     if (!tool || isExempt(tool)) return;
     const text = textOf(event.content);
     const safe = processToolContent(text, deps.config);
-    if (text.length >= deps.config.autoIndexThreshold) {
-      autoIndexOutput(deps.db, text, `tool:${tool}`, {
+    // Auto-index the SCRUBBED content (never the raw output) so secrets never enter
+    // the recall corpus (content/content_fts/embeddings).
+    if (safe.content.length >= deps.config.autoIndexThreshold) {
+      autoIndexOutput(deps.db, safe.content, `tool:${tool}`, {
         threshold: deps.config.autoIndexThreshold,
         indexLargeOutput: deps.indexLargeOutput,
       });

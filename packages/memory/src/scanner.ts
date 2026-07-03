@@ -180,14 +180,13 @@ export const INJECTION_NOTE =
 
 /**
  * Redact known secret patterns from `text`, replacing each match with
- * `[REDACTED:<id>]`. Only the first `MAX_SCAN_CHARS` characters are scanned
- * and redacted; any remaining tail is preserved untouched. Returns the
- * scrubbed text plus the deduplicated list of matched secret ids.
+ * `[REDACTED:<id>]`. Redaction covers the ENTIRE text (the secret patterns are
+ * bounded / ReDoS-safe) so no secret past MAX_SCAN_CHARS can leak to the model or
+ * the recall corpus. Returns the scrubbed text plus the deduplicated matched ids.
  */
 export function scrubSecrets(text: string): { text: string; flagged: string[] } {
   const flagged = new Set<string>();
-  let out = text.slice(0, MAX_SCAN_CHARS);
-  const tail = text.slice(MAX_SCAN_CHARS);
+  let out = text;
   for (const { pattern, id } of SECRET_PATTERNS) {
     const g = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
     if (g.test(out)) {
@@ -195,7 +194,7 @@ export function scrubSecrets(text: string): { text: string; flagged: string[] } 
       out = out.replace(new RegExp(pattern.source, g.flags), `[REDACTED:${id}]`);
     }
   }
-  return { text: out + tail, flagged: [...flagged] };
+  return { text: out, flagged: [...flagged] };
 }
 
 function invisibleCodepointId(ch: string): string {

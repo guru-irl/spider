@@ -131,4 +131,30 @@ describe("AgentStore", () => {
     
     store.stop();
   });
+
+  it("caps handoffs history to a bounded window", () => {
+    const src = new FakeSource();
+    const store = new AgentStore(src);
+    store.start();
+    
+    // Emit more than 64 handoff events
+    for (let i = 0; i < 100; i++) {
+      src.emit({
+        runId: `r${i}`,
+        sessionId: "s",
+        ts: Date.now() + i,
+        type: "handoff",
+        payload: { from: `r${i}`, to: `r${i + 1}`, phase: "review" },
+      });
+    }
+    
+    const edges = store.edges();
+    // Should be capped at 64
+    expect(edges.length).toBe(64);
+    // Should contain the most recent handoffs (last 64)
+    expect(edges[edges.length - 1].from).toBe("r99");
+    expect(edges[0].from).toBe("r36"); // 100 - 64 = 36
+    
+    store.stop();
+  });
 });

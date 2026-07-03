@@ -2,6 +2,7 @@ import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource } from "./
 
 const RETENTION_MS = 10_000;
 const TAIL_CAP = 5;
+const MAX_HANDOFFS = 64;
 
 export function projectRow(row: RunRow): AgentSnapshot {
   return {
@@ -68,7 +69,13 @@ export class AgentStore {
   private ingest(e: RunEvent): void {
     if (e.type === "handoff" && e.payload && typeof e.payload === "object") {
       const p = e.payload as { from?: string; to?: string; phase?: string };
-      if (p.from && p.to) this.handoffs.push({ from: p.from, to: p.to, phase: p.phase, ts: e.ts });
+      if (p.from && p.to) {
+        this.handoffs.push({ from: p.from, to: p.to, phase: p.phase, ts: e.ts });
+        // Cap to the last MAX_HANDOFFS to prevent unbounded growth
+        if (this.handoffs.length > MAX_HANDOFFS) {
+          this.handoffs.shift();
+        }
+      }
     }
     const id = e.runId;
     if (id) {

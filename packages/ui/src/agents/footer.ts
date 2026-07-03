@@ -23,18 +23,21 @@ export function shortModel(m?: string | null): string { if (!m) return "—"; re
  *  `<lead> 🕸  name · type · model · turns · dur · activity`. `lead` is the caller's status
  *  marker (animated spinner while running, terminal glyph otherwise), coloured by status. */
 export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number, lead: string): string {
+  const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
   const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
   const model = shortModel(a.model);
   const sep = t.fg("dim", "·");
   const parts = [
-    t.fg(statusToken(a.status), t.bold(a.name)),
-    sep, t.fg("accent", a.role ?? a.agent),
+    t.fg("toolTitle", t.bold(a.name)),
+    sep, ital(t.fg("accent", a.role ?? a.agent)),
   ];
   if (model !== "—") parts.push(sep, t.fg("muted", model));
   parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
   if (a.activity) parts.push(sep, t.fg("dim", a.activity));
-  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("accent", t.glyph)}  ${parts.join(" ")}`, width, "…");
+  // ONLY the leading status marker (spinner while running, glyph otherwise) is status-coloured;
+  // the name/text stay a constant tool-title colour (no green-on-success noise).
+  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("toolTitle", t.glyph)}  ${parts.join(" ")}`, width, "…");
 }
 
 export class AgentFooter implements Component {
@@ -55,7 +58,9 @@ export class AgentFooter implements Component {
 
   private agentLine(a: AgentSnapshot, width: number): string {
     const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
-    return formatAgentLine(this.theme, a, width, this.now(), lead);
+    const pin = this.store.isPinned(a.runId) ? " 📌" : "";
+    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin)), this.now(), lead);
+    return pin ? line + this.theme.fg("warning", pin) : line;
   }
 
   private build(width: number): string[] {

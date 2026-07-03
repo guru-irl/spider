@@ -37,6 +37,7 @@ export interface ThemeAdapter {
   fg(token: string, s: string): string;
   bg(token: string, s: string): string;
   bold(s: string): string;
+  italic?(s: string): string;
   glyph: string;
 }
 

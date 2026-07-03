@@ -19,11 +19,12 @@ const ANSI = /\x1b\[[0-9;]*m/g;
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 const STOK: Record<string, string> = { done: "success", failed: "error", cancelled: "warning", running: "accent", queued: "muted", paused: "muted" };
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; }
+interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; }
 function mkTheme(theme: any): T {
   return {
     fg: (tok, s) => (typeof theme?.fg === "function" ? theme.fg(tok, s) : s),
     bold: (s) => (typeof theme?.bold === "function" ? theme.bold(s) : s),
+    italic: (s) => (typeof theme?.italic === "function" ? theme.italic(s) : s),
   };
 }
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
@@ -57,7 +58,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   const glyph = t.fg(STOK[status] ?? "muted", SG[status] ?? "•");
   const name = t.bold(r.name ?? r.agent ?? "agent");
   const sep = t.fg("dim", "·");
-  const head = `  ${glyph} ${name} ${sep} ${t.fg("accent", r.agent ?? "worker")} ${sep} ${t.fg("muted", shortModel(r.model))} ${sep} ${t.fg(STOK[status] ?? "muted", status)}`;
+  const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("accent", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))} ${sep} ${t.fg(STOK[status] ?? "muted", status)}`;
   const lines = [clip(head, width)];
   const task = (r.task ?? "").trim();
   if (task) {
@@ -116,11 +117,12 @@ export function renderSpiderResult(
 }
 
 /** In-progress CALL title. renderCall REPLACES the title (pi does NOT prepend the tool
- *  label), so this renders the FULL header: `🕸  spider · parallel · 3 started`. */
+ *  label), so this renders the FULL header using the SAME 'toolTitle' colour pi uses for its
+ *  own tool titles (glyph + all text); the mode word (parallel/chain/…) is italicised. */
 export function renderSpiderCall(args: any, theme: any, _context: any): Component {
   const t = mkTheme(theme);
   const action = String(args?.action ?? "");
-  let suffix = action || "run";
+  let suffix = t.fg("toolTitle", action || "run");
   if (action === "run") {
     const mode = Array.isArray(args?.pipeline) ? "pipeline"
       : Array.isArray(args?.chain) ? "chain"
@@ -128,10 +130,12 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
     const n = Array.isArray(args?.tasks) ? args.tasks.length
       : Array.isArray(args?.chain) ? args.chain.length
       : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
-    suffix = mode === "single" ? "run" : `${mode} · ${n} ${args?.async ? "started" : "run(s)"}`;
+    suffix = mode === "single"
+      ? t.fg("toolTitle", "run")
+      : `${t.italic(t.fg("toolTitle", mode))} ${t.fg("toolTitle", `· ${n} ${args?.async ? "started" : "run(s)"}`)}`;
   } else if (args?.sub || args?.command) {
-    suffix = `${action} · ${args.sub ?? args.command}`;
+    suffix = t.fg("toolTitle", `${action} · ${args.sub ?? args.command}`);
   }
-  const line = `${t.fg("accent", "🕸")}  ${t.fg("accent", t.bold("spider"))} ${t.fg("dim", "·")} ${t.fg("accent", suffix)}`;
+  const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }

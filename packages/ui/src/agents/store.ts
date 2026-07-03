@@ -48,6 +48,7 @@ type Listener = () => void;
 
 export class AgentStore {
   private agents = new Map<string, AgentSnapshot>();
+  private pins = new Set<string>();
   private handoffs: HandoffEdge[] = [];
   private listeners = new Set<Listener>();
   private off?: () => void;
@@ -66,8 +67,17 @@ export class AgentStore {
 
   snapshot(): AgentSnapshot[] {
     this.evict();
-    return [...this.agents.values()];
+    // Pinned agents float to the top (stable within group), so they stay visible in the
+    // footer's limited window and at the head of the grid list.
+    const all = [...this.agents.values()];
+    return all.sort((a, b) => (this.pins.has(b.runId) ? 1 : 0) - (this.pins.has(a.runId) ? 1 : 0));
   }
+
+  /** Pin state is session-lived (survives grid close/reopen) and exempts a run from
+   *  retention eviction, so a pinned agent stays in the footer + grid after it finishes. */
+  togglePin(id: string): boolean { if (this.pins.has(id)) { this.pins.delete(id); this.emit(); return false; } this.pins.add(id); this.emit(); return true; }
+  isPinned(id: string): boolean { return this.pins.has(id); }
+  pinnedIds(): string[] { return [...this.pins]; }
 
   /** Look up one run even if it has been evicted from the live snapshot (reads the row).
    *  The detail view uses this so drilling into a just-finished run isn't a blank screen. */
@@ -120,6 +130,7 @@ export class AgentStore {
   private evict(): void {
     const cutoff = this.now() - RETENTION_MS;
     for (const [id, a] of this.agents) {
+      if (this.pins.has(id)) continue; // pinned runs are never evicted
       const finished = a.status === "done" || a.status === "failed" || a.status === "cancelled";
       if (finished && a.endedAt !== undefined && a.endedAt < cutoff) this.agents.delete(id);
     }

@@ -61,6 +61,30 @@ describe("AgentStore", () => {
     store.stop();
   });
 
+  it("pins exempt a finished run from eviction, float it to the top, and toggle", () => {
+    let now = 1000;
+    const src = new FakeSource();
+    src.rows.set("r1", row({ id: "r1", name: "keep", status: "done", started_at: 0, ended_at: 0 }));
+    src.rows.set("r2", row({ id: "r2", name: "drop", status: "done", started_at: 0, ended_at: 0 }));
+    const store = new AgentStore(src, () => now);
+    store.start();
+    expect(store.snapshot().map(a => a.runId).sort()).toEqual(["r1", "r2"]);
+
+    expect(store.togglePin("r1")).toBe(true);
+    expect(store.isPinned("r1")).toBe(true);
+    expect(store.pinnedIds()).toEqual(["r1"]);
+
+    now = 1_000_000; // far past RETENTION_MS
+    const ids = store.snapshot().map(a => a.runId);
+    expect(ids).toContain("r1");     // pinned → retained after completion
+    expect(ids).not.toContain("r2"); // unpinned → evicted
+    expect(ids[0]).toBe("r1");       // pinned floats to the top
+
+    expect(store.togglePin("r1")).toBe(false); // unpin
+    expect(store.isPinned("r1")).toBe(false);
+    store.stop();
+  });
+
   it("updates activity + counts on a bus event and notifies once", () => {
     const src = new FakeSource();
     src.rows.set("r1", row({ id: "r1", step_count: 1, token_count: 10 }));

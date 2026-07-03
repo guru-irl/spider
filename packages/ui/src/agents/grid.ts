@@ -15,7 +15,6 @@ function padTo(s: string, w: number): string {
  *  footer) inside a rounded frame. One line per agent → dense, readable, no tall boxes. */
 export class Grid implements Component {
   private focus = 0;
-  private pinned = new Set<string>();
   private spinner: Spinner;
   private now: () => number;
   private drill?: (runId: string) => void;
@@ -47,7 +46,7 @@ export class Grid implements Component {
     if (data === "m") { void this.actions.message(id); return true; }
     if (data === "i") { void this.actions.interrupt(id); return true; }
     if (data === "r") { void this.actions.resume(id); return true; }
-    if (data === "f") { if (this.pinned.has(id)) this.pinned.delete(id); else this.pinned.add(id); this.actions.follow(id); return true; }
+    if (data === "f") { this.store.togglePin(id); this.actions.follow(id); return true; }
     return false;
   }
 
@@ -74,7 +73,7 @@ export class Grid implements Component {
     all.forEach((a, i) => {
       const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
       const marker = i === this.focus ? "▸ " : "  ";
-      const pin = this.pinned.has(a.runId) ? " 📌" : "";
+      const pin = this.store.isPinned(a.runId) ? " 📌" : "";
       const lineW = Math.max(4, inner - visibleWidth(marker) - visibleWidth(pin));
       const line = formatAgentLine(t, a, lineW, this.now(), lead);
       body.push(truncateToWidth(`${t.fg("accent", marker)}${line}${pin ? t.fg("warning", pin) : ""}`, inner, "…"));

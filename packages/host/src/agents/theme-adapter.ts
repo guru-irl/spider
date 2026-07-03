@@ -7,6 +7,7 @@ export function piTheme(theme: Theme): ThemeAdapter {
     fg: (token, s) => theme.fg(token as never, s),
     bg: (token, s) => theme.bg(token as never, s),
     bold: (s) => theme.bold(s),
+    italic: (s) => theme.italic(s),
     glyph: "🕸",
   };
 }

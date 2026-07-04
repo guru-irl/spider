@@ -32,7 +32,7 @@ import {
   type OrganismActionDeps,
   type SkillActionArgs,
 } from "@spider/organism";
-import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS } from "@spider/superpowers";
+import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS, registerSuperpowers } from "@spider/superpowers";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
@@ -428,6 +428,16 @@ export default function spiderExtension(pi: PiToolAPI): void {
   );
 
   registerHooks(pi);
+
+  // Register @spider/superpowers: writes the spider-managed AGENTS.md block once
+  // per process (skipped under vitest so tests never mutate the real ~/.pi file),
+  // and its skillPaths provider backs hooks.ts's resources_discover contribution.
+  // Best-effort — never break extension load.
+  try {
+    registerSuperpowers({ registerAction }, pi, { skipAgentsMd: process.env.VITEST === "true" });
+  } catch {
+    /* superpowers registration is best-effort; never break extension load */
+  }
 
   // Keep the mutable session id fresh: tool_call/tool_result events carry no
   // sessionId, so routing reads it via getSessionId() over this ref. pi.on

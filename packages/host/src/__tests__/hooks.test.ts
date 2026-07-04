@@ -19,10 +19,16 @@ describe("registerHooks (Phase 0 empty handlers)", () => {
     expect(HOOK_NAMES as readonly string[]).not.toContain("afterToolCall");
   });
 
-  it("every registered handler is a pass-through no-op (returns undefined)", () => {
+  it("returns undefined for lifecycle no-ops and contributes skillPaths for resources_discover", () => {
     const handlers: Record<string, (...a: unknown[]) => unknown> = {};
     const pi: PiLikeAPI = { on(name, fn) { handlers[name] = fn; } };
     registerHooks(pi);
-    for (const name of HOOK_NAMES) expect(handlers[name]()).toBeUndefined();
+    for (const name of HOOK_NAMES) {
+      if (name === "resources_discover") continue;
+      expect(handlers[name]()).toBeUndefined();
+    }
+    const res = handlers["resources_discover"]({ cwd: process.cwd(), reason: "startup" }) as { skillPaths?: string[] };
+    expect(Array.isArray(res.skillPaths)).toBe(true);
+    expect(res.skillPaths!.length).toBeGreaterThanOrEqual(1);
   });
 });

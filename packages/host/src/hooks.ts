@@ -20,6 +20,7 @@
 // intentionally NOT registered here to avoid double-registration.
 import { resolveProject, openGlobal, openProject } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
+import { contributeSkillPaths } from "@spider/superpowers";
 
 export interface PiLikeAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -72,6 +73,17 @@ export function registerHooks(pi: PiLikeAPI): void {
           // session upsert is best-effort; never block session start.
         }
         return undefined;
+      });
+    } else if (name === "resources_discover") {
+      // Contribute the superpowers baseline skills + the project's .spider/skills
+      // tier. Best-effort: a discovery failure must never break session start.
+      pi.on(name, (event: any) => {
+        try {
+          const cwd = String(event?.cwd ?? process.cwd());
+          return { skillPaths: contributeSkillPaths(cwd) };
+        } catch {
+          return undefined;
+        }
       });
     } else {
       pi.on(name, () => undefined);

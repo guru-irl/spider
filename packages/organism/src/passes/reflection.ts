@@ -34,18 +34,16 @@ export function clusterMemory(db: Db, embedder: Embedder | null, minCluster: num
   if (records.length < minCluster) return [];
 
   const byId = new Map<string, MemoryRecord>();
-  for (const r of records) byId.set(String(r.id), r);
+  for (const r of records) byId.set(r.uuid, r);
 
-  // Embed each record's content (synchronous surface: kick off + block-free is
-  // not possible with the async embedder, so we resolve the embeddings up front
-  // via the queued vectors already indexed in the DB — knn reads persisted
-  // vectors, so no per-call embedding is required here).
+  // knn reads persisted vectors keyed by each record's uuid, so no per-call
+  // embedding is required here — we read the canonical blob from vector_map.
   const seeds = records.slice(0, MAX_SEEDS);
   const consumed = new Set<string>();
   const clusters: MemoryRecord[][] = [];
 
   for (const seed of seeds) {
-    const seedId = String(seed.id);
+    const seedId = seed.uuid;
     if (consumed.has(seedId)) continue;
 
     const query = vectorFor(db, seedId);
@@ -62,24 +60,22 @@ export function clusterMemory(db: Db, embedder: Embedder | null, minCluster: num
     }
 
     if (members.length < minCluster) continue;
-    for (const m of members) consumed.add(String(m.id));
+    for (const m of members) consumed.add(m.uuid);
     clusters.push(members);
   }
 
   return clusters;
 }
 
-/** Read the persisted embedding for a memory record via a nearest-self knn. */
+/** Read the persisted embedding blob for a memory record by its uuid. */
 function vectorFor(db: Db, ownerId: string): Float32Array | null {
-  // The persisted vector is not directly exposed; use the vector store's own
-  // row. knn requires a query vector, so we fall back to reading the blob.
+  // vector_map holds the canonical raw float32 blob (works even when sqlite-vec
+  // is not loaded or the dim differs from the fixed vec0 table).
   try {
-    db.loadVec();
     const row = db
       .prepare(
-        `SELECT v.embedding AS embedding
-         FROM vectors v JOIN vector_map m ON m.rowid = v.rowid
-         WHERE m.owner_kind = 'memory' AND m.owner_id = ?
+        `SELECT embedding FROM vector_map
+         WHERE owner_kind = 'memory' AND owner_id = ?
          LIMIT 1`
       )
       .get(ownerId) as { embedding: Buffer } | undefined;

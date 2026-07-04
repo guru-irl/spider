@@ -97,7 +97,7 @@ export type {
   RenderCtx, ExecKind, ExecDetails, IndexDetails, MemoryRecordView, MemoryCardDetails,
   TodoItemView, TodoChecklistDetails, RunView, RunResultDetails, MessageDetails,
 } from "./renderers/types";
-export { card, kv, statusIcon } from "./renderers/types";
+export { card, kv, statusIcon, sectionRule } from "./renderers/types";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";

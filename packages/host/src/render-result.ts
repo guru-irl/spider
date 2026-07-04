@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, sectionRule, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -224,6 +224,26 @@ function renderControlConfig(t: T, details: any, _expanded: boolean): Component 
   return textComponent({ details });
 }
 
+/** `control memory consolidate` — body-only active-memory list: a `memory · N active · X chars`
+ *  rule, then one `◆ [category] content` line per active entry. Never throws on a partial payload. */
+function renderControlMemory(t: T, details: any): Component {
+  const th = adaptTheme(t);
+  const entries: any[] = Array.isArray(details?.entries) ? details.entries : [];
+  const usage = Number(details?.usage ?? 0);
+  return {
+    render(w: number): string[] {
+      const out = ["", sectionRule(th, `memory · ${entries.length} active · ${usage} chars`, w)];
+      if (!entries.length) out.push(truncateToWidth(th.fg("dim", " (no active memories)"), w, ""));
+      for (const e of entries) {
+        const cat = th.fg("accent", `[${String(e?.category ?? "?")}]`);
+        out.push(truncateToWidth(` ${th.fg("dim", "◆")} ${cat} ${th.fg("text", String(e?.content ?? ""))}`, w, ""));
+      }
+      return out;
+    },
+    invalidate() {},
+  };
+}
+
 /** Map the raw executor result(s) → ExecDetails for renderExecResult. */
 function toExecDetails(action: string, args: any, details: any): ExecDetails {
   const kind = action as ExecKind;
@@ -352,6 +372,8 @@ export function renderSpiderResult(
       if (sub === "models") return renderControlModels(t, details, expanded);
       if (sub === "config") return renderControlConfig(t, details, expanded);
       if (sub === "insights") return renderControlInsights(t, details, expanded);
+      if (sub === "migrate") return wrapBespoke(renderImportResult(details as any));
+      if (sub === "consolidate") return renderControlMemory(t, details);
       return textComponent(result);
     default:
       return textComponent(result);

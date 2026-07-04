@@ -181,6 +181,26 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{|"linkedPct"/); // NOT raw JSON
   });
 
+  it("control migrate → import summary panel (no raw JSON)", () => {
+    const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
+    const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "control", command: "migrate" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toContain("3");
+    expect(out).not.toMatch(/\{\s*"imported"/);
+  });
+
+  it("control memory consolidate → active-memory list (no raw JSON)", () => {
+    const details = { entries: [{ category: "preference", content: "tabs over spaces" }], usage: 1234 };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "memory", sub: "consolidate" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toMatch(/1 active · 1234/);
+    expect(out).toContain("preference");
+    expect(out).toContain("tabs over spaces");
+    expect(out).not.toMatch(/"entries"/);
+  });
+
   it("fetch → index-style card with chunk count, url/source, no glyph, no raw JSON", () => {
     const details = { count: 2, chunks: 7, embedded: 7, urls: ["http://a", "http://b"], sources: ["a", "b"] };
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "fetch" }));

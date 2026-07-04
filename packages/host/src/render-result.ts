@@ -249,6 +249,15 @@ function toIndexDetails(args: any, details: any): IndexDetails {
   return { kind: "index", source: String(r.source ?? args?.source ?? "untitled"), targets: [target], chunks, embedded: chunks };
 }
 
+/** Map the runFetch result → IndexDetails (kind:"fetch") for renderIndexResult. */
+function toFetchDetails(_args: any, details: any): IndexDetails {
+  const sources: string[] = Array.isArray(details?.sources) ? details.sources.map(String) : [];
+  const urls: string[] = Array.isArray(details?.urls) ? details.urls.map(String) : [];
+  const source = sources.length === 1 ? sources[0] : `${details?.count ?? sources.length} source(s)`;
+  const chunks = Number(details?.chunks ?? 0);
+  return { kind: "fetch", source, targets: sources, chunks, embedded: Number(details?.embedded ?? chunks), urls };
+}
+
 /** Map the intercom message args+result → MessageDetails for renderMessageResult. */
 function toMessageDetails(args: any, details: any): MessageDetails {
   const kind = String(args?.kind ?? "");
@@ -314,6 +323,11 @@ export function renderSpiderResult(
     }
     case "index": {
       const d = toIndexDetails(context?.args, details);
+      const th = adaptTheme(t);
+      return { render: (w: number) => renderIndexResult(d, { theme: th, width: w, expanded }), invalidate() {} };
+    }
+    case "fetch": {
+      const d = toFetchDetails(context?.args, details);
       const th = adaptTheme(t);
       return { render: (w: number) => renderIndexResult(d, { theme: th, width: w, expanded }), invalidate() {} };
     }

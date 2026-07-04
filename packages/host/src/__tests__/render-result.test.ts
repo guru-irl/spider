@@ -181,6 +181,17 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{|"linkedPct"/); // NOT raw JSON
   });
 
+  it("fetch → index-style card with chunk count, url/source, no glyph, no raw JSON", () => {
+    const details = { count: 2, chunks: 7, embedded: 7, urls: ["http://a", "http://b"], sources: ["a", "b"] };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "fetch" }));
+    assertComponent(c);
+    const text = c.render(80).join("\n");
+    expect(text).toContain("7 chunks");
+    expect(text).toMatch(/http:\/\/a|a source|2 source/);
+    expect(text).not.toContain("🕸");
+    expect(text).not.toMatch(/\{|"sources"/);
+  });
+
   it("import → import summary panel", () => {
     const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
     const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "import" }));

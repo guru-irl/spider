@@ -19,10 +19,13 @@ export async function runIndex(args: any, ctx: IndexCtx): Promise<{ text: string
   return { text: `indexed ${res.chunkCount} chunk(s) under "${res.source}"`, details: res };
 }
 
-export async function runFetch(args: any, ctx: IndexCtx): Promise<{ text: string; details: { count: number } }> {
+export async function runFetch(args: any, ctx: IndexCtx): Promise<{ text: string; details: any }> {
   const requests = args.requests ?? (args.url ? [{ url: args.url, source: args.source }] : []);
   const store = new ContentStore(ctx.db);
   const summaries: string[] = [];
+  const urls: string[] = [];
+  const sources: string[] = [];
+  let chunks = 0;
   for (const req of requests) {
     const { markdown, source } = await fetchAndConvert(req.url, req.source, {
       cwd: ctx.cwd,
@@ -35,9 +38,15 @@ export async function runFetch(args: any, ctx: IndexCtx): Promise<{ text: string
       const row = sel.get(id) as { chunk: string } | undefined;
       if (row) enqueueEmbed(ctx.db, "content", String(id), row.chunk);
     }
+    urls.push(String(req.url));
+    sources.push(source);
+    chunks += res.chunkCount;
     summaries.push(`${source}: ${res.chunkCount} chunk(s)`);
   }
-  return { text: `fetched+indexed ${requests.length} URL(s)\n${summaries.join("\n")}`, details: { count: requests.length } as { count: number } };
+  return {
+    text: `fetched+indexed ${requests.length} URL(s)\n${summaries.join("\n")}`,
+    details: { count: requests.length, chunks, embedded: chunks, urls, sources },
+  };
 }
 
 export function registerIndexActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {

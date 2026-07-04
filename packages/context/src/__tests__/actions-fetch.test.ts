@@ -29,5 +29,9 @@ describe("fetch action", () => {
     const hits = new ContentStore(ctx.db).ftsSearch("retry", 5);
     expect(hits.length).toBeGreaterThan(0);
     expect(hits[0].chunk.toLowerCase()).toContain("retry");
+
+    expect(r.details.chunks).toBeGreaterThan(0);
+    expect(r.details.urls).toContain("http://example.test/doc");
+    expect(r.details.sources).toContain("web");
   });
 });

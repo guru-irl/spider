@@ -65,16 +65,17 @@ Each agent gets:
 
 ### 3. Dispatch in Parallel
 
-Issue all three subagent dispatches in the same response — they run in parallel:
+Issue one `spider run` per independent domain in a single turn — they run
+concurrently:
 
-```text
-This is a spider run task brief: "Fix agent-tool-abort.test.ts failures"
-This is a spider run task brief: "Fix batch-completion-behavior.test.ts failures"
-This is a spider run task brief: "Fix tool-approval-race-conditions.test.ts failures"
-# All three run concurrently.
-```
+    spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts failures", model: "<mid>" }
+    spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts failures", model: "<mid>" }
+    spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts failures", model: "<mid>" }
 
-Multiple dispatch calls in one response = parallel execution. One per response = sequential.
+Or dispatch the whole fan-out at once: `spider run { tasks: [ ... ], concurrency: 3 }`.
+Collect results with `spider wait { all: true }`, or let each worker wake you via
+intercom (`spider message`) as it finishes so you integrate incrementally
+instead of blocking on the slowest.
 
 ### 4. Review and Integrate
 
@@ -146,9 +147,9 @@ Return: Summary of what you found and what you fixed.
 
 **Dispatch:**
 ```
-Agent 1 → Fix agent-tool-abort.test.ts
-Agent 2 → Fix batch-completion-behavior.test.ts
-Agent 3 → Fix tool-approval-race-conditions.test.ts
+spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts", model: "<mid>" }
+spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts", model: "<mid>" }
+spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts", model: "<mid>" }
 ```
 
 **Results:**

@@ -35,3 +35,11 @@ describe("test-driven-development is spider-native", () => {
     expect(md).toMatch(/handoff|intercom|wake/i);
   });
 });
+
+describe("dispatching-parallel-agents is spider-native", () => {
+  const md = read("dispatching-parallel-agents/SKILL.md");
+  it("uses spider run parallel form", () => {
+    expect(md).toMatch(/spider run/);
+    expect(md).toMatch(/tasks:\s*\[|parallel/i);
+  });
+});

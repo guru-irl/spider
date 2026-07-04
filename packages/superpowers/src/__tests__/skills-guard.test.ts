@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 const skillsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../skills");
@@ -30,5 +31,22 @@ describe("skills vendoring guard", () => {
   it("has no cross-harness plugin/hook artifacts", () => {
     const banned = /(\.claude-plugin|\.codex-plugin|\.cursor-plugin|\.kimi-plugin|\.opencode|GEMINI\.md|gemini-extension\.json|hooks-codex\.json|hooks-cursor\.json)/;
     expect(walk(skillsDir).filter((f) => banned.test(f))).toEqual([]);
+  });
+});
+
+describe("using-superpowers is pi-only (v6.1.0)", () => {
+  const md = readFileSync(path.join(skillsDir, "using-superpowers", "SKILL.md"), "utf8");
+  it("drops all non-pi harness prose", () => {
+    for (const harness of ["Claude Code", "Codex", "Copilot CLI", "Gemini CLI", "OpenCode", "Antigravity"]) {
+      expect(md.includes(harness), `mentions ${harness}`).toBe(false);
+    }
+  });
+  it("references only pi-tools.md", () => {
+    const refLinks = [...md.matchAll(/references\/([a-z-]+)\.md/g)].map((m) => m[1]).sort();
+    expect(new Set(refLinks)).toEqual(new Set(["pi-tools"]));
+  });
+  it("keeps the invocation rule and red-flags table", () => {
+    expect(md).toMatch(/1% chance/i);
+    expect(md).toMatch(/Red Flags/i);
   });
 });

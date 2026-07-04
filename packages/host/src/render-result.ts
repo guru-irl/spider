@@ -208,8 +208,6 @@ function renderControlModels(t: T, details: any, _expanded: boolean): Component 
   return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w)], invalidate() {} };
 }
 
-function firstLine(s: string): string { const l = s.split("\n").map((x) => x.trim()).filter(Boolean)[0] ?? ""; return l; }
-
 /** Map the raw executor result(s) → ExecDetails for renderExecResult. */
 function toExecDetails(action: string, args: any, details: any): ExecDetails {
   const kind = action as ExecKind;
@@ -223,7 +221,7 @@ function toExecDetails(action: string, args: any, details: any): ExecDetails {
   }
   const r = details ?? {};
   const outArr = String(r.stdout ?? "").split("\n").filter(Boolean);
-  const cmd = action === "exec_file" ? String(args?.path ?? "file") : firstLine(String(args?.code ?? ""));
+  const cmd = action === "exec_file" ? String(args?.path ?? "file") : String(args?.code ?? "");
   return { kind, commands: [cmd], ok: Number(r.exitCode ?? 0) === 0, exitCode: Number(r.exitCode ?? 0), outLines: outArr.length, preview: outArr.slice(-8) };
 }
 
@@ -351,20 +349,9 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   } else if (args?.sub || args?.command) {
     suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
   } else if (action === "exec" || action === "exec_file" || action === "batch") {
-    // Surface WHAT is being executed on the call line (the raw command / file / count),
-    // so `spider exec` doesn't just show the bare verb. First line only for scripts.
-    let cmd = "";
-    if (action === "batch") {
-      const n = Array.isArray(args?.commands) ? args.commands.length : 0;
-      cmd = `${n} command${n === 1 ? "" : "s"}`;
-    } else if (action === "exec_file") {
-      cmd = String(args?.path ?? "file");
-    } else {
-      cmd = firstLine(String(args?.code ?? ""));
-    }
-    suffix = cmd
-      ? `${verb(action)} ${t.fg("toolTitle", "·")} ${t.fg("muted", cmd)}`
-      : verb(action);
+    // The command / file / code is rendered in the RESULT body (above the output, white,
+    // truncated, ctrl+o to expand) — NOT on the header line. Keep the header to the bare verb.
+    suffix = verb(action);
   }
   const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
   return { render: (w: number) => [clip(line, w)], invalidate() {} };

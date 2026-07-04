@@ -222,22 +222,37 @@ describe("run block colors (#36)", () => {
     expect(out).toContain("high");
   });
 
-describe("renderSpiderCall shows the exec command being run", () => {
+describe("exec: full command shown above the output, not on the call line", () => {
   const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s };
   const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
-  it("exec surfaces the command code (first line) on the call line", () => {
-    expect(call({ action: "exec", language: "shell", code: "echo hi; seq 1 20" })).toContain("echo hi; seq 1 20");
+  const body = (args: any, details: any, expanded: boolean) =>
+    renderSpiderResult(mkResult(details), { expanded } as any, theme, mkCtx(args)).render(200).join("\n");
+
+  it("keeps the command OFF the call header line (just the verb)", () => {
+    expect(call({ action: "exec", language: "shell", code: "echo hi; seq 1 20" })).not.toContain("echo hi");
+    expect(call({ action: "exec_file", path: "packages/x/y.ts", code: "x" })).not.toContain("packages/x/y.ts");
+    expect(call({ action: "batch", commands: [{ code: "echo one" }, { code: "echo two" }] })).not.toContain("echo one");
   });
-  it("exec_file surfaces the target file path", () => {
-    expect(call({ action: "exec_file", path: "packages/x/y.ts", language: "javascript", code: "console.log(1)" })).toContain("packages/x/y.ts");
-  });
-  it("batch surfaces the command count", () => {
-    expect(call({ action: "batch", commands: [{ language: "shell", code: "echo one" }, { language: "shell", code: "echo two" }] })).toMatch(/2/);
-  });
-  it("exec with a multi-line script shows only the first line", () => {
-    const out = call({ action: "exec", language: "shell", code: "cd /x\nnpm test\necho done" });
+
+  it("exec shows the full command above the output, collapsed to the first line + a ctrl+o hint", () => {
+    const out = body({ action: "exec", code: "cd /x\nnpm test\necho done" }, { stdout: "ok\n", exitCode: 0 }, false);
     expect(out).toContain("cd /x");
-    expect(out).not.toContain("echo done");
+    expect(out).not.toContain("echo done"); // collapsed
+    expect(out).toMatch(/ctrl\+o/);
+  });
+
+  it("ctrl+o expands the full command (all lines)", () => {
+    const out = body({ action: "exec", code: "cd /x\nnpm test\necho done" }, { stdout: "ok\n", exitCode: 0 }, true);
+    expect(out).toContain("cd /x");
+    expect(out).toContain("npm test");
+    expect(out).toContain("echo done");
+  });
+
+  it("exec_file shows the path and batch shows command labels in the body", () => {
+    expect(body({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, { stdout: "", exitCode: 0 }, false)).toContain("packages/x/y.ts");
+    const b = body({ action: "batch", commands: [{ label: "one", code: "echo one" }, { label: "two", code: "echo two" }] }, [{ stdout: "", exitCode: 0 }], true);
+    expect(b).toContain("one");
+    expect(b).toContain("two");
   });
 });
 

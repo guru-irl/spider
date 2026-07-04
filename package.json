@@ -15,6 +15,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "volta": {
+    "node": "24.16.0"
+  },
   "pi": {
     "extensions": [
       "./dist/extension.js"

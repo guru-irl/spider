@@ -8,6 +8,7 @@ import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
 import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
+import { qualifyModelProvider, listPiModels } from "../model-resolve";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
 
@@ -73,9 +74,13 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     // encoded as a model suffix (e.g. "prov/opus:high"); split it out so the model column stays
     // clean and the thinking level renders as its own segment. spawnFor re-applies the suffix.
     const parentModel: string | undefined = ctx.model?.id;
+    // pi resolves a BARE model id (e.g. "claude-sonnet-5") to its default provider, which may
+    // be unauthenticated in the child (→ silent "No API key" death). Qualify to the provider
+    // pi lists as available (e.g. "github-copilot/claude-sonnet-5"). Already-qualified refs pass through.
+    const piModels = listPiModels(ctx.pi);
     const resolveMT = (m?: string, th?: string): { model?: string; thinking?: string } => {
       const full = m ?? parentModel;
-      return { model: stripThinkingSuffix(full), thinking: th ?? thinkingFromModel(full) };
+      return { model: qualifyModelProvider(stripThinkingSuffix(full), piModels), thinking: th ?? thinkingFromModel(full) };
     };
 
     if (Array.isArray(args.pipeline)) {

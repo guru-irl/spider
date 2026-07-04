@@ -1,0 +1,9 @@
+{
+  "name": "@spider/superpowers",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": { "test": "vitest run" },
+  "dependencies": { "@spider/db-core": "*", "@spider/ui": "*" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
+}

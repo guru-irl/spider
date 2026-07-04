@@ -115,8 +115,10 @@ Vague name, tests mock not code
 **MANDATORY. Never skip.**
 
 ```bash
-npm test path/to/test.test.ts
+spider exec "npm test path/to/test.test.ts"
 ```
+
+prefer `spider exec` so large failing output stays sandboxed — print only failures/summary.
 
 Confirm:
 - Test fails (not errors)
@@ -170,8 +172,10 @@ Don't add features, refactor other code, or "improve" beyond the test.
 **MANDATORY.**
 
 ```bash
-npm test path/to/test.test.ts
+spider exec "npm test path/to/test.test.ts"
 ```
+
+prefer `spider exec` so large failing output stays sandboxed — print only failures/summary.
 
 Confirm:
 - Test passes
@@ -338,6 +342,13 @@ Before marking work complete:
 - [ ] Edge cases and errors covered
 
 Can't check all boxes? You skipped TDD. Start over.
+
+## Handoff on green (when running as a spider subagent)
+
+If you are a worker executing a task in a `handoff:"intercom"` pipeline, when
+the suite is green and you have committed, wake the next stage (reviewer) via
+intercom with your report + diff path — don't idle waiting to be polled. If you
+are not in a pipeline, return your status normally.
 
 ## When Stuck
 

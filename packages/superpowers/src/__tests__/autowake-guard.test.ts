@@ -24,3 +24,14 @@ describe("auto-wake rewrite guard", () => {
     }
   });
 });
+
+describe("test-driven-development is spider-native", () => {
+  const md = read("test-driven-development/SKILL.md");
+  it("runs suites via spider exec and preserves the Iron Law", () => {
+    expect(md).toMatch(/spider exec/);
+    expect(md).toMatch(/NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST/);
+  });
+  it("notes intercom hand-off on green", () => {
+    expect(md).toMatch(/handoff|intercom|wake/i);
+  });
+});

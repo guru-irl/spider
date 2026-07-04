@@ -3,6 +3,8 @@
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
 import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch";
+import { registerSlashCommands } from "./slash";
+import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result";
@@ -436,6 +438,15 @@ export default function spiderExtension(pi: PiToolAPI): void {
     })
   );
 
+  registerSlashCommands(pi as any, {
+    run: (a, ctx) =>
+      dispatch(a as SpiderArgs, buildActionCtx(pi, a as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx))) as Promise<{
+        content: string;
+        details?: unknown;
+      }>,
+    alreadyRegistered: new Set(["todos", "agents"]),
+  });
+
   // NOTE: the background embed worker is intentionally NOT started here (no eager
   // DB opens / lingering timers at registration). recall degrades to FTS when no
   // vectors exist; the embed worker is wired in a later integration task.
@@ -456,6 +467,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
       return toToolResult(r);
     },
   });
+
+  try {
+    removeLegacyTools(pi as any);
+  } catch {
+    /* best-effort cutover; never break load */
+  }
 
   // The async subagent_done message is expandable in the transcript: collapsed by default,
   // ctrl+o reveals the COMPLETE curated output. Best-effort — older hosts may lack the API.

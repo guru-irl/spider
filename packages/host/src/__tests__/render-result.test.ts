@@ -153,6 +153,25 @@ describe("run block colors (#36)", () => {
     expect(out).toContain("high");
   });
 
+describe("renderSpiderCall shows the exec command being run", () => {
+  const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s };
+  const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
+  it("exec surfaces the command code (first line) on the call line", () => {
+    expect(call({ action: "exec", language: "shell", code: "echo hi; seq 1 20" })).toContain("echo hi; seq 1 20");
+  });
+  it("exec_file surfaces the target file path", () => {
+    expect(call({ action: "exec_file", path: "packages/x/y.ts", language: "javascript", code: "console.log(1)" })).toContain("packages/x/y.ts");
+  });
+  it("batch surfaces the command count", () => {
+    expect(call({ action: "batch", commands: [{ language: "shell", code: "echo one" }, { language: "shell", code: "echo two" }] })).toMatch(/2/);
+  });
+  it("exec with a multi-line script shows only the first line", () => {
+    const out = call({ action: "exec", language: "shell", code: "cd /x\nnpm test\necho done" });
+    expect(out).toContain("cd /x");
+    expect(out).not.toContain("echo done");
+  });
+});
+
 describe("renderSpiderCall verb italics (UI standard)", () => {
   const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»` };
   const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");

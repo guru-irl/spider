@@ -102,3 +102,8 @@ export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";
 export { renderTodoChecklist } from "./renderers/todo-checklist";
+
+// ---- Phase 8: observability + config screens ----
+export { summarizeStats } from "./screens/stats-collect";
+export type { StatsInput, StatsSummary, ModelStatRow } from "./screens/stats-collect";
+export { renderStats, StatsView } from "./screens/stats-view";

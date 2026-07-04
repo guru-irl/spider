@@ -7,6 +7,7 @@ import { registerHooks } from "./hooks";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result";
 import { controlDoctor, controlConfig } from "./control";
+import { collectStats } from "./control/stats-cmd";
 import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
@@ -307,6 +308,10 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     case "insights": {
       if (!ctx) return { error: "control insights requires an action context" };
       return insightsAction(buildOrganismDeps(ctx));
+    }
+    case "stats": {
+      if (!ctx) return { error: "control stats requires an action context" };
+      return { details: collectStats(ctx.db, ctx.globalDb) };
     }
     case "upstream-watch": {
       if (!ctx) return { error: "control upstream-watch requires an action context" };

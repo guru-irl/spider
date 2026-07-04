@@ -122,6 +122,22 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).toMatch(/0\/1/);
   });
 
+  it("control stats → token-savings + rows + model table card (no raw JSON)", () => {
+    const details = {
+      tokenSavings: { indexedChunks: 100, estTokensSaved: 12000 },
+      rowCounts: { memory: 42, todos: 8 },
+      models: [{ model: "copilot/fast", calls: 2, okRate: 0.5, avgMs: 200, tokens: 1200 }],
+    };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "stats" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toMatch(/token savings/);
+    expect(out).toContain("12000");
+    expect(out).toContain("memory");
+    expect(out).toContain("copilot/fast");
+    expect(out).not.toMatch(/\{|"tokenSavings"/); // NOT raw JSON
+  });
+
   it("import → import summary panel", () => {
     const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
     const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "import" }));

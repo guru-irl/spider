@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -174,6 +174,14 @@ function renderDoctor(t: T, details: any): Component {
   };
 }
 
+/** `control stats` — render the StatsSummary details as a 🕸 stats card (leading blank
+ *  for the gutter style). Never throws on a missing/partial summary. */
+function renderControlStats(t: T, details: any): Component {
+  const th = adaptTheme(t);
+  const summary: StatsSummary = details ?? { tokenSavings: { indexedChunks: 0, estTokensSaved: 0 }, rowCounts: {}, models: [] };
+  return { render: (w: number) => ["", ...renderStats(summary, th, w)], invalidate() {} };
+}
+
 function firstLine(s: string): string { const l = s.split("\n").map((x) => x.trim()).filter(Boolean)[0] ?? ""; return l; }
 
 /** Map the raw executor result(s) → ExecDetails for renderExecResult. */
@@ -286,6 +294,7 @@ export function renderSpiderResult(
     case "control":
       if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[]));
       if (sub === "doctor") return renderDoctor(t, details);
+      if (sub === "stats") return renderControlStats(t, details);
       return textComponent(result);
     default:
       return textComponent(result);

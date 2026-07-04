@@ -155,6 +155,17 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{|"catalog"/); // NOT raw JSON
   });
 
+  it("control config → group-labelled config view (no 🕸, no raw JSON)", () => {
+    const details = { config: { "ui.footer": false } };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "config" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toMatch(/UI/);
+    expect(out).toContain("false");
+    expect(out).not.toContain("🕸");
+    expect(out).not.toMatch(/\{|"config"/); // NOT raw JSON
+  });
+
   it("control insights → learning-graph card with nodes/edges/stats (no raw JSON)", () => {
     const details = {
       nodes: [{ id: "skill:tdd", label: "TDD", kind: "skill", category: "process" }, { id: "mem:u1", label: "prefers tabs", kind: "memory" }],

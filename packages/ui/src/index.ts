@@ -112,3 +112,8 @@ export type { InsightGraphView } from "./screens/insights-view";
 export { catalogRows, resolveDefault, MODEL_ROLES } from "./screens/models-model";
 export type { CatalogRow, TierGroup } from "./screens/models-model";
 export { renderModels, ModelsView } from "./screens/models-view";
+export { CONFIG_SCHEMA, getField, coerce } from "./screens/config-schema";
+export type { ConfigField, ConfigGroup, ConfigFieldType } from "./screens/config-schema";
+export { buildConfigModel, readPath } from "./screens/config-model";
+export type { ConfigFieldRow, ConfigGroupModel } from "./screens/config-model";
+export { renderConfig, ConfigView } from "./screens/config-view";

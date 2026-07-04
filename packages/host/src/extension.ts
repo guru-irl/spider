@@ -9,6 +9,7 @@ import { toToolResult } from "./result";
 import { controlDoctor, controlConfig } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, listCatalog } from "./control/models-cmd";
+import { applyConfigEdit } from "./control/config-cmd";
 import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
@@ -271,7 +272,12 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       return controlDoctor(cwd);
     case "config": {
       const op = (args.op as "get" | "set") ?? "get";
-      return controlConfig(op, cwd, args.key as string | undefined, args.value);
+      if (op === "set" && args.key) {
+        const r = applyConfigEdit(cwd, String(args.key), String(args.value));
+        return { details: { ok: r.ok, error: r.error, key: args.key, value: args.value } };
+      }
+      if (args.key) return { details: { key: args.key, value: controlConfig("get", cwd, String(args.key)) } };
+      return { details: { config: controlConfig("get", cwd) } };
     }
     case "memory": {
       const scope = scopeOf(args);

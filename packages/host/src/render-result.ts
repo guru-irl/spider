@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, renderInsights, renderModels, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -208,6 +208,22 @@ function renderControlModels(t: T, details: any, _expanded: boolean): Component 
   return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w)], invalidate() {} };
 }
 
+/** `control config` — render the schema × current values as a body-only config view. The `set`
+ *  path returns only a confirmation payload; render that as a single status line. Never throws. */
+function renderControlConfig(t: T, details: any, _expanded: boolean): Component {
+  const th = adaptTheme(t);
+  if (details && details.config && typeof details.config === "object") {
+    return { render: (w: number) => ["", ...renderConfig(details.config, th, w)], invalidate() {} };
+  }
+  if (details && (details.ok !== undefined || details.error !== undefined)) {
+    const line = details.error
+      ? th.fg("error", "✗") + " " + th.fg("text", String(details.error))
+      : th.fg("accent", "●") + " " + th.fg("text", `set ${String(details.key ?? "")} → ${String(details.value ?? "")}`);
+    return { render: (w: number) => ["", truncateToWidth(line, w, "")], invalidate() {} };
+  }
+  return textComponent({ details });
+}
+
 /** Map the raw executor result(s) → ExecDetails for renderExecResult. */
 function toExecDetails(action: string, args: any, details: any): ExecDetails {
   const kind = action as ExecKind;
@@ -320,6 +336,7 @@ export function renderSpiderResult(
       if (sub === "doctor") return renderDoctor(t, details);
       if (sub === "stats") return renderControlStats(t, details);
       if (sub === "models") return renderControlModels(t, details, expanded);
+      if (sub === "config") return renderControlConfig(t, details, expanded);
       if (sub === "insights") return renderControlInsights(t, details, expanded);
       return textComponent(result);
     default:

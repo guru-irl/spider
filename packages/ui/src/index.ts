@@ -101,3 +101,4 @@ export { card, kv, statusIcon } from "./renderers/types";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";
+export { renderTodoChecklist } from "./renderers/todo-checklist";

@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -208,6 +208,40 @@ function toMessageDetails(args: any, details: any): MessageDetails {
   return { verb, to: args?.to ? String(args.to) : undefined, kind: kind || undefined, body: String(args?.message ?? ""), delivered: details?.delivered === true };
 }
 
+/** Normalize the todo action's varied `details` (single Todo | Todo[] | SessionSummary[] |
+ *  SessionGroup[] | {ok}) into a TodoChecklistDetails for renderTodoChecklist. Never throws. */
+function toTodoDetails(args: any, details: any): TodoChecklistDetails {
+  const toItem = (x: any) => ({ id: Number(x?.seq ?? x?.id ?? 0), text: String(x?.text ?? ""), done: x?.done === true });
+  let items: { id: number; text: string; done: boolean }[] = [];
+  let scope = "session";
+  if (Array.isArray(details)) {
+    if (details.length && Array.isArray(details[0]?.todos)) {
+      // view → SessionGroup[]: flatten, label each todo with its session
+      scope = "all";
+      for (const g of details) {
+        const label = String(g?.name ?? g?.session ?? "");
+        for (const td of (g?.todos ?? [])) items.push({ ...toItem(td), text: `[${label}] ${td?.text ?? ""}` });
+      }
+    } else if (details.length && details[0]?.total !== undefined && details[0]?.session !== undefined) {
+      // sessions → SessionSummary[]
+      scope = "sessions";
+      items = details.map((s: any, i: number) => ({
+        id: i + 1,
+        text: `${s?.current ? "▸ " : ""}${s?.name ?? s?.session} — ${s?.done ?? 0}/${s?.total ?? 0}`,
+        done: (s?.total ?? 0) > 0 && (s?.done ?? 0) >= (s?.total ?? 0),
+      }));
+    } else {
+      // list → Todo[]
+      items = details.map(toItem);
+    }
+  } else if (details && (details.seq !== undefined || details.text !== undefined)) {
+    // add/toggle → single Todo
+    items = [toItem(details)];
+  }
+  const done = items.filter((it) => it.done).length;
+  return { scope, items, done, total: items.length };
+}
+
 export function renderSpiderResult(
   result: any,
   options: any,
@@ -242,6 +276,11 @@ export function renderSpiderResult(
     }
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));
+    case "todo": {
+      const d = toTodoDetails(context?.args, details);
+      const th = adaptTheme(t);
+      return { render: (w: number) => renderTodoChecklist(d, { theme: th, width: w }), invalidate() {} };
+    }
     case "search": return renderSearch(t, details, expanded);
     case "import": return wrapBespoke(renderImportResult(details as any));
     case "control":

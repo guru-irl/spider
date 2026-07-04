@@ -101,6 +101,27 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(80).join("\n")).toContain("✗");
   });
 
+  it("todo list → checklist with glyphs, ids and completion footer (no raw JSON)", () => {
+    const details = [{ seq: 1, text: "write test", done: true }, { seq: 2, text: "impl", done: false }];
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "todo", op: "list" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toContain("✓");
+    expect(out).toContain("○");
+    expect(out).toMatch(/#1|#2/);
+    expect(out).toMatch(/1\/2/);
+    expect(out).not.toMatch(/\{|"seq"|"done"/); // NOT raw JSON
+  });
+
+  it("todo add → single-item checklist for the affected todo", () => {
+    const details = { seq: 3, text: "new task", done: false };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "todo", op: "add" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toContain("new task");
+    expect(out).toMatch(/0\/1/);
+  });
+
   it("import → import summary panel", () => {
     const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
     const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "import" }));

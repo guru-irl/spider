@@ -1,13 +1,19 @@
 # Implementer Subagent Prompt Template
 
-Use this template when dispatching an implementer subagent.
+Use this template when you `spider run` an implementer (`role:"implementer"`,
+`context:"fresh"`).
 
 ```
-Subagent (general-purpose):
+This is a `spider run` task brief.
+
+spider run:
+  agent: implementer
+  role: "implementer"
+  context: "fresh"
   description: "Implement Task N: [task name]"
   model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
          model silently inherits the session's most expensive one]
-  prompt: |
+  task: |
     You are implementing Task N: [task name]
 
     ## Task Description
@@ -74,7 +80,7 @@ Subagent (general-purpose):
 
     **How to escalate:** Report back with status BLOCKED or NEEDS_CONTEXT. Describe
     specifically what you're stuck on, what you've tried, and what kind of help you need.
-    The controller can provide more context, re-dispatch with a more capable model,
+    The controller can provide more context, `spider run` again with a more capable model,
     or break the task into smaller pieces.
 
     ## Before Reporting Back: Self-Review
@@ -132,6 +138,10 @@ Subagent (general-purpose):
 
     If BLOCKED or NEEDS_CONTEXT, put the specifics in the final message
     itself — the controller acts on it directly.
+
+    When done, wake the next stage per the controller's `handoff:"intercom"`
+    wiring (send your report + review-package path); if no pipeline was
+    wired, return status normally.
 
     Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
     Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need

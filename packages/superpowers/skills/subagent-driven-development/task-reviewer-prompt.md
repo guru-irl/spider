@@ -1,6 +1,7 @@
 # Task Reviewer Prompt Template
 
-Use this template when dispatching a task reviewer subagent. The reviewer
+Use this template when you `spider run` a task reviewer (`role:"reviewer"`,
+`context:"fresh"`). The reviewer
 reads the task's diff once and returns two verdicts: spec compliance and
 code quality.
 
@@ -8,11 +9,16 @@ code quality.
 more, nothing less) and is well-built (clean, tested, maintainable)
 
 ```
-Subagent (general-purpose):
+This is a `spider run` task brief.
+
+spider run:
+  agent: reviewer
+  role: "reviewer"
+  context: "fresh"
   description: "Review Task N (spec + quality)"
   model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
          model silently inherits the session's most expensive one]
-  prompt: |
+  task: |
     You are reviewing one task's implementation: first whether it matches its
     requirements, then whether it is well-built. This is a task-scoped gate,
     not a merge review — a broad whole-branch review happens separately after
@@ -184,5 +190,5 @@ Subagent (general-purpose):
 **Reviewer returns:** Spec Compliance verdict (✅/❌/⚠️), Strengths, Issues
 (Critical/Important/Minor), Task quality verdict
 
-A fix dispatch can address spec gaps and quality findings together;
+A fix run can address spec gaps and quality findings together;
 re-review after fixes covers both verdicts.

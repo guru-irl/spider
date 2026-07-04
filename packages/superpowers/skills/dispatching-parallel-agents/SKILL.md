@@ -68,9 +68,9 @@ Each agent gets:
 Issue all three subagent dispatches in the same response — they run in parallel:
 
 ```text
-Subagent (general-purpose): "Fix agent-tool-abort.test.ts failures"
-Subagent (general-purpose): "Fix batch-completion-behavior.test.ts failures"
-Subagent (general-purpose): "Fix tool-approval-race-conditions.test.ts failures"
+This is a spider run task brief: "Fix agent-tool-abort.test.ts failures"
+This is a spider run task brief: "Fix batch-completion-behavior.test.ts failures"
+This is a spider run task brief: "Fix tool-approval-race-conditions.test.ts failures"
 # All three run concurrently.
 ```
 

@@ -1,11 +1,11 @@
 # Code Reviewer Prompt Template
 
-Use this template when dispatching a code reviewer subagent.
+Use this template when running a `spider run` code reviewer.
 
 **Purpose:** Review completed work against requirements and code quality standards before it cascades into more work.
 
 ```
-Subagent (general-purpose):
+This is a `spider run` reviewer brief.
   description: "Review code changes"
   prompt: |
     You are a Senior Code Reviewer with expertise in software architecture,
@@ -30,9 +30,11 @@ Subagent (general-purpose):
     git diff [BASE_SHA]..[HEAD_SHA]
     ```
 
+    For large diffs, inspect them via `spider exec` (e.g. `spider exec -- git diff [BASE_SHA]..[HEAD_SHA]`) so the bulk output stays out of your context.
+
     ## Read-Only Review
 
-    Your review is read-only on this checkout. Do not mutate the working tree, the index, HEAD, or branch state in any way. Use tools like `git show`, `git diff`, and `git log` to inspect history. If you need a working copy of a different revision, check it out into a separate temporary directory (e.g. `git worktree add /tmp/review-[SHA] [SHA]`) — never move HEAD on this checkout.
+    Your review is read-only on this checkout. Do not mutate the working tree, the index, HEAD, or branch state in any way. Use tools like `git show`, `git diff`, and `git log` to inspect history. If you need a working copy of another revision, add a worktree **under `.spider/scratch/`** (never `/tmp`) — e.g. `git worktree add "$(git rev-parse --show-toplevel)/.spider/scratch/review-[SHA]" [SHA]` — and never move HEAD on this checkout.
 
     ## What to Check
 

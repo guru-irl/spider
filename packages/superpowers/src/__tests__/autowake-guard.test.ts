@@ -43,3 +43,16 @@ describe("dispatching-parallel-agents is spider-native", () => {
     expect(md).toMatch(/tasks:\s*\[|parallel/i);
   });
 });
+
+describe("requesting-code-review is spider-native", () => {
+  const skill = read("requesting-code-review/SKILL.md");
+  const tmpl = read("requesting-code-review/code-reviewer.md");
+  it("requests review via spider run reviewer role", () => {
+    expect(skill).toMatch(/spider run/);
+    expect(skill).toMatch(/role:\s*"?reviewer"?|context:\s*"?fresh"?/);
+  });
+  it("template drops old dispatch header and /tmp worktree", () => {
+    expect(tmpl).not.toMatch(/Subagent \(general-purpose\):/);
+    expect(tmpl).not.toMatch(/\/tmp\/review-/);
+  });
+});

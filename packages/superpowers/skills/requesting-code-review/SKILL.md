@@ -5,7 +5,7 @@ description: Use when completing tasks, implementing major features, or before m
 
 # Requesting Code Review
 
-Dispatch a code reviewer subagent to catch issues before they cascade. The reviewer gets precisely crafted context for evaluation — never your session's history. This keeps the reviewer focused on the work product, not your thought process, and preserves your own context for continued work.
+Request a code reviewer via `spider run` to catch issues before they cascade. The reviewer gets precisely crafted context for evaluation — never your session's history. This keeps the reviewer focused on the work product, not your thought process, and preserves your own context for continued work.
 
 **Core principle:** Review early, review often.
 
@@ -29,9 +29,11 @@ BASE_SHA=$(git rev-parse HEAD~1)  # or origin/main
 HEAD_SHA=$(git rev-parse HEAD)
 ```
 
-**2. Dispatch code reviewer subagent:**
+**2. Run the code reviewer:**
 
-Dispatch a `general-purpose` subagent, filling the template at [code-reviewer.md](code-reviewer.md)
+``spider run { agent: "worker", role: "reviewer", context: "fresh", model: <scaled>, task: <filled code-reviewer.md> }`` — fill the template at [code-reviewer.md](code-reviewer.md) as the `task`. The reviewer runs `role:"reviewer"` with `context:"fresh"`, so it gets the crafted context and never inherits your session's history.
+
+In a `handoff:"intercom"` pipeline the reviewer is WOKEN by the finishing worker with the review-package path (no controller round-trip). A reviewer that finds Critical/Important issues wakes a fix stage; a clean review wakes the controller.
 
 **Placeholders:**
 - `{DESCRIPTION}` - Brief summary of what you built
@@ -55,7 +57,7 @@ You: Let me request code review before proceeding.
 BASE_SHA=$(git log --oneline | grep "Task 1" | head -1 | awk '{print $1}')
 HEAD_SHA=$(git rev-parse HEAD)
 
-[Dispatch code reviewer subagent]
+[spider run reviewer (role:"reviewer", context:"fresh") with filled code-reviewer.md]
   DESCRIPTION: Added verifyIndex() and repairIndex() with 4 issue types
   PLAN_OR_REQUIREMENTS: Task 2 from docs/superpowers/plans/deployment-plan.md
   BASE_SHA: a7981ec

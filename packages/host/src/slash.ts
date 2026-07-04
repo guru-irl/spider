@@ -37,11 +37,13 @@ export interface SlashDeps {
 
 export interface PiLike {
 	registerCommand(name: string, opts: { description: string; handler: (args: string, ctx: unknown) => unknown }): void;
+	/** sendMessage lives on the pi ExtensionApi (NOT the command ctx); optional so tests can omit it. */
+	sendMessage?(message: { customType: string; content: string; display: boolean; details?: unknown }): void;
 }
 
-/** Best-effort extraction of a human string from a dispatch result. Handles the two shapes
- * spider dispatch returns: action handlers ({content} text | blocks | {text}) and control
- * commands ({ok, lines:[...]}), plus {display} / {error}. */
+/** Best-effort human string from a dispatch result — only used for the model-facing `content`
+ * and the notify fallback; the RICH transcript view renders via renderSpiderResult (see
+ * renderCommandOutput), so control's {details} shape does not need to stringify here. */
 function resultText(res: { content?: unknown; display?: unknown; lines?: unknown; text?: unknown; error?: unknown } | undefined): string {
 	if (!res) return "";
 	if (typeof res.content === "string") return res.content;
@@ -58,14 +60,6 @@ function resultText(res: { content?: unknown; display?: unknown; lines?: unknown
 	return "";
 }
 
-/** pi command ctx: sendMessage renders a persistent custom entry in the transcript (like
- * spider.subagent_done); ui.notify is an ephemeral toast used only as a fallback. */
-interface CommandSink {
-	sendMessage?: (m: { customType: string; content: string; display: boolean; details?: unknown }) => unknown;
-	pi?: { sendMessage?: CommandSink["sendMessage"] };
-	ui?: { notify?: (t: string, k?: string) => void };
-}
-
 export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 	for (const name of SLASH_COMMANDS) {
 		if (deps.alreadyRegistered.has(name)) continue;
@@ -73,16 +67,19 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 			description: DESC[name],
 			handler: async (args: string, ctx: unknown) => {
 				const arg = typeof args === "string" ? args.trim() : "";
-				const res = await deps.run(FORWARD[name](arg), ctx);
-				const text = resultText(res);
-				if (!text) return;
-				const c = ctx as CommandSink;
-				const send = typeof c?.sendMessage === "function" ? c.sendMessage.bind(c) : typeof c?.pi?.sendMessage === "function" ? c.pi.sendMessage.bind(c.pi) : undefined;
-				if (send) {
-					send({ customType: "spider.command", content: text, display: true, details: { command: name, text } });
-				} else if (typeof c?.ui?.notify === "function") {
-					c.ui.notify(text, "info");
+				const forwarded = FORWARD[name](arg);
+				const res = await deps.run(forwarded, ctx);
+				if (!res) return;
+				// Primary: a persistent spider.command transcript entry rendered by renderCommandOutput
+				// (which reuses the tool's renderSpiderResult) — themed, identical to a real spider result.
+				if (typeof pi.sendMessage === "function") {
+					pi.sendMessage({ customType: "spider.command", content: resultText(res) || `spider ${name}`, display: true, details: { args: forwarded, result: res } });
+					return;
 				}
+				// Fallback (no ExtensionApi.sendMessage): ephemeral toast with whatever text we can extract.
+				const text = resultText(res);
+				const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+				if (text && typeof notify === "function") notify(text, "info");
 			},
 		});
 	}

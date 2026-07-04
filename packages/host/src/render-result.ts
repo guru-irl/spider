@@ -16,6 +16,7 @@ import {
 } from "@spider/memory";
 import { renderImportResult } from "@spider/context";
 import type { ModelEntry } from "@spider/models";
+import { toToolResult } from "./result";
 const ANSI = /\x1b\[[0-9;]*m/g;
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 
@@ -431,25 +432,22 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   return container as unknown as Component;
 }
 
-/** Transcript renderer for the `spider.command` message a slash command emits. There is no
- *  tool shell here (it's a custom message, not a tool result), so — unlike tool-result bodies —
- *  it paints its OWN glyph-free `spider · <command>` rule header, then the command's output
- *  lines (already human-formatted), width-safe. */
-export function renderCommandOutput(message: any, _options: unknown, theme: any): Component {
+/** Transcript renderer for the `spider.command` message a slash command emits. Renders the
+ *  SAME title + body a real spider tool call produces — renderSpiderCall + renderSpiderResult over
+ *  the dispatch result normalized via toToolResult (so control's {ok,lines}/{details} shapes both
+ *  populate result.details) — wrapped in the tool-success box, so /spider, /stats, /doctor look
+ *  identical to the tool result. ctrl+o (options.expanded) expands. */
+export function renderCommandOutput(message: any, options: { expanded?: boolean }, theme: any): Component {
   const d = message?.details ?? {};
-  const command = String(d.command ?? "spider");
-  const text = typeof d.text === "string" ? d.text : typeof message?.content === "string" ? message.content : "";
-  const at = adaptTheme(mkTheme(theme));
-  const body = text.replace(ANSI, "").split("\n");
+  const args = d.args ?? { action: "control" };
+  const result = d.result ?? {};
+  const expanded = options?.expanded === true;
+  const bgFn = (text: string) => (typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text);
+  const box = new Box(1, 1, bgFn);
+  box.addChild(renderSpiderCall(args, theme, {}) as any);
+  box.addChild(renderSpiderResult(toToolResult(result), { expanded }, theme, { args }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));
-  container.addChild({
-    render(width: number): string[] {
-      const out = [sectionRule(at, `spider \u00b7 ${command}`, width)];
-      for (const ln of body) out.push(clip(ln, width));
-      return out;
-    },
-    invalidate() {},
-  } as any);
+  container.addChild(box as any);
   return container as unknown as Component;
 }

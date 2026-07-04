@@ -352,12 +352,14 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
 });
 
 describe("renderCommandOutput (slash-command transcript message)", () => {
-  it("renders the command output lines under a glyph-free rule, no raw JSON", () => {
-    const msg = { customType: "spider.command", content: "x", details: { command: "doctor", text: "## spider doctor\n- better-sqlite3: loaded (wal)" } };
-    const c = renderCommandOutput(msg, {}, theme);
-    const body = (c.render(80) as string[]).join("\n");
-    expect(body).toContain("better-sqlite3: loaded");
-    expect(body).toContain("doctor");
-    expect(body).not.toMatch(/\{\s*"/);
+  const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»`, bg: (tok: string, s: string) => `[${tok}]${s}` };
+  it("renders themed through the tool renderers (doctor): spider header + tool shell + checks, no raw JSON", () => {
+    const msg = { customType: "spider.command", content: "spider doctor", details: { args: { action: "control", command: "doctor" }, result: { ok: true, lines: ["## spider doctor", "- better-sqlite3: loaded (wal)"] } } };
+    const out = (renderCommandOutput(msg, { expanded: false }, th).render(120) as string[]).join("\n");
+    expect(out).toContain("spider");            // renderSpiderCall header
+    expect(out).toContain("doctor");            // command in the header
+    expect(out).toContain("better-sqlite3: loaded"); // themed doctor body (via renderSpiderResult)
+    expect(out).toContain("[toolSuccessBg]");   // painted in the tool-success shell
+    expect(out).not.toMatch(/\{\s*"/);          // no raw JSON
   });
 });

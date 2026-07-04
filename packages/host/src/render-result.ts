@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, renderInsights, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -174,6 +174,16 @@ function renderDoctor(t: T, details: any): Component {
   };
 }
 
+/** `control insights` — render the organism learning graph (nodes/edges/stats) as a 🕸
+ *  insights card. Never throws on a missing/partial graph. */
+function renderControlInsights(t: T, details: any, expanded: boolean): Component {
+  const th = adaptTheme(t);
+  const g: InsightGraphView = details && Array.isArray(details.nodes)
+    ? details
+    : { nodes: [], edges: [], stats: { nodes: 0, edges: 0, linkedPct: 0 } };
+  return { render: (w: number) => ["", ...renderInsights(g, th, w, expanded)], invalidate() {} };
+}
+
 /** `control stats` — render the StatsSummary details as a 🕸 stats card (leading blank
  *  for the gutter style). Never throws on a missing/partial summary. */
 function renderControlStats(t: T, details: any): Component {
@@ -295,6 +305,7 @@ export function renderSpiderResult(
       if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[]));
       if (sub === "doctor") return renderDoctor(t, details);
       if (sub === "stats") return renderControlStats(t, details);
+      if (sub === "insights") return renderControlInsights(t, details, expanded);
       return textComponent(result);
     default:
       return textComponent(result);

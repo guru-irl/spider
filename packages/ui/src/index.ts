@@ -107,3 +107,5 @@ export { renderTodoChecklist } from "./renderers/todo-checklist";
 export { summarizeStats } from "./screens/stats-collect";
 export type { StatsInput, StatsSummary, ModelStatRow } from "./screens/stats-collect";
 export { renderStats, StatsView } from "./screens/stats-view";
+export { renderInsights, InsightsView } from "./screens/insights-view";
+export type { InsightGraphView } from "./screens/insights-view";

@@ -138,6 +138,21 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{|"tokenSavings"/); // NOT raw JSON
   });
 
+  it("control insights → learning-graph card with nodes/edges/stats (no raw JSON)", () => {
+    const details = {
+      nodes: [{ id: "skill:tdd", label: "TDD", kind: "skill", category: "process" }, { id: "mem:u1", label: "prefers tabs", kind: "memory" }],
+      edges: [{ source: "mem:u1", target: "skill:tdd" }],
+      stats: { nodes: 2, edges: 1, linkedPct: 50 },
+    };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "insights" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toMatch(/2 nodes/);
+    expect(out).toContain("TDD");
+    expect(out).toMatch(/mem:u1|skill:tdd/);
+    expect(out).not.toMatch(/\{|"linkedPct"/); // NOT raw JSON
+  });
+
   it("import → import summary panel", () => {
     const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
     const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "import" }));

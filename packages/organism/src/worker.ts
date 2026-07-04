@@ -94,18 +94,28 @@ export class OrganismWorker {
     let consolidationResult: DigestResult | undefined;
 
     // Model-dependent passes are skipped (treated as empty) when no aux model
-    // is available. Each is additionally gated by its per-pass toggle.
+    // is available. Each is additionally gated by its per-pass toggle. Each pass
+    // is isolated in its own try/catch: one throwing aux-model pass is treated
+    // as an empty result and the drain CONTINUES with the remaining passes (and,
+    // on shutdown, curator decay still runs).
+    const runPass = async (fn: () => Promise<DigestResult>): Promise<DigestResult> => {
+      try {
+        return await fn();
+      } catch {
+        return emptyResult();
+      }
+    };
     if (model !== null) {
-      if (org.passes.runMemoryTodo) results.push(await runMemoryTodoPass(bundle, model));
-      if (org.passes.todoMemory) results.push(await todoMemoryPass(bundle, model));
-      if (org.passes.learning) results.push(await learningPass(bundle, model));
+      if (org.passes.runMemoryTodo) results.push(await runPass(() => runMemoryTodoPass(bundle, model)));
+      if (org.passes.todoMemory) results.push(await runPass(() => todoMemoryPass(bundle, model)));
+      if (org.passes.learning) results.push(await runPass(() => learningPass(bundle, model)));
       if (org.passes.consolidation) {
-        consolidationResult = await consolidationPass(bundle, model);
+        consolidationResult = await runPass(() => consolidationPass(bundle, model));
         results.push(consolidationResult);
       }
       if (org.passes.reflection) {
         const embedder = await this.#deps.getEmbedder();
-        results.push(await reflectionPass(db, embedder, model));
+        results.push(await runPass(() => reflectionPass(db, embedder, model)));
       }
     }
 

@@ -24,7 +24,13 @@ import {
   readOrganismConfig,
   readCuratorConfig,
   createDigestModel,
+  OrganismWorker,
+  skillAction,
+  curateAction,
+  insightsAction,
   type AuxCall,
+  type OrganismActionDeps,
+  type SkillActionArgs,
 } from "@spider/organism";
 import { installAgentsUI } from "./agents/agents-ui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "./render-result";
@@ -183,6 +189,42 @@ const SPIDER_PARAMETERS = {
   additionalProperties: true,
 };
 
+/** Build the organism action deps for a dispatch: reuse the SAME aux-model
+ *  seam the trailing registerOrganism hook block uses (route the configured aux
+ *  model through @spider/models, replay the digest as a flat prompt). makeModel
+ *  returns null when the model can't be resolved so the manual actions degrade
+ *  cleanly (skill/insights need no model; curate skips consolidation). */
+function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
+  const cfg = controlConfig("get", ctx.cwd);
+  const pi = ctx.pi as PiToolAPI;
+  const call: AuxCall = async (rt, system, msgs) => {
+    const entry = ctx.models.pick(ctx.models.catalog(() => enumerate(pi)), { model: rt.model }, {});
+    const prompt = [system, ...msgs.map((m) => `${m.role.toUpperCase()}: ${m.content}`)].join("\n\n");
+    return await ctx.models.complete(entry, prompt, {});
+  };
+  const makeModel = () => {
+    try {
+      return createDigestModel({ cfg, parentModel: "", call });
+    } catch {
+      return null;
+    }
+  };
+  return {
+    db: ctx.db,
+    globalDb: ctx.globalDb,
+    project: ctx.project,
+    worker: new OrganismWorker({
+      db: ctx.db,
+      globalDb: ctx.globalDb,
+      project: ctx.project,
+      getEmbedder,
+      makeModel,
+      org: readOrganismConfig(cfg),
+      curator: readCuratorConfig(cfg),
+    }),
+  };
+}
+
 /** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
 async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown> {
   const command = String(args.command ?? "");
@@ -216,6 +258,20 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     case "migrate": {
       if (!ctx) return { error: "migrate requires an action context" };
       return runImport(args as any, ctx as any);
+    }
+    case "skill": {
+      if (!ctx) return { error: "control skill requires an action context" };
+      if (args.sub === "curate") {
+        return await curateAction(buildOrganismDeps(ctx), {
+          force: args.force as boolean | undefined,
+          consolidate: args.consolidate as boolean | undefined,
+        });
+      }
+      return { error: `control skill sub '${String(args.sub)}' unknown (valid: curate)` };
+    }
+    case "insights": {
+      if (!ctx) return { error: "control insights requires an action context" };
+      return insightsAction(buildOrganismDeps(ctx));
     }
     default:
       return { error: `control command '${command}' is not yet implemented (Phase 0)` };
@@ -292,6 +348,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // todos (ctx-native): dispatch always supplies ctx.db + ctx.sessionId, so the
   // action needs no closure deps; the /todos command resolves db+session per call.
   registerAction("todo", makeTodo());
+
+  // organism manual surface: `skill` (distill → /learn handoff, view, list).
+  // Removes the Phase-0 stub for `skill` (dispatch now finds a handler).
+  registerAction("skill", (args, ctx) => skillAction(buildOrganismDeps(ctx), args as SkillActionArgs));
   pi.registerCommand?.(
     "todos",
     makeTodosCommand({

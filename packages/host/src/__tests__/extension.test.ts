@@ -157,15 +157,17 @@ describe("spider extension entry", () => {
     expect(notified.join("\n")).toContain("(no todos)");
   });
 
-  it("an unregistered action returns the not-implemented stub", async () => {
+  it("routes the now-wired 'skill' action at the tool boundary (no Phase-0 stub)", async () => {
     mkdirSync(scratch, { recursive: true });
-    setGlobalDbPathForTests(join(scratch, `g-unreg-${Date.now()}.db`));
-    const dir = join(scratch, "proj-unreg"); mkdirSync(dir, { recursive: true });
+    setGlobalDbPathForTests(join(scratch, `g-skill-${Date.now()}.db`));
+    const dir = join(scratch, "proj-skill"); mkdirSync(dir, { recursive: true });
     const pi = fakePi();
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
-    const res = await tool.execute("c2", { action: "skill", cwd: dir }, {}) as { content: { text: string }[] };
-    // normalized boundary: the stub message surfaces as the model-facing content text.
-    expect(res.content[0].text).toMatch(/not.*implemented/i);
+    const res = await tool.execute("c2", { action: "skill", op: "list", cwd: dir }, {}) as { content: { text: string }[]; details: unknown };
+    // The organism skill action is mounted now: `list` returns a rendered panel
+    // + an array of skill rows, NOT the "not yet implemented (Phase 0 stub)".
+    expect(res.content[0].text).not.toMatch(/not.*implemented/i);
+    expect(Array.isArray(res.details)).toBe(true);
   });
 });

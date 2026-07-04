@@ -6,6 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
+import { renderExecResult, renderIndexResult, type ExecDetails, type ExecKind, type IndexDetails, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -99,6 +100,38 @@ function wrapBespoke(c: Component): Component {
   return { render: (w: number) => c.render(w), invalidate: () => c.invalidate?.() };
 }
 
+/** Build a ThemeAdapter (fg/bg/bold/glyph) for the pure @spider/ui renderers from the host `T`. */
+function adaptTheme(t: T): ThemeAdapter {
+  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: "🕸" };
+}
+
+function firstLine(s: string): string { const l = s.split("\n").map((x) => x.trim()).filter(Boolean)[0] ?? ""; return l; }
+
+/** Map the raw executor result(s) → ExecDetails for renderExecResult. */
+function toExecDetails(action: string, args: any, details: any): ExecDetails {
+  const kind = action as ExecKind;
+  if (action === "batch") {
+    const arr: any[] = Array.isArray(details) ? details : [];
+    const ok = arr.every((r) => Number(r?.exitCode ?? 0) === 0);
+    const outLines = arr.reduce((n, r) => n + String(r?.stdout ?? "").split("\n").filter(Boolean).length, 0);
+    const preview = arr.flatMap((r) => String(r?.stdout ?? "").split("\n").filter(Boolean)).slice(-8);
+    const commands = (args?.commands ?? []).map((c: any) => String(c?.label ?? c?.code ?? c?.language ?? "cmd"));
+    return { kind, commands, ok, exitCode: ok ? 0 : 1, outLines, preview };
+  }
+  const r = details ?? {};
+  const outArr = String(r.stdout ?? "").split("\n").filter(Boolean);
+  const cmd = action === "exec_file" ? String(args?.path ?? "file") : firstLine(String(args?.code ?? ""));
+  return { kind, commands: [cmd], ok: Number(r.exitCode ?? 0) === 0, exitCode: Number(r.exitCode ?? 0), outLines: outArr.length, preview: outArr.slice(-8) };
+}
+
+/** Map the indexContent result → IndexDetails for renderIndexResult (index action only). */
+function toIndexDetails(args: any, details: any): IndexDetails {
+  const r = details ?? {};
+  const target = args?.path ? String(args.path) : "content";
+  const chunks = Number(r.chunkCount ?? 0);
+  return { kind: "index", source: String(r.source ?? args?.source ?? "untitled"), targets: [target], chunks, embedded: chunks };
+}
+
 export function renderSpiderResult(
   result: any,
   options: any,
@@ -114,6 +147,18 @@ export function renderSpiderResult(
   switch (action) {
     case "run":
       return renderRun(t, details, expanded);
+    case "exec":
+    case "exec_file":
+    case "batch": {
+      const d = toExecDetails(action, context?.args, details);
+      const th = adaptTheme(t);
+      return { render: (w: number) => renderExecResult(d, { theme: th, width: w, expanded }), invalidate() {} };
+    }
+    case "index": {
+      const d = toIndexDetails(context?.args, details);
+      const th = adaptTheme(t);
+      return { render: (w: number) => renderIndexResult(d, { theme: th, width: w, expanded }), invalidate() {} };
+    }
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));
     case "search": return wrapBespoke(renderSearchResult(details as any));

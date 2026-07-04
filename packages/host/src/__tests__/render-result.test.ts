@@ -78,15 +78,15 @@ describe("renderSpiderResult dispatcher", () => {
 
   it("DEFAULT (unmatched action) → text fallback from result.content", () => {
     const c = renderSpiderResult(
-      mkResult({ anything: true }, "exec output line 1\nexec output line 2"),
+      mkResult({ anything: true }, "fallback output line 1\nfallback output line 2"),
       opts,
       theme,
-      mkCtx({ action: "exec" }),
+      mkCtx({ action: "message" }),
     );
     assertComponent(c);
     const text = c.render(80).join("\n");
-    expect(text).toContain("exec output line 1");
-    expect(text).toContain("exec output line 2");
+    expect(text).toContain("fallback output line 1");
+    expect(text).toContain("fallback output line 2");
   });
 
   it("always returns a Component (never undefined) even with no args", () => {

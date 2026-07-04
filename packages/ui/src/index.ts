@@ -91,3 +91,12 @@ export { Spinner, BRAILLE_FRAMES } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
 export { renderDiffView } from "./components/diff-view";
 export { renderTable } from "./components/table";
+
+// ---- Phase 8: per-action renderers ----
+export type {
+  RenderCtx, ExecKind, ExecDetails, IndexDetails, MemoryRecordView, MemoryCardDetails,
+  TodoItemView, TodoChecklistDetails, RunView, RunResultDetails, MessageDetails,
+} from "./renderers/types";
+export { card, kv, statusIcon } from "./renderers/types";
+export { renderExecCall, renderExecResult } from "./renderers/exec";
+export { renderIndexResult } from "./renderers/index-fetch";

@@ -61,7 +61,7 @@ describe("migrate — thinking column (v1\u2192v2)", () => {
     migrate(db, "project");
     const cols = (db.raw.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("thinking");
-    expect(Number(db.pragma("user_version"))).toBe(2);
+    expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
   });
 
   it("a fresh db gets thinking via the full schema", () => {

@@ -4,7 +4,7 @@
 // as the title, so renderResult renders only the BODY (no header of its own — that
 // would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
 import {
   renderRememberResult,
@@ -152,45 +152,28 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }
 
-/** Transcript renderer for the async `spider.subagent_done` message, styled to look like the
- *  spider TOOL CALL: the green (or red) tool shell + the tool title
- *  "🕸  spider · *subagent* · <name> · <status>", with the curated output rendered like
- *  truncated tool output. ctrl+o (options.expanded) reveals the COMPLETE output. */
+/** Transcript renderer for the async `spider.subagent_done` message. Reuses pi's OWN tool-shell
+ *  primitives (a Spacer + a Box painted with the toolSuccessBg/toolErrorBg background, exactly as
+ *  ToolExecutionComponent does) wrapping the SAME renderers a live spider tool call uses
+ *  (renderSpiderCall for the title + renderSpiderResult for the body) — so the completion is
+ *  pixel-identical to a real spider run result. ctrl+o (options.expanded) expands the output. */
 export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {
-  const t = mkTheme(theme);
   const d = message?.details ?? {};
-  const name = String(d.name ?? "subagent");
-  const agent = String(d.agent ?? "worker");
   const status = String(d.status ?? "done");
-  const output = String(d.output ?? "").replace(/\s+$/, "");
-  const bgTok = status === "done" ? "toolSuccessBg" : status === "running" || status === "queued" || status === "paused" ? "toolPendingBg" : "toolErrorBg";
-  const sep = t.fg("dim", "·");
-  const thinkSeg = d.thinking ? ` ${sep} ${t.fg("muted", String(d.thinking))}` : "";
-  // Same layout as a real spider run result (see renderRun): a 3-space header, `⤴` output at
-  // 5/7 spaces, a 3-space ctrl+o hint — but the header leads with the spider identity in place
-  // of the run-block status glyph, and the whole block is painted in the tool shell.
-  const header = `   ${t.fg("toolTitle", "🕸")} ${t.fg("toolTitle", t.bold("spider"))} ${sep} ${t.fg("toolTitle", name)} ${sep} ${t.italic(t.fg("toolTitle", agent))} ${sep} ${t.fg("muted", shortModel(d.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
-  const lines = output ? output.split("\n") : [];
-  const CAP = 6;
+  const isError = status === "failed" || status === "cancelled";
+  const bgFn = isError
+    ? (text: string) => (typeof theme?.bg === "function" ? theme.bg("toolErrorBg", text) : text)
+    : (text: string) => (typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text);
   const expanded = options?.expanded === true;
-  const shown = expanded ? lines : lines.slice(0, CAP);
-  const pad = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - visibleWidth(s)));
-  return {
-    render(w: number): string[] {
-      const rows: string[] = [header];
-      if (shown.length) {
-        shown.forEach((l, i) => rows.push(t.fg("dim", (i === 0 ? "     ⤴ " : "       ") + clip(l, Math.max(1, w - 8)))));
-      } else {
-        rows.push(t.fg("dim", "     (no output)"));
-      }
-      if (!expanded && lines.length > CAP) {
-        rows.push(t.fg("dim", `       … (+${lines.length - CAP} more lines)`));
-        rows.push(t.fg("dim", "   ctrl+o to expand output"));
-      }
-      // Blank separator (no shell), then the green/red tool shell painted full-width so the
-      // completion reads as a spider tool block with the same padding as a real run result.
-      return ["", ...rows.map((r) => t.bg(bgTok, pad(r, w)))];
-    },
-    invalidate() {},
-  };
+  // Feed the same shape a real `spider run` produces: a title (renderCall) + a single run block
+  // (renderResult) carrying the child's name/agent/model/status and its output as the result.
+  const args = { action: "run" };
+  const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output } } };
+  const box = new Box(1, 1, bgFn);
+  box.addChild(renderSpiderCall(args, theme, {}) as any);
+  box.addChild(renderSpiderResult(result, { expanded }, theme, { args }) as any);
+  const container = new Container();
+  container.addChild(new Spacer(1));
+  container.addChild(box as any);
+  return container as unknown as Component;
 }

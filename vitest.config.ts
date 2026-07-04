@@ -10,5 +10,20 @@ export default defineConfig({
     pool: "forks",
     maxWorkers: 3,
     teardownTimeout: 5_000,
+    coverage: {
+      provider: "v8",
+      // Measure only shipped source, not tests/fixtures/generated output.
+      include: ["packages/*/src/**/*.ts"],
+      exclude: [
+        "**/*.test.ts",
+        "**/__tests__/**",
+        "**/*.d.ts",
+        "**/dist/**",
+        "**/node_modules/**",
+      ],
+      reporter: ["text", "text-summary", "html", "json-summary"],
+      reportsDirectory: "./coverage",
+      all: true,
+    },
   },
 });

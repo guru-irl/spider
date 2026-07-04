@@ -11,3 +11,4 @@ dist/
 .pi/
 .pi-subagents/
 .scratch/
+coverage/

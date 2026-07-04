@@ -74,6 +74,33 @@ describe("renderSpiderResult dispatcher", () => {
     expect(bleed).toHaveLength(0);
   });
 
+  it("control doctor → status line + guttered checks (no raw JSON, heading stripped)", () => {
+    const details = {
+      ok: true,
+      lines: [
+        "## spider doctor 🕸",
+        "",
+        "- better-sqlite3: loaded (journal_mode=wal)",
+        "- sqlite-vec: loaded (vec0 vectors table ready)",
+      ],
+    };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "doctor" }));
+    assertComponent(c);
+    const text = c.render(80).join("\n");
+    expect(text).not.toMatch(/\{|"ok"|"lines"/); // NOT raw JSON
+    expect(text).not.toContain("##");            // markdown heading dropped
+    expect(text).toContain("✓");
+    expect(text).toContain("better-sqlite3");
+    expect(text).toContain("loaded");
+  });
+
+  it("control doctor → ✗ status when ok is false", () => {
+    const details = { ok: false, lines: ["- sqlite-vec: NOT loaded"] };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "doctor" }));
+    assertComponent(c);
+    expect(c.render(80).join("\n")).toContain("✗");
+  });
+
   it("import → import summary panel", () => {
     const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
     const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "import" }));

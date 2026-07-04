@@ -144,6 +144,36 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
   };
 }
 
+/** Health-check output for `control doctor`. The call line already shows
+ *  `🕸 spider · control · doctor`, so this renders only a status line + the checks
+ *  (markdown heading/blank lines dropped, `- ` bullets stripped) with a `⎿` gutter. */
+function renderDoctor(t: T, details: any): Component {
+  const ok = details?.ok !== false;
+  const raw: string[] = Array.isArray(details?.lines) ? details.lines : [];
+  const checks = raw
+    .map((l) => String(l))
+    .filter((l) => l.trim() && !l.trim().startsWith("#"))
+    .map((l) => l.replace(/^\s*[-*]\s+/, "").trim());
+  return {
+    render(width: number): string[] {
+      const glyph = t.fg("toolTitle", ok ? "✓" : "✗");
+      const out = ["", clip(` ${glyph} ${t.fg("muted", ok ? "all checks passed" : "issues found")}`, width)];
+      for (const c of checks) {
+        const idx = c.indexOf(":");
+        if (idx > 0) {
+          const label = t.bold(c.slice(0, idx));
+          const rest = t.fg("muted", c.slice(idx + 1).trim());
+          out.push(clip(` ${t.fg("dim", "⎿ ")}${label}${t.fg("dim", ":")} ${rest}`, width));
+        } else {
+          out.push(clip(` ${t.fg("dim", "⎿ ")}${t.fg("muted", c)}`, width));
+        }
+      }
+      return out;
+    },
+    invalidate() {},
+  };
+}
+
 function firstLine(s: string): string { const l = s.split("\n").map((x) => x.trim()).filter(Boolean)[0] ?? ""; return l; }
 
 /** Map the raw executor result(s) → ExecDetails for renderExecResult. */
@@ -216,6 +246,7 @@ export function renderSpiderResult(
     case "import": return wrapBespoke(renderImportResult(details as any));
     case "control":
       if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[]));
+      if (sub === "doctor") return renderDoctor(t, details);
       return textComponent(result);
     default:
       return textComponent(result);

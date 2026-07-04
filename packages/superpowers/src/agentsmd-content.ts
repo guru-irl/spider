@@ -6,6 +6,11 @@ export const SPIDER_BLOCK_BODY = `# spider (managed — do not edit inside the m
 This block is written and updated by the **spider** pi extension. Edits between
 the markers are overwritten on upgrade. Put your own notes outside the markers.
 
+**spider is the single unified extension** — subagents, memory, unified search,
+todos, sandboxed exec, and web fetch on one shared SQLite DB. It **replaces** the
+legacy \`pi-subagents\`, \`context-mode\` (\`ctx_*\`), and standalone todo tools —
+do not reach for those; use the \`spider\` verbs below.
+
 ## Skills first
 
 You have **superpowers** — a skills library. Before acting on any non-trivial
@@ -32,20 +37,26 @@ built-ins:
   will \`edit\` the file (so edits match exact text).
 - \`spider index\` / \`spider fetch\` — index files/dirs or fetch+index URLs into
   the knowledge base for \`spider search\`.
-- \`spider run\` / \`spider wait\` — dispatch subagents (single/chain/parallel/
-  async, \`context:"fresh"|"fork"\`). Always pass an explicit \`model:\` scaled
-  to task complexity (cheap for mechanical, capable for architecture/review).
-  For multi-phase work use push-based handoff:
-  \`spider run { pipeline:[worker, reviewer], handoff:"intercom" }\` — the
-  finishing stage wakes the next with its outputs instead of blocking on
-  \`wait\`. Give review-only children fresh context and tell them not to edit
-  source.
+- \`spider run\` — dispatch subagents (single / chain / parallel / pipeline,
+  always async). Pass an explicit **provider-qualified** \`model:\` (e.g.
+  \`github-copilot/claude-sonnet-5\`) scaled to task complexity (cheap for
+  mechanical, capable for architecture/review), plus \`thinking:\`. Subagents run
+  in the background and report back via a \`spider.subagent_done\` message — there
+  is no blocking wait. For multi-phase work use
+  \`pipeline:[worker, reviewer], handoff:"intercom"\`. Give review-only children
+  \`context:"fresh"\` and tell them not to edit source.
 - \`spider todo\` — durable, per-project + per-session task tracking
   (\`list\`/\`add\`/\`toggle\`/\`clear\`/\`sessions\`/\`view\`). One todo per
   checklist item; toggle as you complete each.
 - \`spider message\` — wake a specific peer/reviewer session directly.
-- \`spider control <command>\` — admin: \`stats\`, \`doctor\`, \`memory\`,
-  \`upstream-watch\`, \`config\`, \`insights\`, and more.
+- \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
+  \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`upstream-watch\`.
+  Every result renders as a themed card, never raw JSON.
+
+## Slash commands
+
+\`/todos\` and \`/agents\` open live overlays. \`/spider\` \`/search\` \`/memory\`
+\`/insights\` \`/learn\` \`/doctor\` \`/stats\` forward to the matching spider action.
 
 ## Memory discipline
 
@@ -59,7 +70,7 @@ to fetch by category/scope.
 
 ## Scratch — never /tmp
 
-Never use \`/tmp\`, \`\$TMPDIR\`, or \`/var/tmp\` for scratch, golden data, or
+Never use \`/tmp\`, \`$TMPDIR\`, or \`/var/tmp\` for scratch, golden data, or
 logs — they are volatile and destroy baselines mid-task. Put all
 scratch/intermediate/golden/log data under the project's \`.spider/scratch/\`
 (or \`~/.pi/agent/spider/scratch/\` for global work).

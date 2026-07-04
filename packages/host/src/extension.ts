@@ -8,6 +8,7 @@ import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result";
 import { controlDoctor, controlConfig } from "./control";
 import { collectStats } from "./control/stats-cmd";
+import { setModelDefault, listCatalog } from "./control/models-cmd";
 import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
@@ -312,6 +313,14 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     case "stats": {
       if (!ctx) return { error: "control stats requires an action context" };
       return { details: collectStats(ctx.db, ctx.globalDb) };
+    }
+    case "models": {
+      if (!ctx) return { error: "control models requires an action context" };
+      if (args.op === "set") {
+        const r = setModelDefault(cwd, String(args.key ?? ""), String(args.value ?? ""));
+        return { details: { ok: r.ok, error: r.error, role: args.key, ref: args.value } };
+      }
+      return { details: { catalog: listCatalog(ctx.pi), defaults: (controlConfig("get", cwd, "models.defaults") as Record<string, string>) ?? {} } };
     }
     case "upstream-watch": {
       if (!ctx) return { error: "control upstream-watch requires an action context" };

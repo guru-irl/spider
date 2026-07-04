@@ -138,6 +138,23 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{|"tokenSavings"/); // NOT raw JSON
   });
 
+  it("control models → tier-grouped catalog card with glyphs + defaults (no raw JSON)", () => {
+    const E = (over: any) => ({ provider: "copilot", id: "m", tier: "standard", thinking: false, vision: false, ctx: 1, speed: 1, costHint: 1, available: true, ...over });
+    const details = {
+      catalog: [E({ id: "claude-sonnet-5", tier: "standard" }), E({ id: "gone", tier: "light", available: false })],
+      defaults: { worker: "copilot/claude-sonnet-5" },
+    };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "models" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toMatch(/light/);
+    expect(out).toMatch(/standard/);
+    expect(out).toContain("●");
+    expect(out).toContain("○");
+    expect(out).toContain("worker");
+    expect(out).not.toMatch(/\{|"catalog"/); // NOT raw JSON
+  });
+
   it("control insights → learning-graph card with nodes/edges/stats (no raw JSON)", () => {
     const details = {
       nodes: [{ id: "skill:tdd", label: "TDD", kind: "skill", category: "process" }, { id: "mem:u1", label: "prefers tabs", kind: "memory" }],

@@ -109,3 +109,6 @@ export type { StatsInput, StatsSummary, ModelStatRow } from "./screens/stats-col
 export { renderStats, StatsView } from "./screens/stats-view";
 export { renderInsights, InsightsView } from "./screens/insights-view";
 export type { InsightGraphView } from "./screens/insights-view";
+export { catalogRows, resolveDefault, MODEL_ROLES } from "./screens/models-model";
+export type { CatalogRow, TierGroup } from "./screens/models-model";
+export { renderModels, ModelsView } from "./screens/models-view";

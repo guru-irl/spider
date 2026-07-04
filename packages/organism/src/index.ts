@@ -12,6 +12,14 @@ export {
 
 export { buildLearnPrompt, AUTHORING_STANDARDS } from "./learn.js";
 
+export {
+  buildLearningGraph,
+  tokenize,
+  type GraphNode,
+  type GraphEdge,
+  type LearningGraph,
+} from "./learning-graph.js";
+
 export function registerOrganism(_host: unknown, _pi: unknown, _deps: unknown): void {
   // filled by later tasks
 }

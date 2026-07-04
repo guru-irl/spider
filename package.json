@@ -35,6 +35,8 @@
     "dev": "vite build --watch",
     "dev:link": "node scripts/dev-link.mjs",
     "dev:unlink": "node scripts/dev-link.mjs --unlink",
+    "link": "node scripts/link.mjs",
+    "unlink": "node scripts/link.mjs --unlink",
     "typecheck": "tsgo -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

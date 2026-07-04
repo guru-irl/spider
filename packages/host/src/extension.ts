@@ -42,7 +42,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { installAgentsUI } from "./agents/agents-ui";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "./render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "./render-result";
 
 export { registerAction };
 
@@ -478,6 +478,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // ctrl+o reveals the COMPLETE curated output. Best-effort — older hosts may lack the API.
   pi.registerMessageRenderer?.("spider.subagent_done", (message: any, options: any, theme: any) =>
     renderSubagentDone(message, options, theme),
+  );
+
+  // Slash commands (/spider, /doctor, /stats, …) emit a spider.command message; render its
+  // output lines themed in the transcript instead of an ephemeral toast.
+  pi.registerMessageRenderer?.("spider.command", (message: any, options: any, theme: any) =>
+    renderCommandOutput(message, options, theme),
   );
 
   registerHooks(pi);

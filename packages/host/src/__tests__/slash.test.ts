@@ -45,12 +45,37 @@ describe("registerSlashCommands", () => {
 		expect(run.mock.calls[0]?.[1]).toBe(ctx); // the ctx, NOT the arg string
 	});
 
-	it("surfaces the result text via ctx.ui.notify", async () => {
+	it("renders control {ok,lines} output as a persistent themed message (customType spider.command)", async () => {
+		const { pi, handlers } = makePi();
+		const run = vi.fn(async () => ({ ok: true, lines: ["## spider doctor", "- better-sqlite3: loaded"] }));
+		registerSlashCommands(pi, { run, alreadyRegistered: new Set() });
+		const sendMessage = vi.fn();
+		await handlers.doctor("", { sendMessage, ui: {} });
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+		const msg = sendMessage.mock.calls[0]?.[0] as any;
+		expect(msg.customType).toBe("spider.command");
+		expect(msg.display).toBe(true);
+		expect(msg.content).toBe("## spider doctor\n- better-sqlite3: loaded");
+		expect(msg.details).toMatchObject({ command: "doctor" });
+	});
+
+	it("falls back to ctx.ui.notify when sendMessage is unavailable", async () => {
 		const { pi, handlers } = makePi();
 		const run = vi.fn(async () => ({ content: "5 results" }));
 		registerSlashCommands(pi, { run, alreadyRegistered: new Set() });
 		const notify = vi.fn();
 		await handlers.stats("", { ui: { notify } });
 		expect(notify).toHaveBeenCalledWith("5 results", "info");
+	});
+
+	it("does nothing (no throw) when the result carries no text", async () => {
+		const { pi, handlers } = makePi();
+		const run = vi.fn(async () => ({ ok: true }));
+		registerSlashCommands(pi, { run, alreadyRegistered: new Set() });
+		const sendMessage = vi.fn();
+		const notify = vi.fn();
+		await handlers.doctor("", { sendMessage, ui: { notify } });
+		expect(sendMessage).not.toHaveBeenCalled();
+		expect(notify).not.toHaveBeenCalled();
 	});
 });

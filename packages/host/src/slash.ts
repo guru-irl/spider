@@ -31,7 +31,7 @@ const DESC: Record<SlashCommandName, string> = {
 };
 
 export interface SlashDeps {
-	run: (args: Record<string, unknown>, ctx: unknown) => Promise<{ content?: unknown; display?: unknown; details?: unknown }>;
+	run: (args: Record<string, unknown>, ctx: unknown) => Promise<{ content?: unknown; display?: unknown; details?: unknown; lines?: unknown; text?: unknown; error?: unknown; ok?: unknown }>;
 	alreadyRegistered: Set<string>;
 }
 
@@ -39,18 +39,31 @@ export interface PiLike {
 	registerCommand(name: string, opts: { description: string; handler: (args: string, ctx: unknown) => unknown }): void;
 }
 
-/** Best-effort extraction of a human string from a dispatch result (content text | display | ""). */
-function resultText(res: { content?: unknown; display?: unknown } | undefined): string {
+/** Best-effort extraction of a human string from a dispatch result. Handles the two shapes
+ * spider dispatch returns: action handlers ({content} text | blocks | {text}) and control
+ * commands ({ok, lines:[...]}), plus {display} / {error}. */
+function resultText(res: { content?: unknown; display?: unknown; lines?: unknown; text?: unknown; error?: unknown } | undefined): string {
 	if (!res) return "";
 	if (typeof res.content === "string") return res.content;
-	if (typeof res.display === "string") return res.display;
 	if (Array.isArray(res.content)) {
 		return res.content
 			.map((b) => (b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string" ? (b as { text: string }).text : ""))
 			.filter(Boolean)
 			.join("\n");
 	}
+	if (typeof res.display === "string") return res.display;
+	if (Array.isArray(res.lines)) return (res.lines as unknown[]).filter((l): l is string => typeof l === "string").join("\n");
+	if (typeof res.text === "string") return res.text;
+	if (typeof res.error === "string") return `Error: ${res.error}`;
 	return "";
+}
+
+/** pi command ctx: sendMessage renders a persistent custom entry in the transcript (like
+ * spider.subagent_done); ui.notify is an ephemeral toast used only as a fallback. */
+interface CommandSink {
+	sendMessage?: (m: { customType: string; content: string; display: boolean; details?: unknown }) => unknown;
+	pi?: { sendMessage?: CommandSink["sendMessage"] };
+	ui?: { notify?: (t: string, k?: string) => void };
 }
 
 export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
@@ -62,8 +75,14 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 				const arg = typeof args === "string" ? args.trim() : "";
 				const res = await deps.run(FORWARD[name](arg), ctx);
 				const text = resultText(res);
-				const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
-				if (text && typeof notify === "function") notify(text, "info");
+				if (!text) return;
+				const c = ctx as CommandSink;
+				const send = typeof c?.sendMessage === "function" ? c.sendMessage.bind(c) : typeof c?.pi?.sendMessage === "function" ? c.pi.sendMessage.bind(c.pi) : undefined;
+				if (send) {
+					send({ customType: "spider.command", content: text, display: true, details: { command: name, text } });
+				} else if (typeof c?.ui?.notify === "function") {
+					c.ui.notify(text, "info");
+				}
 			},
 		});
 	}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "../render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
 // Minimal fakes for pi's renderResult call shape. We only exercise the fields the
@@ -348,5 +348,16 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
     const out = renderSubagentDone(msg, { expanded: true }, th).render(200).join("\n");
     expect(out).toContain("l8");
     expect(out).not.toContain("ctrl+o to expand");
+  });
+});
+
+describe("renderCommandOutput (slash-command transcript message)", () => {
+  it("renders the command output lines under a glyph-free rule, no raw JSON", () => {
+    const msg = { customType: "spider.command", content: "x", details: { command: "doctor", text: "## spider doctor\n- better-sqlite3: loaded (wal)" } };
+    const c = renderCommandOutput(msg, {}, theme);
+    const body = (c.render(80) as string[]).join("\n");
+    expect(body).toContain("better-sqlite3: loaded");
+    expect(body).toContain("doctor");
+    expect(body).not.toMatch(/\{\s*"/);
   });
 });

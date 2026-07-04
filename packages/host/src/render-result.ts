@@ -410,11 +410,6 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   return { render: (w: number) => [clip(line, w)], invalidate() {} };
 }
 
-/** Transcript renderer for the async `spider.subagent_done` message. Reuses pi's OWN tool-shell
- *  primitives (a Spacer + a Box painted with the toolSuccessBg/toolErrorBg background, exactly as
- *  ToolExecutionComponent does) wrapping the SAME renderers a live spider tool call uses
- *  (renderSpiderCall for the title + renderSpiderResult for the body) — so the completion is
- *  pixel-identical to a real spider run result. ctrl+o (options.expanded) expands the output. */
 export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {
   const d = message?.details ?? {};
   const status = String(d.status ?? "done");
@@ -433,5 +428,28 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
+  return container as unknown as Component;
+}
+
+/** Transcript renderer for the `spider.command` message a slash command emits. There is no
+ *  tool shell here (it's a custom message, not a tool result), so — unlike tool-result bodies —
+ *  it paints its OWN glyph-free `spider · <command>` rule header, then the command's output
+ *  lines (already human-formatted), width-safe. */
+export function renderCommandOutput(message: any, _options: unknown, theme: any): Component {
+  const d = message?.details ?? {};
+  const command = String(d.command ?? "spider");
+  const text = typeof d.text === "string" ? d.text : typeof message?.content === "string" ? message.content : "";
+  const at = adaptTheme(mkTheme(theme));
+  const body = text.replace(ANSI, "").split("\n");
+  const container = new Container();
+  container.addChild(new Spacer(1));
+  container.addChild({
+    render(width: number): string[] {
+      const out = [sectionRule(at, `spider \u00b7 ${command}`, width)];
+      for (const ln of body) out.push(clip(ln, width));
+      return out;
+    },
+    invalidate() {},
+  } as any);
   return container as unknown as Component;
 }

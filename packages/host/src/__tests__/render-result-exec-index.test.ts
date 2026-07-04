@@ -17,10 +17,9 @@ function lines(action: string, details: unknown, args: Record<string, unknown> =
 }
 
 describe("render-result exec/index wiring (Phase 8)", () => {
-  it("exec routes to the bespoke renderer (🕸 spider exec ✓ exit 0)", () => {
+  it("exec routes to the bespoke renderer (✓ exit 0, no duplicated header)", () => {
     const out = lines("exec", { stdout: "one\ntwo\nthree", stderr: "", exitCode: 0, timedOut: false }, { code: "ls -la" }).join("\n");
-    expect(out).toContain("🕸");
-    expect(out).toContain("spider exec");
+    expect(out).not.toMatch(/spider exec/);
     expect(out).toContain("✓");
     expect(out).toMatch(/exit 0/);
   });
@@ -30,20 +29,19 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       { stdout: "ok", stderr: "", exitCode: 0, timedOut: false },
       { stdout: "bad", stderr: "boom", exitCode: 1, timedOut: false },
     ]).join("\n");
-    expect(out).toContain("spider batch");
     expect(out).toContain("✗");
   });
 
   it("index routes to the bespoke renderer with source + chunk counts", () => {
     const out = lines("index", { source: "docs", chunkCount: 12 }, { path: "docs/x.md" }).join("\n");
-    expect(out).toContain("spider index");
+    expect(out).not.toMatch(/spider index/);
     expect(out).toMatch(/docs/);
     expect(out).toMatch(/12 chunks/);
   });
 
   it("message routes to the bespoke renderer (delivered ✓ + target + body)", () => {
     const out = lines("message", { delivered: true }, { to: "peer", message: "ping" }).join("\n");
-    expect(out).toContain("spider send");
+    expect(out).not.toMatch(/spider (send|message)/);
     expect(out).toContain("✓");
     expect(out).toMatch(/peer/);
     expect(out).toMatch(/ping/);

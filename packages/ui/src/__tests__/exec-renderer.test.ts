@@ -6,30 +6,32 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
 describe("exec renderer", () => {
-  it("call shows a command block and +N more when over the cap", () => {
+  it("call-header variant shows a command block and +N more when over the cap", () => {
     const cmds = Array.from({ length: 14 }, (_, i) => `cmd${i}`);
     const lines = renderExecCall({ kind: "batch", commands: cmds }, { theme: id, width: 40 });
     expect(lines.join("\n")).toContain("cmd0");
     expect(lines.join("\n")).toMatch(/more/);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(40);
   });
-  it("result header carries ✓/exit/lines and the indexed note", () => {
+  it("result body carries ✓/exit/lines and the indexed note — but NOT a repeated 🕸 spider header", () => {
     const lines = renderExecResult({
       kind: "exec", commands: ["ls"], ok: true, exitCode: 0, outLines: 12, ms: 34,
       preview: ["a", "b", "c"], indexed: { source: "shell:ls", chunks: 2 },
     }, { theme: id, width: 60, expanded: true });
-    expect(lines[0]).toContain("🕸");
-    expect(lines[0]).toContain("✓");
-    expect(lines.join("\n")).toMatch(/exit 0/);
-    expect(lines.join("\n")).toMatch(/12/);
-    expect(lines.join("\n")).toMatch(/shell:ls|2 chunks/);
+    const text = lines.join("\n");
+    expect(text).not.toMatch(/spider exec/); // no duplicated header — call line already shows it
+    expect(text).toContain("✓");
+    expect(text).toMatch(/exit 0/);
+    expect(text).toMatch(/12 lines/);
+    expect(text).toMatch(/shell:ls|2 chunks/);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
-  it("collapsed preview shows one line + more-indicator", () => {
+  it("collapsed preview shows one line + more-indicator and the ✗ fail path", () => {
     const lines = renderExecResult({
       kind: "exec", commands: ["ls"], ok: false, exitCode: 1, outLines: 5, preview: ["x", "y", "z"],
     }, { theme: id, width: 40, expanded: false });
-    expect(lines[0]).toContain("✗");
-    expect(lines.join("\n")).toMatch(/more/);
+    const text = lines.join("\n");
+    expect(text).toContain("✗");
+    expect(text).toMatch(/more/);
   });
 });

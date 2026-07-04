@@ -6,13 +6,14 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
 describe("index/fetch renderer", () => {
-  it("shows source, chunk + embed counts", () => {
+  it("shows source, chunk + embed counts — no repeated 🕸 spider header", () => {
     const lines = renderIndexResult({
       kind: "index", source: "docs", targets: ["a.md", "b.md"], chunks: 20, embedded: 20,
     }, { theme: id, width: 60, expanded: true });
-    expect(lines[0]).toContain("🕸");
-    expect(lines.join("\n")).toMatch(/docs/);
-    expect(lines.join("\n")).toMatch(/20/);
+    const text = lines.join("\n");
+    expect(text).not.toMatch(/spider index/);
+    expect(text).toMatch(/docs/);
+    expect(text).toMatch(/20 chunks/);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
   it("renders fetch urls and skipped count", () => {

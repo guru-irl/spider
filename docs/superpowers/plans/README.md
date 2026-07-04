@@ -47,13 +47,14 @@ spider/
 │   ├── context/src/index.ts
 │   ├── todo/src/index.ts
 │   ├── subagents/src/index.ts
+│   ├── organism/src/index.ts       # autonomic organism (compaction/shutdown digests + skill curator)
 │   ├── superpowers/               # skills/ + agentsmd manager + upstream-watch
 │   ├── ui/src/index.ts
 │   └── host/src/extension.ts      # THE single pi extension entry
 └── docs/superpowers/{specs,plans}/
 ```
 
-- Internal package names: `@spider/db-core`, `@spider/memory`, `@spider/context`, `@spider/todo`, `@spider/subagents`, `@spider/ui`, `@spider/host`.
+- Internal package names: `@spider/db-core`, `@spider/memory`, `@spider/context`, `@spider/todo`, `@spider/subagents`, `@spider/organism`, `@spider/ui`, `@spider/host`.
 - `package.json` `"pi"` manifest: `{ "extensions": ["./dist/extension.js"], "skills": ["./packages/superpowers/skills"] }`, keyword `pi-package`.
 
 ---
@@ -174,6 +175,26 @@ CREATE TABLE vector_map (
 CREATE TABLE embed_queue (
   id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
   text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE skills (            -- skill lifecycle + staged candidates; SKILL.md files remain the source of truth
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',   -- baseline | project
+  category TEXT, path TEXT,                -- .spider/skills/<name>/SKILL.md (null while a staged-only candidate)
+  state TEXT NOT NULL DEFAULT 'active',    -- active | stale | archived   (curator lifecycle)
+  status TEXT NOT NULL DEFAULT 'active',   -- active | staged | rejected  (co-equal capture staging)
+  source TEXT NOT NULL DEFAULT 'user',     -- user | auto | import | learn
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,  -- pinned=opt-out; protected=builtin/hub
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,                     -- proposed SKILL.md while status='staged'; null once written to disk
+  related TEXT,                            -- JSON array of related skill names (learning-graph edges)
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX idx_skills_state ON skills(state, status);
+CREATE TABLE curator_state (
+  scope TEXT PRIMARY KEY,                  -- 'project'
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
 );
 ```
 
@@ -324,14 +345,9 @@ The host builds ONE `ActionCtx` per dispatch and calls `handler(args, ctx)`; the
 
 ### A4 — new tables (Phase 6/7/Q24 own their migrations; declared here to stay canonical)
 ```sql
--- project DB
-CREATE TABLE skills (            -- AI-authored project skills registry (files live in .spider/skills/)
-  id INTEGER PRIMARY KEY, slug TEXT UNIQUE NOT NULL, path TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',   -- active|stale|archived|staged
-  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
-  use_count INTEGER DEFAULT 0, last_used_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER
-);
-CREATE TABLE curator_state ( key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER );
+-- project DB: skills + curator_state are now defined canonically in "Project DB tables" above
+-- (SUPERSEDED by Phase 6 Task 0 — the earlier slug/key-value placeholders here are retired;
+--  the frozen shapes are `skills`(name/tier/state/status/...) + `curator_state`(scope/last_run_at/paused)).
 -- global DB
 CREATE TABLE model_stats (      -- Q24 lightweight learned-routing signal
   id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
@@ -375,3 +391,19 @@ export interface ModelsConfig { autoSelect: boolean; defaults: Record<string,str
 - `pick` order: explicit `profile.model` (if available) > role `cfg.defaults[role]` (if available) > walk `(cfg.tierPreference||TIER_PREFERENCE)[targetTier]` first-available (vision-filtered if `needsVision`) > any available of that tier > degrade to adjacent tier (heavy<->standard<->light). `thinkingLevel = profile.thinkingLevel ?? cfg.thinkingDefaults[tier] ?? DEFAULT_THINKING[tier]`.
 - `targetTier`: `profile.tier` > (`premium`|`high`)->heavy, (`cheap`|`low`)->light, else standard.
 - **Copilot sync** (`scripts/sync-copilot-models.mjs`): query `api.githubcopilot.com/models` (auth.json copilot token), diff vs pi-ai `GITHUB_COPILOT_MODELS` built-in catalog + `~/.pi/agent/models.json`, and additively inject any exposed-but-missing id into models.json `providers["github-copilot"].models[]` with the correct `api` (claude->anthropic-messages, gpt/mai->openai-responses, gemini->openai-completions) + the copilot IDE `headers` (Editor-Version etc.) + baseUrl. Idempotent; preserves existing `modelOverrides`/entries. (Validated 2026-07-02: sonnet-5 + mai-code-1-flash-picker added this way both run.)
+
+### A9 — config: add `organism` + `curator` groups (Phase 6)
+
+Phase 6 reads two new config groups (config precedence + `control config` UI already exist per Phase 0/8; this phase only reads these keys). Master + per-behavior toggles default-on; the curator's LLM umbrella consolidation defaults off (Hermes conservatism).
+
+- `organism`:
+  - `enabled: bool = true` — master switch for the autonomic organism (compaction/shutdown drains).
+  - `passes: { runMemoryTodo: bool=true, todoMemory: bool=true, learning: bool=true, consolidation: bool=true, reflection: bool=true, insights: bool=true }` — per-digest-pass toggles (all default `true`).
+  - `selfNaming: bool = true` — allow the organism to self-name the session/project.
+  - `autoWriteBudget: number` — per-session cap on organism-produced auto-writes (documented default; staged, fail-closed).
+- `curator`:
+  - `enabled: bool = true` — run the skill curator (decay + umbrella consolidation) at session-end.
+  - `minIntervalHours: number` — min idle interval between curator runs (documented default ~24–48h).
+  - `staleAfterDays: number` — `active → stale` transition threshold (documented default).
+  - `archiveAfterDays: number` — `stale → archived` transition threshold (documented default).
+  - `consolidate: bool = false` — opt-in LLM umbrella consolidation (defaults OFF; never auto-deletes).

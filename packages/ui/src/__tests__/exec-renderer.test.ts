@@ -1,0 +1,35 @@
+import { describe, it, expect } from "vitest";
+import { renderExecCall, renderExecResult } from "../renderers/exec.js";
+import type { ThemeAdapter } from "../agents/types.js";
+import { visibleWidth } from "@earendil-works/pi-tui";
+
+const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
+
+describe("exec renderer", () => {
+  it("call shows a command block and +N more when over the cap", () => {
+    const cmds = Array.from({ length: 14 }, (_, i) => `cmd${i}`);
+    const lines = renderExecCall({ kind: "batch", commands: cmds }, { theme: id, width: 40 });
+    expect(lines.join("\n")).toContain("cmd0");
+    expect(lines.join("\n")).toMatch(/more/);
+    for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(40);
+  });
+  it("result header carries ✓/exit/lines and the indexed note", () => {
+    const lines = renderExecResult({
+      kind: "exec", commands: ["ls"], ok: true, exitCode: 0, outLines: 12, ms: 34,
+      preview: ["a", "b", "c"], indexed: { source: "shell:ls", chunks: 2 },
+    }, { theme: id, width: 60, expanded: true });
+    expect(lines[0]).toContain("🕸");
+    expect(lines[0]).toContain("✓");
+    expect(lines.join("\n")).toMatch(/exit 0/);
+    expect(lines.join("\n")).toMatch(/12/);
+    expect(lines.join("\n")).toMatch(/shell:ls|2 chunks/);
+    for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
+  });
+  it("collapsed preview shows one line + more-indicator", () => {
+    const lines = renderExecResult({
+      kind: "exec", commands: ["ls"], ok: false, exitCode: 1, outLines: 5, preview: ["x", "y", "z"],
+    }, { theme: id, width: 40, expanded: false });
+    expect(lines[0]).toContain("✗");
+    expect(lines.join("\n")).toMatch(/more/);
+  });
+});

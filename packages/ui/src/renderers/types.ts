@@ -42,7 +42,10 @@ export function kv(theme: ThemeAdapter, label: string, value: string, width: num
   return truncateToWidth(`${theme.fg("muted", label)} ${theme.fg("text", value)}`, width, "");
 }
 
-/** A 🕸-ruled titled card; every returned line is ≤ width visible cells. */
+/** A 🕸-ruled titled card. OVERLAY-ONLY: use this for standalone surfaces mounted via
+ *  ctx.ui.custom (no outer tool shell). NEVER in a tool-result renderer — pi's tool shell
+ *  already shows `🕸 spider · <action>`, so a second 🕸 header double-heads the output.
+ *  See docs/output-ui-guidelines.md. Every returned line is ≤ width visible cells. */
 export function card(theme: ThemeAdapter, title: string, lines: string[], width: number): string[] {
   const head = `${theme.fg("accent", "🕸")} ${theme.bold(theme.fg("accent", title))} `;
   const fill = Math.max(0, width - visibleWidth(head));
@@ -50,4 +53,13 @@ export function card(theme: ThemeAdapter, title: string, lines: string[], width:
   const out = [rule];
   for (const l of lines) out.push(truncateToWidth(l, width, ""));
   return out;
+}
+
+/** A glyph-free section rule for grouping lines INSIDE a tool-result body: `label ─────`
+ *  (muted label + dim rule, no 🕸). This is the tool-result counterpart to card() — it adds
+ *  structure without repeating the tool shell's header. See docs/output-ui-guidelines.md. */
+export function sectionRule(theme: ThemeAdapter, label: string, width: number): string {
+  const head = `${theme.fg("muted", label)} `;
+  const fill = Math.max(0, width - visibleWidth(head));
+  return truncateToWidth(head + theme.fg("dim", "─".repeat(fill)), width, "");
 }

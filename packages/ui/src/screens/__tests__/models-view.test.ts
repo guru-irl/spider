@@ -20,7 +20,8 @@ describe("renderModels", () => {
   it("renders tier sections, availability glyphs and default markers, width-safe", () => {
     const lines = renderModels(entries, defaults, id, 60);
     const out = lines.join("\n");
-    expect(lines[0]).toContain("🕸");
+    expect(lines.join("\n")).not.toContain("🕸"); // tool shell owns the header (docs/output-ui-guidelines.md)
+    expect(lines[0]).toMatch(/light/); // first tier rule (light→standard→heavy)
     expect(out).toMatch(/light/);
     expect(out).toMatch(/standard/);
     expect(out).toContain("●"); // available
@@ -29,9 +30,9 @@ describe("renderModels", () => {
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
 
-  it("never throws on empty input", () => {
+  it("never throws on empty input (empty body — tool shell still shows the header)", () => {
     const lines = renderModels([], {}, id, 40);
-    expect(lines[0]).toContain("🕸");
+    expect(lines).toEqual([]);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(40);
   });
 });

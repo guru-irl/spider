@@ -17,7 +17,8 @@ const graph = {
 describe("renderInsights", () => {
   it("renders a stats header, nodes and edges within width", () => {
     const lines = renderInsights(graph, id, 60, true);
-    expect(lines[0]).toContain("🕸");
+    expect(lines.join("\n")).not.toContain("🕸"); // tool shell owns the header (docs/output-ui-guidelines.md)
+    expect(lines[0]).toMatch(/2 nodes/);
     expect(lines.join("\n")).toMatch(/2 nodes/);
     expect(lines.join("\n")).toMatch(/1 edge/);
     expect(lines.join("\n")).toMatch(/50%/);

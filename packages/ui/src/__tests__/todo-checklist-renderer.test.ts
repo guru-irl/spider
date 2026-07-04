@@ -18,13 +18,13 @@ describe("todo checklist renderer", () => {
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(40);
   });
 
-  it("names the scope in the card title and stays within width at narrow sizes", () => {
+  it("names the scope as a glyph-free rule and never repeats the tool 🕸 header", () => {
     const lines = renderTodoChecklist({
       scope: "all", done: 0, total: 1,
       items: [{ id: 7, text: "a very long todo text that should be clipped to the width budget without overflow", done: false }],
     }, { theme: id, width: 24 });
-    expect(lines[0]).toContain("🕸");
-    expect(lines.join("\n")).toContain("all");
+    expect(lines.join("\n")).not.toContain("🕸"); // tool shell already shows it (docs/output-ui-guidelines.md)
+    expect(lines[0]).toContain("all");
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(24);
   });
 

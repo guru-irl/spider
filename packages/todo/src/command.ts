@@ -1,8 +1,50 @@
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Db } from "@spider/db-core";
 import { listTodos, viewSession } from "./store";
 import type { SessionGroup, Todo } from "./types";
 
 const GLYPH = "🕸";
+
+type Fg = (token: string, s: string) => string;
+
+/** Safe theme.fg accessor — pi passes a real Theme in the overlay, but tests/non-interactive
+ *  paths may pass a bare object; degrade to identity so nothing throws. */
+function fgOf(theme: any): Fg {
+  return typeof theme?.fg === "function" ? (t, s) => theme.fg(t, s) : (_t, s) => s;
+}
+
+function shortId(session: string): string {
+  return session.length > 8 ? session.slice(0, 8) : session;
+}
+
+/** `name (abcd1234)` — friendly session label, with a ` ← current` marker for this session. */
+function sessionLabel(g: { session: string; name?: string; current?: boolean }): string {
+  const id = shortId(g.session);
+  const base = g.name ? `${g.name} (${id})` : id;
+  return g.current ? `${base} ← current` : base;
+}
+
+/** A subtle full-width `─── Title ────` rule (no 🕸 chrome — this is an overlay, not a tool result). */
+function ruleHeader(fg: Fg, label: string, width: number): string {
+  const title = ` ${label} `;
+  const left = 3;
+  const right = Math.max(0, width - visibleWidth(title) - left);
+  return truncateToWidth(fg("dim", "─".repeat(left)) + fg("accent", title) + fg("dim", "─".repeat(right)), width, "");
+}
+
+/** `done/total completed` summary + one `✓/○ #id text` line per todo (done → dim). */
+function todoLines(fg: Fg, todos: Todo[], width: number, indent: string): string[] {
+  if (!todos.length) return [truncateToWidth(`${indent}${fg("dim", "No todos.")}`, width, "")];
+  const done = todos.filter((t) => t.done).length;
+  const out = [truncateToWidth(`${indent}${fg("muted", `${done}/${todos.length} completed`)}`, width, ""), ""];
+  for (const t of todos) {
+    const check = t.done ? fg("success", "✓") : fg("dim", "○");
+    const id = fg("accent", `#${t.seq}`);
+    const text = t.done ? fg("dim", t.text) : fg("text", t.text);
+    out.push(truncateToWidth(`${indent}${check} ${id} ${text}`, width, ""));
+  }
+  return out;
+}
 
 /**
  * Deps for the `/todos` command. DB + session are resolved per-invocation from
@@ -21,20 +63,6 @@ function fmtTodo(t: Todo): string {
 function sessionLines(db: Db, sessionId: string): string[] {
   const todos = listTodos(db, sessionId);
   return todos.length ? todos.map(fmtTodo) : ["(no todos)"];
-}
-
-/** Lines for all-sessions view (grouped by session). */
-function allSessionLines(db: Db, sessionId: string): string[] {
-  const groups: SessionGroup[] = viewSession(db, "all", sessionId);
-  if (!groups.length) return ["(no todos)"];
-  const out: string[] = [];
-  for (const g of groups) {
-    const label = g.name ?? g.session;
-    out.push(`${g.current ? "▸ " : "  "}${label}${g.current ? " (this session)" : ""}`);
-    if (g.todos.length) for (const t of g.todos) out.push(`    ${fmtTodo(t)}`);
-    else out.push("    (no todos)");
-  }
-  return out;
 }
 
 /** Model-facing / notify text for the current session (fallback path). */
@@ -61,11 +89,13 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
       const sessionId: string =
         ctx?.sessionManager?.getSessionId?.() ?? deps.getSessionId(ctx);
       const db = deps.getDb(ctx);
+      const sessionName: string | undefined = ctx?.sessionManager?.getSessionName?.();
 
       // Interactive overlay when available.
       if (typeof ctx?.ui?.custom === "function") {
-        await ctx.ui.custom((tui: any, _theme: any, _kb: any, done: () => void) => {
+        await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => {
           let allSessions = false;
+          const fg = fgOf(theme);
           // force:true so a shrinking view (all→this) or closing the overlay triggers pi's
           // clearOnShrink — freed rows are cleared and the chat flows back down with the editor
           // pinned at the bottom, instead of stranding the chat bar in the middle (mirrors the
@@ -74,20 +104,35 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
           return {
             render(width: number): string[] {
               const w = Math.max(1, width | 0);
-              const title = allSessions
-                ? `${GLYPH} todos — all sessions`
-                : `${GLYPH} todos — this session`;
-              const hint = "(a: toggle all · q: close)";
-              const body = allSessions
-                ? allSessionLines(db, sessionId)
-                : sessionLines(db, sessionId);
-              return [title, hint, "", ...body].map((l) =>
-                l.length <= w ? l : l.slice(0, Math.max(0, w - 1)) + "…",
-              );
+              const lines: string[] = [""];
+              if (!allSessions) {
+                lines.push(ruleHeader(fg, "Todos", w));
+                lines.push(
+                  "",
+                  truncateToWidth(`  ${fg("dim", "session: ")}${fg("muted", sessionLabel({ session: sessionId, name: sessionName, current: true }))}`, w, ""),
+                  "",
+                );
+                lines.push(...todoLines(fg, listTodos(db, sessionId), w, "  "));
+              } else {
+                lines.push(ruleHeader(fg, "Todos · all sessions", w), "");
+                const groups: SessionGroup[] = viewSession(db, "all", sessionId);
+                if (!groups.length) {
+                  lines.push(truncateToWidth(`  ${fg("dim", "No todos in this project yet.")}`, w, ""));
+                } else {
+                  for (const g of groups) {
+                    lines.push(truncateToWidth(`  ${fg("accent", sessionLabel(g))}`, w, ""));
+                    lines.push(...todoLines(fg, g.todos, w, "    "));
+                    lines.push("");
+                  }
+                }
+              }
+              const hint = `Press "a" to toggle ${allSessions ? "current session" : "all sessions"} · "q"/Esc to close`;
+              lines.push("", truncateToWidth(`  ${fg("dim", hint)}`, w, ""), "");
+              return lines;
             },
             invalidate() {},
             handleInput(data: string): boolean {
-              if (data === "a") {
+              if (data === "a" || data === "A") {
                 allSessions = !allSessions;
                 requestRender();
                 return true;

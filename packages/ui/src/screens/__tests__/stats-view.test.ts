@@ -12,7 +12,8 @@ describe("renderStats", () => {
       rowCounts: { memory: 42, todos: 8 },
       models: [{ model: "copilot/fast", calls: 2, okRate: 0.5, avgMs: 200, tokens: 1200 }],
     }, id, 60);
-    expect(lines[0]).toContain("🕸");
+    expect(lines.join("\n")).not.toContain("🕸"); // tool shell owns the header (docs/output-ui-guidelines.md)
+    expect(lines[0]).toContain("token savings");
     expect(lines.join("\n")).toMatch(/12000|12,000/);
     expect(lines.join("\n")).toMatch(/memory/);
     expect(lines.join("\n")).toMatch(/copilot\/fast/);

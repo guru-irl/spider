@@ -2,22 +2,23 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
 import type { StatsSummary } from "./stats-collect.js";
 import { renderTable } from "../components/table.js";
-import { card } from "../renderers/types.js";
+import { sectionRule } from "../renderers/types.js";
 
-/** Pure: token-savings + row-counts + per-model table, framed as a 🕸 stats card. */
+/** Pure: token-savings + row-counts + per-model table as a body-only stats view (NO 🕸 header —
+ *  the spider tool shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md). */
 export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number): string[] {
   const body: string[] = [];
-  body.push(truncateToWidth(theme.fg("accent", "── token savings ──"), width, ""));
+  body.push(sectionRule(theme, "token savings", width));
   body.push(truncateToWidth(
     `${theme.fg("muted", "indexed chunks")} ${theme.fg("text", String(s.tokenSavings.indexedChunks))}  ` +
     `${theme.fg("muted", "est tokens saved")} ${theme.fg("success", String(s.tokenSavings.estTokensSaved))}`,
     width, ""));
-  body.push(truncateToWidth(theme.fg("accent", "── rows ──"), width, ""));
+  body.push(sectionRule(theme, "rows", width));
   for (const [k, v] of Object.entries(s.rowCounts)) {
     body.push(truncateToWidth(`${theme.fg("muted", k)} ${theme.fg("text", String(v))}`, width, ""));
   }
   if (s.models.length) {
-    body.push(truncateToWidth(theme.fg("accent", "── models ──"), width, ""));
+    body.push(sectionRule(theme, "models", width));
     body.push(...renderTable(theme, {
       columns: [
         { header: "model" }, { header: "calls", align: "right" }, { header: "ok%", align: "right" },
@@ -27,7 +28,7 @@ export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number)
       width,
     }));
   }
-  return card(theme, "stats", body, width);
+  return body;
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

@@ -1,6 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
-import { card } from "../renderers/types.js";
+import { sectionRule } from "../renderers/types.js";
 
 /** The learning-graph shape produced by @spider/organism `buildLearningGraph`
  *  (nodes = learned skills / active memories, edges = skill↔skill or memory→skill). */
@@ -13,15 +13,16 @@ export interface InsightGraphView {
 const NODE_CAP = 8;
 const EDGE_CAP = 6;
 
-/** Pure: render the learning graph as a 🕸 insights card — a stats header, a nodes list
- *  (skill/memory badge + label), and an edges list (`a → b`). Collapsed caps the lists. */
+/** Pure: render the learning graph as a body-only insights view (NO 🕸 header — the spider tool
+ *  shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md): a stats line, a
+ *  nodes list (skill/memory badge + label), and an edges list (`a → b`). Collapsed caps the lists. */
 export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: number, expanded = false): string[] {
   const body: string[] = [];
   const pct = Math.round(g.stats?.linkedPct ?? 0);
   body.push(truncateToWidth(theme.fg("muted", `${g.stats?.nodes ?? 0} nodes · ${g.stats?.edges ?? 0} edge${(g.stats?.edges ?? 0) === 1 ? "" : "s"} · ${pct}% linked`), width, ""));
 
   const nodes = g.nodes ?? [];
-  body.push(truncateToWidth(theme.fg("accent", `── nodes (${nodes.length}) ──`), width, ""));
+  body.push(sectionRule(theme, `nodes (${nodes.length})`, width));
   const shownNodes = expanded ? nodes : nodes.slice(0, NODE_CAP);
   for (const n of shownNodes) {
     const badge = n.kind === "skill" ? theme.fg("success", "◆") : theme.fg("dim", "•");
@@ -34,7 +35,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
 
   const edges = g.edges ?? [];
   if (edges.length) {
-    body.push(truncateToWidth(theme.fg("accent", `── edges (${edges.length}) ──`), width, ""));
+    body.push(sectionRule(theme, `edges (${edges.length})`, width));
     const shownEdges = expanded ? edges : edges.slice(0, EDGE_CAP);
     for (const e of shownEdges) {
       body.push(truncateToWidth(`${theme.fg("text", e.source)} ${theme.fg("dim", "→")} ${theme.fg("text", e.target)}`, width, ""));
@@ -43,7 +44,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
       body.push(truncateToWidth(theme.fg("muted", `⎿ … ${edges.length - shownEdges.length} more`), width, ""));
     }
   }
-  return card(theme, "insights", body, width);
+  return body;
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

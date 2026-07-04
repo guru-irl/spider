@@ -51,6 +51,21 @@ describe("makeTodosCommand — interactive overlay", () => {
     expect(initial).not.toContain("other session task");
   });
 
+  it("renders the quality layout: Todos rule, session line, completed count and check glyphs", async () => {
+    ctx = makeTodoDb();
+    addTodo(ctx.db, "s1", "write plan");
+    addTodo(ctx.db, "s1", "ship it");
+    const fake = fakeCustomUi();
+    const cmd = makeTodosCommand({ getDb: () => ctx.db, getSessionId: () => "s1" });
+    await cmd.handler("", { hasUI: true, ui: fake.ui });
+    const out = fake.component.render(80).join("\n");
+    expect(out).toContain("Todos");         // subtle rule header (no 🕸 chrome)
+    expect(out).toContain("session:");      // context line
+    expect(out).toMatch(/0\/2 completed/);  // summary
+    expect(out).toContain("○");             // open-item glyph
+    expect(out).toMatch(/Esc to close/);    // footer hint
+  });
+
   it("'a' toggles to the all-sessions view and re-renders", async () => {
     ctx = makeTodoDb();
     addTodo(ctx.db, "s1", "write plan");

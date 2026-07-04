@@ -2,7 +2,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
 import type { ModelEntry } from "@spider/models";
 import { catalogRows } from "./models-model.js";
-import { card } from "../renderers/types.js";
+import { sectionRule } from "../renderers/types.js";
 
 /** Pure: the copilot model catalog grouped by tier, framed as a 🕸 models card. Each tier is
  *  an accent `── <tier> ──` rule; each model is an availability glyph (● available / ○ not),
@@ -11,7 +11,7 @@ import { card } from "../renderers/types.js";
 export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number): string[] {
   const body: string[] = [];
   for (const group of catalogRows(entries, defaults)) {
-    body.push(truncateToWidth(theme.fg("accent", `── ${group.tier} ──`), width, ""));
+    body.push(sectionRule(theme, group.tier, width));
     for (const row of group.rows) {
       const glyph = row.available ? theme.fg("accent", "●") : theme.fg("muted", "○");
       const badges: string[] = [];
@@ -22,7 +22,7 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       body.push(truncateToWidth(`${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
     }
   }
-  return card(theme, "models", body, width);
+  return body;
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

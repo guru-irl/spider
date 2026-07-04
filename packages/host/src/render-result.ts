@@ -184,8 +184,8 @@ function renderControlInsights(t: T, details: any, expanded: boolean): Component
   return { render: (w: number) => ["", ...renderInsights(g, th, w, expanded)], invalidate() {} };
 }
 
-/** `control stats` — render the StatsSummary details as a 🕸 stats card (leading blank
- *  for the gutter style). Never throws on a missing/partial summary. */
+/** `control stats` — render the StatsSummary details as a body-only stats view (leading blank
+ *  for the gutter style; the tool shell owns the header). Never throws on a missing/partial summary. */
 function renderControlStats(t: T, details: any): Component {
   const th = adaptTheme(t);
   const summary: StatsSummary = details ?? { tokenSavings: { indexedChunks: 0, estTokensSaved: 0 }, rowCounts: {}, models: [] };
@@ -193,8 +193,8 @@ function renderControlStats(t: T, details: any): Component {
 }
 
 /** `control models` — render the copilot catalog (tier-grouped, availability + role defaults)
- *  as a 🕸 models card. The `--set` path returns only a confirmation payload; render that as a
- *  single status line. Never throws on a missing/partial payload. */
+ *  as a body-only models view. The `--set` path returns only a confirmation payload; render that as
+ *  a single status line. Never throws on a missing/partial payload. */
 function renderControlModels(t: T, details: any, _expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.catalog === undefined && (details.ok !== undefined || details.error !== undefined)) {

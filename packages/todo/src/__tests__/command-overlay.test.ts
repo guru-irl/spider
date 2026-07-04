@@ -99,6 +99,20 @@ describe("makeTodosCommand — interactive overlay", () => {
     expect(closed).toBe(true);
   });
 
+  it("'Esc' and Ctrl+C close the overlay via done()", async () => {
+    ctx = makeTodoDb();
+    addTodo(ctx.db, "s1", "write plan");
+    for (const key of ["\x1b", "\x03"]) {
+      const fake = fakeCustomUi();
+      let closed = false;
+      fake.onDone(() => { closed = true; });
+      const cmd = makeTodosCommand({ getDb: () => ctx.db, getSessionId: () => "s1" });
+      await cmd.handler("", { hasUI: true, ui: fake.ui });
+      expect(fake.component.handleInput(key)).toBe(true);
+      expect(closed).toBe(true);
+    }
+  });
+
   it("'a' toggle forces a full redraw (clearOnShrink) so a shrinking view reclaims freed rows", async () => {
     ctx = makeTodoDb();
     addTodo(ctx.db, "s1", "write plan");

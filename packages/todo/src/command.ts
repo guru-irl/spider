@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, Key, matchesKey } from "@earendil-works/pi-tui";
 import type { Db } from "@spider/db-core";
 import { listTodos, viewSession } from "./store";
 import type { SessionGroup, Todo } from "./types";
@@ -137,7 +137,9 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
                 requestRender();
                 return true;
               }
-              if (data === "q" || data === "\x1b" || data === "\x03") {
+              // Esc / Ctrl+C / q close. Use matchesKey (not a raw "\x1b" compare) so pi's
+              // normalized escape key actually matches — the raw compare silently missed it.
+              if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q" || data === "Q") {
                 done();
                 return true;
               }

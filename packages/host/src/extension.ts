@@ -119,7 +119,7 @@ const SPIDER_PARAMETERS = {
     },
     // control
     command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory')." },
-    op: { type: "string", enum: ["get", "set"], description: "control config op." },
+    op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command." },
@@ -180,7 +180,8 @@ const SPIDER_PARAMETERS = {
     to: { type: "string", description: "Target session name/id for action 'message'." },
     message: { type: "string", description: "Message body for action 'message'." },
     // todo
-    text: { type: "string", description: "Todo text for action 'todo' (add)." },
+    text: { type: "string", description: "Todo text for action 'todo' (op add)." },
+    session: { type: "string", description: "For action 'todo' op 'view': which session's todos (session id/prefix/name or 'all')." },
     // exec
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
     language: { type: "string", description: "Language for action 'exec' (javascript, shell, python, ruby, go, rust, php, perl, r, elixir, csharp, typescript)." },
@@ -423,7 +424,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; todo→text; control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,

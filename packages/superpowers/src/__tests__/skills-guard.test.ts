@@ -34,6 +34,20 @@ describe("skills vendoring guard", () => {
   });
 });
 
+describe("pi-tools.md leads with spider verbs", () => {
+  const md = readFileSync(path.join(skillsDir, "using-superpowers", "references", "pi-tools.md"), "utf8");
+  it("maps actions to the spider mega-tool", () => {
+    for (const verb of ["spider search", "spider run", "spider exec", "spider remember", "spider todo"]) {
+      expect(md.includes(verb), `mentions ${verb}`).toBe(true);
+    }
+  });
+  it("does not present ctx_* / pi-subagents / pi-todo-sqlite as separate installs", () => {
+    expect(md).not.toMatch(/If the `context-mode` package is installed/);
+    expect(md).not.toMatch(/from `pi-subagents`/);
+    expect(md).not.toMatch(/`pi-todo-sqlite`/);
+  });
+});
+
 describe("using-superpowers is pi-only (v6.1.0)", () => {
   const md = readFileSync(path.join(skillsDir, "using-superpowers", "SKILL.md"), "utf8");
   it("drops all non-pi harness prose", () => {

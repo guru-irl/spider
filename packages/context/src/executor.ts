@@ -25,7 +25,12 @@ const isWin = process.platform === "win32";
  * requires `.ps1` there.
  */
 const SCRIPT_EXT: Record<Language, string> = {
-  javascript: "js",
+  // `.cjs` (not `.js`): forces CommonJS so `require`/__dirname work regardless of the
+  // nearest package.json `"type"`. Under a `"type":"module"` project a `.js` script is
+  // ESM, where `require` is undefined — which broke both plain `require(...)` snippets
+  // and the executeFile wrapper (`require("fs").readFileSync`). Matches the documented
+  // Think-in-Code `require(...)` convention.
+  javascript: "cjs",
   typescript: "ts",
   python: "py",
   shell: "sh",

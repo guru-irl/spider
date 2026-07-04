@@ -14,7 +14,7 @@ import {
   type StageResult,
   type MemoryRecord,
 } from "@spider/memory";
-import { renderSearchResult, renderImportResult } from "@spider/context";
+import { renderImportResult } from "@spider/context";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
@@ -105,6 +105,45 @@ function adaptTheme(t: T): ThemeAdapter {
   return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: "🕸" };
 }
 
+const SEARCH_GLYPH: Record<string, string> = { memory: "◆", content: "▪", todo: "▣", message: "✉" };
+
+/** Unified-search hits rendered in the parallel-run style (renderRun/runBlock): a leading
+ *  blank, a muted count line, then one 2-line block per hit — `n. ◆ title · kind · source`
+ *  plus a single-line (collapsed) or wrapped (expanded) snippet. No Panel border, no repeated
+ *  🕸 header (the spider call line already shows `🕸 spider · search`). */
+function renderSearch(t: T, rows: any, expanded: boolean): Component {
+  const list: any[] = Array.isArray(rows) ? rows : [];
+  return {
+    render(width: number): string[] {
+      if (list.length === 0) return ["", t.fg("muted", "   (no results)")];
+      const sep = t.fg("dim", "·");
+      const lines: string[] = [t.fg("muted", `  ${list.length} result${list.length === 1 ? "" : "s"}`)];
+      list.forEach((r, i) => {
+        const glyph = t.fg("toolTitle", SEARCH_GLYPH[String(r?.kind)] ?? "•");
+        const num = t.fg("dim", `${i + 1}.`);
+        const title = t.bold(String(r?.title || "untitled"));
+        const kind = t.italic(t.fg("toolTitle", String(r?.kind ?? "")));
+        const src = r?.source ? ` ${sep} ${t.fg("muted", String(r.source))}` : "";
+        lines.push(clip(`  ${num} ${glyph} ${title} ${sep} ${kind}${src}`, width));
+        const snippet = String(r?.snippet ?? "").replace(/\s+/g, " ").trim();
+        if (snippet) {
+          if (expanded) {
+            const body = wrap(snippet, width - 7, 8);
+            for (let j = 0; j < body.length; j++) lines.push(`     ${t.fg("dim", (j === 0 ? "↳ " : "  ") + body[j])}`);
+          } else {
+            lines.push(`     ${t.fg("dim", "↳ " + clip(snippet, Math.max(1, width - 7)))}`);
+          }
+        }
+      });
+      if (!expanded && list.some((r) => String(r?.snippet ?? "").length > 0)) {
+        lines.push(t.fg("dim", "  ctrl+o to expand"));
+      }
+      return ["", ...lines];
+    },
+    invalidate() {},
+  };
+}
+
 function firstLine(s: string): string { const l = s.split("\n").map((x) => x.trim()).filter(Boolean)[0] ?? ""; return l; }
 
 /** Map the raw executor result(s) → ExecDetails for renderExecResult. */
@@ -112,7 +151,7 @@ function toExecDetails(action: string, args: any, details: any): ExecDetails {
   const kind = action as ExecKind;
   if (action === "batch") {
     const arr: any[] = Array.isArray(details) ? details : [];
-    const ok = arr.every((r) => Number(r?.exitCode ?? 0) === 0);
+    const ok = arr.length > 0 && arr.every((r) => Number(r?.exitCode ?? 0) === 0);
     const outLines = arr.reduce((n, r) => n + String(r?.stdout ?? "").split("\n").filter(Boolean).length, 0);
     const preview = arr.flatMap((r) => String(r?.stdout ?? "").split("\n").filter(Boolean)).slice(-8);
     const commands = (args?.commands ?? []).map((c: any) => String(c?.label ?? c?.code ?? c?.language ?? "cmd"));
@@ -173,7 +212,7 @@ export function renderSpiderResult(
     }
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));
-    case "search": return wrapBespoke(renderSearchResult(details as any));
+    case "search": return renderSearch(t, details, expanded);
     case "import": return wrapBespoke(renderImportResult(details as any));
     case "control":
       if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[]));

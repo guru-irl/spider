@@ -183,7 +183,22 @@ const SPIDER_PARAMETERS = {
     text: { type: "string", description: "Todo text for action 'todo' (add)." },
     // exec
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
-    language: { type: "string", description: "Language for action 'exec'." },
+    language: { type: "string", description: "Language for action 'exec' (javascript, shell, python, ruby, go, rust, php, perl, r, elixir, csharp, typescript)." },
+    timeout: { type: "number", description: "Max execution time in ms for action 'exec'/'exec_file'." },
+    background: { type: "boolean", description: "Keep an 'exec' process running after timeout (servers/daemons)." },
+    commands: {
+      type: "array",
+      description: "Batch commands for action 'batch': each runs sequentially. Give each {language, code} (+ optional timeout).",
+      items: {
+        type: "object",
+        properties: {
+          language: { type: "string" },
+          code: { type: "string" },
+          timeout: { type: "number" },
+        },
+        required: ["language", "code"],
+      },
+    },
     // index / fetch
     url: { type: "string", description: "URL for action 'fetch'." },
     source: { type: "string", description: "Source label for action 'index'/'fetch'." },

@@ -56,15 +56,22 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(80).join("\n")).toContain("pending item");
   });
 
-  it("search → search panel with hit count", () => {
+  it("search → per-row view with count, title, kind and snippet", () => {
     const rows = [
       { key: "k1", kind: "memory", id: "1", title: "fact", snippet: "hello world" },
+      { key: "k2", kind: "content", id: "2", title: "files", snippet: "learning.ts\nrun-memory-todo.ts\nmore.ts", source: "pkg/x" },
     ];
     const c = renderSpiderResult(mkResult(rows), opts, theme, mkCtx({ action: "search" }));
     assertComponent(c);
     const text = c.render(80).join("\n");
-    expect(text).toContain("search");
+    expect(text).toMatch(/2 result/);
+    expect(text).toContain("fact");
+    expect(text).toContain("memory");
     expect(text).toContain("hello world");
+    expect(text).not.toMatch(/🕸\s*🕸/); // no double glyph
+    // multi-line snippet is flattened to a single content line (no bleed)
+    const bleed = c.render(80).filter((l) => l.includes("run-memory-todo.ts") && !l.includes("learning.ts"));
+    expect(bleed).toHaveLength(0);
   });
 
   it("import → import summary panel", () => {

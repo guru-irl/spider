@@ -19,6 +19,13 @@ import {
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
+import {
+  registerOrganism,
+  readOrganismConfig,
+  readCuratorConfig,
+  createDigestModel,
+  type AuxCall,
+} from "@spider/organism";
 import { installAgentsUI } from "./agents/agents-ui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "./render-result";
 
@@ -365,5 +372,47 @@ export default function spiderExtension(pi: PiToolAPI): void {
     });
   } catch {
     /* routing is best-effort; never break extension load */
+  }
+
+  // Autonomic organism: drain sessions into staged memory/skills on
+  // before_compact + shutdown, self-name, curate. Best-effort — never break
+  // extension load, and NEVER throw on the drain/shutdown path.
+  try {
+    const orgCwd = process.cwd();
+    const project = resolveProject(orgCwd);
+    const orgDb = openProject(project.projectKey);
+    const orgGlobalDb = openGlobal();
+    const cfg = controlConfig("get", orgCwd);
+
+    // The real aux-model seam: route the configured aux model through
+    // @spider/models and replay the digest as a flat prompt. Integration-only
+    // (worker tests inject a fake model); it must compile + build.
+    const call: AuxCall = async (rt, system, msgs) => {
+      const entry = models.pick(models.catalog(() => enumerate(pi)), { model: rt.model }, {});
+      const prompt = [system, ...msgs.map((m) => `${m.role.toUpperCase()}: ${m.content}`)].join("\n\n");
+      return await models.complete(entry, prompt, {});
+    };
+    // No parent-model handle at registration; aux routing degrades to the
+    // default tier when unconfigured. makeModel returns null when the model
+    // can't be resolved so the drain/shutdown path no-ops cleanly.
+    const makeModel = () => {
+      try {
+        return createDigestModel({ cfg, parentModel: "", call });
+      } catch {
+        return null;
+      }
+    };
+
+    registerOrganism(pi, pi, {
+      db: orgDb,
+      globalDb: orgGlobalDb,
+      project,
+      getEmbedder,
+      makeModel,
+      org: readOrganismConfig(cfg),
+      curator: readCuratorConfig(cfg),
+    });
+  } catch {
+    /* organism wiring is best-effort; never break extension load */
   }
 }

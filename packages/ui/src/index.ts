@@ -100,3 +100,4 @@ export type {
 export { card, kv, statusIcon } from "./renderers/types";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
+export { renderMessageResult } from "./renderers/message";

@@ -81,7 +81,7 @@ describe("renderSpiderResult dispatcher", () => {
       mkResult({ anything: true }, "fallback output line 1\nfallback output line 2"),
       opts,
       theme,
-      mkCtx({ action: "message" }),
+      mkCtx({ action: "wait" }),
     );
     assertComponent(c);
     const text = c.render(80).join("\n");

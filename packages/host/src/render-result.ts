@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, type ExecDetails, type ExecKind, type IndexDetails, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -132,6 +132,13 @@ function toIndexDetails(args: any, details: any): IndexDetails {
   return { kind: "index", source: String(r.source ?? args?.source ?? "untitled"), targets: [target], chunks, embedded: chunks };
 }
 
+/** Map the intercom message args+result → MessageDetails for renderMessageResult. */
+function toMessageDetails(args: any, details: any): MessageDetails {
+  const kind = String(args?.kind ?? "");
+  const verb: MessageDetails["verb"] = kind === "ask" ? "ask" : kind === "reply" ? "reply" : kind === "broadcast" ? "broadcast" : "send";
+  return { verb, to: args?.to ? String(args.to) : undefined, kind: kind || undefined, body: String(args?.message ?? ""), delivered: details?.delivered === true };
+}
+
 export function renderSpiderResult(
   result: any,
   options: any,
@@ -158,6 +165,11 @@ export function renderSpiderResult(
       const d = toIndexDetails(context?.args, details);
       const th = adaptTheme(t);
       return { render: (w: number) => renderIndexResult(d, { theme: th, width: w, expanded }), invalidate() {} };
+    }
+    case "message": {
+      const d = toMessageDetails(context?.args, details);
+      const th = adaptTheme(t);
+      return { render: (w: number) => renderMessageResult(d, { theme: th, width: w }), invalidate() {} };
     }
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));

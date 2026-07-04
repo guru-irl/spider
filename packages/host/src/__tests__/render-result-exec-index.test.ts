@@ -41,6 +41,14 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(out).toMatch(/12 chunks/);
   });
 
+  it("message routes to the bespoke renderer (delivered ✓ + target + body)", () => {
+    const out = lines("message", { delivered: true }, { to: "peer", message: "ping" }).join("\n");
+    expect(out).toContain("spider send");
+    expect(out).toContain("✓");
+    expect(out).toMatch(/peer/);
+    expect(out).toMatch(/ping/);
+  });
+
   it("every rendered line stays within the width", () => {
     const comp = renderSpiderResult(
       { details: { stdout: "x".repeat(500), stderr: "", exitCode: 0, timedOut: false } },

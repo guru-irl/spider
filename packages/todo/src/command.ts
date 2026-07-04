@@ -66,7 +66,11 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
       if (typeof ctx?.ui?.custom === "function") {
         await ctx.ui.custom((tui: any, _theme: any, _kb: any, done: () => void) => {
           let allSessions = false;
-          const requestRender = () => tui?.requestRender?.();
+          // force:true so a shrinking view (all→this) or closing the overlay triggers pi's
+          // clearOnShrink — freed rows are cleared and the chat flows back down with the editor
+          // pinned at the bottom, instead of stranding the chat bar in the middle (mirrors the
+          // agents drilled-detail fix in agents-ui.ts).
+          const requestRender = () => tui?.requestRender?.(true);
           return {
             render(width: number): string[] {
               const w = Math.max(1, width | 0);
@@ -94,7 +98,7 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
               }
               return false;
             },
-            dispose() {},
+            dispose() { requestRender(); },
           };
         });
         return;

@@ -11,7 +11,8 @@ function fakeCustomUi() {
   let doneFn: (() => void) | undefined;
   let component: any;
   let renderCount = 0;
-  const tui = { requestRender: () => { renderCount++; } };
+  let forcedRenderCount = 0;
+  const tui = { requestRender: (force?: boolean) => { renderCount++; if (force) forcedRenderCount++; } };
   const theme = {};
   const kb = {};
   const ui = {
@@ -24,6 +25,7 @@ function fakeCustomUi() {
     ui,
     get component() { return component; },
     get renderCount() { return renderCount; },
+    get forcedRenderCount() { return forcedRenderCount; },
     onDone(fn: () => void) { doneFn = fn; },
   };
 }
@@ -80,6 +82,30 @@ describe("makeTodosCommand — interactive overlay", () => {
 
     expect(comp.handleInput("q")).toBe(true);
     expect(closed).toBe(true);
+  });
+
+  it("'a' toggle forces a full redraw (clearOnShrink) so a shrinking view reclaims freed rows", async () => {
+    ctx = makeTodoDb();
+    addTodo(ctx.db, "s1", "write plan");
+    const fake = fakeCustomUi();
+    const cmd = makeTodosCommand({ getDb: () => ctx.db, getSessionId: () => "s1" });
+    await cmd.handler("", { hasUI: true, ui: fake.ui });
+    const comp = fake.component;
+    const before = fake.forcedRenderCount;
+    comp.handleInput("a");
+    expect(fake.forcedRenderCount).toBeGreaterThan(before);
+  });
+
+  it("dispose forces a full redraw so closing reclaims freed rows and the chat bar reflows down", async () => {
+    ctx = makeTodoDb();
+    addTodo(ctx.db, "s1", "write plan");
+    const fake = fakeCustomUi();
+    const cmd = makeTodosCommand({ getDb: () => ctx.db, getSessionId: () => "s1" });
+    await cmd.handler("", { hasUI: true, ui: fake.ui });
+    const comp = fake.component;
+    const before = fake.forcedRenderCount;
+    comp.dispose();
+    expect(fake.forcedRenderCount).toBeGreaterThan(before);
   });
 
   it("falls back to notify when ctx.ui.custom is unavailable", async () => {

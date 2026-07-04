@@ -22,11 +22,17 @@ const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■
 
 interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; }
 function mkTheme(theme: any): T {
+  // Theme.fg/bg THROW on a token the active theme lacks; swallow it so one unknown token never
+  // aborts a whole render (pi's CustomMessageComponent would silently fall back to raw content).
+  const guard = (fn: any, tok: string, s: string): string => {
+    if (typeof fn !== "function") return s;
+    try { return fn(tok, s); } catch { return s; }
+  };
   return {
-    fg: (tok, s) => (typeof theme?.fg === "function" ? theme.fg(tok, s) : s),
-    bold: (s) => (typeof theme?.bold === "function" ? theme.bold(s) : s),
-    italic: (s) => (typeof theme?.italic === "function" ? theme.italic(s) : s),
-    bg: (tok, s) => (typeof theme?.bg === "function" ? theme.bg(tok, s) : s),
+    fg: (tok, s) => guard(theme?.fg?.bind(theme), tok, s),
+    bold: (s) => { try { return typeof theme?.bold === "function" ? theme.bold(s) : s; } catch { return s; } },
+    italic: (s) => { try { return typeof theme?.italic === "function" ? theme.italic(s) : s; } catch { return s; } },
+    bg: (tok, s) => guard(theme?.bg?.bind(theme), tok, s),
   };
 }
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
@@ -442,7 +448,7 @@ export function renderCommandOutput(message: any, options: { expanded?: boolean 
   const args = d.args ?? { action: "control" };
   const result = d.result ?? {};
   const expanded = options?.expanded === true;
-  const bgFn = (text: string) => (typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text);
+  const bgFn = (text: string) => { try { return typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text; } catch { return text; } };
   const box = new Box(1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, {}) as any);
   box.addChild(renderSpiderResult(toToolResult(result), { expanded }, theme, { args }) as any);

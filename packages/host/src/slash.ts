@@ -73,7 +73,7 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 				// Primary: a persistent spider.command transcript entry rendered by renderCommandOutput
 				// (which reuses the tool's renderSpiderResult) — themed, identical to a real spider result.
 				if (typeof pi.sendMessage === "function") {
-					pi.sendMessage({ customType: "spider.command", content: resultText(res) || `spider ${name}`, display: true, details: { args: forwarded, result: res } });
+					pi.sendMessage({ customType: "spider.command", content: resultText(res) || `spider ${String((forwarded as { command?: unknown }).command ?? (forwarded as { action?: unknown }).action ?? name)}`, display: true, details: { args: forwarded, result: res } });
 					return;
 				}
 				// Fallback (no ExtensionApi.sendMessage): ephemeral toast with whatever text we can extract.

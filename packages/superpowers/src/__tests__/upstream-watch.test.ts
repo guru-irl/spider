@@ -100,3 +100,26 @@ describe("runUpstreamWatch", () => {
     expect(todoCount()).toBe(2);
   });
 });
+
+describe("runUpstreamWatch resilience", () => {
+  it("records a package with a non-git localRepo as an error and never throws", () => {
+    const gdb = openGlobal();
+    migrate(gdb, "global");
+    seedUpstreamRefs(gdb);
+    markReviewed(gdb, "superpowers", "deadbeef");
+
+    const notARepo = path.join(paths.scratch("project", process.cwd()), `uw-notgit-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(notARepo, { recursive: true });
+
+    const { cwd, sessionId } = scratchProject();
+    const info = resolveProject(cwd);
+    const pdb = openProject(info.projectKey);
+    migrate(pdb, "project");
+
+    const rep = runUpstreamWatch(gdb, pdb, sessionId, { git: realGit, localRepos: { superpowers: notARepo } });
+    const sp = rep.packages.find((p) => p.package === "superpowers")!;
+    expect(sp.error).toBeTruthy();
+    expect(sp.candidates).toEqual([]);
+    expect(rep.todosAdded).toBe(0);
+  });
+});

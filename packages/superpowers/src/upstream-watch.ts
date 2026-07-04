@@ -4,7 +4,7 @@ export type GitRunner = (repoPath: string, args: string[]) => string;
 
 export interface UpstreamCheck { package: string; upstreamRepo: string; upstreamRef?: string; lastReviewedCommit?: string; }
 export interface CherryCandidate { package: string; commit: string; subject: string; }
-export interface PackageResult { package: string; head: string; candidates: CherryCandidate[]; }
+export interface PackageResult { package: string; head: string; candidates: CherryCandidate[]; error?: string; }
 
 const UNIT = "\x1f";
 
@@ -82,24 +82,30 @@ export function runUpstreamWatch(
   for (const row of rows) {
     const repoPath = deps.localRepos[row.package];
     if (!repoPath) continue;
-    const res = diffUpstream(
-      {
-        package: row.package,
-        upstreamRepo: row.upstream_repo,
-        upstreamRef: row.upstream_ref ?? undefined,
-        lastReviewedCommit: row.last_reviewed_commit ?? undefined,
-      },
-      repoPath,
-      deps.git,
-    );
-    packages.push(res);
-    touch.run({ now, head: res.head, pkg: row.package });
-    for (const c of res.candidates) {
-      const text = `upstream-watch(${c.package}): ${c.commit.slice(0, 7)} ${c.subject}`;
-      if (findTodo.get({ sid: sessionId, text })) continue;
-      const info = insTodo.run({ sid: sessionId, seq: nextSeq(projectDb, sessionId), text, now });
-      insFts.run(Number(info.lastInsertRowid), text);
-      todosAdded++;
+    try {
+      const res = diffUpstream(
+        {
+          package: row.package,
+          upstreamRepo: row.upstream_repo,
+          upstreamRef: row.upstream_ref ?? undefined,
+          lastReviewedCommit: row.last_reviewed_commit ?? undefined,
+        },
+        repoPath,
+        deps.git,
+      );
+      packages.push(res);
+      touch.run({ now, head: res.head, pkg: row.package });
+      for (const c of res.candidates) {
+        const text = `upstream-watch(${c.package}): ${c.commit.slice(0, 7)} ${c.subject}`;
+        if (findTodo.get({ sid: sessionId, text })) continue;
+        const info = insTodo.run({ sid: sessionId, seq: nextSeq(projectDb, sessionId), text, now });
+        insFts.run(Number(info.lastInsertRowid), text);
+        todosAdded++;
+      }
+    } catch (e) {
+      // A package that is not a local checkout (or whose ref cannot be resolved)
+      // is recorded and skipped — one bad repo never aborts the whole watch.
+      packages.push({ package: row.package, head: "", candidates: [], error: e instanceof Error ? e.message : String(e) });
     }
   }
   return { checkedAt: now, packages, todosAdded };

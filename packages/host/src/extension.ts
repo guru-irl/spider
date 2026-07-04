@@ -32,6 +32,10 @@ import {
   type OrganismActionDeps,
   type SkillActionArgs,
 } from "@spider/organism";
+import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS } from "@spider/superpowers";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import * as path from "node:path";
 import { installAgentsUI } from "./agents/agents-ui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone } from "./render-result";
 
@@ -226,6 +230,21 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
 }
 
 /** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
+/** Render a control upstream-watch report as a compact 🕸 panel string. */
+function renderUpstreamReport(report: {
+  packages: Array<{ package: string; head: string; candidates: Array<{ commit: string; subject: string }>; error?: string }>;
+  todosAdded: number;
+}): string {
+  const lines = [`🕸 upstream-watch — ${report.packages.length} package(s) checked, ${report.todosAdded} new cherry-pick todo(s)`];
+  for (const p of report.packages) {
+    if (p.error) { lines.push(`  ${p.package}: skipped (${p.error.split("\n")[0]})`); continue; }
+    if (p.candidates.length === 0) { lines.push(`  ${p.package} @ ${p.head.slice(0, 7)}: up to date`); continue; }
+    lines.push(`  ${p.package} @ ${p.head.slice(0, 7)}: ${p.candidates.length} candidate(s)`);
+    for (const c of p.candidates) lines.push(`    • ${c.commit.slice(0, 7)} ${c.subject}`);
+  }
+  return lines.join("\n");
+}
+
 async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown> {
   const command = String(args.command ?? "");
   const cwd = String(args.cwd ?? process.cwd());
@@ -272,6 +291,27 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     case "insights": {
       if (!ctx) return { error: "control insights requires an action context" };
       return insightsAction(buildOrganismDeps(ctx));
+    }
+    case "upstream-watch": {
+      if (!ctx) return { error: "control upstream-watch requires an action context" };
+      const mark = (args as { mark?: unknown }).mark;
+      if (mark != null && mark !== false) {
+        const parts = Array.isArray(mark) ? mark.map(String) : String(mark).split(/\s+/).filter(Boolean);
+        const [pkg, sha] = parts;
+        if (!pkg || !sha) return { error: "control upstream-watch --mark needs <package> <sha>" };
+        markReviewed(ctx.globalDb, pkg, sha);
+        return { display: `🕸 upstream-watch: marked ${pkg} reviewed @ ${sha}`, details: { ok: true, marked: { package: pkg, sha } } };
+      }
+      const git = (repo: string, gitArgs: string[]): string =>
+        execFileSync("git", gitArgs, { cwd: repo, encoding: "utf8" });
+      const injected = (args as { repos?: Record<string, string> }).repos;
+      const localRepos = injected ?? Object.fromEntries(
+        DEFAULT_UPSTREAM_REFS
+          .map((r) => [r.package, path.join(ctx.cwd, "packages", r.package)] as const)
+          .filter(([, p]) => existsSync(p)),
+      );
+      const report = runUpstreamWatch(ctx.globalDb, ctx.db, ctx.sessionId, { git, localRepos });
+      return { display: renderUpstreamReport(report), details: report };
     }
     default:
       return { error: `control command '${command}' is not yet implemented (Phase 0)` };

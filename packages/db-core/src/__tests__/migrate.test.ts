@@ -71,3 +71,67 @@ describe("migrate — thinking column (v1\u2192v2)", () => {
     expect(cols).toContain("thinking");
   });
 });
+
+describe("migrate — schema v5 global/project", () => {
+  // Mutation: revert scope selection to `scope === "project" ? ... : []` — global steps never run.
+  it("v4 global db migrates to v5, gains delivered_at and read_at columns, preserves existing rows", () => {
+    const db = openDb(scratchDbPath("mig-v4-global")); opened.push(db);
+    // Simulate v4 global schema: message_mirror without delivered_at/read_at
+    db.exec(`CREATE TABLE message_mirror (
+      id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+      kind TEXT, body TEXT, created_at INTEGER NOT NULL
+    )`);
+    db.prepare("INSERT INTO message_mirror (from_session, to_session, kind, body, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      "s1", "s2", "request", "test", Date.now()
+    );
+    db.raw.pragma("user_version = 4");
+    migrate(db, "global");
+    const cols = (db.raw.prepare("PRAGMA table_info(message_mirror)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain("delivered_at");
+    expect(cols).toContain("read_at");
+    const count = (db.prepare("SELECT COUNT(*) as c FROM message_mirror").get() as { c: number }).c;
+    expect(count).toBe(1);
+    expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
+  });
+
+  // Mutation: drop the v5 step in PROJECT_MIGRATIONS — project v4→v5 fails.
+  it("v4 project db migrates to v5 without error", () => {
+    const db = openDb(scratchDbPath("mig-v4-project")); opened.push(db);
+    // Simulate v4 project schema: runs with pid/host_pid
+    db.exec(`CREATE TABLE runs (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent TEXT NOT NULL,
+      status TEXT NOT NULL, phase TEXT, model TEXT, task TEXT, thinking TEXT,
+      step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+      pid INTEGER, host_pid INTEGER
+    )`);
+    db.raw.pragma("user_version = 4");
+    expect(() => migrate(db, "project")).not.toThrow();
+    expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
+  });
+
+  // Mutation: change fresh schema to NOT include delivered_at/read_at → fresh != migrated.
+  it("fresh global db has same message_mirror columns as migrated v4 global db", () => {
+    const fresh = openDb(scratchDbPath("mig-fresh-global")); opened.push(fresh);
+    migrate(fresh, "global");
+    const freshCols = (fresh.raw.prepare("PRAGMA table_info(message_mirror)").all() as { name: string }[]).map((c) => c.name).sort();
+
+    const migrated = openDb(scratchDbPath("mig-v4-parity")); opened.push(migrated);
+    migrated.exec(`CREATE TABLE message_mirror (
+      id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+      kind TEXT, body TEXT, created_at INTEGER NOT NULL
+    )`);
+    migrated.raw.pragma("user_version = 4");
+    migrate(migrated, "global");
+    const migratedCols = (migrated.raw.prepare("PRAGMA table_info(message_mirror)").all() as { name: string }[]).map((c) => c.name).sort();
+
+    expect(freshCols).toEqual(migratedCols);
+  });
+
+  // Mutation: make migration throw on repeat → idempotency test fails.
+  it("global migration is idempotent (opening twice is a no-op)", () => {
+    const db = openDb(scratchDbPath("mig-idem-global")); opened.push(db);
+    migrate(db, "global");
+    expect(() => migrate(db, "global")).not.toThrow();
+    expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
+  });
+});

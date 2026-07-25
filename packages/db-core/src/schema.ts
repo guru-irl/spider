@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS upstream_refs (
 
 CREATE TABLE IF NOT EXISTS message_mirror (
   id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
-  kind TEXT, body TEXT, created_at INTEGER NOT NULL
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL,
+  delivered_at INTEGER, read_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS insights (

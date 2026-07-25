@@ -11,6 +11,8 @@ export interface SessionCoordinators {
   /** Live child handles by runId — the in-process fast path for kill, and what
    *  session_shutdown iterates so quitting the session kills its subagents. */
   children: Map<string, ChildHandle>;
+  /** Cleanup function for the escalation notifier (watches bus for escalation events). */
+  escalationNotifierCleanup?: () => void;
 }
 
 // Module-scoped registry — one extension activation owns it; NO globalThis singletons.
@@ -75,6 +77,7 @@ export function teardownCoordinators(sessionId: string): void {
   c.children?.clear();
   try { c.tailer?.stop(); } catch {}
   for (const p of c.pipelines) { try { p.dispose(); } catch {} }
+  try { c.escalationNotifierCleanup?.(); } catch {}
   registry.delete(sessionId);
 }
 

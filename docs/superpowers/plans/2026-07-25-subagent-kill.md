@@ -12,7 +12,7 @@ Source spec: `docs/superpowers/specs/2026-07-25-tiering-intercom-kill-design.md`
 
 ## Global Constraints
 
-- Node `>=22.19.0`; build target `node22`. Volta pins `24.16.0`.
+- Node `>=22.19.0`; build target `node22`. **Volta pins `26.4.0`** — spider's bundle loads inside pi's process and `better-sqlite3` is native, so the build node must match pi's runtime ABI (147). Build and test with `~/.nvm/versions/node/v26.4.0/bin` on PATH.
 - Package dependency direction is a one-way DAG: `host` → `subagents` → `db-core`. **`subagents` must never import `@spider/host`.** Hosts are passed structurally.
 - `@earendil-works/pi-coding-agent` is a **peer dependency and `external`** in `vite.config.mjs`. Its `exports` map exposes only `.` and `./rpc-entry` — **deep imports such as `dist/utils/shell.js` are forbidden** and fail at runtime.
 - Scratch/test data goes under a package's `.spider/scratch/` — **never `/tmp`, `$TMPDIR`, or `/var/tmp`.** Use `scratchDbPath()` from `@spider/db-core`'s testutil.

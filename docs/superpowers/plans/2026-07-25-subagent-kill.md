@@ -740,7 +740,7 @@ describe("killRun", () => {
       { store, db, getChild: () => undefined, kill, alive: () => true },
       "s1", store.get(a.id)!,
     );
-    expect(kill).toHaveBeenCalledWith(777, expect.anything());
+    expect(kill).toHaveBeenCalledWith(777);
     expect(res.via).toBe("pid");
     expect(store.get(a.id)!.status).toBe("cancelled");
   });
@@ -796,7 +796,7 @@ export interface KillDeps {
   store: RunStore;
   db: Db;
   getChild?: (sessionId: string, runId: string) => { kill(): void } | undefined;
-  kill?: (pid: number, opts?: unknown) => Promise<"terminated" | "forced" | "already-dead">;
+  kill?: (pid: number, opts?: KillOpts) => Promise<"terminated" | "forced" | "already-dead">;
   alive?: (pid: number) => boolean;
 }
 

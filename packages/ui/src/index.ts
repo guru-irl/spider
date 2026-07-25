@@ -106,6 +106,8 @@ export type { KillDetails, KillResultLine } from "./renderers/kill";
 export { renderTodoChecklist } from "./renderers/todo-checklist";
 export { renderEscalation } from "./renderers/escalation";
 export type { EscalationDetails } from "./renderers/escalation";
+export { renderMigrateResult } from "./renderers/migrate";
+export type { MigrateDetails } from "./renderers/migrate";
 
 // ---- Phase 8: observability + config screens ----
 export { summarizeStats } from "./screens/stats-collect";

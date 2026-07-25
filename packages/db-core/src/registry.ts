@@ -5,12 +5,13 @@ import { realpathSync } from "node:fs";
 import { join, isAbsolute, resolve, dirname } from "node:path";
 import { openDb, type Db } from "./db";
 import { migrate } from "./migrate";
-import { paths, type Scope } from "./paths";
+import { paths, type Scope, worktreeRoot } from "./paths";
 
 export interface ProjectInfo {
   projectKey: string;
   realPath: string;
   gitCommonDir?: string;
+  repoKey?: string;
   dbPath: string;
   name?: string;
 }
@@ -46,9 +47,10 @@ function gitCommonDir(cwd: string): string | undefined {
 export function resolveProject(cwd: string): ProjectInfo {
   const realPath = realpathSync(cwd);
   const gcd = gitCommonDir(cwd);
-  const projectKey = gcd ?? realPath;
+  const projectKey = worktreeRoot(cwd);
+  const repoKey = gcd;
   const dbPath = join(paths.projectRoot(realPath), "project.db");
-  const info: ProjectInfo = { projectKey, realPath, gitCommonDir: gcd, dbPath };
+  const info: ProjectInfo = { projectKey, realPath, gitCommonDir: gcd, repoKey, dbPath };
   registerProject(info);
   return info;
 }
@@ -59,17 +61,19 @@ export function registerProject(info: ProjectInfo): void {
     const now = Date.now();
     g.withRetry(() => {
       g.prepare(
-        `INSERT INTO projects (project_key, real_path, git_common_dir, db_path, name, created_at, last_seen_at)
-         VALUES (@project_key, @real_path, @git_common_dir, @db_path, @name, @now, @now)
+        `INSERT INTO projects (project_key, real_path, git_common_dir, repo_key, db_path, name, created_at, last_seen_at)
+         VALUES (@project_key, @real_path, @git_common_dir, @repo_key, @db_path, @name, @now, @now)
          ON CONFLICT(project_key) DO UPDATE SET
            real_path = excluded.real_path,
            git_common_dir = excluded.git_common_dir,
+           repo_key = excluded.repo_key,
            db_path = excluded.db_path,
            last_seen_at = excluded.last_seen_at`
       ).run({
         project_key: info.projectKey,
         real_path: info.realPath,
         git_common_dir: info.gitCommonDir ?? null,
+        repo_key: info.repoKey ?? null,
         db_path: info.dbPath,
         name: info.name ?? null,
         now,

@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS projects (
   project_key     TEXT PRIMARY KEY,
   real_path       TEXT NOT NULL,
   git_common_dir  TEXT,
+  repo_key        TEXT,
   db_path         TEXT NOT NULL,
   name            TEXT,
   created_at      INTEGER NOT NULL,

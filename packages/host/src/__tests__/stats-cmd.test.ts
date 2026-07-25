@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { openDbAt, paths } from "@spider/db-core";
+import { openDbAt } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -9,7 +10,7 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const c of cleanups.splice(0)) c(); });
 
 function scratchDb(kind: "project" | "global") {
-  const p = join(paths.scratch(kind, process.cwd()), `stats-${randomUUID()}.db`);
+  const p = testScratchPath(`stats-${kind}-${randomUUID()}.db`);
   const db = openDbAt(p, kind);
   cleanups.push(() => {
     try { db.close(); rmSync(p, { force: true }); rmSync(`${p}-wal`, { force: true }); rmSync(`${p}-shm`, { force: true }); } catch { /* ignore */ }

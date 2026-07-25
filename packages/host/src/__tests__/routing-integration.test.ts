@@ -3,7 +3,8 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { openDbAt, paths, listEvents } from "@spider/db-core";
+import { openDbAt, listEvents } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { registerRouting, DEFAULT_ROUTING_CONFIG } from "../routing/index";
 
 let dbPath = "";
@@ -39,7 +40,7 @@ function fakePi() {
 }
 
 function setup() {
-  const base = paths.scratch("project", process.cwd());
+  const base = testScratchPath(".spider-test");
   dbPath = join(base, `rint-${randomUUID()}.db`);
   workDir = join(base, `rwork-${randomUUID()}`);
   mkdirSync(workDir, { recursive: true });
@@ -118,7 +119,7 @@ describe("routing integration smoke", () => {
 
   it("keeps all scratch under the spider root, never /tmp", () => {
     setup();
-    const root = paths.scratch("project", process.cwd());
+    const root = testScratchPath(".spider-test");
     expect(dbPath.startsWith(root)).toBe(true);
     expect(workDir.startsWith(root)).toBe(true);
     expect(dbPath.startsWith(tmpdir())).toBe(false);

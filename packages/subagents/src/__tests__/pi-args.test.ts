@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import {
   buildChildSpawnSpec,
   SPIDER_DB_PATH_ENV,
@@ -15,9 +16,9 @@ import {
 let scratchRoot: string;
 
 beforeAll(() => {
-  // Use .spider/scratch under a temp directory (never /tmp directly)
-  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "spider-test-"));
-  scratchRoot = path.join(tmpBase, ".spider", "scratch");
+  // Use package-relative .spider/scratch (never /tmp)
+  const pkgRoot = path.join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  scratchRoot = path.join(pkgRoot, ".spider", "scratch", `pi-args-${process.pid}`);
   fs.mkdirSync(scratchRoot, { recursive: true });
 });
 
@@ -40,15 +41,16 @@ const base = {
   context: "fresh" as const,
   parentSessionId: "s1",
   childIndex: 0,
-  dbPath: "/x/.spider/project.db",
+  dbPath: "", // Will be set in tests
   scratchRoot: "", // Will be set in tests
 };
 
 describe("buildChildSpawnSpec", () => {
   it("marks the child and threads the shared DB path + run id through env", () => {
-    const spec = buildChildSpawnSpec({ ...base, scratchRoot });
+    const dbPath = path.join(scratchRoot, "test.db");
+    const spec = buildChildSpawnSpec({ ...base, scratchRoot, dbPath });
     expect(spec.env[SUBAGENT_CHILD_ENV]).toBe("1");
-    expect(spec.env[SPIDER_DB_PATH_ENV]).toBe("/x/.spider/project.db");
+    expect(spec.env[SPIDER_DB_PATH_ENV]).toBe(dbPath);
     expect(spec.env[SUBAGENT_RUN_ID_ENV]).toBe("r1");
   });
 

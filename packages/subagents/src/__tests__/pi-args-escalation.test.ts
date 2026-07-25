@@ -2,14 +2,15 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { buildChildSpawnSpec } from "../pi-args";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 
 let scratchRoot: string;
 
 beforeAll(() => {
-  // Use .spider/scratch under a temp directory (never /tmp directly)
-  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "spider-test-"));
-  scratchRoot = path.join(tmpBase, ".spider", "scratch");
+  // Use package-relative .spider/scratch (never /tmp)
+  const pkgRoot = path.join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+  scratchRoot = path.join(pkgRoot, ".spider", "scratch", `esc-${process.pid}`);
   fs.mkdirSync(scratchRoot, { recursive: true });
 });
 
@@ -32,7 +33,7 @@ const base = {
   context: "fresh" as const,
   parentSessionId: "s1",
   childIndex: 0,
-  dbPath: "/x/.spider/project.db",
+  dbPath: "", // Will be set in tests
   scratchRoot: "", // Will be set in tests
 };
 

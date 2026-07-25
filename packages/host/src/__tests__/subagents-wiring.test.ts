@@ -3,7 +3,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getAction } from "../dispatch";
 import spiderExtension from "../extension";
-import { setGlobalDbPathForTests, paths } from "@spider/db-core";
+import { setGlobalDbPathForTests } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { registerSubagentActions } from "@spider/subagents";
 
 function fakePi(): any {
@@ -15,7 +16,7 @@ describe("host wires subagent actions", () => {
     const prev = process.env.PI_SUBAGENT_CHILD;
     delete process.env.PI_SUBAGENT_CHILD;
     try {
-      const scratch = paths.scratch("global");
+      const scratch = testScratchPath(".spider-test-global");
       mkdirSync(scratch, { recursive: true });
       setGlobalDbPathForTests(join(scratch, `g-sub-${Date.now()}.db`));
       spiderExtension(fakePi());

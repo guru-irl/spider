@@ -3,14 +3,15 @@ import { describe, it, expect, afterEach } from "vitest";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths, listEvents } from "@spider/db-core";
+import { openDbAt, listEvents } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { registerRouting, DEFAULT_ROUTING_CONFIG } from "../routing/index";
 
 let dbPath = "";
 afterEach(() => { for (const s of ["", "-wal", "-shm"]) { try { rmSync(`${dbPath}${s}`, { force: true }); } catch {} } });
 function fakePi() { const hooks: Record<string, Function> = {}; const tools: Record<string, any> = {}; return { on: (n: string, f: Function) => { hooks[n] = f; }, registerTool: (t: any) => { tools[t.name] = t; }, _hooks: hooks, _tools: tools }; }
 function setup() {
-  dbPath = join(paths.scratch("project", process.cwd()), `rpers-${randomUUID()}.db`);
+  dbPath = join(testScratchPath(".spider-test"), `rpers-${randomUUID()}.db`);
   const db = openDbAt(dbPath, "project");
   const pi = fakePi();
   registerRouting(pi as any, { db, getSessionId: () => "s1", getCwd: () => process.cwd(), config: DEFAULT_ROUTING_CONFIG });

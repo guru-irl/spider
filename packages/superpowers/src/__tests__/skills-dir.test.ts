@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { paths } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { baselineSkillsDir, projectSkillsDir, contributeSkillPaths } from "../skills-dir.js";
 
 describe("skills-dir", () => {
@@ -10,12 +10,12 @@ describe("skills-dir", () => {
     expect(fs.existsSync(path.join(d, "using-superpowers", "SKILL.md"))).toBe(true);
   });
   it("contributeSkillPaths returns baseline only when no project skills dir exists", () => {
-    const cwd = path.join(paths.scratch("project", process.cwd()), `noskills-${process.pid}`);
+    const cwd = testScratchPath( `noskills-${process.pid}`);
     fs.mkdirSync(cwd, { recursive: true });
     expect(contributeSkillPaths(cwd)).toEqual([baselineSkillsDir()]);
   });
   it("contributeSkillPaths appends the project tier when .spider/skills exists", () => {
-    const cwd = path.join(paths.scratch("project", process.cwd()), `withskills-${process.pid}`);
+    const cwd = testScratchPath( `withskills-${process.pid}`);
     fs.mkdirSync(projectSkillsDir(cwd), { recursive: true });
     expect(contributeSkillPaths(cwd)).toEqual([baselineSkillsDir(), projectSkillsDir(cwd)]);
   });

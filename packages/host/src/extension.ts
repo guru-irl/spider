@@ -41,8 +41,7 @@ import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS, registerSuperpow
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
-import { installAgentsUI } from "./agents/agents-ui";
-import { createAgentActions } from "./agents/actions";
+import { mountAgentsUI } from "./agents/mount";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "./render-result";
 
 export { registerAction };
@@ -518,13 +517,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
       const cwd = cwdOf(ctx) ?? process.cwd();
       const db = openProject(resolveProject(cwd).projectKey);
       const sessionId = sessionIdOf(ctx) || currentSessionId;
-      disposeAgentsUI = installAgentsUI(pi as any, ctx as any, {
+      disposeAgentsUI = mountAgentsUI(pi as any, ctx as any, {
         db,
         sessionId,
-        actions: createAgentActions(pi, {
-          ui: ctx.ui,
-          dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd)),
-        }),
+        cwd,
+        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd)),
       });
     } catch { /* UI mount best-effort; never break the session */ }
     return undefined;

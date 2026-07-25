@@ -1,8 +1,11 @@
 // CRITICAL 1 regression: kill affordance must reach dispatch when actions are wired
+// This test verifies the PRODUCTION WIRING: that mountAgentsUI correctly wires
+// actions by calling createAgentActions. It does NOT construct actions manually —
+// that would bypass the bug (missing actions key in the production mount call).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { installAgentsUI } from "../agents/agents-ui";
+import { mountAgentsUI } from "../agents/mount";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
@@ -19,30 +22,25 @@ function fakeUi() {
   };
 }
 
-describe("kill wiring across the installAgentsUI boundary", () => {
-  it("onKill reaches the wired actions.kill when drilling into a detail and triggering k-k", async () => {
+describe("kill wiring across the mountAgentsUI → installAgentsUI boundary", () => {
+  it("k-k kill affordance reaches dispatch when mountAgentsUI wires actions", async () => {
     const db = openDb(scratchDbPath("kill-wiring")); opened.push(db); migrate(db, "project");
     db.prepare(`INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at)
                 VALUES ('r1','s','worker','alpha','running',1,0,0)`).run();
     
     const ui = fakeUi();
-    const dispatch = vi.fn().mockResolvedValue(undefined);
-    const killSpy = vi.fn();
-    const actions = {
-      kill: async (runId: string) => {
-        killSpy(runId);
-        await dispatch("kill", { id: runId });
-      },
-      message: vi.fn(),
-      interrupt: vi.fn(),
-      resume: vi.fn(),
-      follow: vi.fn(),
-    };
+    const dispatchSpy = vi.fn().mockResolvedValue(undefined);
     
     const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
     
-    // This is the production call site (extension.ts:520) — it MUST wire actions
-    const dispose: any = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s", actions });
+    // This is the PRODUCTION mount path: extension.ts calls mountAgentsUI which must
+    // wire actions internally. The test injects dispatch to spy on the wiring.
+    const dispose: any = mountAgentsUI(pi as never, { ui } as never, {
+      db,
+      sessionId: "s",
+      cwd: "/tmp",
+      dispatch: dispatchSpy,
+    });
     
     // Capture the overlay factory from ui.custom
     let overlayComp: any;
@@ -68,49 +66,9 @@ describe("kill wiring across the installAgentsUI boundary", () => {
     // Wait for async dispatch
     await new Promise(resolve => setImmediate(resolve));
     
-    // Assert: the kill action must have been dispatched with the run id
-    if (killSpy.mock.calls.length === 0) {
-      throw new Error(`CRITICAL 1 BUG NOT FIXED: killSpy was not called. actions.kill: ${typeof actions.kill}, dispatch calls: ${dispatch.mock.calls.length}`);
-    }
-    expect(killSpy).toHaveBeenCalledWith("r1");
-    expect(dispatch).toHaveBeenCalledWith("kill", { id: "r1" });
-    
-    dispose();
-  });
-  
-  it("fails when actions are NOT wired (discrimination check)", async () => {
-    const db = openDb(scratchDbPath("kill-wiring-no-actions")); opened.push(db); migrate(db, "project");
-    db.prepare(`INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at)
-                VALUES ('r1','s','worker','alpha','running',1,0,0)`).run();
-    
-    const ui = fakeUi();
-    const dispatch = vi.fn().mockResolvedValue(undefined);
-    
-    const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
-    
-    // NO actions key — this is the current production bug
-    const dispose: any = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
-    
-    // Capture the overlay factory
-    let overlayComp: any;
-    ui.custom.mockImplementation((factory: any) => {
-      overlayComp = factory({ requestRender() {} }, ui.theme, {}, () => {});
-      return Promise.resolve();
-    });
-    
-    await dispose.openOverlay();
-    
-    // Enter to drill
-    overlayComp.handleInput("\r");
-    
-    // k-k sequence
-    overlayComp.handleInput("k");
-    overlayComp.handleInput("k");
-    
-    await new Promise(resolve => setImmediate(resolve));
-    
-    // Without actions wired, dispatch is never called
-    expect(dispatch).not.toHaveBeenCalled();
+    // Assert: the kill action must have been dispatched with the run id.
+    // If mountAgentsUI does NOT wire actions, dispatchSpy will never be called.
+    expect(dispatchSpy).toHaveBeenCalledWith("kill", { id: "r1" });
     
     dispose();
   });

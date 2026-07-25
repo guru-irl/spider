@@ -223,10 +223,11 @@ describe("kill action", () => {
       expect(res.details.killed).toHaveLength(2);
       expect(res.isError).toBe(true);
       
-      // First run should have failure in lastActivity
+      // First run should have failed outcome
+      expect(res.details.killed[0].outcome).toBe("failed");
       expect(res.details.killed[0].lastActivity).toContain("kill failed");
-      // Second run should be processed normally (either killed or already-finished)
-      expect(["killed", "already-finished", "no-process"]).toContain(res.details.killed[1].outcome);
+      // Second run should be processed normally (no spawned process, so reconciled)
+      expect(res.details.killed[1].outcome).toBe("no-process");
     } finally {
       spy.mockRestore();
     }

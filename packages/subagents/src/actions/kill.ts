@@ -26,17 +26,22 @@ export function makeKillHandler(): (args: any, ctx: any) => Promise<{ content: s
       } catch (err: unknown) {
         anyFailed = true;
         const message = err instanceof Error ? err.message : String(err);
-        // Push a failure entry so the partial report includes this run
         killed.push({
           runId: run.id,
-          name: run.name ?? run.id.slice(0, 7),
-          outcome: "no-process", // reuse existing outcome; lastActivity records the error
+          name: run.name ?? run.agent,
+          outcome: "failed",
           via: "none",
           lastActivity: `kill failed: ${message}`,
         });
       }
     }
+    const successCount = killed.filter(k => k.outcome !== "failed").length;
     const lines = killed.map((k) => `  • ${k.name} — ${k.outcome}${k.via !== "none" ? ` (via ${k.via})` : ""}${k.lastActivity ? ` (${k.lastActivity})` : ""}`).join("\n");
-    return { content: `killed ${killed.length} subagent(s)\n${lines}`, isError: anyFailed, details: { killed, requested } };
+    const errorMsg = anyFailed ? ` (${killed.filter(k => k.outcome === "failed").length} failed)` : "";
+    return {
+      content: `killed ${successCount} of ${targets.length} subagent(s)${errorMsg}\n${lines}`,
+      isError: anyFailed,
+      details: { killed, requested, error: anyFailed ? `${killed.filter(k => k.outcome === "failed").length} kill(s) failed` : undefined },
+    };
   };
 }

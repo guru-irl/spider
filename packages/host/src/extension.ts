@@ -118,7 +118,7 @@ const SPIDER_PARAMETERS = {
       type: "string",
       enum: [
         "search", "remember", "recall", "exec", "exec_file", "batch",
-        "index", "fetch", "run", "todo", "skill", "import", "message", "control",
+        "index", "fetch", "run", "kill", "todo", "skill", "import", "message", "control",
       ],
       description: "The spider verb to run.",
     },
@@ -179,7 +179,7 @@ const SPIDER_PARAMETERS = {
     model: { type: "string", description: "Model override for spawned subagent(s)." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
-    id: { type: "string", description: "Run id/prefix (also a todo id)." },
+    id: { type: "string", description: "Run id/prefix (also a todo id). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },

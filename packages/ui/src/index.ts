@@ -101,6 +101,8 @@ export { card, kv, statusIcon, sectionRule } from "./renderers/types";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";
+export { renderKillResult } from "./renderers/kill";
+export type { KillDetails, KillResultLine } from "./renderers/kill";
 export { renderTodoChecklist } from "./renderers/todo-checklist";
 
 // ---- Phase 8: observability + config screens ----

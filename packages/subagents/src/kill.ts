@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
-import { killProcessGroup, isProcessAlive } from "./kill-process";
+import { killProcessGroup, isProcessAlive, type KillOpts } from "./kill-process";
 import { getChild, unregisterChild } from "./coordinators";
 
 export interface KillResult {
@@ -16,7 +16,7 @@ export interface KillDeps {
   store: RunStore;
   db: Db;
   getChild?: (sessionId: string, runId: string) => { kill(): void } | undefined;
-  kill?: (pid: number, opts?: Record<string, unknown>) => Promise<"terminated" | "forced" | "already-dead">;
+  kill?: (pid: number, opts?: KillOpts) => Promise<"terminated" | "forced" | "already-dead">;
   alive?: (pid: number) => boolean;
 }
 
@@ -97,7 +97,7 @@ export async function killRun(deps: KillDeps, sessionId: string, run: RunRow): P
   }
 
   const killFn = deps.kill ?? killProcessGroup;
-  try { await killFn(pid, {}); } catch { /* best-effort */ }
+  try { await killFn(pid); } catch { /* best-effort */ }
   deps.store.cancel(run.id, `killed via pid ${pid} (was: ${lastActivity ?? "no recorded activity"})`);
   return { runId: run.id, name, outcome: "killed", via: "pid", lastActivity };
 }

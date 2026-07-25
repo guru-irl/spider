@@ -11,16 +11,20 @@ export * from "./schemas";
 export * from "./pipeline";
 export * from "./coordinators";
 export * from "./spawn-default";
+export * from "./kill";
+export * from "./kill-process";
+export * from "./reaper";
 
 import { attachChildReporter, isSubagentChild } from "./child-reporter";
 import { makeRunHandler } from "./actions/run";
 import { makeMessageHandler } from "./actions/message";
-import { teardownAll } from "./coordinators";
+import { makeKillHandler } from "./actions/kill";
+import { teardownAll, teardownAllAsync } from "./coordinators";
 
-export { makeRunHandler, makeMessageHandler };
+export { makeRunHandler, makeMessageHandler, makeKillHandler };
 
 /**
- * Register the `run`/`message` actions on a structural host (`host.registerAction`).
+ * Register the `run`/`message`/`kill` actions on a structural host (`host.registerAction`).
  * In a subagent CHILD process (PI_SUBAGENT_CHILD=1) the orchestration surface is NOT
  * registered — the child only attaches the run_events reporter (preserves pi-subagents
  * early-out semantics + avoids recursive orchestration). NO @spider/host import (host is
@@ -33,5 +37,6 @@ export function registerSubagentActions(host: { registerAction: (name: string, h
   }
   host.registerAction("run", makeRunHandler());
   host.registerAction("message", makeMessageHandler());
-  try { pi?.on?.("session_shutdown", () => teardownAll()); } catch { /* best-effort */ }
+  host.registerAction("kill", makeKillHandler());
+  try { pi?.on?.("session_shutdown", async () => await teardownAllAsync()); } catch { /* best-effort */ }
 }

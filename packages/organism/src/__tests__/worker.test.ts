@@ -29,7 +29,8 @@ describe("OrganismWorker.runDrain", () => {
     ctx = makeOrgDb();
     seed(ctx.db);
     const w = new OrganismWorker({
-      db: ctx.db,
+      db: ctx.repoDb,
+      worktreeDb: ctx.db,
       globalDb: ctx.db,
       project: { projectKey: "k", realPath: "/x", dbPath: "/x" } as any,
       getEmbedder: async () => null,
@@ -39,7 +40,7 @@ describe("OrganismWorker.runDrain", () => {
     });
     const summary = await w.runDrain("s1", "shutdown");
     expect(summary.memoryStaged).toBeGreaterThan(0);
-    expect(listPending(ctx.db, "project").length).toBe(summary.memoryStaged);
+    expect(listPending(ctx.repoDb, "repo").length).toBe(summary.memoryStaged);
     expect((ctx.db.prepare("SELECT name FROM sessions WHERE id='s1'").get() as any).name).toBe("auth-refactor");
   });
 
@@ -47,7 +48,8 @@ describe("OrganismWorker.runDrain", () => {
     ctx = makeOrgDb();
     seed(ctx.db);
     const w = new OrganismWorker({
-      db: ctx.db,
+      db: ctx.repoDb,
+      worktreeDb: ctx.db,
       globalDb: ctx.db,
       project: {} as any,
       getEmbedder: async () => null,
@@ -57,7 +59,7 @@ describe("OrganismWorker.runDrain", () => {
     });
     const summary = await w.runDrain("s1", "shutdown");
     expect(summary.memoryStaged).toBe(0);
-    expect(listPending(ctx.db, "project")).toHaveLength(0);
+    expect(listPending(ctx.repoDb, "repo")).toHaveLength(0);
   });
 
   it("per-pass toggle off skips that pass (real attribution)", async () => {
@@ -65,7 +67,8 @@ describe("OrganismWorker.runDrain", () => {
     seed(ctx.db);
     const org = { ...ORGANISM_DEFAULTS, passes: { ...ORGANISM_DEFAULTS.passes, runMemoryTodo: false } };
     const w = new OrganismWorker({
-      db: ctx.db,
+      db: ctx.repoDb,
+      worktreeDb: ctx.db,
       globalDb: ctx.db,
       project: {} as any,
       getEmbedder: async () => null,
@@ -79,7 +82,7 @@ describe("OrganismWorker.runDrain", () => {
     // embedder, consolidation emits only summary/selfName). Disabling it →
     // zero staged memory.
     expect(summary.memoryStaged).toBe(0);
-    expect(listPending(ctx.db, "project")).toHaveLength(0);
+    expect(listPending(ctx.repoDb, "repo")).toHaveLength(0);
     // consolidation still runs → self-name persisted.
     expect((ctx.db.prepare("SELECT name FROM sessions WHERE id='s1'").get() as any).name).toBe("auth-refactor");
   });
@@ -101,7 +104,8 @@ describe("OrganismWorker.runDrain", () => {
       },
     };
     const w = new OrganismWorker({
-      db: ctx.db,
+      db: ctx.repoDb,
+      worktreeDb: ctx.db,
       globalDb: ctx.db,
       project: { projectKey: "k", realPath: "/x", dbPath: "/x" } as any,
       getEmbedder: async () => null,

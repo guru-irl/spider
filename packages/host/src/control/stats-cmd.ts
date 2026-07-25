@@ -16,12 +16,17 @@ function count(db: Db, table: string): number {
  * handles (from the ActionCtx) so it stays unit-testable against scratch DBs.
  * Token-savings is a heuristic: `indexedChunks × (avg chunk chars / 4)`.
  */
-export function collectStats(projectDb: Db, globalDb: Db): StatsSummary {
-  const contentChunks = count(projectDb, "content");
+interface StatsCtx {
+  worktreeDb: Db;  // content, sessions, runs, todos
+  repoDb: Db;      // memory
+}
+
+export function collectStats(ctx: StatsCtx, globalDb: Db): StatsSummary {
+  const contentChunks = count(ctx.worktreeDb, "content");
 
   let avgChunkTokens = 0;
   try {
-    const rows = projectDb.prepare("SELECT chunk FROM content LIMIT 200").all() as { chunk?: string }[];
+    const rows = ctx.worktreeDb.prepare("SELECT chunk FROM content LIMIT 200").all() as { chunk?: string }[];
     if (rows.length) {
       const avgChars = rows.reduce((s, r) => s + (r.chunk?.length ?? 0), 0) / rows.length;
       avgChunkTokens = Math.round(avgChars / 4);
@@ -32,10 +37,10 @@ export function collectStats(projectDb: Db, globalDb: Db): StatsSummary {
 
   const rowCounts: Record<string, number> = {
     content: contentChunks,
-    memory: count(projectDb, "memory"),
-    todos: count(projectDb, "todos"),
-    runs: count(projectDb, "runs"),
-    sessions: count(projectDb, "sessions"),
+    memory: count(ctx.repoDb, "memory"),
+    todos: count(ctx.worktreeDb, "todos"),
+    runs: count(ctx.worktreeDb, "runs"),
+    sessions: count(ctx.worktreeDb, "sessions"),
   };
 
   let modelStats: { model: string; ms: number; ok: number; tokens: number }[] = [];

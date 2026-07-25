@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { CONFIG_SCHEMA, getField, coerce } from "../config-schema.js";
 
 describe("config schema", () => {
-	it("declares all eight groups", () => {
+	it("declares all nine groups", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["curator", "embeddings", "memory", "models", "organism", "routing", "self_naming", "ui"].sort());
+		expect(ids).toEqual(["curator", "embeddings", "exec", "memory", "models", "organism", "routing", "self_naming", "ui"].sort());
 	});
 	it("every field key is dotted-prefixed by its group id", () => {
 		for (const g of CONFIG_SCHEMA) for (const f of g.fields) expect(f.key.startsWith(g.id + ".")).toBe(true);

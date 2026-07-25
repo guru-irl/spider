@@ -7,7 +7,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths, type Db } from "@spider/db-core";
+import { openDbAt, type Db } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import {
   stageWrite,
   listPending,
@@ -42,18 +43,24 @@ const fakeEmbedder: Embedder = {
   },
 };
 
-function makeProjectDb(): { db: Db; dbPath: string; cleanup(): void } {
-  const scratchRoot = paths.scratch("project", process.cwd());
-  const dbPath = join(scratchRoot, `smoke-${randomUUID()}.db`);
-  const db = openDbAt(dbPath, "project");
+function makeProjectDb(): { db: Db; repoDb: Db; dbPath: string; repoPath: string; cleanup(): void } {
+  const scratchRoot = testScratchPath(".spider-test");
+  const dbPath = join(scratchRoot, `smoke-wt-${randomUUID()}.db`);
+  const repoPath = join(scratchRoot, `smoke-repo-${randomUUID()}.db`);
+  const db = openDbAt(dbPath, "worktree");
+  const repoDb = openDbAt(repoPath, "repo");
   return {
     db,
+    repoDb,
     dbPath,
+    repoPath,
     cleanup() {
       db.close();
+      repoDb.close();
       for (const suffix of ["", "-wal", "-shm"]) {
         try {
           rmSync(`${dbPath}${suffix}`, { force: true });
+          rmSync(`${repoPath}${suffix}`, { force: true });
         } catch {
           // ignore cleanup errors
         }
@@ -63,7 +70,7 @@ function makeProjectDb(): { db: Db; dbPath: string; cleanup(): void } {
 }
 
 describe("Phase 1 integration smoke: memory write->approve->snapshot->embed->knn + todo CRUD", () => {
-  let project: { db: Db; dbPath: string; cleanup(): void } | undefined;
+  let project: { db: Db; repoDb: Db; dbPath: string; repoPath: string; cleanup(): void } | undefined;
 
   afterEach(() => {
     project?.cleanup();
@@ -72,16 +79,16 @@ describe("Phase 1 integration smoke: memory write->approve->snapshot->embed->knn
 
   it("threads the full pipeline end-to-end on a hermetic scratch-root temp DB", async () => {
     project = makeProjectDb();
-    const { db, dbPath } = project;
+    const { db, repoDb, dbPath } = project;
 
     // --- Guard: scratch db is NOT under /tmp, and IS under the scratch root. ---
     expect(dbPath).not.toContain("/tmp");
-    expect(dbPath.startsWith(paths.scratch("project", process.cwd()))).toBe(true);
+    expect(dbPath.startsWith(testScratchPath(".spider-test"))).toBe(true);
 
     const content = "spider uses a shared sqlite db as the single source of truth";
 
     // --- 1. Stage a background ("auto") write: must land STAGED, not active. ---
-    const staged = stageWrite(db, "project", {
+    const staged = stageWrite(repoDb, "repo", {
       category: "insight",
       content,
       link: null,
@@ -91,33 +98,33 @@ describe("Phase 1 integration smoke: memory write->approve->snapshot->embed->knn
     expect(staged.uuid).toBeTruthy();
     const uuid = staged.uuid!;
 
-    const preApprovalRecord = getMemory(db, "project", uuid);
+    const preApprovalRecord = getMemory(repoDb, "repo", uuid);
     expect(preApprovalRecord?.status).toBe("staged");
 
     // A pre-approval snapshot must NOT include the staged (not-yet-active) content.
-    const preApprovalSnapshot = assembleSnapshot({ project: db });
+    const preApprovalSnapshot = assembleSnapshot({ repo: repoDb });
     expect(preApprovalSnapshot).not.toContain(content);
 
     // --- 2. listPending contains the staged uuid. ---
-    const pending = listPending(db, "project");
+    const pending = listPending(repoDb, "repo");
     expect(pending.some((r) => r.uuid === uuid)).toBe(true);
 
     // --- 3. Approve -> active. ---
-    const approved = approvePending(db, "project", uuid);
+    const approved = approvePending(repoDb, "repo", uuid);
     expect(approved?.status).toBe("active");
-    const activeRecord = getMemory(db, "project", uuid);
+    const activeRecord = getMemory(repoDb, "repo", uuid);
     expect(activeRecord?.status).toBe("active");
 
     // --- 4. Snapshot now contains the approved content. ---
-    const snapshot = assembleSnapshot({ project: db });
+    const snapshot = assembleSnapshot({ repo: repoDb });
     expect(snapshot).toContain(content);
 
     // --- 5. Embeddings: drain the queue entry enqueued by the write, then knn. ---
-    const drained = await drainEmbedQueue(db, fakeEmbedder);
+    const drained = await drainEmbedQueue(repoDb, fakeEmbedder);
     expect(drained).toBeGreaterThanOrEqual(1);
 
     const [queryVec] = await fakeEmbedder.embed(["shared sqlite source of truth"]);
-    const hits = knn(db, queryVec, 5, "memory");
+    const hits = knn(repoDb, queryVec, 5, "memory");
     expect(hits.some((h) => h.ownerId === uuid)).toBe(true);
 
     // --- 6. Todo CRUD round-trip. ---
@@ -129,10 +136,10 @@ describe("Phase 1 integration smoke: memory write->approve->snapshot->embed->knn
 
   it("rejectPending marks a staged memory rejected and it never reaches the snapshot", () => {
     project = makeProjectDb();
-    const { db } = project;
+    const { repoDb } = project;
 
     const content2 = "reject-path memory content, never approved";
-    const staged = stageWrite(db, "project", {
+    const staged = stageWrite(repoDb, "repo", {
       category: "insight",
       content: content2,
       link: null,
@@ -141,15 +148,15 @@ describe("Phase 1 integration smoke: memory write->approve->snapshot->embed->knn
     expect(staged.status).toBe("staged");
     const uuid = staged.uuid!;
 
-    rejectPending(db, "project", uuid);
-    const rec = getMemory(db, "project", uuid);
+    rejectPending(repoDb, "repo", uuid);
+    const rec = getMemory(repoDb, "repo", uuid);
     expect(rec?.status).toBe("rejected");
 
-    const snapshot = assembleSnapshot({ project: db });
+    const snapshot = assembleSnapshot({ repo: repoDb });
     expect(snapshot).not.toContain(content2);
 
     // rejected memories must not surface in listPending anymore either.
-    const pending = listPending(db, "project");
+    const pending = listPending(repoDb, "repo");
     expect(pending.some((r) => r.uuid === uuid)).toBe(false);
   });
 });

@@ -32,9 +32,8 @@ built-ins:
   and todos. Reach for it before re-reading files.
 - \`spider exec\` / \`spider exec_file\` / \`spider batch\` — run commands or
   analyze large files in a sandbox; only what you print/query enters context.
-  **Prefer these over raw \`bash\`/\`read\` whenever output could exceed ~10
-  lines** (git, tests, logs, repo-wide grep). Use plain \`read\` only when you
-  will \`edit\` the file (so edits match exact text).
+  **\`bash\` is mechanically blocked** — \`spider exec\` is the shell. Use plain
+  \`read\` only when you will \`edit\` the file (so edits match exact text).
 - \`spider index\` / \`spider fetch\` — index files/dirs or fetch+index URLs into
   the knowledge base for \`spider search\`.
 - \`spider run\` — dispatch subagents (single / chain / parallel / pipeline,
@@ -50,8 +49,15 @@ built-ins:
   checklist item; toggle as you complete each.
 - \`spider message\` — wake a specific peer/reviewer session directly.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
-  \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`upstream-watch\`.
-  Every result renders as a themed card, never raw JSON.
+  \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,
+  \`upstream-watch\`. Every result renders as a themed card, never raw JSON.
+
+## Escalation
+
+You MUST escalate when blocked, when the task is ambiguous in a way that
+changes the outcome, when about to do something destructive or irreversible,
+or when you discover the task's premise is wrong. Escalating is expected and
+is NOT a failure — failing silently is worse.
 
 ## Slash commands
 
@@ -67,6 +73,9 @@ Background/\`[auto]\` writes are **staged and fail-closed**; approve or reject v
 \`spider control memory\`. A frozen memory snapshot is injected each session —
 new writes persist immediately and re-inject next session. Use \`spider recall\`
 to fetch by category/scope.
+
+**Scope rule:** "Is this still true after I delete this worktree?" → **repo**;
+"Is this true in every repo?" → **global**; otherwise → **worktree**.
 
 ## Scratch — never /tmp
 

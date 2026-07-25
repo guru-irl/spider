@@ -3,7 +3,7 @@ import { runChain, runParallel } from "../modes-index";
 import { Runner } from "../runner";
 import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
-import { freshDb } from "./helpers/testutil";
+import { freshDb, testScratchPath } from "./helpers/testutil";
 
 function makeRunner(db: ReturnType<typeof freshDb>, capture: Array<Record<string, unknown>>) {
   const store = new RunStore(db);
@@ -11,8 +11,8 @@ function makeRunner(db: ReturnType<typeof freshDb>, capture: Array<Record<string
   const runner = new Runner(db, "sess1", "/repo", {
     store,
     tailer,
-    scratchRoot: "/x/.spider/scratch",
-    dbPath: "/x/.spider/project.db",
+    scratchRoot: testScratchPath("modes-scratch"),
+    dbPath: testScratchPath("modes.db"),
     spawn: () => ({
       pid: 4242,
       wait: async () => ({ exitCode: 0, result: `res-${capture.length}` }),

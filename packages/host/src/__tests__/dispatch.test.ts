@@ -24,4 +24,12 @@ describe("action dispatch", () => {
     const res = await dispatch({ action: "bogus" as never }, ctx) as { error: string };
     expect(res.error).toMatch(/unknown action/i);
   });
+
+  it("routes 'kill' action through dispatch without error", async () => {
+    // Critical: 'kill' must be in SpiderAction union AND VALID set for dispatch to succeed
+    registerAction("kill", async (args) => ({ ok: true, details: { killed: [], requested: args.id ?? "all" } }));
+    const res = await dispatch({ action: "kill" as any, id: "all" }, ctx) as any;
+    expect(res.error).toBeUndefined();
+    expect(res.ok).toBe(true);
+  });
 });

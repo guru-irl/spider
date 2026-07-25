@@ -101,7 +101,15 @@ export { card, kv, statusIcon, sectionRule } from "./renderers/types";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";
+export { renderKillResult } from "./renderers/kill";
+export type { KillDetails, KillResultLine } from "./renderers/kill";
 export { renderTodoChecklist } from "./renderers/todo-checklist";
+export { renderEscalation } from "./renderers/escalation";
+export type { EscalationDetails } from "./renderers/escalation";
+export { renderMigrateResult } from "./renderers/migrate";
+export type { MigrateDetails } from "./renderers/migrate";
+export { renderBindResult } from "./renderers/bind";
+export type { BindDetails } from "./renderers/bind";
 
 // ---- Phase 8: observability + config screens ----
 export { summarizeStats } from "./screens/stats-collect";

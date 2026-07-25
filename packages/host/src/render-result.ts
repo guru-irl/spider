@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, sectionRule, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type TodoChecklistDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -363,6 +363,10 @@ export function renderSpiderResult(
       const th = adaptTheme(t);
       return { render: (w: number) => renderMessageResult(d, { theme: th, width: w }), invalidate() {} };
     }
+    case "kill": {
+      const th = adaptTheme(t);
+      return { render: (w: number) => renderKillResult(details as KillDetails, { theme: th, width: w }), invalidate() {} };
+    }
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));
     case "todo": {
@@ -379,7 +383,14 @@ export function renderSpiderResult(
       if (sub === "models") return renderControlModels(t, details, expanded);
       if (sub === "config") return renderControlConfig(t, details, expanded);
       if (sub === "insights") return renderControlInsights(t, details, expanded);
-      if (sub === "migrate") return wrapBespoke(renderImportResult(details as any));
+      if (sub === "migrate") {
+        const th = adaptTheme(t);
+        return { render: (w: number) => renderMigrateResult(details as MigrateDetails, { theme: th, width: w }), invalidate() {} };
+      }
+      if (sub === "bind" || sub === "unbind") {
+        const th = adaptTheme(t);
+        return { render: (w: number) => renderBindResult(details as BindDetails, { theme: th, width: w }), invalidate() {} };
+      }
       if (sub === "consolidate") return renderControlMemory(t, details);
       return textComponent(result);
     default:
@@ -452,6 +463,33 @@ export function renderCommandOutput(message: any, options: { expanded?: boolean 
   const box = new Box(1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, {}) as any);
   box.addChild(renderSpiderResult(toToolResult(result), { expanded }, theme, { args }) as any);
+  const container = new Container();
+  container.addChild(new Spacer(1));
+  container.addChild(box as any);
+  return container as unknown as Component;
+}
+
+/** Transcript renderer for `spider.escalation` custom messages. Escalations always use
+ *  the error background (warnings/blocks are both urgent enough to warrant the red card). */
+export function renderEscalationMessage(message: any, options: { expanded?: boolean }, theme: any): Component {
+  const d = message?.details ?? {};
+  const escalationDetails: EscalationDetails = {
+    runId: d.runId,
+    severity: d.severity ?? "warning",
+    summary: d.summary ?? "Escalation",
+    agent: d.agent ?? "worker",
+    name: d.name ?? d.agent ?? "subagent",
+    payload: d.payload,
+  };
+  const th = adaptTheme(mkTheme(theme));
+  const bgFn = (text: string) => {
+    try { return typeof theme?.bg === "function" ? theme.bg("toolErrorBg", text) : text; } catch { return text; }
+  };
+  const box = new Box(1, 1, bgFn);
+  box.addChild({
+    render: (w: number) => renderEscalation(escalationDetails, { theme: th, width: w, expanded: options?.expanded === true }),
+    invalidate() {},
+  } as any);
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);

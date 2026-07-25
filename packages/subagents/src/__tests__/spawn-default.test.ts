@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { defaultSpawner } from "../spawn-default";
 
 describe("defaultSpawner", () => {
@@ -21,5 +21,21 @@ describe("defaultSpawner", () => {
     } finally {
       process.off("uncaughtException", onUncaught);
     }
+  });
+
+  it("spawns unix children detached so they own a process group", async () => {
+    const calls: any[] = [];
+    vi.doMock("node:child_process", () => ({
+      spawn: (...a: any[]) => {
+        calls.push(a);
+        return { pid: 1, on: () => {}, unref: () => {}, kill: () => {} };
+      },
+    }));
+    vi.resetModules();
+    const { defaultSpawner } = await import("../spawn-default");
+    defaultSpawner({ argv: ["pi", "-p"], env: {}, cwd: "/tmp-not-used", sessionFile: "s" } as any);
+    const opts = calls[0][2];
+    expect(opts.detached).toBe(process.platform !== "win32");
+    vi.doUnmock("node:child_process");
   });
 });

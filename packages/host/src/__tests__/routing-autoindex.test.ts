@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths } from "@spider/db-core";
+import { openDbAt } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { autoIndexOutput } from "../routing/autoindex";
 
 let dbPath: string;
@@ -12,7 +13,7 @@ afterEach(() => {
 });
 
 function mkdb() {
-  dbPath = join(paths.scratch("project", process.cwd()), `ai-${randomUUID()}.db`);
+  dbPath = join(testScratchPath(".spider-test"), `ai-${randomUUID()}.db`);
   return openDbAt(dbPath, "project");
 }
 

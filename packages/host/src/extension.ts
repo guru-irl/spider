@@ -8,7 +8,7 @@ import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result";
-import { controlDoctor, controlConfig } from "./control";
+import { controlDoctor, controlConfig, controlMigrate } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, listCatalog } from "./control/models-cmd";
 import { applyConfigEdit } from "./control/config-cmd";
@@ -16,7 +16,7 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, type Db } from "@spider/db-core";
 import {
   stageWrite, recall, listPending, approvePending, rejectPending,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
@@ -41,8 +41,8 @@ import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS, registerSuperpow
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
-import { installAgentsUI } from "./agents/agents-ui";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "./render-result";
+import { mountAgentsUI } from "./agents/mount";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "./render-result";
 
 export { registerAction };
 
@@ -91,9 +91,20 @@ function makeIndexer(db: Db) {
 }
 
 // scope + per-call DB selection (ctx-native: reuse the DBs buildActionCtx resolved).
-const scopeOf = (a: any) => (a?.scope === "global" ? "global" : "project");
-const dbFor = (scope: "global" | "project", ctx: ActionCtx | undefined) =>
-  scope === "global" ? ctx!.globalDb : ctx!.db;
+// "project" is a deprecated alias for "worktree"
+// Default is "repo" for memory operations (memory tables live in repo tier post-71a2acf)
+const scopeOf = (a: any): "global" | "repo" | "worktree" => {
+  if (a?.scope === "global") return "global";
+  if (a?.scope === "repo") return "repo";
+  if (a?.scope === "worktree") return "worktree";
+  if (a?.scope === "project") return "worktree"; // deprecated alias
+  return "repo"; // default: memory tables are in repo tier
+};
+const dbFor = (scope: "global" | "repo" | "worktree", ctx: ActionCtx | undefined) => {
+  if (scope === "global") return ctx!.globalDb;
+  if (scope === "repo") return ctx!.repoDb;
+  return ctx!.db; // worktree
+};
 
 interface PiToolAPI {
   registerTool(tool: {
@@ -111,26 +122,26 @@ interface PiToolAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
 }
 
-const SPIDER_PARAMETERS = {
+export const SPIDER_PARAMETERS = {
   type: "object",
   properties: {
     action: {
       type: "string",
       enum: [
         "search", "remember", "recall", "exec", "exec_file", "batch",
-        "index", "fetch", "run", "todo", "skill", "import", "message", "control",
+        "index", "fetch", "run", "kill", "todo", "skill", "import", "message", "control",
       ],
       description: "The spider verb to run.",
     },
     // control
-    command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory')." },
+    command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory','bind','unbind')." },
     op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command." },
     uuid: { type: "string", description: "pending-memory uuid for approve/reject." },
     // scope / cwd (most actions)
-    scope: { type: "string", enum: ["global", "project"], description: "Memory/registry scope (default project)." },
+    scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory/registry scope (default repo). \"Is this still true after I delete this worktree?\" → **repo**; \"Is this true in every repo?\" → **global**; otherwise → **worktree**. (\"project\" is deprecated, use \"worktree\")" },
     cwd: { type: "string", description: "Working-directory override." },
     // search / recall
     query: { type: "string", description: "Query text for action 'search' or 'recall'." },
@@ -179,7 +190,7 @@ const SPIDER_PARAMETERS = {
     model: { type: "string", description: "Model override for spawned subagent(s)." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
-    id: { type: "string", description: "Run id/prefix (also a todo id)." },
+    id: { type: "string", description: "Run id/prefix (also a todo id). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
@@ -212,7 +223,7 @@ const SPIDER_PARAMETERS = {
   },
   required: ["action"],
   additionalProperties: true,
-};
+} as const;
 
 /** Build the organism action deps for a dispatch: reuse the SAME aux-model
  *  seam the trailing registerOrganism hook block uses (route the configured aux
@@ -235,11 +246,12 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
     }
   };
   return {
-    db: ctx.db,
+    db: ctx.repoDb,
     globalDb: ctx.globalDb,
     project: ctx.project,
     worker: new OrganismWorker({
-      db: ctx.db,
+      db: ctx.repoDb,
+      worktreeDb: ctx.db,
       globalDb: ctx.globalDb,
       project: ctx.project,
       getEmbedder,
@@ -271,10 +283,14 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
   const cwd = String(args.cwd ?? process.cwd());
   switch (command) {
     case "doctor":
-      return controlDoctor(cwd);
+      return controlDoctor(cwd, ctx?.sessionId);
     case "config": {
       const op = (args.op as "get" | "set") ?? "get";
       if (op === "set" && args.key) {
+        // Protected key: exec.enforce can only be changed by the user via slash command
+        if (String(args.key) === "exec.enforce") {
+          return { error: "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command" };
+        }
         const r = applyConfigEdit(cwd, String(args.key), String(args.value));
         return { details: { ok: r.ok, error: r.error, key: args.key, value: args.value } };
       }
@@ -301,8 +317,9 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       }
     }
     case "migrate": {
-      if (!ctx) return { error: "migrate requires an action context" };
-      return runImport(args as any, ctx as any);
+      const apply = Boolean(args.apply);
+      const result = controlMigrate({ apply, dryRun: !apply, cwd });
+      return { details: result };
     }
     case "skill": {
       if (!ctx) return { error: "control skill requires an action context" };
@@ -320,7 +337,7 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     }
     case "stats": {
       if (!ctx) return { error: "control stats requires an action context" };
-      return { details: collectStats(ctx.db, ctx.globalDb) };
+      return { details: collectStats({ worktreeDb: ctx.db, repoDb: ctx.repoDb }, ctx.globalDb) };
     }
     case "models": {
       if (!ctx) return { error: "control models requires an action context" };
@@ -350,6 +367,19 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       );
       const report = runUpstreamWatch(ctx.globalDb, ctx.db, ctx.sessionId, { git, localRepos });
       return { display: renderUpstreamReport(report), details: report };
+    }
+    case "bind": {
+      if (!ctx) return { error: "control bind requires an action context" };
+      const bindPath = args.path ? String(args.path) : cwd;
+      const { controlBind } = await import("./control-bind");
+      const result = controlBind(ctx.globalDb, ctx.sessionId, bindPath);
+      return { details: result };
+    }
+    case "unbind": {
+      if (!ctx) return { error: "control unbind requires an action context" };
+      const { controlUnbind } = await import("./control-bind");
+      const result = controlUnbind(ctx.globalDb, ctx.sessionId);
+      return { details: result };
     }
     default:
       return { error: `control command '${command}' is not yet implemented (Phase 0)` };
@@ -384,8 +414,17 @@ export function cwdOf(ctx: unknown): string | undefined {
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
 export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd?: string): ActionCtx {
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
-  const project = resolveProject(cwd);
-  return { db: openProject(project.projectKey), globalDb: openGlobal(), project, sessionId, cwd, pi, models };
+  // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
+  const explicitCwd = !!(args as { cwd?: unknown }).cwd;
+  const project = resolveProject(cwd, { sessionId, explicitCwd });
+  const worktreeDb = openProject(project.projectKey);
+  // For git repos: open the repo DB
+  // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
+  // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
+  const repoDb = project.repoKey
+    ? openRepo(project.repoKey)
+    : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
@@ -433,7 +472,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
   pi.registerCommand?.(
     "todos",
     makeTodosCommand({
-      getDb: (ctx) => openProject(resolveProject(cwdOf(ctx) ?? process.cwd()).projectKey),
+      getDb: (ctx) => {
+        const sessionId = sessionIdOf(ctx);
+        const cwd = cwdOf(ctx) ?? process.cwd();
+        return openProject(resolveProject(cwd, { sessionId, explicitCwd: false }).projectKey);
+      },
       getSessionId: (ctx) => sessionIdOf(ctx),
     })
   );
@@ -447,6 +490,100 @@ export default function spiderExtension(pi: PiToolAPI): void {
     alreadyRegistered: new Set(["todos", "agents"]),
   });
 
+  // User-only /exec-enforce command (bypasses model-facing guard)
+  pi.registerCommand?.("exec-enforce", {
+    description: "Control bash enforcement (user only)",
+    handler: async (args: string, ctx: unknown) => {
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const arg = typeof args === "string" ? args.trim().toLowerCase() : "";
+      
+      // No argument: report current state
+      if (!arg) {
+        const current = controlConfig("get", cwd, "exec.enforce");
+        const state = current === false ? "OFF" : "ON";
+        const text = `exec.enforce is ${state} (default: ON)`;
+        
+        if (typeof (pi as any).sendMessage === "function") {
+          (pi as any).sendMessage({
+            customType: "spider.command",
+            content: text,
+            display: true,
+            details: { args: { command: "exec-enforce" }, result: { text, current } },
+          });
+        } else {
+          const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+          if (typeof notify === "function") notify(text, "info");
+        }
+        return;
+      }
+      
+      // Parse on/off/true/false/1/0
+      let value: boolean;
+      if (["on", "true", "1"].includes(arg)) {
+        value = true;
+      } else if (["off", "false", "0"].includes(arg)) {
+        value = false;
+      } else {
+        const text = `Invalid argument: "${arg}". Use: on|off|true|false`;
+        if (typeof (pi as any).sendMessage === "function") {
+          (pi as any).sendMessage({
+            customType: "spider.command",
+            content: text,
+            display: true,
+            details: { args: { command: "exec-enforce", arg }, result: { error: text } },
+          });
+        } else {
+          const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+          if (typeof notify === "function") notify(text, "error");
+        }
+        return;
+      }
+      
+      // Set via controlConfig directly (bypasses the model-facing guard)
+      controlConfig("set", cwd, "exec.enforce", value);
+      const text = `exec.enforce set to ${value ? "ON" : "OFF"}`;
+      
+      if (typeof (pi as any).sendMessage === "function") {
+        (pi as any).sendMessage({
+          customType: "spider.command",
+          content: text,
+          display: true,
+          details: { args: { command: "exec-enforce", arg, value }, result: { text, value } },
+        });
+      } else {
+        const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+        if (typeof notify === "function") notify(text, "info");
+      }
+    },
+  });
+
+  // User-only /bind command
+  pi.registerCommand?.("bind", {
+    description: "Bind session to a worktree path",
+    handler: async (args: string, ctx: unknown) => {
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const sessionId = sessionIdOf(ctx);
+      const path = typeof args === "string" ? args.trim() : cwd;
+      
+      const { controlBind } = await import("./control-bind");
+      const result = controlBind(openGlobal(), sessionId, path || cwd);
+      
+      const text = result.message ?? (result.ok ? "Session bound" : "Failed to bind");
+      
+      if (typeof (pi as any).sendMessage === "function") {
+        (pi as any).sendMessage({
+          customType: "spider.command",
+          content: text,
+          display: true,
+          details: { args: { command: "bind", path }, result },
+        });
+      } else {
+        const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+        if (typeof notify === "function") notify(text, result.ok ? "info" : "error");
+      }
+    },
+  });
+
   // NOTE: the background embed worker is intentionally NOT started here (no eager
   // DB opens / lingering timers at registration). recall degrades to FTS when no
   // vectors exist; the embed worker is wired in a later integration task.
@@ -455,7 +592,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
@@ -484,6 +621,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // output lines themed in the transcript instead of an ephemeral toast.
   pi.registerMessageRenderer?.("spider.command", (message: any, options: any, theme: any) =>
     renderCommandOutput(message, options, theme),
+  );
+
+  // Escalation messages from subagents render in the error card style (red background).
+  pi.registerMessageRenderer?.("spider.escalation", (message: any, options: any, theme: any) =>
+    renderEscalationMessage(message, options, theme),
   );
 
   registerHooks(pi);
@@ -515,9 +657,14 @@ export default function spiderExtension(pi: PiToolAPI): void {
       if (!ctx?.hasUI) return undefined;
       disposeAgentsUI?.();
       const cwd = cwdOf(ctx) ?? process.cwd();
-      const db = openProject(resolveProject(cwd).projectKey);
       const sessionId = sessionIdOf(ctx) || currentSessionId;
-      disposeAgentsUI = installAgentsUI(pi as any, ctx as any, { db, sessionId });
+      const db = openProject(resolveProject(cwd, { sessionId, explicitCwd: false }).projectKey);
+      disposeAgentsUI = mountAgentsUI(pi as any, ctx as any, {
+        db,
+        sessionId,
+        cwd,
+        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd)),
+      });
     } catch { /* UI mount best-effort; never break the session */ }
     return undefined;
   });
@@ -549,7 +696,13 @@ export default function spiderExtension(pi: PiToolAPI): void {
   try {
     const orgCwd = process.cwd();
     const project = resolveProject(orgCwd);
-    const orgDb = openProject(project.projectKey);
+    const orgWorktreeDb = openProject(project.projectKey);
+    // For git repos: open the repo DB (for skills and curator_state)
+    // For non-git dirs: create a repo-schema DB at worktree root (skills/curator_state are repo tier)
+    // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
+    const orgRepoDb = project.repoKey
+      ? openRepo(project.repoKey)
+      : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
     const orgGlobalDb = openGlobal();
     const cfg = controlConfig("get", orgCwd);
 
@@ -573,7 +726,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     };
 
     registerOrganism(pi, pi, {
-      db: orgDb,
+      db: orgRepoDb,
+      worktreeDb: orgWorktreeDb,
       globalDb: orgGlobalDb,
       project,
       getEmbedder,

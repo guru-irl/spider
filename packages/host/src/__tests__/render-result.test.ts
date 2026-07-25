@@ -181,13 +181,14 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{|"linkedPct"/); // NOT raw JSON
   });
 
-  it("control migrate → import summary panel (no raw JSON)", () => {
-    const summary = { imported: 3, skipped: 1, staged: 5, committed: 2, perSession: [] };
-    const c = renderSpiderResult(mkResult(summary), opts, theme, mkCtx({ action: "control", command: "migrate" }));
+  it("control migrate → migrate result panel (no raw JSON)", () => {
+    const details = { dryRun: false, applied: true, moved: { memory: 3, skills: 1 }, ambiguous: [] };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "migrate" }));
     assertComponent(c);
     const out = c.render(80).join("\n");
     expect(out).toContain("3");
-    expect(out).not.toMatch(/\{\s*"imported"/);
+    expect(out).toMatch(/memory|skills/);
+    expect(out).not.toMatch(/\{\s*"moved"/);
   });
 
   it("control memory consolidate → active-memory list (no raw JSON)", () => {

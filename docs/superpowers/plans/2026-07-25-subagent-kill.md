@@ -12,7 +12,7 @@ Source spec: `docs/superpowers/specs/2026-07-25-tiering-intercom-kill-design.md`
 
 ## Global Constraints
 
-- Node `>=22.19.0`; build target `node22`. Volta pins `24.16.0`.
+- Node `>=22.19.0`; build target `node22`. **Volta pins `26.4.0`** — spider's bundle loads inside pi's process and `better-sqlite3` is native, so the build node must match pi's runtime ABI (147). Build and test with `~/.nvm/versions/node/v26.4.0/bin` on PATH.
 - Package dependency direction is a one-way DAG: `host` → `subagents` → `db-core`. **`subagents` must never import `@spider/host`.** Hosts are passed structurally.
 - `@earendil-works/pi-coding-agent` is a **peer dependency and `external`** in `vite.config.mjs`. Its `exports` map exposes only `.` and `./rpc-entry` — **deep imports such as `dist/utils/shell.js` are forbidden** and fail at runtime.
 - Scratch/test data goes under a package's `.spider/scratch/` — **never `/tmp`, `$TMPDIR`, or `/var/tmp`.** Use `scratchDbPath()` from `@spider/db-core`'s testutil.
@@ -182,7 +182,7 @@ natural exit never rewrites the real outcome."
 - Consumes: nothing.
 - Produces:
   - `isProcessAlive(pid: number): boolean`
-  - `killProcessGroup(pid: number, opts?: { graceMs?: number; now?: () => number; kill?: (pid: number, sig: NodeJS.Signals) => void; platform?: string }): Promise<"terminated" | "forced" | "already-dead">`
+  - `killProcessGroup(pid: number, opts?: { graceMs?: number; kill?: (pid: number, sig: NodeJS.Signals | number) => void; platform?: string }): Promise<"terminated" | "forced" | "already-dead">`
 
 **Why a separate file:** these are pure OS primitives with no DB or run knowledge, so they can be unit-tested with an injected `kill` spy instead of real processes.
 
@@ -422,12 +422,28 @@ const registry = new Map<string, SessionCoordinators>();
 
 export function getCoordinators(sessionId: string, make: () => SessionCoordinators): SessionCoordinators {
   let c = registry.get(sessionId);
-  if (!c) { c = make(); registry.set(sessionId, c); }
+  if (!c) {
+    c = make();
+    c.children ??= new Map();
+    registry.set(sessionId, c);
+    return c;
+  }
+  // A slot() created by registerChild() before the first `run` has NO tailer. Returning it
+  // as-is would permanently suppress tailer creation for the session (make() is never called
+  // again), silently killing the live agent feed. Upgrade the slot in place instead, keeping
+  // any children already registered against it.
+  if (!c.tailer) {
+    const made = make();
+    c.tailer = made.tailer;
+    if (made.pipelines.length) c.pipelines.push(...made.pipelines);
+  }
+  c.children ??= new Map();
   return c;
 }
 
 /** Coordinators for a session that may not have a tailer yet — used by the child
- *  registry, which must work even before the first `run` builds a full coordinator. */
+ *  registry, which must work even before the first `run` builds a full coordinator.
+ *  Any slot this creates is upgraded by the next getCoordinators() call. */
 function slot(sessionId: string): SessionCoordinators {
   let c = registry.get(sessionId);
   if (!c) {
@@ -724,7 +740,7 @@ describe("killRun", () => {
       { store, db, getChild: () => undefined, kill, alive: () => true },
       "s1", store.get(a.id)!,
     );
-    expect(kill).toHaveBeenCalledWith(777, expect.anything());
+    expect(kill).toHaveBeenCalledWith(777);
     expect(res.via).toBe("pid");
     expect(store.get(a.id)!.status).toBe("cancelled");
   });
@@ -780,7 +796,7 @@ export interface KillDeps {
   store: RunStore;
   db: Db;
   getChild?: (sessionId: string, runId: string) => { kill(): void } | undefined;
-  kill?: (pid: number, opts?: unknown) => Promise<"terminated" | "forced" | "already-dead">;
+  kill?: (pid: number, opts?: KillOpts) => Promise<"terminated" | "forced" | "already-dead">;
   alive?: (pid: number) => boolean;
 }
 

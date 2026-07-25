@@ -5,12 +5,14 @@ import { realpathSync } from "node:fs";
 import { join, isAbsolute, resolve, dirname } from "node:path";
 import { openDb, type Db } from "./db";
 import { migrate } from "./migrate";
-import { paths, type Scope } from "./paths";
+import { paths, type Scope, worktreeRoot, repoRoot } from "./paths";
+import { getBinding, bindSession } from "./bindings";
 
 export interface ProjectInfo {
   projectKey: string;
   realPath: string;
   gitCommonDir?: string;
+  repoKey?: string;
   dbPath: string;
   name?: string;
 }
@@ -23,6 +25,8 @@ export function setGlobalDbPathForTests(path: string | null): void {
 function globalDbPath(): string {
   return _globalDbPathOverride ?? join(paths.globalRoot, "spider.db");
 }
+
+export { repoRoot } from "./paths";
 
 export function openGlobal(): Db {
   const db = openDb(globalDbPath());
@@ -43,12 +47,39 @@ function gitCommonDir(cwd: string): string | undefined {
   }
 }
 
-export function resolveProject(cwd: string): ProjectInfo {
-  const realPath = realpathSync(cwd);
-  const gcd = gitCommonDir(cwd);
-  const projectKey = gcd ?? realPath;
+export function resolveProject(cwd: string, opts?: { sessionId?: string; explicitCwd?: boolean }): ProjectInfo {
+  // Resolution order: explicit cwd > session binding > cwd's worktree root
+  let resolvedCwd = cwd;
+  const isExplicit = opts?.explicitCwd ?? true; // default to explicit for backward compat
+  
+  // If not explicit and we have a sessionId, check for binding
+  if (!isExplicit && opts?.sessionId) {
+    const g = openGlobal();
+    try {
+      const binding = getBinding(g, opts.sessionId);
+      if (binding) {
+        resolvedCwd = binding;
+      } else {
+        // No binding exists - check if we should auto-bind (promotes, never switches)
+        // Auto-bind when resolving from a non-repo cwd (container or loose directory)
+        const cwdIsRepo = gitCommonDir(cwd) !== undefined;
+        if (!cwdIsRepo) {
+          // Resolving from non-repo container - auto-bind to the resolved worktree
+          const targetRoot = worktreeRoot(cwd);
+          bindSession(g, opts.sessionId, targetRoot);
+        }
+      }
+    } finally {
+      g.close();
+    }
+  }
+  
+  const realPath = realpathSync(resolvedCwd);
+  const gcd = gitCommonDir(resolvedCwd);
+  const projectKey = worktreeRoot(resolvedCwd);
+  const repoKey = gcd;
   const dbPath = join(paths.projectRoot(realPath), "project.db");
-  const info: ProjectInfo = { projectKey, realPath, gitCommonDir: gcd, dbPath };
+  const info: ProjectInfo = { projectKey, realPath, gitCommonDir: gcd, repoKey, dbPath };
   registerProject(info);
   return info;
 }
@@ -59,17 +90,19 @@ export function registerProject(info: ProjectInfo): void {
     const now = Date.now();
     g.withRetry(() => {
       g.prepare(
-        `INSERT INTO projects (project_key, real_path, git_common_dir, db_path, name, created_at, last_seen_at)
-         VALUES (@project_key, @real_path, @git_common_dir, @db_path, @name, @now, @now)
+        `INSERT INTO projects (project_key, real_path, git_common_dir, repo_key, db_path, name, created_at, last_seen_at)
+         VALUES (@project_key, @real_path, @git_common_dir, @repo_key, @db_path, @name, @now, @now)
          ON CONFLICT(project_key) DO UPDATE SET
            real_path = excluded.real_path,
            git_common_dir = excluded.git_common_dir,
+           repo_key = excluded.repo_key,
            db_path = excluded.db_path,
            last_seen_at = excluded.last_seen_at`
       ).run({
         project_key: info.projectKey,
         real_path: info.realPath,
         git_common_dir: info.gitCommonDir ?? null,
+        repo_key: info.repoKey ?? null,
         db_path: info.dbPath,
         name: info.name ?? null,
         now,
@@ -93,7 +126,16 @@ export function openProject(projectKey: string): Db {
   }
   mkdirSync(join(dbPath, ".."), { recursive: true });
   const db = openDb(dbPath);
-  migrate(db, "project");
+  migrate(db, "worktree");
+  return db;
+}
+
+/** Open a repo-tier DB by its repo_key (git common dir). */
+export function openRepo(repoKey: string): Db {
+  const dbPath = join(repoKey, "spider", "repo.db");
+  mkdirSync(join(dbPath, ".."), { recursive: true });
+  const db = openDb(dbPath);
+  migrate(db, "repo");
   return db;
 }
 
@@ -103,13 +145,15 @@ export function openProject(projectKey: string): Db {
 export function openDbAt(absPath: string, scope?: Scope): Db {
   mkdirSync(dirname(absPath), { recursive: true });
   const db = openDb(absPath);
-  const resolved: Scope = scope ?? (absPath === join(paths.globalRoot, "spider.db") ? "global" : "project");
-  migrate(db, resolved);
+  const resolved: Scope = scope ?? (absPath === join(paths.globalRoot, "spider.db") ? "global" : "worktree");
+  // Map "project" to "worktree" for the deprecated alias
+  const actualScope = resolved === "project" ? "worktree" : resolved;
+  migrate(db, actualScope);
   return db;
 }
 
 /** Open a project's DB by its real path (explicit-path open; no registry key needed) (A3). */
 export function openProjectByPath(realPath: string): Db {
   const dbPath = join(paths.projectRoot(realpathSync(realPath)), "project.db");
-  return openDbAt(dbPath, "project");
+  return openDbAt(dbPath, "worktree");
 }

@@ -17,6 +17,10 @@ export function emitHandoff(db: Db, e: { runId: string; sessionId: string; toRun
   appendRunEvent(db, { runId: e.runId, sessionId: e.sessionId, ts: Date.now(), type: "handoff", summary: e.summary, payload: { toRunId: e.toRunId, phase: e.phase, ...(e.payload && typeof e.payload === "object" ? e.payload : {}) } });
 }
 
+export function emitEscalation(db: Db, e: { runId: string; sessionId: string; severity: "blocked" | "question" | "warning"; summary: string; payload?: unknown }): void {
+  appendRunEvent(db, { runId: e.runId, sessionId: e.sessionId, ts: Date.now(), type: "escalation", summary: e.summary, payload: { severity: e.severity, ...(e.payload && typeof e.payload === "object" ? e.payload : {}) } });
+}
+
 export function emitMessage(db: Db, e: { runId?: string; sessionId: string; summary?: string; payload?: unknown }): void {
   appendRunEvent(db, { runId: e.runId, sessionId: e.sessionId, ts: Date.now(), type: "message", summary: e.summary, payload: e.payload });
 }

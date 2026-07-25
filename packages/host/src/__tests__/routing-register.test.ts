@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths, listEvents } from "@spider/db-core";
+import { openDbAt, listEvents } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { registerRouting, DEFAULT_ROUTING_CONFIG } from "../routing/index";
 
 let dbPath: string;
@@ -10,7 +11,7 @@ afterEach(() => {
   for (const s of ["", "-wal", "-shm"]) rmSync(`${dbPath}${s}`, { force: true });
 });
 function mkdb() {
-  dbPath = join(paths.scratch("project", process.cwd()), `reg-${randomUUID()}.db`);
+  dbPath = join(testScratchPath(".spider-test"), `reg-${randomUUID()}.db`);
   return openDbAt(dbPath, "project");
 }
 function fakePi() {

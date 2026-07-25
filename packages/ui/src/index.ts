@@ -108,6 +108,8 @@ export { renderEscalation } from "./renderers/escalation";
 export type { EscalationDetails } from "./renderers/escalation";
 export { renderMigrateResult } from "./renderers/migrate";
 export type { MigrateDetails } from "./renderers/migrate";
+export { renderBindResult } from "./renderers/bind";
+export type { BindDetails } from "./renderers/bind";
 
 // ---- Phase 8: observability + config screens ----
 export { summarizeStats } from "./screens/stats-collect";

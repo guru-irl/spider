@@ -5,7 +5,7 @@ import type { RenderCtx } from "./types.js";
 export interface KillResultLine {
   runId: string;
   name: string;
-  outcome: "killed" | "already-finished" | "no-process";
+  outcome: "killed" | "already-finished" | "no-process" | "failed";
   via: "handle" | "pid" | "none";
   lastActivity?: string;
 }
@@ -19,10 +19,11 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
   if (details.error) {
     return [
       "",
-      truncateToWidth(` ${statusIcon(theme, "fail")} ${theme.fg("error", details.error)}`, width, ""),
+      truncateToWidth(` ${statusIcon(theme, "fail")} ${theme.fg("error", details.error)}`, width, "…"),
     ];
   }
-  // Empty-state branch
+  // Empty-state branch (currently only reachable when requested="all" since
+  // resolveKillTargets returns [] only for "all"; kept defensive for API robustness)
   if (rows.length === 0) {
     const target = details.requested && details.requested !== "all" ? ` matching '${details.requested}'` : "";
     return ["", truncateToWidth(` ${theme.fg("muted", `no active subagents${target} to kill`)}`, width, "")];
@@ -33,7 +34,7 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
     const isKilled = r.outcome === "killed";
     const isBenign = r.outcome === "already-finished" || r.outcome === "no-process";
     const icon = statusIcon(theme, isKilled ? "ok" : isBenign ? "warn" : "fail");
-    const textColor = isKilled ? "success" : isBenign ? "warning" : "muted";
+    const textColor = isKilled ? "success" : isBenign ? "warning" : "error";
     const via = r.via !== "none" ? ` ${theme.fg("dim", "·")} ${theme.fg("muted", `via ${r.via}`)}` : "";
     out.push(truncateToWidth(
       ` ${icon} ${theme.bold(r.name)} ${theme.fg("dim", "·")} ${theme.fg(textColor, r.outcome)}${via}`,

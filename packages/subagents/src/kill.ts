@@ -6,7 +6,7 @@ import { getChild, unregisterChild } from "./coordinators";
 export interface KillResult {
   runId: string;
   name: string;
-  outcome: "killed" | "already-finished" | "no-process";
+  outcome: "killed" | "already-finished" | "no-process" | "failed";
   via: "handle" | "pid" | "none";
   /** What the child was last doing — so a kill mid-`edit` is visible. */
   lastActivity?: string;

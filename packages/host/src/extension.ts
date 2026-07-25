@@ -16,7 +16,7 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, openRepo, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, type Db } from "@spider/db-core";
 import {
   stageWrite, recall, listPending, approvePending, rejectPending,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
@@ -92,12 +92,13 @@ function makeIndexer(db: Db) {
 
 // scope + per-call DB selection (ctx-native: reuse the DBs buildActionCtx resolved).
 // "project" is a deprecated alias for "worktree"
+// Default is "repo" for memory operations (memory tables live in repo tier post-71a2acf)
 const scopeOf = (a: any): "global" | "repo" | "worktree" => {
   if (a?.scope === "global") return "global";
   if (a?.scope === "repo") return "repo";
   if (a?.scope === "worktree") return "worktree";
   if (a?.scope === "project") return "worktree"; // deprecated alias
-  return "worktree"; // default
+  return "repo"; // default: memory tables are in repo tier
 };
 const dbFor = (scope: "global" | "repo" | "worktree", ctx: ActionCtx | undefined) => {
   if (scope === "global") return ctx!.globalDb;
@@ -140,7 +141,7 @@ export const SPIDER_PARAMETERS = {
     sub: { type: "string", description: "control memory sub-command." },
     uuid: { type: "string", description: "pending-memory uuid for approve/reject." },
     // scope / cwd (most actions)
-    scope: { type: "string", enum: ["global", "project"], description: "Memory/registry scope (default project). \"Is this still true after I delete this worktree?\" → **repo**; \"Is this true in every repo?\" → **global**; otherwise → **worktree**." },
+    scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory/registry scope (default repo). \"Is this still true after I delete this worktree?\" → **repo**; \"Is this true in every repo?\" → **global**; otherwise → **worktree**. (\"project\" is deprecated, use \"worktree\")" },
     cwd: { type: "string", description: "Working-directory override." },
     // search / recall
     query: { type: "string", description: "Query text for action 'search' or 'recall'." },
@@ -415,8 +416,11 @@ export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: strin
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   const project = resolveProject(cwd);
   const worktreeDb = openProject(project.projectKey);
-  // Open repo DB if available (git repo), otherwise fall back to worktree DB
-  const repoDb = project.repoKey ? openRepo(project.repoKey) : worktreeDb;
+  // For git repos: open the repo DB
+  // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
+  const repoDb = project.repoKey
+    ? openRepo(project.repoKey)
+    : openDbAt(path.join(project.projectKey, "spider", "repo.db"), "repo");
   return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models };
 }
 
@@ -681,8 +685,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
     const orgCwd = process.cwd();
     const project = resolveProject(orgCwd);
     const orgWorktreeDb = openProject(project.projectKey);
-    // Open repo DB if available (for skills and curator_state), otherwise fall back to worktree DB
-    const orgRepoDb = project.repoKey ? openRepo(project.repoKey) : orgWorktreeDb;
+    // For git repos: open the repo DB (for skills and curator_state)
+    // For non-git dirs: create a repo-schema DB at worktree root (skills/curator_state are repo tier)
+    const orgRepoDb = project.repoKey
+      ? openRepo(project.repoKey)
+      : openDbAt(path.join(project.projectKey, "spider", "repo.db"), "repo");
     const orgGlobalDb = openGlobal();
     const cfg = controlConfig("get", orgCwd);
 

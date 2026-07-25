@@ -1,5 +1,4 @@
 {
-  "exec.enforce": false,
   "ui.footer": false,
   "models.defaults": {
     "worker": "copilot/claude-sonnet-5",

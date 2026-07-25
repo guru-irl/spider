@@ -107,7 +107,6 @@ export class Runner {
     // Finalize the row on child EXIT even if the child-reporter missed session_shutdown
     // (headless/killed children) — otherwise the run is stuck "running" in the UI.
     void handle.wait().then(({ exitCode, result }) => {
-      unregisterChild(this.sessionId, run.id);
       const cur = this.deps.store.get(run.id);
       let status: RunStatus;
       if (cur && (cur.status === "running" || cur.status === "queued")) {
@@ -125,7 +124,9 @@ export class Runner {
       // finalized the row. A CANCELLED run is a deliberate stop — the notifier suppresses it
       // (see makeAsyncNotifier), so killing an agent does not wake the orchestrator.
       this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, status, result);
-    }).catch(() => { /* best-effort finalize */ });
+    }).catch(() => { /* best-effort finalize */ }).finally(() => {
+      unregisterChild(this.sessionId, run.id);
+    });
     handle.detach();
     return this.deps.store.get(run.id)!;
   }

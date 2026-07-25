@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Runner, type Spawner, type ChildHandle } from "../runner";
 import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
+import { getChild } from "../coordinators";
 import { freshDb } from "./helpers/testutil";
 import { appendRunEvent } from "@spider/db-core";
 import { latestRunOutput } from "../completion-output";
@@ -162,5 +163,33 @@ describe("Runner", () => {
     resolveWait({ exitCode: 0, result: "CHILD-FINAL" });
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
     expect(onComplete.mock.calls[0][1]).toBe("done");
+  });
+
+  it("releases the child handle from the registry when wait() rejects", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const tailer = new RunEventTailer(db);
+    const sessionId = "sess-reject-test";
+    
+    // a fake spawner whose wait() REJECTS
+    const handle: ChildHandle = {
+      pid: 9999,
+      wait: () => Promise.reject(new Error("spawn blew up")),
+      kill: () => {},
+      detach: () => {},
+    };
+    const spawn: Spawner = () => handle;
+    
+    const runner = new Runner(db, sessionId, "/repo", { store, tailer, ...deps(spawn) });
+    const run = runner.runAsync({ agent: "worker", task: "test", context: "fresh" });
+    
+    // Verify handle is registered initially
+    expect(getChild(sessionId, run.id)).toBe(handle);
+    
+    // Flush microtasks to allow the promise chain to settle
+    await new Promise((r) => setImmediate(r));
+    
+    // The handle should be unregistered even though wait() rejected
+    expect(getChild(sessionId, run.id)).toBeUndefined();
   });
 });

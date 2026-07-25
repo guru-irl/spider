@@ -45,7 +45,7 @@ export function controlConfig(op: "get" | "set", cwd: string, key?: string, valu
 }
 
 // ── doctor ──
-export function controlDoctor(cwd: string): { ok: boolean; lines: string[] } {
+export function controlDoctor(cwd: string, sessionId?: string): { ok: boolean; lines: string[] } {
   const lines: string[] = ["## spider doctor 🕸", ""];
   let ok = true;
 
@@ -65,7 +65,7 @@ export function controlDoctor(cwd: string): { ok: boolean; lines: string[] } {
 
   // 2. project registry integrity
   try {
-    const info = resolveProject(cwd);
+    const info = resolveProject(cwd, { sessionId, explicitCwd: false });
     lines.push(`- registry: project_key=${info.projectKey.slice(0, 24)}… db=${info.dbPath}`);
   } catch (e) {
     ok = false;

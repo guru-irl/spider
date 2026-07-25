@@ -90,18 +90,31 @@ export async function pollPendingMessages(
   const pending = store.pending(sessionId);
 
   for (const msg of pending) {
-    // Deliver the message to the session
-    // Emit an event that the session can consume
-    pi.events.emit("spider.message_delivered", {
-      id: msg.id,
-      from: msg.fromSession,
-      to: msg.toSession,
-      kind: msg.kind,
-      body: msg.body,
-      createdAt: msg.createdAt,
-    });
+    try {
+      // Deliver the message to the orchestrator (user-visible path)
+      // Use the same mechanism as the escalation notifier: sendMessage with a themed card
+      pi.sendMessage?.(
+        {
+          customType: "spider.message_delivered",
+          content: `📨 *message* from ${msg.fromSession ?? "unknown"} · ${msg.kind ?? "message"}\n\n${msg.body}`,
+          display: true,
+          details: {
+            id: msg.id,
+            from: msg.fromSession,
+            to: msg.toSession,
+            kind: msg.kind,
+            body: msg.body,
+            createdAt: msg.createdAt,
+          },
+        },
+        { triggerTurn: true },
+      );
 
-    // Mark as delivered
-    store.markDelivered(msg.id);
+      // Only mark as delivered AFTER successful delivery
+      store.markDelivered(msg.id);
+    } catch {
+      // Best-effort: if delivery fails, the message remains pending and will be
+      // retried on the next session_start (delivered_at stays NULL)
+    }
   }
 }

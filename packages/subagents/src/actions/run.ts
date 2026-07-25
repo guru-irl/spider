@@ -3,7 +3,7 @@ import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
 import { Runner, type Spawner } from "../runner";
 import { PipelineCoordinator } from "../pipeline";
-import { getCoordinators, type SessionCoordinators } from "../coordinators";
+import { getCoordinators, setupEscalationNotifier, type SessionCoordinators } from "../coordinators";
 import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
@@ -61,7 +61,8 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       getCoordinators(ctx.sessionId, () => {
         const t = new RunEventTailer(ctx.db);
         t.start();
-        return { tailer: t, pipelines: [], children: new Map() };
+        const escalationNotifierCleanup = setupEscalationNotifier(ctx, store);
+        return { tailer: t, pipelines: [], children: new Map(), escalationNotifierCleanup };
       });
     const tailer = coords.tailer;
     const spawn = overrides.spawner ?? defaultSpawner;

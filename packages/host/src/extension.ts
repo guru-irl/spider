@@ -42,7 +42,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { mountAgentsUI } from "./agents/mount";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "./render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "./render-result";
 
 export { registerAction };
 
@@ -283,7 +283,7 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
   const cwd = String(args.cwd ?? process.cwd());
   switch (command) {
     case "doctor":
-      return controlDoctor(cwd);
+      return controlDoctor(cwd, ctx?.sessionId);
     case "config": {
       const op = (args.op as "get" | "set") ?? "get";
       if (op === "set" && args.key) {
@@ -414,7 +414,9 @@ export function cwdOf(ctx: unknown): string | undefined {
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
 export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd?: string): ActionCtx {
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
-  const project = resolveProject(cwd);
+  // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
+  const explicitCwd = !!(args as { cwd?: unknown }).cwd;
+  const project = resolveProject(cwd, { sessionId, explicitCwd });
   const worktreeDb = openProject(project.projectKey);
   // For git repos: open the repo DB
   // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
@@ -469,7 +471,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
   pi.registerCommand?.(
     "todos",
     makeTodosCommand({
-      getDb: (ctx) => openProject(resolveProject(cwdOf(ctx) ?? process.cwd()).projectKey),
+      getDb: (ctx) => {
+        const sessionId = sessionIdOf(ctx);
+        const cwd = cwdOf(ctx) ?? process.cwd();
+        return openProject(resolveProject(cwd, { sessionId, explicitCwd: false }).projectKey);
+      },
       getSessionId: (ctx) => sessionIdOf(ctx),
     })
   );
@@ -616,6 +622,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
     renderCommandOutput(message, options, theme),
   );
 
+  // Escalation messages from subagents render in the error card style (red background).
+  pi.registerMessageRenderer?.("spider.escalation", (message: any, options: any, theme: any) =>
+    renderEscalationMessage(message, options, theme),
+  );
+
   registerHooks(pi);
 
   // Register @spider/superpowers: writes the spider-managed AGENTS.md block once
@@ -645,8 +656,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
       if (!ctx?.hasUI) return undefined;
       disposeAgentsUI?.();
       const cwd = cwdOf(ctx) ?? process.cwd();
-      const db = openProject(resolveProject(cwd).projectKey);
       const sessionId = sessionIdOf(ctx) || currentSessionId;
+      const db = openProject(resolveProject(cwd, { sessionId, explicitCwd: false }).projectKey);
       disposeAgentsUI = mountAgentsUI(pi as any, ctx as any, {
         db,
         sessionId,

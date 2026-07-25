@@ -298,14 +298,11 @@ describe("Task 5: queue-first intercom durability", () => {
       const { pollPendingMessages } = await import("../intercom");
       const delivered: any[] = [];
       const piB = {
-        events: {
-          on: vi.fn(),
-          emit: vi.fn((event: string, payload: any) => {
-            if (event === "spider.message_delivered") {
-              delivered.push(payload);
-            }
-          }),
-        },
+        sendMessage: vi.fn((message: any) => {
+          if (message.customType === "spider.message_delivered") {
+            delivered.push(message.details);
+          }
+        }),
       };
       await pollPendingMessages(db, "session-b", piB);
 

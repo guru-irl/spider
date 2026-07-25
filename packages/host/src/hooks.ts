@@ -50,7 +50,8 @@ export function registerHooks(pi: PiLikeAPI): void {
       pi.on(name, (event: any) => {
         try {
           const cwd = String(event?.cwd ?? process.cwd());
-          const project = resolveProject(cwd);
+          const sessionId = event?.sessionId ? String(event.sessionId) : undefined;
+          const project = resolveProject(cwd, { sessionId, explicitCwd: !sessionId });
           // For git repos: open the repo DB (for memory)
           // For non-git dirs: create a repo-schema DB at worktree root (memory is repo tier)
           const repoDb = project.repoKey
@@ -72,7 +73,8 @@ export function registerHooks(pi: PiLikeAPI): void {
       pi.on(name, (event: any) => {
         try {
           const cwd = String(event?.cwd ?? process.cwd());
-          const project = resolveProject(cwd);
+          const sessionId = event?.sessionId ? String(event.sessionId) : undefined;
+          const project = resolveProject(cwd, { sessionId, explicitCwd: false });
           const db = openProject(project.projectKey);
           
           // Reap subagents orphaned by a host that died without firing session_shutdown

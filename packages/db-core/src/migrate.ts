@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, PROJECT_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -11,6 +11,9 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
     "ALTER TABLE message_mirror ADD COLUMN delivered_at INTEGER",
     "ALTER TABLE message_mirror ADD COLUMN read_at INTEGER",
     "CREATE INDEX IF NOT EXISTS idx_mm_to_undelivered ON message_mirror(to_session, delivered_at)",
+  ],
+  6: [
+    "ALTER TABLE projects ADD COLUMN repo_key TEXT",
   ],
 };
 
@@ -42,6 +45,7 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
     "ALTER TABLE runs ADD COLUMN host_pid INTEGER",
   ],
   5: [], // Version bump only for project scope
+  6: [], // Version bump only for project scope
 };
 
 export function migrate(db: Db, scope: "global" | "project"): void {

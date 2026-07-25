@@ -46,7 +46,7 @@ describe("projects registry", () => {
     mkdirSync(dir, { recursive: true });
     const info = resolveProject(dir);
     const db = openProject(info.projectKey);
-    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memory'").get();
+    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'sessions'").get();
     db.close();
     expect(t).toBeTruthy();
   });
@@ -62,7 +62,7 @@ describe("projects registry", () => {
     const dir = join(scratchDbPath("bypath").replace(/\.db$/, ""), "p");
     mkdirSync(dir, { recursive: true });
     const db = openProjectByPath(dir);
-    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memory'").get();
+    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'sessions'").get();
     db.close();
     expect(t).toBeTruthy();
   });

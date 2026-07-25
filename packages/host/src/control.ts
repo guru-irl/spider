@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openGlobal, resolveProject, paths } from "@spider/db-core";
 
+export { controlMigrate } from "./control/migrate-cmd";
+
 // ── config (plain JSON; precedence defaults < global < project) ──
 const DEFAULTS: Record<string, unknown> = {
   "ui.footer": true,

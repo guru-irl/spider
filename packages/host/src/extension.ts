@@ -8,7 +8,7 @@ import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult } from "./result";
-import { controlDoctor, controlConfig } from "./control";
+import { controlDoctor, controlConfig, controlMigrate } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, listCatalog } from "./control/models-cmd";
 import { applyConfigEdit } from "./control/config-cmd";
@@ -316,8 +316,9 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       }
     }
     case "migrate": {
-      if (!ctx) return { error: "migrate requires an action context" };
-      return runImport(args as any, ctx as any);
+      const apply = Boolean(args.apply);
+      const result = controlMigrate({ apply, dryRun: !apply, cwd });
+      return { details: result };
     }
     case "skill": {
       if (!ctx) return { error: "control skill requires an action context" };

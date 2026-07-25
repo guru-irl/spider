@@ -1,8 +1,9 @@
 // packages/host/src/control/migrate-cmd.ts
-import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { openDbAt, paths, repoRoot, projectRoot } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
+import DatabaseConstructor from "better-sqlite3";
 
 export interface MigrateOptions {
   dryRun?: boolean;
@@ -20,12 +21,12 @@ export interface MigrateResult {
   message?: string;
 }
 
-/** Repo-tier tables that should be in repo.db */
-const REPO_TABLES = ["memory", "memory_fts", "skills", "curator_state", "vector_map", "embed_queue"];
+/** Repo-tier tables that should be in repo.db (C3: removed vector_map, embed_queue - those are worktree-tier) */
+const REPO_TABLES = ["memory", "memory_fts", "skills", "curator_state"];
 
 /** Worktree-tier tables that should be in project.db */
 const WORKTREE_TABLES = ["sessions", "sessions_fts", "content", "content_fts", "todos", "todos_fts", 
-                         "runs", "run_events", "events"];
+                         "runs", "run_events", "events", "vector_map", "embed_queue"];
 
 interface DbFile {
   path: string;
@@ -45,7 +46,7 @@ function findOldDbs(cwd: string): DbFile[] {
     dbs.push({ path: currentDb, worktreeRoot: wtRoot, repoRoot: rRoot });
   }
   
-  // For git repos, check for other worktrees
+  // I2: For git repos, enumerate sibling worktrees
   if (rRoot) {
     const gitCommonDir = rRoot.replace(/\/spider$/, "");
     const worktreesPath = join(gitCommonDir, "worktrees");
@@ -55,10 +56,22 @@ function findOldDbs(cwd: string): DbFile[] {
       for (const entry of entries) {
         const gitdirPath = join(worktreesPath, entry, "gitdir");
         if (existsSync(gitdirPath)) {
-          // Read the gitdir file to find the worktree root
-          // It contains something like "/path/to/worktree/.git"
-          // We need to get the worktree root from there
-          // For simplicity, skip this for now - we'll handle the current worktree only
+          try {
+            // Read the gitdir file to find the worktree root
+            // It contains something like "/path/to/worktree/.git"
+            const gitdirContent = readFileSync(gitdirPath, "utf-8").trim();
+            // Remove trailing /.git to get the worktree root
+            const siblingWtRoot = gitdirContent.replace(/\/\.git$/, "");
+            
+            if (siblingWtRoot !== wtRoot) {
+              const siblingDb = join(siblingWtRoot, ".spider", "project.db");
+              if (existsSync(siblingDb)) {
+                dbs.push({ path: siblingDb, worktreeRoot: siblingWtRoot, repoRoot: rRoot });
+              }
+            }
+          } catch (err) {
+            // Skip worktrees we can't read
+          }
         }
       }
     }
@@ -67,20 +80,19 @@ function findOldDbs(cwd: string): DbFile[] {
   return dbs;
 }
 
-/** Check if a DB has already been migrated (has new schema) */
+/** Check if a DB has already been migrated (has new schema) - I4: read-only check */
 function isAlreadyMigrated(dbPath: string): boolean {
   if (!existsSync(dbPath)) return true; // doesn't exist = nothing to migrate
   
-  const db = openDbAt(dbPath);
+  // I4: Open read-only to avoid modifying the DB
+  const db = new DatabaseConstructor(dbPath, { readonly: true, fileMustExist: true });
   try {
     // Check if it has BOTH repo and worktree tables (old schema) or only one type (new schema)
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
     const tableNames = new Set(tables.map(t => t.name));
     
-    
-    const hasRepoTables = REPO_TABLES.some(t => tableNames.has(t));
+    const hasRepoTables = REPO_TABLES.some(t => tableNames.has(t) && t !== "memory_fts"); // memory_fts is virtual, may not exist yet
     const hasWorktreeTables = WORKTREE_TABLES.some(t => tableNames.has(t));
-    
     
     // If it has both types, it's not migrated yet
     // If it has only one type or neither, it's either already migrated or empty
@@ -107,7 +119,7 @@ function createBackup(dbFiles: DbFile[]): string {
 }
 
 /** Count rows in a table */
-function countRows(db: Db, table: string): number {
+function countRows(db: Db | DatabaseConstructor.Database, table: string): number {
   try {
     const result = db.prepare(`SELECT COUNT(*) as n FROM ${table}`).get() as { n: number } | undefined;
     return result?.n ?? 0;
@@ -116,13 +128,16 @@ function countRows(db: Db, table: string): number {
   }
 }
 
-/** Analyze what would be moved */
+/** Analyze what would be moved (I4: read-only analysis) */
 function analyzeMove(dbFile: DbFile): Record<string, number> {
   const counts: Record<string, number> = {};
-  const db = openDbAt(dbFile.path);
+  
+  // I4: Open read-only
+  const db = new DatabaseConstructor(dbFile.path, { readonly: true, fileMustExist: true });
   
   try {
     for (const table of REPO_TABLES) {
+      if (table === "memory_fts") continue; // Virtual table, will be rebuilt
       const count = countRows(db, table);
       if (count > 0) {
         counts[table] = count;
@@ -141,7 +156,7 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
   const ambiguous: Array<{ table: string; uuid: string; reason: string }> = [];
   
   if (dryRun) {
-    // Just analyze, don't actually move
+    // Just analyze, don't actually move (C3: ensure dry-run and apply agree)
     return { moved: analyzeMove(dbFile), ambiguous };
   }
   
@@ -150,105 +165,111 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
     return { moved, ambiguous };
   }
   
-  const srcDb = openDbAt(dbFile.path);
+  const srcDb = openDbAt(dbFile.path, "worktree");
   
   try {
     // Create repo DB if needed
     if (dbFile.repoRoot) {
       mkdirSync(dbFile.repoRoot, { recursive: true });
       const repoDbPath = join(dbFile.repoRoot, "repo.db");
-      const repoDb = openDbAt(repoDbPath);
+      
+      // C2: Open with "repo" scope so it gets REPO_SCHEMA (includes memory_fts)
+      const repoDb = openDbAt(repoDbPath, "repo");
       
       try {
-        // Ensure repo schema exists
-        repoDb.exec(`
-          CREATE TABLE IF NOT EXISTS memory (
-            id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
-            category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
-            status TEXT NOT NULL DEFAULT 'active',
-            source TEXT NOT NULL DEFAULT 'user',
-            confidence REAL, session_id TEXT,
-            created_at INTEGER NOT NULL, updated_at INTEGER
-          );
-          CREATE TABLE IF NOT EXISTS skills (
-            id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-            tier TEXT NOT NULL DEFAULT 'project',
-            category TEXT, path TEXT,
-            state TEXT NOT NULL DEFAULT 'active',
-            status TEXT NOT NULL DEFAULT 'active',
-            source TEXT NOT NULL DEFAULT 'user',
-            pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
-            use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
-            last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
-            candidate_body TEXT, related TEXT,
-            created_at INTEGER NOT NULL, updated_at INTEGER
-          );
-          CREATE TABLE IF NOT EXISTS curator_state (
-            scope TEXT PRIMARY KEY,
-            last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
-          );
-        `);
+        // I5: Use transaction for atomicity
+        repoDb.exec("BEGIN TRANSACTION");
         
-        // Move repo-tier tables
-        for (const table of ["memory", "skills", "curator_state"]) {
-          const count = countRows(srcDb, table);
-          if (count > 0) {
-            // Copy rows to repo DB
-            const rows = srcDb.prepare(`SELECT * FROM ${table}`).all();
-            
-            for (const row of rows) {
-              const rowData = row as Record<string, unknown>;
-              // Check for conflicts before inserting
-              let conflict = false;
-              if (table === "memory" && "uuid" in rowData) {
-                const existing = repoDb.prepare("SELECT uuid FROM memory WHERE uuid = ?").get(String(rowData.uuid));
-                if (existing) {
-                  conflict = true;
+        try {
+          // Move repo-tier tables
+          for (const table of ["memory", "skills", "curator_state"]) {
+            const count = countRows(srcDb, table);
+            if (count > 0) {
+              // Copy rows to repo DB
+              const rows = srcDb.prepare(`SELECT * FROM ${table}`).all();
+              
+              for (const row of rows) {
+                const rowData = row as Record<string, unknown>;
+                // Check for conflicts before inserting
+                let conflict = false;
+                let conflictUuid = "";
+                
+                if (table === "memory" && "uuid" in rowData) {
+                  const existing = repoDb.prepare("SELECT uuid FROM memory WHERE uuid = ?").get(String(rowData.uuid));
+                  if (existing) {
+                    conflict = true;
+                    conflictUuid = String(rowData.uuid);
+                  }
+                } else if (table === "skills" && "name" in rowData) {
+                  const existing = repoDb.prepare("SELECT name FROM skills WHERE name = ?").get(String(rowData.name));
+                  if (existing) {
+                    conflict = true;
+                    conflictUuid = String(rowData.name);
+                  }
+                } else if (table === "curator_state" && "scope" in rowData) {
+                  const existing = repoDb.prepare("SELECT scope FROM curator_state WHERE scope = ?").get(String(rowData.scope));
+                  if (existing) {
+                    conflict = true;
+                    conflictUuid = String(rowData.scope);
+                  }
+                }
+                
+                // I5: Report ALL conflicts, not just memory
+                if (conflict) {
                   ambiguous.push({
                     table,
-                    uuid: String(rowData.uuid),
-                    reason: "Duplicate UUID found across worktrees",
+                    uuid: conflictUuid,
+                    reason: "Duplicate key found across worktrees",
                   });
-                }
-              } else if (table === "skills" && "name" in rowData) {
-                const existing = repoDb.prepare("SELECT name FROM skills WHERE name = ?").get(String(rowData.name));
-                if (existing) {
-                  conflict = true;
-                }
-              } else if (table === "curator_state" && "scope" in rowData) {
-                const existing = repoDb.prepare("SELECT scope FROM curator_state WHERE scope = ?").get(String(rowData.scope));
-                if (existing) {
-                  conflict = true;
+                } else {
+                  // Build INSERT - exclude 'id' column to let SQLite auto-generate it
+                  const cols = Object.keys(rowData).filter(k => k !== "id");
+                  const values = cols.map(k => rowData[k]);
+                  const placeholders = cols.map(() => "?").join(", ");
+                  const sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
+                  repoDb.prepare(sql).run(...values);
                 }
               }
               
-              if (!conflict) {
-                // Build INSERT - exclude 'id' column to let SQLite auto-generate it
-                const cols = Object.keys(rowData).filter(k => k !== "id");
-                const values = cols.map(k => rowData[k]);
-                const placeholders = cols.map(() => "?").join(", ");
-                const sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
-                repoDb.prepare(sql).run(...values);
-              }
+              moved[table] = count;
             }
-            
-            moved[table] = count;
-            
-            // Drop from source DB - drop all related tables
+          }
+          
+          // C3: Rebuild memory_fts from memory table
+          const memoryRows = repoDb.prepare("SELECT uuid, category, content, link FROM memory").all();
+          for (const row of memoryRows) {
+            const r = row as { uuid: string; category: string; content: string; link: string | null };
+            repoDb.prepare("INSERT INTO memory_fts (uuid, category, content, link) VALUES (?, ?, ?, ?)").run(
+              r.uuid, r.category, r.content, r.link
+            );
+          }
+          
+          repoDb.exec("COMMIT");
+        } catch (err) {
+          repoDb.exec("ROLLBACK");
+          throw err;
+        }
+      } finally {
+        repoDb.close();
+      }
+      
+      // I5: Now drop from source DB in a transaction (after successful copy)
+      srcDb.exec("BEGIN TRANSACTION");
+      try {
+        for (const table of ["memory", "skills", "curator_state"]) {
+          const count = countRows(srcDb, table);
+          if (count > 0) {
+            srcDb.exec(`DROP TABLE IF EXISTS ${table}`);
+            // Also drop memory_fts if memory was dropped
             if (table === "memory") {
-              srcDb.exec(`DROP TABLE IF EXISTS memory`);
               srcDb.exec(`DROP TABLE IF EXISTS memory_fts`);
-            } else {
-              srcDb.exec(`DROP TABLE IF EXISTS ${table}`);
             }
           }
         }
-        
-        // Also drop vector_map and embed_queue if they exist (repo-tier)
-        srcDb.exec(`DROP TABLE IF EXISTS vector_map`);
-        srcDb.exec(`DROP TABLE IF EXISTS embed_queue`);
-      } finally {
-        repoDb.close();
+        srcDb.exec("COMMIT");
+      } catch (err) {
+        srcDb.exec("ROLLBACK");
+        throw err;
       }
     }
   } finally {
@@ -277,7 +298,6 @@ export function controlMigrate(opts: MigrateOptions): MigrateResult {
     const needs = !isAlreadyMigrated(db.path);
     return needs;
   });
-  
   
   if (needsMigration.length === 0) {
     return {

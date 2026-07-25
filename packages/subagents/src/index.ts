@@ -11,13 +11,16 @@ export * from "./schemas";
 export * from "./pipeline";
 export * from "./coordinators";
 export * from "./spawn-default";
+export * from "./kill";
+export * from "./kill-process";
 
 import { attachChildReporter, isSubagentChild } from "./child-reporter";
 import { makeRunHandler } from "./actions/run";
 import { makeMessageHandler } from "./actions/message";
+import { makeKillHandler } from "./actions/kill";
 import { teardownAll } from "./coordinators";
 
-export { makeRunHandler, makeMessageHandler };
+export { makeRunHandler, makeMessageHandler, makeKillHandler };
 
 /**
  * Register the `run`/`message` actions on a structural host (`host.registerAction`).
@@ -33,5 +36,6 @@ export function registerSubagentActions(host: { registerAction: (name: string, h
   }
   host.registerAction("run", makeRunHandler());
   host.registerAction("message", makeMessageHandler());
+  host.registerAction("kill", makeKillHandler());
   try { pi?.on?.("session_shutdown", () => teardownAll()); } catch { /* best-effort */ }
 }

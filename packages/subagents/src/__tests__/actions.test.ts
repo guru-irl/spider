@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { openDbAt, paths } from "@spider/db-core";
 import { makeRunHandler } from "../actions/run";
 import { makeMessageHandler } from "../actions/message";
+import { makeKillHandler } from "../actions/kill";
 import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
 import { RunStore } from "../run-store";
 import { teardownAll } from "../coordinators";
@@ -163,5 +164,36 @@ describe("message action handler", () => {
     const res: any = await handler({ to: "peer", message: "hi", timeoutMs: 1000 }, ctx);
     expect(res.content).toContain("message delivered to peer");
     expect(res.isError).toBe(false);
+  });
+});
+
+describe("kill action", () => {
+  it("kills all active runs and reports each", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const a = store.create({ sessionId: "s1", agent: "worker", name: "alpha", task: "t" });
+    const b = store.create({ sessionId: "s1", agent: "worker", name: "beta", task: "t" });
+    store.start(a.id); store.start(b.id);
+    const handler = makeKillHandler();
+    const res = await handler({ id: "all" }, { db, sessionId: "s1" });
+    expect(res.details.killed).toHaveLength(2);
+    expect(store.get(a.id)!.status).toBe("cancelled");
+    expect(store.get(b.id)!.status).toBe("cancelled");
+  });
+
+  it("reports 'no active subagents' rather than erroring when none are running", async () => {
+    const db = freshDb();
+    const handler = makeKillHandler();
+    const res = await handler({ id: "all" }, { db, sessionId: "s1" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toMatch(/no active subagents/i);
+  });
+
+  it("returns an error result for an unmatched target instead of throwing", async () => {
+    const db = freshDb();
+    const handler = makeKillHandler();
+    const res = await handler({ id: "ghost" }, { db, sessionId: "s1" });
+    expect(res.isError).toBe(true);
+    expect(res.content).toMatch(/no active run/i);
   });
 });

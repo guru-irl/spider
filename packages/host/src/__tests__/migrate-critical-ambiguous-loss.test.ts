@@ -23,6 +23,75 @@ afterEach(() => {
 });
 
 describe("CRITICAL 2: Ambiguous row destruction", () => {
+  // MIXED fixture: wt2 has one row that COPIES cleanly and one that CONFLICTS.
+  // This matters because the source-delete block is gated on `moved[table] > 0`.
+  // The all-conflict fixture below leaves moved === 0, so the per-row delete loop
+  // never executes and its correctness is never exercised — a wholesale
+  // `DELETE FROM <table>` there passes that test. This case forces the loop to run
+  // with a conflict present.
+  // Mutation it catches: replace the per-row
+  //   `DELETE FROM ${table} WHERE ${keyCol} = ?`
+  // with `DELETE FROM ${table}` → the conflicting row is destroyed → this fails.
+  it("deletes only copied rows, preserving conflicts, when the same table has both", () => {
+    const repoDir = join(scratch, "mixed-repo");
+    mkdirSync(repoDir, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.email", "test@test"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "README.md"), "# Test\n");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["commit", "-m", "init"], { cwd: repoDir });
+
+    const wtA = join(scratch, "mixed-wtA");
+    const wtB = join(scratch, "mixed-wtB");
+    execFileSync("git", ["worktree", "add", wtA, "-b", "mixed-a"], { cwd: repoDir });
+    execFileSync("git", ["worktree", "add", wtB, "-b", "mixed-b"], { cwd: repoDir });
+
+    const seed = (wt: string, rows: Array<[string, string]>) => {
+      const spiderDir = join(wt, ".spider");
+      mkdirSync(spiderDir, { recursive: true });
+      const db = openDbAt(join(spiderDir, "project.db"), "worktree");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory (
+          id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+          category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+          status TEXT NOT NULL DEFAULT 'active',
+          source TEXT NOT NULL DEFAULT 'user',
+          confidence REAL, session_id TEXT,
+          created_at INTEGER NOT NULL, updated_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY);
+      `);
+      const now = Date.now();
+      for (const [uuid, content] of rows) {
+        db.prepare(
+          `INSERT INTO memory (uuid, category, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
+        ).run(uuid, "convention", content, now, now);
+      }
+      db.close();
+    };
+
+    // A migrates first and wins "shared". B brings "shared" (conflict) + "b-only" (copies).
+    seed(wtA, [["shared", "from A"]]);
+    seed(wtB, [["shared", "from B"], ["b-only", "unique to B"]]);
+
+    const result = controlMigrate({ apply: true, cwd: wtA });
+    expect(result.applied).toBe(true);
+
+    const conflict = result.ambiguous!.find((a) => a.table === "memory" && a.uuid === "shared");
+    expect(conflict).toBeDefined();
+
+    const bDb = new DatabaseConstructor(join(wtB, ".spider", "project.db"));
+    const rows = bDb.prepare("SELECT uuid, content FROM memory ORDER BY uuid").all() as any[];
+    bDb.close();
+
+    const byUuid = new Map(rows.map((r) => [r.uuid, r.content]));
+    // The conflicting row was NOT copied, so it must survive in the source.
+    expect(byUuid.get("shared")).toBe("from B");
+    // The cleanly-copied row was moved, so it must be gone from the source.
+    expect(byUuid.has("b-only")).toBe(false);
+  });
+
   it("conflicting source rows must NOT be deleted", () => {
     // Create repo with two worktrees that have conflicting memories
     const repoDir = join(scratch, "repo");

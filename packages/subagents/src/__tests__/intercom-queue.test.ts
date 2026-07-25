@@ -33,6 +33,8 @@ function fakePiNoBroker() {
         for (const fn of handlers.get(event) ?? []) fn(payload);
       },
     },
+    // IMPORTANT 4: pollPendingMessages requires sendMessage to deliver
+    sendMessage: () => { /* no-op for test */ },
   };
 }
 
@@ -56,6 +58,8 @@ function fakePiWithBroker() {
         for (const fn of handlers.get(event) ?? []) fn(payload);
       },
     },
+    // IMPORTANT 4: pollPendingMessages requires sendMessage to deliver
+    sendMessage: () => { /* no-op for test */ },
   };
 }
 

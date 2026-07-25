@@ -90,10 +90,13 @@ export async function pollPendingMessages(
   const pending = store.pending(sessionId);
 
   for (const msg of pending) {
+    // IMPORTANT 4: Skip if sendMessage is not available (leave pending for retry)
+    if (typeof pi.sendMessage !== "function") continue;
+    
     try {
       // Deliver the message to the orchestrator (user-visible path)
       // Use the same mechanism as the escalation notifier: sendMessage with a themed card
-      pi.sendMessage?.(
+      pi.sendMessage(
         {
           customType: "spider.message_delivered",
           content: `📨 *message* from ${msg.fromSession ?? "unknown"} · ${msg.kind ?? "message"}\n\n${msg.body}`,

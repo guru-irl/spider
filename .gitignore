@@ -3,6 +3,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 **/.spider/scratch/
+# Per-machine spider state. config.json holds personal toggles (ui.footer,
+# models.defaults) and the exec.enforce safety switch -- committing
+# "exec.enforce": false would silently disable bash enforcement for every clone.
+**/.spider/config.json
 **/.spider/project.db*
 **/.spider/logs/
 .DS_Store

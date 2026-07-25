@@ -1,11 +1,19 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, PROJECT_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
  *  instead, which already includes every column. */
+const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
+  5: [
+    "ALTER TABLE message_mirror ADD COLUMN delivered_at INTEGER",
+    "ALTER TABLE message_mirror ADD COLUMN read_at INTEGER",
+    "CREATE INDEX IF NOT EXISTS idx_mm_to_undelivered ON message_mirror(to_session, delivered_at)",
+  ],
+};
+
 const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   2: ["ALTER TABLE runs ADD COLUMN thinking TEXT"],
   3: [
@@ -33,6 +41,7 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
     "ALTER TABLE runs ADD COLUMN pid INTEGER",
     "ALTER TABLE runs ADD COLUMN host_pid INTEGER",
   ],
+  5: [], // Version bump only for project scope
 };
 
 export function migrate(db: Db, scope: "global" | "project"): void {
@@ -44,7 +53,7 @@ export function migrate(db: Db, scope: "global" | "project"): void {
         db.exec(scope === "global" ? GLOBAL_SCHEMA : PROJECT_SCHEMA);
       } else {
         for (let v = current + 1; v <= SCHEMA_VERSION; v++) {
-          const steps = scope === "project" ? PROJECT_MIGRATIONS[v] ?? [] : [];
+          const steps = scope === "project" ? PROJECT_MIGRATIONS[v] ?? [] : GLOBAL_MIGRATIONS[v] ?? [];
           for (const s of steps) db.exec(s);
         }
       }

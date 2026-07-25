@@ -32,8 +32,13 @@ interface Item {
   rank?: number;
 }
 
+export interface SearchCtx {
+  worktreeDb: Db;  // sessions, content, todos, worktree vector_map
+  repoDb: Db;      // memory, repo vector_map
+}
+
 export async function unifiedSearch(
-  db: Db,
+  ctx: SearchCtx,
   opts: { query: string; limit?: number; kinds?: SearchKind[] },
 ): Promise<SearchResultRow[]> {
   const kinds = opts.kinds ?? (["memory", "content", "session", "todo"] as SearchKind[]);
@@ -43,7 +48,7 @@ export async function unifiedSearch(
 
   if (kinds.includes("content")) {
     try {
-      refreshStaleContent(new ContentStore(db));
+      refreshStaleContent(new ContentStore(ctx.worktreeDb));
     } catch {
       /* freshness is best-effort; never break search */
     }
@@ -53,7 +58,7 @@ export async function unifiedSearch(
 
   if (kinds.includes("content")) {
     try {
-      const hits = new ContentStore(db).ftsSearch(opts.query, limit);
+      const hits = new ContentStore(ctx.worktreeDb).ftsSearch(opts.query, limit);
       ftsLists.push(
         hits.map((h) => ({
           key: `content:${h.id}`,
@@ -72,7 +77,7 @@ export async function unifiedSearch(
 
   if (kinds.includes("memory")) {
     try {
-      const rows = db
+      const rows = ctx.repoDb
         .prepare(
           "SELECT mem.uuid AS id, mem.category AS category, mem.content AS content, bm25(memory_fts) AS rank " +
             "FROM memory_fts JOIN memory mem ON mem.uuid = memory_fts.uuid " +
@@ -96,7 +101,7 @@ export async function unifiedSearch(
 
   if (kinds.includes("session")) {
     try {
-      const rows = db
+      const rows = ctx.worktreeDb
         .prepare(
           "SELECT sessions_fts.id AS id, sessions_fts.name AS name, sessions_fts.summary AS summary, bm25(sessions_fts) AS rank " +
             "FROM sessions_fts WHERE sessions_fts MATCH ? ORDER BY rank LIMIT ?",
@@ -119,7 +124,7 @@ export async function unifiedSearch(
 
   if (kinds.includes("todo")) {
     try {
-      const rows = db
+      const rows = ctx.worktreeDb
         .prepare(
           "SELECT rowid AS id, text AS text, bm25(todos_fts) AS rank " +
             "FROM todos_fts WHERE todos_fts MATCH ? ORDER BY rank LIMIT ?",
@@ -141,13 +146,16 @@ export async function unifiedSearch(
   }
 
   let vecList: Item[] = [];
-  const hasVectors = db.prepare("SELECT 1 FROM vector_map LIMIT 1").get();
-  if (hasVectors) {
+  // Check both DBs for vectors (each tier has its own vector_map)
+  const hasRepoVec = ctx.repoDb.prepare("SELECT 1 FROM vector_map LIMIT 1").get();
+  const hasWtVec = ctx.worktreeDb.prepare("SELECT 1 FROM vector_map LIMIT 1").get();
+  if (hasRepoVec || hasWtVec) {
     const embedder = await resolveEmbedder();
     if (embedder) {
       const [qv] = await embedder.embed([opts.query]);
       const vecKinds = (["memory", "content", "session"] as const).filter((k) => kinds.includes(k));
       for (const kind of vecKinds) {
+        const db = kind === "memory" ? ctx.repoDb : ctx.worktreeDb;
         const hits = knn(db, qv, limit, kind);
         vecList.push(
           ...hits.map((h) => ({
@@ -169,28 +177,28 @@ export async function unifiedSearch(
       if (it.title !== "" || it.content !== "") return it;
       // Vector-only hit — hydrate from the owning table, or drop if gone/inactive.
       if (it.kind === "memory") {
-        const row = db
+        const row = ctx.repoDb
           .prepare("SELECT category, content FROM memory WHERE uuid = ? AND status='active'")
           .get(it.id) as { category: string; content: string } | undefined;
         if (!row) return null;
         return { ...it, title: row.category, content: row.content };
       }
       if (it.kind === "content") {
-        const row = db
+        const row = ctx.worktreeDb
           .prepare("SELECT heading, chunk, source FROM content WHERE id = ?")
           .get(Number(it.id)) as { heading: string | null; chunk: string; source: string } | undefined;
         if (!row) return null;
         return { ...it, title: row.heading ?? "", content: row.chunk, source: row.source };
       }
       if (it.kind === "session") {
-        const row = db
+        const row = ctx.worktreeDb
           .prepare("SELECT name, summary FROM sessions WHERE id = ?")
           .get(it.id) as { name: string | null; summary: string | null } | undefined;
         if (!row) return null;
         return { ...it, title: row.name ?? "", content: row.summary ?? "" };
       }
       if (it.kind === "todo") {
-        const row = db.prepare("SELECT text FROM todos WHERE id = ?").get(Number(it.id)) as
+        const row = ctx.worktreeDb.prepare("SELECT text FROM todos WHERE id = ?").get(Number(it.id)) as
           | { text: string }
           | undefined;
         if (!row) return null;

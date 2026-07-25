@@ -335,7 +335,7 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     }
     case "stats": {
       if (!ctx) return { error: "control stats requires an action context" };
-      return { details: collectStats(ctx.db, ctx.globalDb) };
+      return { details: collectStats({ worktreeDb: ctx.db, repoDb: ctx.repoDb }, ctx.globalDb) };
     }
     case "models": {
       if (!ctx) return { error: "control models requires an action context" };

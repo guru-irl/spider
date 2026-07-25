@@ -18,13 +18,13 @@ describe("learning graph", () => {
 
   it("links a memory to a skill by lexical overlap and persists insights", () => {
     ctx = makeOrgDb();
-    const s = new SkillStore(ctx.db);
+    const s = new SkillStore(ctx.repoDb);
     s.upsert({ name: "auth-flow", category: "security" });
-    addMemory(ctx.db, "repo", { category: "convention", content: "the auth flow uses PKCE" });
-    const g = buildLearningGraph(ctx.db, ctx.db, { persist: true });
+    addMemory(ctx.repoDb, "repo", { category: "convention", content: "the auth flow uses PKCE" });
+    const g = buildLearningGraph(ctx.repoDb, ctx.repoDb, { persist: true });
     expect(g.nodes.some((n) => n.kind === "skill" && n.id === "auth-flow")).toBe(true);
     expect(g.edges.some((e) => e.target === "auth-flow")).toBe(true);
-    const rows = ctx.db
+    const rows = ctx.repoDb
       .prepare("SELECT COUNT(*) c FROM insights WHERE kind IN ('node','edge')")
       .get() as { c: number };
     expect(rows.c).toBeGreaterThan(0);

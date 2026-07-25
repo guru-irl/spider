@@ -18,7 +18,7 @@ describe("context e2e via dispatcher", () => {
       expect(host.map.has(n)).toBe(true);
     }
     cx = makeContentDb();
-    const ctx = { db: cx.db, cwd: process.cwd(), sessionId: "s" };
+    const ctx = { db: cx.db, repoDb: cx.repoDb, cwd: process.cwd(), sessionId: "s" };
     await host.dispatch("index", { action: "index", content: "# H\nunified search works", source: "d" }, ctx);
     const res = await host.dispatch("search", { action: "search", query: "unified search", limit: 5 }, ctx);
     expect(String((res.text ?? "") + JSON.stringify(res.details ?? "")).length).toBeGreaterThan(0);

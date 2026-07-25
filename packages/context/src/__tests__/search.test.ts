@@ -14,16 +14,16 @@ describe("unifiedSearch (FTS-only degrade path)", () => {
       content: "# Retry\nWe retry on SQLITE_BUSY with backoff.",
       source: "notes",
     });
-    ctx.db
+    ctx.repoDb
       .prepare(
         "INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES (?,?,?,?,?,?)",
       )
       .run("m1", "convention", "always retry on SQLITE_BUSY", "active", "user", Date.now());
-    ctx.db
+    ctx.repoDb
       .prepare("INSERT INTO memory_fts (uuid, category, content, link) VALUES (?,?,?,?)")
       .run("m1", "convention", "always retry on SQLITE_BUSY", "");
 
-    const rows = await unifiedSearch(ctx.db, { query: "retry busy", limit: 10 });
+    const rows = await unifiedSearch({ worktreeDb: ctx.db, repoDb: ctx.repoDb }, { query: "retry busy", limit: 10 });
     const kinds = new Set(rows.map((r) => r.kind));
     expect(kinds.has("content")).toBe(true);
     expect(kinds.has("memory")).toBe(true);

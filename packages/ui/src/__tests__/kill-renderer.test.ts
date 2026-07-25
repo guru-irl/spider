@@ -62,11 +62,15 @@ describe("renderKillResult", () => {
   it("renders failed outcome with fail glyph", () => {
     const out = renderKillResult(
       { requested: "alpha", killed: [
-        { runId: "r1", name: "alpha", outcome: "failed" as any, via: "none", lastActivity: "kill failed: SQLITE_BUSY" },
+        { runId: "r1", name: "alpha", outcome: "failed", via: "none", error: "SQLITE_BUSY" },
       ] },
       ctx,
     ).join("\n");
-    expect(out).toContain("failed");
+    // Outcome word must appear on main line (not just in lastActivity substring)
+    const lines = out.split("\n");
+    const mainLine = lines.find(l => l.includes("alpha"));
+    expect(mainLine).toBeTruthy();
+    expect(mainLine).toMatch(/·\s+failed/);
     expect(out).toContain("✗");
   });
 });

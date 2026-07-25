@@ -10,6 +10,8 @@ export interface KillResult {
   via: "handle" | "pid" | "none";
   /** What the child was last doing — so a kill mid-`edit` is visible. */
   lastActivity?: string;
+  /** Kill error message (only for outcome="failed"). */
+  error?: string;
 }
 
 export interface KillDeps {
@@ -51,7 +53,7 @@ export function resolveKillTargets(store: RunStore, sessionId: string, id: strin
 /** The child's most recent meaningful activity, for the kill report.
  *  There is NO listRunEvents helper — `run_events` is queried inline, the same
  *  shape packages/host/src/agents/run-source.ts uses for the detail view. */
-function lastActivityOf(db: Db, runId: string): string | undefined {
+export function lastActivityOf(db: Db, runId: string): string | undefined {
   try {
     const row = db
       .prepare(

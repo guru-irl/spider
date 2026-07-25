@@ -1,5 +1,5 @@
 import { RunStore } from "../run-store";
-import { resolveKillTargets, killRun, type KillResult } from "../kill";
+import { resolveKillTargets, killRun, lastActivityOf, type KillResult } from "../kill";
 
 export interface KillDetails { killed: KillResult[]; requested: string; error?: string }
 
@@ -31,15 +31,16 @@ export function makeKillHandler(): (args: any, ctx: any) => Promise<{ content: s
           name: run.name ?? run.agent,
           outcome: "failed",
           via: "none",
-          lastActivity: `kill failed: ${message}`,
+          lastActivity: lastActivityOf(ctx.db, run.id),
+          error: message,
         });
       }
     }
-    const successCount = killed.filter(k => k.outcome !== "failed").length;
+    const actuallyKilled = killed.filter(k => k.outcome === "killed").length;
     const lines = killed.map((k) => `  • ${k.name} — ${k.outcome}${k.via !== "none" ? ` (via ${k.via})` : ""}${k.lastActivity ? ` (${k.lastActivity})` : ""}`).join("\n");
     const errorMsg = anyFailed ? ` (${killed.filter(k => k.outcome === "failed").length} failed)` : "";
     return {
-      content: `killed ${successCount} of ${targets.length} subagent(s)${errorMsg}\n${lines}`,
+      content: `killed ${actuallyKilled} of ${targets.length} subagent(s)${errorMsg}\n${lines}`,
       isError: anyFailed,
       details: { killed, requested, error: anyFailed ? `${killed.filter(k => k.outcome === "failed").length} kill(s) failed` : undefined },
     };

@@ -17,7 +17,7 @@ export interface ReapDeps {
  * session still owns that child, and touching it would kill another session's
  * work.
  */
-export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[] }> {
+export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]; error?: string }> {
   const store = deps.store ?? new RunStore(deps.db);
   const alive = deps.alive ?? isProcessAlive;
   const kill = deps.kill ?? ((pid: number) => killProcessGroup(pid));
@@ -29,22 +29,34 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
     rows = deps.db
       .prepare(`SELECT * FROM runs WHERE status IN ('queued','running','paused') AND host_pid IS NOT NULL`)
       .all() as RunRow[];
-  } catch {
-    return { reaped }; // pre-v4 DB or read failure — never block session start
+  } catch (err) {
+    return { reaped, error: String((err as Error)?.message ?? err) };
   }
 
-  for (const row of rows) {
+  // M3: Document pid-reuse limitation. isProcessAlive answers "some process has this pid",
+  // not "the original host". No start-time/generation counter disambiguates today. The
+  // recycled-host-pid direction fails SAFE: nothing is signalled because only row.pid is
+  // ever killed.
+  const work = rows.map(async (row) => {
     const hostPid = row.host_pid;
-    if (hostPid === null || hostPid === selfPid) continue; // ours, or unknown owner
-    if (alive(hostPid)) continue;                          // another live session owns it
+    if (hostPid === null || hostPid === selfPid) return null; // ours, or unknown owner
+    if (alive(hostPid)) return null;                          // another live session owns it
 
     if (row.pid !== null && alive(row.pid)) {
       try { await kill(row.pid); } catch { /* best-effort */ }
     }
     try {
       store.cancel(row.id, "cancelled — orphaned by a host that exited without shutdown");
-      reaped.push(row.id);
+      // M1: Only report reaped if the cancel actually changed the row
+      const updated = store.get(row.id);
+      if (updated?.status === "cancelled") return row.id;
     } catch { /* best-effort */ }
-  }
+    return null;
+  });
+
+  // M2: Parallelize per-orphan work; keep ordering deterministic
+  const results = await Promise.all(work);
+  reaped.push(...results.filter((id): id is string => id !== null));
+
   return { reaped };
 }

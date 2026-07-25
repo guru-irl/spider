@@ -10,10 +10,12 @@ describe("registerHooks (Phase 0 empty handlers)", () => {
     expect(registered).toHaveLength(HOOK_NAMES.length);
   });
 
-  it("no longer owns the tool-hook events (tool_call/tool_result moved to routing in Task 7b), and never used the draft beforeToolCall/afterToolCall names", () => {
-    // Ownership of tool_call/tool_result transferred to packages/host/src/routing
-    // (wired in extension.ts) to avoid double-registration.
-    expect(HOOK_NAMES as readonly string[]).not.toContain("tool_call");
+  it("tool_call is registered for bash enforcement; routing separately handles tracking", () => {
+    // tool_call is in HOOK_NAMES for exec enforcement (blocks bash).
+    // Routing ALSO registers tool_call for tracking (never blocks).
+    // Both handlers can coexist; pi calls them in order.
+    expect(HOOK_NAMES as readonly string[]).toContain("tool_call");
+    // tool_result remains routing-only
     expect(HOOK_NAMES as readonly string[]).not.toContain("tool_result");
     expect(HOOK_NAMES as readonly string[]).not.toContain("beforeToolCall");
     expect(HOOK_NAMES as readonly string[]).not.toContain("afterToolCall");
@@ -24,7 +26,7 @@ describe("registerHooks (Phase 0 empty handlers)", () => {
     const pi: PiLikeAPI = { on(name, fn) { handlers[name] = fn; } };
     registerHooks(pi);
     for (const name of HOOK_NAMES) {
-      if (name === "resources_discover") continue;
+      if (name === "resources_discover" || name === "tool_call") continue;
       expect(handlers[name]()).toBeUndefined();
     }
     const res = handlers["resources_discover"]({ cwd: process.cwd(), reason: "startup" }) as { skillPaths?: string[] };

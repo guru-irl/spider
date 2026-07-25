@@ -32,9 +32,8 @@ built-ins:
   and todos. Reach for it before re-reading files.
 - \`spider exec\` / \`spider exec_file\` / \`spider batch\` — run commands or
   analyze large files in a sandbox; only what you print/query enters context.
-  **Prefer these over raw \`bash\`/\`read\` whenever output could exceed ~10
-  lines** (git, tests, logs, repo-wide grep). Use plain \`read\` only when you
-  will \`edit\` the file (so edits match exact text).
+  **\`bash\` is mechanically blocked** — \`spider exec\` is the shell. Use plain
+  \`read\` only when you will \`edit\` the file (so edits match exact text).
 - \`spider index\` / \`spider fetch\` — index files/dirs or fetch+index URLs into
   the knowledge base for \`spider search\`.
 - \`spider run\` — dispatch subagents (single / chain / parallel / pipeline,

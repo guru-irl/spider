@@ -48,8 +48,9 @@ describe("spider extension entry", () => {
   it("registers a handler for every contract hook", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
-    // tool_call/tool_result are NOT in HOOK_NAMES anymore (routing owns them).
-    expect(HOOK_NAMES).not.toContain("tool_call");
+    // tool_call is now in HOOK_NAMES for exec enforcement.
+    // tool_result remains routing-only.
+    expect(HOOK_NAMES).toContain("tool_call");
     expect(HOOK_NAMES).not.toContain("tool_result");
     for (const name of HOOK_NAMES) expect(pi._hooks[name]).toBeTypeOf("function");
   });

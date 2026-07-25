@@ -22,6 +22,7 @@ import { resolveProject, openGlobal, openProject, appendEvent } from "@spider/db
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns } from "@spider/subagents";
+import { controlConfig } from "./control";
 
 export interface PiLikeAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -34,6 +35,7 @@ export const HOOK_NAMES = [
   "session_compact",
   "session_shutdown",
   "resources_discover",
+  "tool_call",
 ] as const;
 
 export function registerHooks(pi: PiLikeAPI): void {
@@ -115,6 +117,37 @@ export function registerHooks(pi: PiLikeAPI): void {
           const cwd = String(event?.cwd ?? process.cwd());
           return { skillPaths: contributeSkillPaths(cwd) };
         } catch {
+          return undefined;
+        }
+      });
+    } else if (name === "tool_call") {
+      // Mechanically enforce spider exec over bash. Best-effort: a hook failure
+      // must never break a turn.
+      pi.on(name, (event: any) => {
+        try {
+          const tool = event?.toolName;
+          if (tool !== "bash") return undefined;
+          
+          const cwd = String(event?.cwd ?? process.cwd());
+          const enforce = controlConfig("get", cwd, "exec.enforce");
+          
+          // Default ON when unset; only disable if explicitly false
+          if (enforce === false) return undefined;
+          
+          const cmd = String(event?.input?.command ?? "");
+          // Cap command display at 500 chars to avoid bloating the reason
+          const displayCmd = cmd.length > 500 ? cmd.slice(0, 500) + "\n[... truncated]" : cmd;
+          
+          const reason = `bash is disabled in this project — use spider exec (only what you print enters context).
+
+Replace this call with:
+  spider({ action: "exec", language: "shell", code: ${JSON.stringify(displayCmd)} })
+
+To disable enforcement: spider control config set exec.enforce false`;
+          
+          return { block: true, reason };
+        } catch {
+          // Enforcement is best-effort; never break a turn
           return undefined;
         }
       });

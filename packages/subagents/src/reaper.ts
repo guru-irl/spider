@@ -1,6 +1,7 @@
 import type { Db } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
 import { isProcessAlive, killProcessGroup } from "./kill-process";
+import { looksLikeSubagent } from "./process-identity";
 
 export interface ReapDeps {
   db: Db;
@@ -8,6 +9,7 @@ export interface ReapDeps {
   alive?: (pid: number) => boolean;
   kill?: (pid: number) => Promise<unknown>;
   selfPid?: number;
+  probeCommand?: (pid: number) => string | null;
 }
 
 /**
@@ -34,16 +36,25 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
   }
 
   // Document pid-reuse limitation. isProcessAlive answers "some process has this pid",
-  // not "the original host". No start-time/generation counter disambiguates today. The
-  // recycled-host-pid direction fails SAFE: nothing is signalled because only row.pid is
-  // ever killed.
+  // not "the original host/child". No start-time/generation counter disambiguates today.
+  // Signalling a reused row.pid would SIGTERM/SIGKILL an unrelated process group, so we
+  // confirm the command line still looks like a spawned subagent before kill(). If the
+  // probe returns null (win32, ps unavailable, EPERM), we reconcile the row but do NOT
+  // signal — reaping the row is safe; signalling an unidentified pid is not.
   const work = rows.map(async (row) => {
     const hostPid = row.host_pid;
     if (hostPid === null || hostPid === selfPid) return null; // ours, or unknown owner
     if (alive(hostPid)) return null;                          // another live session owns it
 
     if (row.pid !== null && alive(row.pid)) {
-      try { await kill(row.pid); } catch { /* best-effort */ }
+      // Before signalling, confirm the pid still looks like our spawned subagent.
+      // Fail-safe: if probe returns null (unknown), reconcile the row but do NOT signal.
+      const identityConfirmed = deps.probeCommand
+        ? looksLikeSubagent(row.pid, deps.probeCommand)
+        : looksLikeSubagent(row.pid);
+      if (identityConfirmed) {
+        try { await kill(row.pid); } catch { /* best-effort */ }
+      }
     }
     try {
       store.cancel(row.id, "cancelled — orphaned by a host that exited without shutdown");

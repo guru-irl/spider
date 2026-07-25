@@ -22,7 +22,8 @@ describe("reapOrphanRuns", () => {
     store.start(id);
     store.setPid(id, 999, 12345);
     const kill = vi.fn(async () => {});
-    await reapOrphanRuns({ db, alive: (pid) => pid === 999, kill, selfPid: 1 });
+    const probeCommand = vi.fn(() => "pi --mode json -p --session /x/session.jsonl Task: work");
+    await reapOrphanRuns({ db, alive: (pid) => pid === 999, kill, selfPid: 1, probeCommand });
     expect(kill).toHaveBeenCalledWith(999);
   });
 
@@ -69,7 +70,9 @@ describe("reapOrphanRuns", () => {
     store.start(id);
     store.setPid(id, 999, 12345);
     const kill = vi.fn(async () => {});
-    const res = await reapOrphanRuns({ db, alive: () => false, kill, selfPid: 1 });
+    // Provide probeCommand that would confirm identity, so alive() is the only guard
+    const probeCommand = vi.fn(() => "pi --mode json -p --session /x/session.jsonl Task: work");
+    const res = await reapOrphanRuns({ db, alive: () => false, kill, selfPid: 1, probeCommand });
     expect(kill).not.toHaveBeenCalled();
     expect(res.reaped).toContain(id);
   });
@@ -93,3 +96,42 @@ describe("reapOrphanRuns", () => {
     expect(store.get(id)!.status).toBe("running");
   });
 });
+
+  it("kills orphaned child when process identity confirms it is a subagent", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id);
+    store.setPid(id, 999, 12345);
+    const kill = vi.fn(async () => {});
+    const probeCommand = vi.fn(() => "pi --mode json -p --session /x/session.jsonl Task: work");
+    await reapOrphanRuns({ db, alive: (pid) => pid === 999, kill, selfPid: 1, probeCommand });
+    expect(kill).toHaveBeenCalledWith(999);
+    expect(store.get(id)!.status).toBe("cancelled");
+  });
+
+  it("does NOT kill when pid is alive but identity shows it is NOT a subagent (pid reused)", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id);
+    store.setPid(id, 999, 12345);
+    const kill = vi.fn(async () => {});
+    const probeCommand = vi.fn(() => "/usr/bin/postgres -D /var/lib/postgresql/data");
+    await reapOrphanRuns({ db, alive: (pid) => pid === 999, kill, selfPid: 1, probeCommand });
+    expect(kill).not.toHaveBeenCalled();
+    expect(store.get(id)!.status).toBe("cancelled");
+  });
+
+  it("does NOT kill when probe returns null (unknown identity), but still cancels row", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id);
+    store.setPid(id, 999, 12345);
+    const kill = vi.fn(async () => {});
+    const probeCommand = vi.fn(() => null);
+    await reapOrphanRuns({ db, alive: (pid) => pid === 999, kill, selfPid: 1, probeCommand });
+    expect(kill).not.toHaveBeenCalled();
+    expect(store.get(id)!.status).toBe("cancelled");
+  });

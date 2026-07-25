@@ -7,7 +7,7 @@ import { makeMessageHandler } from "../actions/message";
 import { makeKillHandler } from "../actions/kill";
 import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
 import { RunStore } from "../run-store";
-import { teardownAll } from "../coordinators";
+import { teardownAll, registerChild, getChild } from "../coordinators";
 import { freshDb } from "./helpers/testutil";
 import { registerSubagentActions } from "../index";
 
@@ -230,6 +230,57 @@ describe("kill action", () => {
       expect(res.details.killed[1].outcome).toBe("no-process");
     } finally {
       spy.mockRestore();
+    }
+  });
+});
+
+describe("session_shutdown wiring", () => {
+  afterEach(() => teardownAll());
+
+  const fakeHandle = (): import("../runner").ChildHandle & { killed: boolean } => {
+    const h = { pid: 111, killed: false, wait: async () => ({ exitCode: 0 }), kill() { h.killed = true; }, detach() {} };
+    return h as import("../runner").ChildHandle & { killed: boolean };
+  };
+
+  it("registers a session_shutdown listener that kills registered children", () => {
+    const savedEnv = process.env.PI_SUBAGENT_CHILD;
+    try {
+      delete process.env.PI_SUBAGENT_CHILD; // Ensure we're in parent mode
+
+      const listeners = new Map<string, Array<() => void>>();
+      const piDouble = {
+        on: (event: string, handler: () => void) => {
+          const arr = listeners.get(event) ?? [];
+          arr.push(handler);
+          listeners.set(event, arr);
+        },
+      };
+      const host = { registerAction: () => {} };
+      registerSubagentActions(host as never, piDouble as never);
+
+      // Assert the listener was registered
+      expect(listeners.has("session_shutdown")).toBe(true);
+      const handlers = listeners.get("session_shutdown") ?? [];
+      expect(handlers).toHaveLength(1);
+
+      // Register some fake children
+      const h1 = fakeHandle();
+      const h2 = fakeHandle();
+      registerChild("shutdown-sess", "run-a", h1);
+      registerChild("shutdown-sess", "run-b", h2);
+
+      // Verify they're registered
+      expect(getChild("shutdown-sess", "run-a")).toBe(h1);
+      expect(getChild("shutdown-sess", "run-b")).toBe(h2);
+
+      // Invoke the handler directly (it should call teardownAll)
+      handlers[0]();
+
+      // Assert children were killed
+      expect(h1.killed).toBe(true);
+      expect(h2.killed).toBe(true);
+    } finally {
+      if (savedEnv !== undefined) process.env.PI_SUBAGENT_CHILD = savedEnv;
     }
   });
 });

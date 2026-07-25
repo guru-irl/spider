@@ -33,6 +33,7 @@ export interface AgentActions {
   interrupt(runId: string): void | Promise<void>;
   resume(runId: string): void | Promise<void>;
   follow(runId: string): void;
+  kill(runId: string): void | Promise<void>;
 }
 
 export interface ThemeAdapter {

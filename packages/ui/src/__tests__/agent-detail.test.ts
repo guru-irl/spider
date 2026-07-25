@@ -30,3 +30,55 @@ describe("AgentDetail", () => {
     expect(back).toHaveBeenCalled();
   });
 });
+
+describe("AgentDetail kill affordance", () => {
+  // Reuses `Src` and `id` already defined at the TOP of this file. Do not
+  // redefine them — the seeded run is keyed "r1".
+  const mkDetail = (now: () => number) => {
+    const store = new AgentStore(new Src());
+    store.start();
+    return new AgentDetail(store, "r1", id, { now });
+  };
+
+  it("first k arms and shows a confirmation prompt", () => {
+    const d = mkDetail(() => 1000);
+    const killed: string[] = [];
+    d.onKill((runId) => killed.push(runId));
+    expect(d.handleInput("k")).toBe(true);
+    expect(d.render(60).join("\n")).toMatch(/press k again/i);
+    expect(killed).toHaveLength(0);
+  });
+
+  it("second k within the window fires the kill", () => {
+    let t = 1000;
+    const d = mkDetail(() => t);
+    const killed: string[] = [];
+    d.onKill((runId) => killed.push(runId));
+    d.handleInput("k");
+    t = 2000;
+    d.handleInput("k");
+    expect(killed).toEqual(["r1"]);
+  });
+
+  it("an intervening key disarms", () => {
+    const d = mkDetail(() => 1000);
+    const killed: string[] = [];
+    d.onKill((runId) => killed.push(runId));
+    d.handleInput("k");
+    d.handleInput("j");
+    d.handleInput("k");
+    expect(killed).toHaveLength(0);
+    expect(d.render(60).join("\n")).toMatch(/press k again/i);
+  });
+
+  it("the arm expires after the timeout", () => {
+    let t = 1000;
+    const d = mkDetail(() => t);
+    const killed: string[] = [];
+    d.onKill((runId) => killed.push(runId));
+    d.handleInput("k");
+    t = 9999;
+    d.handleInput("k");
+    expect(killed).toHaveLength(0);
+  });
+});

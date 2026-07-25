@@ -40,7 +40,7 @@ from packages below it.
 
 | Layer | Package | Role |
 | --- | --- | --- |
-| Foundation | `@spider/db-core` | Opens and migrates the two databases, defines the schema, resolves a project, and runs the `run_events` bus. No `@spider/*` dependency. |
+| Foundation | `@spider/db-core` | Opens and migrates the three database tiers, defines the schema, resolves a project, and runs the `run_events` bus. No `@spider/*` dependency. |
 | Model routing | `@spider/models` | Model catalog, tiers, selection, and one-shot completion. Depends on `db-core` for the `Db` type only. |
 | Rendering | `@spider/ui` | Pure themed renderers and TUI components. Takes plain data and a theme, returns strings. Depends only on `@spider/models` types. Touches no database and does not import pi. |
 | Action and service | `@spider/memory` | Structured memory: staging, approval, the active snapshot, embeddings. Depends on `db-core` and `ui`. |
@@ -61,27 +61,36 @@ integration point rather than any single package.
 
 ## The shared database
 
-There are two databases, both owned by `@spider/db-core`:
+There are three database tiers, all owned by `@spider/db-core`. The tier a table
+lives in is decided by what the data outlives:
 
-- A global registry database at `~/.pi/agent/spider/spider.db`. It tracks every
-  project spider has seen and holds global-scope memory, cross-session tables,
+- A **global** registry at `~/.pi/agent/spider/spider.db`. It tracks every
+  project spider has seen, plus session bindings, the message queue, insights,
   and model stats.
-- A per-project database at `<project>/.spider/project.db`. It holds that
-  project's sessions, memory, todos, indexed content, runs, event log, and
-  embedding state.
+- A **repo** database at `<git-common-dir>/spider/repo.db`. It holds `memory`,
+  skills, and curator state — shared by every worktree of the same repository,
+  so a convention learned in one worktree is known in its siblings.
+- A **worktree** database at `<worktree-root>/.spider/project.db`. It holds that
+  worktree's sessions, todos, indexed content, runs, event log, and embedding
+  state.
+
+A project is keyed by its **worktree root**, not by the git common directory.
+Keying by the common directory made every worktree of a repo collide on one
+registry row while each wrote its own `db_path`, so opening one worktree
+rewrote another's. Non-git directories fall back to the worktree tier.
 
 Every package that reads or writes data opens a connection through `db-core`
-(`resolveProject`, `openGlobal`, `openProject`, `openDbAt`) and works against the
-returned handle. Packages coordinate by writing rows one reads later, not by
+(`resolveProject`, `openGlobal`, `openRepo`, `openProject`, `openDbAt`) and works
+against the returned handle. Note that `openRepo` takes a **git common dir**, not
+a working directory. Packages coordinate by writing rows one reads later, not by
 calling each other. Content the routing loop indexes, memory the write pipeline
 stages, runs the subagent dispatcher records, and summaries the organism writes
-all live in the same file and are retrievable through `spider search`. The
-schema, the migration ladder, and the `run_events` bus are documented in
-[`data-model.md`](./data-model.md).
+are all retrievable through `spider search`. The schema, the migration ladder,
+and the `run_events` bus are documented in [`data-model.md`](./data-model.md).
 
 ## Master interaction diagram
 
-The diagram shows the ten packages, the two databases, and the pi runtime. Solid
+The diagram shows the ten packages, the three database tiers, and the pi runtime. Solid
 arrows are dependency edges (a package imports the one it points to). The dotted
 edges are the data path: `db-core` opens and migrates both databases, and every
 storage-touching package reaches those databases through the handle it returns.
@@ -217,7 +226,7 @@ described in [`feedback-and-learning-loops.md`](./feedback-and-learning-loops.md
 
 ## See also
 
-- [`data-model.md`](./data-model.md): the two databases, the tables, migrations,
+- [`data-model.md`](./data-model.md): the three database tiers, the tables, migrations,
   and the `run_events` bus.
 - [`feedback-and-learning-loops.md`](./feedback-and-learning-loops.md): the
   routing, memory, organism, and subagent loops that run on the shared database.

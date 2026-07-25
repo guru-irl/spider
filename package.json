@@ -1,7 +1,8 @@
 {
   "name": "@guru-irl/spider",
   "version": "0.0.0",
-  "description": "spider — all-in-one pi coding-agent extension (memory, context, todos, subagents, skills) on one shared SQLite database.",
+  "license": "MIT",
+  "description": "spider \u2014 all-in-one pi coding-agent extension (memory, context, todos, subagents, skills) on one shared SQLite database.",
   "type": "module",
   "private": true,
   "workspaces": [
@@ -34,6 +35,7 @@
   ],
   "scripts": {
     "build": "vite build && node scripts/assert-bundle.mjs",
+    "prepare": "npm run build",
     "bundle": "vite build",
     "dev": "vite build --watch",
     "dev:link": "node scripts/dev-link.mjs",

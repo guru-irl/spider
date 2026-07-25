@@ -1,6 +1,6 @@
 import { openDbAt, type Db } from "@spider/db-core";
 import { RunStore } from "./run-store";
-import { emitIntent, emitToolResult, emitStatus, emitMessage } from "./run-events";
+import { emitIntent, emitToolResult, emitStatus, emitMessage, emitEscalation } from "./run-events";
 import { thinkingFromModel, stripThinkingSuffix } from "./pi-args";
 
 export function isSubagentChild(): boolean {
@@ -44,8 +44,22 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     onToolEnd(tool: string, summary?: string, payload?: unknown): void {
       emitToolResult(db, { ...ctx, tool, summary, payload });
     },
-    /** Assistant prose — recorded so the detail view can show the full live conversation. */
+    /** Assistant prose — recorded so the detail view can show the full live conversation.
+     *  Detects escalation markers (ESCALATION[severity]: message) and emits escalation
+     *  events instead of message events. */
     onMessage(text: string): void {
+      // Parse escalation marker: must be at line start (no leading space), exact format ESCALATION[severity]:
+      const lines = text.split('\n');
+      for (const line of lines) {
+        const match = /^ESCALATION\[(blocked|question|warning)\]:\s*(.+)$/i.exec(line);
+        if (match) {
+          const severity = match[1].toLowerCase() as "blocked" | "question" | "warning";
+          const message = match[2].trim();
+          emitEscalation(db, { ...ctx, severity, summary: message });
+          return; // Found escalation, don't emit as regular message
+        }
+      }
+      // No escalation marker found, emit as normal message
       emitMessage(db, { ...ctx, summary: text, payload: { text } });
     },
     onStatus(status: string, summary?: string): void {

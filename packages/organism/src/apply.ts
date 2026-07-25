@@ -6,8 +6,9 @@ import { SkillStore } from "./skill-usage.js";
 import type { AppliedSummary, DigestResult, WriteBudget } from "./types.js";
 
 export interface ApplyDeps {
-  db: Db;
+  db: Db;           // repo DB: memory, skills
   globalDb: Db;
+  worktreeDb: Db;   // worktree DB: todos, sessions
   scope: MemoryScope;
   sessionId: string;
   skills: SkillStore;
@@ -74,7 +75,7 @@ export function applyDigest(deps: ApplyDeps, result: DigestResult, budget: Write
   }
 
   for (const t of result.todos) {
-    addTodo(deps.db, deps.sessionId, t.text);
+    addTodo(deps.worktreeDb, deps.sessionId, t.text);
     summary.todosAdded++;
   }
 

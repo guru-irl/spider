@@ -8,7 +8,7 @@ describe("renderRememberResult", () => {
       uuid: "8578541f-cafa-4970-97cf-1d4b158fb552",
       content: "The user prefers dark mode and tabs over spaces",
       category: "preference",
-      scope: "project",
+      scope: "repo",
     }).render(120);
     const text = out.join("\n");
     // the actual saved memory is shown

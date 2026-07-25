@@ -9,16 +9,18 @@ export interface SnapshotOpts {
 }
 
 const DEFAULT_CHAR_CAP = 8000;
-const DEFAULT_SCOPES: MemoryScope[] = ["global", "project"];
+const DEFAULT_SCOPES: MemoryScope[] = ["global", "repo"];
 
 /** Assemble a frozen, char-capped memory snapshot from the DB (active records only). */
-export function assembleSnapshot(dbs: { global?: Db; project?: Db }, opts?: SnapshotOpts): string {
+export function assembleSnapshot(dbs: { global?: Db; repo?: Db; worktree?: Db; project?: Db }, opts?: SnapshotOpts): string {
   const charCap = opts?.charCap ?? DEFAULT_CHAR_CAP;
   const scopes = opts?.scopes ?? DEFAULT_SCOPES;
 
   const records: MemoryRecord[] = [];
   for (const scope of scopes) {
-    const db = dbs[scope];
+    // "project" is a deprecated alias for "worktree"
+    const actualScope = scope === "project" ? "worktree" : scope;
+    const db = actualScope === "repo" ? dbs.repo : actualScope === "worktree" ? (dbs.worktree ?? dbs.project) : dbs.global;
     if (!db) continue;
     records.push(...listActive(db, scope));
   }

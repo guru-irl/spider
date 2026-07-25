@@ -8,7 +8,7 @@ afterEach(() => ctx?.cleanup());
 describe("SkillStore", () => {
   it("upsert + touch bumps counts and last_used_at", () => {
     ctx = makeOrgDb();
-    const s = new SkillStore(ctx.db);
+    const s = new SkillStore(ctx.repoDb);
     s.upsert({ name: "release-flow", category: "ci" });
     s.touch("release-flow", "use");
     const row = s.get("release-flow")!;
@@ -17,7 +17,7 @@ describe("SkillStore", () => {
   });
   it("stageCandidate then approve/reject transitions status", () => {
     ctx = makeOrgDb();
-    const s = new SkillStore(ctx.db);
+    const s = new SkillStore(ctx.repoDb);
     s.stageCandidate({ name: "answer-style", body: "# Style" });
     expect(s.get("answer-style")!.status).toBe("staged");
     s.approveCandidate("answer-style");
@@ -29,7 +29,7 @@ describe("SkillStore", () => {
   });
   it("list filters by state/status", () => {
     ctx = makeOrgDb();
-    const s = new SkillStore(ctx.db);
+    const s = new SkillStore(ctx.repoDb);
     s.upsert({ name: "a" });
     s.stageCandidate({ name: "b", body: "x" });
     expect(s.list({ status: "staged" }).map((r) => r.name)).toEqual(["b"]);

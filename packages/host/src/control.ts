@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openGlobal, resolveProject, paths } from "@spider/db-core";
 
+export { controlMigrate } from "./control/migrate-cmd";
+
 // ── config (plain JSON; precedence defaults < global < project) ──
 const DEFAULTS: Record<string, unknown> = {
   "ui.footer": true,
@@ -43,7 +45,7 @@ export function controlConfig(op: "get" | "set", cwd: string, key?: string, valu
 }
 
 // ── doctor ──
-export function controlDoctor(cwd: string): { ok: boolean; lines: string[] } {
+export function controlDoctor(cwd: string, sessionId?: string): { ok: boolean; lines: string[] } {
   const lines: string[] = ["## spider doctor 🕸", ""];
   let ok = true;
 
@@ -63,7 +65,7 @@ export function controlDoctor(cwd: string): { ok: boolean; lines: string[] } {
 
   // 2. project registry integrity
   try {
-    const info = resolveProject(cwd);
+    const info = resolveProject(cwd, { sessionId, explicitCwd: false });
     lines.push(`- registry: project_key=${info.projectKey.slice(0, 24)}… db=${info.dbPath}`);
   } catch (e) {
     ok = false;

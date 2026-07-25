@@ -1,13 +1,14 @@
 import type { Db } from "@spider/db-core";
 import { unifiedSearch, type SearchResultRow } from "../search";
 
-export interface SearchCtx {
-  db: Db;
+export interface SearchActionCtx {
+  db: Db;         // worktree DB
+  repoDb: Db;     // repo DB
   cwd: string;
 }
 
-export async function runSearch(args: any, ctx: SearchCtx): Promise<{ text: string; details: SearchResultRow[] }> {
-  const rows: SearchResultRow[] = await unifiedSearch(ctx.db, {
+export async function runSearch(args: any, ctx: SearchActionCtx): Promise<{ text: string; details: SearchResultRow[] }> {
+  const rows: SearchResultRow[] = await unifiedSearch({ worktreeDb: ctx.db, repoDb: ctx.repoDb }, {
     query: String(args.query ?? ""),
     limit: args.limit,
     kinds: args.kinds,

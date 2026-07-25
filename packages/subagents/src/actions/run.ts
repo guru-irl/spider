@@ -3,7 +3,7 @@ import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
 import { Runner, type Spawner } from "../runner";
 import { PipelineCoordinator } from "../pipeline";
-import { getCoordinators, type SessionCoordinators } from "../coordinators";
+import { getCoordinators, setupEscalationNotifier, type SessionCoordinators } from "../coordinators";
 import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
@@ -16,6 +16,10 @@ import { latestRunOutput } from "../completion-output";
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
 export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
   return (run, status, result) => {
+    // A cancelled run was killed deliberately. Waking the orchestrator with a
+    // "subagent done" card + triggerTurn for something the user just stopped is
+    // noise — the kill action already reported the outcome.
+    if (status === "cancelled") return;
     try {
       const output = latestRunOutput(ctx.db, run.id, result);
       const name = run?.name ?? run?.agent ?? "subagent";
@@ -57,7 +61,8 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       getCoordinators(ctx.sessionId, () => {
         const t = new RunEventTailer(ctx.db);
         t.start();
-        return { tailer: t, pipelines: [] };
+        const escalationNotifierCleanup = setupEscalationNotifier(ctx, store);
+        return { tailer: t, pipelines: [], children: new Map(), escalationNotifierCleanup };
       });
     const tailer = coords.tailer;
     const spawn = overrides.spawner ?? defaultSpawner;

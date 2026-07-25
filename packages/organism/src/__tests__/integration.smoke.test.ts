@@ -71,7 +71,7 @@ function seedSession(db: Db, sessionId: string): void {
  * by the learning pass).
  */
 function writeTranscript(sessionId: string): string {
-  const dir = paths.scratch("project", process.cwd());
+  const dir = paths.scratch("repo", process.cwd());
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `transcript-${sessionId}-${crypto.randomUUID()}.jsonl`);
   const lines = [
@@ -84,10 +84,11 @@ function writeTranscript(sessionId: string): string {
   return path;
 }
 
-function makeWorker(db: Db, overrides?: Partial<WorkerDeps>): OrganismWorker {
+function makeWorker(repoDb: Db, worktreeDb: Db, overrides?: Partial<WorkerDeps>): OrganismWorker {
   return new OrganismWorker({
-    db,
-    globalDb: db,
+    db: repoDb,
+    worktreeDb,
+    globalDb: repoDb,  // Use repo DB as global for test simplicity
     project: { projectKey: "k", realPath: process.cwd(), dbPath: "x" } as never,
     getEmbedder: async () => null,
     makeModel: () => fakeModel,
@@ -103,15 +104,15 @@ describe("Phase-6 integration smoke", () => {
     seedSession(ctx.db, "s1");
     const transcriptPath = writeTranscript("s1");
 
-    const w = makeWorker(ctx.db);
+    const w = makeWorker(ctx.repoDb, ctx.db);
     const summary = await w.runDrain("s1", "shutdown", { transcriptPath });
 
     // Staged memory is visible AND fully accounted for by the summary.
-    expect(listPending(ctx.db, "project").length).toBeGreaterThan(0);
-    expect(listPending(ctx.db, "project").length).toBe(summary.memoryStaged);
+    expect(listPending(ctx.repoDb, "repo").length).toBeGreaterThan(0);
+    expect(listPending(ctx.repoDb, "repo").length).toBe(summary.memoryStaged);
 
     // The learning pass staged at least one skill candidate.
-    expect(new SkillStore(ctx.db).list({ status: "staged" }).length).toBeGreaterThanOrEqual(1);
+    expect(new SkillStore(ctx.repoDb).list({ status: "staged" }).length).toBeGreaterThanOrEqual(1);
 
     // Consolidation self-named the session.
     const row = ctx.db.prepare("SELECT name FROM sessions WHERE id = 's1'").get() as { name: string };
@@ -123,7 +124,7 @@ describe("Phase-6 integration smoke", () => {
     seedSession(ctx.db, "s2");
     const transcriptPath = writeTranscript("s2");
 
-    const w = makeWorker(ctx.db, { org: { ...ORGANISM_DEFAULTS, autoWriteBudget: 2 } });
+    const w = makeWorker(ctx.repoDb, ctx.db, { org: { ...ORGANISM_DEFAULTS, autoWriteBudget: 2 } });
     const capped = await w.runDrain("s2", "shutdown", { transcriptPath });
 
     expect(capped.memoryStaged + capped.skillsStaged).toBeLessThanOrEqual(2);
@@ -133,55 +134,56 @@ describe("Phase-6 integration smoke", () => {
   it("(C) curator decays idle skills, never touching pinned/protected", async () => {
     ctx = makeOrgDb();
     const now = Date.now();
-    ctx.db
+    ctx.repoDb
       .prepare(`INSERT INTO skills (name, source, use_count, last_used_at, created_at) VALUES ('fresh40','auto',1,?,?)`)
       .run(now - 40 * DAY, now - 40 * DAY);
-    ctx.db
+    ctx.repoDb
       .prepare(`INSERT INTO skills (name, source, use_count, last_used_at, created_at) VALUES ('old100','auto',1,?,?)`)
       .run(now - 100 * DAY, now - 100 * DAY);
-    ctx.db
+    ctx.repoDb
       .prepare(
         `INSERT INTO skills (name, source, pinned, protected, use_count, last_used_at, created_at) VALUES ('pinnedOld','auto',1,0,1,?,?)`
       )
       .run(now - 200 * DAY, now - 200 * DAY);
-    ctx.db
+    ctx.repoDb
       .prepare(
         `INSERT INTO skills (name, source, pinned, protected, use_count, last_used_at, created_at) VALUES ('builtin','user',0,1,1,?,?)`
       )
       .run(now - 200 * DAY, now - 200 * DAY);
 
-    const w = makeWorker(ctx.db);
+    const w = makeWorker(ctx.repoDb, ctx.db);
     const decay = await w.runCurate(now, { force: true });
 
     expect(decay.toStale).toContain("fresh40");
     expect(decay.toArchived).toContain("old100");
     expect(decay.skipped).toEqual(expect.arrayContaining(["pinnedOld", "builtin"]));
 
-    const store = new SkillStore(ctx.db);
+    const store = new SkillStore(ctx.repoDb);
     expect(store.get("pinnedOld")!.state).toBe("active");
     expect(store.get("builtin")!.state).toBe("active");
   });
 
   it("(D) builds and persists the learning graph as insights rows", () => {
     ctx = makeOrgDb();
-    const store = new SkillStore(ctx.db);
+    const store = new SkillStore(ctx.repoDb);
     if (store.get("auth-flow") === undefined) store.upsert({ name: "auth-flow", category: "security" });
-    addMemory(ctx.db, "project", { category: "convention", content: "the auth flow uses PKCE" });
+    addMemory(ctx.repoDb, "repo", { category: "convention", content: "the auth flow uses PKCE" });
 
-    const g = buildLearningGraph(ctx.db, ctx.db, { persist: true });
+    const g = buildLearningGraph(ctx.repoDb, ctx.repoDb, { persist: true });
     expect(g.nodes.length).toBeGreaterThan(0);
 
-    const rows = ctx.db
+    const rows = ctx.repoDb
       .prepare("SELECT COUNT(*) c FROM insights WHERE kind IN ('node','edge')")
       .get() as { c: number };
     expect(rows.c).toBeGreaterThan(0);
   });
 
-  it("(E) uses a scratch path under .spider — never /tmp", () => {
+  it("(E) uses a scratch path under spider dir — never /tmp", () => {
     ctx = makeOrgDb();
-    const scratch = paths.scratch("project", process.cwd());
+    const scratch = paths.scratch("repo", process.cwd());
     expect(scratch).not.toContain("/tmp");
-    expect(scratch).toContain(".spider");
+    // Repo tier scratch is under .git/spider/scratch (shared across worktrees)
+    expect(scratch).toContain("spider");
 
     const transcriptPath = writeTranscript("s-scratch");
     expect(transcriptPath).not.toContain("/tmp");

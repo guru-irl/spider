@@ -2,7 +2,9 @@ import type { Db } from "@spider/db-core";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord } from "./types";
 
 export function tableFor(scope: MemoryScope): "memory" | "global_memory" {
-  return scope === "project" ? "memory" : "global_memory";
+  // "project" is a deprecated alias for "worktree"; repo and worktree both use "memory"
+  const actualScope = scope === "project" ? "worktree" : scope;
+  return (actualScope === "repo" || actualScope === "worktree") ? "memory" : "global_memory";
 }
 
 export function mapRow(
@@ -21,6 +23,8 @@ export function mapRow(
     updated_at: number | null;
   }
 ): MemoryRecord {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
   return {
     id: row.id,
     uuid: row.uuid,
@@ -30,14 +34,17 @@ export function mapRow(
     status: row.status as MemoryStatus,
     source: row.source as any,
     confidence: row.confidence,
-    sessionId: scope === "project" ? (row.session_id ?? null) : null,
+    sessionId: (actualScope === "repo" || actualScope === "worktree") ? (row.session_id ?? null) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 export function activeCharTotal(db: Db, scope: MemoryScope): number {
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+  
+  if (actualScope === "repo" || actualScope === "worktree") {
     const result = db.prepare(`
       SELECT COALESCE(SUM(LENGTH(content)), 0) as total
       FROM memory
@@ -64,7 +71,10 @@ export function listActive(
   const category = opts?.category;
   const limit = opts?.limit;
 
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"; repo and worktree both use the "memory" table
+  const actualScope = scope === "project" ? "worktree" : scope;
+
+  if (actualScope === "repo" || actualScope === "worktree") {
     let sql = `
       SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
       FROM memory

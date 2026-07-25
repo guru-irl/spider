@@ -239,6 +239,26 @@ export interface ChildSpawnSpec {
 	sessionFile: string;
 }
 
+/**
+ * Compose the spider-owned system prompt for subagent children. Includes
+ * the explicit escalation instruction — unhedged, with concrete triggers.
+ */
+export function composeChildSystemPrompt(): string {
+	return `## Escalation (mandatory)
+
+You MUST escalate to the orchestrator when:
+- You are blocked and cannot proceed with the task
+- The task is ambiguous in a way that changes the outcome
+- You are about to do something destructive or irreversible
+- You have discovered the task's premise is wrong
+
+Escalating is expected and is NOT a failure. Failing silently is worse than escalating.
+
+To escalate: emit a line beginning with ESCALATION[severity]: followed by your message.
+Supported severities: blocked, question, warning.
+Example: ESCALATION[blocked]: Cannot proceed without approval for production deletion.`;
+}
+
 export interface BuildChildSpawnSpecInput {
 	runId: string;
 	sessionId: string;
@@ -282,7 +302,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	// --session is threaded through baseArgs (not the sessionFile input) so
 	// buildPiArgs does not hard-mkdir the session dir; buildChildSpawnSpec owns
 	// that best-effort mkdir above.
-	const { args, env: builtEnv } = buildPiArgs({
+	const { args, env: builtEnv, tempDir } = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p", "--session", sessionFile],
 		task: input.task,
 		sessionEnabled: true,
@@ -299,6 +319,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		extensions: [spiderExtension],
 		intercomSessionName: input.intercomSessionName,
 		orchestratorIntercomTarget: input.orchestratorTarget,
+		systemPrompt: composeChildSystemPrompt(),
 	});
 
 	const { command, args: spawnArgs } = getPiSpawnCommand(args);

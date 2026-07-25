@@ -6,17 +6,39 @@ import { STATUS_GLYPH, statusToken } from "./types";
 import type { ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
+const KILL_ARM_MS = 3000;
+
 export class AgentDetail implements Component {
   private now: () => number;
   private back?: () => void;
+  private kill?: (runId: string) => void;
+  private armedAt?: number;
   constructor(private store: AgentStore, private runId: string, private theme: ThemeAdapter,
     opts: { now?: () => number } = {}) { this.now = opts.now ?? Date.now; }
 
   onBack(fn: () => void): void { this.back = fn; }
+  onKill(fn: (runId: string) => void): void { this.kill = fn; }
 
   handleInput(data: string): boolean {
-    if (matchesKey(data, Key.escape)) { this.back?.(); return true; }
+    if (matchesKey(data, Key.escape)) { this.armedAt = undefined; this.back?.(); return true; }
+    if (data === "k") {
+      const now = this.now();
+      if (this.armedAt !== undefined && now - this.armedAt <= KILL_ARM_MS) {
+        this.armedAt = undefined;
+        this.kill?.(this.runId);
+      } else {
+        this.armedAt = now;
+      }
+      return true;
+    }
+    // Any other key disarms — a destructive action must never survive an
+    // unrelated keystroke.
+    this.armedAt = undefined;
     return false;
+  }
+
+  private isArmed(): boolean {
+    return this.armedAt !== undefined && this.now() - this.armedAt <= KILL_ARM_MS;
   }
 
   render(width: number): string[] {
@@ -59,7 +81,9 @@ export class AgentDetail implements Component {
       head, meta, idLine, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
       t.fg("dim", `${t.glyph} conversation`), ...convoTail,
-      "", fit(t.fg("dim", "esc back to list")),
+      "", fit(this.isArmed()
+        ? t.fg("error", `⚠ kill "${a.name}"? press k again to confirm`)
+        : t.fg("dim", "esc back to list · k k to kill")),
     ];
     return this.frame(title, body, width);
   }

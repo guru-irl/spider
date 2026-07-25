@@ -63,7 +63,10 @@ export function stageWrite(
 
 export function listPending(db: Db, scope: MemoryScope): MemoryRecord[] {
   const table = tableFor(scope);
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+  
+  if (actualScope === "repo" || actualScope === "worktree") {
     const rows = db.prepare(`
       SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
       FROM ${table}

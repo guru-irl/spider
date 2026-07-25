@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, PROJECT_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -28,6 +28,10 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   scope TEXT PRIMARY KEY,
   last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
 )`,
+  ],
+  4: [
+    "ALTER TABLE runs ADD COLUMN pid INTEGER",
+    "ALTER TABLE runs ADD COLUMN host_pid INTEGER",
   ],
 };
 

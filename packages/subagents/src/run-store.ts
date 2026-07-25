@@ -35,6 +35,8 @@ export interface RunRow {
   step_count: number;
   token_count: number;
   result: string | null;
+  pid: number | null;
+  host_pid: number | null;
 }
 
 function toRow(r: NewRun & { id: string; name: string; status: RunStatus }) {
@@ -106,6 +108,23 @@ export class RunStore {
          WHERE id = @id`
       )
       .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null });
+  }
+
+  setPid(id: string, pid: number, hostPid: number): void {
+    this.db
+      .prepare(`UPDATE runs SET pid = @pid, host_pid = @hostPid WHERE id = @id`)
+      .run({ id, pid, hostPid });
+  }
+
+  /** Terminal-cancel a run. No-op if it already reached a terminal status, so a
+   *  kill racing a natural exit never rewrites the real outcome. */
+  cancel(id: string, reason?: string): void {
+    this.db
+      .prepare(
+        `UPDATE runs SET status = 'cancelled', ended_at = @now, result = COALESCE(@reason, result)
+         WHERE id = @id AND status IN ('queued', 'running', 'paused')`
+      )
+      .run({ id, now: Date.now(), reason: reason ?? null });
   }
 
   get(id: string): RunRow | undefined {

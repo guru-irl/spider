@@ -254,7 +254,9 @@ You MUST escalate to the orchestrator when:
 
 Escalating is expected and is NOT a failure. Failing silently is worse than escalating.
 
-To escalate: state the issue clearly in your response. The orchestrator monitors your output and will intervene.`;
+To escalate: emit a line beginning with ESCALATION[severity]: followed by your message.
+Supported severities: blocked, question, warning.
+Example: ESCALATION[blocked]: Cannot proceed without approval for production deletion.`;
 }
 
 export interface BuildChildSpawnSpecInput {

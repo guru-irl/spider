@@ -647,16 +647,19 @@ import { freshDb } from "./helpers/testutil";
 function seed() {
   const db = freshDb();
   const store = new RunStore(db);
+  // NOTE: alpha-build and alpha-review deliberately SHARE the "alpha" prefix so the
+  // ambiguity branch is reachable; beta-review is the unique-name control.
   const a = store.create({ sessionId: "s1", agent: "worker", name: "alpha-build", task: "t" });
   const b = store.create({ sessionId: "s1", agent: "worker", name: "beta-review", task: "t" });
-  store.start(a.id); store.start(b.id);
-  return { db, store, a, b };
+  const c = store.create({ sessionId: "s1", agent: "worker", name: "alpha-review", task: "t" });
+  store.start(a.id); store.start(b.id); store.start(c.id);
+  return { db, store, a, b, c };
 }
 
 describe("resolveKillTargets", () => {
   it("resolves 'all' to every active run in the session", () => {
     const { store } = seed();
-    expect(resolveKillTargets(store, "s1", "all")).toHaveLength(2);
+    expect(resolveKillTargets(store, "s1", "all")).toHaveLength(3);
   });
 
   it("resolves an exact run id", () => {
@@ -671,21 +674,33 @@ describe("resolveKillTargets", () => {
     expect(row.id).toBe(a.id);
   });
 
-  it("resolves an exact name", () => {
+  it("prefers an exact name over a prefix match", () => {
     const { store, b } = seed();
     const [row] = resolveKillTargets(store, "s1", "beta-review");
     expect(row.id).toBe(b.id);
   });
 
-  it("throws with candidates on an ambiguous prefix", () => {
+  it("throws naming every candidate when a name prefix is ambiguous", () => {
     const { store } = seed();
-    // Both names share no prefix, so force ambiguity via a shared one.
-    expect(() => resolveKillTargets(store, "s1", "")).toThrow();
+    // "alpha" matches BOTH alpha-build and alpha-review.
+    expect(() => resolveKillTargets(store, "s1", "alpha")).toThrow(/ambiguous/i);
+    expect(() => resolveKillTargets(store, "s1", "alpha")).toThrow(/alpha-build/);
+    expect(() => resolveKillTargets(store, "s1", "alpha")).toThrow(/alpha-review/);
+  });
+
+  it("throws asking for an id when the target is empty", () => {
+    const { store } = seed();
+    expect(() => resolveKillTargets(store, "s1", "")).toThrow(/required/i);
   });
 
   it("throws when nothing matches", () => {
     const { store } = seed();
     expect(() => resolveKillTargets(store, "s1", "nope")).toThrow(/no active run/i);
+  });
+
+  it("ignores runs belonging to another session", () => {
+    const { store } = seed();
+    expect(() => resolveKillTargets(store, "other-session", "alpha-build")).toThrow(/no active run/i);
   });
 });
 
@@ -986,6 +1001,14 @@ describe("kill action", () => {
     expect(res.details.killed).toHaveLength(2);
     expect(store.get(a.id)!.status).toBe("cancelled");
     expect(store.get(b.id)!.status).toBe("cancelled");
+  });
+
+  it("reports 'no active subagents' rather than erroring when none are running", async () => {
+    const db = freshDb();
+    const handler = makeKillHandler();
+    const res = await handler({ id: "all" }, { db, sessionId: "s1" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content).toMatch(/no active subagents/i);
   });
 
   it("returns an error result for an unmatched target instead of throwing", async () => {

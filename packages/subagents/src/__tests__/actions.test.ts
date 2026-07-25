@@ -242,14 +242,14 @@ describe("session_shutdown wiring", () => {
     return h as import("../runner").ChildHandle & { killed: boolean };
   };
 
-  it("registers a session_shutdown listener that kills registered children", () => {
+  it("registers a session_shutdown listener that kills registered children", async () => {
     const savedEnv = process.env.PI_SUBAGENT_CHILD;
     try {
       delete process.env.PI_SUBAGENT_CHILD; // Ensure we're in parent mode
 
-      const listeners = new Map<string, Array<() => void>>();
+      const listeners = new Map<string, Array<() => void | Promise<void>>>();
       const piDouble = {
-        on: (event: string, handler: () => void) => {
+        on: (event: string, handler: () => void | Promise<void>) => {
           const arr = listeners.get(event) ?? [];
           arr.push(handler);
           listeners.set(event, arr);
@@ -273,8 +273,11 @@ describe("session_shutdown wiring", () => {
       expect(getChild("shutdown-sess", "run-a")).toBe(h1);
       expect(getChild("shutdown-sess", "run-b")).toBe(h2);
 
-      // Invoke the handler directly (it should call teardownAll)
-      handlers[0]();
+      // Invoke the handler directly (it may be async, so await it)
+      const result = handlers[0]();
+      if (result instanceof Promise) {
+        await result;
+      }
 
       // Assert children were killed
       expect(h1.killed).toBe(true);

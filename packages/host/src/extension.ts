@@ -42,6 +42,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { installAgentsUI } from "./agents/agents-ui";
+import { createAgentActions } from "./agents/actions";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "./render-result";
 
 export { registerAction };
@@ -455,7 +456,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
@@ -517,7 +518,14 @@ export default function spiderExtension(pi: PiToolAPI): void {
       const cwd = cwdOf(ctx) ?? process.cwd();
       const db = openProject(resolveProject(cwd).projectKey);
       const sessionId = sessionIdOf(ctx) || currentSessionId;
-      disposeAgentsUI = installAgentsUI(pi as any, ctx as any, { db, sessionId });
+      disposeAgentsUI = installAgentsUI(pi as any, ctx as any, {
+        db,
+        sessionId,
+        actions: createAgentActions(pi, {
+          ui: ctx.ui,
+          dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd)),
+        }),
+      });
     } catch { /* UI mount best-effort; never break the session */ }
     return undefined;
   });

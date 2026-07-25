@@ -119,3 +119,18 @@ describe("RunStore", () => {
     expect(row.result).toBe("ok");
   });
 });
+
+  it("CRITICAL: finish() does not overwrite a cancelled status (C2 regression)", () => {
+    const store = new RunStore(freshDb());
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id);
+    
+    // Simulate the race: killRun calls cancel, then the dying child's shutdown handler calls finish
+    store.cancel(id, "killed (was: edit src/a.ts)");
+    store.finish(id, { status: "done" });
+    
+    // After fix: cancel wins, finish is no-op on terminal status
+    const row = store.get(id)!;
+    expect(row.status).toBe("cancelled");
+    expect(row.result).toBe("killed (was: edit src/a.ts)");
+  });

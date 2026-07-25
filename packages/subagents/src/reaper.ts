@@ -33,7 +33,7 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
     return { reaped, error: String((err as Error)?.message ?? err) };
   }
 
-  // M3: Document pid-reuse limitation. isProcessAlive answers "some process has this pid",
+  // Document pid-reuse limitation. isProcessAlive answers "some process has this pid",
   // not "the original host". No start-time/generation counter disambiguates today. The
   // recycled-host-pid direction fails SAFE: nothing is signalled because only row.pid is
   // ever killed.
@@ -47,14 +47,14 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
     }
     try {
       store.cancel(row.id, "cancelled — orphaned by a host that exited without shutdown");
-      // M1: Only report reaped if the cancel actually changed the row
+      // Only report reaped if the cancel actually changed the row
       const updated = store.get(row.id);
       if (updated?.status === "cancelled") return row.id;
     } catch { /* best-effort */ }
     return null;
   });
 
-  // M2: Parallelize per-orphan work; keep ordering deterministic
+  // Parallelize per-orphan work; keep ordering deterministic
   const results = await Promise.all(work);
   reaped.push(...results.filter((id): id is string => id !== null));
 

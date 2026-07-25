@@ -23,7 +23,7 @@ import { teardownAll } from "./coordinators";
 export { makeRunHandler, makeMessageHandler, makeKillHandler };
 
 /**
- * Register the `run`/`message` actions on a structural host (`host.registerAction`).
+ * Register the `run`/`message`/`kill` actions on a structural host (`host.registerAction`).
  * In a subagent CHILD process (PI_SUBAGENT_CHILD=1) the orchestration surface is NOT
  * registered — the child only attaches the run_events reporter (preserves pi-subagents
  * early-out semantics + avoids recursive orchestration). NO @spider/host import (host is

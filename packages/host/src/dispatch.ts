@@ -3,7 +3,7 @@ import type { Db, ProjectInfo } from "@spider/db-core";
 
 export type SpiderAction =
   | "search" | "remember" | "recall" | "exec" | "exec_file" | "batch"
-  | "index" | "fetch" | "run" | "todo" | "skill" | "import" | "message" | "control";
+  | "index" | "fetch" | "run" | "todo" | "skill" | "import" | "message" | "control" | "kill";
 
 export interface SpiderArgs { action: SpiderAction; [k: string]: unknown; }
 
@@ -25,7 +25,7 @@ export type ActionHandler = (args: SpiderArgs, ctx: ActionCtx) => Promise<unknow
 
 const VALID: ReadonlySet<string> = new Set<SpiderAction>([
   "search", "remember", "recall", "exec", "exec_file", "batch",
-  "index", "fetch", "run", "todo", "skill", "import", "message", "control",
+  "index", "fetch", "run", "todo", "skill", "import", "message", "control", "kill",
 ]);
 
 const handlers = new Map<string, ActionHandler>();

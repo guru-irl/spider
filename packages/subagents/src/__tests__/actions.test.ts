@@ -38,6 +38,7 @@ it("does not register a synchronous 'wait' action (subagents are async-only)", (
     registerSubagentActions(host as never, {} as never);
     expect(registered.has("run")).toBe(true);
     expect(registered.has("message")).toBe(true);
+    expect(registered.has("kill")).toBe(true);
     expect(registered.has("wait")).toBe(false);
   } finally {
     if (savedEnv !== undefined) process.env.PI_SUBAGENT_CHILD = savedEnv;
@@ -195,5 +196,39 @@ describe("kill action", () => {
     const res = await handler({ id: "ghost" }, { db, sessionId: "s1" });
     expect(res.isError).toBe(true);
     expect(res.content).toMatch(/no active run/i);
+  });
+
+  it("continues the kill loop on store.cancel failure and reports partial results", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const a = store.create({ sessionId: "s1", agent: "worker", name: "alpha", task: "t" });
+    const b = store.create({ sessionId: "s1", agent: "worker", name: "beta", task: "t" });
+    store.start(a.id); store.start(b.id);
+    
+    // Spy on killRun to throw on first call
+    const killModule = await import("../kill");
+    let callCount = 0;
+    const originalKillRun = killModule.killRun;
+    const spy = vi.spyOn(killModule, "killRun").mockImplementation(async (deps, sessionId, run) => {
+      callCount++;
+      if (callCount === 1) throw new Error("SQLITE_BUSY");
+      return originalKillRun(deps, sessionId, run);
+    });
+    
+    try {
+      const handler = makeKillHandler();
+      const res = await handler({ id: "all" }, { db, sessionId: "s1" });
+      
+      // Should report BOTH runs even though first failed
+      expect(res.details.killed).toHaveLength(2);
+      expect(res.isError).toBe(true);
+      
+      // First run should have failure in lastActivity
+      expect(res.details.killed[0].lastActivity).toContain("kill failed");
+      // Second run should be processed normally (either killed or already-finished)
+      expect(["killed", "already-finished", "no-process"]).toContain(res.details.killed[1].outcome);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

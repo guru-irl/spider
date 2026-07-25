@@ -57,7 +57,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       getCoordinators(ctx.sessionId, () => {
         const t = new RunEventTailer(ctx.db);
         t.start();
-        return { tailer: t, pipelines: [] };
+        return { tailer: t, pipelines: [], children: new Map() };
       });
     const tailer = coords.tailer;
     const spawn = overrides.spawner ?? defaultSpawner;

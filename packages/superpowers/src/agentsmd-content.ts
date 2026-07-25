@@ -52,6 +52,13 @@ built-ins:
   \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`upstream-watch\`.
   Every result renders as a themed card, never raw JSON.
 
+## Escalation
+
+You MUST escalate when blocked, when the task is ambiguous in a way that
+changes the outcome, when about to do something destructive or irreversible,
+or when you discover the task's premise is wrong. Escalating is expected and
+is NOT a failure — failing silently is worse.
+
 ## Slash commands
 
 \`/todos\` and \`/agents\` open live overlays. \`/spider\` \`/search\` \`/memory\`

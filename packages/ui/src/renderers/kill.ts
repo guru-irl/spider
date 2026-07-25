@@ -8,6 +8,7 @@ export interface KillResultLine {
   outcome: "killed" | "already-finished" | "no-process" | "failed";
   via: "handle" | "pid" | "none";
   lastActivity?: string;
+  error?: string;
 }
 export interface KillDetails { killed: KillResultLine[]; requested: string; error?: string }
 
@@ -15,20 +16,21 @@ export interface KillDetails { killed: KillResultLine[]; requested: string; erro
 export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const rows = details.killed ?? [];
-  // Error branch first
-  if (details.error) {
-    return [
-      "",
-      truncateToWidth(` ${statusIcon(theme, "fail")} ${theme.fg("error", details.error)}`, width, "…"),
-    ];
-  }
+  
   // Empty-state branch (currently only reachable when requested="all" since
   // resolveKillTargets returns [] only for "all"; kept defensive for API robustness)
-  if (rows.length === 0) {
+  if (rows.length === 0 && !details.error) {
     const target = details.requested && details.requested !== "all" ? ` matching '${details.requested}'` : "";
     return ["", truncateToWidth(` ${theme.fg("muted", `no active subagents${target} to kill`)}`, width, "")];
   }
+  
   const out: string[] = [""];
+  
+  // Error banner — show ABOVE rows when both error and rows exist (partial failure),
+  // or alone when rows are empty (resolution failure)
+  if (details.error) {
+    out.push(truncateToWidth(` ${statusIcon(theme, "fail")} ${theme.fg("error", details.error)}`, width, "…"));
+  }
   for (const r of rows) {
     // killed -> ok (green), already-finished/no-process -> warn (yellow)
     const isKilled = r.outcome === "killed";
@@ -42,6 +44,9 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
     ));
     if (r.lastActivity) {
       out.push(truncateToWidth(` ${theme.fg("dim", "⎿ ")}${theme.fg("toolOutput", `was: ${r.lastActivity}`)}`, width, ""));
+    }
+    if (r.error) {
+      out.push(truncateToWidth(` ${theme.fg("dim", "⎿ ")}${theme.fg("error", `error: ${r.error}`)}`, width, ""));
     }
   }
   return out;

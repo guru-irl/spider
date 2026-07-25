@@ -225,7 +225,7 @@ describe("kill action", () => {
       
       // First run should have failed outcome
       expect(res.details.killed[0].outcome).toBe("failed");
-      expect(res.details.killed[0].lastActivity).toContain("kill failed");
+      expect(res.details.killed[0].error).toContain("SQLITE_BUSY");
       // Second run should be processed normally (no spawned process, so reconciled)
       expect(res.details.killed[1].outcome).toBe("no-process");
     } finally {

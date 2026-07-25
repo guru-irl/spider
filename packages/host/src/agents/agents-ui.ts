@@ -12,7 +12,7 @@ interface HostUi {
   theme?: unknown;
 }
 interface HostPi {
-  registerShortcut(key: string, opts: { description?: string; handler: (ctx: unknown) => void }): void;
+  registerShortcut?(key: string, opts: { description?: string; handler: (ctx: unknown) => void }): void;
   registerCommand?(name: string, def: { description?: string; handler: (ctx?: unknown) => void }): void;
 }
 interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions }
@@ -174,16 +174,24 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
 
   // ctrl+g is pi's built-in external-editor binding; the user prefers ctrl+up for the agents
   // selector. Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
+  //
+  // Order matters: the COMMAND goes first. The caller wraps this mount in a
+  // best-effort try/catch, so anything that throws here is swallowed silently and
+  // costs the user every registration after it. The shortcut is the more fragile of
+  // the two (host may not implement it), so it must never be able to take /agents
+  // down with it — that combination is exactly how /agents went missing.
   if (!registered) {
     registered = true;
-    pi.registerShortcut("ctrl+up", {
-      description: "Open the spider agents selector",
-      handler: () => { void current?.openOverlay(); },
-    });
     pi.registerCommand?.("agents", {
       description: "Open the spider agents selector",
       handler: () => { void current?.openOverlay(); },
     });
+    try {
+      pi.registerShortcut?.("ctrl+up", {
+        description: "Open the spider agents selector",
+        handler: () => { void current?.openOverlay(); },
+      });
+    } catch { /* shortcut is a convenience; /agents already works */ }
   }
 
   const dispose = function dispose() {

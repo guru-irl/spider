@@ -78,3 +78,64 @@ export function teardownCoordinators(sessionId: string): void {
 export function teardownAll(): void {
   for (const id of [...registry.keys()]) teardownCoordinators(id);
 }
+
+/** Grace period for async teardown (session_shutdown path). Short enough to not
+ *  hang user exit, long enough for well-behaved processes to clean up.
+ *  250ms is a common convention for short-lived services (much less than systemd's
+ *  90s DefaultTimeoutStopSec but appropriate for interactive tools). */
+const SESSION_EXIT_GRACE_MS = 250;
+
+export interface TeardownAsyncOpts {
+  /** Per-child grace period between SIGTERM and SIGKILL. */
+  graceMs?: number;
+}
+
+/** Async teardown: kill children, await a bounded grace, then SIGKILL survivors.
+ *  Used by session_shutdown to ensure wedged processes don't survive exit.
+ *  Escalation is parallel (N children take ~graceMs total, not N*graceMs).
+ *  Best-effort: never throws. */
+export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<void> {
+  const graceMs = opts.graceMs ?? SESSION_EXIT_GRACE_MS;
+  const sessions = [...registry.keys()];
+  
+  try {
+    // Kill all children in parallel across all sessions
+    const killPromises: Promise<void>[] = [];
+    
+    for (const id of sessions) {
+      const c = registry.get(id);
+      if (!c) continue;
+      
+      // Kill children FIRST: the tailer surfaces their final events
+      for (const [, h] of c.children ?? []) {
+        try {
+          // Check if handle supports async kill with escalation
+          if (typeof (h as any).killAsync === "function") {
+            killPromises.push(
+              (h as any).killAsync(graceMs).catch(() => { /* best-effort */ })
+            );
+          } else {
+            // Fallback: sync kill (no escalation guarantee)
+            h.kill();
+          }
+        } catch { /* best-effort */ }
+      }
+    }
+    
+    // Wait for all kills to complete (parallel, bounded by graceMs)
+    await Promise.all(killPromises);
+    
+    // Clean up coordinators
+    for (const id of sessions) {
+      const c = registry.get(id);
+      if (!c) continue;
+      
+      c.children?.clear();
+      try { c.tailer?.stop(); } catch {}
+      for (const p of c.pipelines) { try { p.dispose(); } catch {} }
+      registry.delete(id);
+    }
+  } catch {
+    // Best-effort: never let cleanup errors block session exit
+  }
+}

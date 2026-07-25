@@ -19,7 +19,7 @@ import { attachChildReporter, isSubagentChild } from "./child-reporter";
 import { makeRunHandler } from "./actions/run";
 import { makeMessageHandler } from "./actions/message";
 import { makeKillHandler } from "./actions/kill";
-import { teardownAll } from "./coordinators";
+import { teardownAll, teardownAllAsync } from "./coordinators";
 
 export { makeRunHandler, makeMessageHandler, makeKillHandler };
 
@@ -38,5 +38,5 @@ export function registerSubagentActions(host: { registerAction: (name: string, h
   host.registerAction("run", makeRunHandler());
   host.registerAction("message", makeMessageHandler());
   host.registerAction("kill", makeKillHandler());
-  try { pi?.on?.("session_shutdown", () => teardownAll()); } catch { /* best-effort */ }
+  try { pi?.on?.("session_shutdown", async () => await teardownAllAsync()); } catch { /* best-effort */ }
 }

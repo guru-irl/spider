@@ -5,7 +5,7 @@ import { killProcessGroup } from "./kill-process";
 const isWin = process.platform === "win32";
 
 /** Real child-process spawner (production). NOT exercised in unit tests, which inject a fake. */
-export const defaultSpawner: Spawner = (spec): ChildHandle => {
+export const defaultSpawner: Spawner = (spec) => {
   const child = spawn(spec.argv[0], spec.argv.slice(1), {
     cwd: spec.cwd,
     env: { ...process.env, ...spec.env },
@@ -32,6 +32,12 @@ export const defaultSpawner: Spawner = (spec): ChildHandle => {
       // the SIGTERM→SIGKILL escalation is inherently async.
       void killProcessGroup(child.pid).catch(() => { /* best-effort */ });
     },
+    killAsync(graceMs?: number) {
+      if (child.pid === undefined) return Promise.resolve();
+      // Awaitable kill: returns the killProcessGroup promise so the caller can wait
+      // for SIGTERM → SIGKILL escalation to complete.
+      return killProcessGroup(child.pid, { graceMs }).catch(() => { /* best-effort */ });
+    },
     detach() { child.unref(); },
-  };
+  } as ChildHandle;
 };

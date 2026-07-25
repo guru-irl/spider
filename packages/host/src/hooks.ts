@@ -21,6 +21,7 @@
 import { resolveProject, openGlobal, openProject } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
+import { reapOrphanRuns } from "@spider/subagents";
 
 export interface PiLikeAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -64,10 +65,16 @@ export function registerHooks(pi: PiLikeAPI): void {
         try {
           const id = event?.sessionId;
           if (id) {
-            const project = resolveProject(String(event?.cwd ?? process.cwd()));
-            openProject(project.projectKey)
+            const cwd = String(event?.cwd ?? process.cwd());
+            const project = resolveProject(cwd);
+            const db = openProject(project.projectKey);
+            db
               .prepare("INSERT OR IGNORE INTO sessions(id, reason, started_at) VALUES (?, ?, ?)")
               .run(String(id), event?.reason ?? null, Date.now());
+            // Reap subagents orphaned by a host that died without firing session_shutdown
+            // (crash / dead tty / SIGKILL). Best-effort and defensive: a reaper failure must
+            // never block session start.
+            void reapOrphanRuns({ db }).catch(() => {});
           }
         } catch {
           // session upsert is best-effort; never block session start.

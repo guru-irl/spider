@@ -234,17 +234,14 @@ describe("control migrate", () => {
       db.close();
     }
     
-    // Run migrate on wt1 first
+    // Run migrate on wt1 - this will process ALL worktrees and detect conflicts
     const result1 = controlMigrate({ apply: true, cwd: worktrees[0] });
     expect(result1.applied).toBe(true);
     
-    // Now run migrate on wt2 - this should detect the conflict
-    const result2 = controlMigrate({ apply: true, cwd: worktrees[1] });
-    
-    // Verify the ambiguous row is reported
-    expect(result2.ambiguous).toBeDefined();
-    expect(result2.ambiguous!.length).toBeGreaterThan(0);
-    expect(result2.ambiguous!.some((a: { uuid: string }) => a.uuid === ambiguousUuid)).toBe(true);
+    // Verify the ambiguous row is reported in the first call
+    expect(result1.ambiguous).toBeDefined();
+    expect(result1.ambiguous!.length).toBeGreaterThan(0);
+    expect(result1.ambiguous!.some((a: { uuid: string }) => a.uuid === ambiguousUuid)).toBe(true);
     
     // Verify the row was NOT dropped - it should exist in the repo DB
     const gitCommonDir = join(repoDir, ".git");

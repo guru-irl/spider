@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, sectionRule, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, sectionRule, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -383,7 +383,10 @@ export function renderSpiderResult(
       if (sub === "models") return renderControlModels(t, details, expanded);
       if (sub === "config") return renderControlConfig(t, details, expanded);
       if (sub === "insights") return renderControlInsights(t, details, expanded);
-      if (sub === "migrate") return wrapBespoke(renderImportResult(details as any));
+      if (sub === "migrate") {
+        const th = adaptTheme(t);
+        return { render: (w: number) => renderMigrateResult(details as MigrateDetails, { theme: th, width: w }), invalidate() {} };
+      }
       if (sub === "bind" || sub === "unbind") {
         const th = adaptTheme(t);
         return { render: (w: number) => renderBindResult(details as BindDetails, { theme: th, width: w }), invalidate() {} };

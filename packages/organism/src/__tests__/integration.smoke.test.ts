@@ -71,7 +71,7 @@ function seedSession(db: Db, sessionId: string): void {
  * by the learning pass).
  */
 function writeTranscript(sessionId: string): string {
-  const dir = paths.scratch("project", process.cwd());
+  const dir = paths.scratch("repo", process.cwd());
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `transcript-${sessionId}-${crypto.randomUUID()}.jsonl`);
   const lines = [
@@ -87,6 +87,7 @@ function writeTranscript(sessionId: string): string {
 function makeWorker(db: Db, overrides?: Partial<WorkerDeps>): OrganismWorker {
   return new OrganismWorker({
     db,
+    worktreeDb: db,  // Use same DB for both in tests
     globalDb: db,
     project: { projectKey: "k", realPath: process.cwd(), dbPath: "x" } as never,
     getEmbedder: async () => null,
@@ -107,8 +108,8 @@ describe("Phase-6 integration smoke", () => {
     const summary = await w.runDrain("s1", "shutdown", { transcriptPath });
 
     // Staged memory is visible AND fully accounted for by the summary.
-    expect(listPending(ctx.db, "project").length).toBeGreaterThan(0);
-    expect(listPending(ctx.db, "project").length).toBe(summary.memoryStaged);
+    expect(listPending(ctx.repoDb, "repo").length).toBeGreaterThan(0);
+    expect(listPending(ctx.repoDb, "repo").length).toBe(summary.memoryStaged);
 
     // The learning pass staged at least one skill candidate.
     expect(new SkillStore(ctx.db).list({ status: "staged" }).length).toBeGreaterThanOrEqual(1);
@@ -166,7 +167,7 @@ describe("Phase-6 integration smoke", () => {
     ctx = makeOrgDb();
     const store = new SkillStore(ctx.db);
     if (store.get("auth-flow") === undefined) store.upsert({ name: "auth-flow", category: "security" });
-    addMemory(ctx.db, "project", { category: "convention", content: "the auth flow uses PKCE" });
+    addMemory(ctx.db, "repo", { category: "convention", content: "the auth flow uses PKCE" });
 
     const g = buildLearningGraph(ctx.db, ctx.db, { persist: true });
     expect(g.nodes.length).toBeGreaterThan(0);
@@ -179,7 +180,7 @@ describe("Phase-6 integration smoke", () => {
 
   it("(E) uses a scratch path under .spider — never /tmp", () => {
     ctx = makeOrgDb();
-    const scratch = paths.scratch("project", process.cwd());
+    const scratch = paths.scratch("repo", process.cwd());
     expect(scratch).not.toContain("/tmp");
     expect(scratch).toContain(".spider");
 

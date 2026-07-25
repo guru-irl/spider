@@ -1,7 +1,7 @@
 import type { Db } from "./db";
-import { GLOBAL_SCHEMA, PROJECT_SCHEMA } from "./schema";
+import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -15,6 +15,23 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
   6: [
     "ALTER TABLE projects ADD COLUMN repo_key TEXT",
   ],
+};
+
+const REPO_MIGRATIONS: Record<number, readonly string[]> = {
+  // v7: split from PROJECT_SCHEMA; repo tier gets memory, skills, curator_state
+  7: [],
+};
+
+const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
+  2: ["ALTER TABLE runs ADD COLUMN thinking TEXT"],
+  3: [],  // skills moved to repo tier
+  4: [
+    "ALTER TABLE runs ADD COLUMN pid INTEGER",
+    "ALTER TABLE runs ADD COLUMN host_pid INTEGER",
+  ],
+  5: [], // Version bump only
+  6: [], // Version bump only
+  7: [], // split from PROJECT_SCHEMA; worktree tier gets sessions, content, todos, runs, events
 };
 
 const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
@@ -48,16 +65,32 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   6: [], // Version bump only for project scope
 };
 
-export function migrate(db: Db, scope: "global" | "project"): void {
+export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project"): void {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+  
   const current = Number(db.pragma("user_version"));
   if (current >= SCHEMA_VERSION) return;
   db.withRetry(() => {
     const run = db.transaction(() => {
       if (current === 0) {
-        db.exec(scope === "global" ? GLOBAL_SCHEMA : PROJECT_SCHEMA);
+        if (actualScope === "global") {
+          db.exec(GLOBAL_SCHEMA);
+        } else if (actualScope === "repo") {
+          db.exec(REPO_SCHEMA);
+        } else {
+          db.exec(WORKTREE_SCHEMA);
+        }
       } else {
         for (let v = current + 1; v <= SCHEMA_VERSION; v++) {
-          const steps = scope === "project" ? PROJECT_MIGRATIONS[v] ?? [] : GLOBAL_MIGRATIONS[v] ?? [];
+          let steps: readonly string[];
+          if (actualScope === "global") {
+            steps = GLOBAL_MIGRATIONS[v] ?? [];
+          } else if (actualScope === "repo") {
+            steps = REPO_MIGRATIONS[v] ?? [];
+          } else {
+            steps = WORKTREE_MIGRATIONS[v] ?? [];
+          }
           for (const s of steps) db.exec(s);
         }
       }

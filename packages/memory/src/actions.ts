@@ -29,7 +29,23 @@ export interface ActionResult {
  * by the fakePi test, which passes an empty ctx).
  */
 function resolveDb(args: any, ctx: any, deps: MemoryDeps): { db: Db; scope: MemoryScope } {
-  const scope: MemoryScope = args?.scope === "global" ? "global" : "project";
+  // Parse the requested scope: global, repo, worktree, or the deprecated "project" (alias for worktree)
+  let scope: MemoryScope;
+  if (args?.scope === "global") {
+    scope = "global";
+  } else if (args?.scope === "repo") {
+    scope = "repo";
+  } else if (args?.scope === "worktree") {
+    scope = "worktree";
+  } else if (args?.scope === "project") {
+    // "project" is a deprecated alias for "worktree"
+    scope = "worktree";
+  } else {
+    // Default to repo for memory operations (memory is repo-tier by default)
+    scope = "repo";
+  }
+  
+  // Select the DB: global → globalDb, repo → projectDb (for now, until we thread repoDb through), worktree → projectDb
   const db = scope === "global" ? (ctx?.globalDb ?? deps.globalDb) : (ctx?.db ?? deps.projectDb);
   return { db, scope };
 }

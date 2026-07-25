@@ -19,7 +19,7 @@ describe("reflectionPass", () => {
 
   it("clusterMemory returns [] below minCluster", () => {
     ctx = makeOrgDb();
-    addMemory(ctx.db, "project", { category: "insight", content: "a" });
+    addMemory(ctx.db, "repo", { category: "insight", content: "a" });
     expect(clusterMemory(ctx.db, null, 3)).toEqual([]); // null embedder / too few
   });
 
@@ -27,7 +27,7 @@ describe("reflectionPass", () => {
     ctx = makeOrgDb();
     const dim = 8;
     for (let i = 0; i < 4; i++) {
-      const rec = addMemory(ctx.db, "project", { category: "insight", content: `insight ${i}` });
+      const rec = addMemory(ctx.db, "repo", { category: "insight", content: `insight ${i}` });
       // near-identical vectors so they are mutual near-neighbours
       const vec = new Float32Array(dim).fill(1);
       vec[i % dim] = 1 + i * 1e-4;

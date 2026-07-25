@@ -22,16 +22,16 @@ describe("migrate", () => {
     expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
   });
 
-  it("creates all project tables including fts + runs/run_events/events", () => {
-    const db = openDb(scratchDbPath("project")); opened.push(db);
-    migrate(db, "project");
+  it("creates all worktree/project tables including fts + runs/run_events/events", () => {
+    const db = openDb(scratchDbPath("worktree")); opened.push(db);
+    migrate(db, "worktree");
     const t = tables(db);
-    for (const name of ["sessions", "memory", "content", "todos", "runs", "run_events", "events", "vector_map", "embed_queue"]) {
+    for (const name of ["sessions", "content", "todos", "runs", "run_events", "events", "vector_map", "embed_queue"]) {
       expect(t).toContain(name);
     }
     // fts5 virtual tables register as tables too
-    expect(t).toContain("memory_fts");
     expect(t).toContain("content_fts");
+    expect(t).not.toContain("memory"); // memory is repo-tier
   });
 
   it("is idempotent (second run is a no-op)", () => {
@@ -41,9 +41,9 @@ describe("migrate", () => {
     expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
   });
 
-  it("project memory row round-trips with default status/source", () => {
+  it("repo memory row round-trips with default status/source", () => {
     const db = openDb(scratchDbPath("mem")); opened.push(db);
-    migrate(db, "project");
+    migrate(db, "repo");
     db.prepare("INSERT INTO memory (uuid, category, content, created_at) VALUES (?,?,?,?)").run("u1", "insight", "hi", Date.now());
     const row = db.prepare("SELECT status, source FROM memory WHERE uuid = ?").get("u1") as { status: string; source: string };
     expect(row).toEqual({ status: "active", source: "user" });

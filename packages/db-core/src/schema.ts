@@ -46,17 +46,7 @@ CREATE TABLE IF NOT EXISTS model_stats (
 );
 `;
 
-export const PROJECT_SCHEMA = `
-CREATE TABLE IF NOT EXISTS sessions (
-  id TEXT PRIMARY KEY,
-  parent_session_id TEXT,
-  name TEXT,
-  reason TEXT,
-  started_at INTEGER NOT NULL, ended_at INTEGER,
-  summary TEXT, imported_from TEXT
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
-
+export const REPO_SCHEMA = `
 CREATE TABLE IF NOT EXISTS memory (
   id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
   category TEXT NOT NULL,
@@ -67,6 +57,48 @@ CREATE TABLE IF NOT EXISTS memory (
   created_at INTEGER NOT NULL, updated_at INTEGER
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`;
+
+export const WORKTREE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
 
 CREATE TABLE IF NOT EXISTS content (
   id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
@@ -115,23 +147,4 @@ CREATE TABLE IF NOT EXISTS embed_queue (
   text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS skills (
-  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
-  tier TEXT NOT NULL DEFAULT 'project',
-  category TEXT, path TEXT,
-  state TEXT NOT NULL DEFAULT 'active',
-  status TEXT NOT NULL DEFAULT 'active',
-  source TEXT NOT NULL DEFAULT 'user',
-  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
-  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
-  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
-  candidate_body TEXT,
-  related TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
-CREATE TABLE IF NOT EXISTS curator_state (
-  scope TEXT PRIMARY KEY,
-  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
-);
 `;

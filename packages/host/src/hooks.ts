@@ -21,7 +21,7 @@
 import { resolveProject, openGlobal, openProject, appendEvent } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
-import { reapOrphanRuns } from "@spider/subagents";
+import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
 import { controlConfig } from "./control";
 
 export interface PiLikeAPI {
@@ -98,6 +98,23 @@ export function registerHooks(pi: PiLikeAPI): void {
               } catch { /* best-effort event logging */ }
             });
           
+          // Poll and deliver pending intercom messages for this session. Best-effort and
+          // defensive: a poller failure must never block session start, but it must not be
+          // silently discarded either (surface via appendEvent like the reaper).
+          const globalDb = openGlobal();
+          void pollPendingMessages(globalDb, String(event?.sessionId ?? "unknown"), pi)
+            .catch((e) => {
+              try {
+                appendEvent(db, {
+                  sessionId: String(event?.sessionId ?? "unknown"),
+                  ts: Date.now(),
+                  phase: "after",
+                  tool: "poller",
+                  description: `message poller failed: ${String((e as Error)?.message ?? e)}`,
+                });
+              } catch { /* best-effort event logging */ }
+            });
+
           const id = event?.sessionId;
           if (id) {
             db

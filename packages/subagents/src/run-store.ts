@@ -105,7 +105,7 @@ export class RunStore {
            status = @status,
            ended_at = @now,
            result = COALESCE(@result, result)
-         WHERE id = @id`
+         WHERE id = @id AND status IN ('queued', 'running', 'paused')`
       )
       .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null });
   }

@@ -121,7 +121,7 @@ interface PiToolAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
 }
 
-const SPIDER_PARAMETERS = {
+export const SPIDER_PARAMETERS = {
   type: "object",
   properties: {
     action: {
@@ -133,14 +133,14 @@ const SPIDER_PARAMETERS = {
       description: "The spider verb to run.",
     },
     // control
-    command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory')." },
+    command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory','bind','unbind')." },
     op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command." },
     uuid: { type: "string", description: "pending-memory uuid for approve/reject." },
     // scope / cwd (most actions)
-    scope: { type: "string", enum: ["global", "project"], description: "Memory/registry scope (default project)." },
+    scope: { type: "string", enum: ["global", "project"], description: "Memory/registry scope (default project). \"Is this still true after I delete this worktree?\" → **repo**; \"Is this true in every repo?\" → **global**; otherwise → **worktree**." },
     cwd: { type: "string", description: "Working-directory override." },
     // search / recall
     query: { type: "string", description: "Query text for action 'search' or 'recall'." },
@@ -222,7 +222,7 @@ const SPIDER_PARAMETERS = {
   },
   required: ["action"],
   additionalProperties: true,
-};
+} as const;
 
 /** Build the organism action deps for a dispatch: reuse the SAME aux-model
  *  seam the trailing registerOrganism hook block uses (route the configured aux
@@ -366,6 +366,19 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       );
       const report = runUpstreamWatch(ctx.globalDb, ctx.db, ctx.sessionId, { git, localRepos });
       return { display: renderUpstreamReport(report), details: report };
+    }
+    case "bind": {
+      if (!ctx) return { error: "control bind requires an action context" };
+      const bindPath = args.path ? String(args.path) : cwd;
+      const { controlBind } = await import("./control-bind");
+      const result = controlBind(ctx.globalDb, ctx.sessionId, bindPath);
+      return { details: result };
+    }
+    case "unbind": {
+      if (!ctx) return { error: "control unbind requires an action context" };
+      const { controlUnbind } = await import("./control-bind");
+      const result = controlUnbind(ctx.globalDb, ctx.sessionId);
+      return { details: result };
     }
     default:
       return { error: `control command '${command}' is not yet implemented (Phase 0)` };
@@ -533,6 +546,33 @@ export default function spiderExtension(pi: PiToolAPI): void {
     },
   });
 
+  // User-only /bind command
+  pi.registerCommand?.("bind", {
+    description: "Bind session to a worktree path",
+    handler: async (args: string, ctx: unknown) => {
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const sessionId = sessionIdOf(ctx);
+      const path = typeof args === "string" ? args.trim() : cwd;
+      
+      const { controlBind } = await import("./control-bind");
+      const result = controlBind(openGlobal(), sessionId, path || cwd);
+      
+      const text = result.message ?? (result.ok ? "Session bound" : "Failed to bind");
+      
+      if (typeof (pi as any).sendMessage === "function") {
+        (pi as any).sendMessage({
+          customType: "spider.command",
+          content: text,
+          display: true,
+          details: { args: { command: "bind", path }, result },
+        });
+      } else {
+        const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+        if (typeof notify === "function") notify(text, result.ok ? "info" : "error");
+      }
+    },
+  });
+
   // NOTE: the background embed worker is intentionally NOT started here (no eager
   // DB opens / lingering timers at registration). recall degrades to FTS when no
   // vectors exist; the embed worker is wired in a later integration task.
@@ -541,7 +581,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,

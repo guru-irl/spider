@@ -49,8 +49,8 @@ built-ins:
   checklist item; toggle as you complete each.
 - \`spider message\` — wake a specific peer/reviewer session directly.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
-  \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`upstream-watch\`.
-  Every result renders as a themed card, never raw JSON.
+  \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,
+  \`upstream-watch\`. Every result renders as a themed card, never raw JSON.
 
 ## Escalation
 
@@ -73,6 +73,9 @@ Background/\`[auto]\` writes are **staged and fail-closed**; approve or reject v
 \`spider control memory\`. A frozen memory snapshot is injected each session —
 new writes persist immediately and re-inject next session. Use \`spider recall\`
 to fetch by category/scope.
+
+**Scope rule:** "Is this still true after I delete this worktree?" → **repo**;
+"Is this true in every repo?" → **global**; otherwise → **worktree**.
 
 ## Scratch — never /tmp
 

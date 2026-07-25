@@ -16,6 +16,10 @@ import { latestRunOutput } from "../completion-output";
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
 export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
   return (run, status, result) => {
+    // A cancelled run was killed deliberately. Waking the orchestrator with a
+    // "subagent done" card + triggerTurn for something the user just stopped is
+    // noise — the kill action already reported the outcome.
+    if (status === "cancelled") return;
     try {
       const output = latestRunOutput(ctx.db, run.id, result);
       const name = run?.name ?? run?.agent ?? "subagent";

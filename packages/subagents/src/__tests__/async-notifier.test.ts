@@ -29,4 +29,23 @@ describe("makeAsyncNotifier", () => {
     notify({ id: "none", name: "x", agent: "worker" }, "failed", "crash trace");
     expect(sendMessage.mock.calls[0][0].content).toContain("crash trace");
   });
+
+  it("does not notify or trigger a turn for a cancelled run", () => {
+    const sendMessage = vi.fn();
+    const notify = vi.fn();
+    const ctx: any = { db: freshDb(), pi: { sendMessage }, ui: { notify } };
+    const notifier = makeAsyncNotifier(ctx);
+    notifier({ id: "r1", name: "alpha", agent: "worker" } as any, "cancelled", undefined);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("still notifies for a failed run", () => {
+    const sendMessage = vi.fn();
+    const notify = vi.fn();
+    const ctx: any = { db: freshDb(), pi: { sendMessage }, ui: { notify } };
+    const notifier = makeAsyncNotifier(ctx);
+    notifier({ id: "r2", name: "beta", agent: "worker" } as any, "failed", undefined);
+    expect(sendMessage).toHaveBeenCalled();
+  });
 });

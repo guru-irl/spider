@@ -25,7 +25,7 @@ const digest = async () => ({
 
 function mkctx() {
   cx = makeContentDb();
-  return { db: cx.db, cwd: process.cwd(), sessionId: "cur" };
+  return { db: cx.db, repoDb: cx.repoDb, cwd: process.cwd(), sessionId: "cur" };
 }
 
 describe("importSessions idempotency", () => {
@@ -40,9 +40,9 @@ describe("importSessions idempotency", () => {
     expect(first.imported).toBe(1);
     expect(first.staged).toBeGreaterThan(0);
 
-    const memCount = () => (ctx.db.prepare("SELECT COUNT(*) n FROM memory WHERE source='import'").get() as any).n;
+    const memCount = () => (ctx.repoDb.prepare("SELECT COUNT(*) n FROM memory WHERE source='import'").get() as any).n;
     expect(memCount()).toBe(1);
-    expect((ctx.db.prepare("SELECT status FROM memory WHERE source='import'").get() as any).status).toBe("staged");
+    expect((ctx.repoDb.prepare("SELECT status FROM memory WHERE source='import'").get() as any).status).toBe("staged");
 
     const second = await importSessions(ctx, { session: f }, digest);
     expect(second.skipped).toBe(1);
@@ -57,6 +57,6 @@ describe("importSessions idempotency", () => {
     writeFileSync(f, JSON.stringify({ role: "user", content: "hi" }));
 
     await importSessions(ctx, { session: f, commit: true }, digest);
-    expect((ctx.db.prepare("SELECT status FROM memory WHERE source='import'").get() as any).status).toBe("active");
+    expect((ctx.repoDb.prepare("SELECT status FROM memory WHERE source='import'").get() as any).status).toBe("active");
   });
 });

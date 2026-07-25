@@ -5,7 +5,8 @@ import { defaultDigest, type SessionDigest } from "./digest";
 import { ContentStore } from "./content-store";
 
 export interface ImportCtx {
-  db: Db;
+  db: Db;         // worktree DB: sessions, todos, content
+  repoDb: Db;     // repo DB: memory, skills
   cwd: string;
   sessionId: string;
   project?: unknown;
@@ -73,7 +74,7 @@ export async function importSessions(
     for (const c of d.candidates) {
       if (c.kind === "memory" || c.kind === "skill") {
         const cat = (c.kind === "skill" ? "convention" : (c.category ?? "insight")) as MemoryCategory;
-        const r = stageWrite(ctx.db, "project", {
+        const r = stageWrite(ctx.repoDb, "repo", {
           category: cat,
           content: c.content,
           link: c.link ?? null,
@@ -82,7 +83,7 @@ export async function importSessions(
         if (r.status === "staged") {
           summary.staged++;
           if (opts.commit && r.uuid) {
-            approvePending(ctx.db, "project", r.uuid);
+            approvePending(ctx.repoDb, "repo", r.uuid);
             summary.committed++;
           }
         }

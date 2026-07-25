@@ -133,7 +133,7 @@ export class OrganismWorker {
     }
 
     const summary = applyDigest(
-      { db, globalDb, scope: "project", sessionId, skills: new SkillStore(db), project },
+      { db, globalDb, worktreeDb: this.#deps.worktreeDb, scope: "repo", sessionId, skills: new SkillStore(db), project },
       merged,
       { max: org.autoWriteBudget, used: 0 }
     );
@@ -152,7 +152,7 @@ export class OrganismWorker {
 
     // Best-effort observability breadcrumb for the footer.
     try {
-      emitLog(db, {
+      emitLog(this.#deps.worktreeDb, {
         sessionId,
         summary:
           `organism drain (${reason}): mem=${summary.memoryStaged} todos=${summary.todosAdded} ` +
@@ -172,20 +172,20 @@ export class OrganismWorker {
    * Treats an empty-slug self-name as NO name (Task 7 carry-forward).
    */
   #persistConsolidation(sessionId: string, merged: DigestResult): void {
-    const { db, globalDb, org, project } = this.#deps;
+    const { worktreeDb, globalDb, org, project } = this.#deps;
     const selfName =
       typeof merged.selfName === "string" && merged.selfName.length > 0 ? merged.selfName : undefined;
 
     if (selfName !== undefined) {
       try {
-        db.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(selfName, sessionId);
+        worktreeDb.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(selfName, sessionId);
       } catch {
         /* best-effort */
       }
     }
     if (typeof merged.summary === "string" && merged.summary.length > 0) {
       try {
-        db.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run(merged.summary, sessionId);
+        worktreeDb.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run(merged.summary, sessionId);
       } catch {
         /* best-effort */
       }
@@ -193,12 +193,12 @@ export class OrganismWorker {
 
     // Keep sessions_fts in sync only when the FTS table exists (guarded).
     try {
-      const row = db.prepare("SELECT name, summary FROM sessions WHERE id = ?").get(sessionId) as
+      const row = worktreeDb.prepare("SELECT name, summary FROM sessions WHERE id = ?").get(sessionId) as
         | { name: string | null; summary: string | null }
         | undefined;
       if (row !== undefined) {
-        db.prepare("DELETE FROM sessions_fts WHERE id = ?").run(sessionId);
-        db.prepare("INSERT INTO sessions_fts (id, name, summary) VALUES (?, ?, ?)").run(
+        worktreeDb.prepare("DELETE FROM sessions_fts WHERE id = ?").run(sessionId);
+        worktreeDb.prepare("INSERT INTO sessions_fts (id, name, summary) VALUES (?, ?, ?)").run(
           sessionId,
           row.name ?? "",
           row.summary ?? ""

@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS runs (
   phase TEXT, model TEXT, task TEXT, thinking TEXT,
   started_at INTEGER, ended_at INTEGER,
   step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
-  result TEXT
+  result TEXT,
+  pid INTEGER, host_pid INTEGER
 );
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,

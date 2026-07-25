@@ -87,4 +87,35 @@ describe("RunStore", () => {
     store.updateProgress(id, { thinking: "high" });
     expect(store.get(id)!.thinking).toBe("high");
   });
+
+  it("setPid() records the child pid and owning host pid", () => {
+    const store = new RunStore(freshDb());
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.setPid(id, 4242, 99);
+    const row = store.get(id)!;
+    expect(row.pid).toBe(4242);
+    expect(row.host_pid).toBe(99);
+  });
+
+  it("cancel() sets cancelled status, ended_at and a reason", () => {
+    const store = new RunStore(freshDb());
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id);
+    store.cancel(id, "killed by orchestrator");
+    const row = store.get(id)!;
+    expect(row.status).toBe("cancelled");
+    expect(row.ended_at).toBeGreaterThan(0);
+    expect(row.result).toBe("killed by orchestrator");
+  });
+
+  it("cancel() does not resurrect an already-finished run", () => {
+    const store = new RunStore(freshDb());
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id);
+    store.finish(id, { status: "done", result: "ok" });
+    store.cancel(id, "too late");
+    const row = store.get(id)!;
+    expect(row.status).toBe("done");
+    expect(row.result).toBe("ok");
+  });
 });

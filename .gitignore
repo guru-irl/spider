@@ -7,6 +7,10 @@ dist/
 # models.defaults) and the exec.enforce safety switch -- committing
 # "exec.enforce": false would silently disable bash enforcement for every clone.
 **/.spider/config.json
+
+# Legacy pi-subagents run artifacts (superseded by spider). Machine-local
+# prompt/output dumps -- purged from history, never re-commit.
+.pi-subagents/
 **/.spider/project.db*
 **/.spider/logs/
 .DS_Store

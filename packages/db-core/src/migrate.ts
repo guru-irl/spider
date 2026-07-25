@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -14,6 +14,22 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
   ],
   6: [
     "ALTER TABLE projects ADD COLUMN repo_key TEXT",
+  ],
+  // v9: session_bindings was added to GLOBAL_SCHEMA (fresh installs) without a
+  // migration step, so every EXISTING global db threw "no such table:
+  // session_bindings" on any action that resolves a project (getBinding is on the
+  // hot path via resolveProject). Tests never caught it because they all build
+  // fresh DBs, where GLOBAL_SCHEMA already contains the table.
+  //
+  // This is keyed at 9 rather than 8 deliberately: a db that already reached 8
+  // would be skipped by the `current >= SCHEMA_VERSION` early return and stay
+  // broken forever.
+  9: [
+    `CREATE TABLE IF NOT EXISTS session_bindings (
+  session_id TEXT PRIMARY KEY,
+  worktree_root TEXT NOT NULL,
+  bound_at INTEGER NOT NULL
+)`,
   ],
 };
 

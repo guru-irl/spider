@@ -271,6 +271,48 @@ chain, parallel, pipeline), not just left `undefined`.
    second `k` within 3s kills, any other key disarms. Wired via an `onKill`
    callback from `agents-ui.ts`, same pattern as the existing `onBack`.
 
+### Shutdown guarantee (hard requirement)
+
+**Exiting the main session must kill its subagents.** `detached: true` removes
+the accidental protection we get today from children sharing the host's process
+group, so this has to be made explicit.
+
+Verified against pi 0.80: `registerSignalHandlers`
+(`dist/modes/interactive/interactive-mode.js:2940`) registers only `SIGTERM`
+(plus `SIGHUP` off-Windows). **Ctrl+C is not a signal handler** — the TUI
+consumes it and routes to `shutdown()` → `runtimeHost.dispose()` →
+`session_shutdown`.
+
+| Exit path | fires `session_shutdown` | pi kills its own detached children |
+| --- | --- | --- |
+| `/quit`, Ctrl+D, Ctrl+C | yes | no |
+| SIGTERM / SIGHUP (terminal closed) | yes | yes |
+| `uncaughtCrash` | no | yes |
+| `emergencyTerminalExit` (dead tty) | no | yes |
+| `SIGKILL` on the host | no | no |
+
+Two mechanisms cover the whole matrix:
+
+1. **`session_shutdown` → `teardownAll` → kill every registered child.** The
+   hook is already registered (`subagents/index.ts:36`); `teardownCoordinators`
+   currently stops the tailer and disposes pipelines but has no children to
+   kill. Adding the handle registry closes every user-initiated exit — rows 1
+   and 2, which is the case the requirement is actually about.
+
+2. **Startup orphan reaper**, for rows 3–5. Persist `host_pid` alongside `pid`
+   on `runs`. On session start, scan runs with `status='running'` whose
+   `host_pid` is no longer alive; if the child pid is still alive, kill its
+   process group; mark the run `cancelled` either way. This is the only
+   mechanism that can work after a `SIGKILL`, and it is nearly free once `pid`
+   is persisted for the reload case anyway.
+
+**Rejected: registering with pi's own tracker.** `trackDetachedChildPid` /
+`killTrackedDetachedChildren` exist in `dist/utils/shell.js` and would cover
+rows 2–4 for free, but the package `exports` map exposes only `.` and
+`./rpc-entry`, and `@earendil-works/pi-coding-agent` is `external` in
+`vite.config.mjs` — so a deep import resolves against the exports map at
+runtime and fails. Revisit only if pi promotes these to its public API.
+
 ---
 
 ## Cross-cutting
@@ -279,7 +321,7 @@ chain, parallel, pipeline), not just left `undefined`.
 
 | Package | Change |
 | --- | --- |
-| `db-core` | `resolveProject` re-keying; `repoDb` tier + `REPO_SCHEMA`; `session_bindings`; `message_mirror` columns; `runs.pid`; migrations |
+| `db-core` | `resolveProject` re-keying; `repoDb` tier + `REPO_SCHEMA`; `session_bindings`; `message_mirror` columns; `runs.pid` + `runs.host_pid`; migrations |
 | `host` | `ActionCtx` gains `repoDb`; `control bind`/`unbind`; `control migrate` sweep; auto-bind detection in `routing`; `kill` action wiring; message poller |
 | `memory` | `stageWrite`/`recall` take a tier rather than a two-way scope; `assembleSnapshot` goes from `{global, project}` to `{global, repo, project}` |
 | `context` | unified `search` fans out across three tiers instead of two, and merges/ranks the results |
@@ -296,7 +338,9 @@ chain, parallel, pipeline), not just left `undefined`.
   auto-bind promotes from container but does not switch between worktrees.
 - **subagents:** kill via live handle; kill via DB pid fallback with no handle;
   kill of an already-exited run is a no-op; `cancelled` status written; process
-  group actually torn down.
+  group actually torn down; `session_shutdown` kills all registered children;
+  reaper cancels runs whose `host_pid` is dead and spares runs whose host is
+  still alive.
 - **ui:** `k` arms, second `k` fires, intervening key disarms, timeout disarms.
 - **intercom:** message survives peer restart; poller delivers exactly once;
   escalation reaches the parent bus.
@@ -322,6 +366,6 @@ The three problems are independently shippable. Recommended sequence:
 - **Three open handles per call** instead of two, and a second set of embedding
   tables. Accepted: the DBs are WAL SQLite opened lazily, and the alternative
   (fanning reads across 18 sibling worktrees) is strictly worse.
-- **`detached: true` behaviour change** — children stop dying automatically
-  with the host. Mitigated by the existing `teardownAll` on `session_shutdown`,
-  which must now kill registered children.
+- **`detached: true` behaviour change** — children no longer die incidentally
+  with the host's process group. Covered by the two mechanisms in *Shutdown
+  guarantee* above; this is a hard requirement, not a best-effort.

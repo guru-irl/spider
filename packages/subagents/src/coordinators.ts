@@ -1,6 +1,9 @@
+import { bus } from "@spider/db-core";
+import type { RunEvent } from "@spider/db-core";
 import type { RunEventTailer } from "./event-tailer";
 import type { PipelineCoordinator } from "./pipeline";
 import type { ChildHandle } from "./runner";
+import type { RunStore } from "./run-store";
 
 export interface SessionCoordinators {
   tailer: RunEventTailer;
@@ -138,4 +141,49 @@ export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<vo
   } catch {
     // Best-effort: never let cleanup errors block session exit
   }
+}
+
+/** Set up an escalation notifier that watches the bus for escalation events and
+ *  notifies the orchestrator. Returns a cleanup function. Best-effort; never throws. */
+export function setupEscalationNotifier(ctx: any, store: RunStore): () => void {
+  const off = bus.on((e: RunEvent) => {
+    if (e.type !== "escalation") return;
+    if (!e.runId) return;
+    
+    try {
+      // Check if the run is cancelled — don't notify for deliberately killed runs
+      const run = store.get(e.runId);
+      if (!run || run.status === "cancelled") return;
+      
+      // Extract severity from payload
+      const severity = (e.payload as any)?.severity ?? "warning";
+      const summary = e.summary ?? "Escalation";
+      const runName = run.name ?? run.agent;
+      
+      // Notify the orchestrator with a themed card
+      ctx.pi?.sendMessage?.(
+        {
+          customType: "spider.escalation",
+          content: `🚨 *escalation* "${runName}" · ${run.agent} · *${severity}*\n\n${summary}`,
+          display: true,
+          details: {
+            runId: e.runId,
+            severity,
+            summary,
+            agent: run.agent,
+            name: runName,
+            payload: e.payload,
+          },
+        },
+        { triggerTurn: true },
+      );
+      
+      // Also send a UI notification
+      ctx.ui?.notify?.(summary, severity === "blocked" ? "error" : "warning");
+    } catch {
+      // Best-effort: never let notification failures break the tailer
+    }
+  });
+  
+  return off;
 }

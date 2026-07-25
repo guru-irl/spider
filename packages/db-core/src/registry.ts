@@ -6,6 +6,7 @@ import { join, isAbsolute, resolve, dirname } from "node:path";
 import { openDb, type Db } from "./db";
 import { migrate } from "./migrate";
 import { paths, type Scope, worktreeRoot, repoRoot } from "./paths";
+import { getBinding, bindSession } from "./bindings";
 
 export interface ProjectInfo {
   projectKey: string;
@@ -46,10 +47,36 @@ function gitCommonDir(cwd: string): string | undefined {
   }
 }
 
-export function resolveProject(cwd: string): ProjectInfo {
-  const realPath = realpathSync(cwd);
-  const gcd = gitCommonDir(cwd);
-  const projectKey = worktreeRoot(cwd);
+export function resolveProject(cwd: string, opts?: { sessionId?: string; explicitCwd?: boolean }): ProjectInfo {
+  // Resolution order: explicit cwd > session binding > cwd's worktree root
+  let resolvedCwd = cwd;
+  const isExplicit = opts?.explicitCwd ?? true; // default to explicit for backward compat
+  
+  // If not explicit and we have a sessionId, check for binding
+  if (!isExplicit && opts?.sessionId) {
+    const g = openGlobal();
+    try {
+      const binding = getBinding(g, opts.sessionId);
+      if (binding) {
+        resolvedCwd = binding;
+      } else {
+        // No binding exists - check if we should auto-bind (promotes, never switches)
+        // Auto-bind when resolving from a non-repo cwd (container or loose directory)
+        const cwdIsRepo = gitCommonDir(cwd) !== undefined;
+        if (!cwdIsRepo) {
+          // Resolving from non-repo container - auto-bind to the resolved worktree
+          const targetRoot = worktreeRoot(cwd);
+          bindSession(g, opts.sessionId, targetRoot);
+        }
+      }
+    } finally {
+      g.close();
+    }
+  }
+  
+  const realPath = realpathSync(resolvedCwd);
+  const gcd = gitCommonDir(resolvedCwd);
+  const projectKey = worktreeRoot(resolvedCwd);
   const repoKey = gcd;
   const dbPath = join(paths.projectRoot(realPath), "project.db");
   const info: ProjectInfo = { projectKey, realPath, gitCommonDir: gcd, repoKey, dbPath };

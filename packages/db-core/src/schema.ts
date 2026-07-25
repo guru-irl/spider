@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS insights (
 CREATE TABLE IF NOT EXISTS model_stats (
   id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS session_bindings (
+  session_id TEXT PRIMARY KEY,
+  worktree_root TEXT NOT NULL,
+  bound_at INTEGER NOT NULL
+);
 `;
 
 export const REPO_SCHEMA = `

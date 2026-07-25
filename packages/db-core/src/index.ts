@@ -9,5 +9,6 @@ export {
   resolveProject, registerProject, openGlobal, openProject, openRepo, openDbAt, openProjectByPath, setGlobalDbPathForTests, repoRoot as repoRootFromRegistry,
 } from "./registry";
 export type { ProjectInfo } from "./registry";
+export { bindSession, unbindSession, getBinding } from "./bindings";
 export { appendRunEvent, bus, appendEvent, listEvents, eventCountsByTool } from "./events";
 export type { RunEvent, EventRow } from "./events";

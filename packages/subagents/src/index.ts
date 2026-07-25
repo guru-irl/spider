@@ -13,6 +13,7 @@ export * from "./coordinators";
 export * from "./spawn-default";
 export * from "./kill";
 export * from "./kill-process";
+export * from "./reaper";
 
 import { attachChildReporter, isSubagentChild } from "./child-reporter";
 import { makeRunHandler } from "./actions/run";

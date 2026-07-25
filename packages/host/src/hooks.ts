@@ -18,7 +18,7 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, appendEvent } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, appendEvent } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
@@ -54,9 +54,10 @@ export function registerHooks(pi: PiLikeAPI): void {
           const project = resolveProject(cwd, { sessionId, explicitCwd: !sessionId });
           // For git repos: open the repo DB (for memory)
           // For non-git dirs: create a repo-schema DB at worktree root (memory is repo tier)
+          // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
           const repoDb = project.repoKey
             ? openRepo(project.repoKey)
-            : openDbAt(join(project.projectKey, "spider", "repo.db"), "repo");
+            : openDbAt(join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
           const snap = assembleSnapshot(
             { global: openGlobal(), repo: repoDb },
             { charCap: 8000 },

@@ -34,6 +34,8 @@ export function getCoordinators(sessionId: string, make: () => SessionCoordinato
     const made = make();
     c.tailer = made.tailer;
     if (made.pipelines.length) c.pipelines.push(...made.pipelines);
+    // IMPORTANT 3: Preserve escalationNotifierCleanup on upgrade path
+    if (made.escalationNotifierCleanup) c.escalationNotifierCleanup = made.escalationNotifierCleanup;
   }
   c.children ??= new Map();
   return c;
@@ -139,6 +141,8 @@ export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<vo
       c.children?.clear();
       try { c.tailer?.stop(); } catch {}
       for (const p of c.pipelines) { try { p.dispose(); } catch {} }
+      // IMPORTANT 3: Call escalation disposer through production path
+      try { c.escalationNotifierCleanup?.(); } catch {}
       registry.delete(id);
     }
   } catch {
@@ -152,6 +156,8 @@ export function setupEscalationNotifier(ctx: any, store: RunStore): () => void {
   const off = bus.on((e: RunEvent) => {
     if (e.type !== "escalation") return;
     if (!e.runId) return;
+    // IMPORTANT 3: Filter by sessionId to avoid cross-session escalations
+    if (e.sessionId && e.sessionId !== ctx.sessionId) return;
     
     try {
       // Check if the run is cancelled — don't notify for deliberately killed runs

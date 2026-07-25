@@ -16,7 +16,7 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, type Db } from "@spider/db-core";
 import {
   stageWrite, recall, listPending, approvePending, rejectPending,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
@@ -420,9 +420,10 @@ export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: strin
   const worktreeDb = openProject(project.projectKey);
   // For git repos: open the repo DB
   // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
+  // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
   const repoDb = project.repoKey
     ? openRepo(project.repoKey)
-    : openDbAt(path.join(project.projectKey, "spider", "repo.db"), "repo");
+    : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
   return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models };
 }
 
@@ -698,9 +699,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
     const orgWorktreeDb = openProject(project.projectKey);
     // For git repos: open the repo DB (for skills and curator_state)
     // For non-git dirs: create a repo-schema DB at worktree root (skills/curator_state are repo tier)
+    // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
     const orgRepoDb = project.repoKey
       ? openRepo(project.repoKey)
-      : openDbAt(path.join(project.projectKey, "spider", "repo.db"), "repo");
+      : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
     const orgGlobalDb = openGlobal();
     const cfg = controlConfig("get", orgCwd);
 

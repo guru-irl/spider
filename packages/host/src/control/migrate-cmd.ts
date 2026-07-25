@@ -1,5 +1,5 @@
 // packages/host/src/control/migrate-cmd.ts
-import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync, readFileSync, realpathSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { openDbAt, paths, repoRoot, projectRoot } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
@@ -49,8 +49,21 @@ function findOldDbs(cwd: string): DbFile[] {
   // I2: For git repos, enumerate sibling worktrees
   if (rRoot) {
     const gitCommonDir = rRoot.replace(/\/spider$/, "");
-    const worktreesPath = join(gitCommonDir, "worktrees");
+    const gitDir = join(dirname(gitCommonDir), ".git");
     
+    // ALSO: Derive main worktree - if .git is a directory (not a file), this is main worktree
+    const mainWtRoot = realpathSync(dirname(gitCommonDir));
+    const wtRootReal = realpathSync(wtRoot);
+    
+    if (mainWtRoot !== wtRootReal) {
+      const mainDb = join(mainWtRoot, ".spider", "project.db");
+      if (existsSync(mainDb)) {
+        dbs.push({ path: mainDb, worktreeRoot: mainWtRoot, repoRoot: rRoot });
+      }
+    }
+    
+    // Enumerate linked worktrees
+    const worktreesPath = join(gitCommonDir, "worktrees");
     if (existsSync(worktreesPath)) {
       const entries = readdirSync(worktreesPath);
       for (const entry of entries) {
@@ -61,9 +74,9 @@ function findOldDbs(cwd: string): DbFile[] {
             // It contains something like "/path/to/worktree/.git"
             const gitdirContent = readFileSync(gitdirPath, "utf-8").trim();
             // Remove trailing /.git to get the worktree root
-            const siblingWtRoot = gitdirContent.replace(/\/\.git$/, "");
+            const siblingWtRoot = realpathSync(gitdirContent.replace(/\/\.git$/, ""));
             
-            if (siblingWtRoot !== wtRoot) {
+            if (siblingWtRoot !== wtRootReal) {
               const siblingDb = join(siblingWtRoot, ".spider", "project.db");
               if (existsSync(siblingDb)) {
                 dbs.push({ path: siblingDb, worktreeRoot: siblingWtRoot, repoRoot: rRoot });
@@ -87,17 +100,33 @@ function isAlreadyMigrated(dbPath: string): boolean {
   // I4: Open read-only to avoid modifying the DB
   const db = new DatabaseConstructor(dbPath, { readonly: true, fileMustExist: true });
   try {
-    // Check if it has BOTH repo and worktree tables (old schema) or only one type (new schema)
+    // CRITICAL 1: Row-count-based, not table-existence-based
+    // Check if repo-tier tables have any rows (old schema with data to migrate)
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
     const tableNames = new Set(tables.map(t => t.name));
     
-    const hasRepoTables = REPO_TABLES.some(t => tableNames.has(t) && t !== "memory_fts"); // memory_fts is virtual, may not exist yet
-    const hasWorktreeTables = WORKTREE_TABLES.some(t => tableNames.has(t));
+    // If repo tables don't exist, it's already migrated or never had them
+    const hasRepoTables = REPO_TABLES.some(t => tableNames.has(t) && t !== "memory_fts");
+    if (!hasRepoTables) return true;
     
-    // If it has both types, it's not migrated yet
-    // If it has only one type or neither, it's either already migrated or empty
-    const result = !(hasRepoTables && hasWorktreeTables);
-    return result;
+    // If worktree tables don't exist, it's already split
+    const hasWorktreeTables = WORKTREE_TABLES.some(t => tableNames.has(t));
+    if (!hasWorktreeTables) return true;
+    
+    // Both types exist - check if repo tables have rows (need migration)
+    // Empty tables (from PROJECT_MIGRATIONS[3]) mean already migrated
+    for (const table of ["memory", "skills", "curator_state"]) {
+      if (tableNames.has(table)) {
+        const count = countRows(db, table);
+        if (count > 0) {
+          // Has rows in repo-tier table + worktree tables exist = needs migration
+          return false;
+        }
+      }
+    }
+    
+    // No rows in repo tables = already migrated
+    return true;
   } finally {
     db.close();
   }
@@ -187,6 +216,7 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
             if (count > 0) {
               // Copy rows to repo DB
               const rows = srcDb.prepare(`SELECT * FROM ${table}`).all();
+              let insertedCount = 0;
               
               for (const row of rows) {
                 const rowData = row as Record<string, unknown>;
@@ -228,14 +258,21 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
                   const placeholders = cols.map(() => "?").join(", ");
                   const sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
                   repoDb.prepare(sql).run(...values);
+                  insertedCount++;
                 }
               }
               
-              moved[table] = count;
+              // CRITICAL 2: Only count actually inserted rows, not conflicts
+              if (insertedCount > 0) {
+                moved[table] = (moved[table] ?? 0) + insertedCount;
+              }
             }
           }
           
-          // C3: Rebuild memory_fts from memory table
+          // CRITICAL 1: Rebuild memory_fts from memory table (idempotent)
+          // Delete any existing FTS rows first to avoid duplication on repeated runs
+          repoDb.exec("DELETE FROM memory_fts");
+          
           const memoryRows = repoDb.prepare("SELECT uuid, category, content, link FROM memory").all();
           for (const row of memoryRows) {
             const r = row as { uuid: string; category: string; content: string; link: string | null };
@@ -253,16 +290,36 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
         repoDb.close();
       }
       
-      // I5: Now drop from source DB in a transaction (after successful copy)
+      // CRITICAL 2: Delete per-row only for rows actually copied (not wholesale drop)
       srcDb.exec("BEGIN TRANSACTION");
       try {
         for (const table of ["memory", "skills", "curator_state"]) {
-          const count = countRows(srcDb, table);
-          if (count > 0) {
-            srcDb.exec(`DROP TABLE IF EXISTS ${table}`);
-            // Also drop memory_fts if memory was dropped
-            if (table === "memory") {
-              srcDb.exec(`DROP TABLE IF EXISTS memory_fts`);
+          if (moved[table] && moved[table] > 0) {
+            // Delete only the rows that were successfully copied
+            // For rows that conflicted (in ambiguous), leave them in source
+            const keyCol = table === "memory" ? "uuid" : table === "skills" ? "name" : "scope";
+            const conflictKeys = new Set(
+              ambiguous.filter(a => a.table === table).map(a => a.uuid)
+            );
+            
+            // Get all keys from source
+            const allKeys = srcDb.prepare(`SELECT ${keyCol} FROM ${table}`).all() as Record<string, string>[];
+            
+            for (const row of allKeys) {
+              const key = row[keyCol];
+              if (!conflictKeys.has(key)) {
+                // Only delete rows that were copied (not conflicting)
+                srcDb.prepare(`DELETE FROM ${table} WHERE ${keyCol} = ?`).run(key);
+              }
+            }
+            
+            // If table is now empty, drop it; otherwise keep it with conflict rows
+            const remaining = countRows(srcDb, table);
+            if (remaining === 0) {
+              srcDb.exec(`DROP TABLE IF EXISTS ${table}`);
+              if (table === "memory") {
+                srcDb.exec(`DROP TABLE IF EXISTS memory_fts`);
+              }
             }
           }
         }

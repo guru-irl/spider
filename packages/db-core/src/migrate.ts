@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -20,6 +20,12 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
 const REPO_MIGRATIONS: Record<number, readonly string[]> = {
   // v7: split from PROJECT_SCHEMA; repo tier gets memory, skills, curator_state
   7: [],
+  // v8: IMPORTANT 5 - repair poisoned repo.db files from pre-fix builds
+  // (had worktree schema + no memory_fts, stamped v7)
+  8: [
+    // Create memory_fts if it doesn't exist (idempotent)
+    `CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link)`,
+  ],
 };
 
 const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
@@ -92,6 +98,18 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
             steps = WORKTREE_MIGRATIONS[v] ?? [];
           }
           for (const s of steps) db.exec(s);
+          
+          // IMPORTANT 5: After creating memory_fts (v8), populate it from memory
+          if (actualScope === "repo" && v === 8) {
+            // Populate FTS (idempotent - DELETE first if somehow already populated)
+            db.exec("DELETE FROM memory_fts");
+            const memoryRows = db.prepare("SELECT uuid, category, content, link FROM memory").all();
+            const insertStmt = db.prepare("INSERT INTO memory_fts (uuid, category, content, link) VALUES (?, ?, ?, ?)");
+            for (const row of memoryRows) {
+              const r = row as { uuid: string; category: string; content: string; link: string | null };
+              insertStmt.run(r.uuid, r.category, r.content, r.link);
+            }
+          }
         }
       }
       db.raw.pragma(`user_version = ${SCHEMA_VERSION}`);

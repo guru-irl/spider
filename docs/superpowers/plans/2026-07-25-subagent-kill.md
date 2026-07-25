@@ -182,7 +182,7 @@ natural exit never rewrites the real outcome."
 - Consumes: nothing.
 - Produces:
   - `isProcessAlive(pid: number): boolean`
-  - `killProcessGroup(pid: number, opts?: { graceMs?: number; now?: () => number; kill?: (pid: number, sig: NodeJS.Signals) => void; platform?: string }): Promise<"terminated" | "forced" | "already-dead">`
+  - `killProcessGroup(pid: number, opts?: { graceMs?: number; kill?: (pid: number, sig: NodeJS.Signals | number) => void; platform?: string }): Promise<"terminated" | "forced" | "already-dead">`
 
 **Why a separate file:** these are pure OS primitives with no DB or run knowledge, so they can be unit-tested with an injected `kill` spy instead of real processes.
 
@@ -422,12 +422,28 @@ const registry = new Map<string, SessionCoordinators>();
 
 export function getCoordinators(sessionId: string, make: () => SessionCoordinators): SessionCoordinators {
   let c = registry.get(sessionId);
-  if (!c) { c = make(); registry.set(sessionId, c); }
+  if (!c) {
+    c = make();
+    c.children ??= new Map();
+    registry.set(sessionId, c);
+    return c;
+  }
+  // A slot() created by registerChild() before the first `run` has NO tailer. Returning it
+  // as-is would permanently suppress tailer creation for the session (make() is never called
+  // again), silently killing the live agent feed. Upgrade the slot in place instead, keeping
+  // any children already registered against it.
+  if (!c.tailer) {
+    const made = make();
+    c.tailer = made.tailer;
+    if (made.pipelines.length) c.pipelines.push(...made.pipelines);
+  }
+  c.children ??= new Map();
   return c;
 }
 
 /** Coordinators for a session that may not have a tailer yet — used by the child
- *  registry, which must work even before the first `run` builds a full coordinator. */
+ *  registry, which must work even before the first `run` builds a full coordinator.
+ *  Any slot this creates is upgraded by the next getCoordinators() call. */
 function slot(sessionId: string): SessionCoordinators {
   let c = registry.get(sessionId);
   if (!c) {

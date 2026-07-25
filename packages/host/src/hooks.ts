@@ -18,7 +18,7 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { resolveProject, openGlobal, openProject, appendEvent } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, appendEvent } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
@@ -50,8 +50,10 @@ export function registerHooks(pi: PiLikeAPI): void {
         try {
           const cwd = String(event?.cwd ?? process.cwd());
           const project = resolveProject(cwd);
+          // Open repo DB if available (for memory), otherwise fall back to worktree DB
+          const repoDb = project.repoKey ? openRepo(project.repoKey) : openProject(project.projectKey);
           const snap = assembleSnapshot(
-            { global: openGlobal(), project: openProject(project.projectKey) },
+            { global: openGlobal(), repo: repoDb },
             { charCap: 8000 },
           );
           if (snap && typeof event?.systemPrompt === "string") {

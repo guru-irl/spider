@@ -20,7 +20,7 @@ describe("learning graph", () => {
     ctx = makeOrgDb();
     const s = new SkillStore(ctx.db);
     s.upsert({ name: "auth-flow", category: "security" });
-    addMemory(ctx.db, "project", { category: "convention", content: "the auth flow uses PKCE" });
+    addMemory(ctx.db, "repo", { category: "convention", content: "the auth flow uses PKCE" });
     const g = buildLearningGraph(ctx.db, ctx.db, { persist: true });
     expect(g.nodes.some((n) => n.kind === "skill" && n.id === "auth-flow")).toBe(true);
     expect(g.edges.some((e) => e.target === "auth-flow")).toBe(true);

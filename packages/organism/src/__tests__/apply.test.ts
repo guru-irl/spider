@@ -11,7 +11,7 @@ afterEach(() => ctx?.cleanup());
 const deps = (db: any) => ({
   db,
   globalDb: db,
-  scope: "project" as const,
+  scope: "repo" as const,
   sessionId: "s1",
   skills: new SkillStore(db),
   project: { projectKey: "k", realPath: "/x", dbPath: "/x/.spider/project.db" } as any,
@@ -35,7 +35,7 @@ describe("applyDigest (fail-closed + budget)", () => {
     expect(summary.memoryStaged + summary.skillsStaged).toBe(2); // budget=2
     expect(summary.dropped).toBe(1); // 3 stageables, 1 dropped
     expect(summary.todosAdded).toBe(1);
-    expect(listPending(ctx.db, "project").length).toBe(summary.memoryStaged);
+    expect(listPending(ctx.repoDb, "repo").length).toBe(summary.memoryStaged);
     expect(listTodos(ctx.db, "s1")).toHaveLength(1);
   });
 

@@ -16,7 +16,7 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, type Db } from "@spider/db-core";
 import {
   stageWrite, recall, listPending, approvePending, rejectPending,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
@@ -91,9 +91,19 @@ function makeIndexer(db: Db) {
 }
 
 // scope + per-call DB selection (ctx-native: reuse the DBs buildActionCtx resolved).
-const scopeOf = (a: any) => (a?.scope === "global" ? "global" : "project");
-const dbFor = (scope: "global" | "project", ctx: ActionCtx | undefined) =>
-  scope === "global" ? ctx!.globalDb : ctx!.db;
+// "project" is a deprecated alias for "worktree"
+const scopeOf = (a: any): "global" | "repo" | "worktree" => {
+  if (a?.scope === "global") return "global";
+  if (a?.scope === "repo") return "repo";
+  if (a?.scope === "worktree") return "worktree";
+  if (a?.scope === "project") return "worktree"; // deprecated alias
+  return "worktree"; // default
+};
+const dbFor = (scope: "global" | "repo" | "worktree", ctx: ActionCtx | undefined) => {
+  if (scope === "global") return ctx!.globalDb;
+  if (scope === "repo") return ctx!.repoDb;
+  return ctx!.db; // worktree
+};
 
 interface PiToolAPI {
   registerTool(tool: {
@@ -235,11 +245,12 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
     }
   };
   return {
-    db: ctx.db,
+    db: ctx.repoDb,
     globalDb: ctx.globalDb,
     project: ctx.project,
     worker: new OrganismWorker({
-      db: ctx.db,
+      db: ctx.repoDb,
+      worktreeDb: ctx.db,
       globalDb: ctx.globalDb,
       project: ctx.project,
       getEmbedder,
@@ -389,7 +400,10 @@ export function cwdOf(ctx: unknown): string | undefined {
 export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd?: string): ActionCtx {
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   const project = resolveProject(cwd);
-  return { db: openProject(project.projectKey), globalDb: openGlobal(), project, sessionId, cwd, pi, models };
+  const worktreeDb = openProject(project.projectKey);
+  // Open repo DB if available (git repo), otherwise fall back to worktree DB
+  const repoDb = project.repoKey ? openRepo(project.repoKey) : worktreeDb;
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
@@ -625,7 +639,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
   try {
     const orgCwd = process.cwd();
     const project = resolveProject(orgCwd);
-    const orgDb = openProject(project.projectKey);
+    const orgWorktreeDb = openProject(project.projectKey);
+    // Open repo DB if available (for skills and curator_state), otherwise fall back to worktree DB
+    const orgRepoDb = project.repoKey ? openRepo(project.repoKey) : orgWorktreeDb;
     const orgGlobalDb = openGlobal();
     const cfg = controlConfig("get", orgCwd);
 
@@ -649,7 +665,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     };
 
     registerOrganism(pi, pi, {
-      db: orgDb,
+      db: orgRepoDb,
+      worktreeDb: orgWorktreeDb,
       globalDb: orgGlobalDb,
       project,
       getEmbedder,

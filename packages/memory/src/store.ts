@@ -21,7 +21,10 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
     assertWithinCap(db, scope, input.content.length, cap);
   }
 
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+
+  if (actualScope === "repo" || actualScope === "worktree") {
     const insertRecord = db.transaction(() => {
       const result = db.prepare(`
         INSERT INTO memory (uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at)
@@ -82,14 +85,17 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
 }
 
 export function getMemory(db: Db, scope: MemoryScope, uuid: string): MemoryRecord | null {
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+  
+  if (actualScope === "repo" || actualScope === "worktree") {
     const row = db.prepare(`
       SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
       FROM memory
       WHERE uuid = ?
     `).get(uuid) as any;
 
-    return row ? mapRow("project", row) : null;
+    return row ? mapRow(scope, row) : null;
   } else {
     const row = db.prepare(`
       SELECT id, uuid, category, content, link, scope, status, source, confidence, created_at, updated_at
@@ -110,8 +116,11 @@ export function searchMemoryFts(
   const category = opts?.category;
   const limit = opts?.limit ?? 10;
 
-  if (scope === "project") {
-    // Use FTS for project scope
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+
+  if (actualScope === "repo" || actualScope === "worktree") {
+    // Use FTS for repo/worktree scope
     let sql = `
       SELECT m.id, m.uuid, m.category, m.content, m.link, m.status, m.source, m.confidence, m.session_id, m.created_at, m.updated_at
       FROM memory m
@@ -131,7 +140,7 @@ export function searchMemoryFts(
     params.push(limit);
 
     const rows = db.prepare(sql).all(...params) as any[];
-    return rows.map((row) => mapRow("project", row));
+    return rows.map((row) => mapRow(scope, row));
   } else {
     // Global scope: fallback to LIKE (no FTS table)
     let sql = `
@@ -158,7 +167,10 @@ export function searchMemoryFts(
 export function setStatus(db: Db, scope: MemoryScope, uuid: string, status: MemoryStatus): void {
   const updatedAt = Date.now();
 
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+
+  if (actualScope === "repo" || actualScope === "worktree") {
     db.transaction(() => {
       // Get current status to determine FTS sync action
       const current = db.prepare(`SELECT status FROM memory WHERE uuid = ?`).get(uuid) as { status: string } | undefined;
@@ -209,7 +221,10 @@ export function removeMemory(db: Db, scope: MemoryScope, uuid: string): void {
   // Never hard-delete: archive and remove from FTS
   const updatedAt = Date.now();
 
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+
+  if (actualScope === "repo" || actualScope === "worktree") {
     db.transaction(() => {
       db.prepare(`
         UPDATE memory
@@ -230,7 +245,10 @@ export function removeMemory(db: Db, scope: MemoryScope, uuid: string): void {
 }
 
 export function isDuplicate(db: Db, scope: MemoryScope, category: MemoryCategory, content: string): boolean {
-  if (scope === "project") {
+  // "project" is a deprecated alias for "worktree"
+  const actualScope = scope === "project" ? "worktree" : scope;
+  
+  if (actualScope === "repo" || actualScope === "worktree") {
     const result = db.prepare(`
       SELECT COUNT(*) as count
       FROM memory

@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { join, isAbsolute, resolve, dirname } from "node:path";
 import { openDb, type Db } from "./db";
 import { migrate } from "./migrate";
-import { paths, type Scope, worktreeRoot } from "./paths";
+import { paths, type Scope, worktreeRoot, repoRoot } from "./paths";
 
 export interface ProjectInfo {
   projectKey: string;
@@ -24,6 +24,8 @@ export function setGlobalDbPathForTests(path: string | null): void {
 function globalDbPath(): string {
   return _globalDbPathOverride ?? join(paths.globalRoot, "spider.db");
 }
+
+export { repoRoot } from "./paths";
 
 export function openGlobal(): Db {
   const db = openDb(globalDbPath());
@@ -97,7 +99,16 @@ export function openProject(projectKey: string): Db {
   }
   mkdirSync(join(dbPath, ".."), { recursive: true });
   const db = openDb(dbPath);
-  migrate(db, "project");
+  migrate(db, "worktree");
+  return db;
+}
+
+/** Open a repo-tier DB by its repo_key (git common dir). */
+export function openRepo(repoKey: string): Db {
+  const dbPath = join(repoKey, "spider", "repo.db");
+  mkdirSync(join(dbPath, ".."), { recursive: true });
+  const db = openDb(dbPath);
+  migrate(db, "repo");
   return db;
 }
 
@@ -107,13 +118,15 @@ export function openProject(projectKey: string): Db {
 export function openDbAt(absPath: string, scope?: Scope): Db {
   mkdirSync(dirname(absPath), { recursive: true });
   const db = openDb(absPath);
-  const resolved: Scope = scope ?? (absPath === join(paths.globalRoot, "spider.db") ? "global" : "project");
-  migrate(db, resolved);
+  const resolved: Scope = scope ?? (absPath === join(paths.globalRoot, "spider.db") ? "global" : "worktree");
+  // Map "project" to "worktree" for the deprecated alias
+  const actualScope = resolved === "project" ? "worktree" : resolved;
+  migrate(db, actualScope);
   return db;
 }
 
 /** Open a project's DB by its real path (explicit-path open; no registry key needed) (A3). */
 export function openProjectByPath(realPath: string): Db {
   const dbPath = join(paths.projectRoot(realpathSync(realPath)), "project.db");
-  return openDbAt(dbPath, "project");
+  return openDbAt(dbPath, "worktree");
 }

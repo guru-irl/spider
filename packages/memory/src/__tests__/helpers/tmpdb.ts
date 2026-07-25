@@ -4,8 +4,8 @@ import { rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 export function makeMemDb(): { db: Db; cleanup(): void } {
-  const dbPath = join(paths.scratch("project", process.cwd()), `mem-${randomUUID()}.db`);
-  const db = openDbAt(dbPath, "project");
+  const dbPath = join(paths.scratch("repo", process.cwd()), `mem-${randomUUID()}.db`);
+  const db = openDbAt(dbPath, "repo");
   
   return {
     db,

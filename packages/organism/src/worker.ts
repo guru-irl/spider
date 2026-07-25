@@ -23,7 +23,8 @@ import type { OrganismConfig } from "./config.js";
 
 /** Everything the worker needs to drain a session and curate the skill store. */
 export interface WorkerDeps {
-  db: Db;
+  db: Db;  // repo DB: memory, skills, curator_state
+  worktreeDb: Db;  // worktree DB: sessions, runs, run_events, events, todos, content
   globalDb: Db;
   project: ProjectInfo;
   getEmbedder: () => Promise<Embedder | null>;
@@ -87,7 +88,7 @@ export class OrganismWorker {
     const { db, globalDb, org, project } = this.#deps;
     if (!org.enabled) return zeroSummary();
 
-    const bundle = drainSession(db, sessionId, reason, opts);
+    const bundle = drainSession(this.#deps.worktreeDb, sessionId, reason, opts);
     const model = this.#deps.makeModel();
 
     const results: DigestResult[] = [];

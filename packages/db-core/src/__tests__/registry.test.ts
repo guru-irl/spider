@@ -52,8 +52,8 @@ describe("projects registry", () => {
   });
 
   it("openDbAt opens + migrates a DB at an explicit path (A3)", () => {
-    const db = openDbAt(scratchDbPath("explicit"), "project");
-    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'memory'").get();
+    const db = openDbAt(scratchDbPath("explicit"), "worktree");
+    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'sessions'").get();
     db.close();
     expect(t).toBeTruthy();
   });

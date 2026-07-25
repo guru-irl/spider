@@ -141,9 +141,7 @@ export function registerHooks(pi: PiLikeAPI): void {
           const reason = `bash is disabled in this project — use spider exec (only what you print enters context).
 
 Replace this call with:
-  spider({ action: "exec", language: "shell", code: ${JSON.stringify(displayCmd)} })
-
-To disable enforcement: spider control config set exec.enforce false`;
+  spider({ action: "exec", language: "shell", code: ${JSON.stringify(displayCmd)} })`;
           
           return { block: true, reason };
         } catch {

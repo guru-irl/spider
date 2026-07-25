@@ -18,7 +18,7 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { resolveProject, openGlobal, openProject } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, appendEvent } from "@spider/db-core";
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns } from "@spider/subagents";
@@ -63,18 +63,44 @@ export function registerHooks(pi: PiLikeAPI): void {
     } else if (name === "session_start") {
       pi.on(name, (event: any) => {
         try {
+          const cwd = String(event?.cwd ?? process.cwd());
+          const project = resolveProject(cwd);
+          const db = openProject(project.projectKey);
+          
+          // Reap subagents orphaned by a host that died without firing session_shutdown
+          // (crash / dead tty / SIGKILL). Best-effort and defensive: a reaper failure must
+          // never block session start.
+          void reapOrphanRuns({ db })
+            .then((r) => {
+              if (r.error) {
+                try {
+                  appendEvent(db, {
+                    sessionId: String(event?.sessionId ?? "unknown"),
+                    ts: Date.now(),
+                    phase: "after",
+                    tool: "reaper",
+                    description: `orphan reaper failed: ${r.error}`,
+                  });
+                } catch { /* best-effort event logging */ }
+              }
+            })
+            .catch((e) => {
+              try {
+                appendEvent(db, {
+                  sessionId: String(event?.sessionId ?? "unknown"),
+                  ts: Date.now(),
+                  phase: "after",
+                  tool: "reaper",
+                  description: `orphan reaper rejected: ${String((e as Error)?.message ?? e)}`,
+                });
+              } catch { /* best-effort event logging */ }
+            });
+          
           const id = event?.sessionId;
           if (id) {
-            const cwd = String(event?.cwd ?? process.cwd());
-            const project = resolveProject(cwd);
-            const db = openProject(project.projectKey);
             db
               .prepare("INSERT OR IGNORE INTO sessions(id, reason, started_at) VALUES (?, ?, ?)")
               .run(String(id), event?.reason ?? null, Date.now());
-            // Reap subagents orphaned by a host that died without firing session_shutdown
-            // (crash / dead tty / SIGKILL). Best-effort and defensive: a reaper failure must
-            // never block session start.
-            void reapOrphanRuns({ db }).catch(() => {});
           }
         } catch {
           // session upsert is best-effort; never block session start.

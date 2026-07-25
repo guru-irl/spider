@@ -275,6 +275,10 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     case "config": {
       const op = (args.op as "get" | "set") ?? "get";
       if (op === "set" && args.key) {
+        // Protected key: exec.enforce can only be changed by the user via slash command
+        if (String(args.key) === "exec.enforce") {
+          return { error: "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command" };
+        }
         const r = applyConfigEdit(cwd, String(args.key), String(args.value));
         return { details: { ok: r.ok, error: r.error, key: args.key, value: args.value } };
       }
@@ -445,6 +449,73 @@ export default function spiderExtension(pi: PiToolAPI): void {
         details?: unknown;
       }>,
     alreadyRegistered: new Set(["todos", "agents"]),
+  });
+
+  // User-only /exec-enforce command (bypasses model-facing guard)
+  pi.registerCommand?.("exec-enforce", {
+    description: "Control bash enforcement (user only)",
+    handler: async (args: string, ctx: unknown) => {
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const arg = typeof args === "string" ? args.trim().toLowerCase() : "";
+      
+      // No argument: report current state
+      if (!arg) {
+        const current = controlConfig("get", cwd, "exec.enforce");
+        const state = current === false ? "OFF" : "ON";
+        const text = `exec.enforce is ${state} (default: ON)`;
+        
+        if (typeof (pi as any).sendMessage === "function") {
+          (pi as any).sendMessage({
+            customType: "spider.command",
+            content: text,
+            display: true,
+            details: { args: { command: "exec-enforce" }, result: { text, current } },
+          });
+        } else {
+          const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+          if (typeof notify === "function") notify(text, "info");
+        }
+        return;
+      }
+      
+      // Parse on/off/true/false/1/0
+      let value: boolean;
+      if (["on", "true", "1"].includes(arg)) {
+        value = true;
+      } else if (["off", "false", "0"].includes(arg)) {
+        value = false;
+      } else {
+        const text = `Invalid argument: "${arg}". Use: on|off|true|false`;
+        if (typeof (pi as any).sendMessage === "function") {
+          (pi as any).sendMessage({
+            customType: "spider.command",
+            content: text,
+            display: true,
+            details: { args: { command: "exec-enforce", arg }, result: { error: text } },
+          });
+        } else {
+          const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+          if (typeof notify === "function") notify(text, "error");
+        }
+        return;
+      }
+      
+      // Set via controlConfig directly (bypasses the model-facing guard)
+      controlConfig("set", cwd, "exec.enforce", value);
+      const text = `exec.enforce set to ${value ? "ON" : "OFF"}`;
+      
+      if (typeof (pi as any).sendMessage === "function") {
+        (pi as any).sendMessage({
+          customType: "spider.command",
+          content: text,
+          display: true,
+          details: { args: { command: "exec-enforce", arg, value }, result: { text, value } },
+        });
+      } else {
+        const notify = (ctx as { ui?: { notify?: (t: string, k?: string) => void } })?.ui?.notify;
+        if (typeof notify === "function") notify(text, "info");
+      }
+    },
   });
 
   // NOTE: the background embed worker is intentionally NOT started here (no eager

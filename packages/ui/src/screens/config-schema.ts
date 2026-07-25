@@ -32,6 +32,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "routing.injectionScan", label: "Injection scan", type: "boolean", default: true, description: "Prompt-injection scan of results." },
 		{ key: "routing.autoIndexThreshold", label: "Auto-index threshold (bytes)", type: "number", default: 4000, min: 0, max: 1000000, description: "Large-output auto-index cutoff." },
 	]},
+	{ id: "exec", label: "Exec enforcement", fields: [
+		{ key: "exec.enforce", label: "Enforce spider exec", type: "boolean", default: true, description: "Block bash tool; model must use spider exec." },
+	]},
 	{ id: "curator", label: "Skill curator", fields: [
 		{ key: "curator.minIntervalHours", label: "Min interval (h)", type: "number", default: 24, min: 1, max: 336, description: "Minimum hours between curator runs." },
 	]},

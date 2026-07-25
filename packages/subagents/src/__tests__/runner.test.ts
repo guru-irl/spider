@@ -3,7 +3,7 @@ import { Runner, type Spawner, type ChildHandle } from "../runner";
 import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
 import { getChild } from "../coordinators";
-import { freshDb } from "./helpers/testutil";
+import { freshDb, testScratchPath } from "./helpers/testutil";
 import { appendRunEvent } from "@spider/db-core";
 import { latestRunOutput } from "../completion-output";
 
@@ -20,8 +20,8 @@ function fakeSpawn(result: { exitCode: number; result?: string }): Spawner {
 }
 
 const deps = (spawn: Spawner) => ({
-  scratchRoot: "/x/.spider/scratch",
-  dbPath: "/x/.spider/project.db",
+  scratchRoot: testScratchPath("runner-scratch"),
+  dbPath: testScratchPath("runner.db"),
   spawn,
 });
 

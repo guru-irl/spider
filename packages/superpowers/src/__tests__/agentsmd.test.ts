@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { paths } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { upsertManagedBlock, isLegacyFiveToolGuide, writeAgentsMd } from "../agentsmd.js";
 import { buildSpiderBlock, SPIDER_BLOCK_START, SPIDER_BLOCK_END } from "../agentsmd-content.js";
 
@@ -11,7 +11,7 @@ function countBlocks(s: string): number {
 }
 let n = 0;
 function scratchFile(name: string): string {
-  const dir = path.join(paths.scratch("project", process.cwd()), `agentsmd-${process.pid}-${n++}`);
+  const dir = testScratchPath( `agentsmd-${process.pid}-${n++}`);
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, name);
 }
@@ -70,7 +70,7 @@ describe("writeAgentsMd (IO)", () => {
     expect(r2.action).toBe("unchanged");
   });
   it("creates parent directories if missing", () => {
-    const p = path.join(paths.scratch("project", process.cwd()), `agentsmd-nested-${process.pid}-${n++}`, "deep", "AGENTS.md");
+    const p = path.join(testScratchPath(`agentsmd-nested-${process.pid}-${n++}`), "deep", "AGENTS.md");
     const r = writeAgentsMd(p);
     expect(r.action).toBe("created");
     expect(fs.existsSync(p)).toBe(true);

@@ -8,7 +8,12 @@ import { registerHooks } from "../hooks";
 import { controlConfig } from "../control";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `enforcement-${process.pid}`);
-beforeEach(() => { mkdirSync(scratch, { recursive: true }); setGlobalDbPathForTests(join(scratch, `g-${Date.now()}.db`)); });
+beforeEach(() => { 
+  mkdirSync(scratch, { recursive: true }); 
+  // Initialize as git repo so projectRoot resolves to this directory, not parent repo
+  require("child_process").execFileSync("git", ["init", "-q"], { cwd: scratch });
+  setGlobalDbPathForTests(join(scratch, `g-${Date.now()}.db`)); 
+});
 afterEach(() => { setGlobalDbPathForTests(null); rmSync(scratch, { recursive: true, force: true }); });
 
 describe("tool_call hook bash enforcement", () => {

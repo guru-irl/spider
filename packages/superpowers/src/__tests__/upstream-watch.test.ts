@@ -2,13 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { paths, openGlobal, openProject, migrate, resolveProject, setGlobalDbPathForTests } from "@spider/db-core";
+import { openGlobal, openDbAt, migrate, setGlobalDbPathForTests } from "@spider/db-core";
 import { diffUpstream, runUpstreamWatch, seedUpstreamRefs, markReviewed, type GitRunner } from "../upstream-watch.js";
+import { testScratchPath } from "./testutil.js";
 
 const realGit: GitRunner = (repo, args) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
 
 function tempRepo(): { dir: string; commit: (msg: string) => string } {
-  const dir = path.join(paths.scratch("project", process.cwd()), `uw-repo-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const dir = testScratchPath(`uw-repo-${process.pid}-${Math.random().toString(36).slice(2)}`);
   fs.mkdirSync(dir, { recursive: true });
   const run = (...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" });
   run("init", "-q");
@@ -48,15 +49,12 @@ describe("diffUpstream", () => {
 
 // Hermetic: point openGlobal() at a scratch DB so tests never touch the real
 // ~/.pi/agent/spider/spider.db. Reset after.
-const scratchGlobalDb = path.join(
-  paths.scratch("project", process.cwd()),
-  `uw-global-${process.pid}-${Math.random().toString(36).slice(2)}.db`,
-);
+const scratchGlobalDb = testScratchPath(`uw-global-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
 beforeAll(() => { setGlobalDbPathForTests(scratchGlobalDb); });
 afterAll(() => { setGlobalDbPathForTests(null); });
 
 function scratchProject(): { cwd: string; sessionId: string } {
-  const cwd = path.join(paths.scratch("project", process.cwd()), `uw-proj-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const cwd = testScratchPath(`uw-proj-${process.pid}-${Math.random().toString(36).slice(2)}`);
   fs.mkdirSync(cwd, { recursive: true });
   return { cwd, sessionId: "s-uw" };
 }
@@ -74,8 +72,7 @@ describe("runUpstreamWatch", () => {
     markReviewed(gdb, "superpowers", base);
 
     const { cwd, sessionId } = scratchProject();
-    const info = resolveProject(cwd);
-    const pdb = openProject(info.projectKey);
+    const pdb = openDbAt(path.join(cwd, "project.db"), "project");
     migrate(pdb, "project");
 
     const deps = { git: realGit, localRepos: { superpowers: r.dir } };
@@ -108,12 +105,11 @@ describe("runUpstreamWatch resilience", () => {
     seedUpstreamRefs(gdb);
     markReviewed(gdb, "superpowers", "deadbeef");
 
-    const notARepo = path.join(paths.scratch("project", process.cwd()), `uw-notgit-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const notARepo = testScratchPath(`uw-notgit-${process.pid}-${Math.random().toString(36).slice(2)}`);
     fs.mkdirSync(notARepo, { recursive: true });
 
     const { cwd, sessionId } = scratchProject();
-    const info = resolveProject(cwd);
-    const pdb = openProject(info.projectKey);
+    const pdb = openDbAt(path.join(cwd, "project.db"), "project");
     migrate(pdb, "project");
 
     const rep = runUpstreamWatch(gdb, pdb, sessionId, { git: realGit, localRepos: { superpowers: notARepo } });

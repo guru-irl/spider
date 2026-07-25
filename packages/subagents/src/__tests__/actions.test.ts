@@ -1,14 +1,14 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths } from "@spider/db-core";
+import { openDbAt } from "@spider/db-core";
 import { makeRunHandler } from "../actions/run";
 import { makeMessageHandler } from "../actions/message";
 import { makeKillHandler } from "../actions/kill";
 import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
 import { RunStore } from "../run-store";
 import { teardownAll, registerChild, getChild } from "../coordinators";
-import { freshDb } from "./helpers/testutil";
+import { freshDb, testScratchPath } from "./helpers/testutil";
 import { registerSubagentActions } from "../index";
 
 function fakeEvents() {
@@ -57,7 +57,7 @@ describe("run action routing", () => {
     });
     const handler = makeRunHandler({ makeRunner: fakeRunner as any, makeStore: () => store });
     // parent is on opus:low → children inherit base model 'opus' + thinking 'low'
-    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: "/x/db" }, pi: { events: { on() {}, emit() {} } }, model: { id: "github-copilot/claude-opus-4.8:low" } };
+    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") }, pi: { events: { on() {}, emit() {} } }, model: { id: "github-copilot/claude-opus-4.8:low" } };
     await handler({ agent: "worker", task: "x" } as any, ctx);
     expect(seen[0].model).toBe("github-copilot/claude-opus-4.8");
     expect(seen[0].thinking).toBe("low");
@@ -83,7 +83,7 @@ describe("run action routing", () => {
       },
     });
     const handler = makeRunHandler({ makeRunner: fakeRunnerFactory as any, makeStore: () => store });
-    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: "/x/db" }, pi: { events: { on() {}, emit() {} } } };
+    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") }, pi: { events: { on() {}, emit() {} } } };
     const res = await handler({ agent: "worker", task: "do it" } as any, ctx);
     expect(calls).toContain("single:worker");
     expect((res as any).isError).not.toBe(true);
@@ -99,7 +99,7 @@ describe("run action routing", () => {
       makeStore: () => store,
       makePipeline: () => ({ start: () => { started = true; return { pipelineId: "pl", firstRunId: "p0" }; }, dispose() {} }) as any,
     });
-    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: "/x/db" }, pi: { events: { on() {}, emit() {} } } };
+    const ctx: any = { db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") }, pi: { events: { on() {}, emit() {} } } };
     await handler({ pipeline: [{ agent: "worker" }, { agent: "worker", role: "reviewer" }], handoff: "intercom" } as any, ctx);
     expect(started).toBe(true);
   });
@@ -113,7 +113,7 @@ describe("run action routing", () => {
       makeStore: () => store,
       makeRunner: (_db: any, _sid: string, _cwd: string, deps: any) => { tailers.push(deps.tailer); return fakeRunner as any; },
     });
-    const ctx: any = { db, globalDb: db, sessionId: "reuse", cwd: process.cwd(), project: { dbPath: "/x/db" }, pi: { events: { on() {}, emit() {} } } };
+    const ctx: any = { db, globalDb: db, sessionId: "reuse", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") }, pi: { events: { on() {}, emit() {} } } };
     await handler({ agent: "worker", task: "a" } as any, ctx);
     await handler({ agent: "worker", task: "b" } as any, ctx);
     expect(tailers).toHaveLength(2);
@@ -129,7 +129,7 @@ describe("run action routing", () => {
       makeRunner: () => ({ runAsync: (o: any) => { const { id } = store.create({ sessionId: "pl-sess", agent: o.agent }); store.start(id); return store.get(id); } }) as any,
       makePipeline: () => ({ start: () => ({ pipelineId: "pl", firstRunId: "p0" }), dispose: disposeSpy }) as any,
     });
-    const ctx: any = { db, globalDb: db, sessionId: "pl-sess", cwd: process.cwd(), project: { dbPath: "/x/db" }, pi: { events: { on() {}, emit() {} } } };
+    const ctx: any = { db, globalDb: db, sessionId: "pl-sess", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") }, pi: { events: { on() {}, emit() {} } } };
     await handler({ pipeline: [{ agent: "worker" }], handoff: "intercom" } as any, ctx);
     expect(disposeSpy).not.toHaveBeenCalled();
     teardownAll();
@@ -139,16 +139,16 @@ describe("run action routing", () => {
 
 describe("message action handler", () => {
   function globalDb() {
-    return openDbAt(join(paths.scratch("project", process.cwd()), `msg-${randomUUID()}.db`), "global");
+    return openDbAt(testScratchPath(`msg-${randomUUID()}.db`), "global");
   }
 
-  it("reports NOT delivered + isError when intercom delivery times out", async () => {
+  it("reports queued (not error) when intercom delivery times out (queue-first durability)", async () => {
     const gdb = globalDb();
     const handler = makeMessageHandler();
     const ctx: any = { pi: { events: fakeEvents() }, globalDb: gdb, sessionId: "from-sess" };
     const res: any = await handler({ to: "nobody", message: "hi", timeoutMs: 20 }, ctx);
-    expect(res.content).toContain("message NOT delivered");
-    expect(res.isError).toBe(true);
+    expect(res.content).toContain("message queued for nobody");
+    expect(res.isError).toBe(false); // Queued is not an error — message is durable
     const row = gdb.prepare(`SELECT * FROM message_mirror ORDER BY id DESC LIMIT 1`).get() as any;
     expect(row.to_session).toBe("nobody");
   });

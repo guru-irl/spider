@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths, type Db } from "@spider/db-core";
+import { openDbAt, type Db } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import { RunStore, makeKillHandler } from "@spider/subagents";
 import { renderKillResult } from "@spider/ui";
 
 function freshDb(): Db {
-  return openDbAt(join(paths.scratch("project", process.cwd()), `kill-boundary-${randomUUID()}.db`), "project");
+  return openDbAt(join(testScratchPath(".spider-test"), `kill-boundary-${randomUUID()}.db`), "project");
 }
 
 // Identity theme to get raw glyphs

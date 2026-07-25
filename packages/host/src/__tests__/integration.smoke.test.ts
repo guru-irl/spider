@@ -7,7 +7,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { openDbAt, paths, type Db } from "@spider/db-core";
+import { openDbAt, type Db } from "@spider/db-core";
+import { testScratchPath } from "./testutil.js";
 import {
   stageWrite,
   listPending,
@@ -43,7 +44,7 @@ const fakeEmbedder: Embedder = {
 };
 
 function makeProjectDb(): { db: Db; dbPath: string; cleanup(): void } {
-  const scratchRoot = paths.scratch("project", process.cwd());
+  const scratchRoot = testScratchPath(".spider-test");
   const dbPath = join(scratchRoot, `smoke-${randomUUID()}.db`);
   const db = openDbAt(dbPath, "project");
   return {
@@ -76,7 +77,7 @@ describe("Phase 1 integration smoke: memory write->approve->snapshot->embed->knn
 
     // --- Guard: scratch db is NOT under /tmp, and IS under the scratch root. ---
     expect(dbPath).not.toContain("/tmp");
-    expect(dbPath.startsWith(paths.scratch("project", process.cwd()))).toBe(true);
+    expect(dbPath.startsWith(testScratchPath(".spider-test"))).toBe(true);
 
     const content = "spider uses a shared sqlite db as the single source of truth";
 

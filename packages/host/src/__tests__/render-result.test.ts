@@ -265,23 +265,27 @@ describe("run block colors (#36)", () => {
     expect(out).toContain("high");
   });
 
-describe("exec: full command shown above the output, not on the call line", () => {
+describe("exec: command shown on the call, output on the result", () => {
   const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s };
   const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
   const body = (args: any, details: any, expanded: boolean) =>
     renderSpiderResult(mkResult(details), { expanded } as any, theme, mkCtx(args)).render(200).join("\n");
 
-  it("keeps the command OFF the call header line (just the verb)", () => {
-    expect(call({ action: "exec", language: "shell", code: "echo hi; seq 1 20" })).not.toContain("echo hi");
-    expect(call({ action: "exec_file", path: "packages/x/y.ts", code: "x" })).not.toContain("packages/x/y.ts");
-    expect(call({ action: "batch", commands: [{ code: "echo one" }, { code: "echo two" }] })).not.toContain("echo one");
+  // Reversed deliberately. The call renders when the tool is INVOKED, the result only when
+  // the command EXITS — so keeping the command off the call made a long-running command
+  // show as a bare "spider · exec" with no indication of what was running.
+  it("puts the command ON the call, so it is visible while the command runs", () => {
+    expect(call({ action: "exec", language: "shell", code: "echo hi; seq 1 20" })).toContain("echo hi");
+    expect(call({ action: "exec_file", path: "packages/x/y.ts", code: "x" })).toContain("packages/x/y.ts");
+    expect(call({ action: "batch", commands: [{ code: "echo one" }, { code: "echo two" }] })).toContain("echo one");
   });
 
-  it("exec shows the full command above the output, collapsed to the first line + a ctrl+o hint", () => {
+  it("collapsed result carries the OUTPUT only — the call header already showed the command", () => {
     const out = body({ action: "exec", code: "cd /x\nnpm test\necho done" }, { stdout: "ok\n", exitCode: 0 }, false);
-    expect(out).toContain("cd /x");
-    expect(out).not.toContain("echo done"); // collapsed
-    expect(out).toMatch(/ctrl\+o/);
+    expect(out).toContain("ok");
+    // Mutation this catches: re-add the collapsed command block -> duplicates the call header.
+    expect(out).not.toContain("cd /x");
+    expect(out).not.toContain("echo done");
   });
 
   it("ctrl+o expands the full command (all lines)", () => {
@@ -291,8 +295,8 @@ describe("exec: full command shown above the output, not on the call line", () =
     expect(out).toContain("echo done");
   });
 
-  it("exec_file shows the path and batch shows command labels in the body", () => {
-    expect(body({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, { stdout: "", exitCode: 0 }, false)).toContain("packages/x/y.ts");
+  it("exec_file path and batch labels appear when expanded", () => {
+    expect(body({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, { stdout: "", exitCode: 0 }, true)).toContain("packages/x/y.ts");
     const b = body({ action: "batch", commands: [{ label: "one", code: "echo one" }, { label: "two", code: "echo two" }] }, [{ stdout: "", exitCode: 0 }], true);
     expect(b).toContain("one");
     expect(b).toContain("two");
@@ -362,5 +366,49 @@ describe("renderCommandOutput (slash-command transcript message)", () => {
     expect(out).toContain("better-sqlite3: loaded"); // themed doctor body (via renderSpiderResult)
     expect(out).toContain("[toolSuccessBg]");   // painted in the tool-success shell
     expect(out).not.toMatch(/\{\s*"/);          // no raw JSON
+  });
+});
+
+// The call header is what the user sees WHILE the command runs; the result only
+// arrives after it finishes. Putting the command in the result body meant a long
+// command showed as a bare "spider · exec" spinner with no indication of what was
+// running. The command belongs on the call.
+describe("renderSpiderCall shows the command while it runs", () => {
+  it("exec → the call header carries the command text", () => {
+    const c = renderSpiderCall({ action: "exec", language: "shell", code: "npm run build" }, theme, {});
+    assertComponent(c);
+    const text = c.render(80).join("\n");
+    // Mutation this catches: revert renderCall to the bare verb -> fails.
+    expect(text).toContain("npm run build");
+  });
+
+  it("exec_file → the call header carries the path", () => {
+    const c = renderSpiderCall({ action: "exec_file", path: "scripts/migrate.ts" }, theme, {});
+    const text = c.render(80).join("\n");
+    expect(text).toContain("scripts/migrate.ts");
+  });
+
+  it("batch → the call header lists the commands", () => {
+    const c = renderSpiderCall({ action: "batch", commands: [
+      { language: "shell", code: "npm test" },
+      { language: "shell", code: "npm run lint" },
+    ] }, theme, {});
+    const text = c.render(80).join("\n");
+    expect(text).toContain("npm test");
+    expect(text).toContain("npm run lint");
+  });
+
+  it("multi-line code → shows the first line, notes the rest, never floods the header", () => {
+    const code = ["set -e", "npm ci", "npm run build", "npm test"].join("\n");
+    const c = renderSpiderCall({ action: "exec", language: "shell", code }, theme, {});
+    const lines = c.render(80);
+    expect(lines.join("\n")).toContain("set -e");
+    expect(lines.length).toBeLessThanOrEqual(4);
+  });
+
+  it("non-exec actions keep the bare verb (no regression)", () => {
+    const c = renderSpiderCall({ action: "remember", content: "x" }, theme, {});
+    const text = c.render(80).join("\n");
+    expect(text).toContain("remember");
   });
 });

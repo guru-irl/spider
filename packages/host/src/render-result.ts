@@ -420,12 +420,38 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
   } else if (args?.sub || args?.command) {
     suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
   } else if (action === "exec" || action === "exec_file" || action === "batch") {
-    // The command / file / code is rendered in the RESULT body (above the output, white,
-    // truncated, ctrl+o to expand) — NOT on the header line. Keep the header to the bare verb.
+    // Keep the header line to the bare verb; the command goes BELOW it (see cmdLines).
     suffix = verb(action);
   }
   const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
-  return { render: (w: number) => [clip(line, w)], invalidate() {} };
+
+  // The call is rendered as soon as the tool is invoked; the result only lands when the
+  // command EXITS. So anything not on the call is invisible for the whole run — which is
+  // why a slow `npm run build` used to show as a bare "spider · exec" with no clue what
+  // was executing. Put the command here, and let the result carry only the output.
+  const cmdLines: string[] = [];
+  if (action === "exec" || action === "exec_file" || action === "batch") {
+    const raw =
+      action === "exec_file"
+        ? [String(args?.path ?? "file")]
+        : action === "batch"
+          ? (Array.isArray(args?.commands) ? args.commands : []).map((c: any) =>
+              String(c?.label ?? c?.code ?? c?.language ?? "cmd"),
+            )
+          : String(args?.code ?? "").split("\n");
+    const all = raw.flatMap((s: unknown) => String(s).split("\n")).filter((s: string) => s.trim() !== "");
+    // Cap hard: the header must stay a header. The full script is available on the
+    // result (ctrl+o), so nothing is lost by clipping here.
+    const HEAD = 2;
+    for (const c of all.slice(0, HEAD)) cmdLines.push(`${t.fg("dim", "│ ")}${t.fg("toolOutput", c)}`);
+    const rest = all.length - Math.min(all.length, HEAD);
+    if (rest > 0) cmdLines.push(`${t.fg("dim", `│ … +${rest} more line${rest === 1 ? "" : "s"}`)}`);
+  }
+
+  return {
+    render: (w: number) => [clip(line, w), ...cmdLines.map((c) => clip(c, w))],
+    invalidate() {},
+  };
 }
 
 export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {

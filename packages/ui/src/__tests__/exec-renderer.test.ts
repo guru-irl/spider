@@ -35,13 +35,15 @@ describe("exec renderer", () => {
     expect(text).toMatch(/more/);
   });
 
-  it("shows the full command above the output: collapsed to the first line, full on ctrl+o", () => {
+  it("collapsed shows output only; ctrl+o reveals the whole command", () => {
     const d = { kind: "exec" as const, commands: ["cd /x\nnpm test\necho done"], ok: true, exitCode: 0, outLines: 1, preview: ["ok"] };
     const collapsed = renderExecResult(d, { theme: id, width: 60, expanded: false }).join("\n");
-    expect(collapsed).toContain("cd /x");
+    // The call header owns the command now; repeating it collapsed duplicated it line for line.
+    expect(collapsed).not.toContain("cd /x");
     expect(collapsed).not.toContain("echo done");
-    expect(collapsed).toMatch(/ctrl\+o/);
+    expect(collapsed).toContain("ok");
     const expanded = renderExecResult(d, { theme: id, width: 60, expanded: true }).join("\n");
+    expect(expanded).toContain("cd /x");
     expect(expanded).toContain("npm test");
     expect(expanded).toContain("echo done");
   });

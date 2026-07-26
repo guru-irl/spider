@@ -412,7 +412,13 @@ export function cwdOf(ctx: unknown): string | undefined {
 /** Build ONE ActionCtx per dispatch (A2): both DBs, the resolved project, and the
  *  @spider/models router. A handler routes via
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
-export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd?: string): ActionCtx {
+export function buildActionCtx(
+  pi: PiToolAPI,
+  args: SpiderArgs,
+  sessionId: string,
+  ctxCwd?: string,
+  onPartial?: (text: string) => void,
+): ActionCtx {
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
   const explicitCwd = !!(args as { cwd?: unknown }).cwd;
@@ -424,7 +430,7 @@ export function buildActionCtx(pi: PiToolAPI, args: SpiderArgs, sessionId: strin
   const repoDb = project.repoKey
     ? openRepo(project.repoKey)
     : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models };
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
@@ -596,11 +602,25 @@ export default function spiderExtension(pi: PiToolAPI): void {
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
-    async execute(_toolCallId, args, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, args, _signal, onUpdate, ctx) {
+      // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
+      // empty update fired before any output exists: it materialises the result section
+      // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
+      // of nothing until exit. Subsequent calls carry cumulative, capped snapshots.
+      const emit = typeof onUpdate === "function" ? (onUpdate as (u: unknown) => void) : undefined;
+      const action = String((args as { action?: unknown })?.action ?? "");
+      const streams = action === "exec" || action === "exec_file" || action === "batch";
+      if (emit && streams) emit({ content: [], details: undefined });
+      const onPartial = emit && streams
+        ? (text: string) => {
+            try { emit({ content: [{ type: "text", text }], details: undefined, isPartial: true }); } catch { /* UI only */ }
+          }
+        : undefined;
+
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
-      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx)));
+      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial));
       return toToolResult(r);
     },
   });

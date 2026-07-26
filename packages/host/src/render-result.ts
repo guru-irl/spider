@@ -251,9 +251,16 @@ function renderControlMemory(t: T, details: any): Component {
   };
 }
 
-/** Map the raw executor result(s) → ExecDetails for renderExecResult. */
-function toExecDetails(action: string, args: any, details: any): ExecDetails {
+/** Map the raw executor result(s) → ExecDetails for renderExecResult.
+ *  `partialText` is set only while streaming: pi's partial updates carry the output in
+ *  `content`, not `details`, so without it a running command renders as "exit 0 · 0 lines". */
+function toExecDetails(action: string, args: any, details: any, partialText?: string): ExecDetails {
   const kind = action as ExecKind;
+  if (partialText !== undefined) {
+    const lines = partialText.split("\n").filter(Boolean);
+    const cmd = action === "exec_file" ? String(args?.path ?? "file") : String(args?.code ?? "");
+    return { kind, commands: [cmd], ok: true, exitCode: 0, outLines: lines.length, preview: lines.slice(-12), running: true };
+  }
   if (action === "batch") {
     const arr: any[] = Array.isArray(details) ? details : [];
     const ok = arr.length > 0 && arr.every((r) => Number(r?.exitCode ?? 0) === 0);
@@ -344,7 +351,15 @@ export function renderSpiderResult(
     case "exec":
     case "exec_file":
     case "batch": {
-      const d = toExecDetails(action, context?.args, details);
+      // A partial update carries text in `content` and no `details`. Detect that and render
+      // the running state; otherwise render the finished result.
+      const isPartial = (options as { isPartial?: boolean } | undefined)?.isPartial === true;
+      const partialText = isPartial
+        ? (Array.isArray((result as any)?.content)
+            ? (result as any).content.map((c: any) => String(c?.text ?? "")).join("")
+            : "")
+        : undefined;
+      const d = toExecDetails(action, context?.args, details, partialText);
       const th = adaptTheme(t);
       return { render: (w: number) => renderExecResult(d, { theme: th, width: w, expanded }), invalidate() {} };
     }

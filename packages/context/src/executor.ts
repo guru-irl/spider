@@ -204,6 +204,13 @@ export interface ExecuteOptions {
   /** Keep process running after timeout instead of killing it. */
   background?: boolean;
   /**
+   * Called with each stdout/stderr chunk AS IT ARRIVES, before the process
+   * exits. Lets a caller stream partial output to the UI instead of showing
+   * nothing until close. Mirrors the pattern pi's built-in bash tool uses with
+   * its `onUpdate` callback. Optional — omitting it changes nothing.
+   */
+  onData?: (chunk: string) => void;
+  /**
    * Issue #45 — per-call cwd override for the shell language. When set,
    * the shell script runs in this directory instead of `#projectRoot`.
    * Non-shell languages keep their tmpDir sandbox cwd regardless (the
@@ -296,7 +303,7 @@ export class PolyglotExecutor {
       // Issue #45 — `cwdOverride` lets per-call sites (Codex MCP handlers) pin
       // cwd without mutating process-wide state.
       const cwd = cwdOverride ?? this.#projectRoot;
-      const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background);
+      const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background, opts.onData);
 
       // Skip tmpDir cleanup if process was backgrounded — it may still need files
       if (!result.backgrounded) {
@@ -404,6 +411,7 @@ export class PolyglotExecutor {
     sandboxTmpDir: string,
     timeout: number | undefined,
     background = false,
+    onData?: (chunk: string) => void,
   ): Promise<ExecResult> {
     return new Promise((res) => {
       // Only .cmd/.bat shims need shell on Windows; real executables don't.
@@ -512,6 +520,7 @@ export class PolyglotExecutor {
         totalBytes += chunk.length;
         if (totalBytes <= this.#hardCapBytes) {
           stdoutChunks.push(chunk);
+          onData?.(chunk.toString("utf-8"));
         } else if (!capExceeded) {
           capExceeded = true;
           killTree(proc);
@@ -522,6 +531,7 @@ export class PolyglotExecutor {
         totalBytes += chunk.length;
         if (totalBytes <= this.#hardCapBytes) {
           stderrChunks.push(chunk);
+          onData?.(chunk.toString("utf-8"));
         } else if (!capExceeded) {
           capExceeded = true;
           killTree(proc);

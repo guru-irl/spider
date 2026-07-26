@@ -3,6 +3,13 @@ import { capBytes } from "../truncate";
 
 export interface ExecCtx {
   cwd: string;
+  /**
+   * Called with a cumulative, capped snapshot of output while the command is
+   * still running. The host forwards this to pi's `onUpdate`, which makes the
+   * result section exist as a partial from the first chunk — so the user sees
+   * output arrive instead of a frozen spinner, and ctrl+o works mid-run.
+   */
+  onPartial?: (text: string) => void;
 }
 
 /** Model-facing output budget. Exec output enters the context window VERBATIM — nothing
@@ -18,6 +25,29 @@ const TRUNCATION_NOTE =
   "itself. For session/run history, query the DB rather than dumping logs.]";
 
 const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd });
+
+/** Throttle interval for partial updates. pi's bash tool throttles for the same reason:
+ *  a chatty command emits hundreds of chunks a second and repainting on each one costs
+ *  more than the output is worth. */
+const PARTIAL_THROTTLE_MS = 100;
+
+/** Build the executor `onData` hook that feeds ctx.onPartial with cumulative, capped,
+ *  throttled snapshots. Returns undefined when the caller wants no streaming, so the
+ *  non-streaming path stays exactly as it was. */
+function makeStreamer(ctx: ExecCtx): ((chunk: string) => void) | undefined {
+  if (typeof ctx.onPartial !== "function") return undefined;
+  let acc = "";
+  let lastAt = 0;
+  return (chunk: string) => {
+    acc += chunk;
+    const now = Date.now();
+    if (now - lastAt < PARTIAL_THROTTLE_MS) return;
+    lastAt = now;
+    // Cap partials too: an unbounded partial would blow the same budget the final
+    // result is capped to defend.
+    ctx.onPartial!(capExecOutput(acc));
+  };
+}
 
 /** Cap to the budget. When it truncates, say what to do instead — a bare "..." tells the
  *  agent nothing and it re-runs the same command, paying the same cost twice. */
@@ -36,6 +66,7 @@ export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; 
     code: args.code,
     timeout: args.timeout,
     background: args.background,
+    onData: makeStreamer(ctx),
   });
   return { text: shape(res), details: res, isError: res.exitCode !== 0 && !res.backgrounded };
 }

@@ -8,6 +8,9 @@ export type ExecKind = "exec" | "exec_file" | "batch";
 export interface ExecDetails {
   kind: ExecKind; commands: string[]; ok: boolean; exitCode: number;
   outLines: number; ms?: number; preview: string[]; indexed?: { source: string; chunks: number };
+  /** True while the command is still executing (pi's `options.isPartial`). The exit code is
+   *  not known yet, so the status line must not claim one. */
+  running?: boolean;
 }
 export interface IndexDetails {
   kind: "index" | "fetch"; source: string; targets: string[];

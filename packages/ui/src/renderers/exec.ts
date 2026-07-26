@@ -25,23 +25,20 @@ export function renderExecCall(
   return [head, ...body];
 }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · <kind>`).
- *  The full command is shown ABOVE the output in white (`text`): collapsed to its first line,
- *  fully expanded on ctrl+o. Then a status line and the output, `renderRun`-style (leading
+/** RESULT body (no header — the spider call line already shows `🕸 spider · <kind>` AND the
+ *  command). The result carries the OUTPUT. The command is repeated here only when expanded
+ *  (ctrl+o), where the full script is worth seeing; showing it collapsed would duplicate the
+ *  call header line for line. Then a status line and the output, `renderRun`-style (leading
  *  blank, 1-space indent, `⎿` gutter). */
 export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[] {
   const { theme, width, expanded } = ctx;
   const out: string[] = [""];
 
-  // Command block — white, above the output. exec → the full script (per line); exec_file → the
-  // path; batch → each command label. Collapsed shows the first line + a ctrl+o hint; ctrl+o
-  // (expanded) shows every line.
-  const cmdLines = (details.commands ?? []).flatMap((c) => String(c).split("\n"));
-  if (cmdLines.length) {
-    const shownCmd = expanded ? cmdLines : cmdLines.slice(0, 1);
-    for (const c of shownCmd) out.push(truncateToWidth(` ${theme.fg("text", c)}`, width, "…"));
-    const restCmd = cmdLines.length - shownCmd.length;
-    if (restCmd > 0) out.push(truncateToWidth(` ${theme.fg("dim", `… +${restCmd} more line${restCmd === 1 ? "" : "s"} (ctrl+o)`)}`, width, ""));
+  // Command block — EXPANDED ONLY. The call header already shows the first lines while the
+  // command runs; on ctrl+o we show the whole script, which the header deliberately clips.
+  if (expanded) {
+    const cmdLines = (details.commands ?? []).flatMap((c) => String(c).split("\n"));
+    for (const c of cmdLines) out.push(truncateToWidth(` ${theme.fg("text", c)}`, width, "…"));
   }
 
   const icon = statusIcon(theme, details.ok ? "ok" : "fail");

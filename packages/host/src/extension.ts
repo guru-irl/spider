@@ -54,6 +54,10 @@ const getEmbedder = () => (_emb ??= resolveEmbedder());
 // Routing owns tool_call/tool_result, which carry NO sessionId — so we keep a
 // mutable ref updated at session_start and hand routing a getter over it.
 let currentSessionId = "";
+/** Latest ModelRegistry seen from an ExtensionContext. The organism's aux-model seam runs
+ *  at activation time, where no ExtensionContext exists, so it reads this instead. Updated
+ *  on session_start and on every tool execute. */
+let latestModelRegistry: unknown;
 
 /** DEFAULT_ROUTING_CONFIG merged with any overrides stored under routing.* keys.
  *  Best-effort: never throws; on any doubt returns a fresh default clone. */
@@ -234,7 +238,7 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
   const cfg = controlConfig("get", ctx.cwd);
   const pi = ctx.pi as PiToolAPI;
   const call: AuxCall = async (rt, system, msgs) => {
-    const entry = ctx.models.pick(ctx.models.catalog(() => enumerate(pi)), { model: rt.model }, {});
+    const entry = ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.modelRegistry)), { model: rt.model }, {});
     const prompt = [system, ...msgs.map((m) => `${m.role.toUpperCase()}: ${m.content}`)].join("\n\n");
     return await ctx.models.complete(entry, prompt, {});
   };
@@ -345,7 +349,7 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
         const r = setModelDefault(cwd, String(args.key ?? ""), String(args.value ?? ""));
         return { details: { ok: r.ok, error: r.error, role: args.key, ref: args.value } };
       }
-      return { details: { catalog: listCatalog(ctx.pi), defaults: (controlConfig("get", cwd, "models.defaults") as Record<string, string>) ?? {} } };
+      return { details: { catalog: listCatalog(ctx.modelRegistry), defaults: (controlConfig("get", cwd, "models.defaults") as Record<string, string>) ?? {} } };
     }
     case "upstream-watch": {
       if (!ctx) return { error: "control upstream-watch requires an action context" };
@@ -386,12 +390,23 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
   }
 }
 
-// enumerate = pi's model surface ∩ availability (VALIDATE-FIRST A6: confirm listModels/availableModels).
-export function enumerate(pi: PiToolAPI): Array<{ provider: string; id: string; available: boolean; reasoning: boolean; vision: boolean; ctx: number }> {
-  const list = (pi as any).listModels?.() ?? (pi as any).availableModels ?? [];
-  return list.map((m: any) => ({
-    provider: m.provider ?? m.providerId, id: m.id,
-    available: m.available !== false, reasoning: !!m.reasoning, vision: !!m.vision, ctx: m.contextWindow,
+// enumerate = pi's model surface ∩ availability, read from ExtensionContext.modelRegistry.
+// The comment here used to say "VALIDATE-FIRST A6: confirm listModels/availableModels" -- that
+// confirmation was never done, and neither method exists on pi, so this always returned [].
+export function enumerate(registry: unknown): Array<{ provider: string; id: string; available: boolean; reasoning: boolean; vision: boolean; ctx: number }> {
+  const r = registry as { getAll?: () => unknown[]; getAvailable?: () => unknown[] } | undefined;
+  if (typeof r?.getAll !== "function") return [];
+  const availableKeys = new Set<string>();
+  const hasAvailability = typeof r.getAvailable === "function";
+  if (hasAvailability) {
+    for (const m of (r.getAvailable!() ?? []) as any[]) availableKeys.add(`${m?.provider ?? ""}/${m?.id ?? ""}`);
+  }
+  return ((r.getAll() ?? []) as any[]).map((m: any) => ({
+    provider: String(m?.provider ?? ""), id: String(m?.id ?? ""),
+    available: hasAvailability ? availableKeys.has(`${m?.provider ?? ""}/${m?.id ?? ""}`) : true,
+    reasoning: !!m?.reasoning,
+    vision: Array.isArray(m?.input) ? m.input.map(String).includes("image") : false,
+    ctx: Number(m?.contextWindow ?? 0),
   }));
 }
 
@@ -418,6 +433,7 @@ export function buildActionCtx(
   sessionId: string,
   ctxCwd?: string,
   onPartial?: (text: string) => void,
+  modelRegistry?: unknown,
 ): ActionCtx {
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
@@ -430,7 +446,7 @@ export function buildActionCtx(
   const repoDb = project.repoKey
     ? openRepo(project.repoKey)
     : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial };
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
@@ -607,6 +623,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // empty update fired before any output exists: it materialises the result section
       // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
       // of nothing until exit. Subsequent calls carry cumulative, capped snapshots.
+      latestModelRegistry = (ctx as { modelRegistry?: unknown })?.modelRegistry ?? latestModelRegistry;
       const emit = typeof onUpdate === "function" ? (onUpdate as (u: unknown) => void) : undefined;
       const action = String((args as { action?: unknown })?.action ?? "");
       const streams = action === "exec" || action === "exec_file" || action === "batch";
@@ -620,7 +637,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
-      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial));
+      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial, (ctx as { modelRegistry?: unknown })?.modelRegistry));
       return toToolResult(r);
     },
   });
@@ -663,8 +680,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // Keep the mutable session id fresh: tool_call/tool_result events carry no
   // sessionId, so routing reads it via getSessionId() over this ref. pi.on
   // chains, so hooks.ts's own session_start handler still runs too.
-  pi.on("session_start", (event: any) => {
+  pi.on("session_start", (event: any, ctx?: any) => {
     currentSessionId = String(event?.sessionId ?? currentSessionId);
+    latestModelRegistry = (ctx as { modelRegistry?: unknown })?.modelRegistry ?? latestModelRegistry;
     return undefined;
   });
 
@@ -730,7 +748,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     // @spider/models and replay the digest as a flat prompt. Integration-only
     // (worker tests inject a fake model); it must compile + build.
     const call: AuxCall = async (rt, system, msgs) => {
-      const entry = models.pick(models.catalog(() => enumerate(pi)), { model: rt.model }, {});
+      const entry = models.pick(models.catalog(() => enumerate(latestModelRegistry)), { model: rt.model }, {});
       const prompt = [system, ...msgs.map((m) => `${m.role.toUpperCase()}: ${m.content}`)].join("\n\n");
       return await models.complete(entry, prompt, {});
     };

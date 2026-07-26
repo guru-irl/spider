@@ -14,25 +14,50 @@ export function setModelDefault(cwd: string, role: string, ref: string): { ok: b
   return { ok: true };
 }
 
-// Local enumerate over pi's model surface (matches extension.ts `enumerate`; inlined to keep
-// control/models-cmd out of an import cycle with extension.ts).
-function enumerate(pi: unknown): EnumeratedModel[] {
-  const p = pi as { listModels?: () => unknown[]; availableModels?: unknown[] };
-  const list = p.listModels?.() ?? p.availableModels ?? [];
-  return (list as Array<Record<string, unknown>>).map((m) => ({
-    provider: String(m.provider ?? m.providerId ?? ""),
-    id: String(m.id ?? ""),
-    available: m.available !== false,
-    thinking: !!(m.thinking ?? m.reasoning),
-    vision: !!m.vision,
-    ctx: Number(m.contextWindow ?? 0) || undefined,
-  }));
+// Enumerate over pi's real model surface. `modelRegistry` is a ModelRegistry
+// (dist/core/model-registry.d.ts) exposed on the ExtensionContext — NOT on the extension
+// API object. This previously read `pi.listModels()` / `pi.availableModels`, neither of
+// which exists anywhere in pi, so the catalog was silently always empty.
+//
+// Field names are pi's, not ours: `reasoning` (not `thinking`), and vision is derived from
+// `input` containing "image" (there is no `vision` flag). Availability is not a property on
+// the model at all — it is membership in getAvailable().
+function enumerate(registry: unknown): EnumeratedModel[] {
+  const r = registry as {
+    getAll?: () => unknown[];
+    getAvailable?: () => unknown[];
+  } | undefined;
+  if (typeof r?.getAll !== "function") return [];
+
+  const all = (r.getAll() ?? []) as Array<Record<string, unknown>>;
+  const availableKeys = new Set<string>();
+  if (typeof r.getAvailable === "function") {
+    for (const m of (r.getAvailable() ?? []) as Array<Record<string, unknown>>) {
+      availableKeys.add(`${String(m.provider ?? "")}/${String(m.id ?? "")}`);
+    }
+  }
+  const hasAvailability = typeof r.getAvailable === "function";
+
+  return all.map((m) => {
+    const provider = String(m.provider ?? "");
+    const id = String(m.id ?? "");
+    const input = Array.isArray(m.input) ? (m.input as unknown[]).map(String) : [];
+    return {
+      provider,
+      id,
+      available: hasAvailability ? availableKeys.has(`${provider}/${id}`) : true,
+      thinking: !!m.reasoning,
+      vision: input.includes("image"),
+      ctx: Number(m.contextWindow ?? 0) || undefined,
+    };
+  });
 }
 
-/** Build the copilot model catalog from pi's live model surface, degrading to [] on any error. */
-export function listCatalog(pi: unknown): ModelEntry[] {
+/** Build the model catalog from pi's live registry, degrading to [] on any error.
+ *  Pass the ExtensionContext's `modelRegistry`, not the extension API. */
+export function listCatalog(registry: unknown): ModelEntry[] {
   try {
-    return catalog(() => enumerate(pi));
+    return catalog(() => enumerate(registry));
   } catch {
     return [];
   }

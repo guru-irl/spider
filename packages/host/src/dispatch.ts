@@ -21,6 +21,10 @@ export interface ActionCtx {
   pi: unknown;               // pi ExtensionAPI (events, sendMessage, on, registerTool)
   auxModel?: string;         // cheap aux-model id hint from config (digest routing)
   models: typeof import("@spider/models");  // model router: catalog()/pick()/complete()
+  /** Streams a cumulative, capped output snapshot to the UI while a command is still
+   *  running. Set by the host from pi's `onUpdate`; undefined for non-streaming callers
+   *  (subagents, tests), which is why every consumer must treat it as optional. */
+  onPartial?: (text: string) => void;
 }
 export type ActionHandler = (args: SpiderArgs, ctx: ActionCtx) => Promise<unknown> | unknown;
 

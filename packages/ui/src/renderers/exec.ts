@@ -41,6 +41,17 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     for (const c of cmdLines) out.push(truncateToWidth(` ${theme.fg("text", c)}`, width, "…"));
   }
 
+  // While running we do not know the exit code, so claiming "✓ exit 0" would be a lie that
+  // looks like success. Show a running marker and every line streamed so far — the whole
+  // point of streaming is watching it arrive, so the collapsed 1-line preview is wrong here.
+  if (details.running) {
+    out.push(truncateToWidth(` ${theme.fg("muted", "● running…")}`, width, ""));
+    for (const p of details.preview ?? []) {
+      out.push(truncateToWidth(` ${theme.fg("dim", "⎿ ")}${theme.fg("toolOutput", p)}`, width, ""));
+    }
+    return out;
+  }
+
   const icon = statusIcon(theme, details.ok ? "ok" : "fail");
   const meta = [`exit ${details.exitCode}`, `${details.outLines} lines`];
   if (details.ms !== undefined) meta.push(`${details.ms}ms`);

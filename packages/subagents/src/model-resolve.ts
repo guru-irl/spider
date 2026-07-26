@@ -32,11 +32,36 @@ export function qualifyModelProvider(model: string | undefined, list: ListedMode
   }
 }
 
-/** Read pi's available-model list defensively (listModels() → availableModels → []). */
-export function listPiModels(pi: unknown): ListedModel[] {
+/** Read pi's model list from the ModelRegistry on the ExtensionContext.
+ *
+ *  This used to read `pi.listModels()` / `pi.availableModels`. NEITHER EXISTS anywhere in
+ *  pi — the real surface is `ExtensionContext.modelRegistry`, a ModelRegistry with
+ *  `getAll()` / `getAvailable()` (dist/core/model-registry.d.ts). So this always returned
+ *  [], `qualifyModelProvider` never found a match, and every bare model id was passed to
+ *  the child unqualified — exactly the silent "No API key found" death this module exists
+ *  to prevent. Passing provider-qualified refs by hand was a workaround for this bug.
+ *
+ *  Availability is membership in getAvailable(), not a field on the model. */
+export function listPiModels(registry: unknown): ListedModel[] {
   try {
-    const p = pi as { listModels?: () => ListedModel[]; availableModels?: ListedModel[] };
-    return p?.listModels?.() ?? p?.availableModels ?? [];
+    const r = registry as { getAll?: () => unknown[]; getAvailable?: () => unknown[] } | undefined;
+    if (typeof r?.getAll !== "function") return [];
+    const availableKeys = new Set<string>();
+    const hasAvailability = typeof r.getAvailable === "function";
+    if (hasAvailability) {
+      for (const m of (r.getAvailable!() ?? []) as Array<Record<string, unknown>>) {
+        availableKeys.add(`${String(m.provider ?? "")}/${String(m.id ?? "")}`);
+      }
+    }
+    return ((r.getAll() ?? []) as Array<Record<string, unknown>>).map((m) => {
+      const provider = String(m.provider ?? "");
+      const id = String(m.id ?? "");
+      return {
+        provider,
+        id,
+        available: hasAvailability ? availableKeys.has(`${provider}/${id}`) : true,
+      };
+    });
   } catch {
     return [];
   }

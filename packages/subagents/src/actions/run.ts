@@ -82,7 +82,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     // pi resolves a BARE model id (e.g. "claude-sonnet-5") to its default provider, which may
     // be unauthenticated in the child (→ silent "No API key" death). Qualify to the provider
     // pi lists as available (e.g. "github-copilot/claude-sonnet-5"). Already-qualified refs pass through.
-    const piModels = listPiModels(ctx.pi);
+    const piModels = listPiModels((ctx as { modelRegistry?: unknown }).modelRegistry);
     const resolveMT = (m?: string, th?: string): { model?: string; thinking?: string } => {
       const full = m ?? parentModel;
       return { model: qualifyModelProvider(stripThinkingSuffix(full), piModels), thinking: th ?? thinkingFromModel(full) };

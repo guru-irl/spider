@@ -25,6 +25,9 @@ export interface ActionCtx {
    *  running. Set by the host from pi's `onUpdate`; undefined for non-streaming callers
    *  (subagents, tests), which is why every consumer must treat it as optional. */
   onPartial?: (text: string) => void;
+  /** pi's ModelRegistry, taken from the ExtensionContext (NOT from the extension API --
+   *  it does not live there). Undefined for hosts/tests that do not supply one. */
+  modelRegistry?: unknown;
 }
 export type ActionHandler = (args: SpiderArgs, ctx: ActionCtx) => Promise<unknown> | unknown;
 

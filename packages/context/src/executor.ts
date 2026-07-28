@@ -13,6 +13,13 @@ export interface ExecResult {
   stdout: string; stderr: string; exitCode: number; timedOut: boolean;
   /** Process was detached and continues running in the background. */
   backgrounded?: boolean;
+  /**
+   * True when the caller's AbortSignal fired mid-run and the process TREE was killed
+   * (killTree — the whole process group, not just the top-level shell). Only ever set
+   * `true`; omitted otherwise. `exitCode` is deliberately a non-zero sentinel in this
+   * case — a killed command must never be reported as if it succeeded.
+   */
+  aborted?: boolean;
 }
 
 const isWin = process.platform === "win32";
@@ -219,6 +226,15 @@ export interface ExecuteOptions {
    * a non-project cwd (e.g. $HOME).
    */
   cwd?: string;
+  /**
+   * Aborts the spawned process (killTree — the whole process group, not just the
+   * shell) the moment it fires. Threaded from pi's `ToolDefinition.execute(...,
+   * signal, ...)` through ActionCtx → runExec → here → #spawn, so Escape mid-run
+   * actually kills the command instead of merely dropping the model-facing stream.
+   * Already-aborted signals never spawn at all. Optional — omitting it changes
+   * nothing (no regression for callers without one, e.g. subagents/tests).
+   */
+  signal?: AbortSignal;
 }
 
 export interface ExecuteFileOptions extends ExecuteOptions {
@@ -303,7 +319,7 @@ export class PolyglotExecutor {
       // Issue #45 — `cwdOverride` lets per-call sites (Codex MCP handlers) pin
       // cwd without mutating process-wide state.
       const cwd = cwdOverride ?? this.#projectRoot;
-      const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background, opts.onData);
+      const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background, opts.onData, opts.signal);
 
       // Skip tmpDir cleanup if process was backgrounded — it may still need files
       if (!result.backgrounded) {
@@ -412,8 +428,29 @@ export class PolyglotExecutor {
     timeout: number | undefined,
     background = false,
     onData?: (chunk: string) => void,
+    signal?: AbortSignal,
   ): Promise<ExecResult> {
-    return new Promise((res) => {
+    // Escape (or any other abort source) may already have fired before we get here —
+    // e.g. the user hit it while the tool call was still being dispatched. Never spawn
+    // in that case: there is nothing yet to kill, and spawning anyway would start a
+    // process the caller already asked to cancel.
+    if (signal?.aborted) {
+      return {
+        stdout: "",
+        stderr: "[aborted — signal was already aborted before the command started]",
+        exitCode: 137,
+        timedOut: false,
+        aborted: true,
+      };
+    }
+
+    // `onAbort` is declared here (outer scope) so the `finally` below can always remove
+    // it, on every settle path (abort, normal close, spawn error, or background-timeout
+    // early-resolve) — not just the abort path. Without this, a long-lived AbortSignal
+    // reused across the many execs in a session/turn accumulates one listener per call.
+    let onAbort: (() => void) | undefined;
+    try {
+      return await new Promise<ExecResult>((res) => {
       // Only .cmd/.bat shims need shell on Windows; real executables don't.
       // Using shell: true globally causes process-tree kill issues with MSYS2/Git Bash.
       // "bun" is included as defense-in-depth: bunCommand() prefers absolute
@@ -466,6 +503,7 @@ export class PolyglotExecutor {
       }
 
       let timedOut = false;
+      let aborted = false;
       let resolved = false;
       // Issue #406 — if the caller didn't pass a timeout we don't fire one.
       // Timeout policy belongs to the MCP host/client (Claude Code, VSCode,
@@ -507,6 +545,18 @@ export class PolyglotExecutor {
         }
       }, timeout);
 
+      // Kill the whole process tree the instant the caller's signal fires (Escape
+      // mid-run). Reuses killTree — the SAME primitive the timeout/hard-cap paths
+      // above and below already use — so a grandchild the script spawned itself
+      // (e.g. `sleep 30 &`) dies too, not just the top-level shell.
+      if (signal) {
+        onAbort = () => {
+          aborted = true;
+          killTree(proc);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
       // Stream-level byte cap: kill the process once combined stdout+stderr
       // exceeds hardCapBytes. Without this, a command like `yes` or
       // `cat /dev/urandom | base64` can accumulate gigabytes in memory
@@ -547,6 +597,9 @@ export class PolyglotExecutor {
         if (capExceeded) {
           rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB — process killed]`;
         }
+        if (aborted) {
+          rawStderr += "\n[aborted — the process was killed before it finished]";
+        }
 
         const stdout = rawStdout;
         const stderr = rawStderr;
@@ -554,8 +607,13 @@ export class PolyglotExecutor {
         res({
           stdout,
           stderr,
-          exitCode: timedOut ? 1 : (exitCode ?? 1),
+          // A killed command must never be reported as if it succeeded: force a
+          // non-zero, recognizable sentinel (137 = 128+SIGKILL, the same convention
+          // a shell itself uses for a killed child) instead of whatever raw exitCode
+          // the OS happened to report for the process we just killed.
+          exitCode: aborted ? 137 : (timedOut ? 1 : (exitCode ?? 1)),
           timedOut,
+          ...(aborted ? { aborted: true } : {}),
         });
       });
 
@@ -567,9 +625,17 @@ export class PolyglotExecutor {
           stderr: err.message,
           exitCode: 1,
           timedOut: false,
+          ...(aborted ? { aborted: true } : {}),
         });
       });
-    });
+      });
+    } finally {
+      // Always remove the listener once this spawn settles — whether it settled via
+      // abort, normal exit, spawn error, or the background-timeout early-resolve — so
+      // listeners never accumulate on a signal reused across the many execs in a
+      // session/turn.
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    }
   }
 
   #buildSafeEnv(tmpDir: string): Record<string, string> {

@@ -434,6 +434,7 @@ export function buildActionCtx(
   ctxCwd?: string,
   onPartial?: (text: string) => void,
   modelRegistry?: unknown,
+  signal?: AbortSignal,
 ): ActionCtx {
   const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
@@ -450,7 +451,7 @@ export function buildActionCtx(
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
   const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry, modelDefaults };
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry, modelDefaults, signal };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
@@ -622,7 +623,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
-    async execute(_toolCallId, args, _signal, onUpdate, ctx) {
+    async execute(_toolCallId, args, signal, onUpdate, ctx) {
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
       // empty update fired before any output exists: it materialises the result section
       // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
@@ -638,10 +639,17 @@ export default function spiderExtension(pi: PiToolAPI): void {
           }
         : undefined;
 
+      // pi's real ToolDefinition.execute supplies a genuine `AbortSignal | undefined`
+      // (types.d.ts:361) and fires it on Escape mid-run. Guard with `instanceof` so a
+      // caller/test that passes a bare object (or omits it) degrades to "no signal"
+      // instead of crashing on .aborted/.addEventListener — same defensive shape as the
+      // `typeof onUpdate === "function"` guard just above.
+      const abortSignal = signal instanceof AbortSignal ? signal : undefined;
+
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
-      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial, (ctx as { modelRegistry?: unknown })?.modelRegistry));
+      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial, (ctx as { modelRegistry?: unknown })?.modelRegistry, abortSignal));
       return toToolResult(r);
     },
   });

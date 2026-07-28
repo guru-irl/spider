@@ -10,6 +10,14 @@ export interface ExecCtx {
    * output arrive instead of a frozen spinner, and ctrl+o works mid-run.
    */
   onPartial?: (text: string) => void;
+  /**
+   * Threaded from pi's `ToolDefinition.execute(..., signal, ...)` through ActionCtx.
+   * When Escape (or any other abort source) fires this mid-run, the spawned process
+   * TREE is killed (see Executor#spawn / killTree) instead of running to completion.
+   * Optional — undefined for callers without one (subagents, most tests): the exec
+   * behaves exactly as before.
+   */
+  signal?: AbortSignal;
 }
 
 /** Model-facing output budget. Exec output enters the context window VERBATIM — nothing
@@ -67,6 +75,7 @@ export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; 
     timeout: args.timeout,
     background: args.background,
     onData: makeStreamer(ctx),
+    signal: ctx.signal,
   });
   return { text: shape(res), details: res, isError: res.exitCode !== 0 && !res.backgrounded };
 }

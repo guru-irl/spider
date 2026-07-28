@@ -14,38 +14,35 @@ export function setModelDefault(cwd: string, role: string, ref: string): { ok: b
   return { ok: true };
 }
 
-// Enumerate over pi's real model surface. `modelRegistry` is a ModelRegistry
-// (dist/core/model-registry.d.ts) exposed on the ExtensionContext — NOT on the extension
-// API object. This previously read `pi.listModels()` / `pi.availableModels`, neither of
-// which exists anywhere in pi, so the catalog was silently always empty.
+// Enumerate the models the user can ACTUALLY USE.
+//
+// pi exposes two methods and they are wildly different: getAll() is the entire models.json
+// provider catalogue (~800 entries across bedrock/openrouter/vertex/... , nearly all
+// unusable), while getAvailable() is filtered to providers with configured auth -- i.e.
+// what the subscription actually grants. `spider control models` is a "what can I run?"
+// question, so getAvailable() is the correct source. getAll() is kept only as a fallback
+// for hosts that predate it.
 //
 // Field names are pi's, not ours: `reasoning` (not `thinking`), and vision is derived from
-// `input` containing "image" (there is no `vision` flag). Availability is not a property on
-// the model at all — it is membership in getAvailable().
+// `input` containing "image" (there is no `vision` flag).
 function enumerate(registry: unknown): EnumeratedModel[] {
   const r = registry as {
     getAll?: () => unknown[];
     getAvailable?: () => unknown[];
   } | undefined;
-  if (typeof r?.getAll !== "function") return [];
 
-  const all = (r.getAll() ?? []) as Array<Record<string, unknown>>;
-  const availableKeys = new Set<string>();
-  if (typeof r.getAvailable === "function") {
-    for (const m of (r.getAvailable() ?? []) as Array<Record<string, unknown>>) {
-      availableKeys.add(`${String(m.provider ?? "")}/${String(m.id ?? "")}`);
-    }
-  }
-  const hasAvailability = typeof r.getAvailable === "function";
+  const source =
+    typeof r?.getAvailable === "function" ? r.getAvailable()
+    : typeof r?.getAll === "function" ? r.getAll()
+    : undefined;
+  if (!source) return [];
 
-  return all.map((m) => {
-    const provider = String(m.provider ?? "");
-    const id = String(m.id ?? "");
+  return (source as Array<Record<string, unknown>>).map((m) => {
     const input = Array.isArray(m.input) ? (m.input as unknown[]).map(String) : [];
     return {
-      provider,
-      id,
-      available: hasAvailability ? availableKeys.has(`${provider}/${id}`) : true,
+      provider: String(m.provider ?? ""),
+      id: String(m.id ?? ""),
+      available: true, // by construction: everything here is usable
       thinking: !!m.reasoning,
       vision: input.includes("image"),
       ctx: Number(m.contextWindow ?? 0) || undefined,
@@ -53,7 +50,7 @@ function enumerate(registry: unknown): EnumeratedModel[] {
   });
 }
 
-/** Build the model catalog from pi's live registry, degrading to [] on any error.
+/** Build the catalog of USABLE models from pi's live registry, degrading to [] on any error.
  *  Pass the ExtensionContext's `modelRegistry`, not the extension API. */
 export function listCatalog(registry: unknown): ModelEntry[] {
   try {

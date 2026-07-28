@@ -69,6 +69,61 @@ describe("run action routing", () => {
     await handler({ agent: "worker", task: "z", model: "prov/m:high", thinking: "minimal" } as any, ctx);
     expect(seen[2].thinking).toBe("minimal");
   });
+  it("uses models.defaults[role] when no explicit model is given (role default precedence) — fails today: nothing ever reads models.defaults", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const seen: any[] = [];
+    const fakeRunner = () => ({
+      runForeground: async (o: any) => { throw new Error("must not run foreground"); },
+      runAsync: (o: any) => { seen.push(o); const { id } = store.create({ sessionId: "s1", agent: o.agent, model: o.model, thinking: o.thinking }); return store.get(id); },
+    });
+    const handler = makeRunHandler({ makeRunner: fakeRunner as any, makeStore: () => store });
+    // Parent is on opus 4.8 — the reviewer role default (opus 5) must win over inheritance.
+    const ctx: any = {
+      db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") },
+      pi: { events: { on() {}, emit() {} } },
+      model: { id: "github-copilot/claude-opus-4.8" },
+      modelDefaults: { reviewer: "github-copilot/claude-opus-5" },
+    };
+    await handler({ agent: "reviewer", task: "review it" } as any, ctx);
+    expect(seen[0].model).toBe("github-copilot/claude-opus-5");
+  });
+
+  it("prefers an explicit model: over a configured role default", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const seen: any[] = [];
+    const fakeRunner = () => ({
+      runAsync: (o: any) => { seen.push(o); const { id } = store.create({ sessionId: "s1", agent: o.agent, model: o.model }); return store.get(id); },
+    });
+    const handler = makeRunHandler({ makeRunner: fakeRunner as any, makeStore: () => store });
+    const ctx: any = {
+      db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") },
+      pi: { events: { on() {}, emit() {} } },
+      modelDefaults: { reviewer: "github-copilot/claude-opus-5" },
+    };
+    await handler({ agent: "reviewer", task: "review it", model: "explicit/model" } as any, ctx);
+    expect(seen[0].model).toBe("explicit/model");
+  });
+
+  it("falls back to the parent model when no role default is configured (no regression)", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const seen: any[] = [];
+    const fakeRunner = () => ({
+      runAsync: (o: any) => { seen.push(o); const { id } = store.create({ sessionId: "s1", agent: o.agent, model: o.model }); return store.get(id); },
+    });
+    const handler = makeRunHandler({ makeRunner: fakeRunner as any, makeStore: () => store });
+    const ctx: any = {
+      db, globalDb: db, sessionId: "s1", cwd: process.cwd(), project: { dbPath: testScratchPath("test.db") },
+      pi: { events: { on() {}, emit() {} } },
+      model: { id: "github-copilot/claude-sonnet-5" },
+      modelDefaults: {}, // nothing configured for 'reviewer'
+    };
+    await handler({ agent: "reviewer", task: "review it" } as any, ctx);
+    expect(seen[0].model).toBe("github-copilot/claude-sonnet-5");
+  });
+
   it("routes a single {agent,task} to a single async run (async-only)", async () => {
     const db = freshDb();
     const store = new RunStore(db);

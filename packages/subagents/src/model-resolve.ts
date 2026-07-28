@@ -32,6 +32,28 @@ export function qualifyModelProvider(model: string | undefined, list: ListedMode
   }
 }
 
+/**
+ * Resolve the model a spawned subagent should use, in precedence order:
+ *   1. an explicit `model:` on the call
+ *   2. the configured default for the agent's role (`models.defaults[<role>]`,
+ *      persisted via `control models set` and threaded in through ActionCtx — subagents
+ *      cannot import @spider/host to read config directly)
+ *   3. inherit the parent session's model (existing behaviour, kept as the last resort so
+ *      nothing regresses when no default is configured)
+ *
+ * Before this, the spawn path did `m ?? parentModel` with no role lookup at all: `control
+ * models set` wrote `models.defaults`, `control models` read it back for display, and
+ * NOTHING else ever consumed it — a closed display loop that looked alive but did nothing.
+ */
+export function resolveRoleModel(
+  explicit: string | undefined,
+  role: string | undefined,
+  defaults: Record<string, string> | undefined,
+  parentModel: string | undefined,
+): string | undefined {
+  return explicit ?? (role ? defaults?.[role] : undefined) ?? parentModel;
+}
+
 /** Read pi's model list from the ModelRegistry on the ExtensionContext.
  *
  *  This used to read `pi.listModels()` / `pi.availableModels`. NEITHER EXISTS anywhere in

@@ -346,7 +346,7 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     case "models": {
       if (!ctx) return { error: "control models requires an action context" };
       if (args.op === "set") {
-        const r = setModelDefault(cwd, String(args.key ?? ""), String(args.value ?? ""));
+        const r = setModelDefault(cwd, String(args.key ?? ""), String(args.value ?? ""), listCatalog(ctx.modelRegistry));
         return { details: { ok: r.ok, error: r.error, role: args.key, ref: args.value } };
       }
       return { details: { catalog: listCatalog(ctx.modelRegistry), defaults: (controlConfig("get", cwd, "models.defaults") as Record<string, string>) ?? {} } };
@@ -446,7 +446,11 @@ export function buildActionCtx(
   const repoDb = project.repoKey
     ? openRepo(project.repoKey)
     : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry };
+  // Resolved once per dispatch so packages/subagents/src/actions/run.ts (which cannot
+  // import @spider/host to read config itself) can apply the models.defaults[<role>]
+  // precedence without ever touching the config file directly.
+  const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry, modelDefaults };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {

@@ -8,7 +8,7 @@ import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
 import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
-import { qualifyModelProvider, listPiModels } from "../model-resolve";
+import { qualifyModelProvider, listPiModels, resolveRoleModel } from "../model-resolve";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
 
@@ -83,8 +83,13 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     // be unauthenticated in the child (→ silent "No API key" death). Qualify to the provider
     // pi lists as available (e.g. "github-copilot/claude-sonnet-5"). Already-qualified refs pass through.
     const piModels = listPiModels((ctx as { modelRegistry?: unknown }).modelRegistry);
-    const resolveMT = (m?: string, th?: string): { model?: string; thinking?: string } => {
-      const full = m ?? parentModel;
+    // models.defaults[<role>] (control models set), threaded in via ActionCtx because
+    // subagents cannot import @spider/host to read config directly. Precedence: explicit
+    // model: on the call -> the role's configured default -> inherit the parent (last
+    // resort, so nothing regresses when no default is configured).
+    const modelDefaults = (ctx as { modelDefaults?: Record<string, string> }).modelDefaults;
+    const resolveMT = (m?: string, th?: string, role?: string): { model?: string; thinking?: string } => {
+      const full = resolveRoleModel(m, role, modelDefaults, parentModel);
       return { model: qualifyModelProvider(stripThinkingSuffix(full), piModels), thinking: th ?? thinkingFromModel(full) };
     };
 
@@ -99,7 +104,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     if (Array.isArray(args.chain)) {
       // Async by design: kick the chain off in the background and report back when the last
       // step finishes (each step feeds the next). The tool returns immediately.
-      const chain = args.chain.map((c: any) => ({ ...c, ...resolveMT(c.model, c.thinking) }));
+      const chain = args.chain.map((c: any) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker") }));
       void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh" })
         .then((rows: any[]) => {
           const last = rows[rows.length - 1];
@@ -110,12 +115,12 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       return { content: `chain started: ${chain.length} step(s)`, details: { chain: chain.length, first: first.name ?? first.agent } };
     }
     if (Array.isArray(args.tasks)) {
-      const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking) }));
+      const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking, t.agent) }));
       const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: true });
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
       return { content: `parallel started: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
     }
-    const { model: singleModel, thinking: singleThinking } = resolveMT(args.model, args.thinking);
+    const { model: singleModel, thinking: singleThinking } = resolveMT(args.model, args.thinking, args.agent ?? "worker");
     const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill: args.skill, thinking: singleThinking, context: args.context ?? "fresh", async: true });
     return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: { run: row } };
   };

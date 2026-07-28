@@ -28,6 +28,11 @@ export interface ActionCtx {
   /** pi's ModelRegistry, taken from the ExtensionContext (NOT from the extension API --
    *  it does not live there). Undefined for hosts/tests that do not supply one. */
   modelRegistry?: unknown;
+  /** The persisted `models.defaults` role->ref map (control models set), resolved once per
+   *  dispatch by buildActionCtx. Subagents cannot import @spider/host to read config
+   *  directly, so this is how packages/subagents/src/actions/run.ts sees it: explicit
+   *  `model:` on a call -> modelDefaults[<agent role>] -> inherit the parent's model. */
+  modelDefaults?: Record<string, string>;
 }
 export type ActionHandler = (args: SpiderArgs, ctx: ActionCtx) => Promise<unknown> | unknown;
 

@@ -11,9 +11,50 @@ function firstString(...vals: unknown[]): string | undefined {
   for (const v of vals) if (typeof v === "string" && v.trim()) return v;
   return undefined;
 }
+/** Collapse whitespace and clamp to the existing 100-char summary budget. */
+function clampSnippet(s: string): string {
+  return s.replace(/\s+/g, " ").slice(0, 100);
+}
+
+/** First non-blank line of a (possibly multi-line) script. Strips a trivial leading
+ *  `cd <path> &&` so the real command survives — anything more elaborate than that single
+ *  safe case (quoted/spaced paths, multiple `&&`, …) is left alone rather than mis-parsed. */
+function firstMeaningfulLine(text: string): string {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const stripped = line.replace(/^cd\s+\S+\s*&&\s*/i, "").trim();
+    return stripped || line;
+  }
+  return "";
+}
+
+/** spider is one mega-tool (`{action, ...}`); the generic pick list below has no field for
+ *  its actual payload, so it always fell through to `a.action` itself — every call recorded
+ *  the useless literal "spider exec". The real content lives in action-specific fields
+ *  (`code`, `commands`, `path`, …), so summarise each action from where its payload actually
+ *  is instead of the generic pick list. */
+function summarizeSpiderCall(a: Record<string, any>): string {
+  const action = firstString(a.action);
+  if (!action) return "spider";
+  if (action === "batch") {
+    const commands = Array.isArray(a.commands) ? a.commands : [];
+    const first = (commands[0] ?? {}) as Record<string, any>;
+    const line = firstString(first.code, first.label, first.language);
+    if (!line) return `spider ${action}`;
+    const count = commands.length;
+    return `spider ${action}: ${clampSnippet(firstMeaningfulLine(line))} (${count} command${count === 1 ? "" : "s"})`;
+  }
+  // exec_file → path; exec (and anything else) → code, falling back to the same fields the
+  // generic pick list below already covers for non-spider tools.
+  const value = firstString(a.path, a.code, a.file, a.filePath, a.command, a.pattern, a.query, a.url, a.name);
+  return value ? `spider ${action}: ${clampSnippet(firstMeaningfulLine(value))}` : `spider ${action}`;
+}
+
 /** A concise label for a tool call from its args (path/command/pattern/…). */
-function summarizeToolArgs(tool: string, args: any): string {
+export function summarizeToolArgs(tool: string, args: any): string {
   const a = args && typeof args === "object" ? (args as Record<string, any>) : {};
+  if (tool === "spider") return summarizeSpiderCall(a);
   const pick = firstString(a.path, a.file, a.filePath, a.command, a.pattern, a.query, a.url, a.name, a.action);
   return pick ? `${tool} ${pick.replace(/\s+/g, " ").slice(0, 100)}` : tool;
 }

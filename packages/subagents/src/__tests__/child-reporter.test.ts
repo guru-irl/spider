@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { makeChildReporter, attachChildReporter } from "../child-reporter";
+import { makeChildReporter, attachChildReporter, summarizeToolArgs } from "../child-reporter";
 import { RunStore } from "../run-store";
 import { openDbAt } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
@@ -59,6 +59,55 @@ describe("child reporter", () => {
       for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
       cleanupScratch();
     }
+  });
+
+  describe("summarizeToolArgs — the /agents detail view can only show what this records", () => {
+    // Root cause: spider is one mega-tool (`{action, language, code}` / `{action, commands}`).
+    // The old pick list (path/file/filePath/command/pattern/query/url/name/action) has no
+    // `code` field, so it always fell through to `a.action` — every spider exec call recorded
+    // the literal, useless string "spider exec", no matter what command actually ran.
+
+    it("summarises a spider exec call with the actual command, not just the action", () => {
+      const summary = summarizeToolArgs("spider", { action: "exec", language: "shell", code: "echo hello world" });
+      expect(summary).toBe("spider exec: echo hello world");
+    });
+
+    it("summarises a spider batch call with the first command plus a count", () => {
+      const summary = summarizeToolArgs("spider", {
+        action: "batch",
+        commands: [
+          { language: "shell", code: "echo one" },
+          { language: "shell", code: "echo two" },
+          { language: "shell", code: "echo three" },
+        ],
+      });
+      expect(summary).toBe("spider batch: echo one (3 commands)");
+    });
+
+    it("keeps showing the path for exec_file", () => {
+      const summary = summarizeToolArgs("spider", { action: "exec_file", path: "/tmp/script.sh" });
+      expect(summary).toBe("spider exec_file: /tmp/script.sh");
+    });
+
+    it("degrades to the bare tool name when a tool has none of the known fields", () => {
+      const summary = summarizeToolArgs("mystery_tool", { foo: "bar" });
+      expect(summary).toBe("mystery_tool");
+    });
+
+    it("clamps a very long script to the existing 100-char summary budget", () => {
+      const longCode = "x".repeat(500);
+      const summary = summarizeToolArgs("spider", { action: "exec", code: longCode });
+      expect(summary).toBe(`spider exec: ${"x".repeat(100)}`);
+    });
+
+    it("strips a trivial leading 'cd <path> &&' so the real command survives", () => {
+      const summary = summarizeToolArgs("spider", { action: "exec", code: "cd /Users/guru/src/spider && npm test" });
+      expect(summary).toBe("spider exec: npm test");
+    });
+
+    it("leaves non-spider tool summaries unaffected (write keeps tool + path)", () => {
+      expect(summarizeToolArgs("write", { path: "/tmp/out.txt" })).toBe("write /tmp/out.txt");
+    });
   });
 
   it("emits a terminal status run_event on shutdown so async completion bridges to the bus", () => {

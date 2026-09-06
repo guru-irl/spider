@@ -22,6 +22,17 @@ const COPILOT_HEADERS = {
   "Copilot-Integration-Id": "vscode-chat",
 };
 const COPILOT_BASE_URL = "https://api.individual.githubcopilot.com";
+/** Auto-compaction threshold, chosen by context window.
+ *
+ *  A 1M-token model holds so much that letting it fill to the default before compacting
+ *  means summarising an enormous history in one pass, so those compact early (30). Smaller
+ *  models have nothing to gain from that and just lose usable context, so they keep the
+ *  regular 100. Threshold is on the ACTUAL contextWindow, not the model name -- ids like
+ *  gemini-3.8-flash (1048576) and gpt-5.6-sol-fast (1050000) are "1M" without saying so. */
+const COMPACT_LARGE_CTX = 30;
+const COMPACT_DEFAULT = 100;
+const LARGE_CTX_TOKENS = 1_000_000;
+const compactFor = (ctx) => (ctx >= LARGE_CTX_TOKENS ? COMPACT_LARGE_CTX : COMPACT_DEFAULT);
 // Dated snapshot fallback of pi-ai's built-in copilot catalog (2026-07-02). Refresh if pi-ai updates.
 const BUILTIN_SNAPSHOT = new Set([
   "claude-fable-5", "claude-haiku-4.5", "claude-opus-4.5", "claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8",
@@ -104,6 +115,11 @@ function synth(m) {
   entry.input = s.vision ? ["text", "image"] : ["text"];
   entry.contextWindow = lim.max_context_window_tokens || 128000;
   entry.maxTokens = lim.max_output_tokens || 16000;
+  // Auto-compaction threshold. Without this pi falls back to its built-in default, so every
+  // sync used to add models that compacted on a different schedule to the hand-tuned ones --
+  // silently, because a missing key looks identical to an intentional one. Scaled by context
+  // window: only 1M-token models compact early.
+  entry.compactAtPercent = compactFor(entry.contextWindow);
   return entry;
 }
 

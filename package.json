@@ -48,9 +48,23 @@
     "postinstall": "node scripts/postinstall.mjs",
     "sync:models": "node scripts/sync-copilot-models.mjs"
   },
+  "overrides": {
+    "sharp": "^0.35.4",
+    "onnxruntime-node": "^1.29.0",
+    "adm-zip": "^0.6.0",
+    "protobufjs": "^7.6.6",
+    "brace-expansion": "^5.0.9",
+    "nanoid": "^3.3.18",
+    "postcss": "^8.5.26",
+    "undici": "^8.10.0",
+    "tar": "^7.5.22",
+    "fastembed": {
+      "tar": "6.2.1"
+    }
+  },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
-    "fastembed": "^1.14.1",
+    "fastembed": "^2.1.0",
     "sqlite-vec": "^0.1.6",
     "turndown": "^7.2.0"
   },
@@ -59,7 +73,7 @@
     "@earendil-works/pi-tui": ">=0.80.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.2",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@earendil-works/pi-tui": "^0.80.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.11",

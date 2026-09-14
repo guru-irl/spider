@@ -43,10 +43,12 @@ export async function resolveEmbedder(cfg?: {
   }
 
   // PROVIDER 2: transformers.js (WASM).
-  // @xenova/transformers is an OPTIONAL runtime fallback (optionalDependencies);
-  // absent → degrade to next provider / FTS-only.
+  // @huggingface/transformers is an OPTIONAL runtime fallback (optionalDependencies);
+  // absent → degrade to next provider / FTS-only. This was @xenova/transformers, which is
+  // deprecated and pinned onnxruntime-web@1.14 → onnx-proto → protobufjs@6 (critical RCE)
+  // plus sharp@0.32 (libvips CVEs). The successor package keeps the same pipeline() API.
   try {
-    const spec = "@xenova/transformers";
+    const spec = "@huggingface/transformers";
     const t: any = await import(spec); // variable specifier → tsc will NOT error if the pkg is absent
     const pipe = await t.pipeline("feature-extraction", "Xenova/bge-small-en-v1.5");
     return {

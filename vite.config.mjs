@@ -10,7 +10,7 @@ import { builtinModules } from "node:module";
 //  2. pi's host-provided peer packages — per pi docs/packages.md pi provides these at
 //     runtime; bundling our own copy bloats the artifact and risks duplicate modules.
 const EXTERNAL = [
-  "better-sqlite3", "sqlite-vec", "onnxruntime-node", "onnxruntime-web", "fastembed", "@xenova/transformers", "turndown",
+  "better-sqlite3", "sqlite-vec", "onnxruntime-node", "onnxruntime-web", "fastembed", "@huggingface/transformers", "@xenova/transformers", "turndown",
   "@earendil-works/pi-ai", "@earendil-works/pi-agent-core", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox",
 ];
 const builtins = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);

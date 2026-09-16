@@ -1,0 +1,65 @@
+name: Publish to npm
+
+# Runs only once a GitHub Release is PUBLISHED (not on tag push), so the release
+# workflow's build/test/pack gates are already green before anything is uploaded
+# to the registry. Can also be run by hand for a re-publish after a failure.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write   # required for npm provenance
+
+jobs:
+  publish:
+    name: npm publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Create this environment in repo settings to require manual approval before
+    # a publish. Remove the line if you want releases to go out unattended.
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Refuse to republish a version that already exists rather than failing
+      # deep inside npm publish with a 403.
+      - name: Check version is unpublished
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VER" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$VER is already published"
+            exit 1
+          fi
+          echo "$NAME@$VER is not yet published"
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

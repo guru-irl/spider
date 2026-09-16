@@ -46,7 +46,7 @@ router once per dispatch, then hands control to those packages.
 | `routing/autoindex.ts` | Sends output above the size threshold to the content store. |
 | `routing/overrides.ts` | The edit/write tool overrides (description validation, patch line counts). |
 | `hooks.ts` | Registers the pi lifecycle hooks: memory snapshot injection on `before_agent_start`, session upsert on `session_start`, skill-path contribution on `resources_discover`, and pass-through handlers for the compact/shutdown events. |
-| `agents/agents-ui.ts` | The live agents UI: an above-editor footer widget, the ctrl+up selector overlay, and the `/agents` command. |
+| `agents/agents-ui.ts` | The live agents UI: an above-editor footer widget, the alt+shift+up selector overlay, and the `/agents` command. |
 | `agents/run-source.ts` | Reads `runs` and `run_events` for the current session from the DB and subscribes to the `run_events` bus. |
 | `agents/actions.ts` | Best-effort agent interaction stubs (message/interrupt/resume/follow) for the UI. |
 | `legacy-removal.ts` | Best-effort unregister of the deprecated legacy tool names so `spider` owns the surface. |

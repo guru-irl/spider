@@ -19,7 +19,7 @@ interface Deps { db: Db; sessionId: string; width?: () => number; actions?: Agen
 
 const WIDGET = "spider-agents";
 
-// Register the ctrl+up shortcut and /agents command only ONCE per process.
+// Register the alt+shift+up shortcut and /agents command only ONCE per process.
 let registered = false;
 let current: { openOverlay: () => void | Promise<void> } | undefined;
 
@@ -172,8 +172,12 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
 
   current = { openOverlay };
 
-  // ctrl+g is pi's built-in external-editor binding; the user prefers ctrl+up for the agents
-  // selector. Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
+  // Shortcut choice is constrained by pi's built-ins: ctrl+g is the external-editor binding,
+  // and BOTH ctrl+up and ctrl+shift+up belong to tui.altScreen.previousPrompt (registering
+  // over them makes pi report an extension shortcut conflict and silently steal the key).
+  // alt+shift+up is unclaimed across pi's whole keymap and is option+shift+up on macOS.
+  // Note alt+up alone is taken by app.message.dequeue, so the shift is load-bearing.
+  // Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
   //
   // Order matters: the COMMAND goes first. The caller wraps this mount in a
   // best-effort try/catch, so anything that throws here is swallowed silently and
@@ -187,7 +191,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
       handler: () => { void current?.openOverlay(); },
     });
     try {
-      pi.registerShortcut?.("ctrl+up", {
+      pi.registerShortcut?.("alt+shift+up", {
         description: "Open the spider agents selector",
         handler: () => { void current?.openOverlay(); },
       });

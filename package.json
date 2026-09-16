@@ -1,10 +1,9 @@
 {
   "name": "@guru-irl/spider",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "MIT",
   "description": "spider \u2014 all-in-one pi coding-agent extension (memory, context, todos, subagents, skills) on one shared SQLite database.",
   "type": "module",
-  "private": true,
   "workspaces": [
     "packages/*"
   ],
@@ -82,5 +81,16 @@
     "typescript": "^5.7.0",
     "vite": "^8.1.3",
     "vitest": "^4.0.18"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guru-irl/spider.git"
+  },
+  "bugs": {
+    "url": "https://github.com/guru-irl/spider/issues"
+  },
+  "homepage": "https://github.com/guru-irl/spider#readme"
 }

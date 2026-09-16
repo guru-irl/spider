@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A newer push to the same PR cancels the older run; main is never cancelled so
+# the required check on the merge commit always completes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the version the extension is developed against. better-sqlite3
+          # has no prebuild for this ABI yet, so node-gyp compiles it from source;
+          # that is why this job is slower than a pure-JS one.
+          node-version: '26.x'
+          cache: npm
+
+      # `npm ci` runs the `prepare` script, which already builds. We still run an
+      # explicit build step below so a build failure is reported as its own step
+      # rather than being buried inside install output.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # assert-bundle already runs inside `npm run build`, but this makes the
+      # published artifact's shape an explicit, named gate.
+      - name: Verify bundle shape
+        run: node scripts/assert-bundle.mjs

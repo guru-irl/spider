@@ -1,5 +1,16 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  openSync,
+  closeSync,
+  readSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   detectRuntimes,
@@ -11,8 +22,27 @@ import { paths } from "@spider/db-core";
 
 export interface ExecResult {
   stdout: string; stderr: string; exitCode: number; timedOut: boolean;
-  /** Process was detached and continues running in the background. */
+  /**
+   * Process was detached and continues running in the background — i.e. `timeout`
+   * elapsed while it was still running and `background: true` was set. Its
+   * stdout/stderr are files on disk (see `backgroundLogs`), never a pipe to this
+   * process, so it keeps running — and keeps writing — whether or not this
+   * process (or the session that launched it) is still alive.
+   */
   backgrounded?: boolean;
+  /**
+   * The detached process's pid, when `backgrounded` is true. Nothing here acts on
+   * it automatically — it's reported so a caller who deliberately wants to manage
+   * that process later (check on it, kill it) has the means to.
+   */
+  pid?: number;
+  /**
+   * Absolute paths to the files the detached child's stdout/stderr are writing to,
+   * when `backgrounded` is true. This is where the output went: tail these files
+   * for anything the process produces after this call returns — including after
+   * the calling process itself has exited.
+   */
+  backgroundLogs?: { stdout: string; stderr: string };
   /**
    * True when the caller's AbortSignal fired mid-run and the process TREE was killed
    * (killTree — the whole process group, not just the top-level shell). Only ever set
@@ -204,11 +234,70 @@ function killTree(proc: ReturnType<typeof spawn>): void {
   }
 }
 
+/**
+ * Read a backgrounded process's log file, capped at `maxBytes`. The file on disk
+ * is left completely alone (the detached child may still be appending to it) —
+ * this only bounds what gets copied into the in-memory ExecResult. It's the same
+ * protection `hardCapBytes` gives the non-background pipe path, just applied at
+ * read time instead of continuously: continuous monitoring isn't needed here the
+ * way it is for a pipe, because a file on disk can't make THIS process's heap
+ * grow unbounded the way an unread pipe buffer can — there is no pipe.
+ *
+ * Exported for unit testing (pure given a path — no process/timing dependency).
+ */
+export function readCappedFile(path: string, maxBytes: number): { text: string; truncated: boolean } {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { text: "", truncated: false };
+  }
+  if (size <= maxBytes) {
+    try {
+      return { text: readFileSync(path, "utf-8"), truncated: false };
+    } catch {
+      return { text: "", truncated: false };
+    }
+  }
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const buf = Buffer.alloc(maxBytes);
+      readSync(fd, buf, 0, maxBytes, 0);
+      return { text: buf.toString("utf-8"), truncated: true };
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return { text: "", truncated: false };
+  }
+}
+
 export interface ExecuteOptions {
   language: Language;
   code: string;
+  /**
+   * Milliseconds to wait — e.g. `timeout: 1000` means 1 second, NOT "1000 of
+   * some other unit" and NOT a runtime budget for the command. It is when THIS
+   * CALL gives up waiting synchronously: without `background`, a process still
+   * running at `timeout` is killed (see killTree below); WITH `background: true`,
+   * it is instead detached and left running — see `background`. Omit `timeout`
+   * to wait indefinitely for the process to finish on its own (issue #406 — a
+   * second enforced budget here just duplicates whatever timeout the MCP
+   * host/client already applies).
+   */
   timeout?: number;
-  /** Keep process running after timeout instead of killing it. */
+  /**
+   * When `timeout` elapses and the process is still running, detach it instead
+   * of killing it and return immediately (`timedOut: true, backgrounded: true`)
+   * instead of waiting for it to finish. The detached process's stdout/stderr are
+   * redirected straight to files under the sandbox's scratch directory from the
+   * moment it is spawned — never a pipe to this process — so it keeps running,
+   * and keeps writing, independently of whether this process (or the session
+   * that called it) is still alive. See `ExecResult.backgroundLogs` for where
+   * that output goes. Has no effect unless `timeout` is also set: nothing ever
+   * decides to detach without a deadline to detach AT.
+   */
   background?: boolean;
   /**
    * Called with each stdout/stderr chunk AS IT ARRIVES, before the process
@@ -253,9 +342,6 @@ export class PolyglotExecutor {
   #projectRootResolver: () => string;
   #runtimes: RuntimeMap;
 
-  /** PIDs of backgrounded processes — killed on cleanup to prevent zombies. */
-  #backgroundedPids = new Set<number>();
-
   constructor(opts?: {
     hardCapBytes?: number;
     projectRoot?: string | (() => string);
@@ -279,17 +365,6 @@ export class PolyglotExecutor {
 
   get runtimes(): RuntimeMap {
     return { ...this.#runtimes };
-  }
-
-  /** Kill all backgrounded processes to prevent zombie/port-conflict issues. */
-  cleanupBackgrounded(): void {
-    for (const pid of this.#backgroundedPids) {
-      try {
-        // Kill process group on Unix to catch all children
-        process.kill(isWin ? pid : -pid, "SIGTERM");
-      } catch { /* already dead */ }
-    }
-    this.#backgroundedPids.clear();
   }
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
@@ -473,10 +548,40 @@ export class PolyglotExecutor {
           : cmd.slice(1);
       }
 
+      // Background mode: redirect the child's stdout/stderr straight to files
+      // under the sandbox tmpDir, decided HERE at spawn time — never as a pipe
+      // to this process. This is the actual fix for the defect where a
+      // backgrounded process died the moment its launching process exited: a
+      // pipe's read end lives in the process that called spawn(), so when that
+      // process exits (a subagent finishing counts), the kernel closes it and
+      // the child's next write raises SIGPIPE (default disposition: dead, no
+      // handler, no trace, status files left stale). A plain file has no such
+      // dependency — the child keeps writing successfully long after this
+      // process — and the very idea of "the pipe" — are both gone. This mirrors
+      // Node's own child_process docs example for `options.detached` (open a
+      // log fd, pass it as stdio, close the parent's copy, spawn detached +
+      // unref). We decide this unconditionally whenever `background` is
+      // requested — not only once the timeout actually fires — because by the
+      // time we know the timeout fired, the child's stdio is already fixed for
+      // its whole life; there is no way to swap a live pipe for a file after
+      // the fact.
+      let stdoutLogPath: string | undefined;
+      let stderrLogPath: string | undefined;
+      let outFd: number | undefined;
+      let errFd: number | undefined;
+      if (background) {
+        stdoutLogPath = join(sandboxTmpDir, "stdout.log");
+        stderrLogPath = join(sandboxTmpDir, "stderr.log");
+        outFd = openSync(stdoutLogPath, "w");
+        errFd = openSync(stderrLogPath, "w");
+      }
+
       // Common options shared by both spawn variants below.
       const commonOpts = {
         cwd,
-        stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+        stdio: (background
+          ? ["ignore", outFd!, errFd!]
+          : ["ignore", "pipe", "pipe"]) as ["ignore", "pipe" | number, "pipe" | number],
         env: this.#buildSafeEnv(sandboxTmpDir),
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
@@ -502,6 +607,17 @@ export class PolyglotExecutor {
         proc = spawn(spawnCmd, spawnArgs, { ...commonOpts, shell: false });
       }
 
+      // The child now holds its own reference to outFd/errFd (duplicated across
+      // fork/exec, same as any inherited fd) independent of this process — close
+      // our copies immediately so we don't leak fds across the many execs in a
+      // session. This does NOT close the underlying file: the child's copy keeps
+      // it alive for as long as the child needs it, exactly like `nohup cmd >
+      // log 2>&1 &` at a shell.
+      if (background) {
+        if (outFd !== undefined) closeSync(outFd);
+        if (errFd !== undefined) closeSync(errFd);
+      }
+
       let timedOut = false;
       let aborted = false;
       let resolved = false;
@@ -513,32 +629,29 @@ export class PolyglotExecutor {
       const timer: NodeJS.Timeout | undefined = timeout === undefined ? undefined : setTimeout(() => {
         timedOut = true;
         if (background) {
-          // Background mode: detach process, return partial output, keep running
+          // The child's stdout/stderr are already writing straight to
+          // stdoutLogPath/stderrLogPath (decided at spawn time above) —
+          // nothing about them depends on this process, so there is nothing
+          // to detach at the stdio level and nothing to no-op-drain (there is
+          // no pipe). unref() only lets THIS process's event loop exit
+          // without waiting on the child; it is no longer the thing keeping
+          // the child's output alive — the file is.
           resolved = true;
-          if (proc.pid) this.#backgroundedPids.add(proc.pid);
           proc.unref();
-          // Do NOT destroy stdout/stderr — closing the read end of the pipe
-          // sends SIGPIPE to the child on its next write, killing it.
-          // Instead, replace the data listeners with no-op drains that
-          // consume the stream without accumulating buffers. This keeps
-          // the pipe open and prevents the child from blocking on a full
-          // pipe buffer.
-          if (proc.stdout) {
-            proc.stdout.removeAllListeners("data");
-            proc.stdout.on("data", () => {});
+          const stdoutRead = readCappedFile(stdoutLogPath!, this.#hardCapBytes);
+          const stderrRead = readCappedFile(stderrLogPath!, this.#hardCapBytes);
+          let rawStderr = stderrRead.text;
+          if (stdoutRead.truncated || stderrRead.truncated) {
+            rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB while reading the log — the process keeps writing past the cap on disk; see backgroundLogs]`;
           }
-          if (proc.stderr) {
-            proc.stderr.removeAllListeners("data");
-            proc.stderr.on("data", () => {});
-          }
-          const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
-          const rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
           res({
-            stdout: rawStdout,
+            stdout: stdoutRead.text,
             stderr: rawStderr,
             exitCode: 0,
             timedOut: true,
             backgrounded: true,
+            pid: proc.pid,
+            backgroundLogs: { stdout: stdoutLogPath!, stderr: stderrLogPath! },
           });
         } else {
           killTree(proc);
@@ -560,37 +673,69 @@ export class PolyglotExecutor {
       // Stream-level byte cap: kill the process once combined stdout+stderr
       // exceeds hardCapBytes. Without this, a command like `yes` or
       // `cat /dev/urandom | base64` can accumulate gigabytes in memory
-      // before the timeout fires.
+      // before the timeout fires. Background execs have no pipe (see above) so
+      // there is nothing to attach these listeners to — and no equivalent risk
+      // to guard against: a file on disk can't grow this process's heap the
+      // way an unread pipe buffer can (see readCappedFile).
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let totalBytes = 0;
       let capExceeded = false;
 
-      proc.stdout!.on("data", (chunk: Buffer) => {
-        totalBytes += chunk.length;
-        if (totalBytes <= this.#hardCapBytes) {
-          stdoutChunks.push(chunk);
-          onData?.(chunk.toString("utf-8"));
-        } else if (!capExceeded) {
-          capExceeded = true;
-          killTree(proc);
-        }
-      });
+      if (!background) {
+        proc.stdout!.on("data", (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes <= this.#hardCapBytes) {
+            stdoutChunks.push(chunk);
+            onData?.(chunk.toString("utf-8"));
+          } else if (!capExceeded) {
+            capExceeded = true;
+            killTree(proc);
+          }
+        });
 
-      proc.stderr!.on("data", (chunk: Buffer) => {
-        totalBytes += chunk.length;
-        if (totalBytes <= this.#hardCapBytes) {
-          stderrChunks.push(chunk);
-          onData?.(chunk.toString("utf-8"));
-        } else if (!capExceeded) {
-          capExceeded = true;
-          killTree(proc);
-        }
-      });
+        proc.stderr!.on("data", (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes <= this.#hardCapBytes) {
+            stderrChunks.push(chunk);
+            onData?.(chunk.toString("utf-8"));
+          } else if (!capExceeded) {
+            capExceeded = true;
+            killTree(proc);
+          }
+        });
+      }
 
       proc.on("close", (exitCode) => {
         clearTimeout(timer);
         if (resolved) return; // Already resolved by background timeout
+
+        if (background) {
+          // The process finished on its own before `timeout` elapsed (or no
+          // timeout was set at all) — it was never actually detached. Read
+          // back whatever it wrote to the log files instead of pipe chunks
+          // (there are none: see the stdio decision above). `backgrounded`
+          // stays unset here on purpose — it means "still running after this
+          // call returned", which is not what happened.
+          const stdoutRead = readCappedFile(stdoutLogPath!, this.#hardCapBytes);
+          const stderrRead = readCappedFile(stderrLogPath!, this.#hardCapBytes);
+          let rawStderr = stderrRead.text;
+          if (stdoutRead.truncated || stderrRead.truncated) {
+            rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB while reading the log]`;
+          }
+          if (aborted) {
+            rawStderr += "\n[aborted — the process was killed before it finished]";
+          }
+          res({
+            stdout: stdoutRead.text,
+            stderr: rawStderr,
+            exitCode: aborted ? 137 : (exitCode ?? 1),
+            timedOut: false,
+            ...(aborted ? { aborted: true } : {}),
+          });
+          return;
+        }
+
         const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
         let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
 

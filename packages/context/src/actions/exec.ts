@@ -65,13 +65,29 @@ function capExecOutput(text: string): string {
   return capBytes(text, budget) + TRUNCATION_NOTE;
 }
 
-const shape = (r: any) =>
-  capExecOutput(r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : ""));
+const shape = (r: any) => {
+  let text = r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : "");
+  // Defect-1 fix: a backgrounded process's output now lives in files on disk,
+  // independent of this call and this session. Say so in the model-facing text
+  // too, not just the structured `details` — a stale status file with no
+  // explanation of where the real output went is exactly what caused a real
+  // session to lose visibility into a ~30 minute build.
+  if (r.backgrounded && r.backgroundLogs) {
+    text += `\n\n[still running in the background — this call returned before it finished. ` +
+      `Its output no longer depends on this session; tail it yourself:\n` +
+      `  stdout: ${r.backgroundLogs.stdout}\n` +
+      `  stderr: ${r.backgroundLogs.stderr}]`;
+  }
+  return capExecOutput(text);
+};
 
 export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
   const res = await mk(ctx).execute({
     language: args.language,
     code: args.code,
+    // Milliseconds, and NOT a runtime budget for the command — see the
+    // ExecuteOptions.timeout/.background JSDoc in executor.ts for exactly what
+    // happens at the deadline (killed, or detached + backgrounded to a file).
     timeout: args.timeout,
     background: args.background,
     onData: makeStreamer(ctx),

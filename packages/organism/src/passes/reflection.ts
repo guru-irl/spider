@@ -101,7 +101,7 @@ export async function reflectionPass(
   db: Db,
   embedder: Embedder | null,
   model: DigestModel,
-  opts?: { minCluster?: number }
+  opts?: { minCluster?: number; onClusterError?: (e: unknown, info: { failed: number; total: number }) => void }
 ): Promise<DigestResult> {
   if (embedder === null) return emptyResult();
 
@@ -110,16 +110,34 @@ export async function reflectionPass(
   if (clusters.length === 0) return emptyResult();
 
   const umbrellas: MemoryCandidate[] = [];
+  let failedClusters = 0;
   for (const cluster of clusters) {
     const listing = cluster.map((r, i) => `${i + 1}. [${r.category}] ${r.content}`).join("\n");
     const raw = await model.complete(REFLECTION_PROMPT, [{ role: "user", content: listing }]);
-    const parsed = parseCandidates(raw);
-    if (parsed.memory.length > 0) {
-      for (const m of parsed.memory) umbrellas.push({ category: "insight", content: m.content });
-    } else {
-      const content = raw.trim();
-      if (content.length > 0) umbrellas.push({ category: "insight", content });
+    // Strict: a malformed/non-JSON synthesis reply must never be folded in as
+    // a raw-text "insight" (that was a silent response-dump bug). Skip just
+    // this cluster on a malformed reply rather than discarding every other
+    // cluster's synthesis for one bad completion.
+    let parsed: DigestResult;
+    try {
+      parsed = parseCandidates(raw, { strict: true });
+    } catch {
+      failedClusters++;
+      continue;
     }
+    for (const m of parsed.memory) umbrellas.push({ category: "insight", content: m.content });
+  }
+
+  if (failedClusters > 0) {
+    // Report the aggregated failure ONCE per pass (never one entry per
+    // cluster) so a caller (worker.ts) can distinguish "nothing in this pass
+    // genuinely succeeded" (`failed === total`) from a mixed run, WITHOUT
+    // this function itself throwing — throwing here would discard the valid
+    // items a mixed run already produced, and a modelCalls-diff heuristic
+    // alone cannot tell success from failure (model.complete is called for
+    // every cluster regardless of whether its reply parses).
+    const aggregated = new Error(`${failedClusters}/${clusters.length} reflection cluster(s) failed to synthesize (malformed/non-JSON reply)`);
+    opts?.onClusterError?.(aggregated, { failed: failedClusters, total: clusters.length });
   }
 
   return {

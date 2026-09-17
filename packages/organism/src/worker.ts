@@ -1,15 +1,12 @@
 import type { Db, ProjectInfo } from "@spider/db-core";
 import type { Embedder } from "@spider/memory";
 import { emitLog } from "@spider/subagents";
-import { drainSession } from "./drain.js";
+import { drainSession, type DrainOpts } from "./drain.js";
 import { applyDigest } from "./apply.js";
 import { SkillStore } from "./skill-usage.js";
 import {
-  runCuratorDecay,
-  curatorShouldRun,
-  consolidateSkills,
-  type CuratorConfig,
-  type DecayResult,
+  runCuratorDecay, curatorShouldRun, consolidateSkills,
+  type CuratorConfig, type DecayResult,
 } from "./curator.js";
 import { buildLearningGraph } from "./learning-graph.js";
 import { runMemoryTodoPass } from "./passes/run-memory-todo.js";
@@ -18,227 +15,264 @@ import { learningPass } from "./passes/learning.js";
 import { consolidationPass } from "./passes/consolidation.js";
 import { reflectionPass } from "./passes/reflection.js";
 import { emptyResult } from "./types.js";
-import type { AppliedSummary, DigestModel, DigestResult, DrainReason } from "./types.js";
+import type { AppliedSummary, DigestModel, DigestResult, DrainReason, DrainReport, PassName } from "./types.js";
 import type { OrganismConfig } from "./config.js";
 
-/** Everything the worker needs to drain a session and curate the skill store. */
+export const ORGANISM_DRAIN_TIMEOUT_MS = 30_000;
+
+/** Each worker owns one serialized session/project pipeline. The host owns DB lifetime. */
 export interface WorkerDeps {
-  db: Db;  // repo DB: memory, skills, curator_state
-  worktreeDb: Db;  // worktree DB: sessions, runs, run_events, events, todos, content
+  db: Db; // repo: memory, skills, curator state
+  worktreeDb: Db; // sessions, runs, tracked events, todos
   globalDb: Db;
   project: ProjectInfo;
   getEmbedder: () => Promise<Embedder | null>;
-  makeModel: () => DigestModel | null;
+  makeModel: (signal?: AbortSignal) => DigestModel | null;
   org: OrganismConfig;
   curator: CuratorConfig;
+  /** Total drain deadline, not a fresh budget for each pass. */
+  drainTimeoutMs?: number;
+  /** Optional UI observation; no proposal content or credentials are included. */
+  onDrainReport?: (report: DrainReport) => void;
 }
 
 function zeroSummary(): AppliedSummary {
   return { memoryStaged: 0, todosAdded: 0, skillsStaged: 0, dropped: 0, rejected: 0 };
 }
+export function safeError(error: unknown): string {
+  return String(error instanceof Error ? error.message : error)
+    .replace(/\b(?:npm_|gh[opsu]_|sk-)[A-Za-z0-9_-]{12,}/g, "[redacted credential]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b(api[_-]?key|authorization|password|token)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]")
+    .slice(0, 500);
+}
 
-/**
- * The single in-process autonomic worker. Owns the drain→passes→apply→persist
- * pipeline and the curator decay pass. All public entry points funnel through a
- * single serialized in-flight chain: a second call while one is running is
- * QUEUED (awaits the prior), never run concurrently — so two drains (or a drain
- * and a curate) never race on the same DB.
- */
+/** Bound the wait even if an external implementation ignores the abort signal. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error("organism drain cancelled"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      value => { signal.removeEventListener("abort", abort); resolve(value); },
+      error => { signal.removeEventListener("abort", abort); reject(error); },
+    );
+  });
+}
+
 export class OrganismWorker {
   readonly #deps: WorkerDeps;
   #inflight: Promise<unknown> = Promise.resolve();
+  #lastDrain: DrainReport | undefined;
 
-  constructor(deps: WorkerDeps) {
-    this.#deps = deps;
-  }
+  constructor(deps: WorkerDeps) { this.#deps = deps; }
 
-  /** Chain `fn` after any in-flight work; a rejection never poisons the chain. */
   #serialize<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.#inflight.then(fn, fn);
-    this.#inflight = run.then(
-      () => undefined,
-      () => undefined
-    );
+    this.#inflight = run.then(() => undefined, () => undefined);
     return run;
   }
 
-  /**
-   * Drain a session into staged memory/todos/skills and persist the
-   * consolidation summary/self-name. No-op (zeroed summary) when the master
-   * `org.enabled` toggle is off. Never throws on the drain path.
-   */
-  runDrain(sessionId: string, reason: DrainReason, opts?: { transcriptPath?: string }): Promise<AppliedSummary> {
-    return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
+  /** Latest in-process outcome; persisted receipts survive reload in run_events. */
+  getLastDrain(): DrainReport | undefined {
+    return this.#lastDrain ? structuredClone(this.#lastDrain) : undefined;
   }
 
-  /**
-   * Run the deterministic curator decay pass. Min-interval gated unless
-   * `opts.force`. Optionally runs the aux-model consolidation when
-   * `curator.consolidate` and a model is available.
-   */
-  runCurate(now?: number, opts?: { force?: boolean }): Promise<DecayResult> {
+  runDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
+    return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
+  }
+  runCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean }> {
     return this.#serialize(() => this.#doRunCurate(now, opts));
   }
 
-  async #doRunDrain(
-    sessionId: string,
-    reason: DrainReason,
-    opts?: { transcriptPath?: string }
-  ): Promise<AppliedSummary> {
-    const { db, globalDb, org, project } = this.#deps;
-    if (!org.enabled) return zeroSummary();
-
-    const bundle = drainSession(this.#deps.worktreeDb, sessionId, reason, opts);
-    const model = this.#deps.makeModel();
-
-    const results: DigestResult[] = [];
-    let consolidationResult: DigestResult | undefined;
-
-    // Model-dependent passes are skipped (treated as empty) when no aux model
-    // is available. Each is additionally gated by its per-pass toggle. Each pass
-    // is isolated in its own try/catch: one throwing aux-model pass is treated
-    // as an empty result and the drain CONTINUES with the remaining passes (and,
-    // on shutdown, curator decay still runs).
-    const runPass = async (fn: () => Promise<DigestResult>): Promise<DigestResult> => {
-      try {
-        return await fn();
-      } catch {
-        return emptyResult();
-      }
+  async #doRunDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
+    const { db, globalDb, org, project, worktreeDb } = this.#deps;
+    const summary = zeroSummary();
+    const report: DrainReport = {
+      ...summary, kind: "organism-drain", sessionId, reason, status: "completed",
+      startedAt: Date.now(), finishedAt: 0, modelCalls: 0,
+      inputs: { messages: 0, runs: 0, runEvents: 0, events: 0, completedTodos: 0 }, errors: [],
     };
-    if (model !== null) {
-      if (org.passes.runMemoryTodo) results.push(await runPass(() => runMemoryTodoPass(bundle, model)));
-      if (org.passes.todoMemory) results.push(await runPass(() => todoMemoryPass(bundle, model)));
-      if (org.passes.learning) results.push(await runPass(() => learningPass(bundle, model)));
+    if (!org.enabled) {
+      this.#lastDrain = { ...report, status: "skipped", skipReason: "disabled", finishedAt: Date.now() };
+      return summary; // Master-off means no automatic model calls or DB writes.
+    }
+
+    const fail = (phase: string, error: unknown) => { report.errors.push({ phase, message: safeError(error) }); };
+    const controller = new AbortController();
+    const timeout = this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(new Error("organism drain timed out")), Math.max(1, timeout));
+    timer.unref();
+    let successfulPasses = 0;
+    try {
+      const bundle = drainSession(worktreeDb, sessionId, reason, opts);
+      report.inputs = {
+        messages: bundle.transcript.length, runs: bundle.runs.length, runEvents: bundle.runEvents.length,
+        events: bundle.events.length, completedTodos: bundle.todos.filter(t => t.done).length,
+      };
+      if (Object.values(report.inputs).every(n => n === 0)) {
+        report.status = "skipped"; report.skipReason = "no-input";
+        return summary;
+      }
+
+      let rawModel: DigestModel | null;
+      try { rawModel = this.#deps.makeModel(controller.signal); }
+      catch (e) { fail("model", e); return summary; }
+      if (!rawModel) { report.status = "skipped"; report.skipReason = "no-model"; return summary; }
+      const model: DigestModel = {
+        complete: async (system, messages) => {
+          controller.signal.throwIfAborted();
+          report.modelCalls++;
+          return abortable(Promise.resolve().then(() => rawModel!.complete(system, messages)), controller.signal);
+        },
+      };
+      const runPass = async (name: PassName, fn: () => Promise<DigestResult>): Promise<DigestResult> => {
+        if (controller.signal.aborted) return emptyResult();
+        const before = report.modelCalls;
+        try {
+          const result = await fn();
+          if (report.modelCalls > before) successfulPasses++;
+          return result;
+        } catch (e) { fail(name, e); return emptyResult(); }
+      };
+      const results: DigestResult[] = [];
+      let consolidated: DigestResult | undefined;
+      if (org.passes.runMemoryTodo) results.push(await runPass("runMemoryTodo", () => runMemoryTodoPass(bundle, model)));
+      if (org.passes.todoMemory) results.push(await runPass("todoMemory", () => todoMemoryPass(bundle, model)));
+      if (org.passes.learning) results.push(await runPass("learning", () => learningPass(bundle, model)));
       if (org.passes.consolidation) {
-        consolidationResult = await runPass(() => consolidationPass(bundle, model));
-        results.push(consolidationResult);
+        consolidated = await runPass("consolidation", () => consolidationPass(bundle, model));
       }
       if (org.passes.reflection) {
-        const embedder = await this.#deps.getEmbedder();
-        results.push(await runPass(() => reflectionPass(db, embedder, model)));
+        if (controller.signal.aborted) {
+          results.push(emptyResult());
+        } else {
+          const beforeCalls = report.modelCalls;
+          let reflectionAllFailed = false;
+          try {
+            const embedder = await abortable(this.#deps.getEmbedder(), controller.signal);
+            const result = await reflectionPass(db, embedder, model, {
+              onClusterError: (e, info) => {
+                fail("reflection", e);
+                reflectionAllFailed = info.total > 0 && info.failed === info.total;
+              },
+            });
+            results.push(result);
+            // A modelCalls-diff alone cannot tell success from failure here (every
+            // cluster calls model.complete regardless of whether its reply
+            // parses); only credit a genuine success when at least one cluster
+            // actually synthesized.
+            if (report.modelCalls > beforeCalls && !reflectionAllFailed) successfulPasses++;
+          } catch (e) {
+            fail("reflection", e);
+            results.push(emptyResult());
+          }
+        }
       }
-    }
 
-    // Merge: concat candidate lists; summary/selfName come from consolidation.
-    const merged: DigestResult = emptyResult();
-    for (const r of results) {
-      merged.memory.push(...r.memory);
-      merged.todos.push(...r.todos);
-      merged.skills.push(...r.skills);
-    }
-    if (consolidationResult !== undefined) {
-      merged.summary = consolidationResult.summary;
-      merged.selfName = consolidationResult.selfName;
-    }
-
-    const summary = applyDigest(
-      { db, globalDb, worktreeDb: this.#deps.worktreeDb, scope: "repo", sessionId, skills: new SkillStore(db), project },
-      merged,
-      { max: org.autoWriteBudget, used: 0 }
-    );
-
-    this.#persistConsolidation(sessionId, merged);
-
-    // Refresh the "learning made visible" graph. Side-effecting; never throws
-    // on the drain path.
-    if (org.passes.insights) {
+      const merged = emptyResult();
+      for (const r of results) {
+        merged.memory.push(...r.memory); merged.todos.push(...r.todos); merged.skills.push(...r.skills);
+      }
+      merged.summary = consolidated?.summary;
+      merged.selfName = consolidated?.selfName;
       try {
-        buildLearningGraph(db, globalDb, { persist: true });
-      } catch {
-        /* best-effort */
+        Object.assign(summary, applyDigest(
+          { db, globalDb, worktreeDb, scope: "repo", sessionId, skills: new SkillStore(db), project },
+          merged, { max: org.autoWriteBudget, used: 0 },
+        ));
+      } catch (e) { fail("apply", e); }
+      this.#persistConsolidation(sessionId, merged, fail);
+      if (org.passes.insights) {
+        try { buildLearningGraph(db, globalDb, { persist: true }); }
+        catch (e) { fail("insights", e); }
       }
+      return summary;
+    } catch (e) {
+      fail("drain", e);
+      return summary;
+    } finally {
+      clearTimeout(timer);
+      Object.assign(report, summary, { finishedAt: Date.now() });
+      if (report.errors.length) {
+        report.status = successfulPasses > 0 || summary.memoryStaged + summary.skillsStaged + summary.todosAdded > 0
+          ? "partial" : "failed";
+      }
+      try {
+        emitLog(worktreeDb, {
+          sessionId,
+          summary: `organism drain (${reason}): ${report.status}${report.skipReason ? ` (${report.skipReason})` : ""}; ` +
+            `mem=${summary.memoryStaged} todos=${summary.todosAdded} skills=${summary.skillsStaged} ` +
+            `dropped=${summary.dropped} rejected=${summary.rejected} errors=${report.errors.length}`,
+          payload: report,
+        });
+      } catch (e) {
+        fail("receipt", e);
+        report.status = "failed";
+      }
+      this.#lastDrain = structuredClone(report);
+      try { this.#deps.onDrainReport?.(structuredClone(report)); } catch { /* UI is secondary to the durable receipt. */ }
     }
-
-    // Best-effort observability breadcrumb for the footer.
-    try {
-      emitLog(this.#deps.worktreeDb, {
-        sessionId,
-        summary:
-          `organism drain (${reason}): mem=${summary.memoryStaged} todos=${summary.todosAdded} ` +
-          `skills=${summary.skillsStaged} dropped=${summary.dropped} rejected=${summary.rejected}`,
-        payload: { reason, ...summary },
-      });
-    } catch {
-      /* best-effort */
-    }
-
-    return summary;
   }
 
-  /**
-   * Persist the consolidation summary/self-name. Every write is guarded — a
-   * missing table/column or a bad bind must never throw on the drain path.
-   * Treats an empty-slug self-name as NO name (Task 7 carry-forward).
-   */
-  #persistConsolidation(sessionId: string, merged: DigestResult): void {
+  #persistConsolidation(sessionId: string, merged: DigestResult, fail: (phase: string, error: unknown) => void): void {
     const { worktreeDb, globalDb, org, project } = this.#deps;
-    const selfName =
-      typeof merged.selfName === "string" && merged.selfName.length > 0 ? merged.selfName : undefined;
-
+    const selfName = merged.selfName?.trim() || undefined;
     if (selfName !== undefined) {
       try {
-        worktreeDb.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(selfName, sessionId);
-      } catch {
-        /* best-effort */
-      }
+        // Preserve an existing user/session name; summaries can keep evolving.
+        worktreeDb.prepare("UPDATE sessions SET name=? WHERE id=? AND (name IS NULL OR name='')").run(selfName, sessionId);
+      } catch (e) { fail("session-name", e); }
     }
-    if (typeof merged.summary === "string" && merged.summary.length > 0) {
+    if (merged.summary) {
+      try { worktreeDb.prepare("UPDATE sessions SET summary=? WHERE id=?").run(merged.summary, sessionId); }
+      catch (e) { fail("session-summary", e); }
+    }
+    if (merged.summary || selfName) {
       try {
-        worktreeDb.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run(merged.summary, sessionId);
-      } catch {
-        /* best-effort */
-      }
+        const row = worktreeDb.prepare("SELECT name,summary FROM sessions WHERE id=?").get(sessionId) as
+          { name: string | null; summary: string | null } | undefined;
+        if (!row) throw new Error("Session row missing; lifecycle session_start was not recorded.");
+        const prior = worktreeDb.prepare("SELECT content FROM sessions_fts WHERE id=? LIMIT 1").get(sessionId) as { content: string | null } | undefined;
+        worktreeDb.prepare("DELETE FROM sessions_fts WHERE id=?").run(sessionId);
+        worktreeDb.prepare("INSERT INTO sessions_fts(id,name,summary,content) VALUES (?,?,?,?)")
+          .run(sessionId, row.name ?? "", row.summary ?? "", prior?.content ?? "");
+      } catch (e) { fail("session-search", e); }
     }
-
-    // Keep sessions_fts in sync only when the FTS table exists (guarded).
-    try {
-      const row = worktreeDb.prepare("SELECT name, summary FROM sessions WHERE id = ?").get(sessionId) as
-        | { name: string | null; summary: string | null }
-        | undefined;
-      if (row !== undefined) {
-        worktreeDb.prepare("DELETE FROM sessions_fts WHERE id = ?").run(sessionId);
-        worktreeDb.prepare("INSERT INTO sessions_fts (id, name, summary) VALUES (?, ?, ?)").run(
-          sessionId,
-          row.name ?? "",
-          row.summary ?? ""
-        );
-      }
-    } catch {
-      /* best-effort; sessions_fts may not exist */
-    }
-
-    // Name the project ONLY when self-naming is on and we would not clobber a
-    // user-set (non-empty) projects.name. No-op if the row/table is absent.
-    if (org.selfNaming && selfName !== undefined) {
+    if (org.selfNaming && selfName) {
       try {
-        globalDb
-          .prepare("UPDATE projects SET name = ? WHERE project_key = ? AND (name IS NULL OR name = '')")
+        globalDb.prepare("UPDATE projects SET name=? WHERE project_key=? AND (name IS NULL OR name='')")
           .run(selfName, project.projectKey);
-      } catch {
-        /* best-effort */
-      }
+      } catch (e) { fail("project-name", e); }
     }
   }
 
-  async #doRunCurate(now?: number, opts?: { force?: boolean }): Promise<DecayResult> {
-    const { db, curator } = this.#deps;
+  async #doRunCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean }> {
+    const { db, curator, org } = this.#deps;
     const ts = now ?? Date.now();
-    if (opts?.force !== true && !curatorShouldRun(db, ts, curator)) {
-      return { toStale: [], toArchived: [], skipped: [] };
+    if ((!org.enabled && opts?.force !== true) || (opts?.force !== true && !curatorShouldRun(db, ts, curator))) {
+      return { toStale: [], toArchived: [], skipped: [], consolidated: false };
     }
     const skills = new SkillStore(db);
     const result = runCuratorDecay(db, skills, ts, curator);
-    if (curator.consolidate) {
-      const model = this.#deps.makeModel();
-      if (model !== null) {
-        try {
-          await consolidateSkills(skills, model, curator);
-        } catch {
-          /* best-effort */
+    const shouldConsolidate = opts?.consolidate ?? curator.consolidate;
+    let consolidated = false;
+    if (shouldConsolidate) {
+      const signal = AbortSignal.timeout(this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS);
+      try {
+        const model = this.#deps.makeModel(signal);
+        if (model) { await abortable(consolidateSkills(skills, model, curator), signal); consolidated = true; }
+      } catch (e) {
+        const sessionId = this.#lastDrain?.sessionId;
+        if (sessionId) {
+          try { emitLog(this.#deps.worktreeDb, {
+            sessionId, summary: `organism curate: failed (${safeError(e)})`,
+            payload: { status: "failed", error: safeError(e) },
+          }); } catch { /* DB failure must not hold shutdown open. */ }
         }
+        throw new Error(`Organism curation failed: ${safeError(e)}`);
       }
     }
-    return result;
+    return { ...result, consolidated };
   }
 }

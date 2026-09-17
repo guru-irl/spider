@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paths } from "@spider/db-core";
@@ -19,6 +19,27 @@ const isAlive = (pid: number): boolean => {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * M6 (background-fix-brief, user-approved fixture-only change): every test below
+ * used to pass `process.cwd()` (the REAL spider repo) as `projectRoot`, so every
+ * `background: true` run in this file landed its durable job directory under the
+ * real project's `.spider/scratch/bg/<id>` — with no cleanup in two of the three
+ * describe blocks. This is a git-initialized, throwaway fixture root (same pattern
+ * as executor-background-jobdir.test.ts's `makeFixture`): `paths.scratch("project", root)`
+ * then resolves entirely UNDER `root`, so every job directory this file creates is
+ * isolated there and is removed in each test's own `finally`. NOT ONE assertion
+ * below changed — only where the job directories live and that they get cleaned up.
+ */
+function makeFixture(): string {
+  const scratchRoot = paths.scratch("project", process.cwd());
+  mkdirSync(scratchRoot, { recursive: true }); // M-g: paths.scratch is pure string joining — never creates anything
+  const root = mkdtempSync(join(scratchRoot, ".bgsurvival-fixture-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+  execFileSync("git", ["config", "user.name", "test"], { cwd: root });
+  return root;
 }
 
 /**
@@ -62,7 +83,9 @@ describe("backgrounded process survives the LAUNCHING PROCESS exiting", () => {
   // code — this one cannot, because a SIGPIPE-killed process can never later
   // reach its own completion sentinel.
   it("grandchild keeps writing output and reaches completion AFTER its launching process has fully exited", async () => {
-    const scratchRoot = paths.scratch("project", process.cwd());
+    const fixtureRoot = makeFixture();
+    const scratchRoot = paths.scratch("project", fixtureRoot);
+    mkdirSync(scratchRoot, { recursive: true });
     const workDir = mkdtempSync(join(scratchRoot, ".bgtest-"));
     let nestedTmpDir: string | undefined;
 
@@ -90,7 +113,7 @@ describe("backgrounded process survives the LAUNCHING PROCESS exiting", () => {
       const launcherStart = Date.now();
       execFileSync(
         process.execPath,
-        [harnessPath, process.cwd(), shellCode, String(BACKGROUND_AFTER_MS), handoffPath],
+        [harnessPath, fixtureRoot, shellCode, String(BACKGROUND_AFTER_MS), handoffPath],
         { encoding: "utf-8", timeout: 10_000 },
       );
       const launcherElapsed = Date.now() - launcherStart;
@@ -149,6 +172,7 @@ describe("backgrounded process survives the LAUNCHING PROCESS exiting", () => {
     } finally {
       if (nestedTmpDir) rmSync(nestedTmpDir, { recursive: true, force: true });
       rmSync(workDir, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }, 20_000);
 });
@@ -157,52 +181,67 @@ describe("background result reports where the output went", () => {
   // Same-process, fast complement to the cross-process test above: exercises
   // the shape of the result without paying for a second OS process.
   it("backgroundLogs points at real files under the project's .spider scratch area, never /tmp", async () => {
-    const exec = new PolyglotExecutor({ projectRoot: () => process.cwd() });
-    const r = await exec.execute({
-      language: "shell",
-      code: `echo start; i=0; while [ $i -lt 6 ]; do echo "n$i"; sleep 0.1; i=$((i+1)); done; echo end`,
-      background: true,
-      timeout: 120,
-    });
+    const fixtureRoot = makeFixture();
+    try {
+      const exec = new PolyglotExecutor({ projectRoot: () => fixtureRoot });
+      const r = await exec.execute({
+        language: "shell",
+        code: `echo start; i=0; while [ $i -lt 6 ]; do echo "n$i"; sleep 0.1; i=$((i+1)); done; echo end`,
+        background: true,
+        timeout: 120,
+      });
 
-    expect(r.backgrounded).toBe(true);
-    expect(r.backgroundLogs).toBeTruthy();
-    const scratchRoot = paths.scratch("project", process.cwd());
-    expect(r.backgroundLogs!.stdout.startsWith(scratchRoot)).toBe(true);
-    expect(r.backgroundLogs!.stdout.includes("/tmp/")).toBe(false);
-    expect(readFileSync(r.backgroundLogs!.stdout, "utf-8")).toContain("start");
+      expect(r.backgrounded).toBe(true);
+      expect(r.backgroundLogs).toBeTruthy();
+      const scratchRoot = paths.scratch("project", fixtureRoot);
+      expect(r.backgroundLogs!.stdout.startsWith(scratchRoot)).toBe(true);
+      expect(r.backgroundLogs!.stdout.includes("/tmp/")).toBe(false);
+      expect(readFileSync(r.backgroundLogs!.stdout, "utf-8")).toContain("start");
 
-    // let the short-lived grandchild finish on its own before the test exits
-    await sleep(900);
+      // let the short-lived grandchild finish on its own before removing the fixture
+      await sleep(900);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   }, 10_000);
 
   it("also reports the pid of the detached process, so a caller who wants to manage it explicitly can", async () => {
-    const exec = new PolyglotExecutor({ projectRoot: () => process.cwd() });
-    const r = await exec.execute({
-      language: "shell",
-      code: `sleep 0.6; echo done`,
-      background: true,
-      timeout: 80,
-    });
-    expect(r.backgrounded).toBe(true);
-    expect(typeof r.pid).toBe("number");
-    expect(isAlive(r.pid!)).toBe(true);
-    await sleep(900);
+    const fixtureRoot = makeFixture();
+    try {
+      const exec = new PolyglotExecutor({ projectRoot: () => fixtureRoot });
+      const r = await exec.execute({
+        language: "shell",
+        code: `sleep 0.6; echo done`,
+        background: true,
+        timeout: 80,
+      });
+      expect(r.backgrounded).toBe(true);
+      expect(typeof r.pid).toBe("number");
+      expect(isAlive(r.pid!)).toBe(true);
+      await sleep(900);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   }, 10_000);
 });
 
 describe("background:true does not change behaviour when the process finishes before the timeout", () => {
   it("returns a normal, non-backgrounded result with no backgroundLogs when the command finishes quickly", async () => {
-    const exec = new PolyglotExecutor({ projectRoot: () => process.cwd() });
-    const r = await exec.execute({
-      language: "shell",
-      code: "echo quick",
-      background: true,
-      timeout: 5000,
-    });
-    expect(r.stdout).toContain("quick");
-    expect(r.exitCode).toBe(0);
-    expect(r.backgrounded).toBeFalsy();
-    expect(r.backgroundLogs).toBeUndefined();
+    const fixtureRoot = makeFixture();
+    try {
+      const exec = new PolyglotExecutor({ projectRoot: () => fixtureRoot });
+      const r = await exec.execute({
+        language: "shell",
+        code: "echo quick",
+        background: true,
+        timeout: 5000,
+      });
+      expect(r.stdout).toContain("quick");
+      expect(r.exitCode).toBe(0);
+      expect(r.backgrounded).toBeFalsy();
+      expect(r.backgroundLogs).toBeUndefined();
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 });

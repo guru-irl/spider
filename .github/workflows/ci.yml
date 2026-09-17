@@ -17,6 +17,13 @@ permissions:
 
 jobs:
   build:
+    # NOTE: the two dots below are U+00B7 MIDDLE DOT, not hyphens or slashes.
+    # This exact string (workflow name "CI" is NOT part of it) is what a branch
+    # protection required-status-check rule must match byte-for-byte. Retyping
+    # it with ASCII punctuation, or copying the GitHub UI's "CI / ..." display
+    # form, produces a rule that never matches and leaves `main` unprotected
+    # while the settings UI still shows a rule as configured. Full detail and
+    # the exact byte sequence: docs/release-process.md.
     name: typecheck · test · build
     runs-on: ubuntu-latest
     timeout-minutes: 20

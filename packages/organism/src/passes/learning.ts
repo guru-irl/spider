@@ -131,8 +131,9 @@ export const COMBINED_REVIEW_PROMPT: string =
   "Review the conversation above and update two things:\n\n" +
   "**Memory**: who the user is. Did the user reveal persona, " +
   "desires, preferences, personal details, or expectations about " +
-  "how you should behave? Save facts about the user and durable " +
-  "preferences with the memory tool.\n\n" +
+  "how you should behave? Include facts about the user and durable " +
+  "preferences as memory candidates in your JSON reply (see OUTPUT " +
+  "FORMAT below).\n\n" +
   "**Skills**: how to do this class of task. Be ACTIVE — most " +
   "sessions produce at least one skill update. A pass that does " +
   "nothing is a missed learning opportunity, not a neutral outcome.\n\n" +
@@ -156,15 +157,17 @@ export const COMBINED_REVIEW_PROMPT: string =
   "it's the right place.\n" +
   "  2. UPDATE AN EXISTING UMBRELLA (spider skill list + spider skill view to " +
   "find the right one). Patch it.\n" +
-  "  3. ADD A SUPPORT FILE under an existing umbrella via " +
-  "spider skill action=write_file. Three kinds: " +
+  "  3. ADD A SUPPORT FILE under an existing umbrella by proposing " +
+  "its content in your JSON reply's `skills` array (see OUTPUT " +
+  "FORMAT below) with a `body` that documents the support content and " +
+  "the umbrella it belongs under. Three kinds of support content: " +
   "`references/<topic>.md` for session-specific detail OR condensed " +
   "knowledge banks (quoted research, API docs excerpts, domain " +
   "notes) written concise and task-focused; `templates/<name>.<ext>` " +
   "for starter files meant to be copied and modified; " +
   "`scripts/<name>.<ext>` for statically re-runnable actions " +
-  "(verification, fixture generators, probes). Add a one-line " +
-  "pointer in SKILL.md so future agents find them.\n" +
+  "(verification, fixture generators, probes). A human/automated " +
+  "reviewer applies the actual file; you never write files yourself.\n" +
   "  4. CREATE A NEW CLASS-LEVEL UMBRELLA when nothing exists. " +
   "Name at the class level — NOT a PR number, error string, " +
   "codename, library-alone name, or 'fix-X / debug-Y' session " +
@@ -209,7 +212,20 @@ export const COMBINED_REVIEW_PROMPT: string =
   "standalone constraint.\n\n" +
   "Act on whichever of the two dimensions has real signal. If " +
   "genuinely nothing stands out on either, say 'Nothing to save.' " +
-  "and stop — but don't reach for that conclusion as a default.";
+  "and stop — but don't reach for that conclusion as a default.\n\n" +
+  "OUTPUT FORMAT (required — you are a plain-text completion, not a " +
+  "tool-calling agent; do not call any tool, and do not write files " +
+  "yourself): reply with ONLY a single JSON object of exactly this " +
+  "shape, no other prose:\n" +
+  '{ "memory": [ { "category": string, "content": string, "link"?: string } ], ' +
+  '"skills": [ { "name": string, "body": string, "related"?: string[] } ], ' +
+  '"todos": [] }\n' +
+  "`category` MUST be exactly one of: preference, convention, tool-quirk, " +
+  "failure, correction, insight. This JSON is a REVIEW CANDIDATE only — it " +
+  "is staged for human/automated review, never auto-approved and never " +
+  "activated by you. If nothing is worth saving on either dimension, reply " +
+  "with empty arrays: " +
+  '{ "memory": [], "skills": [], "todos": [] } (equivalent to "Nothing to save.").';
 
 // The negative-lesson "Do NOT capture" block (background_review.py, originally
 // ~L250-273). Ported verbatim, retargeting `execute_code` → `exec`. This is the
@@ -268,7 +284,7 @@ export async function learningPass(bundle: DigestBundle, model: DigestModel): Pr
   if (bundle.transcript.length === 0) return emptyResult();
 
   const raw = await model.complete(COMBINED_REVIEW_PROMPT + "\n\n" + DO_NOT_CAPTURE, bundle.transcript);
-  const parsed = parseCandidates(raw);
+  const parsed = parseCandidates(raw, { strict: true });
   return {
     ...parsed,
     memory: parsed.memory.filter((m) => shouldCapture(m.category, m.content).capture),

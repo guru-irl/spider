@@ -1,16 +1,57 @@
 // packages/db-core/src/__tests__/tier-split.test.ts
-import { describe, it, expect, afterEach } from "vitest";
-import { join } from "node:path";
+import { describe, it, expect, afterEach, afterAll } from "vitest";
+import { join, dirname, relative, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { openDb } from "../db";
 import { migrate, SCHEMA_VERSION } from "../migrate";
 import { scratchDbPath, cleanupScratch } from "../testutil";
-import { paths } from "../paths";
-import { resolveProject, openRepo, repoRoot, openProject } from "../registry";
+import { resolveProject, openRepo, repoRoot, openProject, openGlobal, setGlobalDbPathForTests } from "../registry";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
+
+// Package-owned scratch (packages/db-core/.spider/scratch/tier-split-<pid>), NEVER the
+// REAL global scratch (paths.scratch("global") === ~/.pi/agent/spider/scratch) the two
+// tests below used to build their fixture trees under — without a global-DB override,
+// resolveProject/registerProject then wrote real rows into the user's actual global
+// registry (~/.pi/agent/spider/spider.db). Same layout convention as testutil.ts's
+// PROC_SCRATCH, one dir level further to avoid colliding with scratchDbPath()'s own
+// per-pid file namespace.
+const FIXTURE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `tier-split-${process.pid}`);
+
+// Each test's own `finally` removes its `scratchDir` subtree, but the override-db
+// files created directly under FIXTURE_ROOT (global-shared-repo.db, global-non-git.db)
+// are siblings of that subtree, not inside it — remove the whole fixture root once,
+// after every test in this file is done.
+afterAll(() => {
+  try { rmSync(FIXTURE_ROOT, { recursive: true, force: true }); } catch { /* best-effort */ }
+});
+
+/** True when `target` is `root` itself or nested anywhere underneath it. Path-aware so
+ *  a shared string prefix can't spoof containment (mirrors host's fixture-safety.ts;
+ *  kept local here since db-core doesn't depend on the host package). */
+function isPathInside(root: string, target: string): boolean {
+  const rel = relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** Verify the CURRENTLY live global DB (whatever setGlobalDbPathForTests override is
+ *  active right now) actually resolved its on-disk file inside `root` — i.e. the
+ *  override really took effect, rather than silently falling back to the real
+ *  ~/.pi/agent/spider/spider.db. Reads the REAL database_list, never an assumption. */
+function assertGlobalDbInside(root: string): void {
+  const g = openGlobal();
+  try {
+    const rows = g.raw.pragma("database_list") as Array<{ name: string; file: string }>;
+    const file = rows.find(r => r.name === "main")?.file;
+    expect(file, "global db connection must be an on-disk main database").toBeTruthy();
+    expect(isPathInside(root, file!), `global db file ${file} must live under the fixture root ${root}, not the real registry`).toBe(true);
+  } finally {
+    g.close();
+  }
+}
 
 function tables(db: { prepare(sql: string): { all(): unknown[] } }): string[] {
   return (db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table') ORDER BY name").all() as { name: string }[]).map(r => r.name);
@@ -154,7 +195,13 @@ describe("tier split — fresh vs migrated parity", () => {
 describe("tier split — shared repo memory", () => {
   // Mutation: point repo-tier opener at worktree DB → this test fails
   it("two worktrees of the SAME repo SHARE repo-tier memory and do NOT share worktree-tier sessions/runs", () => {
-    const scratchDir = join(paths.scratch("global"), "tier-split-shared-repo");
+    // Controlled temporary global-DB override BEFORE any resolver runs
+    // (resolveProject below both RESOLVES and REGISTERS into whatever global DB is
+    // currently live) — this is the leak fix: previously this test used the REAL
+    // global scratch dir with no override, so every run wrote real rows into the
+    // user's actual ~/.pi/agent/spider/spider.db. Reset in `finally` below.
+    setGlobalDbPathForTests(join(FIXTURE_ROOT, "global-shared-repo.db"));
+    const scratchDir = join(FIXTURE_ROOT, "tier-split-shared-repo");
     if (existsSync(scratchDir)) rmSync(scratchDir, { recursive: true, force: true });
     mkdirSync(scratchDir, { recursive: true });
     
@@ -185,6 +232,15 @@ describe("tier split — shared repo memory", () => {
       
       // But different project_key (worktree roots)
       expect(proj1.projectKey).not.toBe(proj2.projectKey);
+
+      // Linked worktrees of this FAKE repo must share only the FAKE repo tier: repoKey
+      // must resolve inside this test's own disposable fixture, never the monorepo's
+      // actual .git (this file's own package sits inside a real git checkout).
+      expect(isPathInside(scratchDir, proj1.repoKey!)).toBe(true);
+
+      // Verify the override above actually took effect — the ACTUAL on-disk file
+      // openGlobal() opened, not just the override variable — before any more writes.
+      assertGlobalDbInside(FIXTURE_ROOT);
       
       // Open repo and worktree DBs for wt1
       const repo1 = openRepo(proj1.repoKey!); opened.push(repo1);
@@ -228,6 +284,7 @@ describe("tier split — shared repo memory", () => {
         execFileSync("git", ["worktree", "remove", wt2, "--force"], { cwd: repoDir });
       } catch {}
       if (existsSync(scratchDir)) rmSync(scratchDir, { recursive: true, force: true });
+      setGlobalDbPathForTests(null);
     }
   });
 });
@@ -235,11 +292,25 @@ describe("tier split — shared repo memory", () => {
 describe("tier split — non-git fallback", () => {
   // Mutation: make non-git directories throw → this test fails
   it("non-git directory falls back to worktree tier without error", () => {
-    const scratchDir = join(paths.scratch("global"), "tier-split-non-git");
+    const scratchDir = join(FIXTURE_ROOT, "tier-split-non-git");
     if (existsSync(scratchDir)) rmSync(scratchDir, { recursive: true, force: true });
     mkdirSync(scratchDir, { recursive: true });
-    
+
+    // Controlled temporary global-DB override BEFORE resolveProject — same leak this
+    // fixture previously had via the real global scratch dir with no override.
+    setGlobalDbPathForTests(join(FIXTURE_ROOT, "global-non-git.db"));
+
+    // This fixture now lives under packages/db-core/.spider/scratch/ — itself nested
+    // inside THIS repo's own git checkout. Without a ceiling, `git rev-parse
+    // --show-toplevel` from scratchDir would climb straight past it and find the
+    // monorepo's real .git, silently turning this NON-GIT test into a git fixture
+    // (repoKey would then be defined, contradicting the assertions below). Scope the
+    // ceiling to this fixture's own parent and restore it unconditionally after,
+    // exactly like registry.test.ts's "keys a non-git dir" test does.
+    const prevCeiling = process.env.GIT_CEILING_DIRECTORIES;
     try {
+      process.env.GIT_CEILING_DIRECTORIES = dirname(scratchDir);
+
       // resolveProject should not throw
       const proj = resolveProject(scratchDir);
       expect(proj.projectKey).toBeTruthy();
@@ -248,7 +319,14 @@ describe("tier split — non-git fallback", () => {
       // repoRoot should return undefined for non-git directories
       const rr = repoRoot(scratchDir);
       expect(rr).toBeUndefined();
+
+      // Verify the override above actually took effect (registerProject, called
+      // inside resolveProject, must not have fallen back to the real registry).
+      assertGlobalDbInside(FIXTURE_ROOT);
     } finally {
+      if (prevCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prevCeiling;
+      setGlobalDbPathForTests(null);
       if (existsSync(scratchDir)) rmSync(scratchDir, { recursive: true, force: true });
     }
   });

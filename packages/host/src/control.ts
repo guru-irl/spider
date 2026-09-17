@@ -9,7 +9,6 @@ export { controlMigrate } from "./control/migrate-cmd";
 const DEFAULTS: Record<string, unknown> = {
   "ui.footer": true,
   "ui.grid_hotkey": "ctrl+shift+g",
-  "organism.enabled": true,
   "embeddings.provider": "fastembed",
   "embeddings.model": "BGE-small-en-v1.5",
   "embeddings.dim": 384,

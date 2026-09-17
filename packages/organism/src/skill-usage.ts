@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import type { Db } from "@spider/db-core";
 
 /** Lifecycle state — ported from `hermes-agent/tools/skill_usage.py` states. */
@@ -52,6 +54,79 @@ interface RawSkillRow {
   created_at: number;
   updated_at: number | null;
 }
+
+/** Max length parity with the Agent Skills spec's name limit (pi's loader enforces the same bound). */
+const MAX_SKILL_NAME_LENGTH = 64;
+
+/**
+ * Validate a skill name against the Agent Skills naming rules (lowercase
+ * a-z/0-9/hyphen only, 1-64 chars, no leading/trailing/consecutive hyphens).
+ * This charset has no `/`, `.`, `\`, or NUL, so a name that passes here
+ * cannot be used to escape `<projectRoot>/.spider/skills/<name>/` via path
+ * traversal — the character whitelist IS the traversal guard. Returns an
+ * empty array when valid.
+ */
+export function skillNameErrors(name: string): string[] {
+  const errors: string[] = [];
+  if (name.length === 0 || name.length > MAX_SKILL_NAME_LENGTH) {
+    errors.push(`name must be 1-${MAX_SKILL_NAME_LENGTH} characters (got ${name.length})`);
+  }
+  if (!/^[a-z0-9-]+$/.test(name)) {
+    errors.push("name must contain only lowercase letters, digits, and hyphens");
+  }
+  if (name.startsWith("-") || name.endsWith("-")) {
+    errors.push("name must not start or end with a hyphen");
+  }
+  if (name.includes("--")) {
+    errors.push("name must not contain consecutive hyphens");
+  }
+  return errors;
+}
+
+/**
+ * Deterministic description policy for a candidate body with no frontmatter
+ * of its own: use the first non-blank line (heading markers stripped),
+ * trimmed to a safe length. This guarantees pi's loader (which refuses any
+ * SKILL.md lacking a non-empty `description`) always has one, without ever
+ * fabricating a claim about content that is not in the body.
+ */
+export function deriveSkillDescription(body: string, name: string): string {
+  const firstLine = body
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  const cleaned = (firstLine ?? "").replace(/^#+\s*/, "").trim();
+  const base = cleaned.length > 0 ? cleaned : `Distilled project skill: ${name}.`;
+  return base.length > 500 ? `${base.slice(0, 497)}...` : base;
+}
+
+/**
+ * Compose a discoverable SKILL.md: always synthesizes our own frontmatter
+ * (`name`, `description`) rather than trusting any frontmatter-shaped text
+ * inside an auto-generated `body` — the aux-model prompt asks only for a
+ * "SKILL.md body", never for frontmatter, so this is the only place that
+ * produces it. `body` becomes the instructions section verbatim.
+ */
+export function buildSkillMarkdown(name: string, body: string, category?: string): string {
+  const description = deriveSkillDescription(body, name);
+  const lines = ["---", `name: ${name}`, `description: ${JSON.stringify(description)}`];
+  if (category !== undefined && category.length > 0) {
+    lines.push("metadata:", `  category: ${JSON.stringify(category)}`);
+  }
+  lines.push("---", "");
+  return `${lines.join("\n")}${body.trimEnd()}\n`;
+}
+
+export interface ApproveOk { ok: true; row: SkillRow }
+export interface ApproveErr { ok: false; error: string }
+/** Result of {@link SkillStore.approveCandidate}: fail-closed, never partial. */
+export type ApproveResult = ApproveOk | ApproveErr;
+
+export type SkillStageSkipReason = "protected" | "pinned" | "active" | "user-owned" | "duplicate";
+/** Result of {@link SkillStore.stageCandidate}: distinguishes a real new write from a no-op. */
+export type StageCandidateResult =
+  | { outcome: "staged"; row: SkillRow }
+  | { outcome: "skipped"; reason: SkillStageSkipReason; row: SkillRow };
 
 function opt<T>(v: T | null): T | undefined {
   return v === null ? undefined : v;
@@ -115,7 +190,9 @@ const SELECT_ALL =
  * `last_*_at` timestamps, and `pinned`/`protected` opt-out flags. Adds the
  * staged-candidate flow used by the curator: `stageCandidate` writes a
  * `status='staged'`, `source='auto'` row carrying a `candidate_body`, which is
- * later `approveCandidate`-d (→ active, body cleared) or `rejectCandidate`-ed.
+ * later `approveCandidate`-d (→ materializes `SKILL.md` on disk, row becomes
+ * `active`, `path` recorded, `candidate_body` retained so `view` still shows
+ * content) or `rejectCandidate`-ed (→ `rejected`, no file ever written).
  */
 export class SkillStore {
   constructor(private readonly db: Db) {}
@@ -208,10 +285,27 @@ export class SkillStore {
       .run(pinned ? 1 : 0, Date.now(), name);
   }
 
-  stageCandidate(c: { name: string; category?: string; body: string; related?: string[] }): SkillRow {
+  /**
+   * Stage an auto-proposed candidate. Fail-closed against downgrading a
+   * skill a human already owns: an existing `pinned`/`protected`/`active`
+   * row, or one whose `source` is not `"auto"` (user-owned), is left
+   * untouched and reported as `skipped` rather than silently staged over.
+   * A byte-identical re-proposal of an already-staged candidate is also
+   * `skipped` (`reason: "duplicate"`) so retries cannot inflate counters.
+   */
+  stageCandidate(c: { name: string; category?: string; body: string; related?: string[] }): StageCandidateResult {
+    const existing = this.get(c.name);
+    if (existing !== undefined) {
+      if (existing.protected) return { outcome: "skipped", reason: "protected", row: existing };
+      if (existing.pinned) return { outcome: "skipped", reason: "pinned", row: existing };
+      if (existing.status === "active") return { outcome: "skipped", reason: "active", row: existing };
+      if (existing.source !== "auto") return { outcome: "skipped", reason: "user-owned", row: existing };
+      if (existing.status === "staged" && existing.candidateBody === c.body) {
+        return { outcome: "skipped", reason: "duplicate", row: existing };
+      }
+    }
     const now = Date.now();
     const related = c.related !== undefined ? JSON.stringify(c.related) : null;
-    const existing = this.get(c.name);
     if (existing === undefined) {
       this.db
         .prepare(
@@ -227,23 +321,99 @@ export class SkillStore {
         )
         .run(c.category ?? existing.category ?? null, c.body, related, now, c.name);
     }
-    return this.get(c.name)!;
+    return { outcome: "staged", row: this.get(c.name)! };
   }
 
-  approveCandidate(name: string): SkillRow | null {
+  /**
+   * Approve a staged candidate: validate the name, require staged content,
+   * materialize `<projectRoot>/.spider/skills/<name>/SKILL.md` with a
+   * no-clobber write, verify the write landed inside the project root (guards
+   * a symlinked `.spider`/`skills` directory), and only then flip the DB row
+   * to `active` and record its `path`. Never touches an existing `pinned`,
+   * `protected`, or already-`active` row. On any failure the row is left
+   * exactly as it was (still `staged`, `candidate_body` intact) and an
+   * actionable error is returned — never a silent partial activation.
+   */
+  approveCandidate(name: string, projectRoot: string): ApproveResult {
+    const nameErrors = skillNameErrors(name);
+    if (nameErrors.length > 0) {
+      return { ok: false, error: `invalid skill name "${name}": ${nameErrors.join("; ")}` };
+    }
     const existing = this.get(name);
-    if (existing === undefined) return null;
+    if (existing === undefined) {
+      return { ok: false, error: `no skill candidate named "${name}"` };
+    }
+    if (existing.protected) {
+      return { ok: false, error: `skill "${name}" is protected and cannot be approved over` };
+    }
+    if (existing.pinned) {
+      return { ok: false, error: `skill "${name}" is pinned and cannot be approved over` };
+    }
+    if (existing.status === "active") {
+      return { ok: false, error: `skill "${name}" is already active` };
+    }
+    if (existing.status !== "staged") {
+      return { ok: false, error: `skill "${name}" has no staged candidate (status: ${existing.status})` };
+    }
+    const body = existing.candidateBody;
+    if (body === undefined || body.trim().length === 0) {
+      return { ok: false, error: `skill "${name}" has no staged content to approve` };
+    }
+
+    const skillDir = join(projectRoot, ".spider", "skills", name);
+    const skillFile = join(skillDir, "SKILL.md");
+    let realProjectRoot: string;
+    try {
+      realProjectRoot = realpathSync(projectRoot);
+    } catch (err) {
+      return { ok: false, error: `failed to resolve project root: ${(err as Error).message}` };
+    }
+    const prefix = realProjectRoot.endsWith(sep) ? realProjectRoot : `${realProjectRoot}${sep}`;
+    // Walk one path segment at a time rather than a single recursive mkdir:
+    // if `.spider` or `.spider/skills` is already a symlink pointing outside
+    // the project root, this catches it at that segment — BEFORE ever
+    // creating anything on the far side of the symlink.
+    let current = projectRoot;
+    for (const segment of [".spider", "skills", name]) {
+      current = join(current, segment);
+      try {
+        if (existsSync(current)) {
+          const real = realpathSync(current);
+          if (real !== realProjectRoot && !real.startsWith(prefix)) {
+            return { ok: false, error: `refusing to write outside project root: ${real}` };
+          }
+        } else {
+          mkdirSync(current);
+        }
+      } catch (err) {
+        return { ok: false, error: `failed to prepare skill directory: ${(err as Error).message}` };
+      }
+    }
+
+    const content = buildSkillMarkdown(name, body, existing.category);
+    try {
+      writeFileSync(skillFile, content, { flag: "wx" });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") {
+        return { ok: false, error: `skill file already exists, refusing to overwrite: ${skillFile}` };
+      }
+      return { ok: false, error: `failed to write skill file: ${(err as Error).message}` };
+    }
+
     this.db
-      .prepare(
-        "UPDATE skills SET status = 'active', candidate_body = NULL, updated_at = ? WHERE name = ?"
-      )
-      .run(Date.now(), name);
-    return this.get(name)!;
+      .prepare("UPDATE skills SET status = 'active', state = 'active', path = ?, updated_at = ? WHERE name = ?")
+      .run(skillFile, Date.now(), name);
+    return { ok: true, row: this.get(name)! };
   }
 
-  rejectCandidate(name: string): void {
+  /** Reject a staged candidate: status flips to `rejected`, no file is ever written. */
+  rejectCandidate(name: string): SkillRow | undefined {
+    const existing = this.get(name);
+    if (existing === undefined) return undefined;
     this.db
       .prepare("UPDATE skills SET status = 'rejected', updated_at = ? WHERE name = ?")
       .run(Date.now(), name);
+    return this.get(name)!;
   }
 }

@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { PolyglotExecutor } from "../executor";
-import { runExec } from "../actions/exec";
+import { runExec, runExecFile, runBatch } from "../actions/exec";
 
 const ex = () => new PolyglotExecutor({ projectRoot: () => process.cwd() });
 
@@ -55,5 +55,66 @@ describe("exec streaming (matches pi's bash tool pattern)", () => {
       { cwd: process.cwd(), onPartial: (t: string) => seen.push(t) } as any,
     );
     for (const s of seen) expect(Buffer.byteLength(s)).toBeLessThanOrEqual(10_000);
+  });
+
+  // A-H2 (branch-review A-architecture.md): `executeFile`'s own implementation used to
+  // destructure only {path, language, code, timeout} from `opts` and silently drop
+  // `onData`/`signal`, even though `ExecuteFileOptions extends ExecuteOptions` (which
+  // declares both) — so ANY caller passing them got no streaming/abort at all, one level
+  // below actions/exec.ts.
+  it("executor.executeFile ALSO streams output chunks as they arrive, not just execute() (A-H2)", async () => {
+    const chunks: string[] = [];
+    await ex().executeFile({
+      path: "package.json",
+      language: "shell",
+      code: "echo first; sleep 0.15; echo second",
+      onData: (c: string) => chunks.push(c),
+    } as any);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join("")).toContain("second");
+  });
+
+  // The host declares exec_file/batch streaming (extension.ts's `streams` predicate) and
+  // threads `onPartial` all the way to `ActionCtx` — but actions/exec.ts's `runExecFile`/
+  // `runBatch` passed it to NEITHER `executeFile()` nor `execute()`. Mutation this catches:
+  // stop threading onPartial through runExecFile -> onPartial never fires.
+  it("runExecFile forwards partial output through ctx.onPartial (A-H2)", async () => {
+    const seen: string[] = [];
+    await runExecFile(
+      { action: "exec_file", path: "package.json", language: "shell", code: "echo a; sleep 0.15; echo b" } as any,
+      { cwd: process.cwd(), onPartial: (t: string) => seen.push(t) } as any,
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[seen.length - 1]).toContain("a");
+  });
+
+  // Mutation this catches: stop threading onPartial through runBatch -> onPartial never fires,
+  // or omit the completion flush -> the throttled tail never reaches the final partial.
+  it("runBatch flushes the final cumulative partial without waiting out the throttle (A-H2)", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const seen: string[] = [];
+    const alreadyFinal: string[] = [];
+    try {
+      await runBatch(
+        { action: "batch", commands: [
+          { language: "shell", code: "echo a" },
+          { language: "shell", code: "echo c" },
+        ] } as any,
+        { cwd: process.cwd(), onPartial: (t: string) => seen.push(t) } as any,
+      );
+      await runExec(
+        { action: "exec", language: "shell", code: "echo only" } as any,
+        { cwd: process.cwd(), onPartial: (t: string) => alreadyFinal.push(t) } as any,
+      );
+    } finally {
+      now.mockRestore();
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    // The frozen clock makes every chunk after the first stay inside the throttle window.
+    // Completion must still publish the whole batch transcript, with no fixture sleeps.
+    expect(seen[seen.length - 1]).toContain("a");
+    expect(seen[seen.length - 1]).toContain("c");
+    // A one-chunk command was already published exactly; completion must not repeat it.
+    expect(alreadyFinal).toEqual(["only\n"]);
   });
 });

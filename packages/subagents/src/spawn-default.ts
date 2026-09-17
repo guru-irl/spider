@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { constants } from "node:os";
 import type { Spawner, ChildHandle } from "./runner";
 import { killProcessGroup } from "./kill-process";
 
@@ -21,7 +22,9 @@ export const defaultSpawner: Spawner = (spec) => {
   // guarantees a handler on every path; the memoized promise settles once (idempotent).
   let settle!: (v: { exitCode: number; result?: string }) => void;
   const exit = new Promise<{ exitCode: number; result?: string }>((res) => { settle = res; });
-  child.on("exit", (code) => settle({ exitCode: code ?? 0 }));
+  child.on("exit", (code, signal) => settle({
+    exitCode: code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1),
+  }));
   child.on("error", () => settle({ exitCode: 1 }));
   return {
     pid: child.pid,

@@ -23,25 +23,102 @@ function readField(obj: unknown, key: string): unknown {
 }
 
 /**
- * Tolerant parse of an aux-model reply into typed candidates. Accepts a fenced
- * ```json block or bare JSON. Unknown/invalid entries are dropped (never throw).
- * "Nothing to save." → emptyResult().
+ * Extract a balanced `{...}` JSON substring starting at the first `{`,
+ * tolerating leading/trailing prose around it. Tracks string/escape state so
+ * braces inside string values don't break the balance count. Returns
+ * `undefined` when no balanced object is found. This never evaluates code —
+ * it only locates a substring that is subsequently passed to `JSON.parse`.
  */
-export function parseCandidates(raw: string): DigestResult {
-  const text = typeof raw === "string" ? raw : "";
-  if (/nothing to save\.?/i.test(text.trim())) return emptyResult();
+function extractBalancedJson(text: string): string | undefined {
+  const start = text.indexOf("{");
+  if (start === -1) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return undefined;
+}
 
-  // Extract the FIRST ```json fenced block if present, else use the raw string.
-  const fence = /```json\s*\n?([\s\S]*?)```/i.exec(text);
-  const jsonText = fence ? fence[1] : text;
-
-  let parsed: unknown;
+/** `JSON.parse` a candidate substring; only a plain object result is kept. */
+function tryParseObject(s: string): Record<string, unknown> | undefined {
   try {
-    parsed = JSON.parse(jsonText);
+    const v: unknown = JSON.parse(s);
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
   } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Locate and strictly `JSON.parse` the candidate object embedded in a raw
+ * model reply. Tolerates (in order): a fenced code block with or without a
+ * `json` language tag (case-insensitive), bare JSON with no fence, and prose
+ * wrapped before/after the JSON (preamble and/or trailing commentary). Never
+ * evaluates code — every branch is a plain `JSON.parse` over an extracted
+ * substring. Returns `undefined` when no valid JSON object can be found.
+ */
+function extractJsonCandidate(text: string): Record<string, unknown> | undefined {
+  const fence = /```(?:json)?\s*\n?([\s\S]*?)```/i.exec(text);
+  if (fence) {
+    const inner = fence[1].trim();
+    const direct = tryParseObject(inner);
+    if (direct !== undefined) return direct;
+    const bal = extractBalancedJson(inner);
+    if (bal !== undefined) {
+      const v = tryParseObject(bal);
+      if (v !== undefined) return v;
+    }
+  }
+  const direct = tryParseObject(text.trim());
+  if (direct !== undefined) return direct;
+  const bal = extractBalancedJson(text);
+  if (bal !== undefined) {
+    const v = tryParseObject(bal);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+/**
+ * Tolerant parse of an aux-model reply into typed candidates. Accepts a fenced
+ * ```json (or bare ```) block, bare JSON, or JSON wrapped in prose.
+ * Unknown/invalid entries are dropped (never throw). An exact, trimmed,
+ * case-insensitive "Nothing to save." is a valid empty response.
+ *
+ * `opts.strict` (default `false`, preserving prior tolerant public behavior):
+ * when `true`, a reply that is wholly malformed/non-JSON (and is not the
+ * literal empty-response phrase) throws a short, safe error instead of
+ * silently returning `emptyResult()` — so production callers can distinguish
+ * "the model said nothing" from "the model's reply could not be parsed at
+ * all". The error message never echoes the raw reply (never a raw response
+ * dump) and no code is ever evaluated — only `JSON.parse` over extracted text.
+ */
+export function parseCandidates(raw: string, opts?: { strict?: boolean }): DigestResult {
+  const strict = opts?.strict ?? false;
+  const text = typeof raw === "string" ? raw : "";
+  // Anchored to the WHOLE trimmed reply — a reply that merely quotes or
+  // discusses the phrase while going on to emit real JSON must NOT match.
+  if (/^nothing to save\.?$/i.test(text.trim())) return emptyResult();
+
+  const parsed = extractJsonCandidate(text);
+  if (parsed === undefined) {
+    if (strict) throw new Error("organism: aux-model reply was not valid JSON");
     return emptyResult();
   }
-  if (typeof parsed !== "object" || parsed === null) return emptyResult();
 
   const result = emptyResult();
 

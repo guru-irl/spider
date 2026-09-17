@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { getEventListeners } from "node:events";
 import { PolyglotExecutor } from "../executor";
+import { runExecFile, runBatch } from "../actions/exec";
 
 const ex = () => new PolyglotExecutor({ projectRoot: () => process.cwd() });
 
@@ -129,5 +130,64 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
     setTimeout(() => ac2.abort(), 100);
     await p;
     expect(getEventListeners(ac2.signal, "abort").length).toBe(0);
+  });
+
+  // A-H2 (branch-review A-architecture.md): the host declares exec_file/batch abortable
+  // (extension.ts threads pi's AbortSignal through ActionCtx.signal for all three exec
+  // actions) but actions/exec.ts's runExecFile/runBatch passed `signal` to NEITHER
+  // `executeFile()` nor `execute()` — Escape was a silent no-op for these two actions; the
+  // command ran to completion and reported normally regardless.
+  describe("runExecFile/runBatch now honor ctx.signal (A-H2)", () => {
+    it("runExecFile: an already-aborted signal never runs the command", async () => {
+      const ac = new AbortController();
+      ac.abort();
+      const r = await runExecFile(
+        { action: "exec_file", path: "package.json", language: "shell", code: "echo should-not-run" } as any,
+        { cwd: process.cwd(), signal: ac.signal } as any,
+      );
+      expect(r.text).not.toContain("should-not-run");
+      expect((r.details as any).aborted).toBe(true);
+      expect(r.isError).toBe(true);
+    });
+
+    it("runExecFile: aborting MID-RUN kills the command instead of running it to completion", async () => {
+      const ac = new AbortController();
+      const p = runExecFile(
+        { action: "exec_file", path: "package.json", language: "shell", code: "echo before; sleep 5; echo after" } as any,
+        { cwd: process.cwd(), signal: ac.signal } as any,
+      );
+      setTimeout(() => ac.abort(), 100);
+      const r = await p;
+      expect(r.text).toContain("before");
+      expect(r.text).not.toContain("after");
+      expect((r.details as any).aborted).toBe(true);
+    }, 10_000);
+
+    it("runBatch: an already-aborted signal never runs ANY command in the batch", async () => {
+      const ac = new AbortController();
+      ac.abort();
+      const r = await runBatch(
+        { action: "batch", commands: [{ language: "shell", code: "echo should-not-run" }] } as any,
+        { cwd: process.cwd(), signal: ac.signal } as any,
+      );
+      expect(r.text).not.toContain("should-not-run");
+      expect(r.isError).toBe(true);
+    });
+
+    it("runBatch: aborting mid-batch stops SUBSEQUENT commands from ever starting", async () => {
+      const ac = new AbortController();
+      const p = runBatch(
+        { action: "batch", commands: [
+          { language: "shell", code: "echo cmd1; sleep 5" },
+          { language: "shell", code: "echo SHOULD_NOT_RUN" },
+        ] } as any,
+        { cwd: process.cwd(), signal: ac.signal } as any,
+      );
+      setTimeout(() => ac.abort(), 100);
+      const r = await p;
+      expect(r.text).toContain("cmd1");
+      expect(r.text).not.toContain("SHOULD_NOT_RUN");
+      expect(r.isError).toBe(true);
+    }, 10_000);
   });
 });

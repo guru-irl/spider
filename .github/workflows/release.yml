@@ -1,8 +1,19 @@
 name: Release
 
-# Tag-driven. Push a v-prefixed tag and this builds, verifies, and cuts a GitHub
-# Release. Publishing to npm is a SEPARATE workflow triggered by the release
-# being published, so a bad build can never reach the registry.
+# Tag-driven. Push a v-prefixed tag and this builds, verifies, and cuts a DRAFT
+# GitHub Release. It deliberately stops at draft: GitHub Actions' default
+# GITHUB_TOKEN cannot trigger other workflows from the events it raises (only
+# workflow_dispatch/repository_dispatch are excepted), so if this job published
+# the release directly, publish.yml's `on: release: types: [published]` would
+# never fire and the only working path would be manual workflow_dispatch. A
+# human (or a PAT-authenticated `gh`) publishing the draft is what actually
+# fires that event, since it does not come from GITHUB_TOKEN.
+#
+# So: after this workflow finishes, go to the repo's Releases page and click
+# "Publish release" on the new draft (or `gh release edit "$TAG" --draft=false`
+# locally, authenticated as yourself) once you are satisfied with the notes.
+# That publishes to npm — see docs/release-process.md for the full flow and the
+# one-time manual repo setup (the `npm-publish` environment) it depends on.
 on:
   push:
     tags: ['v*']
@@ -50,11 +61,17 @@ jobs:
         run: npm run build
 
       # Proves the tarball npm would publish actually contains the bundle,
-      # before anything is released.
+      # before anything is released. `--ignore-scripts` is required here: `npm
+      # pack` otherwise re-runs the `prepare` script (`npm run build`), and that
+      # build's own stdout (vite's progress output, assert-bundle's success
+      # line) lands BEFORE `npm pack --json`'s own JSON on the same stdout
+      # stream, so `JSON.parse` on the piped output fails on every run. The
+      # explicit Build step above already produced dist/, so re-running prepare
+      # here is redundant as well as broken.
       - name: Verify package contents
         run: |
-          npm pack --dry-run
-          npm pack --json | node -e "
+          npm pack --dry-run --ignore-scripts
+          npm pack --json --ignore-scripts | node -e "
             let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
               const files=JSON.parse(s)[0].files.map(f=>f.path);
               const need=['dist/extension.js','README.md','LICENSE'];
@@ -62,12 +79,18 @@ jobs:
               if(missing.length){console.error('::error::missing from tarball: '+missing.join(', '));process.exit(1);}
               console.log('tarball contains '+files.length+' files, required entries present');
             });"
+          rm -f guru-irl-spider-*.tgz
 
-      - name: Create GitHub Release
+      # Draft, not live: see the header comment. `gh release create` without
+      # `--draft` would publish immediately, authored by GITHUB_TOKEN, which is
+      # exactly the event source that cannot trigger publish.yml.
+      - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            --verify-tag
+            --verify-tag \
+            --draft
+          echo "::notice::Draft release $GITHUB_REF_NAME created. Publish it by hand (repo Releases page, or 'gh release edit $GITHUB_REF_NAME --draft=false' as an authenticated human) to trigger publish.yml."

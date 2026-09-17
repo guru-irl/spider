@@ -37,3 +37,18 @@ export interface DigestModel { complete(system: string, messages: DigestMsg[]): 
 
 export interface WriteBudget { max: number; used: number; }
 export interface AppliedSummary { memoryStaged: number; todosAdded: number; skillsStaged: number; dropped: number; rejected: number; }
+
+export interface DrainError { phase: string; message: string; }
+/** Counts describe new staged proposals, not approvals or completed user work. */
+export interface DrainReport extends AppliedSummary {
+  kind: "organism-drain";
+  sessionId: string;
+  reason: DrainReason;
+  status: "completed" | "partial" | "failed" | "skipped";
+  skipReason?: "disabled" | "no-input" | "no-model";
+  startedAt: number;
+  finishedAt: number;
+  modelCalls: number;
+  inputs: { messages: number; runs: number; runEvents: number; events: number; completedTodos: number };
+  errors: DrainError[];
+}

@@ -101,6 +101,15 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(80).join("\n")).toContain("✗");
   });
 
+  it("control doctor does not invent success when ok evidence is absent (C-LOW)", () => {
+    const c = renderSpiderResult(mkResult({ lines: [] }), opts, theme, mkCtx({ action: "control", command: "doctor" }));
+    assertComponent(c);
+    const out = c.render(80).join("\n");
+    expect(out).toContain("○");
+    expect(out).toContain("check status unknown");
+    expect(out).not.toContain("all checks passed");
+  });
+
   it("todo list → checklist with glyphs, ids and completion footer (no raw JSON)", () => {
     const details = [{ seq: 1, text: "write test", done: true }, { seq: 2, text: "impl", done: false }];
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "todo", op: "list" }));
@@ -191,14 +200,15 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{\s*"moved"/);
   });
 
-  it("control memory consolidate → active-memory list (no raw JSON)", () => {
-    const details = { entries: [{ category: "preference", content: "tabs over spaces" }], usage: 1234 };
-    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "memory", sub: "consolidate" }));
+  it("control memory status → active-memory list with identifiers (no raw JSON)", () => {
+    const details = { entries: [{ uuid: "memory-to-review", category: "preference", content: "tabs over spaces" }], usage: 1234 };
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "memory", sub: "status" }));
     assertComponent(c);
     const out = c.render(80).join("\n");
     expect(out).toMatch(/1 active · 1234/);
     expect(out).toContain("preference");
     expect(out).toContain("tabs over spaces");
+    expect(out).toContain("memory-to-review");
     expect(out).not.toMatch(/"entries"/);
   });
 
@@ -301,6 +311,202 @@ describe("exec: command shown on the call, output on the result", () => {
     expect(b).toContain("one");
     expect(b).toContain("two");
   });
+
+  it("a genuinely null exitCode with NO backgrounded/backgroundJob (e.g. a resolved spawn-error, not a still-running detach) never renders as exit 0 / success either (M1)", () => {
+    const out = body({ action: "exec", language: "shell", code: "/no/such/binary" }, { stdout: "", stderr: "spawn error", exitCode: null, timedOut: false }, false);
+    expect(out).not.toMatch(/exit 0/);
+    expect(out).not.toContain("✓");
+  });
+
+  it("a detached (backgrounded, exitCode:null) result never renders as exit 0 / success — it renders as detached/exit unknown", () => {
+    const details = {
+      stdout: "partial output so far\n", stderr: "", exitCode: null, timedOut: true, backgrounded: true,
+      pid: 23161,
+      backgroundJob: {
+        id: "20260916T112055Z-a1b2c3d4",
+        dir: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4",
+        manifest: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4/job.json",
+        receipt: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4/exit.json",
+        logs: { stdout: "/p/.../stdout.log", stderr: "/p/.../stderr.log" },
+      },
+    };
+    const out = body({ action: "exec", language: "shell", code: "npm run build" }, details, false);
+    expect(out).not.toMatch(/exit 0/);
+    expect(out).not.toContain("✓");
+    expect(out).toMatch(/detached/i);
+    expect(out).toMatch(/exit unknown|not known/i);
+    expect(out).toContain("exit.json");
+  });
+
+  it("I-3: a verified-finished command with retained descendants renders the REAL exit code plus a retention disclosure, never the detached/unknown wording (`backgrounded` no longer overloaded)", () => {
+    const details = {
+      stdout: "PARENT_DONE\n", stderr: "", exitCode: 0, timedOut: false,
+      retained: true, retainedReason: "process group may still have live members",
+      backgroundJob: {
+        id: "20260916T112055Z-a1b2c3d4",
+        dir: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4",
+        manifest: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4/job.json",
+        receipt: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4/exit.json",
+        logs: { stdout: "/p/.../stdout.log", stderr: "/p/.../stderr.log" },
+      },
+    };
+    const out = body({ action: "exec", language: "shell", code: "(loop) & echo PARENT_DONE" }, details, false);
+    expect(out).toContain("✓");
+    expect(out).toMatch(/exit 0/);
+    expect(out).not.toMatch(/detached/i);
+    expect(out).not.toMatch(/exit unknown/i);
+    expect(out).toMatch(/retained/i);
+  });
+
+  it("m-3: a retained result whose exitCode field is entirely ABSENT (not explicitly null — an executor-unreachable edge case) must never be coerced into a fabricated 'exit 0'", () => {
+    const details: any = {
+      stdout: "", stderr: "", timedOut: false,
+      retained: true, retainedReason: "process group may still have live members",
+      backgroundJob: {
+        id: "20260916T112055Z-a1b2c3d4", dir: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4",
+        manifest: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4/job.json",
+        receipt: "/p/.spider/scratch/bg/20260916T112055Z-a1b2c3d4/exit.json",
+        logs: { stdout: "/p/.../stdout.log", stderr: "/p/.../stderr.log" },
+      },
+    };
+    // deliberately no `exitCode` key at all on `details`
+    const out = body({ action: "exec", language: "shell", code: "x" }, details, false);
+    expect(out).not.toMatch(/✓/);
+    expect(out).not.toMatch(/exit 0\b/);
+  });
+
+  it("M-c: a genuinely unknown batch outcome (a null exitCode among the batch entries) never gets laundered into a fabricated definite failure (exit 1) — it renders as unknown", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "echo a" }, { code: "echo b" }] },
+      [{ stdout: "a", exitCode: 0 }, { stdout: "", exitCode: null }],
+      false,
+    );
+    expect(out).not.toMatch(/exit 1\b/);
+    expect(out).toMatch(/unknown/i);
+  });
+
+  it("M-c: a batch outcome with a REAL nonzero failure still renders as a genuine failure (exit 1 preserved, not laundered into unknown)", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "echo a" }, { code: "false" }] },
+      [{ stdout: "a", exitCode: 0 }, { stdout: "", exitCode: 1 }],
+      false,
+    );
+    expect(out).toMatch(/exit 1\b/);
+    expect(out).not.toMatch(/unknown/i);
+  });
+
+  it("F-1: a batch entry that died by signal is a KNOWN failure — never laundered into 'exit unknown', and the signal is named", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "echo a" }, { code: "kill -TERM $$" }] },
+      [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGTERM" }],
+      false,
+    );
+    expect(out).toContain("✗");
+    expect(out).toMatch(/signal/i);
+    expect(out).not.toMatch(/exit unknown/i);
+  });
+
+  it("F-1: a batch entry that failed to spawn is a KNOWN failure, named 'spawn error', never 'exit unknown'", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "echo a" }, { code: "/no/such/binary" }] },
+      [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "spawn-error" }],
+      false,
+    );
+    expect(out).toContain("✗");
+    expect(out).toMatch(/spawn error/i);
+    expect(out).not.toMatch(/exit unknown/i);
+  });
+
+  it("F-1 control: a genuinely unknown entry (outcome:'unknown', no signal/spawn-error anywhere in the batch) still renders neutrally, never a fabricated failure", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "echo a" }, { code: "b" }] },
+      [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "unknown" }],
+      false,
+    );
+    expect(out).not.toContain("✗");
+    expect(out).toMatch(/unknown/i);
+  });
+
+  it("F-1 mixed: a signal death AND a genuinely-unknown entry in the same batch disclose BOTH — fail+signal named, plus the unknown fact — never collapsed to one", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "a" }, { code: "b" }, { code: "c" }] },
+      [
+        { stdout: "", exitCode: null, outcome: "signal", signal: "SIGKILL" },
+        { stdout: "", exitCode: null, outcome: "unknown" },
+        { stdout: "a", exitCode: 0, outcome: "exited" },
+      ],
+      false,
+    );
+    expect(out).toContain("✗");
+    expect(out).toMatch(/signal/i);
+    expect(out).toMatch(/unknown/i);
+  });
+
+  it("F-1: single-result signal-death path is unaffected by the batch aggregation fix", () => {
+    const out = body(
+      { action: "exec", language: "shell", code: "kill -TERM $$" },
+      { stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGTERM" },
+      false,
+    );
+    expect(out).toContain("✗");
+    expect(out).toMatch(/signal/i);
+  });
+
+  // C-truthfulness.md H2 (also branch-review C-H2): the batch status line must never
+  // fabricate an exit code no command in the batch produced, and must name every distinct
+  // failure kind present — not just the first. Mirrors C-probe's P1/P2/P3e exactly.
+  it("H-2: a numeric failure + a signal death in the SAME batch never fabricates 'exit 1' and names BOTH real failures", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "exit 2" }, { code: "kill -KILL $$" }] },
+      [{ stdout: "x", exitCode: 2, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGKILL" }],
+      false,
+    );
+    expect(out).not.toMatch(/exit 1 /); // the old bug: fabricated "exit 1" (neither entry exited 1)
+    expect(out).toMatch(/exit 2/);       // the REAL numeric failure
+    expect(out).toMatch(/signal SIGKILL/); // AND the signal death — not silently dropped
+  });
+
+  it("H-2: a SINGLE-command batch that exits 127 forwards its OWN real code — no aggregation excuse for fabricating 'exit 1'", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "exit 127" }] },
+      [{ stdout: "", exitCode: 127, outcome: "exited" }],
+      false,
+    );
+    expect(out).toMatch(/exit 127\b/);
+    expect(out).not.toMatch(/exit 1 /);
+  });
+
+  it("H-2: two DIFFERENT signal deaths in the same batch are BOTH named — not just the first", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "a" }, { code: "b" }] },
+      [{ stdout: "", exitCode: null, outcome: "signal", signal: "SIGSEGV" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGKILL" }],
+      false,
+    );
+    expect(out).toMatch(/SIGSEGV/);
+    expect(out).toMatch(/SIGKILL/);
+  });
+
+  it("H-2: multiple entries that all exit with the SAME real numeric code still honestly report that shared code (not null, not a different fabricated one)", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "exit 3" }, { code: "exit 3" }] },
+      [{ stdout: "", exitCode: 3, outcome: "exited" }, { stdout: "", exitCode: 3, outcome: "exited" }],
+      false,
+    );
+    expect(out).toMatch(/exit 3\b/);
+  });
+
+  // A-H1 (branch-review A-architecture.md): render-result.ts's OWN batch classification of
+  // "known failure outcome" omitted `aborted`, diverging from runExec's set (signal |
+  // spawn-error | aborted). Single-sourced against `@spider/context`'s `isKnownFailureOutcome`.
+  it("A-H1: an ABORTED batch entry alongside a different failure kind is named 'aborted', not reduced to a bare exit code (matches runExec's own known-outcome set)", () => {
+    const out = body(
+      { action: "batch", commands: [{ code: "a" }, { code: "b" }] },
+      [{ stdout: "", exitCode: 137, outcome: "aborted" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGKILL" }],
+      false,
+    );
+    expect(out).toMatch(/aborted/i);
+    expect(out).toMatch(/signal SIGKILL/);
+  });
 });
 
 describe("renderSpiderCall verb italics (UI standard)", () => {
@@ -348,6 +554,13 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   it("paints the error shell on failure", () => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, status: "failed" } }, { expanded: false }, th).render(200).join("\n");
     expect(out).toContain("[toolErrorBg]");
+  });
+  it("does not invent done/success when status evidence is absent (C-LOW)", () => {
+    const { status: _status, ...withoutStatus } = msg.details;
+    const out = renderSubagentDone({ ...msg, details: withoutStatus }, { expanded: false }, th).render(200).join("\n");
+    expect(out).toContain("unknown");
+    expect(out).toContain("[toolPendingBg]");
+    expect(out).not.toContain("[toolSuccessBg]");
   });
   it("shows the COMPLETE output when expanded", () => {
     const out = renderSubagentDone(msg, { expanded: true }, th).render(200).join("\n");

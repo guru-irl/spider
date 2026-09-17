@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { makeOrgDb } from "./helpers/tmpdb.js";
 import { OrganismWorker } from "../worker.js";
+import { curateAction, type OrganismActionDeps } from "../actions.js";
 import { ORGANISM_DEFAULTS } from "../config.js";
 import { CURATOR_DEFAULTS } from "../curator.js";
 import { listPending } from "@spider/memory";
@@ -119,5 +120,75 @@ describe("OrganismWorker.runDrain", () => {
     // Consolidation still ran → the session is self-named.
     expect((ctx.db.prepare("SELECT name FROM sessions WHERE id='s1'").get() as any).name).toBe("auth-refactor");
     expect(calls).toBeGreaterThan(1);
+  });
+});
+
+describe("curateAction — honest consolidate passthrough (G5c)", () => {
+  it("forwards the actual requested consolidate flag to the worker instead of dropping it", async () => {
+    ctx = makeOrgDb();
+    let capturedOpts: unknown;
+    const worker = {
+      runCurate: async (_now?: number, opts?: unknown) => {
+        capturedOpts = opts;
+        return { toStale: [], toArchived: [], skipped: [], consolidated: (opts as { consolidate?: boolean } | undefined)?.consolidate === true };
+      },
+    } as unknown as OrganismWorker;
+    const deps: OrganismActionDeps = { db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker };
+    const result = await curateAction(deps, { consolidate: true });
+    expect(capturedOpts).toMatchObject({ consolidate: true });
+    expect((result.details as { consolidated: boolean }).consolidated).toBe(true);
+    expect((result.details as { consolidateRequested: boolean }).consolidateRequested).toBe(true);
+  });
+
+  it("does not claim consolidation ran when it was requested but the worker did not actually perform it", async () => {
+    ctx = makeOrgDb();
+    const worker = {
+      runCurate: async () => ({ toStale: [], toArchived: [], skipped: [], consolidated: false }),
+    } as unknown as OrganismWorker;
+    const deps: OrganismActionDeps = { db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker };
+    const result = await curateAction(deps, { consolidate: true });
+    expect((result.details as { consolidated: boolean }).consolidated).toBe(false);
+    expect((result.details as { consolidateRequested: boolean }).consolidateRequested).toBe(true);
+  });
+
+  it("preserves an unrequested (undefined) consolidate as a real absence, not a fabricated false", async () => {
+    ctx = makeOrgDb();
+    let capturedOpts: unknown;
+    const worker = {
+      runCurate: async (_now?: number, opts?: unknown) => {
+        capturedOpts = opts;
+        return { toStale: [], toArchived: [], skipped: [], consolidated: false };
+      },
+    } as unknown as OrganismWorker;
+    const deps: OrganismActionDeps = { db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker };
+    await curateAction(deps, {});
+    expect((capturedOpts as { consolidate?: boolean }).consolidate).toBeUndefined();
+  });
+
+  // F8 (organism-review.md): the honest consolidated-vs-requested distinction (G5c) lands
+  // in `details` but the RENDERED panel a human reads is silent about it — stale/archived/
+  // skipped only. Genuine RED-first fix (not a promotion): renderCurateResult currently
+  // ignores both fields entirely.
+  it("surfaces the honest consolidation outcome in the rendered display, not just in details (F8)", async () => {
+    ctx = makeOrgDb();
+    const ran = {
+      runCurate: async () => ({ toStale: [], toArchived: [], skipped: [], consolidated: true }),
+    } as unknown as OrganismWorker;
+    const requestedNotRun = {
+      runCurate: async () => ({ toStale: [], toArchived: [], skipped: [], consolidated: false }),
+    } as unknown as OrganismWorker;
+    const notRequested = {
+      runCurate: async () => ({ toStale: [], toArchived: [], skipped: [], consolidated: false }),
+    } as unknown as OrganismWorker;
+    const deps = (worker: OrganismWorker): OrganismActionDeps => ({ db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker });
+
+    const ranResult = await curateAction(deps(ran), { consolidate: true });
+    expect(ranResult.display).toMatch(/consolidat(ion|ed).*ran/i);
+
+    const notRunResult = await curateAction(deps(requestedNotRun), { consolidate: true });
+    expect(notRunResult.display).toMatch(/consolidat(ion|e).*(not run|did not run|did not happen)/i);
+
+    const unrequestedResult = await curateAction(deps(notRequested), {});
+    expect(unrequestedResult.display).not.toMatch(/consolidat(ion|ed) ran/i);
   });
 });

@@ -24,7 +24,7 @@ function fakePi() {
 }
 
 describe("PipelineCoordinator", () => {
-  it("advances stage-by-stage, records handoff edges, and wakes via intercom (no blocking wait)", async () => {
+  it("advances through fresh task handoffs without creating an unreachable child mailbox", async () => {
     const db = freshDb();
     const globalDb = freshGlobal();
     const store = new RunStore(db);
@@ -44,7 +44,7 @@ describe("PipelineCoordinator", () => {
     const handoffs = db.prepare(`SELECT * FROM run_events WHERE type='handoff'`).all() as any[];
     expect(handoffs.length).toBe(1);
     const mirror = globalDb.prepare(`SELECT * FROM message_mirror WHERE kind='handoff'`).all() as any[];
-    expect(mirror.length).toBe(1);
+    expect(mirror.length).toBe(0);
     const reviewer = store.listForSession("s1").find((r) => r.role === "reviewer")!;
     expect(reviewer.task).toContain("worker-out");
     coord.dispose();

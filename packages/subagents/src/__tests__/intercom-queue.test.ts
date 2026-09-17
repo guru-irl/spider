@@ -10,7 +10,8 @@ import { MessageStore } from "../message-store";
 
 let dbPath: string;
 afterEach(() => {
-  for (const s of ["", "-wal", "-shm"]) rmSync(`${dbPath}${s}`, { force: true });
+  if (!dbPath) return;
+  for (const s of ["", "-wal", "-shm", ".worktree", ".worktree-wal", ".worktree-shm"]) rmSync(`${dbPath}${s}`, { force: true });
 });
 
 function freshGlobal() {
@@ -143,7 +144,7 @@ describe("Task 5: queue-first intercom durability", () => {
       db.close();
     });
 
-    it("reports delivered (not error) when the broker acknowledges", async () => {
+    it("reports broker acceptance (not error) without a recipient acknowledgement", async () => {
       const db = freshGlobal();
       const pi = fakePiWithBroker();
       const handler = makeMessageHandler();
@@ -159,7 +160,8 @@ describe("Task 5: queue-first intercom durability", () => {
       );
 
       expect(result.isError).not.toBe(true);
-      expect(result.content).toMatch(/delivered/i);
+      expect(result.content).toMatch(/broker accepted/i);
+      expect(result.details.recipientAcknowledged).toBe(false);
 
       db.close();
     });
@@ -246,11 +248,12 @@ describe("Task 5: queue-first intercom durability", () => {
       const db = freshGlobal();
       const pi = fakePiNoBroker();
 
-      // Get the handler (as dispatch() would)
+      // ActionCtx.db is a WORKTREE DB, not the global message mirror DB.
       const handler = makeMessageHandler();
+      const worktreeDb = openDbAt(`${dbPath}.worktree`, "worktree");
 
       const ctx: any = {
-        db,
+        db: worktreeDb,
         globalDb: db,
         sessionId: "boundary-test",
         pi,
@@ -259,7 +262,7 @@ describe("Task 5: queue-first intercom durability", () => {
         models: {} as any,
       };
 
-      const args = { action: "message", to: "peer", message: "boundary test" };
+      const args = { action: "message", to: "peer", message: "boundary test", timeoutMs: 20 };
 
       // Call the handler as dispatch() would
       const result: any = await handler(args, ctx);
@@ -273,6 +276,7 @@ describe("Task 5: queue-first intercom durability", () => {
       expect(pending).toHaveLength(1);
       expect(pending[0].body).toBe("boundary test");
 
+      worktreeDb.close();
       db.close();
     });
   });

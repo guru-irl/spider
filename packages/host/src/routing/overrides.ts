@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { recordResult } from "./tracking";
 import type { Db } from "@spider/db-core";
+import { markToolCallError } from "../result";
 
 export function validateDescription(desc: unknown): string | null {
   if (typeof desc !== "string" || desc.trim() === "")
@@ -23,7 +24,17 @@ export function countPatchLines(patch: string): { added: number; removed: number
   return { added, removed };
 }
 
-function errorResult(message: string) {
+function errorResult(toolCallId: string, message: string) {
+  // A-M1 (branch-review A-architecture.md): pi's `AgentTool.execute()` contract has NO
+  // `isError` field — verified against pi's own types (see A-architecture.md's M1) — so
+  // returning one on the resolved value here is INERT; pi's runtime never reads it. The
+  // ONLY working channel that can flip `ToolResultMessage.isError` while preserving
+  // `content`/`details` is `markToolCallError(toolCallId)` + the `tool_result` hook
+  // (mechanism (B), routing/index.ts) — the same one the `spider` tool already uses.
+  // `isError: true` stays on the returned object too: harmless (pi ignores it), still an
+  // honest description of what happened, and read by nothing but this module's own
+  // (pre-existing) `!result?.isError` checks after a delegate call.
+  markToolCallError(toolCallId);
   return { content: [{ type: "text", text: message }], details: {}, isError: true };
 }
 
@@ -49,7 +60,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
       const err = validateDescription(params?.description);
-      if (err) return errorResult(err);
+      if (err) return errorResult(toolCallId, err);
       const { description, ...rest } = params;
       const delegate = editDelegate(deps.getCwd());
       const result: any = await delegate.execute(toolCallId, rest, signal, onUpdate, ctx);
@@ -71,7 +82,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
       const err = validateDescription(params?.description);
-      if (err) return errorResult(err);
+      if (err) return errorResult(toolCallId, err);
       const { description, ...rest } = params;
       const cwd = deps.getCwd();
       const abs = isAbsolute(rest.path) ? rest.path : join(cwd, rest.path);

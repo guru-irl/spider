@@ -28,6 +28,8 @@ export interface ActionCtx {
   /** pi's ModelRegistry, taken from the ExtensionContext (NOT from the extension API --
    *  it does not live there). Undefined for hosts/tests that do not supply one. */
   modelRegistry?: unknown;
+  /** Fully-qualified active model from ExtensionContext; used by auxiliary work. */
+  parentModel?: string;
   /** The persisted `models.defaults` role->ref map (control models set), resolved once per
    *  dispatch by buildActionCtx. Subagents cannot import @spider/host to read config
    *  directly, so this is how packages/subagents/src/actions/run.ts sees it: explicit
@@ -66,6 +68,14 @@ export async function dispatch(args: SpiderArgs, ctx: ActionCtx): Promise<unknow
   const name = args?.action;
   if (!name || !VALID.has(name)) return { error: `unknown action: ${String(name)}` };
   const handler = handlers.get(name);
-  if (!handler) return { error: `action '${name}' is not yet implemented (Phase 0 stub)` };
+  if (!handler) {
+    if (process.env.PI_SUBAGENT_CHILD === "1" && ["run", "message", "kill"].includes(name)) {
+      return {
+        code: "unavailable_in_child",
+        error: `spider ${name} is unavailable inside a one-shot subagent child. The parent owns orchestration; report progress or ESCALATION[severity] in your response instead.`,
+      };
+    }
+    return { error: `action '${name}' has no registered handler in this extension instance` };
+  }
   return handler(args, ctx);
 }

@@ -29,7 +29,7 @@ export async function todoMemoryPass(bundle: DigestBundle, model: DigestModel): 
 
   const userMsg: DigestMsg = { role: "user", content: summarizeCompletedTodos(completed) };
   const raw = await model.complete(SYSTEM, [userMsg]);
-  const parsed = parseCandidates(raw);
+  const parsed = parseCandidates(raw, { strict: true });
   return {
     ...parsed,
     memory: parsed.memory.filter((m) => shouldCapture(m.category, m.content).capture),

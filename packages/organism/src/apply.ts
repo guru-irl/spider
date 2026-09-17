@@ -24,7 +24,10 @@ export interface ApplyDeps {
  *     (counted, never silently discarded).
  *   - Memory goes through `stageWrite(source:"auto", autoStage:true)`. A
  *     `status:"rejected"` result increments `rejected` and consumes NO budget.
- *   - Skills go through `skills.stageCandidate` (always staged).
+ *   - Skills go through `skills.stageCandidate`, which is fail-closed against
+ *     downgrading an active/pinned/protected/user-owned skill or re-counting
+ *     a byte-identical duplicate proposal; a skip consumes no budget and is
+ *     counted under `rejected`, not `skillsStaged`.
  *   - Todos are cheap: not budget-limited, but still counted.
  *
  * Iteration order (memory THEN skills) is significant for budget exhaustion.
@@ -64,14 +67,20 @@ export function applyDigest(deps: ApplyDeps, result: DigestResult, budget: Write
       summary.dropped++;
       continue;
     }
-    deps.skills.stageCandidate({
+    const res = deps.skills.stageCandidate({
       name: cand.name,
       category: cand.category,
       body: cand.body,
       related: cand.related,
     });
-    summary.skillsStaged++;
-    budget.used++;
+    if (res.outcome === "staged") {
+      summary.skillsStaged++;
+      budget.used++;
+    } else {
+      // protected/pinned/active/user-owned/duplicate: no write happened,
+      // so this is neither a new stage nor a budget-exhaustion drop.
+      summary.rejected++;
+    }
   }
 
   for (const t of result.todos) {

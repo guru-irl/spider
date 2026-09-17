@@ -6,7 +6,19 @@ import { join, isAbsolute, resolve } from "node:path";
 
 export type Scope = "global" | "repo" | "worktree" | "project";
 
-const GLOBAL_ROOT = join(homedir(), ".pi", "agent", "spider");
+// Tests set this before modules load so every default global-tier path — including
+// future openGlobal() call sites — stays inside process-scoped project scratch.
+// Outside that explicit override, production retains the normal ~/.pi location.
+const configuredGlobalRoot = process.env.SPIDER_GLOBAL_ROOT;
+if (process.env.VITEST && !configuredGlobalRoot) {
+  throw new Error(
+    "paths: refusing to resolve the real global root under Vitest; " +
+    "vitest.setup.ts must set SPIDER_GLOBAL_ROOT before test modules load",
+  );
+}
+const GLOBAL_ROOT = configuredGlobalRoot
+  ? resolve(configuredGlobalRoot)
+  : join(homedir(), ".pi", "agent", "spider");
 
 /** Resolve to the worktree root via git, falling back to realpath'd cwd when not in a repo.
  *  Never throws. */

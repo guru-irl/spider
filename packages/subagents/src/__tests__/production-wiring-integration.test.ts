@@ -8,17 +8,24 @@ import { makeRunHandler } from "../actions/run";
 import { MessageStore } from "../message-store";
 import { RunStore } from "../run-store";
 import { freshDb } from "./helpers/testutil";
-import { bus } from "@spider/db-core";
+import { bus, setGlobalDbPathForTests } from "@spider/db-core";
+import { cleanupScratch, scratchDbPath } from "@spider/db-core/testutil";
 import { teardownCoordinators } from "../coordinators";
 
 describe("Production Wiring Integration Tests", () => {
   const cleanups: Array<() => void> = [];
+
+  beforeEach(() => {
+    setGlobalDbPathForTests(scratchDbPath("production-wiring-global"));
+  });
 
   afterEach(() => {
     for (const cleanup of cleanups) {
       try { cleanup(); } catch {}
     }
     cleanups.length = 0;
+    setGlobalDbPathForTests(null);
+    cleanupScratch();
   });
 
   describe("C4: Escalation notifier reaches orchestrator through production", () => {

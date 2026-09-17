@@ -1,13 +1,16 @@
 // packages/db-core/src/__tests__/paths.test.ts
 import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { paths } from "../paths";
 
 describe("paths (zero temp-dir)", () => {
-  it("roots the global tree under ~/.pi/agent/spider", () => {
-    expect(paths.globalRoot).toBe(join(homedir(), ".pi", "agent", "spider"));
-    expect(paths.models).toBe(join(homedir(), ".pi", "agent", "spider", "models"));
+  it("roots the global tree under the explicit override when configured", () => {
+    const root = process.env.SPIDER_GLOBAL_ROOT
+      ? resolve(process.env.SPIDER_GLOBAL_ROOT)
+      : join(homedir(), ".pi", "agent", "spider");
+    expect(paths.globalRoot).toBe(root);
+    expect(paths.models).toBe(join(root, "models"));
   });
 
   it("roots a project tree under <cwd>/.spider", () => {

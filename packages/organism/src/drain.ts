@@ -8,6 +8,8 @@ import type { DigestBundle, DrainReason, RunEventRow, TrackEventRow } from "./ty
 
 export interface DrainOpts {
   transcriptPath?: string;
+  /** Captured at the lifecycle boundary; also supports in-memory pi sessions. */
+  transcript?: readonly DigestMsg[];
 }
 
 interface RunEventDbRow {
@@ -54,7 +56,7 @@ export function drainSession(db: Db, sessionId: string, reason: DrainReason, opt
 
   const runEvents = (
     db.prepare(`SELECT * FROM run_events WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as RunEventDbRow[]
-  ).map<RunEventRow>((r) => ({
+  ).filter(r => !(r.type === "log" && r.summary?.startsWith("organism "))).map<RunEventRow>((r) => ({
     id: r.id,
     runId: r.run_id ?? undefined,
     ts: r.ts,
@@ -86,12 +88,15 @@ export function drainSession(db: Db, sessionId: string, reason: DrainReason, opt
   const sessionName = sessionRow?.name ?? undefined;
 
   let transcript: DigestMsg[] = [];
-  if (opts?.transcriptPath && existsSync(opts.transcriptPath)) {
+  if (opts?.transcript !== undefined) {
+    transcript = opts.transcript.map(m => ({ role: m.role, content: m.content }));
+  } else if (opts?.transcriptPath && existsSync(opts.transcriptPath)) {
     const normalized = readTranscript(opts.transcriptPath);
-    transcript = normalized.messages.map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
-      content: m.text,
-    }));
+    // Tool output is evidence, not a user instruction. Routing's event log
+    // supplies tool activity separately; the learning transcript is conversation prose.
+    transcript = normalized.messages.flatMap((m): DigestMsg[] =>
+      m.role === "assistant" || m.role === "user" ? [{ role: m.role, content: m.text }] : [],
+    );
   }
 
   return { sessionId, reason, runs, runEvents, events, todos, transcript, sessionName };

@@ -6,8 +6,11 @@ import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dis
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
+import { HostOrganismRuntime } from "./organism-runtime";
+import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
+export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
-import { toToolResult } from "./result";
+import { toToolResult, markToolCallError } from "./result";
 import { controlDoctor, controlConfig, controlMigrate } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, listCatalog } from "./control/models-cmd";
@@ -18,31 +21,32 @@ import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, type Db } from "@spider/db-core";
 import {
-  stageWrite, recall, listPending, approvePending, rejectPending,
+  stageWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
-  renderRememberResult, renderRecallResult, renderPending,
+  renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
 import { registerSubagentActions } from "@spider/subagents";
 import {
   registerOrganism,
   readOrganismConfig,
-  readCuratorConfig,
-  createDigestModel,
-  OrganismWorker,
+  readLastDrainReport,
+  readLastDrainReportForWorktree,
+  SkillStore,
   skillAction,
   curateAction,
   insightsAction,
-  type AuxCall,
+  safeError,
   type OrganismActionDeps,
   type SkillActionArgs,
+  type DrainReport,
 } from "@spider/organism";
 import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS, registerSuperpowers } from "@spider/superpowers";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
 import { mountAgentsUI } from "./agents/mount";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "./render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
 
 export { registerAction };
 
@@ -51,13 +55,14 @@ export { registerAction };
 let _emb: Promise<Embedder | null> | undefined;
 const getEmbedder = () => (_emb ??= resolveEmbedder());
 
-// Routing owns tool_call/tool_result, which carry NO sessionId — so we keep a
-// mutable ref updated at session_start and hand routing a getter over it.
-let currentSessionId = "";
-/** Latest ModelRegistry seen from an ExtensionContext. The organism's aux-model seam runs
- *  at activation time, where no ExtensionContext exists, so it reads this instead. Updated
- *  on session_start and on every tool execute. */
-let latestModelRegistry: unknown;
+// Each loaded extension owns its runtime; manual actions reuse its serialized workers.
+const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
+
+// A-M3 (branch-review A-architecture.md): per-pi-instance record of a `registerRouting`
+// setup failure, read by doctor so it is surfaced instead of fully swallowed. Mirrors
+// `organismRuntimes`'s own WeakMap-per-pi-instance pattern, used for the identical class
+// of problem (registerOrganism's own setup-failure reporting).
+const routingSetupErrors = new WeakMap<object, string>();
 
 /** DEFAULT_ROUTING_CONFIG merged with any overrides stored under routing.* keys.
  *  Best-effort: never throws; on any doubt returns a fresh default clone. */
@@ -123,6 +128,8 @@ interface PiToolAPI {
   }): void;
   registerCommand?(name: string, def: unknown): void;
   registerMessageRenderer?(customType: string, renderer: (message: unknown, options: unknown, theme: unknown) => unknown): void;
+  registerEntryRenderer?(customType: string, renderer: (entry: unknown, options: unknown, theme: unknown) => unknown): void;
+  appendEntry?(customType: string, data?: unknown): void;
   on(name: string, fn: (...args: unknown[]) => unknown): void;
 }
 
@@ -139,17 +146,17 @@ export const SPIDER_PARAMETERS = {
     },
     // control
     command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory','bind','unbind')." },
-    op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view." },
+    op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
-    sub: { type: "string", description: "control memory sub-command." },
-    uuid: { type: "string", description: "pending-memory uuid for approve/reject." },
+    sub: { type: "string", description: "control memory sub-command (pending|approve|reject|status|forget; consolidate is deprecated -> status + forget)." },
+    uuid: { type: "string", description: "memory uuid for approve/reject/forget." },
     // scope / cwd (most actions)
     scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory/registry scope (default repo). \"Is this still true after I delete this worktree?\" → **repo**; \"Is this true in every repo?\" → **global**; otherwise → **worktree**. (\"project\" is deprecated, use \"worktree\")" },
     cwd: { type: "string", description: "Working-directory override." },
     // search / recall
     query: { type: "string", description: "Query text for action 'search' or 'recall'." },
-    category: { type: "string", description: "Memory category (remember) or filter (recall)." },
+    category: { type: "string", description: "Memory category (remember) or filter (recall); optional skill category for action='skill' op=add." },
     limit: { type: "number", description: "Max results (search/recall)." },
     // remember
     content: { type: "string", description: "Text to store for action 'remember' (or index/fetch body)." },
@@ -157,7 +164,7 @@ export const SPIDER_PARAMETERS = {
     auto: { type: "boolean", description: "Mark a remembered item as auto-captured." },
     // run / subagents
     agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
-    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task)." },
+    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task); also the skill name for action='skill' (op add/view/approve/reject)." },
     task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
     tasks: {
       type: "array",
@@ -200,13 +207,13 @@ export const SPIDER_PARAMETERS = {
     to: { type: "string", description: "Target session name/id for action 'message'." },
     message: { type: "string", description: "Message body for action 'message'." },
     // todo
-    text: { type: "string", description: "Todo text for action 'todo' (op add)." },
+    text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate BODY (markdown) for action='skill' op=add; free-form request for action='skill' op=distill." },
     session: { type: "string", description: "For action 'todo' op 'view': which session's todos (session id/prefix/name or 'all')." },
     // exec
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
     language: { type: "string", description: "Language for action 'exec' (javascript, shell, python, ruby, go, rust, php, perl, r, elixir, csharp, typescript)." },
     timeout: { type: "number", description: "Max execution time in ms for action 'exec'/'exec_file'." },
-    background: { type: "boolean", description: "Keep an 'exec' process running after timeout (servers/daemons)." },
+    background: { type: "boolean", description: "Capture stdout/stderr to durable files from launch (not a pipe). If `timeout` elapses while still running, the process is detached (exitCode:null, never fabricated 0) and its logs/receipt path are returned; output keeps growing on disk after that. With no `timeout`, this still waits and streams to the real exit code — it does not detach immediately." },
     commands: {
       type: "array",
       description: "Batch commands for action 'batch': each runs sequentially. Give each {language, code} (+ optional timeout).",
@@ -229,41 +236,15 @@ export const SPIDER_PARAMETERS = {
   additionalProperties: true,
 } as const;
 
-/** Build the organism action deps for a dispatch: reuse the SAME aux-model
- *  seam the trailing registerOrganism hook block uses (route the configured aux
- *  model through @spider/models, replay the digest as a flat prompt). makeModel
- *  returns null when the model can't be resolved so the manual actions degrade
- *  cleanly (skill/insights need no model; curate skips consolidation). */
-function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
-  const cfg = controlConfig("get", ctx.cwd);
-  const pi = ctx.pi as PiToolAPI;
-  const call: AuxCall = async (rt, system, msgs) => {
-    const entry = ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.modelRegistry)), { model: rt.model }, {});
-    const prompt = [system, ...msgs.map((m) => `${m.role.toUpperCase()}: ${m.content}`)].join("\n\n");
-    return await ctx.models.complete(entry, prompt, {});
-  };
-  const makeModel = () => {
-    try {
-      return createDigestModel({ cfg, parentModel: "", call });
-    } catch {
-      return null;
-    }
-  };
-  return {
-    db: ctx.repoDb,
-    globalDb: ctx.globalDb,
-    project: ctx.project,
-    worker: new OrganismWorker({
-      db: ctx.repoDb,
-      worktreeDb: ctx.db,
-      globalDb: ctx.globalDb,
-      project: ctx.project,
-      getEmbedder,
-      makeModel,
-      org: readOrganismConfig(cfg),
-      curator: readCuratorConfig(cfg),
-    }),
-  };
+/** Manual and automatic entry points share the same session/project worker. */
+function buildOrganismDeps(ctx: ActionCtx & { parentModel?: string }): OrganismActionDeps {
+  const api = ctx.pi as object;
+  let runtime = organismRuntimes.get(api);
+  if (!runtime) {
+    runtime = new HostOrganismRuntime(getEmbedder);
+    organismRuntimes.set(api, runtime);
+  }
+  return runtime.resolve(ctx);
 }
 
 /** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
@@ -284,10 +265,74 @@ function renderUpstreamReport(report: {
 
 async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown> {
   const command = String(args.command ?? "");
-  const cwd = String(args.cwd ?? process.cwd());
+  const cwd = String(args.cwd ?? ctx?.cwd ?? process.cwd());
   switch (command) {
-    case "doctor":
-      return controlDoctor(cwd, ctx?.sessionId);
+    case "doctor": {
+      const report = controlDoctor(cwd, ctx?.sessionId);
+      if (ctx) {
+        // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
+        // registration must not break extension load") with NOTHING anywhere
+        // reporting it — markToolCallError kept adding to result.ts's erroredCalls Set
+        // with no consumer ever draining it, and doctor said nothing. Independent of
+        // (and checked before) the organism diagnostics below, so a failure in one
+        // never hides the other.
+        const routingError = routingSetupErrors.get(ctx.pi as object);
+        if (routingError) {
+          report.ok = false;
+          report.lines.push(`- routing: NOT WIRED (registration failed: ${routingError})`);
+        }
+        try {
+          const enabled = readOrganismConfig(controlConfig("get", ctx.project.realPath)).enabled;
+          // Read EXISTING runtime state directly — never create a replacement
+          // runtime just to inspect a registration/setup failure.
+          const runtime = organismRuntimes.get(ctx.pi as object);
+          if (runtime && !runtime.isWired()) {
+            report.ok = false;
+            report.lines.push("- organism: NOT WIRED (registration failed)");
+          }
+          const memLast = (() => {
+            try {
+              return buildOrganismDeps(ctx).worker.getLastDrain();
+            } catch (e) {
+              // Runtime resolution (e.g. no active session id) must not swallow the
+              // remaining independent fallbacks below (P12/F2) — only THIS call is isolated.
+              // A-M4: was `String((e as Error)?.message ?? e)` — a raw stringifier, while
+              // `safeError` (imported precisely because it redacts credentials and caps
+              // length) sat unused on the very next lines. A resolver/config-read failure
+              // is a plausible carrier of a token.
+              report.ok = false;
+              report.lines.push(`- organism runtime unavailable: ${safeError(e)}`);
+              return undefined as DrainReport | undefined;
+            }
+          })();
+          const sessionLast = memLast ?? readLastDrainReport(ctx.db, ctx.sessionId);
+          const inMemorySetupFailure = sessionLast ? undefined : runtime?.getSetupFailure(ctx.sessionId);
+          const current = sessionLast ?? inMemorySetupFailure;
+          const worktreeLast = current ? undefined : readLastDrainReportForWorktree(ctx.db);
+          const last = current ?? worktreeLast;
+          const stale = current === undefined && worktreeLast !== undefined;
+          const state = enabled
+            ? (last
+                ? stale
+                  ? `last drain in this worktree (session ${last.sessionId}, ${new Date(last.finishedAt).toISOString()}): ${last.status}${last.skipReason ? ` (${last.skipReason})` : ""}`
+                  : `${last.status}${last.skipReason ? ` (${last.skipReason})` : ""}`
+                : "waiting for compaction or shutdown; no verified drain recorded")
+            : "disabled";
+          const pendingMemory = listPending(ctx.repoDb, "repo").length;
+          const pendingSkills = new SkillStore(ctx.repoDb).list({ status: "staged" }).length;
+          report.lines.push(`- organism: ${state}`);
+          report.lines.push(`- organism proposals awaiting review: ${pendingMemory} memories, ${pendingSkills} skills`);
+          if (enabled && last && (last.status === "failed" || last.status === "partial" || last.skipReason === "no-model")) report.ok = false;
+          for (const error of last?.errors ?? []) report.lines.push(`- organism ${error.phase}: ${error.message}`);
+          if (pendingMemory + pendingSkills > 0) report.lines.push("- review proposals: spider control memory sub=pending; spider skill op=list");
+        } catch (e) {
+          // A-M4: same fix as the inner catch above — was a raw stringifier.
+          report.ok = false;
+          report.lines.push(`- organism diagnostics unavailable: ${safeError(e)}`);
+        }
+      }
+      return report;
+    }
     case "config": {
       const op = (args.op as "get" | "set") ?? "get";
       if (op === "set" && args.key) {
@@ -314,8 +359,24 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
         case "reject":
           rejectPending(db, scope, args.uuid as string);
           return { details: { ok: true, uuid: args.uuid } };
-        case "consolidate":
+        case "status":
+          // Read-only report: active entries (with uuids) + char usage for this scope.
+          // Pair with `forget <uuid>` to actually free space once the cap is hit.
           return { details: { entries: listActive(db, scope), usage: activeCharTotal(db, scope) } };
+        case "consolidate":
+          // `consolidate` used to return exactly the same payload as `status` above --
+          // a read-only report wearing an action's name. Nothing was ever merged, pruned,
+          // or rewritten. Renamed so the name matches the behavior; the old name now
+          // fails loudly (this error) instead of silently misleading a caller who expects
+          // it to free space.
+          return { error: MEMORY_CONSOLIDATE_RENAMED_MESSAGE };
+        case "forget": {
+          const uuid = args.uuid as string | undefined;
+          if (!uuid) return { error: "control memory forget requires a uuid (see control memory status for active uuids)" };
+          const removed = forgetMemory(db, scope, uuid);
+          if (!removed) return { error: `control memory forget: no entry '${uuid}' in scope '${scope}'` };
+          return { details: { ok: true, uuid, scope, removed } };
+        }
         default:
           return { error: `control memory sub '${String(args.sub)}' unknown` };
       }
@@ -410,18 +471,21 @@ export function enumerate(registry: unknown): Array<{ provider: string; id: stri
   }));
 }
 
-/** Extract the pi native session id from a tool-execute ExtensionContext. Real pi
- *  `ToolDefinition.execute(toolCallId, params, signal, onUpdate, ctx)` passes ExtensionContext
- *  as its 5th arg; its read-only `sessionManager.getSessionId()` is the session id source (A6). */
-export function sessionIdOf(ctx: unknown): string {
-  const sm = (ctx as { sessionManager?: { getSessionId?: () => string } } | undefined)?.sessionManager;
-  return sm?.getSessionId?.() ?? "";
+/** realpathSync, degrading to the raw path when it doesn't exist (never throws). */
+function safeRealpath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
-/** The authoritative working directory from a tool-execute ExtensionContext (types.d.ts:216). */
-export function cwdOf(ctx: unknown): string | undefined {
-  const c = (ctx as { cwd?: unknown } | undefined)?.cwd;
-  return typeof c === "string" ? c : undefined;
+/** True when `target` is `root` itself or nested anywhere underneath it. Path-aware
+ *  (via path.relative), NOT a naive string-prefix test — "/repo-2" must never look
+ *  "contained" inside "/repo" just because the strings share a prefix. */
+function isPathInside(root: string, target: string): boolean {
+  const rel = path.relative(root, target);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 /** Build ONE ActionCtx per dispatch (A2): both DBs, the resolved project, and the
@@ -435,11 +499,33 @@ export function buildActionCtx(
   onPartial?: (text: string) => void,
   modelRegistry?: unknown,
   signal?: AbortSignal,
-): ActionCtx {
-  const cwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
+  parentModel?: string,
+): ActionCtx & { parentModel?: string } {
+  const rawCwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
   const explicitCwd = !!(args as { cwd?: unknown }).cwd;
-  const project = resolveProject(cwd, { sessionId, explicitCwd });
+  const project = resolveProject(rawCwd, { sessionId, explicitCwd });
+  // resolveProject may have selected a different worktree than rawCwd (a session binding
+  // pointing at another tree entirely). An explicit args.cwd is always honored verbatim.
+  // Otherwise: if rawCwd is still inside the selected WORKTREE (including nested
+  // subdirectories — a binding to an ancestor, no binding at all, or a binding to a
+  // *sibling* subdirectory of the same tree), keep rawCwd so callers running from a
+  // subdirectory stay there. Only when rawCwd falls OUTSIDE the selected worktree (the
+  // binding moved execution to a genuinely different tree) do we adopt project.realPath
+  // (the bound destination, which may itself be a subdirectory), so DB writes and the
+  // returned cwd agree on which worktree is live. Containment is judged against
+  // project.projectKey (the worktree ROOT), not project.realPath — realPath can be a
+  // bound subdirectory, and anchoring containment on it would wrongly treat a sibling
+  // subdirectory of the SAME tree as "outside" and discard the caller's actual target.
+  // Containment itself is path-aware (path.relative), never a naive string-prefix test
+  // (e.g. "/repo-2" must not look "contained" in "/repo"). One consequence worth
+  // naming explicitly: a binding to a SUBDIRECTORY of the SAME tree never forces a
+  // chdir into that subdirectory — if rawCwd is anywhere inside project.projectKey,
+  // including the tree's own root, rawCwd wins verbatim and the bound subdirectory is
+  // only adopted when execution is actually moving to a DIFFERENT tree.
+  const cwd = explicitCwd || isPathInside(project.projectKey, safeRealpath(rawCwd))
+    ? rawCwd
+    : project.realPath;
   const worktreeDb = openProject(project.projectKey);
   // For git repos: open the repo DB
   // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
@@ -451,10 +537,28 @@ export function buildActionCtx(
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
   const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry, modelDefaults, signal };
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel };
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
+  const organism = new HostOrganismRuntime(getEmbedder, report => {
+    const meaningful = report.status === "failed" || report.status === "partial" ||
+      report.memoryStaged + report.skillsStaged + report.todosAdded > 0;
+    if (meaningful) pi.appendEntry?.("spider.organism", report);
+  });
+  organismRuntimes.set(pi, organism);
+  let currentContext: unknown;
+  let currentSessionId = "";
+  const routingDbs = new Map<string, Db>();
+  const routingProject = () => resolveProject(cwdOf(currentContext) ?? process.cwd(), {
+    sessionId: sessionIdOf(currentContext) || undefined, explicitCwd: false,
+  });
+  const routingDb = () => {
+    const project = routingProject();
+    let db = routingDbs.get(project.projectKey);
+    if (!db) { db = openProject(project.projectKey); routingDbs.set(project.projectKey, db); }
+    return db;
+  };
   // control is owned by the host from Phase 0; ctx is threaded for memory routing.
   registerAction("control", (args, ctx) => handleControl(args as SpiderArgs, ctx));
 
@@ -510,7 +614,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
 
   registerSlashCommands(pi as any, {
     run: (a, ctx) =>
-      dispatch(a as SpiderArgs, buildActionCtx(pi, a as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx))) as Promise<{
+      dispatch(a as SpiderArgs, buildActionCtx(pi, a as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), undefined, (ctx as { modelRegistry?: unknown })?.modelRegistry, undefined, parentModelOf(ctx))) as Promise<{
         content: string;
         details?: unknown;
       }>,
@@ -623,12 +727,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
-    async execute(_toolCallId, args, signal, onUpdate, ctx) {
+    async execute(toolCallId, args, signal, onUpdate, ctx) {
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
       // empty update fired before any output exists: it materialises the result section
       // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
       // of nothing until exit. Subsequent calls carry cumulative, capped snapshots.
-      latestModelRegistry = (ctx as { modelRegistry?: unknown })?.modelRegistry ?? latestModelRegistry;
+      if (ctx) currentContext = ctx;
       const emit = typeof onUpdate === "function" ? (onUpdate as (u: unknown) => void) : undefined;
       const action = String((args as { action?: unknown })?.action ?? "");
       const streams = action === "exec" || action === "exec_file" || action === "batch";
@@ -649,8 +753,15 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
-      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial, (ctx as { modelRegistry?: unknown })?.modelRegistry, abortSignal));
-      return toToolResult(r);
+      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial, (ctx as { modelRegistry?: unknown })?.modelRegistry, abortSignal, parentModelOf(ctx)));
+      const result = toToolResult(r);
+      // Mechanism (B) (pi-tool-error-contract-report.md §3): pi's AgentToolResult has no
+      // isError field of its own — returning one here does nothing. Hand the
+      // already-computed signal off, keyed by this exact toolCallId, for the
+      // tool_result hook (routing/index.ts) to pick up and flip isError on, without
+      // altering content/details returned to pi below.
+      if (result.isError) markToolCallError(toolCallId);
+      return result;
     },
   });
 
@@ -670,6 +781,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // output lines themed in the transcript instead of an ephemeral toast.
   pi.registerMessageRenderer?.("spider.command", (message: any, options: any, theme: any) =>
     renderCommandOutput(message, options, theme),
+  );
+
+  pi.registerEntryRenderer?.("spider.organism", (entry: unknown, options: any, theme: unknown) =>
+    renderOrganismEntry(entry, options, theme),
   );
 
   // Escalation messages from subagents render in the error card style (red background).
@@ -692,9 +807,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // Keep the mutable session id fresh: tool_call/tool_result events carry no
   // sessionId, so routing reads it via getSessionId() over this ref. pi.on
   // chains, so hooks.ts's own session_start handler still runs too.
-  pi.on("session_start", (event: any, ctx?: any) => {
-    currentSessionId = String(event?.sessionId ?? currentSessionId);
-    latestModelRegistry = (ctx as { modelRegistry?: unknown })?.modelRegistry ?? latestModelRegistry;
+  pi.on("session_start", (_event: any, ctx?: unknown) => {
+    currentContext = ctx;
+    currentSessionId = sessionIdOf(ctx);
     return undefined;
   });
 
@@ -713,7 +828,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
         db,
         sessionId,
         cwd,
-        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd)),
+        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx))),
       });
     } catch { /* UI mount best-effort; never break the session */ }
     return undefined;
@@ -723,69 +838,33 @@ export default function spiderExtension(pi: PiToolAPI): void {
     return undefined;
   });
 
-  // Wire routing/safety at LOAD: the edit/write tool overrides must be registered
-  // before pi builds its tool registry (registering them later would be too late).
-  // Best-effort — never break extension load.
+  // Register tools now, but resolve their DB/CWD only when a session uses them.
+  // Getters keep /bind and session replacement from sending activity to the
+  // directory in which this extension happened to be loaded.
   try {
-    const routingCwd = process.cwd();
-    const routingDb = openProject(resolveProject(routingCwd).projectKey);
     registerRouting(pi as any, {
-      db: routingDb,
-      getSessionId: () => currentSessionId,
-      getCwd: () => routingCwd,
-      config: readRoutingConfig(routingCwd),
-      indexLargeOutput: makeIndexer(routingDb),
+      get db() { return routingDb(); },
+      getSessionId: () => sessionIdOf(currentContext) || currentSessionId,
+      getCwd: () => routingProject().realPath,
+      get config() { return readRoutingConfig(routingProject().realPath); },
+      indexLargeOutput: (text, source) => makeIndexer(routingDb())(text, source),
     });
-  } catch {
-    /* routing is best-effort; never break extension load */
+  } catch (e) {
+    // A-M3: previously fully swallowed with nothing anywhere reporting it. Extension
+    // load still must not throw (routing is best-effort against the rest of the
+    // session), but the failure is now recorded per pi-instance and surfaced by
+    // doctor above.
+    routingSetupErrors.set(pi as object, safeError(e));
   }
 
-  // Autonomic organism: drain sessions into staged memory/skills on
-  // before_compact + shutdown, self-name, curate. Best-effort — never break
-  // extension load, and NEVER throw on the drain/shutdown path.
-  try {
-    const orgCwd = process.cwd();
-    const project = resolveProject(orgCwd);
-    const orgWorktreeDb = openProject(project.projectKey);
-    // For git repos: open the repo DB (for skills and curator_state)
-    // For non-git dirs: create a repo-schema DB at worktree root (skills/curator_state are repo tier)
-    // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
-    const orgRepoDb = project.repoKey
-      ? openRepo(project.repoKey)
-      : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
-    const orgGlobalDb = openGlobal();
-    const cfg = controlConfig("get", orgCwd);
-
-    // The real aux-model seam: route the configured aux model through
-    // @spider/models and replay the digest as a flat prompt. Integration-only
-    // (worker tests inject a fake model); it must compile + build.
-    const call: AuxCall = async (rt, system, msgs) => {
-      const entry = models.pick(models.catalog(() => enumerate(latestModelRegistry)), { model: rt.model }, {});
-      const prompt = [system, ...msgs.map((m) => `${m.role.toUpperCase()}: ${m.content}`)].join("\n\n");
-      return await models.complete(entry, prompt, {});
-    };
-    // No parent-model handle at registration; aux routing degrades to the
-    // default tier when unconfigured. makeModel returns null when the model
-    // can't be resolved so the drain/shutdown path no-ops cleanly.
-    const makeModel = () => {
-      try {
-        return createDigestModel({ cfg, parentModel: "", call });
-      } catch {
-        return null;
-      }
-    };
-
-    registerOrganism(pi, pi, {
-      db: orgRepoDb,
-      worktreeDb: orgWorktreeDb,
-      globalDb: orgGlobalDb,
-      project,
-      getEmbedder,
-      makeModel,
-      org: readOrganismConfig(cfg),
-      curator: readCuratorConfig(cfg),
-    });
-  } catch {
-    /* organism wiring is best-effort; never break extension load */
-  }
+  registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
+  // Registered LAST: shutdown awaits the worker before closing its resources.
+  pi.on("session_shutdown", () => {
+    organism.dispose();
+    organismRuntimes.delete(pi);
+    for (const db of routingDbs.values()) db.close();
+    routingDbs.clear();
+    currentContext = undefined;
+    currentSessionId = "";
+  });
 }

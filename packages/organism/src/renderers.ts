@@ -20,7 +20,8 @@ export function renderSkillList(rows: SkillRow[]): string {
 export function renderSkillView(row: SkillRow | undefined): string {
   if (row === undefined) return "Skill not found.";
   const body = row.candidateBody ?? "";
-  return [`## ${row.name}`, skillLine(row), "", body].join("\n").trimEnd();
+  const pathLine = row.path !== undefined ? [`path: ${row.path}`] : [];
+  return [`## ${row.name}`, skillLine(row), ...pathLine, "", body].join("\n").trimEnd();
 }
 
 /** Render a `/learn` distill prompt handoff. */
@@ -29,13 +30,20 @@ export function renderDistill(prompt: string): string {
 }
 
 /** Render the `control skill curate` decay result. */
-export function renderCurateResult(r: DecayResult): string {
-  return [
+export function renderCurateResult(r: DecayResult & { consolidated?: boolean; consolidateRequested?: boolean }): string {
+  const lines = [
     "## curator 🧹",
     `- stale: ${r.toStale.length}`,
     `- archived: ${r.toArchived.length}`,
     `- skipped (pinned/protected): ${r.skipped.length}`,
-  ].join("\n");
+  ];
+  if (r.consolidateRequested) {
+    lines.push(r.consolidated ? "- consolidation: ran" : "- consolidation: requested but did not run");
+  } else if (r.consolidated) {
+    // Defensive: never hide an actual consolidation even if it wasn't (recorded as) requested.
+    lines.push("- consolidation: ran");
+  }
+  return lines.join("\n");
 }
 
 /** Compact one-line label for an insights node. */

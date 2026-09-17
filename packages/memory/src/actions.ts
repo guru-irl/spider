@@ -2,7 +2,7 @@ import type { Db } from "@spider/db-core";
 import type { Component } from "@spider/ui";
 import type { MemoryScope } from "./types";
 import type { Embedder } from "./embeddings/embedder";
-import { stageWrite, listPending, approvePending, rejectPending } from "./staging";
+import { stageWrite, listPending, approvePending, rejectPending, forgetMemory, MEMORY_CONSOLIDATE_RENAMED_MESSAGE } from "./staging";
 import { recall } from "./recall";
 import { activeCharTotal, listActive } from "./internal";
 import { renderRememberResult, renderRecallResult, renderPending } from "./renderers";
@@ -95,12 +95,21 @@ export function makeControl(deps: MemoryDeps) {
         rejectPending(db, scope, args.uuid);
         return { details: { ok: true, uuid: args.uuid } };
       }
-      case "consolidate": {
-        // Phase 1: expose active entries + char usage so the model can curate
-        // in-turn. No LLM merge here — that is Phase 6.
+      case "consolidate":
+        // Renamed to "status" -- this used to silently return the same read-only report;
+        // now it fails loudly instead of misleading a caller who expects it to free space.
+        return { details: { ok: false, error: MEMORY_CONSOLIDATE_RENAMED_MESSAGE } };
+      case "status": {
         const entries = listActive(db, scope);
         const usage = activeCharTotal(db, scope);
         return { details: { entries, usage } };
+      }
+      case "forget": {
+        const uuid = args?.uuid;
+        if (!uuid) return { details: { ok: false, error: "control memory forget requires a uuid" } };
+        const removed = forgetMemory(db, scope, uuid);
+        if (!removed) return { details: { ok: false, error: `no memory entry '${uuid}' in scope '${scope}'` } };
+        return { details: { ok: true, uuid, scope, removed } };
       }
       default:
         return { details: { ok: false, note: `unhandled memory sub: ${args?.sub}` } };

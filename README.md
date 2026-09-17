@@ -20,17 +20,27 @@ result look identical.
 
 - **Node 26.** The extension loads two native modules, `better-sqlite3` (SQL)
   and `sqlite-vec` (vector search). These are compiled against a specific Node
-  ABI and must match the Node that pi runs. Spider pins Node 26.4.0 (the `volta`
-  field in `package.json`); `engines` allows >= 22.19.0, but the checked-in
-  native builds match the pinned version. On a different major version the
-  native modules fail to load and vector search degrades to full-text search
-  only.
+  ABI **at install time** — `node-gyp` builds `better-sqlite3` from source, and
+  nothing native is checked into the repo (`dist/` and `node_modules/` are both
+  gitignored) — so the install-time Node must match the Node that pi runs.
+  Spider pins Node 26.4.0 (the `volta` field in `package.json`), and that is the
+  only version any CI workflow builds or tests against (`ci.yml`, `release.yml`,
+  and `publish.yml` all pin `node-version: '26.x'`). `engines` allows
+  `>=22.19.0`, but that lower bound is a declared minimum only — nothing in the
+  repo builds or tests on anything below 26.x, so it is unverified. On a
+  different major version the native modules fail to load and vector search
+  degrades to full-text search only.
 - pi coding-agent 0.80 or later (peer dependency).
 
 ## Install
 
-Spider is not published to npm. Install it straight from git — pi clones the
-repo, runs `npm install`, and the `prepare` script builds the bundle:
+Spider is not yet on npm — no version has been tagged or released (`git tag`
+lists none as of this writing). A release pipeline
+(`.github/workflows/release.yml` and `.github/workflows/publish.yml`) publishes
+`@guru-irl/spider` to the npm registry once a maintainer cuts a tagged release;
+see [docs/release-process.md](docs/release-process.md) for that flow. Until the
+first release ships, install straight from git — pi clones the repo, runs
+`npm install`, and the `prepare` script builds the bundle:
 
 ```bash
 pi install git:github.com/guru-irl/spider
@@ -38,10 +48,12 @@ pi install git:github.com/guru-irl/spider
 
 Then run `/reload` in an interactive pi, or relaunch it. Verify with `/doctor`.
 
-Pin a ref if you want a fixed version, and update by re-installing at a new one:
+Pin a ref if you want a fixed version, and update by re-installing at a new one
+(substitute a real release tag for `<tag>` once one exists — none does yet; the
+current unreleased version is `0.1.0`):
 
 ```bash
-pi install git:github.com/guru-irl/spider@v1.0.0
+pi install git:github.com/guru-irl/spider@<tag>
 pi update            # updates installed packages
 pi list              # shows what is installed
 pi remove git:github.com/guru-irl/spider
@@ -218,9 +230,12 @@ packages below it.
 
 - [docs/architecture/README.md](docs/architecture/README.md): the one-tool
   model, the layered packages, the shared database, and how one call flows.
-- [docs/architecture/data-model.md](docs/architecture/data-model.md): the two
-  databases, the tables, migrations, and the `run_events` bus.
+- [docs/architecture/data-model.md](docs/architecture/data-model.md): the three
+  database tiers, the tables, migrations, and the `run_events` bus.
 - [docs/architecture/feedback-and-learning-loops.md](docs/architecture/feedback-and-learning-loops.md):
   the routing, memory, organism, and subagent loops.
 - [docs/guide/using-spider.md](docs/guide/using-spider.md): how to use spider
   day to day.
+- [docs/release-process.md](docs/release-process.md): how a tagged commit
+  becomes a GitHub Release and an npm publish, and the manual repo setup that
+  gates it.

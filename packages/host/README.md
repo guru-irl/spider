@@ -35,7 +35,7 @@ router once per dispatch, then hands control to those packages.
 | `dispatch.ts` | The action registry (`registerAction`, `getAction`, `dispatch`) and the `ActionCtx` type. `dispatch` validates the action name and calls the registered handler. |
 | `result.ts` | `toToolResult` normalizes a handler return into pi's `AgentToolResult`: a model-facing text block plus the structured `details` payload, with ANSI stripped. |
 | `render-result.ts` | pi `renderResult`/`renderCall` for the tool, plus the `spider.subagent_done` and `spider.command` message renderers. Maps each action's `details` to a `@spider/ui` renderer. |
-| `slash.ts` | Registers the thin slash commands that forward to `dispatch` and emit a `spider.command` transcript message. |
+| `slash.ts` | Registers the thin slash commands that forward to `dispatch` and emit a `spider.command` transcript message. `/learn` is a special case: it forwards to `skill` `op:"distill"` and delivers the FULL distilled prompt as a real queued turn via `sendUserMessage`/`sendMessage` (never just a display card). |
 | `control.ts` | Config read/write (JSON merge, precedence defaults then global then project) and the `doctor` health check. |
 | `control/stats-cmd.ts` | `collectStats` builds the token-savings and row-count summary for `control stats`. |
 | `control/models-cmd.ts` | `setModelDefault` and `listCatalog` back `control models`. |

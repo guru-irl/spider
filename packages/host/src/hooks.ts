@@ -18,7 +18,9 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, appendEvent } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, appendEvent, type Db } from "@spider/db-core";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { cwdOf, sessionIdOf } from "./session-context";
 import { assembleSnapshot } from "@spider/memory";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
@@ -47,100 +49,80 @@ export function registerHooks(pi: PiLikeAPI): void {
   // fully defensive so a memory failure never breaks agent start / session start.
   for (const name of HOOK_NAMES) {
     if (name === "before_agent_start") {
-      pi.on(name, (event: any) => {
+      pi.on(name, (event: any, ctx?: unknown) => {
+        // pi consumes the RETURNED prompt patch, not mutation of event.systemPrompt.
+        if (typeof event?.systemPrompt !== "string") return undefined;
+        let repoDb: Db | undefined;
+        let globalDb: Db | undefined;
         try {
-          const cwd = String(event?.cwd ?? process.cwd());
-          const sessionId = event?.sessionId ? String(event.sessionId) : undefined;
+          const cwd = cwdOf(ctx) ?? process.cwd();
+          const sessionId = sessionIdOf(ctx) || undefined;
           const project = resolveProject(cwd, { sessionId, explicitCwd: !sessionId });
-          // For git repos: open the repo DB (for memory)
-          // For non-git dirs: create a repo-schema DB at worktree root (memory is repo tier)
-          // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
-          const repoDb = project.repoKey
+          repoDb = project.repoKey
             ? openRepo(project.repoKey)
             : openDbAt(join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
-          const snap = assembleSnapshot(
-            { global: openGlobal(), repo: repoDb },
-            { charCap: 8000 },
-          );
-          if (snap && typeof event?.systemPrompt === "string") {
-            event.systemPrompt += "\n\n" + snap;
-          }
+          globalDb = openGlobal();
+          const snap = assembleSnapshot({ global: globalDb, repo: repoDb }, { charCap: 8000 });
+          if (snap) return { systemPrompt: event.systemPrompt + "\n\n" + snap };
         } catch {
-          // snapshot injection is best-effort; never block agent start.
+          // Snapshot injection is best-effort; never block agent start.
+        } finally {
+          repoDb?.close();
+          globalDb?.close();
         }
         return undefined;
       });
     } else if (name === "session_start") {
-      pi.on(name, (event: any) => {
-        try {
-          const cwd = String(event?.cwd ?? process.cwd());
-          const sessionId = event?.sessionId ? String(event.sessionId) : undefined;
-          const project = resolveProject(cwd, { sessionId, explicitCwd: false });
-          const db = openProject(project.projectKey);
-          
-          // Reap subagents orphaned by a host that died without firing session_shutdown
-          // (crash / dead tty / SIGKILL). Best-effort and defensive: a reaper failure must
-          // never block session start.
-          void reapOrphanRuns({ db })
-            .then((r) => {
-              if (r.error) {
-                try {
-                  appendEvent(db, {
-                    sessionId: String(event?.sessionId ?? "unknown"),
-                    ts: Date.now(),
-                    phase: "after",
-                    tool: "reaper",
-                    description: `orphan reaper failed: ${r.error}`,
-                  });
-                } catch { /* best-effort event logging */ }
-              }
-            })
-            .catch((e) => {
-              try {
-                appendEvent(db, {
-                  sessionId: String(event?.sessionId ?? "unknown"),
-                  ts: Date.now(),
-                  phase: "after",
-                  tool: "reaper",
-                  description: `orphan reaper rejected: ${String((e as Error)?.message ?? e)}`,
-                });
-              } catch { /* best-effort event logging */ }
-            });
-          
-          // Poll and deliver pending intercom messages for this session. Best-effort and
-          // defensive: a poller failure must never block session start, but it must not be
-          // silently discarded either (surface via appendEvent like the reaper).
-          const globalDb = openGlobal();
-          void pollPendingMessages(globalDb, String(event?.sessionId ?? "unknown"), pi)
-            .catch((e) => {
-              try {
-                appendEvent(db, {
-                  sessionId: String(event?.sessionId ?? "unknown"),
-                  ts: Date.now(),
-                  phase: "after",
-                  tool: "poller",
-                  description: `message poller failed: ${String((e as Error)?.message ?? e)}`,
-                });
-              } catch { /* best-effort event logging */ }
-            });
+      pi.on(name, (event: any, ctx?: unknown) => {
+        const sessionId = sessionIdOf(ctx);
+        // No invented "unknown" session: native session events carry no ID.
+        if (!sessionId) return undefined;
+        const cwd = cwdOf(ctx) ?? process.cwd();
+        return (async () => {
+          let db: Db | undefined;
+          let globalDb: Db | undefined;
+          const logFailure = (tool: string, error: unknown) => {
+            if (!db) return;
+            try {
+              appendEvent(db, {
+                sessionId, ts: Date.now(), phase: "after", tool,
+                description: `${tool} failed: ${String((error as Error)?.message ?? error)}`,
+              });
+            } catch { /* a diagnostic must not break session start */ }
+          };
+          try {
+            const project = resolveProject(cwd, { sessionId, explicitCwd: false });
+            db = openProject(project.projectKey);
+            globalDb = openGlobal();
+            const sm = (ctx as Partial<ExtensionContext>)?.sessionManager;
+            const sessionName = sm?.getSessionName?.()?.trim() || null;
+            db.prepare(
+              "INSERT INTO sessions(id, name, reason, started_at) VALUES (?, ?, ?, ?) " +
+              "ON CONFLICT(id) DO UPDATE SET reason=excluded.reason, " +
+              "name=COALESCE(excluded.name,sessions.name), ended_at=NULL",
+            ).run(sessionId, sessionName, event?.reason ?? null, Date.now());
 
-          const id = event?.sessionId;
-          if (id) {
-            db
-              .prepare("INSERT OR IGNORE INTO sessions(id, reason, started_at) VALUES (?, ?, ?)")
-              .run(String(id), event?.reason ?? null, Date.now());
+            // Keep these connection lifetimes through the asynchronous operations,
+            // then close them. Startup must never poll a made-up session ID.
+            await Promise.all([
+              reapOrphanRuns({ db }).then(r => { if (r.error) logFailure("reaper", r.error); })
+                .catch(e => logFailure("reaper", e)),
+              pollPendingMessages(globalDb, sessionId, pi).catch(e => logFailure("poller", e)),
+            ]);
+          } catch (e) {
+            logFailure("session", e);
+          } finally {
+            db?.close();
+            globalDb?.close();
           }
-        } catch {
-          // session upsert is best-effort; never block session start.
-        }
-        return undefined;
+        })();
       });
     } else if (name === "resources_discover") {
       // Contribute the superpowers baseline skills + the project's .spider/skills
       // tier. Best-effort: a discovery failure must never break session start.
-      pi.on(name, (event: any) => {
+      pi.on(name, (event: any, ctx?: unknown) => {
         try {
-          const cwd = String(event?.cwd ?? process.cwd());
+          const cwd = cwdOf(ctx) ?? String(event?.cwd ?? process.cwd());
           return { skillPaths: contributeSkillPaths(cwd) };
         } catch {
           return undefined;

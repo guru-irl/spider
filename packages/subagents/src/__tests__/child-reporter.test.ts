@@ -4,6 +4,7 @@ import { RunStore } from "../run-store";
 import { openDbAt } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import { freshDb } from "./helpers/testutil";
+import { latestRunOutput } from "../completion-output";
 
 describe("child reporter", () => {
   it("appends run_events and writes terminal run status", () => {
@@ -61,6 +62,87 @@ describe("child reporter", () => {
     }
   });
 
+  describe("attachChildReporter — the child itself must not claim done regardless of provider errors/abort", () => {
+    const KEYS = ["PI_SUBAGENT_CHILD", "PI_SPIDER_DB_PATH", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_SESSION_ID"] as const;
+
+    function withChildEnv(dbFile: string, runId: string, fn: (handlers: Record<string, (e?: any) => void>, dispose: (() => void) | undefined) => void) {
+      const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+      process.env.PI_SUBAGENT_CHILD = "1";
+      process.env.PI_SPIDER_DB_PATH = dbFile;
+      process.env.PI_SUBAGENT_RUN_ID = runId;
+      process.env.PI_SPIDER_SESSION_ID = "child-sess";
+      try {
+        const handlers: Record<string, (e?: any) => void> = {};
+        const pi = { on: (evt: string, fn2: (e?: any) => void) => { handlers[evt] = fn2; return undefined; } };
+        const dispose = attachChildReporter(pi as any);
+        fn(handlers, dispose);
+      } finally {
+        for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+        cleanupScratch();
+      }
+    }
+
+    // Genuine repro for the reported bug: "a child itself currently calls
+    // onShutdown('done') regardless of provider errors/escalation". `stopReason` is the
+    // documented, structural field on the finalized assistant message (session-format.md)
+    // — not a natural-language guess — so this exercises the REAL event shape pi emits.
+    it("a provider error on the last turn is reported failed even though session_shutdown fires cleanly", () => {
+      const dbFile = scratchDbPath("child-reporter-provider-error");
+      const seed = openDbAt(dbFile, "project");
+      const seedStore = new RunStore(seed);
+      const { id: runId } = seedStore.create({ sessionId: "child-sess", agent: "worker" });
+      seedStore.start(runId);
+      seed.close();
+
+      withChildEnv(dbFile, runId, (handlers) => {
+        handlers["message_end"]({ message: { role: "assistant", stopReason: "error", errorMessage: "rate limited by provider", content: [] } });
+        handlers["session_shutdown"]();
+        const verify = openDbAt(dbFile, "project");
+        const row = new RunStore(verify).get(runId)!;
+        expect(row.status).not.toBe("done");
+        expect(row.status).toBe("failed");
+        verify.close();
+      });
+    });
+
+    it("an aborted last turn is reported failed, not done, on clean process exit", () => {
+      const dbFile = scratchDbPath("child-reporter-provider-aborted");
+      const seed = openDbAt(dbFile, "project");
+      const seedStore = new RunStore(seed);
+      const { id: runId } = seedStore.create({ sessionId: "child-sess", agent: "worker" });
+      seedStore.start(runId);
+      seed.close();
+
+      withChildEnv(dbFile, runId, (handlers) => {
+        handlers["message_end"]({ message: { role: "assistant", stopReason: "aborted", content: [] } });
+        handlers["session_shutdown"]();
+        const verify = openDbAt(dbFile, "project");
+        expect(new RunStore(verify).get(runId)!.status).toBe("failed");
+        verify.close();
+      });
+    });
+
+    it("a transient error/abort followed by a successful continuation still reports done (only the LAST turn decides)", () => {
+      const dbFile = scratchDbPath("child-reporter-provider-recovered");
+      const seed = openDbAt(dbFile, "project");
+      const seedStore = new RunStore(seed);
+      const { id: runId } = seedStore.create({ sessionId: "child-sess", agent: "worker" });
+      seedStore.start(runId);
+      seed.close();
+
+      withChildEnv(dbFile, runId, (handlers) => {
+        handlers["message_end"]({ message: { role: "assistant", stopReason: "error", errorMessage: "transient", content: [] } });
+        handlers["message_end"]({ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "FINAL: recovered and finished" }] } });
+        handlers["session_shutdown"]();
+        const verify = openDbAt(dbFile, "project");
+        const row = new RunStore(verify).get(runId)!;
+        expect(row.status).toBe("done");
+        expect(row.result).toBe("FINAL: recovered and finished");
+        verify.close();
+      });
+    });
+  });
+
   describe("summarizeToolArgs — the /agents detail view can only show what this records", () => {
     // Root cause: spider is one mega-tool (`{action, language, code}` / `{action, commands}`).
     // The old pick list (path/file/filePath/command/pattern/query/url/name/action) has no
@@ -107,6 +189,76 @@ describe("child reporter", () => {
 
     it("leaves non-spider tool summaries unaffected (write keeps tool + path)", () => {
       expect(summarizeToolArgs("write", { path: "/tmp/out.txt" })).toBe("write /tmp/out.txt");
+    });
+  });
+
+  // C1's actual production shape: the real child sequence (message(s), then a BARE
+  // onShutdown("done") — attachChildReporter never passes a `result` argument at all,
+  // see the wiring below). No fake stands in for a hand-written final result here.
+  describe("onShutdown — a clean shutdown signal is necessary but not sufficient for done", () => {
+    it("backfills a blank result from the real final message run_event (canonical result survives)", () => {
+      const db = freshDb();
+      const store = new RunStore(db);
+      const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+      store.start(runId);
+      const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
+      rep.onMessage("FINAL: 3 TODOs found");
+      rep.onShutdown("done"); // no result arg — the real child sequence
+      const row = store.get(runId)!;
+      expect(row.status).toBe("done");
+      expect(row.result).toBe("FINAL: 3 TODOs found");
+    });
+
+    it("does NOT report done when the last signal is an unresolved BLOCKED escalation with no further message", () => {
+      const db = freshDb();
+      const store = new RunStore(db);
+      const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+      store.start(runId);
+      const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
+      rep.onMessage("ESCALATION[blocked]: need approval before deleting prod data");
+      rep.onShutdown("done"); // the buggy old code recorded this "done" with result=null
+      const row = store.get(runId)!;
+      expect(row.status).not.toBe("done");
+      expect(row.status).toBe("failed");
+    });
+
+    it("does NOT report done when the last signal is an unresolved QUESTION escalation", () => {
+      const db = freshDb();
+      const store = new RunStore(db);
+      const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+      store.start(runId);
+      const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
+      rep.onMessage("ESCALATION[question]: which environment should I target?");
+      rep.onShutdown("done");
+      expect(store.get(runId)!.status).toBe("failed");
+    });
+
+    it("a WARNING-only escalation does not falsely fail a valid completion", () => {
+      const db = freshDb();
+      const store = new RunStore(db);
+      const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+      store.start(runId);
+      const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
+      rep.onMessage("FINAL: shipped the thing");
+      rep.onMessage("ESCALATION[warning]: minor formatting nit in the output");
+      rep.onShutdown("done");
+      const row = store.get(runId)!;
+      expect(row.status).toBe("done");
+      expect(row.result).toBe("FINAL: shipped the thing");
+    });
+
+    it("a headless child that never calls onShutdown leaves the row non-terminal for the parent to finalize (sibling of the backfill case)", () => {
+      const db = freshDb();
+      const store = new RunStore(db);
+      const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+      store.start(runId);
+      const rep = makeChildReporter(db, { runId, sessionId: "child-sess" });
+      rep.onMessage("FINAL: did the work");
+      // No onShutdown call — simulates headless/killed: session_shutdown never fires.
+      expect(store.get(runId)!.status).toBe("running");
+      // But the real deliverable is already sitting in run_events for the parent's
+      // fallback finalize (runner.ts) to pick up — it must not be reported as missing.
+      expect(latestRunOutput(db, runId)).toBe("FINAL: did the work");
     });
   });
 

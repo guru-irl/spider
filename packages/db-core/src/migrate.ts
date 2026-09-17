@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -31,6 +31,14 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
   bound_at INTEGER NOT NULL
 )`,
   ],
+  // v10: postinstall used to create a partial projects table without repo_key
+  // while leaving user_version at 0. The fresh GLOBAL_SCHEMA CREATE TABLE then
+  // became a silent no-op and migrate stamped the malformed database v9, so the
+  // v6 ALTER could never run. This repair is deliberately keyed ABOVE the stuck
+  // version, just like the v8 repo.db and v9 session_bindings repairs.
+  // The ALTER itself is conditionally applied below because healthy databases
+  // already have repo_key and SQLite has no ADD COLUMN IF NOT EXISTS.
+  10: [],
 };
 
 const REPO_MIGRATIONS: Record<number, readonly string[]> = {
@@ -55,6 +63,13 @@ const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
   6: [], // Version bump only
   7: [], // split from PROJECT_SCHEMA; worktree tier gets sessions, content, todos, runs, events
 };
+
+function repairGlobalProjectsRepoKey(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
+  if (columns.length > 0 && !columns.some((column) => column.name === "repo_key")) {
+    db.exec("ALTER TABLE projects ADD COLUMN repo_key TEXT");
+  }
+}
 
 const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   2: ["ALTER TABLE runs ADD COLUMN thinking TEXT"],
@@ -98,6 +113,9 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
       if (current === 0) {
         if (actualScope === "global") {
           db.exec(GLOBAL_SCHEMA);
+          // GLOBAL_SCHEMA cannot replace a malformed table created by an older
+          // postinstall because its CREATE TABLE is intentionally idempotent.
+          repairGlobalProjectsRepoKey(db);
         } else if (actualScope === "repo") {
           db.exec(REPO_SCHEMA);
         } else {
@@ -114,6 +132,10 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
             steps = WORKTREE_MIGRATIONS[v] ?? [];
           }
           for (const s of steps) db.exec(s);
+
+          if (actualScope === "global" && v === 10) {
+            repairGlobalProjectsRepoKey(db);
+          }
           
           // IMPORTANT 5: After creating memory_fts (v8), populate it from memory
           if (actualScope === "repo" && v === 8) {

@@ -92,7 +92,7 @@ and the `run_events` bus are documented in [`data-model.md`](./data-model.md).
 
 The diagram shows the ten packages, the three database tiers, and the pi runtime. Solid
 arrows are dependency edges (a package imports the one it points to). The dotted
-edges are the data path: `db-core` opens and migrates both databases, and every
+edges are the data path: `db-core` opens and migrates all three databases, and every
 storage-touching package reaches those databases through the handle it returns.
 
 ```mermaid
@@ -120,7 +120,8 @@ flowchart TB
 
   subgraph stores["Shared SQLite"]
     gdb[("global registry DB")]
-    pdb[("per-project DB")]
+    rdb[("repo DB")]
+    wdb[("worktree DB")]
   end
 
   pi -->|loads, calls execute, fires hooks| host
@@ -156,7 +157,8 @@ flowchart TB
   ui --> models
 
   dbcore -. opens and migrates .-> gdb
-  dbcore -. opens and migrates .-> pdb
+  dbcore -. opens and migrates .-> rdb
+  dbcore -. opens and migrates .-> wdb
 ```
 
 ## How one call flows

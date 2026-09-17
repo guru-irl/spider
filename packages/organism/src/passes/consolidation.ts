@@ -1,6 +1,44 @@
 import type { DigestBundle, DigestModel, DigestResult } from "../types.js";
 import { emptyResult } from "../types.js";
 import { parseCandidates } from "../aux-model.js";
+import type { DigestMsg } from "@spider/memory";
+
+// Bound how many tracked tool-event lines are folded into the no-transcript
+// activity summary — never duplicate the full/unbounded raw event log.
+const MAX_TRACKED_EVENT_LINES = 40;
+
+/**
+ * When there is no transcript (but the gate passed because there were runs),
+ * build a concise, bounded activity summary from run rows, tracked tool
+ * events, and the session label — so the model reviews SOMETHING instead of
+ * a bare instruction with no conversation above it. Returns `[]` (send
+ * nothing extra) when there is genuinely no activity to summarize.
+ */
+function summarizeRunActivity(bundle: DigestBundle): DigestMsg[] {
+  const lines: string[] = [];
+  if (bundle.sessionName) lines.push(`Session: ${bundle.sessionName}`);
+  if (bundle.runs.length > 0) {
+    lines.push("Runs:");
+    for (const r of bundle.runs) {
+      lines.push(`- run ${r.id} agent=${r.agent} role=${r.role ?? ""} status=${r.status} steps=${r.step_count} tokens=${r.token_count}`);
+    }
+  }
+  if (bundle.runEvents.length > 0) {
+    lines.push("Run events:");
+    for (const e of bundle.runEvents) {
+      lines.push(`- run=${e.runId ?? ""} type=${e.type}${e.tool ? ` tool=${e.tool}` : ""}${e.summary ? `: ${e.summary}` : ""}`);
+    }
+  }
+  const trackedEvents = bundle.events.slice(-MAX_TRACKED_EVENT_LINES);
+  if (trackedEvents.length > 0) {
+    lines.push("Tracked activity:");
+    for (const e of trackedEvents) {
+      lines.push(`- ${e.phase} tool=${e.tool}${e.description ? `: ${e.description}` : ""}`);
+    }
+  }
+  if (lines.length === 0) return [];
+  return [{ role: "user", content: lines.join("\n") }];
+}
 
 /**
  * Prompt asking the aux model for a short session summary plus a short
@@ -35,8 +73,9 @@ function slugify(name: string): string {
 export async function consolidationPass(bundle: DigestBundle, model: DigestModel): Promise<DigestResult> {
   if (bundle.transcript.length === 0 && bundle.runs.length === 0) return emptyResult();
 
-  const raw = await model.complete(CONSOLIDATION_PROMPT, bundle.transcript);
-  const parsed = parseCandidates(raw);
+  const messages = bundle.transcript.length > 0 ? bundle.transcript : summarizeRunActivity(bundle);
+  const raw = await model.complete(CONSOLIDATION_PROMPT, messages);
+  const parsed = parseCandidates(raw, { strict: true });
   return {
     ...emptyResult(),
     summary: parsed.summary,

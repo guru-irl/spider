@@ -81,9 +81,10 @@ Quality bar:
 - Keep it tight and scannable: ~100 lines for a simple skill, ~200 for a
   complex one. Don't re-paste the source docs.
 - Don't write a router/index/hub skill that only points at other skills.
-- Larger scripts/parsers belong in a \`scripts/\` file (add via \`spider skill\`),
-  referenced from SKILL.md by relative path — not inlined for the agent to
-  re-type every run. References go in \`references/\`, templates in \`templates/\`.`;
+- Keep any necessary script content inline in the body as a fenced code block
+  the agent runs via \`spider exec\` — there is no separate scripts/ upload path
+  today; do not promise one. References go in \`references/\`, templates in
+  \`templates/\` only when those directories already exist for this skill.`;
 
 /**
  * Build the agent prompt for an open-ended `/learn` request.
@@ -128,10 +129,13 @@ export function buildLearnPrompt(userRequest: string): string {
     "1b. Apply every requirement, focus, and constraint in the request to " +
     "the skill you author — these govern what the SKILL.md covers and " +
     "emphasizes, not just which sources you read.\n" +
-    "2. Author ONE SKILL.md and save it with the `spider skill` action " +
-    "(create). Pick a sensible category. If the procedure needs " +
-    "a non-trivial script, add it under the skill's `scripts/` with " +
-    "`spider skill` and reference it by relative path.\n\n" +
+    "2. Stage ONE SKILL.md candidate via the `skill` action with op:\"add\", " +
+    'passing `name` (lowercase-hyphenated) and `text` set to the FULL markdown ' +
+    "body (frontmatter is derived automatically — do not include your own). " +
+    "Pick a sensible category if one applies. This only STAGES a candidate for " +
+    "review; it does not activate anything, and you must never call op:\"approve\" " +
+    "yourself. Tell the user to run `spider skill op=approve name=<name>` when " +
+    "they are ready to activate it.\n\n" +
     `${AUTHORING_STANDARDS}\n\n` +
     "When done, tell the user the skill name, its category, and a " +
     "one-line summary of what it captured."

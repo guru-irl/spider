@@ -246,8 +246,10 @@ approved it flows back into the next session:
 Staged writes are reviewed with `spider control memory` (memory) and the skill
 approval surface (skills). The `/learn` path is separate: `buildLearnPrompt`
 returns a prompt that instructs the live agent to gather the named sources with
-its own tools and author one `SKILL.md` through the `spider skill` action,
-following the embedded `AUTHORING_STANDARDS`.
+its own tools and STAGE one skill candidate via the `skill` action's `op:"add"`
+(name + full markdown body); activation is always a separate, explicit
+`op:"approve"` — the agent never self-approves, and there is no `create`
+operation or separate scripts-upload path.
 
 ## How it fits
 
@@ -259,15 +261,20 @@ rows and the log breadcrumb), `@spider/context` (reading the transcript), and
 
 `@spider/host` wires it in by calling `registerOrganism` with a `WorkerDeps`
 bundle (the two DBs, the project info, an embedder factory, and an aux-model
-factory) and routes the `skill`, `control skill curate`, and `control insights`
-actions to the handlers in `actions.ts`. The organism does not run on the
-foreground request path; it runs on the session lifecycle hooks and on those
-explicit action calls.
+factory) and an optional `onSetupError(phase, error, ctx?)` observer for
+failures that happen BEFORE a drain can start (registration itself throwing,
+a lifecycle event with no resolvable session, or the deps resolver throwing)
+— otherwise invisible failures that would make a dead organism look identical
+to a healthy one that simply hasn't drained yet. It also routes the `skill`,
+`control skill curate`, and `control insights` actions to the handlers in
+`actions.ts`. The organism does not run on the foreground request path; it
+runs on the session lifecycle hooks and on those explicit action calls.
 
 ## Notes
 
 - The before-compact hook must never block or cancel compaction. It is
-  fire-and-forget, never returns `false`, and swallows all errors.
+  fire-and-forget, never returns `false`, and swallows all errors (but reports
+  them through `onSetupError` when a pre-drain failure occurs).
 - The master `org.enabled` toggle short-circuits `runDrain` to a zeroed summary.
 - Staged writes are fail-closed and budget-capped. Over-budget candidates are
   dropped and counted, not applied silently.
@@ -275,9 +282,18 @@ explicit action calls.
   maximum destructive action and is recoverable. Pinned and protected skills are
   never transitioned by the deterministic decay walk.
 - Reflection needs vectors. With no embedder it returns an empty result rather
-  than failing.
+  than failing. A cluster whose synthesis reply fails to parse is skipped, not
+  discarded silently: if every attempted cluster in a pass fails, the drain
+  records a real `reflection` error (never a false "completed" with zero
+  proposals); a mixed pass keeps the clusters that DID parse and still records
+  the failure.
 - Every persistence write on the drain path is guarded so a schema gap cannot
   break drain, curate, or shutdown.
+- `readLastDrainReport(db, sessionId)` reads the current session's own receipt;
+  `readLastDrainReportForWorktree(db)` is a worktree-wide fallback for a FRESH
+  session/runtime that has no receipt of its own yet — callers must label it
+  with its own session id/timestamp and never present it as the current
+  session's own drain.
 - Curator defaults: `staleAfterDays` 30, `archiveAfterDays` 90,
   `minIntervalHours` 24, `consolidate` off. Organism defaults: all passes on,
   self-naming on, `autoWriteBudget` 20.

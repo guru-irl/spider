@@ -208,7 +208,7 @@ describe("message action handler", () => {
     expect(row.to_session).toBe("nobody");
   });
 
-  it("reports delivered when the broker acknowledges delivery", async () => {
+  it("reports broker acceptance without claiming recipient acknowledgement", async () => {
     const gdb = globalDb();
     const events = fakeEvents();
     // Auto-acknowledge: when the request is emitted, echo back a successful delivery.
@@ -218,7 +218,8 @@ describe("message action handler", () => {
     const handler = makeMessageHandler();
     const ctx: any = { pi: { events }, globalDb: gdb, sessionId: "from-sess" };
     const res: any = await handler({ to: "peer", message: "hi", timeoutMs: 1000 }, ctx);
-    expect(res.content).toContain("message delivered to peer");
+    expect(res.content).toContain("Broker accepted the message for peer");
+    expect(res.details).toMatchObject({ delivery: "broker-accepted", recipientAcknowledged: false });
     expect(res.isError).toBe(false);
   });
 });

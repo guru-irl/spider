@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { openDbAt, listEvents } from "@spider/db-core";
 import { testScratchPath } from "./testutil.js";
 import { registerRouting, DEFAULT_ROUTING_CONFIG } from "../routing/index";
+import { markToolCallError } from "../result";
 
 let dbPath = "";
 let workDir = "";
@@ -117,6 +118,49 @@ describe("routing integration smoke", () => {
     db.close();
   });
 
+  // Mechanism (B): §2b/§2c of pi-tool-error-contract-report.md — this hook is the ONLY
+  // place that can flip ToolResultMessage.isError while preserving content/details. The
+  // three tests below assert the new marked-toolCallId branch fires ONLY when a prior
+  // execute() call flagged that exact id (via extension.ts -> result.ts), and never
+  // otherwise — the test just above (no toolCallId marked) is the ordinary case this
+  // branch must NOT disturb; it is left unmodified deliberately (see report §2: it
+  // already asserts the correct behavior for an UNmarked call, which is still exactly
+  // what happens when nothing was ever marked for that id).
+  it("flags a marked spider toolCallId as isError via tool_result, content/details preserved verbatim", async () => {
+    const { pi } = setup();
+    markToolCallError("call-err-1");
+    const ret: any = await pi._hooks.tool_result(
+      { toolName: "spider", toolCallId: "call-err-1", content: [{ type: "text", text: "Error: boom" }], details: { error: "boom" } },
+      {},
+    );
+    expect(ret?.isError).toBe(true);
+    expect(ret?.content).toEqual([{ type: "text", text: "Error: boom" }]);
+    expect(ret?.details).toEqual({ error: "boom" });
+  });
+
+  it("is one-shot: a second tool_result for the same toolCallId is untouched (no leak across calls)", async () => {
+    const { pi } = setup();
+    markToolCallError("call-err-2");
+    const first: any = await pi._hooks.tool_result({ toolName: "spider", toolCallId: "call-err-2", content: [] }, {});
+    expect(first?.isError).toBe(true);
+    const second = await pi._hooks.tool_result({ toolName: "spider", toolCallId: "call-err-2", content: [] }, {});
+    expect(second == null).toBe(true);
+  });
+
+  it("interleaves a failing and a succeeding spider toolCallId without cross-contamination", async () => {
+    const { pi } = setup();
+    // Only "call-fail-1" is ever marked — "call-ok-1" represents a normal, successful
+    // spider call running concurrently (parallel tool execution can interleave
+    // tool_result delivery in either order; a single scalar — instead of a per-id
+    // Map/Set — would leak the flag onto the wrong call here).
+    markToolCallError("call-fail-1");
+    const okRet = await pi._hooks.tool_result({ toolName: "spider", toolCallId: "call-ok-1", content: [{ type: "text", text: "fine" }] }, {});
+    expect(okRet == null).toBe(true);
+    const failRet: any = await pi._hooks.tool_result({ toolName: "spider", toolCallId: "call-fail-1", content: [{ type: "text", text: "boom" }] }, {});
+    expect(failRet?.isError).toBe(true);
+    expect(failRet?.content).toEqual([{ type: "text", text: "boom" }]);
+  });
+
   it("keeps all scratch under the spider root, never /tmp", () => {
     setup();
     const root = testScratchPath(".spider-test");
@@ -124,5 +168,61 @@ describe("routing integration smoke", () => {
     expect(workDir.startsWith(root)).toBe(true);
     expect(dbPath.startsWith(tmpdir())).toBe(false);
     expect(dbPath.includes("/tmp/")).toBe(false);
+  });
+
+  // A-M1 (branch-review A-architecture.md): overrides.ts used to signal an edit/write
+  // validation failure ONLY via an `isError: true` field on its OWN resolved value —
+  // pi's `execute()` contract has no such field, so it was silently dropped and the
+  // failure reached pi (and therefore the model/UI) as a SUCCESS. This is the full,
+  // real round trip: the override's execute() call marks the toolCallId, then the SAME
+  // toolCallId's tool_result event (fired by pi for EVERY tool, edit/write included)
+  // must now come back flagged isError — not just for the spider mega-tool.
+  it("A-M1: a blocked edit's isError actually reaches pi through the SAME tool_result mechanism the spider tool uses — not just an inert field on its own return", async () => {
+    const { pi } = setup();
+    const res: any = await pi._tools.edit.execute(
+      "c-bad-edit",
+      { path: "f.txt", edits: [] }, // no description -> validation failure
+      undefined, undefined, {},
+    );
+    expect(res?.isError).toBe(true); // the (inert-to-pi, still-honest) field on the return itself
+    // The decisive check: pi always fires tool_result for every tool call, edit/write
+    // included. Before the fix this branch only fired for tool === "spider".
+    const ret: any = await pi._hooks.tool_result(
+      { toolName: "edit", toolCallId: "c-bad-edit", content: res.content, details: res.details },
+      {},
+    );
+    expect(ret?.isError).toBe(true);
+    expect(ret?.content).toEqual(res.content);
+  });
+
+  it("A-M1: a blocked write ALSO reaches pi via tool_result, not just the spider tool", async () => {
+    const { pi } = setup();
+    const res: any = await pi._tools.write.execute(
+      "c-bad-write",
+      { path: "f.txt", content: "x" }, // no description -> validation failure
+      undefined, undefined, {},
+    );
+    expect(res?.isError).toBe(true);
+    const ret: any = await pi._hooks.tool_result(
+      { toolName: "write", toolCallId: "c-bad-write", content: res.content, details: res.details },
+      {},
+    );
+    expect(ret?.isError).toBe(true);
+  });
+
+  it("A-M1: a VALID edit's tool_result is untouched (no false-positive marking)", async () => {
+    const { pi } = setup();
+    const file = join(workDir, "g.txt");
+    writeFileSync(file, "old\n");
+    const res: any = await pi._tools.edit.execute(
+      "c-good-edit",
+      { path: "g.txt", description: "fine", edits: [{ oldText: "old", newText: "new" }] },
+      undefined, undefined, {},
+    );
+    expect(res?.isError).toBeFalsy();
+    const ret = await pi._hooks.tool_result({ toolName: "edit", toolCallId: "c-good-edit", content: res.content }, {});
+    // Falls through to the pre-existing OVERRIDDEN-tool no-op path (edit/write already
+    // recorded their own after-event) — no isError, no re-processing.
+    expect((ret as any)?.isError).toBeFalsy();
   });
 });

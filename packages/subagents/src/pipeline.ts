@@ -3,15 +3,16 @@ import { bus } from "@spider/db-core";
 import type { Db, RunEvent } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
 import { emitHandoff } from "./run-events";
-import { sendIntercom } from "./intercom";
 import type { PipelineStage, RunPipelineArgs } from "./schemas";
 
 /**
  * First-class pipeline auto-wake coordinator for `run {pipeline, handoff:"intercom"}`.
  * Spawns stage 0 async, then advances stage-by-stage when the previous stage's run
- * reaches a terminal status on the bus: records a `handoff` run_event edge, wakes the
- * next stage via intercom (message_mirror observability), and spawns it pre-wired with
- * the prior result as {previous}/{handoff}. No blocking wait.
+ * reaches a terminal status on the bus: records a `handoff` run_event edge and
+ * spawns a fresh child pre-wired with the prior result as {previous}/{handoff}.
+ * `handoff:"intercom"` remains accepted for compatibility, but a one-shot child
+ * loads only spider, not the intercom extension. Its task is the actual handoff;
+ * a broker message would only create an unread mailbox row. No blocking wait.
  *
  * NOTE: `stage.count > 1` fan-out (advance only when ALL N terminal) and
  * `wakeOn:"accepted"` (acceptance ledger, Phase 8) are deferred — the single-worker
@@ -26,9 +27,6 @@ export class PipelineCoordinator {
   private baseTask = "";
   constructor(private deps: { db: Db; globalDb: Db; store: RunStore; runner: any; pi: any; sessionId: string }) {}
 
-  private intercomName(stage: PipelineStage, runId: string): string {
-    return `${stage.role ?? stage.agent}-${runId.slice(0, 8)}`;
-  }
   private interpolate(tmpl: string, previous: string): string {
     return tmpl.replace(/\{task\}/g, this.baseTask).replace(/\{previous\}/g, previous).replace(/\{handoff\}/g, previous);
   }
@@ -68,10 +66,9 @@ export class PipelineCoordinator {
     if (!finished || nextIndex >= this.stages.length) { this.dispose(); return; }
     const previous = finished.result ?? "";
     const nextStage = this.stages[nextIndex];
-    // spawn next stage first so we have its run id for the handoff edge + wake target
+    // Spawn first so the durable handoff edge can identify the new process.
     const next = this.spawnStage(nextIndex, previous);
     emitHandoff(this.deps.db, { runId: finished.id, sessionId: this.deps.sessionId, toRunId: next.id, phase: nextStage.phase, summary: `${finished.role ?? finished.agent}\u2192${nextStage.role ?? nextStage.agent}` });
-    void sendIntercom(this.deps.pi, this.deps.globalDb, { to: this.intercomName(nextStage, next.id), message: previous, fromSession: this.deps.sessionId, kind: "handoff" });
   }
 
   dispose(): void { this.off?.(); this.off = null; }

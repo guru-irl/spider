@@ -16,4 +16,12 @@ describe("buildLearnPrompt", () => {
     expect(p).not.toContain("read_file");
     expect(p).toContain("spider skill");
   });
+  it("names only real, supported skill ops — no invented (create), no false scripts/ upload promise", () => {
+    const p = buildLearnPrompt("x");
+    expect(p).not.toMatch(/\(create\)/);
+    expect(p).not.toMatch(/add (it )?(under|via) the skill'?s `scripts\/`/i);
+    expect(p).toContain('op:"add"');
+    expect(p).toMatch(/only stages|does not activate/i);
+    expect(p).toMatch(/op:"approve"|op=approve/);
+  });
 });

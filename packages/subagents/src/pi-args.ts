@@ -278,6 +278,11 @@ export interface BuildChildSpawnSpecInput {
 	/** Extension the child loads (the spider bundle). Defaults to this module's own
 	 * bundled entry (dist/extension.js). Injectable for tests. */
 	childExtensionPath?: string;
+	/** Working directory the child process should be spawned in. Callers (the
+	 * production Runner) resolve this once per run and must thread it through so
+	 * the child executes in the same worktree the parent's DB writes target.
+	 * Falls back to process.cwd() for legacy direct callers that never set it. */
+	cwd?: string;
 }
 
 /**
@@ -287,7 +292,7 @@ export interface BuildChildSpawnSpecInput {
  * under the spider scratch root (never the system temp dir).
  */
 export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawnSpec {
-	const cwd = process.cwd();
+	const cwd = input.cwd ?? process.cwd();
 	const sessionFile = path.join(input.scratchRoot, "subagent-sessions", input.runId, `${input.runId}.jsonl`);
 	try {
 		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });

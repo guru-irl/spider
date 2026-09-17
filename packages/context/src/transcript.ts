@@ -14,10 +14,49 @@ function extractText(content: unknown): string {
   return "";
 }
 
+/** Normalize an already-selected branch. Thinking and non-message metadata are not prose. */
+export function normalizeTranscriptEntries(entries: readonly unknown[]): NormalizedTranscript["messages"] {
+  const messages: NormalizedTranscript["messages"] = [];
+  for (const raw of entries) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as Record<string, unknown>;
+    // Native pi JSONL wraps role/content in `message`; old imports used flat rows.
+    const message = entry.type === "message" && entry.message && typeof entry.message === "object"
+      ? entry.message as Record<string, unknown>
+      : entry;
+    if (typeof message.role !== "string") continue;
+    const text = extractText(message.content);
+    if (text.trim()) messages.push({ role: message.role, text });
+  }
+  return messages;
+}
+
+function activeBranch(entries: Record<string, unknown>[]): Record<string, unknown>[] {
+  const byId = new Map<string, Record<string, unknown>>();
+  let leaf: string | undefined;
+  for (const entry of entries) {
+    if (typeof entry.id === "string" && (entry.parentId === null || typeof entry.parentId === "string")) {
+      byId.set(entry.id, entry);
+      leaf = entry.id;
+    }
+  }
+  if (!leaf) return entries; // Legacy flat transcripts have no tree metadata.
+  const branch: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  while (leaf && !seen.has(leaf)) {
+    seen.add(leaf);
+    const entry = byId.get(leaf);
+    if (!entry) break; // Tolerate an incomplete tail without replaying unrelated branches.
+    branch.push(entry);
+    leaf = typeof entry.parentId === "string" ? entry.parentId : undefined;
+  }
+  return branch.reverse();
+}
+
 /**
- * Reads a pi session transcript (.jsonl) and normalizes it into a flat
- * { role, text } message list. Tolerant of malformed lines and unreadable
- * files: never throws.
+ * Read a native pi session's active branch (or a legacy flat transcript).
+ * Non-message entries remain in the parent chain but are not conversation text.
+ * Tolerant of malformed lines and unreadable files: never throws.
  */
 export function readTranscript(sourcePath: string): NormalizedTranscript {
   const fallbackId = basename(sourcePath).replace(/\.jsonl$/, "");
@@ -29,7 +68,7 @@ export function readTranscript(sourcePath: string): NormalizedTranscript {
   }
 
   let sessionId = fallbackId;
-  const messages: Array<{ role: string; text: string }> = [];
+  const entries: Record<string, unknown>[] = [];
 
   const lines = raw.split("\n").filter((l) => l.trim().length > 0);
   for (const line of lines) {
@@ -46,14 +85,10 @@ export function readTranscript(sourcePath: string): NormalizedTranscript {
       continue;
     }
 
-    const isMessage = typeof entry.role === "string" || entry.type === "message";
-    if (!isMessage) continue;
-    if (typeof entry.role !== "string") continue;
-
-    messages.push({ role: String(entry.role), text: extractText(entry.content) });
+    entries.push(entry);
   }
 
-  return { sessionId, sourcePath, messages };
+  return { sessionId, sourcePath, messages: normalizeTranscriptEntries(activeBranch(entries)) };
 }
 
 function walk(dir: string): string[] {

@@ -9,6 +9,7 @@ import {
   countPatchLines,
   registerEditWriteOverrides,
 } from "../routing/overrides";
+import { consumeToolCallError } from "../result";
 
 let dbPath: string;
 afterEach(() => {
@@ -73,6 +74,61 @@ describe("edit override", () => {
     expect(result.isError).toBe(true);
     expect(delegated).toBe(false);
     expect(listEvents(db)).toHaveLength(0);
+    db.close();
+  });
+
+  // A-M1 (branch-review A-architecture.md): pi's `AgentTool.execute()` contract has NO
+  // `isError` field (verified against pi's own types) — returning one on the resolved
+  // value, as the test above checks, is INERT; pi's runtime never reads it. The ONLY
+  // working channel is `markToolCallError(toolCallId)` + the `tool_result` hook
+  // (mechanism (B), routing/index.ts). A missing/invalid description must go through
+  // that SAME real mechanism, not just carry a field nothing consumes.
+  it("A-M1: a blocked edit marks its toolCallId via the REAL error-signaling mechanism (markToolCallError), not just an inert field", async () => {
+    const db = mkdb();
+    const pi = fakePi();
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s1",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => ({ content: [], details: {} }) }),
+      makeWriteDelegate: () => ({ execute: async () => ({ content: [], details: {} }) }),
+    });
+    const edit = pi.tools.find((t) => t.name === "edit")!;
+    await edit.execute("call-marked-1", { path: "a.ts", edits: [] }, undefined, undefined, {});
+    // consumeToolCallError deletes on read — true here proves markToolCallError fired.
+    expect(consumeToolCallError("call-marked-1")).toBe(true);
+    db.close();
+  });
+
+  it("A-M1: a blocked write ALSO marks its toolCallId via the real mechanism", async () => {
+    const db = mkdb();
+    const pi = fakePi();
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s1",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => ({ content: [], details: {} }) }),
+      makeWriteDelegate: () => ({ execute: async () => ({ content: [], details: {} }) }),
+    });
+    const write = pi.tools.find((t) => t.name === "write")!;
+    await write.execute("call-marked-2", { path: "a.ts", content: "x" }, undefined, undefined, {});
+    expect(consumeToolCallError("call-marked-2")).toBe(true);
+    db.close();
+  });
+
+  it("A-M1: a VALID edit/write never marks a toolCallId (no false positives)", async () => {
+    const db = mkdb();
+    const pi = fakePi();
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s1",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) }),
+      makeWriteDelegate: () => ({ execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }) }),
+    });
+    const edit = pi.tools.find((t) => t.name === "edit")!;
+    await edit.execute("call-ok-1", { path: "a.ts", description: "fine", edits: [{ oldText: "a", newText: "b" }] }, undefined, undefined, {});
+    expect(consumeToolCallError("call-ok-1")).toBe(false);
     db.close();
   });
 

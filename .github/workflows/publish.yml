@@ -1,8 +1,16 @@
 name: Publish to npm
 
-# Runs only once a GitHub Release is PUBLISHED (not on tag push), so the release
-# workflow's build/test/pack gates are already green before anything is uploaded
-# to the registry. Can also be run by hand for a re-publish after a failure.
+# Runs once a GitHub Release is PUBLISHED (not merely created/drafted -- see
+# release.yml, which creates a DRAFT on purpose), so the release workflow's
+# build/test/pack gates are already green before anything is uploaded to the
+# registry. A GitHub Release only reaches "published" when a human (or a
+# PAT-authenticated `gh`) does it by hand; GITHUB_TOKEN-authored events (like
+# release.yml's own draft-creation step) cannot trigger this workflow, by
+# GitHub Actions design. Can also be run by hand (workflow_dispatch) for a
+# re-publish after a failure, or to publish a tag with no release at all.
+#
+# The `npm-publish` environment below is a manual, one-time repo setting, not
+# something this file can create or verify -- see docs/release-process.md.
 on:
   release:
     types: [published]
@@ -21,8 +29,12 @@ jobs:
     name: npm publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Create this environment in repo settings to require manual approval before
-    # a publish. Remove the line if you want releases to go out unattended.
+    # Requires a repo Settings -> Environments entry literally named
+    # "npm-publish" with required reviewers configured BEFORE the first release,
+    # or GitHub auto-creates it with no protection rules on first use and this
+    # runs unattended. Nothing in this repo can assert the protection rules
+    # exist from inside the workflow; see docs/release-process.md for the exact
+    # steps. Remove this line entirely if unattended publishing is intended.
     environment: npm-publish
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +49,23 @@ jobs:
 
       - name: Install
         run: npm ci
+
+      # release.yml's tag-driven path already checked this before creating the
+      # release, but workflow_dispatch lets a caller pass ANY tag/ref via
+      # `inputs.tag`, bypassing that check entirely. Without this, dispatching
+      # against a ref whose package.json disagrees with the tag would publish
+      # under a version number the tag does not describe.
+      - name: Verify release tag matches package.json version
+        env:
+          REL_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          TAG="${REL_TAG#v}"
+          PKG=$(node -p "require('./package.json').version")
+          echo "tag=$TAG package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag $REL_TAG does not match package.json version $PKG at this ref"
+            exit 1
+          fi
 
       - name: Typecheck
         run: npm run typecheck

@@ -14,9 +14,9 @@ describe("action dispatch", () => {
     expect(res).toEqual({ ok: true, got: "remember" });
   });
 
-  it("returns a not-implemented stub for unregistered actions", async () => {
+  it("returns an honest 'no registered handler' diagnostic for unregistered actions (no Phase-0 'not implemented' stub)", async () => {
     const res = await dispatch({ action: "search" }, ctx) as { error: string };
-    expect(res.error).toMatch(/not.*implemented/i);
+    expect(res.error).toMatch(/no registered handler/i);
     expect(res.error).toContain("search");
   });
 

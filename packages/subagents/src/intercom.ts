@@ -11,13 +11,18 @@ export function mirrorMessage(globalDb: Db, m: { fromSession?: string; toSession
 }
 
 export interface IntercomResult {
+  /** Legacy transport flag: true only when the broker explicitly reports delivery. */
   delivered: boolean;
+  /** The message was durably stored; this does not assert that it was consumed. */
   queued: boolean;
   messageId: number;
+  delivery: "broker-accepted" | "queued";
+  /** No recipient/agent acknowledgement protocol is implied by a broker response. */
+  recipientAcknowledged: false;
   error?: string;
 }
 
-export function sendIntercom(
+export async function sendIntercom(
   pi: any,
   globalDb: Db,
   m: { to: string; message: string; fromSession?: string; kind?: string; timeoutMs?: number }
@@ -34,46 +39,44 @@ export function sendIntercom(
     body: m.message,
   });
 
-  // Then attempt broker delivery (fast path for live sessions)
+  const queued = (error: string): IntercomResult => ({
+    delivered: false, queued: true, messageId, delivery: "queued", recipientAcknowledged: false, error,
+  });
+  if (typeof pi?.events?.on !== "function" || typeof pi.events.emit !== "function") {
+    return queued("No intercom broker available; message stored, delivery unconfirmed.");
+  }
+
   return new Promise((resolve) => {
     let settled = false;
-    const off = pi.events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (p: any) => {
-      if (p?.requestId !== requestId || settled) return;
-      settled = true;
-      off?.();
-
-      // On broker ack, mark the message as delivered
-      store.markDelivered(messageId);
-
-      resolve({
-        delivered: true,
-        queued: true,
-        messageId,
-      });
-    });
-
-    const timer = setTimeout(() => {
+    let off: (() => unknown) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: IntercomResult) => {
       if (settled) return;
       settled = true;
-      off?.();
-
-      // On timeout/no broker: the message is queued but not yet delivered
-      // This is NOT an error — the recipient's poller will drain it
-      resolve({
-        delivered: false,
-        queued: true,
-        messageId,
-        error: "recipient offline or no broker (message queued for delivery)",
+      if (timer) clearTimeout(timer);
+      if (typeof off === "function") off();
+      resolve(result);
+    };
+    try {
+      off = pi.events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (p: any) => {
+        if (p?.requestId !== requestId || settled) return;
+        // The REAL broker also replies with delivered:false and an error. A matching
+        // request ID alone is not a successful acknowledgement.
+        if (p.delivered !== true) {
+          finish(queued(typeof p.error === "string" ? p.error : "Broker did not confirm delivery; message remains queued."));
+          return;
+        }
+        let error: string | undefined;
+        try { store.markDelivered(messageId); }
+        catch { error = "Broker accepted the message, but its durable delivery marker could not be updated."; }
+        finish({ delivered: true, queued: true, messageId, delivery: "broker-accepted", recipientAcknowledged: false, ...(error ? { error } : {}) });
       });
-    }, m.timeoutMs ?? 10_000);
-
-    if (typeof (timer as any).unref === "function") (timer as any).unref();
-
-    pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, {
-      to: m.to,
-      message: m.message,
-      requestId,
-    });
+      timer = setTimeout(() => finish(queued("Recipient offline or no broker response; queued, not delivered.")), m.timeoutMs ?? 10_000);
+      timer.unref();
+      pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { to: m.to, message: m.message, requestId });
+    } catch (error) {
+      finish(queued(`Broker unavailable; message remains queued: ${String((error as Error)?.message ?? error)}`));
+    }
   });
 }
 

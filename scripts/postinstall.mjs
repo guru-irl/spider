@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// spider postinstall — native self-check + best-effort global DB migration.
+// spider postinstall — native self-check + best-effort global DB file bootstrap.
 // Best-effort: never block a contributor/CI install; print diagnostics to stderr.
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -42,29 +42,21 @@ try {
   warn(`sqlite-vec FAILED: ${e.message} (vector search will degrade to FTS-only)`);
 }
 
-// ── 3. Best-effort global DB migration ──
+// ── 3. Best-effort global DB file bootstrap (no schema) ──
 try {
+  const root = join(homedir(), ".pi", "agent", "spider");
+  mkdirSync(root, { recursive: true });
   if (Database) {
-    const root = join(homedir(), ".pi", "agent", "spider");
-    mkdirSync(root, { recursive: true });
     const db = new Database(join(root, "spider.db"), { timeout: 30000 });
     db.pragma("journal_mode = WAL");
-    const ver = Number(db.pragma("user_version", { simple: true }));
-    if (ver < 1) {
-      // Minimal registry bootstrap — full schema is applied by db-core.migrate()
-      // on first extension load; here we only ensure the file + projects table
-      // exist so `control doctor` works immediately after install.
-      db.exec(`CREATE TABLE IF NOT EXISTS projects (
-        project_key TEXT PRIMARY KEY, real_path TEXT NOT NULL, git_common_dir TEXT,
-        db_path TEXT NOT NULL, name TEXT, created_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL, session_count INTEGER NOT NULL DEFAULT 0,
-        memory_count INTEGER NOT NULL DEFAULT 0)`);
-      // Do NOT stamp user_version here — let db-core.migrate() own the full
-      // schema + version stamp on first load (idempotent CREATE IF NOT EXISTS).
-    }
+    // DDL must never live in postinstall. db-core.migrate() is the single schema
+    // owner; even an idempotent-looking CREATE TABLE can preserve a partial table
+    // and then cause db-core to stamp that malformed schema as current.
     db.close();
-    warn("global DB ready");
+    warn("global DB file ready (schema deferred to db-core)");
+  } else {
+    warn("global DB directory ready (database unavailable)");
   }
 } catch (e) {
-  warn(`global DB migration skipped: ${e.message}`);
+  warn(`global DB file bootstrap skipped: ${e.message}`);
 }

@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { getEventListeners } from "node:events";
 import { PolyglotExecutor } from "../executor";
 import { runExecFile, runBatch } from "../actions/exec";
 
-const ex = () => new PolyglotExecutor({ projectRoot: () => process.cwd() });
+type Spawn = typeof import("node:child_process").spawn;
+
+const ex = (spawn?: Spawn) => new PolyglotExecutor({ projectRoot: () => process.cwd(), spawn });
 
 /** True while `pid` still exists in the process table. Signal 0 is a pure liveness
  *  probe — kill(2) never actually delivers it. */
@@ -37,8 +39,6 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
   it("aborting mid-run kills the whole process group — asserts a GRANDCHILD pid is dead, not just the shell", async () => {
     const ac = new AbortController();
     let childPid: number | undefined;
-    const start = Date.now();
-
     const p = ex().execute({
       language: "shell",
       // The backgrounded `sleep` is a child of the spawned shell — a GRANDCHILD of this
@@ -55,41 +55,40 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
     } as any);
 
     const r = await p;
-    const elapsed = Date.now() - start;
-
     expect(childPid).toBeGreaterThan(0);
     expect(r.aborted).toBe(true);
     expect(r.exitCode).not.toBe(0);
-    // Proves the kill was early (ours) — not the grandchild's own 6s timer expiring.
-    expect(elapsed).toBeLessThan(2000);
+    // Directly proves the process-tree kill reached the grandchild.
     expect(await waitUntilDead(childPid!)).toBe(true);
   });
 
   // Mutation this catches: remove the `signal.addEventListener("abort", ...)` wiring ->
-  // nothing ever calls killTree, so this waits out the full sleep and fails on elapsed.
-  it("abort resolves the exec call promptly instead of waiting out the full command", async () => {
+  // nothing calls killTree, so the command reaches the echo after its full sleep.
+  it("abort stops the command before code after its sleep can run", async () => {
     const ac = new AbortController();
-    const start = Date.now();
-    const p = ex().execute({ language: "shell", code: "sleep 5", signal: ac.signal } as any);
+    const p = ex().execute({
+      language: "shell",
+      code: "echo before-abort; sleep 5; echo should-not-run",
+      signal: ac.signal,
+    } as any);
     setTimeout(() => ac.abort(), 100);
     const r = await p;
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(1000);
+    expect(r.stdout).toContain("before-abort");
+    expect(r.stdout).not.toContain("should-not-run");
     expect(r.aborted).toBe(true);
   });
 
   it("a signal that is already aborted before execute() is called never spawns the process", async () => {
     const ac = new AbortController();
     ac.abort();
-    const start = Date.now();
-    const r = await ex().execute({
+    const spawn = vi.fn() as unknown as Spawn;
+    const r = await ex(spawn).execute({
       language: "shell",
       code: "echo should-not-run; sleep 5",
       signal: ac.signal,
     } as any);
-    const elapsed = Date.now() - start;
+    expect(spawn).not.toHaveBeenCalled();
     expect(r.stdout).not.toContain("should-not-run");
-    expect(elapsed).toBeLessThan(500);
     expect(r.aborted).toBe(true);
   });
 

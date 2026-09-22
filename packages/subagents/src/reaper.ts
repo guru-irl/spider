@@ -57,10 +57,9 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
       }
     }
     try {
-      store.cancel(row.id, "cancelled — orphaned by a host that exited without shutdown");
-      // Only report reaped if the cancel actually changed the row
-      const updated = store.get(row.id);
-      if (updated?.status === "cancelled") return row.id;
+      // cancel() emits the terminal status event and returns false if a natural
+      // completion won the race, so neither the event nor this result is fabricated.
+      if (store.cancel(row.id, "cancelled — orphaned by a host that exited without shutdown")) return row.id;
     } catch { /* best-effort */ }
     return null;
   });

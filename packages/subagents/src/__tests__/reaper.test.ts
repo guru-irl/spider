@@ -13,6 +13,10 @@ describe("reapOrphanRuns", () => {
     const res = await reapOrphanRuns({ db, alive: (pid) => pid === 999, kill: vi.fn(async () => {}), selfPid: 1 });
     expect(res.reaped).toContain(id);
     expect(store.get(id)!.status).toBe("cancelled");
+    const event = db.prepare(
+      `SELECT payload FROM run_events WHERE run_id = ? AND type = 'status' ORDER BY id DESC LIMIT 1`
+    ).get(id) as { payload: string } | undefined;
+    expect(event && JSON.parse(event.payload)).toEqual({ status: "cancelled" });
   });
 
   it("kills the orphaned child process when it is still alive", async () => {

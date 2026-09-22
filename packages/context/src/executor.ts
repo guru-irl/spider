@@ -486,11 +486,14 @@ export class PolyglotExecutor {
    */
   #projectRootResolver: () => string;
   #runtimes: RuntimeMap;
+  /** Injectable only for deterministic process-launch tests. */
+  #spawnProcess: typeof spawn;
 
   constructor(opts?: {
     hardCapBytes?: number;
     projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
+    spawn?: typeof spawn;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     const pr = opts?.projectRoot;
@@ -502,6 +505,7 @@ export class PolyglotExecutor {
       this.#projectRootResolver = () => process.cwd();
     }
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
+    this.#spawnProcess = opts?.spawn ?? spawn;
   }
 
   get #projectRoot(): string {
@@ -834,11 +838,11 @@ export class PolyglotExecutor {
             startedAt: new Date().toISOString(),
             ...(needsShell ? { shellCommand: buildFullShellCommand() } : { argv: [spawnCmd, ...spawnArgs] }),
           });
-          proc = spawn(process.execPath, [job!.supervisorScript, job!.dir], commonOpts);
+          proc = this.#spawnProcess(process.execPath, [job!.supervisorScript, job!.dir], commonOpts);
         } else if (needsShell) {
-          proc = spawn(buildFullShellCommand(), [], { ...commonOpts, shell: true });
+          proc = this.#spawnProcess(buildFullShellCommand(), [], { ...commonOpts, shell: true });
         } else {
-          proc = spawn(spawnCmd, spawnArgs, { ...commonOpts, shell: false });
+          proc = this.#spawnProcess(spawnCmd, spawnArgs, { ...commonOpts, shell: false });
         }
       } catch (err) {
         if (background) {

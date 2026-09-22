@@ -1,5 +1,6 @@
 import type { Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
+import { emitStatus } from "./run-events";
 import { deriveRunName } from "./self-name";
 
 export { deriveRunName };
@@ -117,14 +118,25 @@ export class RunStore {
   }
 
   /** Terminal-cancel a run. No-op if it already reached a terminal status, so a
-   *  kill racing a natural exit never rewrites the real outcome. */
-  cancel(id: string, reason?: string): void {
-    this.db
+   *  kill racing a natural exit never rewrites the real outcome or fabricates a
+   *  cancellation event. Returns whether this call changed the row. */
+  cancel(id: string, reason?: string): boolean {
+    const result = this.db
       .prepare(
         `UPDATE runs SET status = 'cancelled', ended_at = @now, result = COALESCE(@reason, result)
          WHERE id = @id AND status IN ('queued', 'running', 'paused')`
       )
       .run({ id, now: Date.now(), reason: reason ?? null });
+    if (result.changes === 0) return false;
+
+    const row = this.get(id)!;
+    emitStatus(this.db, {
+      runId: id,
+      sessionId: row.session_id,
+      status: "cancelled",
+      summary: row.name ?? undefined,
+    });
+    return true;
   }
 
   get(id: string): RunRow | undefined {

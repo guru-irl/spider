@@ -1,6 +1,20 @@
 import { describe, it, expect } from "vitest";
+import { bus, type Db } from "@spider/db-core";
+import { AgentStore, type RunEvent, type RunRow as UiRunRow, type RunSource } from "@spider/ui";
 import { RunStore, deriveRunName } from "../run-store";
 import { freshDb } from "./helpers/testutil";
+
+function runSource(db: Db, sessionId: string): RunSource {
+  return {
+    listActive: () => db
+      .prepare(`SELECT * FROM runs WHERE session_id = ? AND status IN ('queued','running','paused')`)
+      .all(sessionId) as UiRunRow[],
+    getRun: (id: string) => db.prepare(`SELECT * FROM runs WHERE id = ?`).get(id) as UiRunRow | undefined,
+    subscribe: (fn: (event: RunEvent) => void) => bus.on((event) => {
+      if (event.sessionId === sessionId) fn(event);
+    }),
+  };
+}
 
 describe("deriveRunName", () => {
   it("is deterministic for the same input", () => {
@@ -97,26 +111,43 @@ describe("RunStore", () => {
     expect(row.host_pid).toBe(99);
   });
 
-  it("cancel() sets cancelled status, ended_at and a reason", () => {
-    const store = new RunStore(freshDb());
-    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
-    store.start(id);
-    store.cancel(id, "killed by orchestrator");
-    const row = store.get(id)!;
-    expect(row.status).toBe("cancelled");
-    expect(row.ended_at).toBeGreaterThan(0);
-    expect(row.result).toBe("killed by orchestrator");
+  it("cancel() emits a terminal status event that finishes the live UI projection", () => {
+    const db = freshDb();
+    const runs = new RunStore(db);
+    const { id } = runs.create({ sessionId: "s1", agent: "worker", task: "t" });
+    runs.start(id);
+    const agents = new AgentStore(runSource(db, "s1"));
+    agents.start();
+
+    try {
+      expect(agents.snapshot()[0]).toMatchObject({ runId: id, status: "running", endedAt: undefined });
+
+      runs.cancel(id, "killed by orchestrator");
+
+      const event = db.prepare(
+        `SELECT type, payload FROM run_events WHERE run_id = ? AND type = 'status' ORDER BY id DESC LIMIT 1`
+      ).get(id) as { type: string; payload: string } | undefined;
+      expect(event).toBeDefined();
+      expect(JSON.parse(event!.payload)).toEqual({ status: "cancelled" });
+      expect(agents.snapshot()[0]).toMatchObject({ runId: id, status: "cancelled" });
+      expect(agents.snapshot()[0].endedAt).toEqual(expect.any(Number));
+    } finally {
+      agents.stop();
+    }
   });
 
-  it("cancel() does not resurrect an already-finished run", () => {
-    const store = new RunStore(freshDb());
+  it("cancel() emits nothing and preserves the row when the run is already terminal", () => {
+    const db = freshDb();
+    const store = new RunStore(db);
     const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
     store.start(id);
     store.finish(id, { status: "done", result: "ok" });
+    const before = store.get(id)!;
+
     store.cancel(id, "too late");
-    const row = store.get(id)!;
-    expect(row.status).toBe("done");
-    expect(row.result).toBe("ok");
+
+    expect(store.get(id)).toEqual(before);
+    expect(db.prepare(`SELECT COUNT(*) AS count FROM run_events WHERE run_id = ?`).get(id)).toEqual({ count: 0 });
   });
 });
 

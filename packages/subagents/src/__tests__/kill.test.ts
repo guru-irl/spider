@@ -73,6 +73,10 @@ describe("killRun", () => {
     expect(res.via).toBe("handle");
     expect(res.outcome).toBe("killed");
     expect(store.get(a.id)!.status).toBe("cancelled");
+    const event = db.prepare(
+      `SELECT payload FROM run_events WHERE run_id = ? AND type = 'status' ORDER BY id DESC LIMIT 1`
+    ).get(a.id) as { payload: string } | undefined;
+    expect(event && JSON.parse(event.payload)).toEqual({ status: "cancelled" });
   });
 
   it("falls back to the persisted pid when no handle is registered", async () => {

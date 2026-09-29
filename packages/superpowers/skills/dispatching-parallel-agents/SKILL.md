@@ -73,9 +73,8 @@ concurrently:
     spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts failures", model: "<mid>" }
 
 Or dispatch the whole fan-out at once: `spider run { tasks: [ ... ], concurrency: 3 }`.
-Collect results with `spider wait { all: true }`, or let each worker wake you via
-intercom (`spider message`) as it finishes so you integrate incrementally
-instead of blocking on the slowest.
+Children report terminal status asynchronously. Integrate each result as its
+completion event arrives instead of blocking on the slowest.
 
 ### 4. Review and Integrate
 

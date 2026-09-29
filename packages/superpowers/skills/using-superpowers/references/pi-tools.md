@@ -14,8 +14,8 @@ fallback.
 | Analyze a large file without editing | `spider exec_file` | `read` (only if you will edit) |
 | Index / fetch docs for search | `spider index` / `spider fetch` | — |
 | Dispatch a subagent | `spider run` (single/chain/parallel/async, `context:"fresh"\|"fork"`) | — |
-| Await subagents | `spider wait` | — |
-| Hand a finished stage to the next agent | `spider run { pipeline:[...], handoff:"intercom" }` / `spider message` | — |
+| Observe subagent completion | terminal completion events from `spider run` | — |
+| Hand a finished stage to the next agent | `spider run { pipeline:[...], handoff:"intercom" }` | — |
 | Task tracking (create/mark a todo) | `spider todo` (`list`/`add`/`toggle`/`clear`/`sessions`/`view`) | plan file / `TODO.md` |
 | Invoke / distill a skill | `spider skill` | `read` the `SKILL.md` |
 | Import a past session | `spider import` | — |
@@ -34,9 +34,9 @@ and only what you print/query enters context.
 `spider run` spawns subagents (single, chain, parallel, async, forked context)
 and persists them for the live agents footer/grid. For multi-phase work, prefer
 push-based handoff: `spider run { pipeline:[stageA, stageB], handoff:"intercom" }`
-wakes each next stage with the previous stage's outputs instead of the blocking
-spawn→wait→process→spawn-next cycle. Use `spider message { to, message }` to wake
-a specific peer/reviewer directly.
+starts each next stage as a fresh child with the previous stage's outputs.
+`spider message { to, message }` delivers to a live peer session; it does not
+resume a completed child or redirect an already-running child.
 
 ## Memory discipline
 

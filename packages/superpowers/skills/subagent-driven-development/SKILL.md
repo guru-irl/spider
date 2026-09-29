@@ -84,19 +84,18 @@ digraph process {
 }
 ```
 
-## Auto-wake Handoff (spider)
+## Asynchronous Handoff (spider)
 
-Do not block on `spider wait` between every stage. For the per-task
-implement → review → fix loop, wire a push pipeline:
+Children report terminal status asynchronously. For a per-task implement →
+review handoff that can be fully specified in advance, wire a push pipeline:
 
 `spider run { pipeline: [ implementer, reviewer ], handoff: "intercom" }`
 
-The finishing implementer wakes the reviewer directly with its report + review
-package path via intercom; a reviewer that finds Critical/Important issues wakes
-a fix stage; a clean review wakes you (the controller) to mark the task
-complete. Each hop records a `handoff` edge the agents footer/grid renders. Use
-`spider wait { all: true }` only as the final barrier before the whole-branch
-review, or when you genuinely have nothing else to do until a run returns.
+Each pipeline hop starts a fresh child and passes the prior stage's report and
+review-package path through intercom; it never resumes a completed child. If a
+reviewer finds Critical/Important issues, the controller dispatches a fresh
+fix/re-review run after reading the report. Before whole-branch review, confirm
+all expected terminal completion events have arrived.
 
 ## Pre-Flight Plan Review
 

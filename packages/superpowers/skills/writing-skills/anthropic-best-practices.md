@@ -1140,8 +1140,8 @@ Before sharing a Skill, verify:
     Create your first Skill
   </Card>
 
-  <Card title="Use Skills in Claude Code" icon="terminal" href="https://code.claude.com/docs/en/skills">
-    Create and manage Skills in Claude Code
+  <Card title="Use Skills in Pi" icon="terminal" href="../using-superpowers/references/pi-tools.md">
+    Discover and load Skills in Pi
   </Card>
 
   <Card title="Use Skills with the API" icon="code" href="https://platform.claude.com/docs/en/build-with-claude/skills-guide">

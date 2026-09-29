@@ -24,7 +24,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	{ id: "memory", label: "Memory", fields: [
 		{ key: "memory.autoWriteBudget", label: "Auto-write budget", type: "number", default: 20, min: 0, max: 1000, description: "Per-session staged auto-write cap." },
 		{ key: "memory.stagingFailClosed", label: "Staging fail-closed", type: "boolean", default: true, description: "Stage all auto/background writes." },
-		{ key: "memory.snapshotCharCap", label: "Snapshot char cap", type: "number", default: 6000, min: 500, max: 40000, description: "Frozen snapshot character budget." },
+		{ key: "memory.snapshotCharCap", label: "Snapshot char cap", type: "number", default: "unlimited", min: 500, max: 40000, description: "Optional explicit snapshot body limit. By default inject all active memory; a lower cap may omit entries and reports their count." },
 	]},
 	{ id: "routing", label: "Routing / safety", fields: [
 		{ key: "routing.tracking", label: "Universal tracking", type: "boolean", default: true, description: "Log all tool intents/results." },
@@ -65,6 +65,8 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 			return { ok: false, error: "expected true|false" };
 		}
 		case "number": {
+			if (field.key === "memory.snapshotCharCap" && (raw.trim() === "" || raw.trim().toLowerCase() === "unlimited"))
+				return { ok: true, value: undefined };
 			const n = Number(raw);
 			if (!Number.isFinite(n)) return { ok: false, error: "expected a number" };
 			if (field.min !== undefined && n < field.min) return { ok: false, error: `min ${field.min}` };

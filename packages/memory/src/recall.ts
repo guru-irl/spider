@@ -20,7 +20,7 @@ export async function recall(
   const limit = opts?.limit ?? 10;
 
   if (typeof query === "string" && query.length > 0) {
-    if (embedder !== null) {
+    if (embedder !== null && scope === "repo") {
       const [qv] = await embedder.embed([query]);
       const hits = knn(db, qv, limit, "memory");
       const records: MemoryRecord[] = [];

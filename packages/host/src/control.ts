@@ -1,7 +1,7 @@
 // packages/host/src/control.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openGlobal, resolveProject, paths } from "@spider/db-core";
+import { openGlobal, resolveProject, paths, assertTestConfigPath } from "@spider/db-core";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
@@ -18,6 +18,7 @@ function configFile(scopeRoot: string): string {
   return join(scopeRoot, "config.json");
 }
 function readJson(file: string): Record<string, unknown> {
+  assertTestConfigPath(file);
   if (!existsSync(file)) return {};
   try { return JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>; } catch { return {}; }
 }
@@ -27,20 +28,26 @@ function merged(cwd: string): Record<string, unknown> {
   return { ...DEFAULTS, ...g, ...p };
 }
 
-export function controlConfig(op: "get" | "set", cwd: string, key?: string, value?: unknown): unknown {
+export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: string, value?: unknown): unknown {
   if (op === "get") {
     const all = merged(cwd);
     return key === undefined ? all : all[key];
   }
   // set → write to the PROJECT config (project overrides global)
   const root = paths.projectRoot(cwd);
-  mkdirSync(root, { recursive: true });
   const file = configFile(root);
+  assertTestConfigPath(file);
+  mkdirSync(root, { recursive: true });
   const cur = readJson(file);
   if (key === undefined) throw new Error("control config set: key required");
-  cur[key] = value;
+  if (op === "unset") {
+    // A global limit must not silently reappear after the user chooses unlimited.
+    const global = readJson(configFile(paths.globalRoot));
+    if (Object.prototype.hasOwnProperty.call(global, key)) cur[key] = "unlimited";
+    else delete cur[key];
+  } else cur[key] = value;
   writeFileSync(file, JSON.stringify(cur, null, 2));
-  return { ok: true, key, value };
+  return { ok: true, key, value: op === "unset" ? undefined : value };
 }
 
 // ── doctor ──

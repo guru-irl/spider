@@ -13,7 +13,7 @@
 // credential to redact and can't be lengthened past safeError's 500-char cap either).
 // So — isolated to this ONE file (vi.mock is hoisted/file-scoped; extension.test.ts's
 // many other doctor/organism tests must never see this) — HostOrganismRuntime itself
-// is replaced with a double whose `resolve()` throws a KNOWN, credential-bearing
+// is replaced with a double whose `peekLastDrain()` throws a KNOWN, credential-bearing
 // message, exercising the REAL extension.ts/handleControl code path around it
 // unmodified.
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -36,7 +36,7 @@ vi.mock("../organism-runtime", async (importOriginal) => {
       isWired(): boolean {
         return true;
       }
-      resolve(): unknown {
+      peekLastDrain(): unknown {
         throw new Error(`${CREDENTIAL} leaked while resolving organism runtime`);
       }
       getSetupFailure(): undefined {
@@ -75,14 +75,15 @@ describe("doctor's organism-diagnostics fallback lines redact credentials (A-M4)
     const dir = join(scratch, "proj"); mkdirSync(dir, { recursive: true });
 
     const args = { action: "control", command: "doctor", cwd: dir } as SpiderArgs;
-    const probe = buildActionCtx({} as never, args, "", dir);
+    const probe = buildActionCtx({} as never, args, "redact-session", dir);
     probeHandles.push(probe.db, probe.repoDb, probe.globalDb);
     assertPostOpenIsolation(probe, EXPECTED, { requireRepoKey: true });
 
     const pi = fakePi();
     spiderExtension(pi as never);
-    const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
-    const res = await tool.execute("c-am4", args, {}) as { details: { ok?: boolean; lines?: string[] } };
+    const tool = pi._tools["spider"] as { execute(id: string, args: unknown, signal?: AbortSignal, onUpdate?: unknown, ctx?: unknown): Promise<unknown> };
+    const res = await tool.execute("c-am4", args, undefined, undefined,
+      { cwd: dir, sessionManager: { getSessionId: () => "redact-session" } }) as { details: { ok?: boolean; lines?: string[] } };
 
     expect(res.details.ok).toBe(false);
     const line = res.details.lines?.find((l) => l.includes("organism runtime unavailable"));

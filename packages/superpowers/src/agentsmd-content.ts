@@ -74,8 +74,8 @@ Background/\`[auto]\` writes are **staged and fail-closed**; approve or reject v
 new writes persist immediately and re-inject next session. Use \`spider recall\`
 to fetch by category/scope.
 
-**Scope rule:** "Is this still true after I delete this worktree?" → **repo**;
-"Is this true in every repo?" → **global**; otherwise → **worktree**.
+**Scope rule:** "Is this true in every repo?" → **global**; otherwise → **repo**.
+Worktree memory was removed; use repo for facts specific to a repository.
 
 ## Scratch — never /tmp
 

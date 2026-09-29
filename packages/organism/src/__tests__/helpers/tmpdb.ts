@@ -5,7 +5,7 @@ import type { Db } from "@spider/db-core";
 
 export function makeOrgDb(): { db: Db; repoDb: Db; cleanup(): void } {
   const worktreeDbPath = join(paths.scratch("worktree", process.cwd()), `org-wt-${crypto.randomUUID()}.db`);
-  const repoDbPath = join(paths.scratch("repo", process.cwd()), `org-repo-${crypto.randomUUID()}.db`);
+  const repoDbPath = join(paths.scratch("worktree", process.cwd()), `org-repo-${crypto.randomUUID()}.db`);
   const db = openDbAt(worktreeDbPath, "worktree");
   const repoDb = openDbAt(repoDbPath, "repo");
   return {

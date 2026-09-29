@@ -152,8 +152,8 @@ the model actually reads at decision time):
 1. `scope` enum becomes `global | repo | worktree` with the decision rule
    inline in the tool schema description.
 2. AGENTS.md memory section rewritten around the test:
-   > *Is this still true after I delete this worktree?* → `repo`.
-   > *Is it true in every repo?* → `global`. Otherwise → `worktree`.
+   > *Is this true in every repo?* → `global`. Otherwise → `repo`.
+   > Worktree memory was removed after this design; only global and repo hold memory.
 3. `spider control bind` output shows all three resolved tiers.
 
 ---

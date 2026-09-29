@@ -1,13 +1,14 @@
-import type { Db } from "@spider/db-core";
+import { sanitizeQuery, type Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types";
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow";
-import { mapRow } from "./internal";
+import { mapRow, tableFor } from "./internal";
 import { enqueueEmbed } from "./embeddings/queue";
 
 export { activeCharTotal, listActive } from "./internal";
 
 export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number = DEFAULT_MEMORY_CHAR_CAP): MemoryRecord {
+  tableFor(scope);
   const uuid = randomUUID();
   const createdAt = Date.now();
   const status = input.status ?? "active";
@@ -21,10 +22,8 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
     assertWithinCap(db, scope, input.content.length, cap);
   }
 
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
 
-  if (actualScope === "repo" || actualScope === "worktree") {
+  if (tableFor(scope) === "memory") {
     const insertRecord = db.transaction(() => {
       const result = db.prepare(`
         INSERT INTO memory (uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at)
@@ -78,17 +77,14 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
       updatedAt: null,
     };
 
-    if (status === "active" || status === "staged") enqueueEmbed(db, "memory", uuid, input.content);
-
+    // Global memory uses LIKE recall; its schema has no embed_queue.
     return record;
   }
 }
 
 export function getMemory(db: Db, scope: MemoryScope, uuid: string): MemoryRecord | null {
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
   
-  if (actualScope === "repo" || actualScope === "worktree") {
+  if (tableFor(scope) === "memory") {
     const row = db.prepare(`
       SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
       FROM memory
@@ -116,30 +112,37 @@ export function searchMemoryFts(
   const category = opts?.category;
   const limit = opts?.limit ?? 10;
 
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
 
-  if (actualScope === "repo" || actualScope === "worktree") {
-    // Use FTS for repo/worktree scope
-    let sql = `
-      SELECT m.id, m.uuid, m.category, m.content, m.link, m.status, m.source, m.confidence, m.session_id, m.created_at, m.updated_at
-      FROM memory m
-      WHERE m.uuid IN (
-        SELECT uuid FROM memory_fts WHERE memory_fts MATCH ?
-      )
-      AND m.status = 'active'
-    `;
-    const params: any[] = [query];
-
-    if (category) {
-      sql += ` AND m.category = ?`;
-      params.push(category);
+  if (tableFor(scope) === "memory") {
+    // Both modes use the same literal-token sanitizer as unified search.
+    const andQuery = sanitizeQuery(query, "AND");
+    if (andQuery === '""' || limit === 0) return [];
+    const find = (ftsQuery: string, remaining: number, seen: string[] = []): any[] => {
+      let sql = `
+        WITH hits AS MATERIALIZED (
+          SELECT uuid, bm25(memory_fts) AS score FROM memory_fts WHERE memory_fts MATCH ?
+        )
+        SELECT m.id, m.uuid, m.category, m.content, m.link, m.status, m.source, m.confidence, m.session_id, m.created_at, m.updated_at,
+          MIN(h.score) AS score
+        FROM hits h JOIN memory m ON m.uuid = h.uuid
+        WHERE m.status = 'active'
+      `;
+      const params: (string | number)[] = [ftsQuery];
+      if (category) {
+        sql += ` AND m.category = ?`;
+        params.push(category);
+      }
+      if (seen.length) {
+        sql += ` AND m.uuid NOT IN (${seen.map(() => "?").join(", ")})`;
+        params.push(...seen);
+      }
+      sql += ` GROUP BY m.uuid ORDER BY score, m.created_at DESC LIMIT ?`;
+      return db.prepare(sql).all(...params, remaining) as any[];
+    };
+    const rows = find(andQuery, limit);
+    if (rows.length < limit) {
+      rows.push(...find(sanitizeQuery(query, "OR"), limit - rows.length, rows.map(row => row.uuid as string)));
     }
-
-    sql += ` ORDER BY m.created_at DESC LIMIT ?`;
-    params.push(limit);
-
-    const rows = db.prepare(sql).all(...params) as any[];
     return rows.map((row) => mapRow(scope, row));
   } else {
     // Global scope: fallback to LIKE (no FTS table)
@@ -167,10 +170,8 @@ export function searchMemoryFts(
 export function setStatus(db: Db, scope: MemoryScope, uuid: string, status: MemoryStatus): void {
   const updatedAt = Date.now();
 
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
 
-  if (actualScope === "repo" || actualScope === "worktree") {
+  if (tableFor(scope) === "memory") {
     db.transaction(() => {
       // Get current status to determine FTS sync action
       const current = db.prepare(`SELECT status FROM memory WHERE uuid = ?`).get(uuid) as { status: string } | undefined;
@@ -192,7 +193,8 @@ export function setStatus(db: Db, scope: MemoryScope, uuid: string, status: Memo
         // Leaving active: remove from FTS
         db.prepare(`DELETE FROM memory_fts WHERE uuid = ?`).run(uuid);
       } else if (!wasActive && isActive) {
-        // Entering active: add to FTS
+        // Entering active: replace any row left by an older FTS rebuild.
+        db.prepare(`DELETE FROM memory_fts WHERE uuid = ?`).run(uuid);
         const rec = db.prepare(`
           SELECT uuid, category, content, link
           FROM memory
@@ -221,10 +223,8 @@ export function removeMemory(db: Db, scope: MemoryScope, uuid: string): void {
   // Never hard-delete: archive and remove from FTS
   const updatedAt = Date.now();
 
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
 
-  if (actualScope === "repo" || actualScope === "worktree") {
+  if (tableFor(scope) === "memory") {
     db.transaction(() => {
       db.prepare(`
         UPDATE memory
@@ -244,25 +244,14 @@ export function removeMemory(db: Db, scope: MemoryScope, uuid: string): void {
   }
 }
 
-export function isDuplicate(db: Db, scope: MemoryScope, category: MemoryCategory, content: string): boolean {
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
-  
-  if (actualScope === "repo" || actualScope === "worktree") {
-    const result = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM memory
-      WHERE category = ? AND content = ?
-    `).get(category, content) as { count: number };
-
-    return result.count > 0;
-  } else {
-    const result = db.prepare(`
-      SELECT COUNT(*) as count
-      FROM global_memory
-      WHERE category = ? AND content = ?
-    `).get(category, content) as { count: number };
-
-    return result.count > 0;
-  }
+export function isDuplicate(db: Db, scope: MemoryScope, category: MemoryCategory, content: string, source: AddMemoryInput["source"] = "user"): boolean {
+  const statuses = source === "auto" || source === "import"
+    ? "('active', 'staged', 'rejected')" : "('active', 'staged')";
+  const table = tableFor(scope);
+  const result = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM ${table}
+    WHERE category = ? AND content = ? AND status IN ${statuses}
+  `).get(category, content) as { count: number };
+  return result.count > 0;
 }

@@ -75,6 +75,11 @@ export class HostOrganismRuntime {
     return this.#wired;
   }
 
+  /** Inspect an already resolved worker without creating DB handles or running migrations. */
+  peekLastDrain(sessionId: string, projectKey: string): DrainReport | undefined {
+    return this.#entries.get(JSON.stringify([sessionId, projectKey]))?.actions.worker.getLastDrain();
+  }
+
   /** The in-memory (possibly also persisted) setup-failure receipt for a
    *  session, when this runtime instance has recorded one. */
   getSetupFailure(sessionId: string): DrainReport | undefined {

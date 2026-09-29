@@ -18,7 +18,7 @@ export const REFLECTION_PROMPT: string =
   '{ "memory": [ { "category": "insight", "content": "<the umbrella insight>" } ] }.';
 
 /**
- * Cluster ACTIVE project memory by vector proximity. Pure & testable.
+ * Cluster ACTIVE repo memory by vector proximity. Pure & testable.
  *
  * Degrades to `[]` when `embedder` is null (FTS-only, no vectors) or when there
  * are fewer than `minCluster` active records. Otherwise embeds each record's
@@ -30,7 +30,7 @@ export const REFLECTION_PROMPT: string =
 export function clusterMemory(db: Db, embedder: Embedder | null, minCluster: number): MemoryRecord[][] {
   if (embedder === null) return [];
 
-  const records = listActive(db, "project");
+  const records = listActive(db, "repo");
   if (records.length < minCluster) return [];
 
   const byId = new Map<string, MemoryRecord>();

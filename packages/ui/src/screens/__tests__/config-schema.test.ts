@@ -6,6 +6,18 @@ describe("config schema", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
 		expect(ids).toEqual(["curator", "embeddings", "exec", "memory", "models", "organism", "routing", "self_naming", "ui"].sort());
 	});
+	it("snapshot cap is optional and warns that an explicit limit may omit entries", () => {
+		const field = getField("memory.snapshotCharCap")!;
+		expect(field.default).toBe("unlimited");
+		expect(field.description).toMatch(/optional|explicit/i);
+		expect(field.description).toMatch(/omit/i);
+	});
+	it("accepts unlimited or blank to clear only the optional snapshot cap", () => {
+		const cap = getField("memory.snapshotCharCap")!;
+		expect(coerce(cap, "unlimited")).toEqual({ ok: true, value: undefined });
+		expect(coerce(cap, "")).toEqual({ ok: true, value: undefined });
+		expect(coerce(getField("embeddings.dim")!, "unlimited").ok).toBe(false);
+	});
 	it("every field key is dotted-prefixed by its group id", () => {
 		for (const g of CONFIG_SCHEMA) for (const f of g.fields) expect(f.key.startsWith(g.id + ".")).toBe(true);
 	});

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 
 export function makeContentDb(): { db: Db; repoDb: Db; cleanup(): void } {
   const dbPath = join(paths.scratch("worktree", process.cwd()), `cs-wt-${randomUUID()}.db`);
-  const repoPath = join(paths.scratch("repo", process.cwd()), `cs-repo-${randomUUID()}.db`);
+  const repoPath = join(paths.scratch("worktree", process.cwd()), `cs-repo-${randomUUID()}.db`);
   const db = openDbAt(dbPath, "worktree");
   const repoDb = openDbAt(repoPath, "repo");
 

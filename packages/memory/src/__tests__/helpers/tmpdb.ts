@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 export function makeMemDb(): { db: Db; cleanup(): void } {
-  const dbPath = join(paths.scratch("repo", process.cwd()), `mem-${randomUUID()}.db`);
+  const dbPath = join(paths.scratch("worktree", process.cwd()), `mem-${randomUUID()}.db`);
   const db = openDbAt(dbPath, "repo");
   
   return {
@@ -26,7 +26,7 @@ export function makeMemDb(): { db: Db; cleanup(): void } {
 // instead of REPO_SCHEMA (memory + memory_fts), so tests can exercise forgetMemory
 // et al against the global tier without a repo-schema DB throwing "no such table".
 export function makeGlobalMemDb(): { db: Db; cleanup(): void } {
-  const dbPath = join(paths.scratch("repo", process.cwd()), `mem-global-${randomUUID()}.db`);
+  const dbPath = join(paths.scratch("worktree", process.cwd()), `mem-global-${randomUUID()}.db`);
   const db = openDbAt(dbPath, "global");
 
   return {

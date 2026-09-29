@@ -146,7 +146,7 @@ remaining passes.
 4. **consolidation**: produce a 1 to 3 sentence session summary and a short
    self-name slug for the broad ongoing task. Emits no candidates.
    Short-circuits when there is neither a transcript nor any runs.
-5. **reflection**: cluster active project memory by vector proximity and ask
+5. **reflection**: cluster active repo memory by vector proximity and ask
    the model to synthesize each dense cluster into one umbrella `insight`.
    Degrades to an empty result when no embedder is available or no cluster
    qualifies.
@@ -222,7 +222,7 @@ empty slug is treated as no name.
 
 After apply, when the `insights` pass toggle is on, the worker rebuilds the
 learning graph with `buildLearningGraph`. Nodes are the non-archived skills and
-the active project memories. Edges are skill-to-skill links from each skill's
+the active repo memories. Edges are skill-to-skill links from each skill's
 declared `related` list plus memory-to-skill links scored by lexical token
 overlap (with a bonus when a skill name appears verbatim in the memory), keeping
 the top four scoring skills per memory. The graph carries a `linkedPct`

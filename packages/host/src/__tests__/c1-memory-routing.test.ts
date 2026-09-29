@@ -148,25 +148,45 @@ describe("C1: memory routing to repo tier", () => {
     }
   });
   
-  it("schema enum accepts 'repo', 'worktree', and deprecated 'project'", () => {
+  it("schema retains removed scope names so memory actions can return the removal error", () => {
     // MUTATION: drop 'repo' from enum → must fail
     
     const scopeEnum = SPIDER_PARAMETERS.properties.scope.enum;
     
     expect(scopeEnum).toContain("repo");
     expect(scopeEnum).toContain("worktree");
-    expect(scopeEnum).toContain("project"); // deprecated but still accepted
+    expect(scopeEnum).toContain("project"); // retained for a clear error, never a memory write
     expect(scopeEnum).toContain("global");
   });
   
+  it.each(["worktree", "project"])("rejects removed %s memory scope at remember, recall, and control memory", async (scope) => {
+    const dir = join(scratch, `removed-${scope}`);
+    mkdirSync(dir, { recursive: true });
+    execSync("git init", { cwd: dir, stdio: "ignore" });
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
+    for (const args of [
+      { action: "remember", category: "insight", content: "removed scope fact" },
+      { action: "recall", query: "removed" },
+      { action: "control", command: "memory", sub: "status" },
+    ]) {
+      const result = await tool.execute("removed-scope", { ...args, scope, cwd: dir }, {});
+      expect(JSON.stringify(result)).toMatch(/worktree memory was removed.*use repo/i);
+    }
+  });
+
   it("non-git directory can remember/recall without throwing (covers I6)", async () => {
     // MUTATION: alias repoDb to worktreeDb for non-git → must fail
     // This covers I6: non-git directories need a real repo-schema DB
     
     const nonGitDir = join(scratch, "no-git");
     mkdirSync(nonGitDir, { recursive: true });
-    // Explicitly NOT a git repo
-    
+    // Git walks parents, so merely omitting git init is not enough inside this checkout.
+    const previousCeiling = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = scratch;
+    try {
+    expect(resolveProject(nonGitDir).repoKey).toBeUndefined();
     const pi = fakePi();
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as {
@@ -192,8 +212,25 @@ describe("C1: memory routing to repo tier", () => {
     
     expect(recallRes.details.length).toBeGreaterThan(0);
     expect(recallRes.details.some((r: { content: string }) => r.content.includes("standalone memory fact"))).toBe(true);
+    } finally {
+      if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
+    }
   });
   
+  it("remember scope=global writes to the global DB without a repo-only embed queue", async () => {
+    const dir = join(scratch, "global-memory");
+    mkdirSync(dir, { recursive: true });
+    execSync("git init", { cwd: dir, stdio: "ignore" });
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
+    const result = await tool.execute("g1", { action: "remember", category: "preference", content: "global fact", scope: "global", cwd: dir }, {});
+    expect(result.details.status).toBe("active");
+    const recallResult = await tool.execute("g2", { action: "recall", query: "global fact", scope: "global", cwd: dir }, {});
+    expect(JSON.stringify(recallResult.details)).toContain("global fact");
+  });
+
   it("explicit scope='repo' routes to repo DB (same as default)", async () => {
     // Ensure explicit scope='repo' works correctly
     

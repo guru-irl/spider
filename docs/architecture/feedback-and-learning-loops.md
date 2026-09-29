@@ -29,7 +29,7 @@ The four loops are:
 
 | Trigger | Kind | What it drives |
 | --- | --- | --- |
-| `session_start` | pi hook | Insert a row into the project `sessions` table (memory hook). |
+| `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). |
 | `before_agent_start` | pi hook | Assemble the active-memory snapshot and append it to the system prompt. |
 | `tool_call` / `tool_result` | pi hook | Record intent, scrub secrets, scan for injection, auto-index large non-spider output. |
 | `session_before_compact` | pi hook | Fire-and-forget organism drain with `reason: "before_compact"`. |
@@ -107,13 +107,13 @@ flowchart TD
 
 ## 2. The memory lifecycle
 
-Memory holds structured, categorized notes at project or global scope. A record
+Memory holds structured, categorized notes at repo or global scope. A record
 has one of six categories (`preference`, `convention`, `tool-quirk`, `failure`,
 `correction`, `insight`), content, an optional link, a status, and a source. The
 lifecycle differs by how a write originates.
 
-**Foreground writes activate immediately.** `spider remember` reaches
-`makeRemember`, which calls `stageWrite` with `source: "user"` unless the caller
+**Foreground writes activate immediately.** `spider remember` reaches the
+host `remember` action, which calls `stageWrite` with `source: "user"` unless the caller
 sets `auto`. `stageWrite` runs a fixed order: a strict threat scan, then (for
 background writes only) the anti-poisoning guardrail, then a duplicate check,
 then the staged-versus-active decision. A user write with no `autoStage` inserts
@@ -138,18 +138,23 @@ re-checks the cap at approval time, so an approval can still fail with
 Rejection sets `status: "rejected"`. Nothing is hard-deleted; rejected and
 archived rows stay in the table and are removed only from the FTS mirror.
 
-**The active snapshot is injected at `before_agent_start`.** The
-`makeBeforeAgentStart` hook calls `assembleSnapshot`, which reads the active
-records for the requested scopes (global and project by default), sorts
-user-authored records first and then by recency, groups them by category, and
-stops once the running length would exceed the char cap (8,000 by default). The
-hook appends the result to `event.systemPrompt` only when the snapshot is
-non-empty and the system prompt is already a string. The snapshot is computed
-fresh on each call. A memory approved mid-session does not change the prompt
-already sent for the current turn: it takes effect starting with the next
-`before_agent_start` call, which in practice means the next turn or the next
-session. The `session_start` hook (`makeSessionStart`) inserts the session row
-that the organism later drains.
+**The active snapshot is injected at `before_agent_start`.** The host hook and
+`control doctor` use one `readInjectionSnapshot` function. It resolves session
+bindings from the read-only global DB, then reads active memory from the global and repo
+tiers independently using read-only DB opens. It does not register projects,
+migrate schemas, or write memory. A broken tier cannot hide the other tier's
+entries; doctor reports the failing tier as unreadable. Snapshot assembly orders
+preference and correction directives before observations, then groups by tier
+and category within each priority band. There is no default snapshot cap: all
+active entries are injected. An optional explicit `memory.snapshotCharCap`
+limit skips entries that do not fit and continues packing smaller entries. It
+appends `Memory snapshot: N entries omitted.` when a configured cap omits rows;
+doctor reports this as a warning without failing its check. The hook returns a
+system-prompt patch only when the snapshot is non-empty and the system prompt
+is a string. The snapshot is computed fresh on each call. A memory approved
+mid-session takes effect at the next `before_agent_start` call, usually the next
+turn or session. The host `session_start` hook inserts the session row that the
+organism later drains.
 
 ```mermaid
 flowchart TD
@@ -167,7 +172,7 @@ flowchart TD
   ACT --> AM[("active memory rows")]
   ACT2 --> AM
 
-  AM --> SNAP["assembleSnapshot, char cap 8000"]
+  AM --> SNAP["readInjectionSnapshot, global and repo read-only; no default cap"]
   SNAP --> INJ["before_agent_start appends to system prompt"]
   INJ --> NEXT["next turn and next session start informed"]
 ```
@@ -209,7 +214,7 @@ try/catch so one throwing pass does not stop the drain:
   prefix, or a `-today` suffix) are dropped.
 - **consolidation**: produce a one to three sentence session summary and a short
   self-name slug for the ongoing task. Emits no candidates.
-- **reflection**: cluster active project memory by vector proximity and ask the
+- **reflection**: cluster active repo memory by vector proximity and ask the
   model to synthesize each dense cluster into one umbrella `insight`. Degrades
   to an empty result when no embedder is available.
 
@@ -247,7 +252,7 @@ is guarded so a missing table or column cannot throw on the drain path.
 
 **Learning graph and insights.** When the `insights` pass toggle is on, the
 worker rebuilds the learning graph with `buildLearningGraph`. Nodes are the
-non-archived skills and the active project memories. Edges are skill-to-skill
+non-archived skills and the active repo memories. Edges are skill-to-skill
 links from each skill's declared `related` list plus memory-to-skill links
 scored by lexical token overlap (with a bonus when a skill name appears verbatim
 in a memory), keeping the top four scoring skills per memory. The graph carries

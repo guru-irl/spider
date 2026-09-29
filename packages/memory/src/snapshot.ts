@@ -1,76 +1,83 @@
 import type { Db } from "@spider/db-core";
-import type { MemoryCategory, MemoryRecord, MemoryScope } from "./types";
+import type { MemoryRecord, MemoryScope } from "./types";
 import { listActive } from "./store";
+import { tableFor } from "./internal";
 import { buildMemoryContextBlock } from "./scrubber";
 
 export interface SnapshotOpts {
+  /** Optional limit on the snapshot body, excluding the surrounding context fence. */
   charCap?: number;
   scopes?: MemoryScope[];
 }
 
-const DEFAULT_CHAR_CAP = 8000;
-const DEFAULT_SCOPES: MemoryScope[] = ["global", "repo"];
+export type SnapshotCounts = Record<MemoryScope, { active: number; injected: number }>;
+export interface SnapshotResult { text: string; counts: SnapshotCounts }
 
-/** Assemble a frozen, char-capped memory snapshot from the DB (active records only). */
-export function assembleSnapshot(dbs: { global?: Db; repo?: Db; worktree?: Db; project?: Db }, opts?: SnapshotOpts): string {
-  const charCap = opts?.charCap ?? DEFAULT_CHAR_CAP;
-  const scopes = opts?.scopes ?? DEFAULT_SCOPES;
-
-  const records: MemoryRecord[] = [];
-  for (const scope of scopes) {
-    // "project" is a deprecated alias for "worktree"
-    const actualScope = scope === "project" ? "worktree" : scope;
-    const db = actualScope === "repo" ? dbs.repo : actualScope === "worktree" ? (dbs.worktree ?? dbs.project) : dbs.global;
-    if (!db) continue;
-    records.push(...listActive(db, scope));
+/** Build a frozen, scope-labelled snapshot; an absent cap includes every active entry. */
+export function assembleSnapshotWithStats(
+  dbs: { global?: Db; repo?: Db }, opts?: SnapshotOpts,
+): SnapshotResult {
+  const active: Partial<Record<MemoryScope, MemoryRecord[]>> = {};
+  for (const tier of opts?.scopes ?? ["global", "repo"] as const) {
+    tableFor(tier);
+    const db = dbs[tier];
+    if (db) active[tier] = listActive(db, tier);
   }
+  return assembleSnapshotFromRecords(active, opts);
+}
 
-  if (records.length === 0) {
-    return "";
+/** Pack already-read active tiers. The host reads each tier separately so a bad file cannot hide another tier. */
+export function assembleSnapshotFromRecords(
+  active: Partial<Record<MemoryScope, MemoryRecord[]>>, opts?: SnapshotOpts,
+): SnapshotResult {
+  const counts: SnapshotCounts = {
+    global: { active: 0, injected: 0 },
+    repo: { active: 0, injected: 0 },
+  };
+  const records: Array<MemoryRecord & { tier: MemoryScope }> = [];
+  for (const tier of opts?.scopes ?? ["global", "repo"] as const) {
+    tableFor(tier);
+    const tierRecords = active[tier] ?? [];
+    counts[tier].active += tierRecords.length;
+    records.push(...tierRecords.map(record => ({ ...record, tier })));
   }
+  if (!records.length) return { text: "", counts };
 
-  records.sort((a, b) => {
-    const aUser = a.source === "user" ? 0 : 1;
-    const bUser = b.source === "user" ? 0 : 1;
-    if (aUser !== bUser) return aUser - bUser;
-    const aTime = a.updatedAt ?? a.createdAt;
-    const bTime = b.updatedAt ?? b.createdAt;
-    return bTime - aTime;
-  });
+  // User directives precede observations regardless of tier or timestamp.
+  const priority = (record: MemoryRecord): number =>
+    record.category === "preference" ? 0 : record.category === "correction" ? 1 : 2;
+  records.sort((a, b) => priority(a) - priority(b)
+    || a.tier.localeCompare(b.tier)
+    || a.category.localeCompare(b.category)
+    || Number(b.source === "user") - Number(a.source === "user")
+    || (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt)
+    || a.uuid.localeCompare(b.uuid));
 
-  const categoryOrder: MemoryCategory[] = [];
-  const byCategory = new Map<MemoryCategory, MemoryRecord[]>();
-  for (const record of records) {
-    if (!byCategory.has(record.category)) {
-      byCategory.set(record.category, []);
-      categoryOrder.push(record.category);
-    }
-    byCategory.get(record.category)!.push(record);
-  }
-
+  const omittedLine = (n: number) => `Memory snapshot: ${n} ${n === 1 ? "entry" : "entries"} omitted.\n`;
+  const cap = opts?.charCap;
   let body = "";
-  outer: for (const category of categoryOrder) {
-    const header = `## ${category}\n`;
-    if (body.length + header.length > charCap) {
-      break;
-    }
-    body += header;
-    for (const record of byCategory.get(category)!) {
-      const line = `- ${record.content}${record.link ? ` [→ ${record.link}]` : ""}\n`;
-      if (body.length + line.length > charCap) {
-        break outer;
-      }
-      body += line;
-    }
+  let lastTier: MemoryScope | undefined;
+  let lastCategory: string | undefined;
+  let included = 0;
+  for (const record of records) {
+    const header = (lastTier === record.tier ? "" : `## ${record.tier}\n`)
+      + (lastTier === record.tier && lastCategory === record.category ? "" : `### ${record.category}\n`);
+    const line = `- ${record.content}${record.link ? ` [→ ${record.link}]` : ""}\n`;
+    // Reserve the largest possible omission notice while unprocessed entries remain.
+    // A misfit is skipped, not a reason to abandon smaller entries that follow.
+    const reserve = included + 1 < records.length ? omittedLine(records.length).length : 0;
+    if (cap !== undefined && body.length + header.length + line.length + reserve > cap) continue;
+    body += header + line;
+    lastTier = record.tier;
+    lastCategory = record.category;
+    counts[record.tier].injected++;
+    included++;
   }
+  const omitted = records.length - included;
+  if (omitted) body += omittedLine(omitted);
+  return { text: buildMemoryContextBlock(body), counts };
+}
 
-  if (body.length > charCap) {
-    body = body.slice(0, charCap);
-  }
-
-  if (!body.trim()) {
-    return "";
-  }
-
-  return buildMemoryContextBlock(body);
+export function assembleSnapshot(dbs: { global?: Db; repo?: Db }, opts?: SnapshotOpts): string {
+  return assembleSnapshotWithStats(dbs, opts).text;
 }

@@ -1,10 +1,11 @@
 // packages/db-core/src/__tests__/registry.test.ts
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveProject, registerProject, openGlobal, openProject, openDbAt, openProjectByPath, setGlobalDbPathForTests } from "../registry";
 import { scratchDbPath, cleanupScratch } from "../testutil";
+import { assertTestDbPath, assertTestConfigPath } from "../db";
 
 beforeEach(() => setGlobalDbPathForTests(scratchDbPath("global-registry")));
 afterEach(() => { setGlobalDbPathForTests(null); cleanupScratch(); });
@@ -44,11 +45,64 @@ describe("projects registry", () => {
   it("openProject resolves the registered db_path and migrates it", () => {
     const dir = join(scratchDbPath("open").replace(/\.db$/, ""), "p");
     mkdirSync(dir, { recursive: true });
+    const prev = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = join(dir, "..");
+    try {
     const info = resolveProject(dir);
     const db = openProject(info.projectKey);
     const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'sessions'").get();
     db.close();
     expect(t).toBeTruthy();
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prev;
+    }
+  });
+
+  it("refuses a repo DB outside the Vitest fixture root before creating it", () => {
+    const unsafe = join(process.cwd(), ".spider", "guard-rejected.db");
+    expect(() => openDbAt(unsafe, "repo")).toThrow(/Vitest fixture/);
+  });
+
+  it("refuses real-checkout-shaped repo and worktree DB paths", () => {
+    expect(() => openDbAt(join(process.cwd(), ".git", "spider", "repo.db"), "repo")).toThrow(/Vitest fixture/);
+    expect(() => openDbAt(join(process.cwd(), ".spider", "project.db"), "worktree")).toThrow(/Vitest fixture/);
+  });
+
+  it("rejects the real checkout config path before any config read or write", () => {
+    expect(() => assertTestConfigPath(join(process.cwd(), ".spider", "config.json"))).toThrow(/Vitest fixture/);
+  });
+
+  it("rejects a scratch-looking path outside the checkout test fixture roots without opening it", () => {
+    const unsafe = join(process.cwd(), "docs", ".spider", "scratch", "not-a-fixture.db");
+    expect(() => assertTestDbPath(unsafe)).toThrow(/Vitest fixture/);
+  });
+
+  it("refuses a fixture DB filename symlinked to a path outside the fixture root", () => {
+    const target = join(process.cwd(), ".spider", "guard-symlink-target.db");
+    const link = scratchDbPath("symlink-escape");
+    // This target is a disposable empty test file, never a user's DB.
+    writeFileSync(target, "");
+    symlinkSync(target, link);
+    try {
+      expect(() => openDbAt(link, "repo")).toThrow(/Vitest fixture/);
+    } finally {
+      rmSync(link, { force: true });
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(target + suffix, { force: true });
+    }
+  });
+
+  it("refuses a dangling scratch DB symlink before SQLite can create its outside target", () => {
+    const target = join(process.cwd(), ".spider", "guard-dangling-target.db");
+    const link = scratchDbPath("dangling-escape");
+    expect(existsSync(target)).toBe(false);
+    symlinkSync(target, link);
+    try {
+      expect(() => assertTestDbPath(link)).toThrow(/Vitest fixture/);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      rmSync(link, { force: true });
+    }
   });
 
   it("openDbAt opens + migrates a DB at an explicit path (A3)", () => {
@@ -61,10 +115,17 @@ describe("projects registry", () => {
   it("openProjectByPath opens the project DB for a real path (A3)", () => {
     const dir = join(scratchDbPath("bypath").replace(/\.db$/, ""), "p");
     mkdirSync(dir, { recursive: true });
-    const db = openProjectByPath(dir);
-    const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'sessions'").get();
-    db.close();
-    expect(t).toBeTruthy();
+    const prev = process.env.GIT_CEILING_DIRECTORIES;
+    process.env.GIT_CEILING_DIRECTORIES = join(dir, "..");
+    try {
+      const db = openProjectByPath(dir);
+      const t = db.prepare("SELECT name FROM sqlite_master WHERE name = 'sessions'").get();
+      db.close();
+      expect(t).toBeTruthy();
+    } finally {
+      if (prev === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = prev;
+    }
   });
 
   // Mutation: restore `const projectKey = gcd ?? realPath;` → this test MUST fail.

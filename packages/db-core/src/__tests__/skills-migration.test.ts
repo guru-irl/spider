@@ -8,7 +8,7 @@ afterEach(() => { for (const s of ["", "-wal", "-shm"]) rmSync(`${dbPath}${s}`, 
 
 describe("phase6 schema", () => {
   it("creates skills + curator_state tables on repo migrate", () => {
-    dbPath = join(paths.scratch("repo", process.cwd()), `skills-${Date.now()}.db`);
+    dbPath = join(paths.scratch("worktree", process.cwd()), `skills-${Date.now()}.db`);
     const db = openDbAt(dbPath, "repo");
     const names = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(r => r.name);
     expect(names).toContain("skills");

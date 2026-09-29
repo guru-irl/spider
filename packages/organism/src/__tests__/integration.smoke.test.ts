@@ -71,7 +71,7 @@ function seedSession(db: Db, sessionId: string): void {
  * by the learning pass).
  */
 function writeTranscript(sessionId: string): string {
-  const dir = paths.scratch("repo", process.cwd());
+  const dir = paths.scratch("worktree", process.cwd());
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `transcript-${sessionId}-${crypto.randomUUID()}.jsonl`);
   const lines = [
@@ -180,9 +180,9 @@ describe("Phase-6 integration smoke", () => {
 
   it("(E) uses a scratch path under spider dir — never /tmp", () => {
     ctx = makeOrgDb();
-    const scratch = paths.scratch("repo", process.cwd());
+    const scratch = paths.scratch("worktree", process.cwd());
     expect(scratch).not.toContain("/tmp");
-    // Repo tier scratch is under .git/spider/scratch (shared across worktrees)
+    // Test-owned worktree scratch stays under .spider/scratch, not .git/spider.
     expect(scratch).toContain("spider");
 
     const transcriptPath = writeTranscript("s-scratch");

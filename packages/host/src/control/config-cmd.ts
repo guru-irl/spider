@@ -12,6 +12,7 @@ export function applyConfigEdit(cwd: string, key: string, raw: string): { ok: bo
 	if (!field) return { ok: false, error: `unknown key ${key}` };
 	const c = coerce(field, raw);
 	if (!c.ok) return { ok: false, error: c.error };
-	controlConfig("set", cwd, key, c.value);
+	if (key === "memory.snapshotCharCap" && c.value === undefined) controlConfig("unset", cwd, key);
+	else controlConfig("set", cwd, key, c.value);
 	return { ok: true };
 }

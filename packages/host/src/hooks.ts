@@ -18,14 +18,13 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, appendEvent, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, appendEvent, type Db } from "@spider/db-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cwdOf, sessionIdOf } from "./session-context";
-import { assembleSnapshot } from "@spider/memory";
+import { readInjectionSnapshot } from "./injection-snapshot";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
 import { controlConfig } from "./control";
-import { join } from "node:path";
 
 export interface PiLikeAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -52,23 +51,11 @@ export function registerHooks(pi: PiLikeAPI): void {
       pi.on(name, (event: any, ctx?: unknown) => {
         // pi consumes the RETURNED prompt patch, not mutation of event.systemPrompt.
         if (typeof event?.systemPrompt !== "string") return undefined;
-        let repoDb: Db | undefined;
-        let globalDb: Db | undefined;
         try {
-          const cwd = cwdOf(ctx) ?? process.cwd();
-          const sessionId = sessionIdOf(ctx) || undefined;
-          const project = resolveProject(cwd, { sessionId, explicitCwd: !sessionId });
-          repoDb = project.repoKey
-            ? openRepo(project.repoKey)
-            : openDbAt(join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
-          globalDb = openGlobal();
-          const snap = assembleSnapshot({ global: globalDb, repo: repoDb }, { charCap: 8000 });
-          if (snap) return { systemPrompt: event.systemPrompt + "\n\n" + snap };
+          const snap = readInjectionSnapshot(cwdOf(ctx) ?? process.cwd(), sessionIdOf(ctx));
+          if (snap.text) return { systemPrompt: event.systemPrompt + "\n\n" + snap.text };
         } catch {
           // Snapshot injection is best-effort; never block agent start.
-        } finally {
-          repoDb?.close();
-          globalDb?.close();
         }
         return undefined;
       });

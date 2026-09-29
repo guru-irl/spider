@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join, isAbsolute, resolve, dirname } from "node:path";
-import { openDb, type Db } from "./db";
+import { openDb, openDbReadOnly, assertTestDbPath, type Db } from "./db";
 import { migrate } from "./migrate";
 import { paths, type Scope, worktreeRoot, repoRoot } from "./paths";
 import { getBinding, bindSession } from "./bindings";
@@ -33,6 +33,12 @@ export function openGlobal(): Db {
   migrate(db, "global");
   return db;
 }
+
+/** No create, migration, pragma, or checkpoint on snapshot reads. */
+export const openGlobalReadOnly = (): Db | undefined => openDbReadOnly(globalDbPath());
+export const openRepoReadOnly = (repoKey: string): Db | undefined =>
+  openDbReadOnly(join(repoKey, "spider", "repo.db"));
+export const openDbReadOnlyAt = (dbPath: string): Db | undefined => openDbReadOnly(dbPath);
 
 function gitCommonDir(cwd: string): string | undefined {
   try {
@@ -124,6 +130,7 @@ export function openProject(projectKey: string): Db {
   } finally {
     g.close();
   }
+  assertTestDbPath(dbPath);
   mkdirSync(join(dbPath, ".."), { recursive: true });
   const db = openDb(dbPath);
   migrate(db, "worktree");
@@ -133,6 +140,7 @@ export function openProject(projectKey: string): Db {
 /** Open a repo-tier DB by its repo_key (git common dir). */
 export function openRepo(repoKey: string): Db {
   const dbPath = join(repoKey, "spider", "repo.db");
+  assertTestDbPath(dbPath);
   mkdirSync(join(dbPath, ".."), { recursive: true });
   const db = openDb(dbPath);
   migrate(db, "repo");
@@ -143,6 +151,7 @@ export function openRepo(repoKey: string): Db {
  *  from the path (the global spider.db) unless passed explicitly. Used by import,
  *  cross-project reads, and tests that need an explicit-path open. */
 export function openDbAt(absPath: string, scope?: Scope): Db {
+  assertTestDbPath(absPath);
   mkdirSync(dirname(absPath), { recursive: true });
   const db = openDb(absPath);
   const resolved: Scope = scope ?? (absPath === join(paths.globalRoot, "spider.db") ? "global" : "worktree");

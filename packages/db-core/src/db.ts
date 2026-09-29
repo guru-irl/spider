@@ -1,7 +1,7 @@
 // packages/db-core/src/db.ts
 import { createRequire } from "node:module";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, realpathSync, existsSync, lstatSync } from "node:fs";
+import { dirname, basename, isAbsolute, join, resolve, sep } from "node:path";
 import type BetterSqlite3 from "better-sqlite3";
 
 const require = createRequire(import.meta.url);
@@ -53,7 +53,66 @@ function sqliteVec(): { getLoadablePath(): string } {
   return _sqliteVec;
 }
 
+function assertTestFixturePath(dbPath: string, label: string): void {
+  if (process.env.VITEST) {
+    // Test DBs must live under a .spider/scratch fixture. The real checkout DBs
+    // (.git/spider/repo.db and .spider/project.db) cannot match this rule. Check
+    // the resolved parent too so a symlinked scratch directory cannot escape it.
+    // Only this checkout's root or direct packages/* fixture roots are allowed.
+    // The real checkout DBs (.git/spider/repo.db, .spider/project.db) are
+    // siblings of scratch, never descendants, so they cannot match this rule.
+    const checkout = realpathSync(process.env.SPIDER_TEST_FIXTURE_CHECKOUT ?? process.cwd());
+    const roots = [join(checkout, ".spider", "scratch")];
+    const packageRoot = join(checkout, "packages");
+    const allowed = (candidate: string) => roots.some(root => candidate.startsWith(root + sep)) ||
+      candidate.startsWith(packageRoot + sep) &&
+      /^([^/\\]+)[/\\](?:src[/\\])?\.spider[/\\]scratch[/\\]/.test(candidate.slice(packageRoot.length + 1));
+    let parent = dirname(resolve(dbPath));
+    const missing: string[] = [];
+    for (;;) {
+      try { parent = join(realpathSync(parent), ...missing.reverse()); break; }
+      catch { const next = dirname(parent); if (next === parent) break; missing.push(basename(parent)); parent = next; }
+    }
+    let file = resolve(dbPath);
+    try { file = realpathSync(dbPath); }
+    catch {
+      // A dangling symlink is not a new file: SQLite follows it on O_CREAT.
+      try { if (lstatSync(dbPath).isSymbolicLink()) throw new Error("dangling symlink"); }
+      catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw new Error(`${label}: refusing path outside a Vitest fixture (.spider/scratch): ${dbPath}`);
+        }
+      }
+    }
+    if (!isAbsolute(dbPath) || !allowed(resolve(dbPath)) || !allowed(parent + sep) || !allowed(file)) {
+      throw new Error(`${label}: refusing path outside a Vitest fixture (.spider/scratch): ${dbPath}`);
+    }
+  }
+}
+
+export function assertTestDbPath(dbPath: string): void { assertTestFixturePath(dbPath, "openDb"); }
+export function assertTestConfigPath(configPath: string): void { assertTestFixturePath(configPath, "config"); }
+
+export function openDbReadOnly(dbPath: string): Db | undefined {
+  assertTestDbPath(dbPath);
+  if (!existsSync(dbPath)) return undefined;
+  const Database = loadDatabase();
+  const raw = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const readonly = () => { throw new Error("read-only snapshot DB"); };
+  return {
+    prepare: sql => raw.prepare(sql),
+    exec: readonly,
+    transaction: readonly,
+    pragma: source => raw.pragma(source, { simple: true }),
+    loadVec: readonly,
+    withRetry: fn => withRetry(fn),
+    get raw() { return raw; },
+    close: () => raw.close(),
+  };
+}
+
 export function openDb(dbPath: string): Db {
+  assertTestDbPath(dbPath);
   mkdirSync(dirname(dbPath), { recursive: true });
   const Database = loadDatabase();
   const raw = new Database(dbPath, { timeout: BUSY_TIMEOUT_MS });

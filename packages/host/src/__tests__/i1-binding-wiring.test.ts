@@ -6,6 +6,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { openGlobal, bindSession, setGlobalDbPathForTests, resolveProject } from "@spider/db-core";
 import { buildActionCtx } from "../extension";
 import { join } from "path";
+import { isolatedCwd } from "./isolated-cwd";
+const fixtureCwd = isolatedCwd("i1-binding");
 
 function scratchDbPath(name: string): string {
   return join(process.cwd(), ".spider", "scratch", "test-dbs", `${name}-${Date.now()}.db`);
@@ -26,7 +28,7 @@ describe("I1 Production Binding Wiring", () => {
 
   it("buildActionCtx honors session bindings when no explicit cwd in args", () => {
     const sessionId = "test-binding-sess";
-    const boundPath = process.cwd();
+    const boundPath = fixtureCwd;
 
     // Bind the session
     bindSession(globalDb, sessionId, boundPath);
@@ -41,13 +43,14 @@ describe("I1 Production Binding Wiring", () => {
 
     // Should resolve to the bound path's project key
     const expectedProject = resolveProject(boundPath, { sessionId, explicitCwd: false });
+    ctx.db.close(); ctx.repoDb.close(); ctx.globalDb.close();
     expect(ctx.project.projectKey).toBe(expectedProject.projectKey);
   });
 
   it("buildActionCtx overrides binding when explicit cwd in args", () => {
     const sessionId = "test-explicit-sess";
     const boundPath = "/some/bound/path";
-    const explicitPath = process.cwd();
+    const explicitPath = fixtureCwd;
 
     // Bind to a different path
     bindSession(globalDb, sessionId, boundPath);
@@ -62,6 +65,7 @@ describe("I1 Production Binding Wiring", () => {
 
     // Should resolve to the explicit path, NOT the bound path
     const expectedProject = resolveProject(explicitPath, { sessionId, explicitCwd: true });
+    ctx.db.close(); ctx.repoDb.close(); ctx.globalDb.close();
     expect(ctx.project.projectKey).toBe(expectedProject.projectKey);
   });
 });

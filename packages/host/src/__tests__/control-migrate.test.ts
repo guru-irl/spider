@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { openDbAt, paths } from "@spider/db-core";
+import { openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
 import { setGlobalDbPathForTests } from "@spider/db-core";
 import { controlMigrate } from "../control/migrate-cmd";
@@ -151,6 +151,48 @@ function setupCollapsedRepo(): { repoDir: string; worktrees: string[] } {
 }
 
 describe("control migrate", () => {
+  it("rebuilds the legacy FTS index from active rows only", () => {
+    const { repoDir, worktrees } = setupCollapsedRepo();
+    const source = openDbAt(join(worktrees[0], ".spider", "project.db"));
+    source.prepare("INSERT INTO memory (uuid, category, content, status, created_at) VALUES ('staged-legacy', 'insight', 'amber basil', 'staged', 1)").run();
+    source.close();
+    controlMigrate({ cwd: worktrees[0], apply: true });
+    const repo = openDbReadOnlyAt(join(repoDir, ".git", "spider", "repo.db"))!;
+    try {
+      expect((repo.prepare("SELECT status FROM memory WHERE uuid = 'staged-legacy'").get() as { status: string }).status).toBe("staged");
+      expect((repo.prepare("SELECT COUNT(*) AS n FROM memory_fts WHERE uuid = 'staged-legacy'").get() as { n: number }).n).toBe(0);
+    } finally { repo.close(); }
+  });
+
+  it("reports a repo schema upgrade in dry-run and applies it explicitly even without legacy worktree DBs", () => {
+    const cwd = join(scratch, "schema-only");
+    mkdirSync(cwd, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd });
+    const repoPath = join(cwd, ".git", "spider", "repo.db");
+    const db = openDbAt(repoPath, "repo");
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
+    db.close();
+    const version = () => {
+      const ro = openDbReadOnlyAt(repoPath)!;
+      try { return Number(ro.pragma("user_version")); } finally { ro.close(); }
+    };
+    const dry = controlMigrate({ cwd });
+    expect(dry.message).toContain(`v${SCHEMA_VERSION - 1} to v${SCHEMA_VERSION}`);
+    expect(dry.applied).toBe(false);
+    expect(version()).toBe(SCHEMA_VERSION - 1);
+    const applied = controlMigrate({ cwd, apply: true });
+    expect(applied.message).toContain(`v${SCHEMA_VERSION - 1} to v${SCHEMA_VERSION}`);
+    expect(applied.applied).toBe(true);
+    expect(applied.backupDir).toBeDefined();
+    const backupName = repoPath.replace(/\//g, "_").replace(/^_+/, "");
+    const backupPath = join(applied.backupDir!, backupName);
+    expect(existsSync(backupPath)).toBe(true);
+    const backup = openDbReadOnlyAt(backupPath)!;
+    try { expect(backup.pragma("user_version")).toBe(SCHEMA_VERSION - 1); } finally { backup.close(); }
+    expect(version()).toBe(SCHEMA_VERSION);
+    expect(controlMigrate({ cwd, apply: true }).message).toMatch(/no changes needed/i);
+  });
+
   it("dry-run mutates NOTHING - byte-identical DBs afterwards (mutation: make dry-run apply → must fail)", () => {
     const { worktrees } = setupCollapsedRepo();
     

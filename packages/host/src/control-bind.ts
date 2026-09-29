@@ -14,9 +14,8 @@ export interface UnbindResult {
   message?: string;
 }
 
-const SCOPE_RULE = `"Is this still true after I delete this worktree?" → **repo**
-"Is this true in every repo?" → **global**
-otherwise → **worktree**`;
+const SCOPE_RULE = `"Is this true in every repo?" → **global**
+otherwise → **repo**`;
 
 export function controlBind(db: Db, sessionId: string, path: string): BindResult {
   try {

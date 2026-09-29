@@ -4,6 +4,7 @@
 import type { Db } from "@spider/db-core";
 import { installAgentsUI } from "./agents-ui";
 import { createAgentActions } from "./actions";
+import { controlConfig } from "../control.js";
 
 interface HostUi {
   setWidget(key: string, value: unknown, opts?: { placement?: "aboveEditor" | "belowEditor" }): void;
@@ -38,6 +39,7 @@ export function mountAgentsUI(
   return installAgentsUI(pi, ctx, {
     db,
     sessionId,
+    showFooter: controlConfig("get", opts.cwd, "ui.footer") !== false,
     actions: createAgentActions(pi, {
       ui: ctx.ui,
       dispatch,

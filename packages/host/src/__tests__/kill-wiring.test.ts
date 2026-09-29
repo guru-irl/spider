@@ -3,6 +3,9 @@
 // actions by calling createAgentActions. It does NOT construct actions manually —
 // that would bypass the bug (missing actions key in the production mount call).
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import { mountAgentsUI } from "../agents/mount";
@@ -32,13 +35,18 @@ describe("kill wiring across the mountAgentsUI → installAgentsUI boundary", ()
     const dispatchSpy = vi.fn().mockResolvedValue(undefined);
     
     const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
+    const scratch = resolve(".spider/scratch");
+    mkdirSync(scratch, { recursive: true });
+    const cwd = mkdtempSync(join(scratch, "kill-wiring-"));
+    try {
+    execFileSync("git", ["init", "-q"], { cwd });
     
     // This is the PRODUCTION mount path: extension.ts calls mountAgentsUI which must
     // wire actions internally. The test injects dispatch to spy on the wiring.
     const dispose: any = mountAgentsUI(pi as never, { ui } as never, {
       db,
       sessionId: "s",
-      cwd: "/tmp",
+      cwd,
       dispatch: dispatchSpy,
     });
     
@@ -71,5 +79,6 @@ describe("kill wiring across the mountAgentsUI → installAgentsUI boundary", ()
     expect(dispatchSpy).toHaveBeenCalledWith("kill", { id: "r1" });
     
     dispose();
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 });

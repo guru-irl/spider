@@ -11,9 +11,9 @@ import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult, markToolCallError } from "./result";
-import { controlDoctor, controlConfig, controlMigrate } from "./control";
+import { controlDoctor, controlConfig, controlMigrate, modelDefaultLayers, configReadErrors, execEnforcement } from "./control";
 import { collectStats } from "./control/stats-cmd";
-import { setModelDefault, listCatalog } from "./control/models-cmd";
+import { setModelDefault, clearLocalModelDefault, listCatalog } from "./control/models-cmd";
 import { applyConfigEdit } from "./control/config-cmd";
 import { readInjectionSnapshot, type InjectionSnapshot } from "./injection-snapshot";
 import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
@@ -170,7 +170,8 @@ export const SPIDER_PARAMETERS = {
           name: { type: "string", description: "Short display name surfaced in the UI." },
           task: { type: "string" },
           count: { type: "integer", minimum: 1 },
-          model: { type: "string" },
+          model: { type: "string", description: "Per-item model override for this task." },
+          thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "Per-item reasoning/thinking level for this task; overrides the resolved model suffix." },
           context: { type: "string", enum: ["fresh", "fork"] },
         },
         required: ["agent", "task"],
@@ -185,14 +186,25 @@ export const SPIDER_PARAMETERS = {
           agent: { type: "string" },
           name: { type: "string", description: "Short display name surfaced in the UI." },
           task: { type: "string" },
-          model: { type: "string" },
+          model: { type: "string", description: "Per-item model override for this chain step." },
+          thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "Per-item reasoning/thinking level for this chain step; overrides the resolved model suffix." },
           context: { type: "string", enum: ["fresh", "fork"] },
         },
       },
     },
-    pipeline: { type: "array", description: "PIPELINE-mode stages (advanced push-based auto-wake).", items: { type: "object" } },
+    pipeline: {
+      type: "array", description: "PIPELINE-mode stages (advanced push-based auto-wake).",
+      items: { type: "object", properties: {
+        agent: { type: "string" }, role: { type: "string" }, phase: { type: "string" },
+        task: { type: "string", description: "Template: {task}, {previous}, {handoff}, {outputs.<as>}." },
+        as: { type: "string" }, model: { type: "string", description: "Per-stage model override for this pipeline stage." }, thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "Per-stage reasoning/thinking level for this pipeline stage; overrides the resolved model suffix." },
+        skill: { type: "string" }, context: { type: "string", enum: ["fresh", "fork"] },
+        count: { type: "integer", minimum: 1 }, wakeOn: { type: "string", enum: ["done", "accepted"] },
+      }, required: ["agent"] },
+    },
     concurrency: { type: "integer", minimum: 1, description: "PARALLEL max concurrent (default 4)." },
-    model: { type: "string", description: "Model override for spawned subagent(s)." },
+    model: { type: "string", description: "SINGLE-mode model override; tasks, chain and pipeline use per-item model fields." },
+    thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "SINGLE-mode reasoning/thinking level; overrides the resolved model suffix. Tasks, chain and pipeline use per-item thinking fields." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
     id: { type: "string", description: "Run id/prefix (also a todo id). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
@@ -403,8 +415,8 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         const r = applyConfigEdit(cwd, String(args.key), String(args.value));
         return { details: { ok: r.ok, error: r.error, key: args.key, value: args.value } };
       }
-      if (args.key) return { details: { key: args.key, value: controlConfig("get", cwd, String(args.key)) } };
-      return { details: { config: controlConfig("get", cwd) } };
+      if (args.key) return { details: { key: args.key, value: controlConfig("get", cwd, String(args.key)), errors: configReadErrors(cwd) } };
+      return { details: { config: controlConfig("get", cwd), errors: configReadErrors(cwd) } };
     }
     case "memory": {
       if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };
@@ -469,9 +481,14 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
       if (!ctx) return { error: "control models requires an action context" };
       if (args.op === "set") {
         const r = setModelDefault(cwd, String(args.key ?? ""), String(args.value ?? ""), listCatalog(ctx.modelRegistry));
-        return { details: { ok: r.ok, error: r.error, role: args.key, ref: args.value } };
+        return { details: { ...r, role: args.key, ref: args.value } };
       }
-      return { details: { catalog: listCatalog(ctx.modelRegistry), defaults: (controlConfig("get", cwd, "models.defaults") as Record<string, string>) ?? {} } };
+      if (args.op === "clear") {
+        const r = clearLocalModelDefault(cwd, String(args.key ?? ""));
+        return { details: { ...r, role: args.key } };
+      }
+      const { defaults, sources, global, local, errors } = modelDefaultLayers(cwd);
+      return { details: { catalog: listCatalog(ctx.modelRegistry), defaults, sources, global, local, errors } };
     }
     case "upstream-watch": {
       if (!ctx) return { error: "control upstream-watch requires an action context" };
@@ -762,6 +779,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
   });
 
   // User-only /exec-enforce command (bypasses model-facing guard)
+  const enforcementProblems = (diagnostics: string[]) => diagnostics.map(error =>
+    error.replace(/^cannot parse config file /, "config file does not parse: ")
+      .replace(/^invalid models\.defaults in /, "invalid value for models.defaults in ")
+  ).join("; ");
   pi.registerCommand?.("exec-enforce", {
     description: "Control bash enforcement (user only)",
     handler: async (args: string, ctx: unknown) => {
@@ -770,9 +791,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
       
       // No argument: report current state
       if (!arg) {
-        const current = controlConfig("get", cwd, "exec.enforce");
-        const state = current === false ? "OFF" : "ON";
-        const text = `exec.enforce is ${state} (default: ON)`;
+        const { current, errors, diagnostics } = execEnforcement(cwd);
+        const state = errors.length === 0 && current === false ? "OFF" : "ON";
+        const text = `exec.enforce is ${state} (default: ON${diagnostics.length ? `; config problems: ${enforcementProblems(diagnostics)}` : ""})`;
         
         if (typeof (pi as any).sendMessage === "function") {
           (pi as any).sendMessage({
@@ -812,7 +833,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
       
       // Set via controlConfig directly (bypasses the model-facing guard)
       controlConfig("set", cwd, "exec.enforce", value);
-      const text = `exec.enforce set to ${value ? "ON" : "OFF"}`;
+      const { errors, diagnostics } = execEnforcement(cwd);
+      const text = errors.length
+        ? `exec.enforce remains ON (config problems: ${enforcementProblems(diagnostics)})`
+        : `exec.enforce set to ${value ? "ON" : "OFF"}${diagnostics.length ? ` (config problems: ${enforcementProblems(diagnostics)})` : ""}`;
       
       if (typeof (pi as any).sendMessage === "function") {
         (pi as any).sendMessage({
@@ -953,7 +977,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     return undefined;
   });
 
-  // Mount the live agents UI (footer + Ctrl+Shift+G grid + /agents) on session_start.
+  // Mount the agents UI (configured footer + Alt+Shift+Up selector + /agents) on session_start.
   // pi.on chains, so this runs alongside the currentSessionId updater above. The
   // mount is best-effort — never break the session if the UI can't initialize.
   let disposeAgentsUI: (() => void) | undefined;

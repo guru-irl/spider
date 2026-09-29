@@ -1,6 +1,8 @@
+import { join } from "node:path";
+import { paths } from "@spider/db-core";
 import { catalog, type ModelEntry, type EnumeratedModel } from "@spider/models";
 import { MODEL_ROLES } from "@spider/ui";
-import { controlConfig } from "../control.js";
+import { controlConfig, modelDefaultLayers, modelDefaultLayerForEdit } from "../control.js";
 
 function refOf(m: { provider: string; id: string }): string {
   return `${m.provider}/${m.id}`;
@@ -37,7 +39,7 @@ function isKnownRef(ref: string, models: ModelEntry[]): boolean {
  *  and NOTHING ever validated or consumed it, so a bad ref just silently never resolved at
  *  spawn time. Known-stale provider prefixes (`copilot/` -> `github-copilot/`) are
  *  normalised first, before validation. */
-export function setModelDefault(cwd: string, role: string, ref: string, models: ModelEntry[]): { ok: boolean; error?: string } {
+export function setModelDefault(cwd: string, role: string, ref: string, models: ModelEntry[]): { ok: boolean; error?: string; shadowedBy?: { ref: string; file: string }; errors?: string[] } {
   if (!MODEL_ROLES.includes(role)) {
     return { ok: false, error: `unknown role '${role}' (valid: ${MODEL_ROLES.join(", ")})` };
   }
@@ -46,10 +48,25 @@ export function setModelDefault(cwd: string, role: string, ref: string, models: 
     const valid = models.map(refOf).join(", ");
     return { ok: false, error: `unknown model '${ref}' (valid: ${valid || "no models available"})` };
   }
-  const cur = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  const next = { ...cur, [role]: normalized };
+  const next = { ...modelDefaultLayerForEdit(cwd, "global"), [role]: normalized };
+  controlConfig("set", cwd, "models.defaults", next, "global");
+  const { local, errors } = modelDefaultLayers(cwd);
+  return {
+    ok: true,
+    ...(local[role] === undefined ? {} : { shadowedBy: { ref: local[role], file: join(paths.projectRoot(cwd), "config.json") } }),
+    ...(errors.length ? { errors } : {}),
+  };
+}
+
+/** Remove only this role from the worktree-local override; other roles and settings survive. */
+export function clearLocalModelDefault(cwd: string, role: string): { ok: boolean; cleared?: boolean; error?: string } {
+  if (!MODEL_ROLES.includes(role)) return { ok: false, error: `unknown role '${role}' (valid: ${MODEL_ROLES.join(", ")})` };
+  const local = modelDefaultLayerForEdit(cwd, "local");
+  if (!Object.hasOwn(local, role)) return { ok: true, cleared: false };
+  const next = { ...local };
+  delete next[role];
   controlConfig("set", cwd, "models.defaults", next);
-  return { ok: true };
+  return { ok: true, cleared: true };
 }
 
 // Enumerate the models the user can ACTUALLY USE.

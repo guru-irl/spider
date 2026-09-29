@@ -1,6 +1,6 @@
 // packages/host/src/__tests__/control.test.ts
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync, realpathSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, existsSync, realpathSync, renameSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,7 @@ import { applyConfigEdit } from "../control/config-cmd";
 
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), writeFileSync: vi.fn(actual.writeFileSync) };
+  return { ...actual, mkdirSync: vi.fn(actual.mkdirSync), writeFileSync: vi.fn(actual.writeFileSync), renameSync: vi.fn(actual.renameSync) };
 });
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ctrl-${process.pid}`);
@@ -37,6 +37,34 @@ describe("control doctor", () => {
 });
 
 describe("control config", () => {
+  it("refuses a malformed global file without changing any bytes", () => {
+    const dir = configFixture("bad-global");
+    const previous = paths.globalRoot;
+    paths.globalRoot = join(dir, "global");
+    mkdirSync(paths.globalRoot, { recursive: true });
+    const file = join(paths.globalRoot, "config.json");
+    const original = '{"exec.enforce":false,"organism.enabled":false, }\n';
+    writeFileSync(file, original);
+    try {
+      expect(() => controlConfig("set", dir, "models.defaults", { worker: "provider/model" }, "global")).toThrow(/config\.json.*parse|parse.*config\.json/i);
+      expect(readFileSync(file, "utf8")).toBe(original);
+      expect(readdirSync(paths.globalRoot)).toEqual(["config.json"]);
+    } finally { paths.globalRoot = previous; }
+  });
+
+  it("writes a same-directory temporary config then renames it over the target", () => {
+    const dir = configFixture("atomic-global");
+    const previous = paths.globalRoot;
+    paths.globalRoot = join(dir, "global");
+    try {
+      vi.mocked(renameSync).mockClear();
+      controlConfig("set", dir, "models.defaults", { worker: "provider/model" }, "global");
+      const file = join(paths.globalRoot, "config.json");
+      expect(vi.mocked(renameSync)).toHaveBeenCalledWith(expect.stringMatching(/global\/config\.json\..+\.tmp$/), file);
+      expect(JSON.parse(readFileSync(file, "utf8"))["models.defaults"]).toEqual({ worker: "provider/model" });
+    } finally { paths.globalRoot = previous; }
+  });
+
   it("returns a default when unset, then round-trips a set", () => {
     const dir = configFixture("cfg");
     controlConfig("set", dir, "ui.footer", true);
@@ -74,6 +102,15 @@ describe("control config", () => {
       mkdir.mockClear(); write.mockClear();
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it("keeps legacy UI keys loadable without inventing a configurable grid shortcut", () => {
+    const dir = configFixture("legacy-ui");
+    expect(controlConfig("get", dir, "ui.grid_hotkey")).toBeUndefined();
+    controlConfig("set", dir, "ui.gridHotkey", "ctrl+g");
+    controlConfig("set", dir, "ui.theme", "dark");
+    expect(controlConfig("get", dir, "ui.gridHotkey")).toBe("ctrl+g");
+    expect(controlConfig("get", dir, "ui.theme")).toBe("dark");
   });
 
   it("get with no key returns the merged config object", () => {

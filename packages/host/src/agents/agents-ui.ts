@@ -15,7 +15,7 @@ interface HostPi {
   registerShortcut?(key: string, opts: { description?: string; handler: (ctx: unknown) => void }): void;
   registerCommand?(name: string, def: { description?: string; handler: (ctx?: unknown) => void }): void;
 }
-interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions }
+interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean }
 
 const WIDGET = "spider-agents";
 
@@ -92,7 +92,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   const repaint = () => footerTui?.requestRender?.(true);
 
   const syncWidget = () => {
-    const active = store.snapshot().length > 0;
+    const active = deps.showFooter !== false && store.snapshot().length > 0;
     if (active && !mounted) {
       ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
         footerTui = tui as { requestRender?: (force?: boolean) => void };
@@ -120,6 +120,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
   syncWidget();
 
   const openOverlay = async () => {
+    if (deps.showFooter === false) { ctx.ui.notify("Spider agents footer is disabled (ui.footer)", "info"); return; }
     // Don't open an invisible key-sink when there's nothing to select — it would silently
     // capture input (the user can't type, with no visible reason) until they hit escape.
     if (store.snapshot().length === 0) { ctx.ui.notify("No active spider agents", "info"); return; }

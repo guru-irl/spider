@@ -1,14 +1,16 @@
 // packages/host/src/__tests__/extension.test.ts
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { setGlobalDbPathForTests, openDbAt, type Db } from "@spider/db-core";
+import { setGlobalDbPathForTests, openDbAt, paths, type Db } from "@spider/db-core";
+import { controlConfig } from "../control";
+import { makeRunHandler } from "@spider/subagents";
 import spiderExtension, { buildActionCtx, sessionIdOf, cwdOf } from "../extension";
 import { getAction, type SpiderArgs } from "../dispatch";
-import { HOOK_NAMES } from "../hooks";
+import { HOOK_NAMES, registerHooks } from "../hooks";
 import { assertPostOpenIsolation, assertPreflightIsolation, type ExpectedRoots } from "./fixture-safety";
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `ext-${process.pid}`);
@@ -86,6 +88,162 @@ function fakePi() {
 }
 
 describe("spider extension entry", () => {
+  for (const layer of ["global", "worktree"] as const) {
+    it(`keeps actions and bash enforcement available with malformed ${layer} config and reports its path`, async () => {
+      gitInitScratch();
+      setGlobalDbPathForTests(join(scratch, `g-bad-${layer}.db`));
+      const priorRoot = paths.globalRoot;
+      paths.globalRoot = join(scratch, "global");
+      const cwd = join(scratch, `bad-${layer}`);
+      mkdirSync(cwd, { recursive: true });
+      const file = layer === "global" ? join(paths.globalRoot, "config.json") : join(scratch, ".spider", "config.json");
+      mkdirSync(dirname(file), { recursive: true });
+      const bad = '{"ui.footer": true, }';
+      writeFileSync(file, bad);
+      try {
+        const pi = fakePi(); spiderExtension(pi as never);
+        const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
+        const run = (args: object) => tool.execute("bad-config", { ...args, cwd }, undefined, undefined, { cwd });
+        const todo = await run({ action: "todo", op: "list" });
+        expect(todo.details).toEqual([]);
+        const memory = await run({ action: "remember", category: "insight", content: "fixture note" });
+        expect(memory.details.content).toBe("fixture note");
+        const config = await run({ action: "control", command: "config", op: "get" });
+        expect(config.details.config["ui.footer"]).toBe(true);
+        expect(config.details.errors.join(" ")).toContain(file);
+        const single = await run({ action: "control", command: "config", op: "get", key: "ui.footer" });
+        expect(single.details.errors.join(" ")).toContain(file);
+        const models = await run({ action: "control", command: "models" });
+        expect(models.details.errors.join(" ")).toContain(file);
+        const doctor = await run({ action: "control", command: "doctor" });
+        expect(doctor.details.lines.join("\n")).toContain(file);
+        const hooks: Record<string, Function> = {};
+        registerHooks({ on: (name, fn) => { hooks[name] = fn; } });
+        expect(hooks.tool_call({ toolName: "bash", cwd, input: { command: "echo fixture" } })).toMatchObject({ block: true });
+        expect(() => controlConfig("set", cwd, "ui.footer", false, layer === "global" ? "global" : "local")).toThrow(/cannot parse config file/);
+        expect(readFileSync(file, "utf8")).toBe(bad);
+      } finally { paths.globalRoot = priorRoot; }
+    });
+  }
+  it("reports invalid models.defaults in config, models and doctor reads", async () => {
+    gitInitScratch();
+    setGlobalDbPathForTests(join(scratch, "g-invalid-defaults.db"));
+    const priorRoot = paths.globalRoot;
+    paths.globalRoot = join(scratch, "global");
+    try {
+      const file = join(paths.globalRoot, "config.json");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, '{"models.defaults": []}');
+      const pi = fakePi(); spiderExtension(pi as never);
+      const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
+      const run = (command: string) => tool.execute("invalid-defaults", { action: "control", command, op: "get", cwd: scratch }, undefined, undefined, { cwd: scratch });
+      const config = await run("config");
+      const models = await run("models");
+      const doctor = await run("doctor");
+      for (const text of [config.details.errors.join(" "), models.details.errors.join(" "), doctor.details.lines.join(" ")]) {
+        expect(text).toContain(`invalid models.defaults in ${file}`);
+      }
+    } finally { paths.globalRoot = priorRoot; }
+  });
+
+  it("reports effective ON and the malformed file when /exec-enforce status or off cannot permit bash", async () => {
+    gitInitScratch();
+    const priorRoot = paths.globalRoot;
+    paths.globalRoot = join(scratch, "global");
+    try {
+      const file = join(paths.globalRoot, "config.json");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, '{"exec.enforce": false, }');
+      const messages: string[] = [];
+      const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
+      spiderExtension(pi as never);
+      const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
+      await command.handler("off", { cwd: scratch });
+      await command.handler("", { cwd: scratch });
+      expect(messages).toHaveLength(2);
+      for (const text of messages) {
+        expect(text).toContain("ON");
+        expect(text).not.toContain("OFF");
+        expect(text).toContain(file);
+        expect(text).toMatch(/unreadable|does not parse/);
+        expect(text).not.toContain("invalid value for");
+      }
+    } finally { paths.globalRoot = priorRoot; }
+  });
+
+  it("labels a config read failure unreadable rather than claiming its JSON does not parse", async () => {
+    gitInitScratch();
+    const priorRoot = paths.globalRoot;
+    paths.globalRoot = join(scratch, "global");
+    try {
+      const file = join(paths.globalRoot, "config.json");
+      mkdirSync(file, { recursive: true });
+      const messages: string[] = [];
+      const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
+      spiderExtension(pi as never);
+      const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
+      await command.handler("", { cwd: scratch });
+      expect(messages[0]).toContain("ON");
+      expect(messages[0]).toContain(`unreadable config file ${file}`);
+      expect(messages[0]).not.toContain("does not parse");
+    } finally { paths.globalRoot = priorRoot; }
+  });
+
+  for (const invalid of ["x", null] as const) {
+    it(`reports invalid models.defaults ${String(invalid)} without calling parsed config unreadable or forcing ON`, async () => {
+      gitInitScratch();
+      setGlobalDbPathForTests(join(scratch, "g-slash-invalid.db"));
+      const priorRoot = paths.globalRoot;
+      paths.globalRoot = join(scratch, "global");
+      try {
+        const file = join(paths.globalRoot, "config.json");
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, JSON.stringify({ "exec.enforce": false, "models.defaults": invalid }));
+        const messages: string[] = [];
+        const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
+        spiderExtension(pi as never);
+        const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
+        const run = (command: string) => tool.execute("invalid-defaults", { action: "control", command, op: "get", cwd: scratch }, undefined, undefined, { cwd: scratch });
+        for (const text of [(await run("config")).details.errors.join(" "), (await run("models")).details.errors.join(" "), (await run("doctor")).details.lines.join(" ")]) {
+          expect(text).toContain(`invalid models.defaults in ${file}`);
+        }
+        const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
+        await command.handler("", { cwd: scratch });
+        await command.handler("off", { cwd: scratch });
+        expect(messages).toHaveLength(2);
+        for (const text of messages) {
+          expect(text).toContain("OFF");
+          expect(text).not.toContain("remains ON");
+          expect(text).toContain(`invalid value for models.defaults in ${file}`);
+          expect(text).not.toMatch(/unreadable|does not parse/);
+        }
+      } finally { paths.globalRoot = priorRoot; }
+    });
+  }
+
+  it("reports non-boolean exec.enforce as an invalid value and keeps bash blocked", async () => {
+    gitInitScratch();
+    const priorRoot = paths.globalRoot;
+    paths.globalRoot = join(scratch, "global");
+    try {
+      const file = join(paths.globalRoot, "config.json");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, '{"exec.enforce": "false"}');
+      const messages: string[] = [];
+      const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
+      spiderExtension(pi as never);
+      const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
+      await command.handler("", { cwd: scratch });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("ON");
+      expect(messages[0]).toContain(`invalid value for exec.enforce in ${file}`);
+      expect(messages[0]).not.toMatch(/unreadable|does not parse/);
+      const handlers: Record<string, Function> = {};
+      registerHooks({ on: (name, fn) => { handlers[name] = fn; } });
+      expect(handlers.tool_call({ toolName: "bash", cwd: scratch, input: { command: "echo test" } })).toMatchObject({ block: true });
+    } finally { paths.globalRoot = priorRoot; }
+  });
+
   it("advertises run/query params in the tool schema so the model passes them (regression: empty tasks/0 tool calls)", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
@@ -96,6 +254,31 @@ describe("spider extension entry", () => {
     // async-only: there is NO synchronous option, so the schema must NOT advertise `async`.
     expect(props.async).toBeUndefined();
     expect(props.tasks.items.required).toEqual(expect.arrayContaining(["agent", "task"]));
+  });
+
+  it("advertises accepted thinking levels in the registered spider run schema for every mode", () => {
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    for (const thinking of [props.thinking, props.tasks.items.properties.thinking, props.chain.items.properties.thinking, props.pipeline.items.properties.thinking]) {
+      expect(thinking.enum).toEqual(levels);
+      expect(thinking.description).toMatch(/thinking|reasoning/i);
+    }
+    expect(props.pipeline.items.properties.task.description).toContain("{previous}");
+  });
+
+  it("describes top-level run overrides as single-only and every multi-run item as per-item", () => {
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
+    for (const key of ["model", "thinking"]) {
+      expect(props[key].description).toMatch(/SINGLE/i);
+      expect(props[key].description).toMatch(/tasks|chain|pipeline/i);
+      for (const mode of ["tasks", "chain", "pipeline"]) {
+        expect(props[mode].items.properties[key].description).toMatch(/per-item|item|stage/i);
+      }
+    }
   });
 
   it("registers the 'spider' tool (with the 🕸 description) alongside the edit/write overrides", () => {
@@ -193,6 +376,28 @@ describe("spider extension entry", () => {
     // Should return dry-run result by default
     expect(res.details.dryRun).toBe(true);
     expect(res.details.applied).toBe(false);
+  });
+
+  it("buildActionCtx passes a global-only role default to subagent dispatch", async () => {
+    gitInitScratch();
+    setGlobalDbPathForTests(join(scratch, "g-global-model.db"));
+    const previous = paths.globalRoot;
+    paths.globalRoot = join(scratch, "global");
+    const dir = join(scratch, "global-model-project"); mkdirSync(dir, { recursive: true });
+    try {
+      controlConfig("set", dir, "models.defaults", { reviewer: "provider/review" }, "global");
+      const ctx = buildActionCtx(fakePi() as never, { action: "run", cwd: dir }, "s-global-model");
+      probeHandles.push(ctx.db, ctx.repoDb, ctx.globalDb);
+      expect(ctx.modelDefaults).toEqual({ reviewer: "provider/review" });
+      expect(controlConfig("get", dir, "models.defaults")).toEqual(ctx.modelDefaults);
+      const seen: any[] = [];
+      const run = makeRunHandler({ getCoordinators: () => ({ tailer: {}, pipelines: [], children: new Map() }) as any, makeRunner: () => ({ runAsync: (options: any) => {
+        seen.push(options);
+        return { id: "fixture-run", name: "reviewer", agent: "reviewer", status: "running" };
+      } }) as any });
+      await run({ agent: "reviewer", task: "check" }, { ...ctx, model: { id: "provider/parent" }, pi: { events: { on: () => () => {}, emit: () => {} } } });
+      expect(seen[0].model).toBe("provider/review");
+    } finally { paths.globalRoot = previous; }
   });
 
   it("builds an ActionCtx that carries the models router", () => {

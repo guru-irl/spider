@@ -216,13 +216,24 @@ function renderControlModels(t: T, details: any, _expanded: boolean): Component 
   const th = adaptTheme(t);
   if (details && details.catalog === undefined && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.ok
-      ? th.fg("accent", "●") + " " + th.fg("text", `set ${String(details.role ?? "")} → ${String(details.ref ?? "")}`)
+      ? th.fg("accent", "●") + " " + th.fg("text", details.cleared === false
+        ? `no local override for ${String(details.role ?? "")}`
+        : details.cleared ? `clear ${String(details.role ?? "")} (local)`
+        : `set ${String(details.role ?? "")} → ${String(details.ref ?? "")} (global)`)
       : th.fg("error", "✗") + " " + th.fg("text", String(details.error ?? "failed"));
-    return { render: (w: number) => ["", truncateToWidth(line, w, "")], invalidate() {} };
+    const shadow = details.ok && details.shadowedBy
+      ? `This worktree overrides it with ${String(details.shadowedBy.ref)} in ${String(details.shadowedBy.file)}` : "";
+    return { render: (w: number) => ["", truncateToWidth(line, w, ""), ...(shadow ? [truncateToWidth(shadow, w, "")] : []), ...renderConfigErrors(th, details, w)], invalidate() {} };
   }
   const catalog: ModelEntry[] = Array.isArray(details?.catalog) ? details.catalog : [];
   const defaults: Record<string, string> = (details?.defaults as Record<string, string>) ?? {};
-  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w)], invalidate() {} };
+  const origins = details?.sources && details?.global ? { sources: details.sources, global: details.global } : undefined;
+  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w, origins), ...renderConfigErrors(th, details, w)], invalidate() {} };
+}
+
+function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, width: number): string[] {
+  return Array.isArray(details?.errors)
+    ? details.errors.map((error: unknown) => truncateToWidth(th.fg("error", String(error)), width, "")) : [];
 }
 
 /** `control config` — render the schema × current values as a body-only config view. The `set`
@@ -230,14 +241,15 @@ function renderControlModels(t: T, details: any, _expanded: boolean): Component 
 function renderControlConfig(t: T, details: any, _expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.config && typeof details.config === "object") {
-    return { render: (w: number) => ["", ...renderConfig(details.config, th, w)], invalidate() {} };
+    return { render: (w: number) => ["", ...renderConfig(details.config, th, w), ...renderConfigErrors(th, details, w)], invalidate() {} };
   }
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
       ? th.fg("error", "✗") + " " + th.fg("text", String(details.error))
-      : th.fg("accent", "●") + " " + th.fg("text", `set ${String(details.key ?? "")} → ${String(details.value ?? "")}`);
+      : th.fg("accent", "●") + " " + th.fg("text", `set ${String(details.key ?? "")} → ${String(details.value ?? "")}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
     return { render: (w: number) => ["", truncateToWidth(line, w, "")], invalidate() {} };
   }
+  if (details?.key !== undefined) return { render: (w: number) => ["", `${String(details.key)}: ${String(details.value)}`, ...renderConfigErrors(th, details, w)], invalidate() {} };
   return textComponent({ details });
 }
 

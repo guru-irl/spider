@@ -183,7 +183,7 @@ describe("child reporter", () => {
     });
 
     it("strips a trivial leading 'cd <path> &&' so the real command survives", () => {
-      const summary = summarizeToolArgs("spider", { action: "exec", code: "cd /Users/guru/src/spider && npm test" });
+      const summary = summarizeToolArgs("spider", { action: "exec", code: "cd /fixture/project && npm test" });
       expect(summary).toBe("spider exec: npm test");
     });
 

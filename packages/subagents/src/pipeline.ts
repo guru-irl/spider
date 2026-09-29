@@ -51,7 +51,7 @@ export class PipelineCoordinator {
     const task = this.interpolate(stage.task ?? (index === 0 ? "{task}" : "{previous}"), previous);
     const parentRunId = this.lastRun?.id;
     const row: RunRow = this.deps.runner.runAsync({
-      agent: stage.agent, role: stage.role, task, model: stage.model, skill: stage.skill,
+      agent: stage.agent, role: stage.role, task, model: stage.model, thinking: stage.thinking, skill: stage.skill,
       context: stage.context ?? "fresh", phase: stage.phase ?? `stage-${index}`, parentRunId,
       orchestratorTarget: undefined, intercomSessionName: undefined, async: true,
     });

@@ -13,6 +13,7 @@ const testGlobalRoot = resolve(
   String(process.pid),
 );
 mkdirSync(testGlobalRoot, { recursive: true });
+process.env.SPIDER_TEST_FIXTURE_CHECKOUT = resolve(".");
 process.env.SPIDER_GLOBAL_ROOT = testGlobalRoot;
 
 afterAll(() => {

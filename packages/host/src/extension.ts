@@ -41,9 +41,9 @@ import {
   type SkillActionArgs,
   type DrainReport,
 } from "@spider/organism";
-import { runUpstreamWatch, markReviewed, DEFAULT_UPSTREAM_REFS, registerSuperpowers } from "@spider/superpowers";
-import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { runUpstreamWatch, markReviewed, registerSuperpowers } from "@spider/superpowers";
+import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import { mountAgentsUI } from "./agents/mount";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
@@ -250,15 +250,37 @@ function buildOrganismDeps(ctx: ActionCtx & { parentModel?: string }): OrganismA
 /** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
 /** Render a control upstream-watch report as a compact 🕸 panel string. */
 function renderUpstreamReport(report: {
-  packages: Array<{ package: string; head: string; candidates: Array<{ commit: string; subject: string }>; error?: string }>;
+  packages: Array<{
+    package: string;
+    state: "no-baseline" | "fetch-failed" | "unreachable" | "up-to-date" | "candidates";
+    head: string;
+    candidates: Array<{ commit: string; subject: string }>;
+    reason?: string;
+  }>;
   todosAdded: number;
 }): string {
   const lines = [`🕸 upstream-watch — ${report.packages.length} package(s) checked, ${report.todosAdded} new cherry-pick todo(s)`];
   for (const p of report.packages) {
-    if (p.error) { lines.push(`  ${p.package}: skipped (${p.error.split("\n")[0]})`); continue; }
-    if (p.candidates.length === 0) { lines.push(`  ${p.package} @ ${p.head.slice(0, 7)}: up to date`); continue; }
-    lines.push(`  ${p.package} @ ${p.head.slice(0, 7)}: ${p.candidates.length} candidate(s)`);
-    for (const c of p.candidates) lines.push(`    • ${c.commit.slice(0, 7)} ${c.subject}`);
+    const head = p.head ? ` @ ${p.head.slice(0, 7)}` : "";
+    const reason = (p.reason ?? "unknown reason").split("\n")[0];
+    if (p.state === "no-baseline") {
+      lines.push(`  ${p.package}${head}: NO BASELINE — ${reason}`);
+      continue;
+    }
+    if (p.state === "fetch-failed") {
+      lines.push(`  ${p.package}: FETCH FAILED / UNREACHABLE — ${reason}`);
+      continue;
+    }
+    if (p.state === "unreachable") {
+      lines.push(`  ${p.package}${head}: UNREACHABLE — ${reason}`);
+      continue;
+    }
+    if (p.state === "up-to-date") {
+      lines.push(`  ${p.package}${head}: up to date`);
+      continue;
+    }
+    lines.push(`  ${p.package}${head}: ${p.candidates.length} candidate(s)`);
+    for (const candidate of p.candidates) lines.push(`    • ${candidate.commit.slice(0, 7)} ${candidate.subject}`);
   }
   return lines.join("\n");
 }
@@ -414,23 +436,50 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
     }
     case "upstream-watch": {
       if (!ctx) return { error: "control upstream-watch requires an action context" };
+      const git = (
+        repo: string,
+        gitArgs: string[],
+        options: { timeoutMs: number; env: Readonly<Record<string, string>> },
+      ): Promise<string> => new Promise((resolve, reject) => {
+        execFile("git", gitArgs, {
+          cwd: repo,
+          encoding: "utf8",
+          timeout: options.timeoutMs,
+          env: { ...process.env, ...options.env },
+        }, (error, stdout, stderr) => {
+          if (error) {
+            Object.assign(error, { stderr });
+            reject(error);
+          } else {
+            resolve(stdout);
+          }
+        });
+      });
+      const mirrorRoot = path.join(paths.globalRoot, "upstream");
       const mark = (args as { mark?: unknown }).mark;
       if (mark != null && mark !== false) {
         const parts = Array.isArray(mark) ? mark.map(String) : String(mark).split(/\s+/).filter(Boolean);
-        const [pkg, sha] = parts;
-        if (!pkg || !sha) return { error: "control upstream-watch --mark needs <package> <sha>" };
-        markReviewed(ctx.globalDb, pkg, sha);
-        return { display: `🕸 upstream-watch: marked ${pkg} reviewed @ ${sha}`, details: { ok: true, marked: { package: pkg, sha } } };
+        const [pkg, ref] = parts;
+        if (!pkg || !ref) return { error: "control upstream-watch --mark needs <package> <ref>" };
+        try {
+          const sha = await markReviewed(ctx.globalDb, pkg, ref, { git, mirrorRoot });
+          return {
+            display: `🕸 upstream-watch: marked ${pkg} reviewed @ ${sha}`,
+            details: { ok: true, marked: { package: pkg, ref, sha } },
+          };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
       }
-      const git = (repo: string, gitArgs: string[]): string =>
-        execFileSync("git", gitArgs, { cwd: repo, encoding: "utf8" });
-      const injected = (args as { repos?: Record<string, string> }).repos;
-      const localRepos = injected ?? Object.fromEntries(
-        DEFAULT_UPSTREAM_REFS
-          .map((r) => [r.package, path.join(ctx.cwd, "packages", r.package)] as const)
-          .filter(([, p]) => existsSync(p)),
-      );
-      const report = runUpstreamWatch(ctx.globalDb, ctx.db, ctx.sessionId, { git, localRepos });
+      // `repos` is a hermetic-test hook: values replace upstream_repo sources,
+      // never mirror paths. Production always reads the URLs stored in the DB.
+      const upstreamRepos = (args as { repos?: Record<string, string> }).repos;
+      const report = await runUpstreamWatch(ctx.globalDb, ctx.db, ctx.sessionId, {
+        git,
+        mirrorRoot,
+        upstreamRepos,
+        packages: upstreamRepos ? Object.keys(upstreamRepos) : undefined,
+      });
       return { display: renderUpstreamReport(report), details: report };
     }
     case "bind": {

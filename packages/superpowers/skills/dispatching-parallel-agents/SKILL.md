@@ -68,13 +68,18 @@ Each agent gets:
 Issue one `spider run` per independent domain in a single turn — they run
 concurrently:
 
-    spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts failures", model: "<mid>" }
-    spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts failures", model: "<mid>" }
-    spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts failures", model: "<mid>" }
+    spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts failures", model: "<provider-qualified worker default>" }
+    spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts failures", model: "<provider-qualified worker default>" }
+    spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts failures", model: "<provider-qualified worker default>" }
 
-Or dispatch the whole fan-out at once: `spider run { tasks: [ ... ], concurrency: 3 }`.
-Children report terminal status asynchronously. Integrate each result as its
-completion event arrives instead of blocking on the slowest.
+Resolve the explicit provider-qualified model from `spider control models`
+(`models.defaults.worker`) before dispatch; do not hardcode a model family.
+Or dispatch the whole fan-out at once: `spider run { tasks: [ ... ], concurrency: 3 }`;
+each task still needs its own explicit model and concrete task. Children report
+terminal status asynchronously. Integrate each result as its completion event
+arrives instead of blocking on the slowest. A `pipeline` with `handoff:"intercom"`
+spawns a fresh next-stage child, never resumes the previous one; `spider message`
+does not redirect running children or restart completed ones.
 
 ### 4. Review and Integrate
 
@@ -146,9 +151,9 @@ Return: Summary of what you found and what you fixed.
 
 **Dispatch:**
 ```
-spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts", model: "<mid>" }
-spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts", model: "<mid>" }
-spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts", model: "<mid>" }
+spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts", model: "<provider-qualified worker default>" }
+spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts", model: "<provider-qualified worker default>" }
+spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts", model: "<provider-qualified worker default>" }
 ```
 
 **Results:**
@@ -158,15 +163,6 @@ spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts",
 
 **Integration:** All fixes independent, no conflicts, full suite green
 
-**Time saved:** 3 problems solved in parallel vs sequentially
-
-## Key Benefits
-
-1. **Parallelization** - Multiple investigations happen simultaneously
-2. **Focus** - Each agent has narrow scope, less context to track
-3. **Independence** - Agents don't interfere with each other
-4. **Speed** - 3 problems solved in time of 1
-
 ## Verification
 
 After agents return:
@@ -174,12 +170,3 @@ After agents return:
 2. **Check for conflicts** - Did agents edit same code?
 3. **Run full suite** - Verify all fixes work together
 4. **Spot check** - Agents can make systematic errors
-
-## Real-World Impact
-
-From debugging session (2025-10-03):
-- 6 failures across 3 files
-- 3 agents dispatched in parallel
-- All investigations completed concurrently
-- All fixes integrated successfully
-- Zero conflicts between agent changes

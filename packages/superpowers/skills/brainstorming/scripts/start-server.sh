@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the brainstorm server and output connection info
-# Usage: start-server.sh [--project-dir <path>] [--host <bind-host>] [--url-host <display-host>] [--foreground] [--background]
+# Usage: start-server.sh [--project-dir <path>] [--port <port>] [--host <bind-host>] [--url-host <display-host>] [--foreground] [--background]
 #
 # Starts server on a random high port, outputs JSON with URL.
 # Each session gets its own directory to avoid conflicts.
@@ -8,6 +8,7 @@
 # Options:
 #   --project-dir <path>  Store durable session files under <path>/.superpowers/brainstorm/.
 #                         Otherwise use <cwd>/.spider/scratch/superpowers/brainstorm/.
+#   --port <port>        Port to bind (0 lets the OS choose a free port).
 #   --host <bind-host>    Host/interface to bind (default: 127.0.0.1).
 #                         Use 0.0.0.0 in remote/containerized environments.
 #   --url-host <host>     Hostname shown in returned URL JSON.
@@ -15,7 +16,7 @@
 #   --open                Auto-open the browser on the first screen (use only
 #                         after the user approves the visual companion).
 #   --foreground          Run server in the current terminal (no backgrounding).
-#   --background          Force background mode (overrides Codex auto-foreground).
+#   --background          Force background mode (overrides Windows auto-foreground).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -26,10 +27,15 @@ FORCE_BACKGROUND="false"
 BIND_HOST="127.0.0.1"
 URL_HOST=""
 IDLE_TIMEOUT_MINUTES=""
+PORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-dir)
       PROJECT_DIR="$2"
+      shift 2
+      ;;
+    --port)
+      PORT="${2:-}"
       shift 2
       ;;
     --host)
@@ -71,6 +77,14 @@ if [[ -z "$URL_HOST" ]]; then
   fi
 fi
 
+if [[ -n "$PORT" ]]; then
+  if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( 10#$PORT > 65535 )); then
+    echo '{"error": "--port must be an integer from 0 to 65535"}'
+    exit 1
+  fi
+  export BRAINSTORM_PORT="$PORT"
+fi
+
 if [[ -n "$IDLE_TIMEOUT_MINUTES" ]]; then
   if ! [[ "$IDLE_TIMEOUT_MINUTES" =~ ^[0-9]+$ ]] || [[ "$IDLE_TIMEOUT_MINUTES" -lt 1 ]]; then
     echo "{\"error\": \"--idle-timeout-minutes must be a positive integer\"}"
@@ -93,11 +107,6 @@ is_windows_like_shell() {
   esac
   return 1
 }
-
-# Some environments reap detached/background processes. Auto-foreground when detected.
-if [[ -n "${CODEX_CI:-}" && "$FOREGROUND" != "true" && "$FORCE_BACKGROUND" != "true" ]]; then
-  FOREGROUND="true"
-fi
 
 # Windows/Git Bash reaps nohup background processes. Auto-foreground when detected.
 if [[ "$FOREGROUND" != "true" && "$FORCE_BACKGROUND" != "true" ]]; then

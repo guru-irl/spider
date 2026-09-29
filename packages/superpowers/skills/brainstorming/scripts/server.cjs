@@ -660,6 +660,7 @@ function startServer() {
   let triedFallback = false;
 
   function onListen() {
+    PORT = server.address().port;
     // Cookie name keys on the ACTUAL bound port (may differ from the preferred
     // one after an EADDRINUSE fallback) so it can't collide with another server's
     // cookie in the shared localhost jar.

@@ -5,7 +5,7 @@ description: Use when completing tasks, implementing major features, or before m
 
 # Requesting Code Review
 
-Request a code reviewer via `spider run` to catch issues before they cascade. The reviewer gets precisely crafted context for evaluation — never your session's history. This keeps the reviewer focused on the work product, not your thought process, and preserves your own context for continued work.
+Request a code reviewer via `spider run` to catch issues before they cascade. The reviewer gets precisely crafted context for evaluation — never your session's history. This keeps the reviewer focused on the work product, not your thought process.
 
 **Core principle:** Review early, review often.
 
@@ -25,15 +25,15 @@ Request a code reviewer via `spider run` to catch issues before they cascade. Th
 
 **1. Get git SHAs:**
 ```bash
-BASE_SHA=$(git rev-parse HEAD~1)  # or origin/main
+BASE_SHA=$(git merge-base origin/main HEAD)  # or another justified base
 HEAD_SHA=$(git rev-parse HEAD)
 ```
 
 **2. Run the code reviewer:**
 
-``spider run { agent: "worker", role: "reviewer", context: "fresh", model: <scaled>, task: <filled code-reviewer.md> }`` — fill the template at [code-reviewer.md](code-reviewer.md) as the `task`. The reviewer runs `role:"reviewer"` with `context:"fresh"`, so it gets the crafted context and never inherits your session's history.
+`spider run { agent: "reviewer", context: "fresh", model: "<provider-qualified reviewer default>", task: "Review [specific range] against [requirements] using code-reviewer.md; report findings" }` — fill the template at [code-reviewer.md](code-reviewer.md) as the concrete task. Resolve `model` from `spider control models` (`models.defaults.reviewer`) and pass it explicitly. The fresh reviewer never inherits your session history.
 
-In a `handoff:"intercom"` pipeline the reviewer is WOKEN by the finishing worker with the review-package path (no controller round-trip). A reviewer that finds Critical/Important issues wakes a fix stage; a clean review wakes the controller.
+A `pipeline` with `handoff:"intercom"` spawns a **fresh** reviewer after the worker finishes only when the next task can be specified up front. Findings require a newly dispatched fix stage; `spider message` cannot resume a finished child or redirect a running one.
 
 **Placeholders:**
 - `{DESCRIPTION}` - Brief summary of what you built
@@ -57,7 +57,7 @@ You: Let me request code review before proceeding.
 BASE_SHA=$(git log --oneline | grep "Task 1" | head -1 | awk '{print $1}')
 HEAD_SHA=$(git rev-parse HEAD)
 
-[spider run reviewer (role:"reviewer", context:"fresh") with filled code-reviewer.md]
+[spider run reviewer (context:"fresh", explicit role-default model) with filled code-reviewer.md]
   DESCRIPTION: Added verifyIndex() and repairIndex() with 4 issue types
   PLAN_OR_REQUIREMENTS: Task 2 from docs/superpowers/plans/deployment-plan.md
   BASE_SHA: a7981ec
@@ -74,20 +74,12 @@ You: [Fix progress indicators]
 [Continue to Task 3]
 ```
 
-## Integration with Workflows
+## Common Rationalizations
 
-**Subagent-Driven Development:**
-- Review after EACH task
-- Catch issues before they compound
-- Fix before moving to next task
-
-**Executing Plans:**
-- Review after each task or at natural checkpoints
-- Get feedback, apply, continue
-
-**Ad-Hoc Development:**
-- Review before merge
-- Review when stuck
+| Excuse | Reality |
+|--------|---------|
+| "I'll just review the diff myself instead of dispatching a reviewer" | The coordinator needs context to drive the work. Dispatch a fresh reviewer with the diff and requirements; only findings return. |
+| "The reviewer needs my whole session history" | Give precisely crafted context, never the session history. |
 
 ## Red Flags
 

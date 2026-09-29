@@ -15,11 +15,12 @@ import { controlDoctor, controlConfig, controlMigrate } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, listCatalog } from "./control/models-cmd";
 import { applyConfigEdit } from "./control/config-cmd";
+import { readInjectionSnapshot, type InjectionSnapshot } from "./injection-snapshot";
 import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, paths, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db } from "@spider/db-core";
 import {
   stageWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
@@ -99,21 +100,13 @@ function makeIndexer(db: Db) {
   };
 }
 
-// scope + per-call DB selection (ctx-native: reuse the DBs buildActionCtx resolved).
-// "project" is a deprecated alias for "worktree"
-// Default is "repo" for memory operations (memory tables live in repo tier post-71a2acf)
-const scopeOf = (a: any): "global" | "repo" | "worktree" => {
-  if (a?.scope === "global") return "global";
-  if (a?.scope === "repo") return "repo";
-  if (a?.scope === "worktree") return "worktree";
-  if (a?.scope === "project") return "worktree"; // deprecated alias
-  return "repo"; // default: memory tables are in repo tier
-};
-const dbFor = (scope: "global" | "repo" | "worktree", ctx: ActionCtx | undefined) => {
-  if (scope === "global") return ctx!.globalDb;
-  if (scope === "repo") return ctx!.repoDb;
-  return ctx!.db; // worktree
-};
+// Keep the removed names in the tool enum so callers receive this actionable error
+// rather than a schema rejection. Only global and repo reach memory storage.
+const removedMemoryScope = (a: SpiderArgs): boolean => a.scope === "worktree" || a.scope === "project";
+const REMOVED_MEMORY_SCOPE = "worktree memory was removed; use repo (or global for facts true in every repo)";
+const scopeOf = (a: SpiderArgs): "global" | "repo" => a.scope === "global" ? "global" : "repo";
+const dbFor = (scope: "global" | "repo", ctx: ActionCtx | undefined) =>
+  scope === "global" ? ctx!.globalDb : ctx!.repoDb;
 
 interface PiToolAPI {
   registerTool(tool: {
@@ -146,16 +139,17 @@ export const SPIDER_PARAMETERS = {
     },
     // control
     command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory','bind','unbind')." },
+    apply: { type: "boolean", description: "control migrate: apply changes (default is a dry-run)." },
     op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command (pending|approve|reject|status|forget; consolidate is deprecated -> status + forget)." },
     uuid: { type: "string", description: "memory uuid for approve/reject/forget." },
     // scope / cwd (most actions)
-    scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory/registry scope (default repo). \"Is this still true after I delete this worktree?\" → **repo**; \"Is this true in every repo?\" → **global**; otherwise → **worktree**. (\"project\" is deprecated, use \"worktree\")" },
+    scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory scope (default repo). \"Is this true in every repo?\" → **global**; otherwise → **repo**. Worktree/project memory was removed; use repo." },
     cwd: { type: "string", description: "Working-directory override." },
     // search / recall
-    query: { type: "string", description: "Query text for action 'search' or 'recall'." },
+    query: { type: "string", description: "Search matches any sanitized term. Repo recall ranks all-word matches first (AND), then fills from any-word matches (OR); FTS operators are ignored, and common words are removed unless all terms are common. Global recall matches the whole query as a substring." },
     category: { type: "string", description: "Memory category (remember) or filter (recall); optional skill category for action='skill' op=add." },
     limit: { type: "number", description: "Max results (search/recall)." },
     // remember
@@ -285,12 +279,15 @@ function renderUpstreamReport(report: {
   return lines.join("\n");
 }
 
-async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown> {
+type DoctorActionCtx = Omit<ActionCtx, "repoDb"> & { repoDb?: Db };
+
+async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string): Promise<unknown> {
   const command = String(args.command ?? "");
   const cwd = String(args.cwd ?? ctx?.cwd ?? process.cwd());
+  const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
-      const report = controlDoctor(cwd, ctx?.sessionId);
+      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId);
       if (ctx) {
         // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
         // registration must not break extension load") with NOTHING anywhere
@@ -314,7 +311,8 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
           }
           const memLast = (() => {
             try {
-              return buildOrganismDeps(ctx).worker.getLastDrain();
+              if (!ctx.sessionId) throw new Error("Organism needs an active pi session.");
+              return runtime?.peekLastDrain(ctx.sessionId, ctx.project.projectKey);
             } catch (e) {
               // Runtime resolution (e.g. no active session id) must not swallow the
               // remaining independent fallbacks below (P12/F2) — only THIS call is isolated.
@@ -340,10 +338,22 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
                   : `${last.status}${last.skipReason ? ` (${last.skipReason})` : ""}`
                 : "waiting for compaction or shutdown; no verified drain recorded")
             : "disabled";
-          const pendingMemory = listPending(ctx.repoDb, "repo").length;
-          const pendingSkills = new SkillStore(ctx.repoDb).list({ status: "staged" }).length;
+          const version = ctx.repoDb ? Number(ctx.repoDb.pragma("user_version")) : undefined;
+          if (version !== undefined && version < SCHEMA_VERSION) {
+            report.ok = false;
+            report.lines.push(`- repo DB schema v${version} < v${SCHEMA_VERSION}; run spider control migrate with apply=true`);
+          } else if (version !== undefined && version > SCHEMA_VERSION) {
+            report.ok = false;
+            report.lines.push(`- repo DB schema v${version} is newer than this build (v${SCHEMA_VERSION}); proposal counts unavailable`);
+          }
+          const pendingMemory = ctx.repoDb && version === SCHEMA_VERSION ? listPending(ctx.repoDb, "repo").length : 0;
+          const pendingSkills = ctx.repoDb && version === SCHEMA_VERSION ? new SkillStore(ctx.repoDb).list({ status: "staged" }).length : 0;
           report.lines.push(`- organism: ${state}`);
-          report.lines.push(`- organism proposals awaiting review: ${pendingMemory} memories, ${pendingSkills} skills`);
+          if (version === undefined || version === SCHEMA_VERSION) {
+            report.lines.push(`- organism proposals awaiting review: ${pendingMemory} memories, ${pendingSkills} skills`);
+          } else if (version < SCHEMA_VERSION) {
+            report.lines.push("- organism proposal counts unavailable until migrated");
+          }
           if (enabled && last && (last.status === "failed" || last.status === "partial" || last.skipReason === "no-model")) report.ok = false;
           for (const error of last?.errors ?? []) report.lines.push(`- organism ${error.phase}: ${error.message}`);
           if (pendingMemory + pendingSkills > 0) report.lines.push("- review proposals: spider control memory sub=pending; spider skill op=list");
@@ -351,6 +361,34 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
           // A-M4: same fix as the inner catch above — was a raw stringifier.
           report.ok = false;
           report.lines.push(`- organism diagnostics unavailable: ${safeError(e)}`);
+        }
+      }
+      {
+        try {
+          const snap = ctx?.injectionSnapshot ?? doctorSnapshot ?? readInjectionSnapshot(ctx?.injectionCwd ?? cwd, ctx?.sessionId);
+          let omitted = 0;
+          for (const scope of ["global", "repo"] as const) {
+            const error = snap.errors[scope];
+            if (error) {
+              report.ok = false;
+              report.lines.push(`- memory ${scope}: unreadable: ${safeError(error)}`);
+            } else {
+              const { active, injected } = snap.counts[scope];
+              report.lines.push(`- memory ${scope}: active=${active} injected=${injected}`);
+              omitted += active - injected;
+            }
+          }
+          if (snap.errors.config) {
+            report.ok = false;
+            report.lines.push(`- memory ${safeError(snap.errors.config)}`);
+          }
+          if (omitted) {
+            if (!snap.capped) report.ok = false;
+            report.lines.push(`- memory WARNING: ${omitted} ${omitted === 1 ? "entry" : "entries"} omitted from injection (memory.snapshotCharCap)`);
+          }
+        } catch (e) {
+          report.ok = false;
+          report.lines.push(`- memory diagnostics unavailable: ${safeError(e)}`);
         }
       }
       return report;
@@ -369,8 +407,9 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       return { details: { config: controlConfig("get", cwd) } };
     }
     case "memory": {
+      if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };
       const scope = scopeOf(args);
-      const db = dbFor(scope, ctx);
+      const db = dbFor(scope, fullCtx);
       switch (args.sub) {
         case "pending": {
           const recs = listPending(db, scope);
@@ -409,9 +448,9 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       return { details: result };
     }
     case "skill": {
-      if (!ctx) return { error: "control skill requires an action context" };
+      if (!fullCtx) return { error: "control skill requires an action context" };
       if (args.sub === "curate") {
-        return await curateAction(buildOrganismDeps(ctx), {
+        return await curateAction(buildOrganismDeps(fullCtx), {
           force: args.force as boolean | undefined,
           consolidate: args.consolidate as boolean | undefined,
         });
@@ -419,12 +458,12 @@ async function handleControl(args: SpiderArgs, ctx?: ActionCtx): Promise<unknown
       return { error: `control skill sub '${String(args.sub)}' unknown (valid: curate)` };
     }
     case "insights": {
-      if (!ctx) return { error: "control insights requires an action context" };
-      return insightsAction(buildOrganismDeps(ctx));
+      if (!fullCtx) return { error: "control insights requires an action context" };
+      return insightsAction(buildOrganismDeps(fullCtx));
     }
     case "stats": {
-      if (!ctx) return { error: "control stats requires an action context" };
-      return { details: collectStats({ worktreeDb: ctx.db, repoDb: ctx.repoDb }, ctx.globalDb) };
+      if (!fullCtx) return { error: "control stats requires an action context" };
+      return { details: collectStats({ worktreeDb: fullCtx.db, repoDb: fullCtx.repoDb }, fullCtx.globalDb) };
     }
     case "models": {
       if (!ctx) return { error: "control models requires an action context" };
@@ -541,6 +580,16 @@ function isPathInside(root: string, target: string): boolean {
  *  @spider/models router. A handler routes via
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
 export function buildActionCtx(
+  pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd: string | undefined,
+  onPartial: ((text: string) => void) | undefined, modelRegistry: unknown, signal: AbortSignal | undefined,
+  parentModel: string | undefined, readOnlyRepo: true,
+): DoctorActionCtx & { parentModel?: string };
+export function buildActionCtx(
+  pi: PiToolAPI, args: SpiderArgs, sessionId: string, ctxCwd?: string,
+  onPartial?: (text: string) => void, modelRegistry?: unknown, signal?: AbortSignal,
+  parentModel?: string, readOnlyRepo?: false,
+): ActionCtx & { parentModel?: string };
+export function buildActionCtx(
   pi: PiToolAPI,
   args: SpiderArgs,
   sessionId: string,
@@ -549,7 +598,8 @@ export function buildActionCtx(
   modelRegistry?: unknown,
   signal?: AbortSignal,
   parentModel?: string,
-): ActionCtx & { parentModel?: string } {
+  readOnlyRepo = false,
+): (ActionCtx | DoctorActionCtx) & { parentModel?: string } {
   const rawCwd = String((args as { cwd?: unknown }).cwd ?? ctxCwd ?? process.cwd());
   // If args.cwd is provided, it's an explicit user-specified path; otherwise honor bindings
   const explicitCwd = !!(args as { cwd?: unknown }).cwd;
@@ -579,14 +629,53 @@ export function buildActionCtx(
   // For git repos: open the repo DB
   // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
   // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
-  const repoDb = project.repoKey
-    ? openRepo(project.repoKey)
-    : openDbAt(path.join(paths.projectRoot(project.projectKey), "repo.db"), "repo");
+  const repoPath = project.repoKey
+    ? path.join(project.repoKey, "spider", "repo.db")
+    : path.join(paths.projectRoot(project.projectKey), "repo.db");
+  // Reporting on a repo must never create or migrate its DB. Other actions still
+  // use the writable, migrated connection they require.
+  const repoDb = readOnlyRepo
+    ? openDbReadOnlyAt(repoPath)
+    : project.repoKey ? openRepo(project.repoKey) : openDbAt(repoPath, "repo");
   // Resolved once per dispatch so packages/subagents/src/actions/run.ts (which cannot
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
   const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel };
+  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel };
+}
+
+async function dispatchWithDoctorSnapshot(
+  pi: PiToolAPI, params: SpiderArgs, ctx: unknown, onPartial?: (text: string) => void, signal?: AbortSignal,
+): Promise<unknown> {
+  const sessionId = sessionIdOf(ctx);
+  const injectionSnapshot = params.action === "control" && params.command === "doctor"
+    ? readInjectionSnapshot(cwdOf(ctx) ?? String(params.cwd ?? process.cwd()), sessionId) : undefined;
+  try {
+    if (injectionSnapshot) {
+      const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
+        (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx), true);
+      actionCtx.injectionSnapshot = injectionSnapshot;
+      // An older schema can still be inspected, but a corrupt file must retain
+      // the existing action-context fallback rather than hiding the open error.
+      if (injectionSnapshot.errors.repo && actionCtx.repoDb) actionCtx.repoDb.pragma("user_version");
+      return await handleControl(params, actionCtx);
+    }
+    if (params.action === "control" && params.command === "migrate") {
+      // A dry-run must not migrate the repo as a side effect of context creation.
+      const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
+        (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx), true);
+      return await handleControl(params, actionCtx);
+    }
+    const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
+      (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx));
+    return await dispatch(params, actionCtx);
+  } catch (e) {
+    if (!injectionSnapshot) throw e;
+    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId) as { ok: boolean; lines: string[] };
+    report.ok = false;
+    report.lines.push(`- action context unavailable: ${safeError(e)}`);
+    return report;
+  }
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
@@ -619,6 +708,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
 
   // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.
   registerAction("remember", async (args, ctx) => {
+    if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };
     const scope = scopeOf(args);
     const r = stageWrite(dbFor(scope, ctx), scope, {
       category: args.category as any,
@@ -633,6 +723,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   });
 
   registerAction("recall", async (args, ctx) => {
+    if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };
     const scope = scopeOf(args);
     const embedder = await getEmbedder();
     const recs = await recall(dbFor(scope, ctx), scope, args.query as string, embedder, {
@@ -663,7 +754,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
 
   registerSlashCommands(pi as any, {
     run: (a, ctx) =>
-      dispatch(a as SpiderArgs, buildActionCtx(pi, a as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), undefined, (ctx as { modelRegistry?: unknown })?.modelRegistry, undefined, parentModelOf(ctx))) as Promise<{
+      dispatchWithDoctorSnapshot(pi, a as SpiderArgs, ctx) as Promise<{
         content: string;
         details?: unknown;
       }>,
@@ -802,7 +893,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
-      const r = await dispatch(args, buildActionCtx(pi, args as SpiderArgs, sessionIdOf(ctx), cwdOf(ctx), onPartial, (ctx as { modelRegistry?: unknown })?.modelRegistry, abortSignal, parentModelOf(ctx)));
+      const r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, onPartial, abortSignal);
       const result = toToolResult(r);
       // Mechanism (B) (pi-tool-error-contract-report.md §3): pi's AgentToolResult has no
       // isError field of its own — returning one here does nothing. Hand the

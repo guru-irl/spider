@@ -170,8 +170,8 @@ in one worktree is visible from its siblings; sessions and runs are not.
 
 Which scope to use, when writing memory:
 
-> *"Is this still true after I delete this worktree?"* → **repo**.
-> *"Is it true in every repo?"* → **global**. Otherwise → **worktree**.
+> *"Is this true in every repo?"* → **global**. Otherwise → **repo**.
+> Worktree memory was removed; use repo for repository-specific facts.
 
 A session normally resolves its project from the working directory. `/bind`
 pins a session to a specific worktree when that is wrong (for example, a session

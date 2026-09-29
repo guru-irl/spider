@@ -51,9 +51,10 @@ memory vectors live with memory, content vectors with content.
 AGENTS.md block, and the `bind` output — the schema description matters most, because that is
 what the model reads at decision time):
 
-> *"Is this still true after I delete this worktree?"* → **repo**
 > *"Is this true in every repo?"* → **global**
-> otherwise → **worktree**
+> otherwise → **repo**
+
+Current memory behavior supersedes the historical three-tier guidance: worktree memory was removed.
 
 ---
 

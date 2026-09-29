@@ -113,7 +113,7 @@ export function buildLearningGraph(
 
   // Memory nodes + memory→skill lexical-overlap edges.
   const skillMeta = skills.map((s) => ({ name: s.name, category: s.category }));
-  for (const mem of listActive(projectDb, "project")) {
+  for (const mem of listActive(projectDb, "repo")) {
     const node: GraphNode = {
       id: mem.uuid,
       label: memoryLabel(mem.content),

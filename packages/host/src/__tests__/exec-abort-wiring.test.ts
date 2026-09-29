@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import spiderExtension from "../extension";
+import { isolatedCwd } from "./isolated-cwd";
+const fixtureCwd = isolatedCwd("exec-abort-wiring");
 
 // Enters through the REAL registered tool, not a hand-built ctx — same rationale as
 // exec-stream-wiring.test.ts: a correct Executor unit is worthless if extension.ts never
@@ -29,7 +31,7 @@ describe("Escape (pi's real AbortSignal) reaches the spawned process end-to-end"
       { action: "exec", language: "shell", code: "sleep 5" },
       ac.signal,
       undefined,
-      { cwd: process.cwd(), sessionId: "s-abort-1" },
+      { cwd: fixtureCwd, sessionId: "s-abort-1" },
     );
     setTimeout(() => ac.abort(), 150);
     const result: any = await resultPromise;
@@ -50,7 +52,7 @@ describe("Escape (pi's real AbortSignal) reaches the spawned process end-to-end"
       { action: "exec", language: "shell", code: "echo ok" },
       {},
       undefined,
-      { cwd: process.cwd(), sessionId: "s-abort-2" },
+      { cwd: fixtureCwd, sessionId: "s-abort-2" },
     );
     expect(JSON.stringify(result)).toContain("ok");
   });

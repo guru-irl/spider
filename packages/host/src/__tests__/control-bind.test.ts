@@ -60,8 +60,9 @@ describe("control bind/unbind", () => {
 
     // Assert on SHORT STABLE SUBSTRINGS
     const msg = result.message!;
-    expect(msg).toContain("delete this worktree");
-    expect(msg).toContain("repo");
+    expect(msg).toContain("Is this true in every repo?");
+    expect(msg).toContain("otherwise → **repo**");
+    expect(msg).not.toContain("otherwise → **worktree**");
   });
 
   it("renderer emits a themed card and truncates to width", () => {

@@ -1,5 +1,6 @@
 // packages/host/src/dispatch.ts
 import type { Db, ProjectInfo } from "@spider/db-core";
+import type { InjectionSnapshot } from "./injection-snapshot";
 
 export type SpiderAction =
   | "search" | "remember" | "recall" | "exec" | "exec_file" | "batch"
@@ -18,6 +19,8 @@ export interface ActionCtx {
   project: ProjectInfo;      // { projectKey, realPath, gitCommonDir?, repoKey?, dbPath, name? }
   sessionId: string;         // pi native session id, verbatim
   cwd: string;
+  injectionCwd?: string;       // host cwd before action-context binding resolution; doctor mirrors the hook
+  injectionSnapshot?: InjectionSnapshot; // captured before action context can migrate a broken DB
   pi: unknown;               // pi ExtensionAPI (events, sendMessage, on, registerTool)
   auxModel?: string;         // cheap aux-model id hint from config (digest routing)
   models: typeof import("@spider/models");  // model router: catalog()/pick()/complete()

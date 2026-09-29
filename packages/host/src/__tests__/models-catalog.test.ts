@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { listCatalog } from "../control/models-cmd";
 import spiderExtension from "../extension";
+import { isolatedCwd } from "./isolated-cwd";
+const fixtureCwd = isolatedCwd("models-catalog");
 
 // A stand-in for pi's real ModelRegistry (dist/core/model-registry.d.ts).
 // Field names are pi's, not ours: `reasoning` (not thinking) and
@@ -60,7 +62,7 @@ describe("control models is wired through the real tool", () => {
     };
     spiderExtension(pi);
     const r: any = await tool.execute("m1", { action: "control", command: "models" }, undefined, undefined, {
-      cwd: process.cwd(),
+      cwd: fixtureCwd,
       sessionId: "s-models",
       modelRegistry: mkRegistry([model("github-copilot", "claude-sonnet-5")]),
     });

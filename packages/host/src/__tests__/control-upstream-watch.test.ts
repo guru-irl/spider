@@ -31,9 +31,12 @@ function tempRepo(): { dir: string; commit: (m: string) => string } {
 }
 
 let ctx: ActionCtx;
+let previousCeiling: string | undefined;
 
 beforeAll(() => {
   mkdirSync(scratch, { recursive: true });
+  previousCeiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = scratch;
   setGlobalDbPathForTests(join(scratch, "global.db"));
   const pi: unknown = { on: () => undefined, registerTool: () => undefined, registerCommand: () => undefined, registerMessageRenderer: () => undefined };
   spiderExtension(pi as never);
@@ -43,7 +46,10 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  ctx?.db.close(); ctx?.repoDb.close(); ctx?.globalDb.close();
   setGlobalDbPathForTests(null);
+  if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+  else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
   try { rmSync(scratch, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
 

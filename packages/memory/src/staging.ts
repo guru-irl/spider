@@ -19,9 +19,8 @@ export interface StageResult {
  * without an LLM (and an LLM-summarisation path is deliberately out of scope -- it would not
  * be testable or predictable), so the honest fix is a rename, not a fake merge: the report
  * lives on as `control memory status`, and the *old* name now fails loudly instead of
- * silently misleading a caller who expects it to free space. Shared by both control-memory
- * call sites (packages/host/src/extension.ts and this package's own actions.ts) so the
- * message can't drift between them.
+ * silently misleading a caller who expects it to free space. The production host
+ * action uses this message.
  */
 export const MEMORY_CONSOLIDATE_RENAMED_MESSAGE: string =
   "control memory consolidate was a read-only report (active entries + char usage), not an " +
@@ -44,6 +43,7 @@ export function stageWrite(
   input: AddMemoryInput,
   opts?: { autoStage?: boolean; cap?: number }
 ): StageResult {
+  tableFor(scope);
   // 1. SCAN FIRST — no row inserted on threat.
   const threat = firstThreatMessage(input.content, "strict");
   if (threat) {
@@ -59,7 +59,7 @@ export function stageWrite(
   }
 
   // 3. DUPLICATE — no new row.
-  if (isDuplicate(db, scope, input.category, input.content)) {
+  if (isDuplicate(db, scope, input.category, input.content, input.source)) {
     return { status: "rejected", reason: "duplicate" };
   }
 
@@ -80,26 +80,14 @@ export function stageWrite(
 
 export function listPending(db: Db, scope: MemoryScope): MemoryRecord[] {
   const table = tableFor(scope);
-  // "project" is a deprecated alias for "worktree"
-  const actualScope = scope === "project" ? "worktree" : scope;
-  
-  if (actualScope === "repo" || actualScope === "worktree") {
-    const rows = db.prepare(`
-      SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
-      FROM ${table}
-      WHERE status = 'staged'
-      ORDER BY created_at DESC
-    `).all() as any[];
-    return rows.map((row) => mapRow(scope, row));
-  } else {
-    const rows = db.prepare(`
-      SELECT id, uuid, category, content, link, status, source, confidence, created_at, updated_at
-      FROM ${table}
-      WHERE status = 'staged'
-      ORDER BY created_at DESC
-    `).all() as any[];
-    return rows.map((row) => mapRow(scope, row));
-  }
+  const sessionId = table === "memory" ? "session_id" : "NULL AS session_id";
+  const rows = db.prepare(`
+    SELECT id, uuid, category, content, link, status, source, confidence, ${sessionId}, created_at, updated_at
+    FROM ${table}
+    WHERE status = 'staged'
+    ORDER BY created_at DESC
+  `).all() as any[];
+  return rows.map((row) => mapRow(scope, row));
 }
 
 export function approvePending(db: Db, scope: MemoryScope, uuid: string): MemoryRecord | null {
@@ -125,7 +113,7 @@ export function rejectPending(db: Db, scope: MemoryScope, uuid: string): void {
  * deletes: delegates to removeMemory (store.ts), which archives the row and strips it from
  * the FTS mirror, matching rejectPending's "never actually delete" contract. Scope safety is
  * structural, not a check performed here: `db` is already the one DB the caller resolved for
- * a single scope (global/repo/worktree each live in a different file/table pairing), so a
+ * a single scope (global/repo each live in a different file/table pairing), so a
  * uuid belonging to a different scope simply is not found -- forgetMemory cannot reach across
  * scopes to delete something even by accident.
  */

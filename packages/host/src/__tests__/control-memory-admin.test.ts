@@ -72,6 +72,22 @@ function makeTool() {
 }
 
 describe("control memory admin: status / consolidate / forget", () => {
+  it("auto remember stages, control memory pending lists it, approval activates it while user remember is active", async () => {
+    const dir = join(scratch, "auto-staging-repo"); mkdirSync(dir, { recursive: true });
+    const tool = makeTool();
+    const auto: any = await tool.execute("auto", { action: "remember", category: "preference", content: "Always check the preview before publishing", auto: true, cwd: dir }, {});
+    expect(auto.details.status).toBe("staged");
+    const pending: any = await tool.execute("pending", { action: "control", command: "memory", sub: "pending", cwd: dir }, {});
+    expect(pending.details.map((entry: { uuid: string }) => entry.uuid)).toContain(auto.details.uuid);
+    const status: any = await tool.execute("status", { action: "control", command: "memory", sub: "status", cwd: dir }, {});
+    expect(status.details.entries.map((entry: { uuid: string }) => entry.uuid)).not.toContain(auto.details.uuid);
+    const approved: any = await tool.execute("approve", { action: "control", command: "memory", sub: "approve", uuid: auto.details.uuid, cwd: dir }, {});
+    expect(approved.details.status).toBe("active");
+    const user: any = await tool.execute("user", { action: "remember", category: "preference", content: "Show the diff before publishing", cwd: dir }, {});
+    expect(user.details.status).toBe("active");
+    const after: any = await tool.execute("after", { action: "control", command: "memory", sub: "status", cwd: dir }, {});
+    expect(after.details.entries.map((entry: { uuid: string }) => entry.uuid)).toEqual(expect.arrayContaining([auto.details.uuid, user.details.uuid]));
+  });
   it("status reports active entries with uuids and usage", async () => {
     const dir = join(scratch, "status-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
@@ -126,6 +142,18 @@ describe("control memory admin: status / consolidate / forget", () => {
 
     const recallRes = await tool.execute("rc1", { action: "recall", query: "widget beta", cwd: dir }, {});
     expect((recallRes.details as Array<{ content: string }>).some((r) => r.content === "widget beta")).toBe(false);
+  });
+
+  it("remember, forget, then remember the same text succeeds via the production tool", async () => {
+    const dir = join(scratch, "dedupe-repo"); mkdirSync(dir, { recursive: true });
+    const tool = makeTool();
+    const args = { action: "remember", category: "preference", content: "reuse after forget", cwd: dir };
+    const first: any = await tool.execute("d1", args, {});
+    const uuid = first.details.uuid;
+    await tool.execute("d2", { action: "control", command: "memory", sub: "forget", uuid, cwd: dir }, {});
+    const second: any = await tool.execute("d3", args, {});
+    expect(second.details.status).toBe("active");
+    expect(second.details.uuid).not.toBe(uuid);
   });
 
   it("forget on an unknown uuid returns a clear error, not silent success", async () => {

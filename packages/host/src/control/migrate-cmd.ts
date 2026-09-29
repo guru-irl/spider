@@ -1,7 +1,7 @@
 // packages/host/src/control/migrate-cmd.ts
 import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync, readFileSync, realpathSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
-import { openDbAt, paths, repoRoot, projectRoot } from "@spider/db-core";
+import { openDbAt, openDbReadOnlyAt, paths, repoRoot, projectRoot, SCHEMA_VERSION } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
 import DatabaseConstructor from "better-sqlite3";
 
@@ -133,7 +133,7 @@ function isAlreadyMigrated(dbPath: string): boolean {
 }
 
 /** Create a backup of all DBs before migration */
-function createBackup(dbFiles: DbFile[]): string {
+function createBackup(dbFiles: DbFile[], repoPath?: string): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").split("T").join("_").split("Z")[0];
   const backupDir = join(paths.globalRoot, "backups", timestamp);
   mkdirSync(backupDir, { recursive: true });
@@ -142,6 +142,14 @@ function createBackup(dbFiles: DbFile[]): string {
     // Use the dbFile.path to create a safe filename
     const backupName = dbFile.path.replace(/\//g, "_").replace(/^_+/, "");
     copyFileSync(dbFile.path, join(backupDir, backupName));
+  }
+  if (repoPath) {
+    // VACUUM INTO includes committed WAL contents in a consistent SQLite snapshot.
+    const db = new DatabaseConstructor(repoPath, { readonly: true, fileMustExist: true });
+    try {
+      const backupName = repoPath.replace(/\//g, "_").replace(/^_+/, "");
+      db.prepare("VACUUM INTO ?").run(join(backupDir, backupName));
+    } finally { db.close(); }
   }
   
   return backupDir;
@@ -273,7 +281,7 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
           // Delete any existing FTS rows first to avoid duplication on repeated runs
           repoDb.exec("DELETE FROM memory_fts");
           
-          const memoryRows = repoDb.prepare("SELECT uuid, category, content, link FROM memory").all();
+          const memoryRows = repoDb.prepare("SELECT uuid, category, content, link FROM memory WHERE status = 'active'").all();
           for (const row of memoryRows) {
             const r = row as { uuid: string; category: string; content: string; link: string | null };
             repoDb.prepare("INSERT INTO memory_fts (uuid, category, content, link) VALUES (?, ?, ?, ?)").run(
@@ -339,35 +347,33 @@ function migrateDb(dbFile: DbFile, dryRun: boolean): { moved: Record<string, num
 export function controlMigrate(opts: MigrateOptions): MigrateResult {
   const dryRun = opts.dryRun ?? !opts.apply;
   
-  // Find DBs to migrate
-  const dbFiles = findOldDbs(opts.cwd);
-  
-  if (dbFiles.length === 0) {
-    return {
-      dryRun,
-      applied: false,
-      message: "No databases found to migrate",
-    };
+  const repoPath = join(repoRoot(opts.cwd) ?? projectRoot(opts.cwd), "repo.db");
+  const repoVersion = (): number | undefined => {
+    const db = openDbReadOnlyAt(repoPath);
+    if (!db) return undefined;
+    try { return Number(db.pragma("user_version")); } finally { db.close(); }
+  };
+  const before = repoVersion();
+  if (before !== undefined && before > SCHEMA_VERSION) {
+    return { dryRun, applied: false, message: `Repo DB schema v${before} is newer than this build (v${SCHEMA_VERSION}); no changes made` };
   }
-  
-  // Check if already migrated
-  const needsMigration = dbFiles.filter(db => {
-    const needs = !isAlreadyMigrated(db.path);
-    return needs;
-  });
-  
-  if (needsMigration.length === 0) {
+
+  // The legacy worktree-to-repo move and the repo schema upgrade are independent.
+  const dbFiles = findOldDbs(opts.cwd);
+  const needsMigration = dbFiles.filter(db => !isAlreadyMigrated(db.path));
+  const needsRepoUpgrade = before !== undefined && before < SCHEMA_VERSION;
+  if (needsMigration.length === 0 && !needsRepoUpgrade) {
     return {
       dryRun,
       applied: false,
-      message: "All databases are already migrated (no changes needed)",
+      message: dbFiles.length === 0 && before === undefined ? "No databases found to migrate" : "All databases are already migrated (no changes needed)",
     };
   }
   
   // Create backup before making changes (only if applying)
   let backupDir: string | undefined;
   if (!dryRun) {
-    backupDir = createBackup(needsMigration);
+    backupDir = createBackup(needsMigration, needsRepoUpgrade ? repoPath : undefined);
   }
   
   // Perform migration
@@ -385,12 +391,25 @@ export function controlMigrate(opts: MigrateOptions): MigrateResult {
     allAmbiguous.push(...result.ambiguous);
   }
   
+  // openDbAt delegates to db-core's repo migration path. Do not create an
+  // absent repo DB merely because control migrate was requested.
+  if (!dryRun && needsRepoUpgrade && existsSync(repoPath)) {
+    const db = openDbAt(repoPath, "repo");
+    db.close();
+  }
+  const after = dryRun ? before : repoVersion();
+  const schemaMessage = needsRepoUpgrade
+    ? dryRun
+      ? `Repo DB schema would upgrade from v${before} to v${SCHEMA_VERSION} (dry-run; no changes made)`
+      : `Repo DB schema upgraded from v${before} to v${after}`
+    : undefined;
   return {
     dryRun,
-    applied: !dryRun,
+    applied: !dryRun && (needsMigration.length > 0 || after !== before),
     backupDir,
     moved: dryRun ? undefined : allMoved,
     wouldMove: dryRun ? allMoved : undefined,
     ambiguous: allAmbiguous.length > 0 ? allAmbiguous : undefined,
+    message: schemaMessage,
   };
 }

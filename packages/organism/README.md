@@ -90,6 +90,23 @@ From `index.ts`:
 
 ### Triggers: before-compact and shutdown
 
+The host does not register the organism in subagent children
+(`PI_SUBAGENT_CHILD=1`). Children can use `skill list`, `view`, and `add`
+directly against the repo DB without constructing a worker or model.
+`skill distill`, `approve`, and `reject`, `control skill curate` (including
+forced consolidation), and `control insights` actions refuse with
+`organism is disabled in subagent sessions`. Worker drains and curation also
+refuse before making model calls or writing receipts.
+
+Background model calls default to `github-copilot/gpt-6-luna` with `low`
+thinking, independently of the session model. Explicit
+`auxiliary.background_review.model` and `.provider` settings override this
+default. A provider-only override selects `<provider>/gpt-6-luna`. A bare
+model id must match exactly one available catalog entry, under the configured
+provider if supplied, without using the session provider.
+An unavailable model records a failed drain with a model error;
+there is no fallback to the session model or another available model.
+
 `registerOrganism` attaches two hooks. `pi.on` chains, so they coexist with any
 other handlers.
 
@@ -126,10 +143,10 @@ does not write; the event log is left intact.
 ### Passes
 
 The worker runs the passes in order, each gated by its per-pass toggle in
-`OrganismConfig.passes`. Model-dependent passes are skipped and treated as empty
-when no aux model is available. Each pass runs inside its own try/catch: a pass
-that throws is treated as an empty result and the drain continues with the
-remaining passes.
+`OrganismConfig.passes`. A model resolution failure is recorded as a failed
+drain, not a successful empty result. Each pass runs inside its own try/catch:
+a pass that throws records an error and the drain continues with the remaining
+passes, reporting a failed or partial outcome.
 
 1. **runMemoryTodo**: summarize subagent runs and their run events, ask the
    aux model for durable memory and follow-up todo candidates, and filter every

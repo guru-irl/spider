@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { makeOrgDb } from "./helpers/tmpdb.js";
 import { OrganismWorker } from "../worker.js";
 import { curateAction, type OrganismActionDeps } from "../actions.js";
@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { DigestModel } from "../types.js";
 
 let ctx: ReturnType<typeof makeOrgDb>;
-afterEach(() => ctx?.cleanup());
+afterEach(() => { ctx?.cleanup(); vi.unstubAllEnvs(); });
 
 const model: DigestModel = {
   complete: async (system) =>
@@ -29,6 +29,23 @@ function seed(db: any): void {
 }
 
 describe("OrganismWorker.runDrain", () => {
+  it("refuses child drains and forced consolidation before making a model or writing receipts", async () => {
+    ctx = makeOrgDb();
+    seed(ctx.db);
+    ctx.repoDb.prepare("INSERT INTO skills (name, source, use_count, last_used_at, created_at) VALUES ('candidate','auto',1,1,1)").run();
+    const makeModel = vi.fn(() => model);
+    const worker = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.db,
+      project: {} as never, getEmbedder: async () => null, makeModel,
+      org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS });
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    await expect(worker.runDrain("s1", "shutdown")).rejects.toThrow("organism is disabled in subagent sessions");
+    await expect(worker.runCurate(undefined, { force: true, consolidate: true })).rejects.toThrow("organism is disabled in subagent sessions");
+    expect(makeModel).not.toHaveBeenCalled();
+    expect(worker.getLastDrain()).toBeUndefined();
+    expect(ctx.db.prepare("SELECT COUNT(*) n FROM run_events WHERE summary LIKE 'organism %'").get()).toEqual({ n: 0 });
+    expect(ctx.repoDb.prepare("SELECT COUNT(*) n FROM curator_state").get()).toEqual({ n: 0 });
+  });
+
   it("applies a configured per-pass cap to learning, run and todo, counting all truncated proposals", async () => {
     ctx = makeOrgDb();
     seed(ctx.db);

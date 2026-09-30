@@ -14,6 +14,7 @@ import { dispatch } from "../dispatch";
 import { controlConfig } from "../control";
 import { controlBind } from "../control-bind";
 import { renderSpiderResult } from "../render-result";
+import { HostOrganismRuntime } from "../organism-runtime";
 
 // Embeddings and completion are external IO boundaries. DBs, routing, models,
 // pi's loader and event dispatch all stay REAL in this integration test.
@@ -26,29 +27,7 @@ const roots: string[] = [];
 const handles: Db[] = [];
 const cleanups: Array<() => Promise<void>> = [];
 
-// INCIDENT-premature-run-finalization.md, defence in depth: a subagent runs `npm
-// test` as its own verification gate, so THIS vitest worker can inherit a REAL, live
-// parent subagent's PI_SUBAGENT_CHILD/PI_SPIDER_DB_PATH/PI_SUBAGENT_RUN_ID/
-// PI_SPIDER_SESSION_ID from its ambient environment. Both fixture builders below
-// (`setup`, `freshHost`) load the real spiderExtension, which wires
-// @spider/subagents' registerSubagentActions — exactly the function that reads
-// those four vars. Stub all four to inert, scratch-scoped values — never inherited
-// real ones — the same isolation child-terminal-message.test.ts already applies for
-// its own (intentional) attach. PI_SUBAGENT_CHILD is stubbed OFF (empty, not "1"):
-// this suite is not testing the child reporter and must not change which actions
-// registerSubagentActions mounts. The production ownership guard in
-// child-reporter.ts is the real fix; this is only a second layer that keeps this
-// harness from ever being able to reach the real DB at all.
-const CHILD_ENV_KEYS = ["PI_SUBAGENT_CHILD", "PI_SPIDER_DB_PATH", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_SESSION_ID"] as const;
-function stubChildEnv(root: string): void {
-  const fixtureValues: Record<(typeof CHILD_ENV_KEYS)[number], string> = {
-    PI_SUBAGENT_CHILD: "",
-    PI_SPIDER_DB_PATH: join(root, "unused-child-fixture.db"),
-    PI_SUBAGENT_RUN_ID: "not-a-real-run-id",
-    PI_SPIDER_SESSION_ID: "not-a-real-session-id",
-  };
-  for (const key of CHILD_ENV_KEYS) vi.stubEnv(key, fixtureValues[key]);
-}
+// vitest.setup.ts clears inherited child identity before this file loads.
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
@@ -59,11 +38,11 @@ afterEach(async () => {
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(opts?: { noParentModel?: boolean }) {
+async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?: boolean }) {
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "fixture-"));
   roots.push(root);
-  stubChildEnv(root);
+  if (opts?.child) vi.stubEnv("PI_SUBAGENT_CHILD", "1");
   const cwd = join(root, "selected");
   const unrelated = join(root, "unrelated");
   for (const dir of [cwd, unrelated]) {
@@ -90,6 +69,14 @@ async function setup(opts?: { noParentModel?: boolean }) {
     models: [{ id: "fixture-model", name: "Fixture", reasoning: true, input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
   });
+  if (!opts?.noLuna) {
+    models.registerProvider("github-copilot", {
+      api: "openai-responses", baseUrl: "https://fixture.invalid", apiKey: "fixture-only",
+      models: [{ id: "gpt-6-luna", name: "Learner fixture", reasoning: true, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
+    });
+    await models.getAvailable("github-copilot");
+  }
   await models.getAvailable("fixture-provider");
   const model = models.getModel("fixture-provider", "fixture-model")!;
   expect(model).toBeDefined();
@@ -203,12 +190,137 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(JSON.parse(row.payload)).toMatchObject({ status: "failed", errors: [{ phase: "model", message: expect.stringContaining("unavailable") }] });
   });
 
-  it("fails honestly with zero model calls when there is no parent model to mirror and no auxiliary override is configured (G3b)", async () => {
+  it("uses luna even without a parent model", async () => {
     const f = await setup({ noParentModel: true });
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(f.complete).toHaveBeenCalled();
+    expect(f.complete.mock.calls[0][0]).toMatchObject({ provider: "github-copilot", id: "gpt-6-luna" });
+  });
+
+  it("records unavailable luna as a failed drain instead of falling back to the available parent", async () => {
+    const f = await setup({ noLuna: true });
     await f.runner.emit({ type: "session_shutdown", reason: "quit" });
     expect(f.complete).not.toHaveBeenCalled();
     const row = f.db.prepare("SELECT payload FROM run_events WHERE summary LIKE 'organism drain%' ORDER BY id DESC LIMIT 1").get() as { payload: string };
-    expect(JSON.parse(row.payload)).toMatchObject({ status: "failed", errors: [{ phase: "model", message: expect.stringContaining("no active model to mirror") }] });
+    expect(JSON.parse(row.payload)).toMatchObject({ status: "failed", modelCalls: 0,
+      errors: [{ phase: "model", message: expect.stringContaining("github-copilot/gpt-6-luna") }] });
+  });
+
+  it.each([
+    ["auxiliary.background_review.model", "fixture-provider/fixture-model"],
+    ["auxiliary.background_review", { provider: "fixture-provider", model: "fixture-model" }],
+    ["auxiliary", { background_review: { provider: "fixture-provider", model: "fixture-model" } }],
+  ])("honors an explicit override at %s", async (key, value) => {
+    const f = await setup();
+    controlConfig("set", f.cwd, key, value);
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(f.complete).toHaveBeenCalled();
+    expect(f.complete.mock.calls[0][0]).toMatchObject({ provider: "fixture-provider", id: "fixture-model" });
+  });
+
+  it("does not resolve a worker, call a model, or write a drain receipt for either child lifecycle event", async () => {
+    const resolveWorker = vi.spyOn(HostOrganismRuntime.prototype, "resolve");
+    const f = await setup({ child: true });
+    await f.runner.emit(compactEvent(f.session));
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(resolveWorker).not.toHaveBeenCalled();
+    expect(f.complete).not.toHaveBeenCalled();
+    expect(f.db.prepare("SELECT COUNT(*) n FROM run_events WHERE summary LIKE 'organism %'").get()).toEqual({ n: 0 });
+    expect(f.session.getEntries().filter(e => e.type === "custom" && e.customType === "spider.organism")).toEqual([]);
+  });
+
+  it.each([
+    { action: "control", command: "skill", sub: "curate", force: true, consolidate: true },
+    { action: "control", command: "insights" },
+    { action: "skill", op: "distill", text: "fixture" },
+    { action: "skill", op: "approve", name: "fixture" },
+    { action: "skill", op: "reject", name: "fixture" },
+  ])("refuses manual organism work in a child: $action $command $op", async (args) => {
+    const resolveWorker = vi.spyOn(HostOrganismRuntime.prototype, "resolve");
+    const f = await setup({ child: true });
+    const tool = f.runner.getToolDefinition("spider")!;
+    const result = await tool.execute("child-manual", args, undefined, undefined, f.runner.createContext());
+    expect(JSON.stringify(result)).toContain("organism is disabled in subagent sessions");
+    expect(resolveWorker).not.toHaveBeenCalled();
+    expect(f.complete).not.toHaveBeenCalled();
+    expect(f.db.prepare("SELECT COUNT(*) n FROM run_events WHERE summary LIKE 'organism %'").get()).toEqual({ n: 0 });
+  });
+
+  it("allows child skill staging, listing and viewing from the repo without resolving an organism or model", async () => {
+    const resolveWorker = vi.spyOn(HostOrganismRuntime.prototype, "resolve");
+    const f = await setup({ child: true });
+    // Any attempt to inspect the registry for skill access is a regression.
+    const catalog = vi.spyOn(f.registry, "getAvailable").mockImplementation(() => { throw new Error("unexpected model construction"); });
+    const tool = f.runner.getToolDefinition("spider")!;
+    const ctx = f.runner.createContext();
+    const staged = await tool.execute("add", { action: "skill", op: "add", name: "child-fixture", text: "# Child fixture\nUse deterministic fixtures." }, undefined, undefined, ctx);
+    expect(staged.details).toMatchObject({ ok: true, outcome: "staged" });
+    const listed = await tool.execute("list", { action: "skill", op: "list" }, undefined, undefined, ctx);
+    expect(listed.details).toEqual(expect.arrayContaining([expect.objectContaining({ name: "child-fixture", status: "staged" })]));
+    const viewed = await tool.execute("view", { action: "skill", op: "view", name: "child-fixture" }, undefined, undefined, ctx);
+    expect(viewed.details).toMatchObject({ name: "child-fixture", status: "staged", candidateBody: "# Child fixture\nUse deterministic fixtures." });
+    expect(f.repoDb.prepare("SELECT name FROM skills WHERE name='child-fixture'").get()).toEqual({ name: "child-fixture" });
+    expect(f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='skills'").get()).toBeUndefined();
+    expect(resolveWorker).not.toHaveBeenCalled();
+    expect(catalog).not.toHaveBeenCalled();
+    expect(f.complete).not.toHaveBeenCalled();
+  });
+
+  it("reports the organism as disabled in a child without reading a parent's failed drain", async () => {
+    const f = await setup({ child: true });
+    f.db.prepare("INSERT INTO run_events(session_id, ts, type, summary, payload) VALUES (?,1,'log','organism drain (shutdown): failed',?)").run("parent-session", JSON.stringify({ kind: "organism-drain", sessionId: "parent-session", reason: "shutdown", status: "failed", startedAt: 1, finishedAt: 1, modelCalls: 0, memoryStaged: 0, skillsStaged: 0, todosAdded: 0, dropped: 0, rejected: 0, inputs: { messages: 0, runs: 0, runEvents: 0, events: 0, completedTodos: 0 }, errors: [{ phase: "model", message: "parent failure" }] }));
+    const tool = f.runner.getToolDefinition("spider")!;
+    const doctor = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    const text = JSON.stringify(doctor.content);
+    expect(text).toContain("organism: disabled in subagent sessions");
+    expect(text).not.toContain("waiting for compaction");
+    expect(text).not.toContain("parent failure");
+    expect(text).not.toContain("last drain in this worktree");
+    expect(doctor.details).toMatchObject({ ok: true });
+  });
+
+  it("resolves a bare override only by exact catalog id, not the session provider", async () => {
+    const f = await setup();
+    controlConfig("set", f.cwd, "auxiliary.background_review.model", "gpt-6-luna");
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(f.complete.mock.calls[0][0]).toMatchObject({ provider: "github-copilot", id: "gpt-6-luna" });
+  });
+
+  it("refuses an ambiguous bare override instead of choosing the session provider", async () => {
+    const f = await setup();
+    f.models.registerProvider("fixture-provider", {
+      api: "anthropic-messages", baseUrl: "https://fixture.invalid", apiKey: "fixture-only",
+      models: [{ id: "gpt-6-luna", name: "Ambiguous learner", reasoning: true, input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096 }],
+    });
+    await f.models.getAvailable("fixture-provider");
+    controlConfig("set", f.cwd, "auxiliary.background_review.model", "gpt-6-luna");
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(f.complete).not.toHaveBeenCalled();
+    const row = f.db.prepare("SELECT payload FROM run_events WHERE summary LIKE 'organism drain%' ORDER BY id DESC LIMIT 1").get() as { payload: string };
+    expect(JSON.parse(row.payload)).toMatchObject({ status: "failed", modelCalls: 0, errors: [{ phase: "model", message: expect.stringContaining("unavailable or ambiguous") }] });
+  });
+
+  it.each(["gpt-6", "luna"])("does not resolve a partial bare override %s", async (model) => {
+    const f = await setup();
+    controlConfig("set", f.cwd, "auxiliary.background_review.model", model);
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(f.complete).not.toHaveBeenCalled();
+    const row = f.db.prepare("SELECT payload FROM run_events WHERE summary LIKE 'organism drain%' ORDER BY id DESC LIMIT 1").get() as { payload: string };
+    expect(JSON.parse(row.payload)).toMatchObject({ status: "failed", modelCalls: 0, errors: [{ phase: "model", message: expect.stringContaining("unavailable or ambiguous") }] });
+  });
+
+  it.each(["github-copilot", "fixture-provider"])("keeps luna for a provider-only override %s", async (provider) => {
+    const f = await setup();
+    controlConfig("set", f.cwd, "auxiliary.background_review.provider", provider);
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    if (provider === "github-copilot") {
+      expect(f.complete.mock.calls[0][0]).toMatchObject({ provider: "github-copilot", id: "gpt-6-luna" });
+    } else {
+      expect(f.complete).not.toHaveBeenCalled();
+      const row = f.db.prepare("SELECT payload FROM run_events WHERE summary LIKE 'organism drain%' ORDER BY id DESC LIMIT 1").get() as { payload: string };
+      expect(JSON.parse(row.payload)).toMatchObject({ status: "failed", modelCalls: 0, errors: [{ phase: "model", message: expect.stringContaining("fixture-provider/gpt-6-luna") }] });
+    }
   });
 
   it("follows a new session binding and records its summary in that worktree", async () => {
@@ -318,13 +430,14 @@ describe("the installed pi contract through the full spider extension", () => {
     ]);
   });
 
-  it("uses the authenticated registry for the active model and stages the learned proposal in the bound repo", async () => {
+  it("uses the authenticated registry for luna with low thinking, not the different parent model, and stages proposals", async () => {
     const f = await setup();
     await f.runner.emit({ type: "session_shutdown", reason: "quit" });
     expect(f.errors).toEqual([]);
     expect(f.complete).toHaveBeenCalled();
     const [model, context] = f.complete.mock.calls[0];
-    expect(model).toMatchObject({ provider: "fixture-provider", id: "fixture-model" });
+    expect(model).toMatchObject({ provider: "github-copilot", id: "gpt-6-luna" });
+    expect(f.complete.mock.calls[0][2]).toMatchObject({ reasoningEffort: "low" });
     expect(context.systemPrompt).toBeTruthy();
     expect(JSON.stringify(context.messages)).toContain("record the failing assertion");
     expect(listPending(f.repoDb, "repo")).toHaveLength(1);
@@ -342,6 +455,7 @@ describe("the installed pi contract through the full spider extension", () => {
  * through `getLastDrain()`).
  */
 async function freshHost(root: string, cwd: string, sessionSeed: string) {
+  controlConfig("set", cwd, "auxiliary.background_review.model", "fixture-provider/fixture-model");
   const session = SessionManager.inMemory(cwd);
   session.appendMessage({ role: "user", content: sessionSeed, timestamp: 1 });
   const models = await ModelRuntime.create({
@@ -404,8 +518,7 @@ describe("F3 \u2014 a FRESH runtime + the REAL doctor reads a prior real receipt
     mkdirSync(scratch, { recursive: true });
     const root = mkdtempSync(join(scratch, "f3-"));
     roots.push(root);
-    stubChildEnv(root);
-    const cwd = join(root, "wt-a");
+      const cwd = join(root, "wt-a");
     const other = join(root, "wt-b");
     for (const d of [cwd, other]) { mkdirSync(d); execFileSync("git", ["init", "-q", d]); }
     setGlobalDbPathForTests(join(root, "global.db"));
@@ -455,8 +568,7 @@ describe("F2 \u2014 doctor's receipt fallback and pending counts survive a resol
     mkdirSync(scratch, { recursive: true });
     const root = mkdtempSync(join(scratch, "f2-"));
     roots.push(root);
-    stubChildEnv(root);
-    const cwd = join(root, "wt");
+      const cwd = join(root, "wt");
     mkdirSync(cwd); execFileSync("git", ["init", "-q", cwd]);
     setGlobalDbPathForTests(join(root, "global.db"));
     vi.spyOn(process, "cwd").mockReturnValue(cwd);

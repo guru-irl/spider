@@ -9,7 +9,7 @@
 // dispatch registry + handleControl. It MUST fail against an unwired host (skill
 // falls through to the Phase-0 stub; control insights/skill hit the "not yet
 // implemented" default) and PASS once the actions are routed.
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,29 +20,7 @@ import { assertPostOpenIsolation, assertPreflightIsolation, gitInit, type Expect
 
 const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `org-wire-${process.pid}`);
 
-// INCIDENT-premature-run-finalization.md, defence in depth: a subagent runs `npm
-// test` as its own verification gate, so THIS vitest worker can inherit a REAL, live
-// parent subagent's PI_SUBAGENT_CHILD/PI_SPIDER_DB_PATH/PI_SUBAGENT_RUN_ID/
-// PI_SPIDER_SESSION_ID from its ambient environment. This suite builds the real
-// extension (spiderExtension wires @spider/subagents' registerSubagentActions,
-// which reads those exact four vars), so every test stubs all four to inert,
-// scratch-scoped values — never inherited real ones — the same isolation
-// child-terminal-message.test.ts already applies for its own (intentional) attach.
-// PI_SUBAGENT_CHILD is stubbed OFF (empty, not "1"): this suite is not testing the
-// child reporter and must not change which of the five session_shutdown handlers
-// registerSubagentActions wires (see the afterEach comment below) — the production
-// ownership guard in child-reporter.ts is the real fix; this is only a second layer
-// that keeps this harness from ever being able to reach the real DB at all.
-const CHILD_ENV_KEYS = ["PI_SUBAGENT_CHILD", "PI_SPIDER_DB_PATH", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_SESSION_ID"] as const;
-function stubChildEnv(dir: string): void {
-  const fixtureValues: Record<(typeof CHILD_ENV_KEYS)[number], string> = {
-    PI_SUBAGENT_CHILD: "",
-    PI_SPIDER_DB_PATH: join(dir, "unused-child-fixture.db"),
-    PI_SUBAGENT_RUN_ID: "not-a-real-run-id",
-    PI_SPIDER_SESSION_ID: "not-a-real-session-id",
-  };
-  for (const key of CHILD_ENV_KEYS) vi.stubEnv(key, fixtureValues[key]);
-}
+// vitest.setup.ts clears inherited child identity before this file loads.
 
 type Fixture = { pi: ReturnType<typeof fakePi>; ctx: ActionCtx; dir: string };
 const liveFixtures: Fixture[] = [];
@@ -72,7 +50,6 @@ afterEach(() => {
     f.ctx.repoDb.close();
     f.ctx.globalDb.close();
   }
-  vi.unstubAllEnvs();
   setGlobalDbPathForTests(null);
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -111,7 +88,6 @@ function setup(sub: string): { pi: ReturnType<typeof fakePi>; ctx: ActionCtx; di
   // which in fact opens none at all — pure path resolution only).
   setGlobalDbPathForTests(join(scratch, `g-${sub}-${Date.now()}.db`));
   const dir = join(scratch, `proj-${sub}`);
-  stubChildEnv(dir);
   // Isolate the fixture from this real checkout's git toplevel BEFORE any resolver
   // runs: without this, resolveProject's git walk climbs straight past `dir` and out
   // to the real repo root, and every DB open below would silently target real repo

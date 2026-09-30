@@ -3,14 +3,13 @@
 // `agent/background_review.py` `_resolve_review_runtime` (L46) and
 // `_digest_history` (L112).
 //
-// The review fork runs on the MAIN model by default, replaying the full
-// conversation (warm in the prompt cache -> cheap cache reads). A user can
-// route the review to a different, cheaper model via
-// `auxiliary.background_review.{provider,model}`. A different model cannot
-// reuse the parent's cache (different key), so when (and only when) routed to a
-// different model we replay a compact DIGEST to minimise cold-written tokens.
-// Same model -> full replay; different model -> digest. That's the whole
-// policy.
+// This generic helper describes configured routing overrides; it does not
+// choose a completion model. The organism host defaults to
+// github-copilot/gpt-6-luna with low thinking, independently of the session
+// model, and never runs in subagent children. Explicit
+// `auxiliary.background_review.{provider,model}` settings override that default.
+// A different model cannot reuse the parent's prompt cache (different key),
+// so digestHistory bounds replay for callers using a separate auxiliary model.
 //
 // Per amendment A1 this module only resolves the CONFIGURED override (the
 // routing profile / cheap-tier intent). The actual model selection and
@@ -78,13 +77,12 @@ function msgText(m: DigestMsg): string {
 }
 
 /**
- * Compact replay for the routed (different-model) path only.
+ * Compact replay for auxiliary callers, including the organism's Luna learner.
  *
  * Keeps the recent `tail` messages verbatim and collapses older turns into one
  * synthetic user-role digest prepended before the tail, preserving role
- * alternation. Used ONLY when routed to a different model (cache cold
- * regardless, so fewer cold-written tokens is a pure win); never on the
- * main-model path (full replay stays warm).
+ * alternation. The caller chooses when to compact; this helper does not select
+ * a model or enforce a same-model replay policy.
  *
  * Ported from `_digest_history`. If `messages.length <= tail`, returns a copy
  * unchanged.

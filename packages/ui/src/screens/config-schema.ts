@@ -7,11 +7,11 @@ export interface ConfigGroup { id: string; label: string; fields: ConfigField[];
 
 export const CONFIG_SCHEMA: ConfigGroup[] = [
 	{ id: "auxiliary", label: "Auxiliary model", fields: [
-		{ key: "auxiliary.background_review.provider", label: "Provider", type: "string", default: "", description: "Optional provider for background review model." },
-		{ key: "auxiliary.background_review.model", label: "Model", type: "string", default: "", description: "Optional background review model id." },
+		{ key: "auxiliary.background_review.provider", label: "Provider", type: "string", default: "", description: "Optional background review provider override; default github-copilot." },
+		{ key: "auxiliary.background_review.model", label: "Model", type: "string", default: "", description: "Optional model override; default github-copilot/gpt-6-luna with low thinking, never the session model." },
 	]},
 	{ id: "organism", label: "Organism", fields: [
-		{ key: "organism.enabled", label: "Master enable", type: "boolean", default: true, description: "Enable organism background work." },
+		{ key: "organism.enabled", label: "Master enable", type: "boolean", default: true, description: "Enable organism background work in parent sessions only; always disabled in subagents." },
 		...(["runMemoryTodo", "todoMemory", "learning", "consolidation", "reflection", "insights"] as const).map(name => ({ key: `organism.passes.${name}`, label: name, type: "boolean" as const, default: true, description: `Enable ${name} pass.` })),
 		{ key: "organism.selfNaming", label: "Self naming", type: "boolean", default: true, description: "Allow organism to name projects." },
 		{ key: "organism.autoWriteBudget", label: "Auto-write budget", type: "number", default: 20, min: 0, max: 1000, description: "Maximum staged writes per drain." },

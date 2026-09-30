@@ -42,7 +42,6 @@ function fixture() {
     on: (name: string, handler: Function) => { (hooks[name] ??= []).push(handler); },
     registerTool: () => {}, registerCommand: () => {},
   };
-  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   spiderExtension(pi as never);
   const specs: ChildSpawnSpec[] = [];
   const kills: Array<ReturnType<typeof vi.fn>> = [];

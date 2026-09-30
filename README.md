@@ -148,6 +148,23 @@ checking that the recorded pid still looks like a pi subagent, so pid reuse
 cannot make the reaper signal an unrelated process, and only when the owning
 host is actually dead, so one session never kills another's agents.
 
+## Background learning
+
+The organism runs only in parent sessions. With `PI_SUBAGENT_CHILD=1`, the
+host does not register its compaction or shutdown hooks, and manual organism
+actions refuse with `organism is disabled in subagent sessions`. Children can
+use `skill list`, `view`, and `add` directly against the repo DB, without an
+organism worker or model. `skill distill`, `approve`, and `reject`, plus
+`control skill curate` (including consolidation) and `control insights`, refuse.
+
+Background learning and skill consolidation default to
+`github-copilot/gpt-6-luna` with `low` thinking, never the session model.
+Explicit `auxiliary.background_review.model` and `.provider` settings override
+the default. A provider-only override selects `<provider>/gpt-6-luna`. A bare
+model id must match exactly one available catalog entry, under the configured
+provider if supplied; it never borrows the session provider. An unavailable
+model produces a recorded drain error without falling back to another model.
+
 ## Escalation and messaging
 
 Subagents escalate to their parent by emitting a structured marker

@@ -15,7 +15,6 @@ describe("child capability diagnostics", () => {
 
   it("does not misdiagnose an ordinary parent registration failure as a child restriction", async () => {
     clearActions();
-    vi.stubEnv("PI_SUBAGENT_CHILD", undefined);
     const result = await dispatch({ action: "message" }, {} as ActionCtx) as { error: string; code?: string };
     expect(result.code).not.toBe("unavailable_in_child");
     expect(result.error).toMatch(/registered|implemented/);

@@ -3,6 +3,14 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { aroundAll } from "vitest";
 
+// Every test file starts as a parent, even when launched by a subagent.
+// Child-mode tests explicitly set their own identity and restore it locally.
+for (const key of [
+  "PI_SUBAGENT_CHILD", "PI_SPIDER_DB_PATH", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_SESSION_ID",
+  "PI_SUBAGENT_ORCHESTRATOR_TARGET", "PI_SUBAGENT_CHILD_AGENT", "PI_SUBAGENT_CHILD_INDEX",
+  "PI_SUBAGENT_FANOUT_CHILD", "PI_SUBAGENT_INTERCOM_SESSION_NAME",
+]) delete process.env[key];
+
 // This setup file executes before each test module. Fork workers have distinct PIDs,
 // so parallel files cannot share or delete one another's SQLite databases. Keep all
 // test scratch inside the checkout — never under /tmp and never under the user's

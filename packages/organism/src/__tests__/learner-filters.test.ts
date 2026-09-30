@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { openDbAt, paths } from "@spider/db-core";
@@ -21,7 +21,6 @@ const candidate = (content: string, scope: string = "repo") => ({
   evidence: "src/rules.ts:42",
 });
 let ctx: ReturnType<typeof makeOrgDb>;
-beforeEach(() => vi.stubEnv("PI_SUBAGENT_CHILD", ""));
 afterEach(() => { ctx?.cleanup(); vi.unstubAllEnvs(); });
 
 describe("learner memory filters", () => {

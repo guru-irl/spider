@@ -86,6 +86,7 @@ export class OrganismWorker {
   }
 
   async #doRunDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
+    if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     const { db, globalDb, org, project, worktreeDb } = this.#deps;
     const summary = zeroSummary();
     const report: DrainReport = {
@@ -256,6 +257,7 @@ export class OrganismWorker {
   }
 
   async #doRunCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }> {
+    if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     const { db, curator, org } = this.#deps;
     const ts = now ?? Date.now();
     if (!org.enabled && opts?.force !== true) {

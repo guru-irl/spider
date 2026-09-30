@@ -211,7 +211,19 @@ flowchart TD
 
 The organism turns a finished session into durable knowledge. It never runs on
 the foreground request path. `registerOrganism` attaches two lifecycle hooks and
-builds one `OrganismWorker`.
+builds one `OrganismWorker`. The host skips registration when
+`PI_SUBAGENT_CHILD=1`; manual organism actions and worker execution refuse in
+children before model calls or drain receipts. Children can still use
+`skill list`, `view`, and `add` directly against the repo DB without a worker
+or model; `distill`, `approve`, and `reject` refuse.
+
+Background completions use `github-copilot/gpt-6-luna` with `low` thinking by
+default, never the session model. Explicit `auxiliary.background_review.model`
+and `.provider` settings override the default. A provider-only override selects
+`<provider>/gpt-6-luna`. A bare model id must match exactly one available catalog
+entry, under the configured provider if supplied, without using the session
+provider. If the selected model is unavailable, the drain records a model error
+and fails without a fallback.
 
 **Triggers.** `session_before_compact` fires a fire-and-forget drain with
 `reason: "before_compact"`: it never returns `false`, never calls a cancel API,
@@ -228,9 +240,9 @@ conversation, into a `DigestBundle`. It reads only; the event log is left
 intact.
 
 **Passes.** The worker runs a set of passes, each gated by its per-pass toggle
-in `OrganismConfig.passes`. Model-dependent passes are skipped (treated as an
-empty result) when no aux model is available, and each pass runs inside its own
-try/catch so one throwing pass does not stop the drain:
+in `OrganismConfig.passes`. Model resolution errors fail the drain with a
+recorded error. Each pass runs inside its own try/catch so one throwing pass
+does not stop the remaining passes; its error remains in the drain report:
 
 - **runMemoryTodo**: summarize subagent run activity, ask the aux model for
   durable memory and follow-up todo candidates. Emits no skills.

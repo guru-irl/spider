@@ -134,12 +134,17 @@ describe("brainstorming companion scripts", () => {
 
   it("returns not_running for missing sessions and ignores CDPATH when stopping", async () => {
     const { project, session } = await startSession(false);
+    const decoyRoot = path.join(project, "decoy");
+    const decoyState = path.join(decoyRoot, path.relative(project, session), "state");
+    fs.mkdirSync(decoyState, { recursive: true });
+    fs.writeFileSync(path.join(decoyState, "server.pid"), "999999\n");
     const result = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), path.relative(project, session)], {
-      cwd: project, encoding: "utf8", env: { ...process.env, CDPATH: path.dirname(project) },
+      cwd: project, encoding: "utf8", env: { ...process.env, CDPATH: decoyRoot },
     });
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(JSON.parse(result.stdout).status).toBe("stopped");
     expect(fs.existsSync(session)).toBe(false);
+    expect(fs.readFileSync(path.join(decoyState, "server.pid"), "utf8")).toBe("999999\n");
     const again = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), session], { cwd: project, encoding: "utf8" });
     expect(again.status).toBe(0);
     expect(JSON.parse(again.stdout).status).toBe("not_running");
@@ -193,7 +198,7 @@ describe("brainstorming companion scripts", () => {
     expect(recipe).toMatch(/umask 077/);
     expect(recipe).toMatch(/<skill-dir>\/scripts\/start-server\.sh/);
     expect(recipe).toMatch(/git rev-parse --show-toplevel/);
-    expect(guide).toMatch(/<id>\/server\.log[^\n]*url/);
+    expect(guide).toMatch(/<project-root>\/\.spider\/scratch\/superpowers\/brainstorm\/<id>\/server\.log[^\n]*url/);
   });
 
   async function startSession(durable: boolean) {

@@ -116,10 +116,13 @@ describe("all shipped skill files are Pi-portable", () => {
   const tempCalls: Rule = { name: "volatile-system-temp", pattern: /\b(?:mktemp|mkdtemp\(|(?:os\.)?tmpdir\(\)|gettempdir\(|process\.env\.(?:TMPDIR|TMP|TEMP)\b)|\/var\/folders\// };
   const prohibitedTempCall = /\b(?:never|do not|don't|must not|avoid)\s+(?:use\s+)?(?:mktemp|mkdtemp\(|(?:os\.)?tmpdir\(\)|gettempdir\()/gi;
   const tempToken = String.raw`(?:\/var\/tmp(?:\/|\b)|\/tmp(?:\/|\b)|\$\{?(?:TMPDIR|TMP|TEMP)\}?(?![A-Za-z0-9_]))`;
-  const governedTemp = new RegExp(String.raw`\b(?:never|do not|don't|must not|avoid)\b\s*(?:(?:use|write\s+to|in)\s+)?[\s` + "`" + String.raw`'"(*]*` + tempToken + String.raw`(?:[` + "`" + String.raw`'")*]*\s*(?:,\s*)?(?:(?:or|and)\s+)?[` + "`" + String.raw`'"(*]*` + tempToken + String.raw`)*`, "gi");
+  const tempPath = tempToken + String.raw`(?:[\w*-]|[./](?=[\w*-]))*`;
+  const listEnd = String.raw`(?=[` + "`" + String.raw`'")*]*\s*(?:$|[.;:!?)]|<!--|#|\b(?:for|as|in|under|when|during)\b))`;
+  const governedTemp = new RegExp(String.raw`\b(?:never|do not|don't|must not|avoid)\b\s*(?:(?:use|write\s+to|in)\s+)?[\s` + "`" + String.raw`'"(*]*` + tempPath +
+    String.raw`(?:[` + "`" + String.raw`'")*]*\s*(?:,\s*(?:(?:or|and)\s+)?|(?:or|and)\s+)[` + "`" + String.raw`'"(*]*` + tempPath + String.raw`)*` + listEnd, "gi");
   const messageSubject = /\b(?:completed|finished|running|in-flight|child|children|subagent)\b/i;
   const claimVerb = /\b(?:resume|restart|wake|redirect)\w*\b/gi;
-  const lifecycleNegation = /\b(?:does not|doesn't|cannot|can't|never|not)\b/i;
+  const lifecycleNegation = /\b(?:does not|doesn't|cannot|can't|never|not|no way)\b/i;
   const paragraphRules = contentRules.filter((rule) => ["claude-tool-name", "claude-capitalized-tool", "claude-path-or-environment", "nonexistent-spider-wait"].includes(rule.name));
 
   function scan(root: string): string[] {
@@ -172,7 +175,7 @@ describe("all shipped skill files are Pi-portable", () => {
             for (const verb of sentence.matchAll(claimVerb)) {
               const prefix = sentence.slice(0, verb.index);
               if (lifecycleNegation.test(prefix.slice(-80)) &&
-                  /(?:does not|doesn't|cannot|can't|never|not)\s+$|\bcannot be\s+\w+\s+or\s+$|\b(?:cannot|does not)\s+[^;,.]*\s+or\s+$/.test(prefix)) continue;
+                  /(?:does not|doesn't|cannot|can't|never|not)\s+$|\b(?:cannot|can't)\s*,\s*however\s*,\s*$|\b(?:cannot|can't)\s+be\s+(?:used\s+to\s+)?$|\b(?:is not a way|no way)\s+to\s+$|\b[Nn]ever use spider message to\s+$|\bcannot be\s+\w+\s+or\s+$|\b(?:cannot|can't|does not|doesn't)\s+[^;,.]*\s+or\s+$|\b(?:cannot|can't|does not|doesn't|never)\s+(?:wake|resume|restart|redirect)\w*(?:\s*,\s*(?:wake|resume|restart|redirect)\w*)*\s*(?:,?\s+or\s+|,\s*)$/.test(prefix)) continue;
               violations.push(`${relativePath}:${firstLine} [false-spider-message-resume] ${sentence.trim().slice(0, 240)}`);
               break;
             }
@@ -243,6 +246,11 @@ describe("all shipped skill files are Pi-portable", () => {
           "Don't use /tmp unless you want speed, and /tmp/fast is fine then",
           "Never use /tmp, create the dir with mktemp -d and /var/tmp/x as fallback",
           "# Never use /tmp or $TMPDIR, prefer mktemp -d and /var/tmp",
+          "Never use /tmp, /var/tmp/out is where logs go.",
+          "Do not use /tmp, $TMPDIR is fine.",
+          "Never write to /tmp /var/tmp/logs holds the logs",
+          "Never use /tmp, and /var/tmp/out is the log dir",
+          "Never use /tmp/ /tmp/cache holds data",
         ].map((text, i): [string, string, string] => [`chain-${i}.md`, `${text} <!-- guard-allow: prohibition -->`, "volatile-system-temp"]),
         ["marked-call.sh", "# Never use /tmp; mktemp -d # guard-allow: prohibition", "volatile-system-temp"],
         ["node.ts", "process.env.TMPDIR", "volatile-system-temp"],
@@ -252,7 +260,13 @@ describe("all shipped skill files are Pi-portable", () => {
         ["python.py", "tempfile.mkdtemp()", "volatile-system-temp"],
         ["gettemp.cjs", "tempfile.gettempdir()", "volatile-system-temp"],
         ["naked-tool", "mktemp -d", "volatile-system-temp"],
-        ["emphasis.md", "Use **Task** tool; _Task_ tool; Task <!-- x --> tool", "claude-tool-name"],
+        ["bold.md", "Use **Task** tool", "claude-tool-name"],
+        ["italic.md", "Use _Task_ tool", "claude-tool-name"],
+        ["comment.md", "Use Task <!-- x --> tool", "claude-tool-name"],
+        ["zero-width.md", "Use Ta\u200bsk tool.", "claude-tool-name"],
+        ["zero-width-joiner.md", "Use Ta\u200dsk tool.", "claude-tool-name"],
+        ["bom.md", "Use Ta\ufeffsk tool.", "claude-tool-name"],
+        ["folders.sh", "cd /var/folders/x/T/", "volatile-system-temp"],
         ["entity.md", "Use Claude&nbsp;Code", "claude-path-or-environment"],
         ["em-wait.md", "Call spider **wait**", "nonexistent-spider-wait"],
         ["verb-first.md", "To resume a completed child, use spider message.", "false-spider-message-resume"],
@@ -286,14 +300,27 @@ describe("all shipped skill files are Pi-portable", () => {
       }
       fs.writeFileSync(path.join(root, "safe.md"), [
         "spider message cannot resume a completed child.",
+        "Never use spider message to resume a completed child.",
         "Never use /tmp. <!-- guard-allow: prohibition -->",
         "Never use mktemp -d.",
+        "Must not use mktemp -d.",
         "Never use `/tmp`, `$TMPDIR`, or `/var/tmp`. <!-- guard-allow: prohibition -->",
         "Must not use /tmp. <!-- guard-allow: prohibition -->",
+        "Never use /tmp, $TMPDIR or /var/tmp for scratch. <!-- guard-allow: prohibition -->",
+        "Never write to /tmp/scratch. <!-- guard-allow: prohibition -->",
+        "Never use /tmp <!-- guard-allow: prohibition -->",
+        "spider message can't reach a finished child or resume it.",
+        "spider message cannot be used to resume a completed child.",
+        "spider message cannot, however, resume a completed child.",
+        "spider message is not a way to resume a completed child.",
+        "spider message can't resume or redirect a running child.",
+        "A completed child cannot be resumed by spider message.",
+        "There is no way to resume a completed child; spider message only reaches peers.",
+        "spider message does not wake, resume or redirect a subagent.",
         "- `spider message` reaches a live peer\n- to restart work after a child finished, dispatch a new run",
         "| spider message | reaches a live peer |\n| Resume a completed child | not supported |",
       ].join("\n"));
-      fs.writeFileSync(path.join(root, "safe.sh"), "# Never use /tmp # guard-allow: prohibition\n");
+      fs.writeFileSync(path.join(root, "safe.sh"), "# Never use /tmp # guard-allow: prohibition\n# guard-allow: prohibition: never use /tmp\n");
       expect(scan(root)).toEqual([]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

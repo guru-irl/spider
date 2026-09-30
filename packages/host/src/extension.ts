@@ -148,7 +148,7 @@ export const SPIDER_PARAMETERS = {
     uuid: { type: "string", description: "memory uuid for approve/reject/forget." },
     // scope / cwd (most actions)
     scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory scope (default repo). \"Is this true in every repo?\" → **global**; otherwise → **repo**. Worktree/project memory was removed; use repo." },
-    cwd: { type: "string", description: "Working-directory override." },
+    cwd: { type: "string", description: "Working-directory override. For run: sets the child's working directory and which project's model defaults apply; the run is still recorded in this session's database (or its /bind target), so kill and message find it without a cwd. Other actions use the override's project database." },
     // search / recall
     query: { type: "string", description: "Search matches any sanitized term. Repo recall ranks all-word matches first (AND), then fills from any-word matches (OR); FTS operators are ignored, and common words are removed unless all terms are common. Global recall matches the whole query as a substring." },
     category: { type: "string", description: "Memory category (remember) or filter (recall); optional skill category for action='skill' op=add." },
@@ -594,6 +594,18 @@ function isPathInside(root: string, target: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
+/** The session-owned runs DB, shared by dispatch and the mounted agents view. */
+export function openSessionRunDb(sessionCwd: string, sessionId: string): { db: Db; dbPath: string } {
+  let dbPath = path.join(path.resolve(sessionCwd), ".spider", "project.db");
+  try {
+    const project = resolveProject(sessionCwd, { sessionId, explicitCwd: false });
+    dbPath = project.dbPath;
+    return { db: openProject(project.projectKey), dbPath };
+  } catch (cause) {
+    throw new Error(`cannot open session run DB (${dbPath}): ${String(cause)}`, { cause });
+  }
+}
+
 /** Build ONE ActionCtx per dispatch (A2): both DBs, the resolved project, and the
  *  @spider/models router. A handler routes via
  *  `ctx.models.pick(ctx.models.catalog(() => enumerate(ctx.pi as PiToolAPI)), profile)`. */
@@ -643,7 +655,11 @@ export function buildActionCtx(
   const cwd = explicitCwd || isPathInside(project.projectKey, safeRealpath(rawCwd))
     ? rawCwd
     : project.realPath;
-  const worktreeDb = openProject(project.projectKey);
+  // Run records are owned by the dispatching session, not by the child's cwd.
+  // Keep `project`, `cwd`, repoDb and modelDefaults tied to the target as before.
+  const runRecordAction = args.action === "run" || args.action === "kill" || args.action === "message";
+  const sessionRun = runRecordAction ? openSessionRunDb(ctxCwd ?? process.cwd(), sessionId) : undefined;
+  const worktreeDb = sessionRun?.db ?? openProject(project.projectKey);
   // For git repos: open the repo DB
   // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
   // IMPORTANT 6: Use paths.projectRoot to get <root>/.spider (dotted dir)
@@ -659,7 +675,7 @@ export function buildActionCtx(
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
   const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  return { db: worktreeDb, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel };
+  return { db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel };
 }
 
 async function dispatchWithDoctorSnapshot(
@@ -999,7 +1015,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       disposeAgentsUI?.();
       const cwd = cwdOf(ctx) ?? process.cwd();
       const sessionId = sessionIdOf(ctx) || currentSessionId;
-      const db = openProject(resolveProject(cwd, { sessionId, explicitCwd: false }).projectKey);
+      const { db } = openSessionRunDb(cwd, sessionId);
       disposeAgentsUI = mountAgentsUI(pi as any, ctx as any, {
         db,
         sessionId,

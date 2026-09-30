@@ -13,7 +13,8 @@ export interface SpiderArgs { action: SpiderAction; [k: string]: unknown; }
 // Task 18 — the type import below resolves under `tsc -b` project references (models
 // builds before host; see Task 1 host refs + Task 18 tsconfig).
 export interface ActionCtx {
-  db: Db;                    // worktree DB (openProject, resolved for cwd) — sessions, runs, content, todos
+  db: Db;                    // run/kill/message: session worktree DB; other actions: cwd project DB
+  runDbPath?: string;        // session runs DB file passed to children; may differ from project.dbPath when run has an explicit cwd
   repoDb: Db;                // repo DB (openRepo, resolved for repo_key) — memory, skills, curator_state
   globalDb: Db;              // global DB (registry, message_mirror, model_stats, insights)
   project: ProjectInfo;      // { projectKey, realPath, gitCommonDir?, repoKey?, dbPath, name? }

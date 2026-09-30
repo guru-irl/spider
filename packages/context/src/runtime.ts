@@ -668,8 +668,7 @@ export function buildCommand(
         );
       }
       if (BUN_BASENAME.test(runtimeBasename(runtimes.typescript))) return [runtimes.typescript, "run", filePath];
-      if (runtimes.typescript === "tsx") return ["tsx", filePath];
-      return ["ts-node", filePath];
+      return [runtimes.typescript, filePath];
 
     case "python":
       if (!runtimes.python) {
@@ -719,7 +718,7 @@ export function buildCommand(
       if (!runtimes.go) {
         throw new Error("Go not available. Install go.");
       }
-      return ["go", "run", filePath];
+      return [runtimes.go, "run", filePath];
 
     case "rust": {
       if (!runtimes.rust) {
@@ -735,13 +734,13 @@ export function buildCommand(
       if (!runtimes.php) {
         throw new Error("PHP not available. Install php.");
       }
-      return ["php", filePath];
+      return [runtimes.php, filePath];
 
     case "perl":
       if (!runtimes.perl) {
         throw new Error("Perl not available. Install perl.");
       }
-      return ["perl", filePath];
+      return [runtimes.perl, filePath];
 
     case "r":
       if (!runtimes.r) {
@@ -753,7 +752,7 @@ export function buildCommand(
       if (!runtimes.elixir) {
         throw new Error( "Elixir not available. Install elixir.");
       }
-      return ["elixir", filePath];
+      return [runtimes.elixir, filePath];
 
     case "csharp":
       if (!runtimes.csharp) {

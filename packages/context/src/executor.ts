@@ -671,7 +671,7 @@ export class PolyglotExecutor {
     // overall timeout (a hung compile shouldn't run forever even if the
     // caller is fine with a long-running binary afterwards).
     try {
-      execFileSync("rustc", [srcPath, "-o", binPath], {
+      execFileSync(this.#runtimes.rust!, [srcPath, "-o", binPath], {
         cwd,
         timeout: timeout === undefined ? 60_000 : Math.min(timeout, 60_000),
         encoding: "utf-8",

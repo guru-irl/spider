@@ -25,6 +25,7 @@ const roots: string[] = [];
 const handles: Db[] = [];
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const db of handles.splice(0)) db.close();
   setGlobalDbPathForTests(null);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -74,6 +75,13 @@ const start = { type: "session_start", reason: "startup" } satisfies SessionStar
 const shutdown = { type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent;
 
 describe("organism's actual pi runtime contract", () => {
+  it("refuses direct child runtime resolution before opening storage", () => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    const runtime = new HostOrganismRuntime(async () => null);
+    expect(() => runtime.resolve({ sessionId: "", cwd: "" })).toThrow("organism is disabled in subagent sessions");
+    runtime.dispose();
+  });
+
   it("persists the real context session ID, even when process.cwd is another repo", async () => {
     const f = setup();
     registerHooks(f.pi);

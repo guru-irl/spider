@@ -2,23 +2,22 @@ import { join } from "node:path";
 import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { openGlobal, openProject, openRepo, openDbAt, paths, type ProjectInfo } from "@spider/db-core";
 import { openSessionRunDb, resolveSessionRunProject } from "./session-run-db";
-import type { Embedder } from "@spider/memory";
+import { digestHistory, type Embedder } from "@spider/memory";
 import { complete, pick } from "@spider/models";
 import { emitLog } from "@spider/subagents";
 import {
-  createDigestModel, OrganismWorker, readCuratorConfig, readOrganismConfig, safeError,
+  OrganismWorker, readCuratorConfig, readOrganismConfig, safeError,
   type OrganismActionDeps, type WorkerDeps, type DrainReport,
 } from "@spider/organism";
 import { controlConfig } from "./control";
 import { listCatalog } from "./control/models-cmd";
-import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
+import { cwdOf, sessionIdOf } from "./session-context";
 
 interface RuntimeContext {
   sessionId: string;
   cwd: string;
   project?: ProjectInfo;
   modelRegistry?: unknown;
-  parentModel?: string;
 }
 interface RuntimeEntry {
   context: RuntimeContext;
@@ -146,11 +145,12 @@ export class HostOrganismRuntime {
   fromContext(ctx: ExtensionContext): OrganismActionDeps {
     return this.resolve({
       sessionId: sessionIdOf(ctx), cwd: cwdOf(ctx) ?? process.cwd(),
-      modelRegistry: ctx.modelRegistry, parentModel: parentModelOf(ctx),
+      modelRegistry: ctx.modelRegistry,
     });
   }
 
   resolve(context: RuntimeContext): OrganismActionDeps {
+    if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     if (this.#disposed) throw new Error("Organism runtime has shut down; reload the session before using it.");
     if (!context.sessionId) throw new Error("Organism needs an active pi session.");
     const project = context.project ?? resolveSessionRunProject(context.cwd, context.sessionId);
@@ -186,8 +186,9 @@ export class HostOrganismRuntime {
         if (available.length === 0) throw new Error("Organism has no authenticated model available. Check pi /model and /login.");
         const cfg = config();
         const aux = configuredAux(cfg);
-        const parent = current.parentModel;
-        const parentProvider = parent?.slice(0, parent.indexOf("/"));
+        // Background learning is independent of the active session model.
+        const defaultProvider = "github-copilot";
+        const defaultModel = "gpt-6-luna";
         let ref: string | undefined;
         if (aux.model?.includes("/")) {
           if (aux.provider && !aux.model.startsWith(`${aux.provider}/`)) {
@@ -195,29 +196,23 @@ export class HostOrganismRuntime {
           }
           ref = aux.model;
         } else if (aux.model) {
-          const provider = aux.provider ?? parentProvider;
+          const provider = aux.provider;
           const matches = available.filter(m => m.id === aux.model && (!provider || m.provider === provider));
           if (matches.length !== 1) throw new Error(`Organism auxiliary model '${aux.model}' is unavailable or ambiguous; configure its provider explicitly.`);
           ref = `${matches[0].provider}/${matches[0].id}`;
-        } else if (aux.provider && aux.provider !== parentProvider) {
-          throw new Error("Organism auxiliary provider needs an explicit model when it differs from the active provider.");
         } else {
-          ref = parent;
-        }
-        if (ref === undefined) {
-          throw new Error("Organism has no active model to mirror; select a model with /model.");
+          ref = `${aux.provider ?? defaultProvider}/${defaultModel}`;
         }
         if (!available.some(m => `${m.provider}/${m.id}` === ref)) {
           throw new Error(`Organism model '${ref}' is not available in this authenticated session.`);
         }
         const selected = pick(available, { model: ref }, {});
         const requestSignal = signal ?? AbortSignal.timeout(30_000);
-        return createDigestModel({
-          cfg, parentModel: parent ?? "",
-          call: async (_runtime, system, messages) => complete(selected, boundedPrompt(messages),
-            { registry, system, maxTokens: 4096, signal: requestSignal },
+        return {
+          complete: async (system, messages) => complete(selected, boundedPrompt(digestHistory(messages)),
+            { registry, system, thinkingLevel: "low", maxTokens: 4096, signal: requestSignal },
           ),
-        });
+        };
       },
     };
     entry.deps = deps;

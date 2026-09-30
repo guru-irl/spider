@@ -43,7 +43,7 @@ export interface SkillActionArgs {
  * host-visible error, never a silent fallthrough to `list` — a caller must
  * never mistake a successful listing for a save that never happened.
  */
-export function skillAction(deps: OrganismActionDeps, args: SkillActionArgs): OrganismActionResult {
+export function skillAction(deps: Pick<OrganismActionDeps, "db" | "project">, args: SkillActionArgs): OrganismActionResult {
   const skills = new SkillStore(deps.db);
   switch (args.op ?? "list") {
     case "distill": {

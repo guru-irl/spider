@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { learningPass, COMBINED_REVIEW_PROMPT } from "../passes/learning.js";
 import type { DigestBundle, DigestModel } from "../types.js";
 
@@ -16,8 +16,6 @@ const bundle: DigestBundle = {
 };
 
 describe("learningPass — F4 JSON output contract", () => {
-  beforeEach(() => vi.stubEnv("PI_SUBAGENT_CHILD", ""));
-  afterEach(() => vi.unstubAllEnvs());
   it("COMBINED_REVIEW_PROMPT explicitly states the candidate JSON output contract", () => {
     expect(COMBINED_REVIEW_PROMPT).toMatch(/JSON/);
     expect(COMBINED_REVIEW_PROMPT).toMatch(/"memory"/);

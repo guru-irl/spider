@@ -32,7 +32,7 @@ export interface ActionCtx {
   /** pi's ModelRegistry, taken from the ExtensionContext (NOT from the extension API --
    *  it does not live there). Undefined for hosts/tests that do not supply one. */
   modelRegistry?: unknown;
-  /** Fully-qualified active model from ExtensionContext; used by auxiliary work. */
+  /** Fully-qualified active model from ExtensionContext; used for subagent model inheritance. */
   parentModel?: string;
   /** The persisted `models.defaults` role->ref map (control models set), resolved once per
    *  dispatch by buildActionCtx. Subagents cannot import @spider/host to read config

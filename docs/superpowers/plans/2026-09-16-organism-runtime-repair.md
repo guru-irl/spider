@@ -60,7 +60,7 @@
 **Files:** `packages/organism/src/config.ts`, `worker.ts`, `types.ts`, `apply.ts`, `aux-model.ts`, `skill-usage.ts`, `actions.ts`, `renderers.ts`; `packages/memory/src/aux.ts` only after handoff; host glue and docs.
 
 - [ ] RED tests exercise dotted values exactly as returned by `controlConfig`: master disable, per-pass disable, write budget, curator settings and provider-qualified auxiliary override. Preserve existing nested config inputs; explicit dotted leaves win.
-- [ ] Model selection defaults to the current parent model when no override exists; explicit provider/model is validated, not silently replaced with another available model.
+- [ ] Model selection defaults to `github-copilot/gpt-6-luna` with low thinking when no override exists, independently of the parent model; explicit provider/model is validated, not silently replaced with another available model. Organism execution is disabled in subagent children (`PI_SUBAGENT_CHILD=1`).
 - [ ] Distinguish disabled/no-input/no-model/failed/completed drains in a structured receipt. Record which pass failed and keep the other passes safe to run. A model/schema error must not become a success-looking zero-count result.
 - [ ] Use the existing run_events log and diagnostic/card surfaces to show the last outcome and pending counts. Do not dump transcripts or credentials into diagnostics.
 - [ ] Count only newly staged rows; a duplicate is not a new write. Prevent automatic candidates from downgrading/replacing approved, pinned or protected skills.

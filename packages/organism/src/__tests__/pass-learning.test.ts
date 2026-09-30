@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { learningPass } from "../passes/learning.js";
 import type { DigestBundle, DigestModel } from "../types.js";
 
@@ -17,8 +17,6 @@ const bundle: DigestBundle = {
 };
 
 describe("learningPass (co-equal capture)", () => {
-  beforeEach(() => vi.stubEnv("PI_SUBAGENT_CHILD", ""));
-  afterEach(() => vi.unstubAllEnvs());
   it("emits BOTH a staged memory AND a staged skill from one turn", async () => {
     const r = await learningPass(
       bundle,

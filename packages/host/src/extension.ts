@@ -261,7 +261,8 @@ export const SPIDER_PARAMETERS = {
 } as const;
 
 /** Manual and automatic entry points share the same session/project worker. */
-function buildOrganismDeps(ctx: ActionCtx & { parentModel?: string }): OrganismActionDeps {
+function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
+  if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
   const api = ctx.pi as object;
   let runtime = organismRuntimes.get(api);
   if (!runtime) {
@@ -333,7 +334,9 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
           report.ok = false;
           report.lines.push(`- routing: NOT WIRED (registration failed: ${routingError})`);
         }
-        try {
+        if (process.env.PI_SUBAGENT_CHILD === "1") {
+          report.lines.push("- organism: disabled in subagent sessions");
+        } else try {
           const enabled = readOrganismConfig(controlConfig("get", ctx.project.realPath)).enabled;
           // Read EXISTING runtime state directly — never create a replacement
           // runtime just to inspect a registration/setup failure.
@@ -481,6 +484,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
       return { details: result };
     }
     case "skill": {
+      if (process.env.PI_SUBAGENT_CHILD === "1") return { error: "organism is disabled in subagent sessions" };
       if (!fullCtx) return { error: "control skill requires an action context" };
       if (args.sub === "curate") {
         return await curateAction(buildOrganismDeps(fullCtx), {
@@ -491,6 +495,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
       return { error: `control skill sub '${String(args.sub)}' unknown (valid: curate)` };
     }
     case "insights": {
+      if (process.env.PI_SUBAGENT_CHILD === "1") return { error: "organism is disabled in subagent sessions" };
       if (!fullCtx) return { error: "control insights requires an action context" };
       return insightsAction(buildOrganismDeps(fullCtx));
     }
@@ -797,9 +802,17 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // action needs no closure deps; the /todos command resolves db+session per call.
   registerAction("todo", makeTodo());
 
-  // organism manual surface: `skill` (distill → /learn handoff, view, list).
-  // Removes the Phase-0 stub for `skill` (dispatch now finds a handler).
-  registerAction("skill", (args, ctx) => skillAction(buildOrganismDeps(ctx), args as SkillActionArgs));
+  // Children load and stage skills directly from repo storage. Distillation
+  // and user review decisions stay parent-only, as does runtime resolution.
+  registerAction("skill", (args, ctx) => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") {
+      if (["distill", "approve", "reject"].includes(String(args.op))) {
+        return { error: "organism is disabled in subagent sessions" };
+      }
+      return skillAction({ db: ctx.repoDb, project: ctx.project }, args as SkillActionArgs);
+    }
+    return skillAction(buildOrganismDeps(ctx), args as SkillActionArgs);
+  });
   pi.registerCommand?.(
     "todos",
     makeTodosCommand({
@@ -1069,7 +1082,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
     routingSetupErrors.set(pi as object, safeError(e));
   }
 
-  registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
+  if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
+  }
   // Registered LAST: shutdown awaits the worker before closing its resources.
   pi.on("session_shutdown", () => {
     organism.dispose();

@@ -1,6 +1,5 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { RenderCtx } from "./types.js";
-import { statusIcon } from "./types.js";
 
 export interface EscalationDetails {
   runId: string;
@@ -21,13 +20,15 @@ function severityToStatus(severity: "blocked" | "question" | "warning"): "fail" 
 /** Render an escalation notification card. */
 export function renderEscalation(details: EscalationDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
+  const expanded = ctx.expanded === true;
+  const trim = resultTrimmer(expanded);
   const icon = statusIcon(theme, severityToStatus(details.severity));
   
   const lines: string[] = [];
   
   // Header: icon + severity + run name
   const header = `${icon} ${theme.bold(details.severity)} • ${theme.fg("accent", details.name)} (${theme.fg("muted", details.agent)})`;
-  lines.push(truncateToWidth(header, width, ""));
+  lines.push(trim(header, width, ""));
   
   // Empty line for spacing
   lines.push("");
@@ -35,15 +36,15 @@ export function renderEscalation(details: EscalationDetails, ctx: RenderCtx): st
   // Summary (potentially multi-line, each line truncated)
   const summaryLines = details.summary.split("\n");
   for (const line of summaryLines) {
-    lines.push(truncateToWidth(theme.fg("text", line), width, ""));
+    lines.push(trim(theme.fg("text", line), width, ""));
   }
   
   // Empty line for spacing
   lines.push("");
   
   // Footer: run ID
-  const footer = theme.fg("dim", `run ${details.runId.slice(0, 8)}`);
-  lines.push(truncateToWidth(footer, width, ""));
+  const footer = theme.fg("dim", `run ${expanded ? details.runId : details.runId.slice(0, 8)}`);
+  lines.push(trim(footer, width, ""));
   
-  return lines;
+  return fitResultLines(lines, width, expanded);
 }

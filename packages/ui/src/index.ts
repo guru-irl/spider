@@ -2,6 +2,7 @@
 // Honors pi active theme tokens; signature glyph is 🕸 (never color-only).
 
 import type { Component } from "./component";
+import { fitResultLines } from "./renderers/types";
 export type { Component } from "./component";
 
 // Phase 0 kept a static ANSI token table; that is gone. Colour is NEVER hardcoded here —
@@ -34,12 +35,13 @@ export function SectionRule(title?: string): Component {
   };
 }
 
-export function Panel(opts: { title?: string; body: string[] }): Component {
+export function Panel(opts: { title?: string; body: string[]; expanded?: boolean }): Component {
   return {
     render(width: number): string[] {
       const out: string[] = [];
       if (opts.title) out.push(...SectionRule(opts.title).render(width));
-      for (const line of opts.body) out.push(clamp(line, width));
+      if (opts.expanded) out.push(...fitResultLines(opts.body, width, true));
+      else for (const line of opts.body) out.push(clamp(line, width));
       return out;
     },
   };
@@ -97,7 +99,7 @@ export type {
   RenderCtx, ExecKind, ExecDetails, IndexDetails, MemoryRecordView, MemoryCardDetails,
   TodoItemView, TodoChecklistDetails, RunView, RunResultDetails, MessageDetails,
 } from "./renderers/types";
-export { card, kv, statusIcon, sectionRule } from "./renderers/types";
+export { card, kv, statusIcon, sectionRule, fitResultLines } from "./renderers/types";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";

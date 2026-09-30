@@ -1,5 +1,6 @@
 // packages/ui/src/components/table.ts
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { fitResultLines } from "../renderers/types.js";
 import type { ThemeAdapter } from "../agents/types";
 
 interface Col { header: string; align?: "left" | "right"; token?: string }
@@ -7,8 +8,15 @@ interface Col { header: string; align?: "left" | "right"; token?: string }
 export function renderTable(
   theme: ThemeAdapter,
   opts: { columns: Col[]; rows: string[][]; width: number },
+  expanded = false,
 ): string[] {
   const { columns, rows, width } = opts;
+  if (expanded) {
+    const colW = columns.map((c, i) => Math.max(visibleWidth(c.header), ...rows.map((r) => visibleWidth(r[i] ?? ""))));
+    const fullWidth = colW.reduce((sum, n) => sum + n, 0) + Math.max(0, columns.length - 1);
+    if (fullWidth > width) return fitResultLines(
+      [columns.map((c) => theme.fg("muted", c.header)).join(" "), ...rows.map((r) => r.join(" "))], width, true);
+  }
   const nCols = columns.length;
   const raw = [columns.map((c) => c.header), ...rows];
   const colW = new Array(nCols).fill(0);

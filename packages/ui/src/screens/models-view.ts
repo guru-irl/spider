@@ -1,8 +1,7 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
 import type { ModelEntry } from "@spider/models";
 import { catalogRows } from "./models-model.js";
-import { sectionRule } from "../renderers/types.js";
+import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
 /** Pure: the copilot model catalog grouped by tier, framed as a 🕸 models card. Each tier is
  *  an accent `── <tier> ──` rule; each model is an availability glyph (● available / ○ not),
@@ -13,7 +12,8 @@ export interface ModelDefaultOrigins {
   global: Record<string, string>;
 }
 
-export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number, origins?: ModelDefaultOrigins): string[] {
+export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number, origins?: ModelDefaultOrigins, expanded = false): string[] {
+  const trim = resultTrimmer(expanded);
   const body: string[] = [];
   for (const group of catalogRows(entries, defaults)) {
     body.push(sectionRule(theme, group.tier, width));
@@ -24,7 +24,7 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       if (row.vision) badges.push(theme.fg("dim", "V"));
       const badge = badges.length ? ` ${badges.join("")}` : "";
       const dflt = row.isDefaultFor.length ? theme.fg("success", ` ⟵ ${row.isDefaultFor.join(",")}`) : "";
-      body.push(truncateToWidth(`${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
+      body.push(trim(`${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
     }
   }
   if (origins && Object.keys(defaults).length) {
@@ -33,10 +33,10 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       const source = origins.sources[role] ?? "global";
       const shadow = source === "local" && origins.global[role] !== undefined
         ? `; shadows global ${origins.global[role]}` : "";
-      body.push(truncateToWidth(`${role}: ${ref} (${source}${shadow})`, width, ""));
+      body.push(trim(`${role}: ${ref} (${source}${shadow})`, width, ""));
     }
   }
-  return body;
+  return fitResultLines(body, width, expanded);
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

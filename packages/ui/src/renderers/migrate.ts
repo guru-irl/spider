@@ -1,5 +1,4 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import { statusIcon } from "./types.js";
+import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { RenderCtx } from "./types.js";
 
 export interface MigrateDetails {
@@ -15,16 +14,18 @@ export interface MigrateDetails {
 /** Render the migrate result as a themed card. */
 export function renderMigrateResult(details: MigrateDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
+  const expanded = ctx.expanded === true;
+  const trim = resultTrimmer(expanded);
   const out: string[] = [""];
   
   // Dry-run vs applied header
   if (details.dryRun) {
-    out.push(truncateToWidth(
+    out.push(trim(
       ` ${statusIcon(theme, "on")} ${theme.fg("info", "Dry-run preview (no changes made)")}`,
       width, ""
     ));
   } else if (details.applied) {
-    out.push(truncateToWidth(
+    out.push(trim(
       ` ${statusIcon(theme, "ok")} ${theme.fg("success", "Migration applied")}`,
       width, ""
     ));
@@ -33,7 +34,7 @@ export function renderMigrateResult(details: MigrateDetails, ctx: RenderCtx): st
   // Backup location
   if (details.backupDir) {
     out.push("");
-    out.push(truncateToWidth(
+    out.push(trim(
       ` ${theme.fg("dim", "backup:")} ${theme.fg("muted", details.backupDir)}`,
       width, "…"
     ));
@@ -44,11 +45,11 @@ export function renderMigrateResult(details: MigrateDetails, ctx: RenderCtx): st
   if (counts && Object.keys(counts).length > 0) {
     out.push("");
     const verb = details.dryRun ? "would move" : "moved";
-    out.push(truncateToWidth(` ${theme.fg("dim", `${verb}:`)}`, width, ""));
+    out.push(trim(` ${theme.fg("dim", `${verb}:`)}`, width, ""));
     
     for (const [table, count] of Object.entries(counts)) {
       if (count > 0) {
-        out.push(truncateToWidth(
+        out.push(trim(
           `   ${theme.fg("muted", "·")} ${theme.bold(table)}: ${theme.fg("info", String(count))}`,
           width, ""
         ));
@@ -59,17 +60,17 @@ export function renderMigrateResult(details: MigrateDetails, ctx: RenderCtx): st
   // Report ambiguous rows
   if (details.ambiguous && details.ambiguous.length > 0) {
     out.push("");
-    out.push(truncateToWidth(
+    out.push(trim(
       ` ${statusIcon(theme, "warn")} ${theme.fg("warning", "Ambiguous rows (kept, needs review)")}`,
       width, ""
     ));
     
     for (const amb of details.ambiguous) {
-      out.push(truncateToWidth(
+      out.push(trim(
         `   ${theme.fg("muted", "·")} ${theme.bold(amb.table)}: ${theme.fg("muted", amb.uuid)}`,
         width, "…"
       ));
-      out.push(truncateToWidth(
+      out.push(trim(
         `     ${theme.fg("dim", amb.reason)}`,
         width, "…"
       ));
@@ -79,8 +80,8 @@ export function renderMigrateResult(details: MigrateDetails, ctx: RenderCtx): st
   // Generic message
   if (details.message) {
     out.push("");
-    out.push(truncateToWidth(` ${theme.fg("muted", details.message)}`, width, "…"));
+    out.push(trim(` ${theme.fg("muted", details.message)}`, width, "…"));
   }
   
-  return out;
+  return fitResultLines(out, width, expanded);
 }

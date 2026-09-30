@@ -9,7 +9,36 @@
 // string via `text`; older handlers that only return `{ display, details }` degrade to a
 // JSON view of `details` (functional, ANSI-free) until they add a `text` field.
 
+import type { ContextEvent } from "@earendil-works/pi-coding-agent";
+
 const ANSI = /\x1b\[[0-9;]*m/g;
+
+/** Repair model-facing history, including tool results persisted before this extension loaded. */
+export function repairBlankToolResults(messages: ContextEvent["messages"]): { messages: ContextEvent["messages"] } | undefined {
+  try {
+    let changed = false;
+    const repaired = messages.map(message => {
+      try {
+        if (message.role !== "toolResult" || message.isError !== true || !Array.isArray(message.content)) return message;
+        const content = message.content;
+        // Unknown or malformed blocks are left untouched rather than guessed at.
+        if (!content.every(block => block && (block.type === "image" ||
+          (block.type === "text" && typeof block.text === "string")))) return message;
+        if (content.some(block => block.type === "image")) {
+          const withoutBlank = content.filter(block => block.type !== "text" || block.text.trim());
+          if (withoutBlank.length === content.length) return message;
+          changed = true;
+          return { ...message, content: withoutBlank.some(block => block.type === "text")
+            ? withoutBlank : [...withoutBlank, { type: "text" as const, text: "(tool error with no message)" }] };
+        }
+        if (content.some(block => block.type === "text" && block.text.trim())) return message;
+        changed = true;
+        return { ...message, content: [{ type: "text" as const, text: "(tool error with no message)" }] };
+      } catch { return message; }
+    });
+    return changed ? { messages: repaired } : undefined;
+  } catch { return undefined; }
+}
 
 /** pi TextContent block (structural — no import needed). */
 export interface TextBlock { type: "text"; text: string }
@@ -20,8 +49,47 @@ export interface TextBlock { type: "text"; text: string }
  *  the rest to pi's `execute()` contract. */
 export interface ToolResult { content: TextBlock[]; details: unknown; isError: boolean }
 
+export function rethrowWithMessage(error: unknown, operation: string): never {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.trim()) throw error;
+  const kind = error instanceof Error ? error.constructor.name : typeof error;
+  throw new Error(`${operation} failed: ${kind} with no message`, { cause: error });
+}
+
 function safeJson(v: unknown): string {
   try { return JSON.stringify(v, null, 2) ?? String(v); } catch { return String(v); }
+}
+
+/** Model text for an empty settled result; derive a short status from exec details when present. */
+function emptyResultText(details: unknown, isError: boolean): string {
+  if (details && typeof details === "object" && "stdout" in details && "stderr" in details) {
+    const exec = details as { outcome?: string; exitCode?: number | null; signal?: string | null };
+    if (exec.outcome === "timeout") return "detached at timeout (no output yet; exit status unknown)";
+    if (exec.outcome === "aborted") return "aborted (no output)";
+    if (exec.outcome === "signal") return `killed by signal ${exec.signal ?? "unknown"} (no output)`;
+    if (exec.outcome === "spawn-error") return "spawn error (no output)";
+    if (exec.outcome === "unknown") return "outcome unknown (no output)";
+    if (typeof exec.exitCode === "number" && exec.exitCode !== 0) return `exit ${exec.exitCode} (no output)`;
+    return isError ? "exec failed (no output)" : "(no output)";
+  }
+  return isError ? "Error (no message)" : "(no message)";
+}
+
+/** Edit/write delegates bypass toToolResult. Preserve meaningful results verbatim. */
+export function ensureNonEmptyToolContent(result: null | undefined): { content: TextBlock[]; details: Record<string, never> };
+export function ensureNonEmptyToolContent<T extends { content?: Array<{ type: string; text?: string }>; isError?: boolean }>(result: T): T;
+export function ensureNonEmptyToolContent<T extends { content?: Array<{ type: string; text?: string }>; isError?: boolean }>(result: T | null | undefined): T | { content: TextBlock[]; details: Record<string, never> } {
+  if (result == null) return { content: [{ type: "text", text: "(no message)" }], details: {} };
+  const content = result.content ?? [];
+  if (content.some(block => block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0)) return result;
+  const fallback = result.isError ? "Error (no message)" : "(no message)";
+  const textBlocks = content.filter(block => block.type === "text");
+  return {
+    ...result,
+    content: textBlocks.length
+      ? content.map(block => block.type === "text" ? { ...block, text: fallback } : block)
+      : [...content, { type: "text", text: fallback }],
+  } as T;
 }
 
 // --- Mechanism (B): isError correlation store ------------------------------------
@@ -97,5 +165,6 @@ export function toToolResult(r: unknown): ToolResult {
     o.isError === true ||
     (o.isError === undefined && (o.error != null || detailsFailed))
   );
-  return { content: [{ type: "text", text: text.replace(ANSI, "") }], details: normalizedDetails, isError };
+  const cleanText = text.replace(ANSI, "");
+  return { content: [{ type: "text", text: cleanText.trim() ? cleanText : emptyResultText(normalizedDetails, isError) }], details: normalizedDetails, isError };
 }

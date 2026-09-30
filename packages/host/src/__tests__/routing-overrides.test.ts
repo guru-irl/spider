@@ -53,6 +53,128 @@ describe("countPatchLines", () => {
 });
 
 describe("edit override", () => {
+  it.each(["edit", "write"])("adds model-facing text when a %s delegate returns empty content", async (name) => {
+    const db = mkdb();
+    const pi = fakePi();
+    const empty = { content: [{ type: "text", text: "" }], details: { patch: "" } };
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s-empty",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => empty }),
+      makeWriteDelegate: () => ({ execute: async () => empty }),
+    });
+    try {
+      const tool = pi.tools.find((t) => t.name === name)!;
+      const params = name === "edit"
+        ? { path: "unused.txt", description: "test empty content", edits: [{ oldText: "a", newText: "b" }] }
+        : { path: "unused.txt", description: "test empty content", content: "new" };
+      const result: any = await tool.execute(`empty-${name}`, params, undefined, undefined, {});
+      expect(result.content.some((block: any) => block.type === "text" && block.text.length > 0)).toBe(true);
+      expect(result.details).toBe(empty.details);
+    } finally { db.close(); }
+  });
+
+  it.each(["edit", "write"])("replaces whitespace-only %s delegate text", async (name) => {
+    const db = mkdb();
+    const pi = fakePi();
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s-whitespace",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => ({ content: [{ type: "text", text: "  \n" }], details: {} }) }),
+      makeWriteDelegate: () => ({ execute: async () => ({ content: [{ type: "text", text: "  \n" }], details: {} }) }),
+    });
+    try {
+      const tool = pi.tools.find((t) => t.name === name)!;
+      const params = name === "edit"
+        ? { path: "unused.txt", description: "test whitespace", edits: [{ oldText: "a", newText: "b" }] }
+        : { path: "unused.txt", description: "test whitespace", content: "new" };
+      const result: any = await tool.execute(`whitespace-${name}`, params, undefined, undefined, {});
+      expect(result.content[0].text).toBe("(no message)");
+    } finally { db.close(); }
+  });
+
+  it.each(["edit", "write"])("adds model-facing text when a %s delegate returns no content blocks", async (name) => {
+    const db = mkdb();
+    const pi = fakePi();
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s-empty-blocks",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => ({ content: [], details: {} }) }),
+      makeWriteDelegate: () => ({ execute: async () => ({ content: [], details: {} }) }),
+    });
+    try {
+      const tool = pi.tools.find((t) => t.name === name)!;
+      const params = name === "edit"
+        ? { path: "unused.txt", description: "test missing blocks", edits: [{ oldText: "a", newText: "b" }] }
+        : { path: "unused.txt", description: "test missing blocks", content: "new" };
+      const result: any = await tool.execute(`no-blocks-${name}`, params, undefined, undefined, {});
+      expect(result.content.some((block: any) => block.type === "text" && block.text.length > 0)).toBe(true);
+    } finally { db.close(); }
+  });
+
+  it.each(["edit", "write"])("rethrows blank %s delegate errors with a readable message", async (name) => {
+    const db = mkdb();
+    const pi = fakePi();
+    const original = new Error("");
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s-blank-throw",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => { throw original; } }),
+      makeWriteDelegate: () => ({ execute: async () => { throw original; } }),
+    });
+    try {
+      const tool = pi.tools.find((t) => t.name === name)!;
+      const params = name === "edit"
+        ? { path: "unused.txt", description: "test blank throw", edits: [{ oldText: "a", newText: "b" }] }
+        : { path: "unused.txt", description: "test blank throw", content: "new" };
+      await expect(tool.execute(`blank-throw-${name}`, params, undefined, undefined, {}))
+        .rejects.toMatchObject({ message: `${name} delegate failed: Error with no message`, cause: original });
+    } finally { db.close(); }
+  });
+
+  it.each(["edit", "write"])("preserves nonblank %s delegate errors", async (name) => {
+    const db = mkdb();
+    const pi = fakePi();
+    const original = new Error("permission denied");
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s-readable-throw",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => { throw original; } }),
+      makeWriteDelegate: () => ({ execute: async () => { throw original; } }),
+    });
+    try {
+      const tool = pi.tools.find((t) => t.name === name)!;
+      const params = name === "edit"
+        ? { path: "unused.txt", description: "test readable throw", edits: [{ oldText: "a", newText: "b" }] }
+        : { path: "unused.txt", description: "test readable throw", content: "new" };
+      await expect(tool.execute(`readable-throw-${name}`, params, undefined, undefined, {})).rejects.toBe(original);
+    } finally { db.close(); }
+  });
+
+  it.each(["edit", "write"])("returns an existing %s delegate result unchanged", async (name) => {
+    const db = mkdb();
+    const pi = fakePi();
+    const original = { content: [{ type: "text", text: "Already meaningful" }], details: { patch: "" } };
+    registerEditWriteOverrides(pi as any, {
+      db,
+      getSessionId: () => "s-meaningful",
+      getCwd: () => process.cwd(),
+      makeEditDelegate: () => ({ execute: async () => original }),
+      makeWriteDelegate: () => ({ execute: async () => original }),
+    });
+    try {
+      const tool = pi.tools.find((t) => t.name === name)!;
+      const params = name === "edit"
+        ? { path: "unused.txt", description: "test preservation", edits: [{ oldText: "a", newText: "b" }] }
+        : { path: "unused.txt", description: "test preservation", content: "new" };
+      expect(await tool.execute(`meaningful-${name}`, params, undefined, undefined, {})).toBe(original);
+    } finally { db.close(); }
+  });
   it("blocks an edit with no description (isError, no delegate, no event)", async () => {
     const db = mkdb();
     const pi = fakePi();
@@ -160,6 +282,22 @@ describe("edit override", () => {
     expect(row.added).toBe(2);
     expect(row.removed).toBe(1);
     db.close();
+  });
+
+  it("passes through non-empty text returned by pi's real write and edit delegates", async () => {
+    const db = mkdb();
+    const pi = fakePi();
+    const cwd = testScratchPath(`delegate-${randomUUID()}`);
+    const path = "delegate-check.txt";
+    registerEditWriteOverrides(pi as any, { db, getSessionId: () => "s-real", getCwd: () => cwd });
+    try {
+      const write = pi.tools.find((t) => t.name === "write")!;
+      const edit = pi.tools.find((t) => t.name === "edit")!;
+      const written: any = await write.execute("real-write", { path, content: "original", description: "create delegate fixture" }, undefined, undefined, { cwd });
+      expect(written.content[0].text).toBe(`Successfully wrote to ${path}`);
+      const edited: any = await edit.execute("real-edit", { path, description: "update delegate fixture", edits: [{ oldText: "original", newText: "updated" }] }, undefined, undefined, { cwd });
+      expect(edited.content[0].text).toBe(`Successfully replaced 1 block(s) in ${path}.`);
+    } finally { db.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
 
   it("overrides omit renderCall/renderResult (native diff renderer inherited)", () => {

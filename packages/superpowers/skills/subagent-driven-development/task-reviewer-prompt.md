@@ -1,7 +1,8 @@
 # Task Reviewer Prompt Template
 
-Use this template when you `spider run` a task reviewer (`role:"reviewer"`,
-`context:"fresh"`). The reviewer
+Use this template when you `spider run` a task reviewer with
+`context:"fresh"` and explicit provider-qualified `model:` from
+`spider control models` reviewer role defaults. The reviewer
 reads the task's diff once and returns two verdicts: spec compliance and
 code quality.
 
@@ -13,11 +14,9 @@ This is a `spider run` task brief.
 
 spider run:
   agent: reviewer
-  role: "reviewer"
   context: "fresh"
-  description: "Review Task N (spec + quality)"
-  model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
-         model silently inherits the session's most expensive one]
+  name: "Review Task N (spec + quality)"
+  model: [PROVIDER-QUALIFIED REVIEWER MODEL FROM ROLE DEFAULTS]
   task: |
     You are reviewing one task's implementation: first whether it matches its
     requirements, then whether it is well-built. This is a task-scoped gate,
@@ -55,8 +54,9 @@ spider run:
     lock ordering, a function or API contract, or shared mutable state,
     checking the call sites is the right method.
 
-    Your review is read-only on this checkout. Do not mutate the working
-    tree, the index, HEAD, or branch state in any way.
+    Your review is read-only on this checkout. Do not edit source or mutate
+    the working tree, index, HEAD or branch state. Do not dispatch nested
+    subagents or reviewers. Review the diff yourself.
 
     ## Do Not Trust the Report
 
@@ -79,7 +79,9 @@ spider run:
     test you would run.
 
     Warnings or other noise in the implementer's reported test output are
-    findings — test output should be pristine.
+    findings. If evidence seems truncated, re-read its file at the given
+    path before calling it missing; do not re-run a suite because the
+    displayed excerpt was incomplete.
 
     ## Part 1: Spec Compliance
 
@@ -92,6 +94,8 @@ spider run:
     - **Misunderstood:** right feature built the wrong way, wrong problem
       solved
 
+    If the brief batches multiple files, check each listed file against
+    its promised change. Missing a listed file is a Missing finding.
     If a requirement cannot be verified from this diff alone (it lives in
     unchanged code or spans tasks), report it as a ⚠️ item instead of
     broadening your search.
@@ -172,8 +176,8 @@ spider run:
 ```
 
 **Placeholders:**
-- `[MODEL]` — REQUIRED: reviewer model per SKILL.md Model Selection
-- `[BRIEF_FILE]` — REQUIRED: the task brief file (`scripts/task-brief PLAN N`
+- `[MODEL]` — REQUIRED: explicit provider-qualified reviewer role default
+- `[BRIEF_FILE]` — REQUIRED: the task brief file (`bash scripts/task-brief PLAN N`
   prints the path; same file the implementer worked from)
 - `[GLOBAL_CONSTRAINTS]` — the binding requirements copied verbatim from
   the plan's Global Constraints section or the spec: exact values, formats,
@@ -184,7 +188,7 @@ spider run:
 - `[BASE_SHA]` — commit before this task
 - `[HEAD_SHA]` — current commit
 - `[DIFF_FILE]` — REQUIRED: the path the controller wrote the review
-  package to (`scripts/review-package BASE HEAD` prints the unique path it
+  package to (`bash scripts/review-package PLAN_FILE BASE HEAD` prints the unique path it
   wrote; the package never enters the controller's context)
 
 **Reviewer returns:** Spec Compliance verdict (✅/❌/⚠️), Strengths, Issues

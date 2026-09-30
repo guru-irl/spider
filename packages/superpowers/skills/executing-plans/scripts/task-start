@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Usage: task-start PLAN_FILE TASK_NUMBER
+# Prints brief path and full SHA of task BASE.
+set -euo pipefail
+if [ $# -ne 2 ]; then
+  echo "usage: task-start PLAN_FILE TASK_NUMBER" >&2
+  exit 2
+fi
+sdd="$(cd "$(dirname "$0")/../../subagent-driven-development/scripts" && pwd)"
+out=$(bash "$sdd/task-brief" "$1" "$2")
+brief=$(printf '%s\n' "$out" | sed -n 's/^wrote \(.*\): [0-9][0-9]* lines$/\1/p')
+[ -n "$brief" ] || { echo "task-brief did not report a path: $out" >&2; exit 1; }
+echo "brief: $brief"
+echo "base: $(git rev-parse HEAD)"

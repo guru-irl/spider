@@ -7,7 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PROC_SCRATCH = join(pkgRoot, ".spider", "scratch", String(process.pid));
+const PROC_SCRATCH = join(process.env.SUPERPOWERS_TEST_SCRATCH_ROOT ?? join(pkgRoot, ".spider", "scratch"), String(process.pid));
 
 export function testScratchPath(name: string): string {
   mkdirSync(PROC_SCRATCH, { recursive: true });

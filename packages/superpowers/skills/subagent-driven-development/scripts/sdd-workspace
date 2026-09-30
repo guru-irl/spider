@@ -109,13 +109,13 @@ if [ -f "$base/progress.md" ]; then
     echo "legacy ledger belongs to another plan; with approval move its files aside into $base/legacy-<name>/" >&2
     exit 2
   fi
-  # The first ten lines may use a plain, emphasized, or list-item Plan: header.
+  # The first ten lines may use a plain, formatted, heading, quote or list-item Plan: header.
   header=$(head -n 10 "$base/progress.md")
-  reference=$(printf '%s\n' "$header" | grep -m 1 -E '^([[:space:]]*[-*+][[:space:]]*)?([*_`]*Plan[*_`]*:|# SDD ledger — plan: )' || :)
+  reference=$(printf '%s\n' "$header" | grep -m 1 -E '^([[:space:]>#]*([-*+][[:space:]]*)?[*_`]*[Pp]lan( file)?[*_`]*:|# SDD ledger — plan: )' || :)
   if [ -n "$reference" ]; then
     case "$reference" in
       '# SDD ledger — plan: '*) reference=${reference#'# SDD ledger — plan: '} ;;
-      *) reference=$(printf '%s\n' "$reference" | sed -E 's/^[[:space:]]*([-*+][[:space:]]*)?[*_`]*Plan[*_`]*:[*_`[:space:]]*//') ;;
+      *) reference=$(printf '%s\n' "$reference" | sed -E 's/^[[:space:]>#]*([-*+][[:space:]]*)?[*_`]*[Pp]lan( file)?[*_`]*:[*_`[:space:]]*//') ;;
     esac
     identity=$(normalize_ref "$reference") || identity=
     if [ "$identity" != "$plan_id" ]; then

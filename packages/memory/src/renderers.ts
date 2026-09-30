@@ -5,7 +5,7 @@ import type { StageResult } from "./staging";
 const GLYPH = "🕸";
 
 export function renderRememberResult(
-  r: StageResult & { content?: string; category?: string; scope?: string; source?: string },
+  r: StageResult & { content?: string; category?: string; scope?: string; source?: string; message?: string },
   expanded = false,
 ): Component {
   const body: string[] = [];
@@ -13,10 +13,11 @@ export function renderRememberResult(
     const preview = r.content.trim().replace(/\s+/g, " ");
     body.push(expanded ? r.content : preview.length > 160 ? preview.slice(0, 159) + "…" : preview);
   }
+  if (r.message) body.push(r.message);
   const meta: string[] = [`status: ${r.status}`];
   if (r.category) meta.push(`category: ${r.category}`);
   if (r.scope) meta.push(`scope: ${r.scope}`);
-  if (r.reason) meta.push(`reason: ${r.reason}`);
+  if (r.reason && !r.message) meta.push(`reason: ${r.reason}`);
   body.push(meta.join("  ·  "));
   // No Panel title — the tool call already renders "🕸 spider · remember"; a second
   // glyph+rule header here was redundant noise.

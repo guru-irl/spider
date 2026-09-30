@@ -12,8 +12,9 @@ The four loops are:
    or the content index. The bytes stay in the database. Only the printed or
    queried slice enters the model context, and `spider search` retrieves the
    rest later.
-2. **The memory lifecycle.** Foreground `remember` writes activate immediately.
-   Background and auto-captured writes stage fail-closed and wait for approval.
+2. **The memory lifecycle.** Foreground `remember` writes require justification and
+   a durability, overlap, and scope review before activation. A failed review stores
+   as requested. Auto-sourced and background writes stage fail-closed for approval.
    The active-memory snapshot is injected at `before_agent_start` and re-injected
    on every later turn and every new session.
 3. **The organism feedback and learning loop.** On before-compact and on
@@ -112,14 +113,31 @@ has one of six categories (`preference`, `convention`, `tool-quirk`, `failure`,
 `correction`, `insight`), content, an optional link, a status, and a source. The
 lifecycle differs by how a write originates.
 
-**Foreground writes activate immediately.** `spider remember` reaches the
-host `remember` action, which calls `stageWrite` with `source: "user"` unless the caller
-sets `auto`. `stageWrite` runs a fixed order: a strict threat scan, then (for
-background writes only) the anti-poisoning guardrail, then a duplicate check,
-then the staged-versus-active decision. A user write with no `autoStage` inserts
-as `status: "active"` right away, subject to the per-scope character cap. If the
-write would push the scope's active content over `DEFAULT_MEMORY_CHAR_CAP`
-(8,000 characters), `assertWithinCap` throws `MemoryOverflowError` and no row is
+**Foreground writes are reviewed before insertion.** `spider remember` requires
+`justification` explaining durability after the task, usefulness to other agents,
+and the requested scope. The host `remember` action injects an authenticated
+`@spider/models` `complete()` reviewer into `reviewedWrite` in the memory package.
+The deterministic justification, strict threat scan, background-only guardrail,
+and exact duplicate checks run before any model call. The reviewer sees the
+candidate and relevant active entries from both scopes (repo via sanitized FTS;
+global via sanitized token matching because its table has no FTS). Its verdict
+can insert as requested (`new`), reuse an active UUID (`already_present`), atomically
+insert and archive active entries in the same scope via the FTS-aware path
+(`supersedes`), insert
+under a corrected scope (`wrong_scope`), or leave task-only facts in the
+conversation without insertion (`not_durable`). An invalid verdict, timeout,
+abort, unavailable model or disabled reviewer stores as requested and reports
+`review skipped` with the reason. A supersedes verdict for an auto-sourced write
+stages the new entry and reports pending supersessions without archiving anything;
+entries in the other scope are related but never archived. Justification is stored on inserted
+memory rows, including staged writes and wrong-scope redirects; verdicts that insert nothing
+store no justification.
+
+`stageWrite` remains the synchronous insert path used by background callers;
+reviewed writes use it after validation. A user write with no `autoStage` inserts
+as `status: "active"`, subject to the per-scope character cap. If the write
+would push the scope's active content over `DEFAULT_MEMORY_CHAR_CAP` (8,000
+characters), `assertWithinCap` throws `MemoryOverflowError` and no row is
 written.
 
 **Background and auto writes stage fail-closed.** Any write with
@@ -158,12 +176,22 @@ organism later drains.
 
 ```mermaid
 flowchart TD
-  R["spider remember"] --> SRC{"source"}
-  SRC -->|"user, foreground"| SW1["stageWrite: scan, duplicate check"]
-  SRC -->|"auto or import, background"| SW2["stageWrite: scan, guardrail, duplicate check"]
-
-  SW1 --> ACT["insert status=active, cap checked"]
-  SW2 --> STG["insert status=staged, fail-closed, cap bypassed"]
+  R["spider remember"] --> J{"justification supplied?"}
+  J -->|no| NO["reject before review"]
+  J -->|yes| PRE["scan content and justification, guardrail for auto, exact duplicate"]
+  PRE -->|reject| NO
+  PRE -->|pass| REVIEW["model review: new, already_present, supersedes, wrong_scope, not_durable"]
+  REVIEW -->|"already_present or not_durable"| NOINSERT["no insert"]
+  REVIEW -->|"failed, disabled, timed out or aborted"| SKIP["review skipped: store as requested"]
+  REVIEW -->|"new or wrong_scope"| SW["stageWrite in chosen scope"]
+  REVIEW -->|"supersedes"| ATOMIC["same-scope atomic archive and insert if active"]
+  SKIP --> SW
+  SW -->|"user, foreground"| ACT["insert status=active, cap checked"]
+  SW -->|"auto or import"| STG["insert status=staged, fail-closed, cap bypassed"]
+  ATOMIC -->|"user: archive and insert"| ACT
+  ATOMIC -->|"auto or import: no archive"| STG
+  ORG["organism background proposal"] --> BG["stageWrite: scan, guardrail, duplicate check"]
+  BG --> STG
 
   STG --> REV["spider control memory: pending, approve, reject"]
   REV -->|approve| ACT2["approvePending re-checks cap, status=active"]

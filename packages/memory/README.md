@@ -14,6 +14,7 @@
 | --- | --- |
 | `types.ts` | `MemoryScope` (`repo` or `global`), categories, statuses, sources and record/input types. |
 | `store.ts`, `internal.ts` | `addMemory`, `getMemory`, `listActive`, `searchMemoryFts`, `setStatus`, `removeMemory`, `isDuplicate`, `activeCharTotal`; row mapping and tier validation. |
+| `reviewed-write.ts` | `reviewedWrite`, `parseVerdict`, `reviewerContext`: deterministic checks, model verdict validation, scope redirects and atomic same-scope supersession. |
 | `staging.ts`, `overflow.ts` | `stageWrite`, `listPending`, `approvePending`, `rejectPending`, `forgetMemory`; `DEFAULT_MEMORY_CHAR_CAP`, `assertWithinCap` and `MemoryOverflowError`. |
 | `scanner.ts`, `guardrails.ts` | `scanForThreats`, `firstThreatMessage` and `shouldCapture` for threat and background-write checks. |
 | `snapshot.ts`, `scrubber.ts` | `assembleSnapshotFromRecords`, `assembleSnapshotWithStats`, `assembleSnapshot`; `buildMemoryContextBlock`, `sanitizeContext` and `StreamingContextScrubber`. |
@@ -24,9 +25,9 @@
 
 ## Write and approval lifecycle
 
-The host `remember` action calls `stageWrite` with `source: "user"` for explicit writes or `source: "auto"` for auto captures. Imports use `source: "import"`. Every write first passes the strict threat scanner. Auto/import writes also pass the anti-poisoning guardrail. Duplicate checks compare exact category and content within a scope: active and staged rows block all sources, rejected rows also block auto/import re-proposals, and archived rows never block new writes.
+The host `remember` action calls `reviewedWrite` with `source: "user"` for explicit writes or `source: "auto"` for auto captures. Imports use `source: "import"` in the staging pipeline. `reviewedWrite` validates the six memory categories and requires a justification before any review. It scans content and justification for threats, applies the anti-poisoning guardrail to auto/import writes, and checks for duplicates before calling the optional model reviewer. The reviewer considers active entries in both scopes for durability, overlap and scope, then returns `new`, `already_present`, `supersedes`, `wrong_scope` or `not_durable`. Invalid replies, timeouts, aborts and unavailable reviewers skip review and store as requested. Duplicate checks compare exact category and content within a scope: active and staged rows block all sources, rejected rows also block auto/import re-proposals, and archived rows never block new writes.
 
-Auto/import writes (or an explicit `autoStage` option) are staged. Foreground user writes activate immediately. Staged entries bypass the active-content cap and remain absent from active listing, recall and injection until approval. `approvePending` checks the write-time cap before activation; `rejectPending` retains a rejected row; `forgetMemory` archives an entry and removes its FTS mirror. The per-scope **write-time** active-content limit is `DEFAULT_MEMORY_CHAR_CAP` (8,000 characters). This is not a snapshot limit.
+A reviewed foreground user write activates only when the verdict permits it. `not_durable` and `already_present` reject the candidate; `wrong_scope` can redirect it to the other scope. An active `supersedes` verdict archives only cited active entries in the requested scope, in the same immediate transaction as the insert. Staged auto/import writes record pending supersession but do not archive. Direct `stageWrite` calls bypass model review; auto/import writes (or an explicit `autoStage` option) are staged. Staged entries bypass the active-content cap and remain absent from active listing, recall and injection until approval. `approvePending` checks the write-time cap before activation; `rejectPending` retains a rejected row; `forgetMemory` archives an entry and removes its FTS mirror. The per-scope **write-time** active-content limit is `DEFAULT_MEMORY_CHAR_CAP` (8,000 characters). This is not a snapshot limit.
 
 ## Recall and injection
 

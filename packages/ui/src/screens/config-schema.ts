@@ -25,6 +25,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	]},
 	{ id: "memory", label: "Memory", fields: [
 		{ key: "memory.snapshotCharCap", label: "Snapshot char cap", type: "number", default: "unlimited", min: 500, max: 40000, description: "Optional explicit snapshot body limit. By default inject all active memory; a lower cap may omit entries and reports their count." },
+		{ key: "memory.reviewer.enabled", label: "Review remembers", type: "boolean", default: true, description: "Review foreground memory proposals before saving. Failures store as requested." },
+		{ key: "memory.reviewer.model", label: "Reviewer model", type: "string", default: "github-copilot/gpt-6-luna", description: "Authenticated provider/model for the foreground memory reviewer." },
+		{ key: "memory.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 20000, min: 1000, max: 120000, description: "Maximum wait before the proposed memory is stored as requested." },
 	]},
 	{ id: "routing", label: "Routing / safety", fields: [
 		{ key: "routing.tracking", label: "Universal tracking", type: "boolean", default: true, description: "Log all tool intents/results." },

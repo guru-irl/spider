@@ -101,7 +101,7 @@ Actions on the `spider` tool:
 spider search   query:"where is the retry backoff set"   # FTS + vector search
 spider exec      language:shell code:"git log --oneline -20"  # sandboxed; only printed output enters context
 spider index     path:"docs/"                             # index files for later search
-spider remember  content:"prefer tabs" category:"preference"  # structured memory linked to a file/skill
+spider remember  content:"prefer tabs" category:"preference" justification:"A standing preference, useful to future agents in any repo; global scope applies." scope:"global"
 spider run       agent:"reviewer" task:"review the diff on the auth module"  # background subagent
 spider kill      id:"a1b2c3"                              # kill a subagent (id, prefix, name, or "all")
 spider todo      op:"add" text:"wire up the migration"    # durable per-session todo
@@ -180,6 +180,19 @@ Which scope to use, when writing memory:
 
 > *"Is this true in every repo?"* → **global**. Otherwise → **repo**.
 > Worktree memory was removed; use repo for repository-specific facts.
+
+Every `spider remember` call needs a nonblank `justification`: why the fact
+will stay true and useful after this task, how other agents can use it, and why
+its scope is correct. The foreground reviewer checks durability first, then
+active entries in both scopes for overlap and replacements. It may store as
+requested (`new`), return an existing UUID (`already_present`), archive older
+entries (`supersedes`), move the write to the correct scope (`wrong_scope`), or
+leave task-only information in the conversation (`not_durable`). The result
+states the verdict and reason. A reviewer error, unavailable model, timeout,
+abort, or disabled reviewer never loses the write: it stores as requested and
+states `review skipped: <reason>`. Configure `memory.reviewer.enabled` (default
+`true`), `memory.reviewer.model` (default `github-copilot/gpt-6-luna`), and
+`memory.reviewer.timeoutMs` (default `20000`) with `spider control config set`.
 
 A session normally resolves its project from the working directory. `/bind`
 pins a session to a specific worktree when that is wrong (for example, a session

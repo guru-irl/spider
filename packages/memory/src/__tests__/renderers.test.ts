@@ -23,6 +23,11 @@ describe("renderRememberResult", () => {
     expect(text).not.toMatch(/─{3,}/);
   });
 
+  it("shows the reviewer message and reason once on the card", () => {
+    const text = renderRememberResult({ status: "active", content: "A fact", reason: "useful later", message: "stored as id (reviewer: new; useful later)" }).render(120).join("\n");
+    expect(text).toContain("stored as id (reviewer: new; useful later)");
+    expect(text.match(/useful later/g)).toHaveLength(1);
+  });
   it("omits the content line when nothing was passed (still renders status)", () => {
     const out = renderRememberResult({ status: "staged", uuid: "abcd1234" }).render(120);
     expect(out.join("\n")).toContain("status: staged");

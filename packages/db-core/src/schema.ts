@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS global_memory (
   scope TEXT NOT NULL DEFAULT 'global',
   status TEXT NOT NULL DEFAULT 'active',
   source TEXT NOT NULL DEFAULT 'user',
-  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
 );
 
 CREATE TABLE IF NOT EXISTS upstream_refs (
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS memory (
   status TEXT NOT NULL DEFAULT 'active',
   source TEXT NOT NULL DEFAULT 'user',
   confidence REAL, session_id TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
 

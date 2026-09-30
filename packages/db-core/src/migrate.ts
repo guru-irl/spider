@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -39,6 +39,8 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
   // The ALTER itself is conditionally applied below because healthy databases
   // already have repo_key and SQLite has no ADD COLUMN IF NOT EXISTS.
   10: [],
+  // v11: conditional ALTERs run in ensureMemoryProvenance (SQLite lacks ADD COLUMN IF NOT EXISTS).
+  11: [],
 };
 
 const REPO_MIGRATIONS: Record<number, readonly string[]> = {
@@ -50,6 +52,8 @@ const REPO_MIGRATIONS: Record<number, readonly string[]> = {
     // Create memory_fts if it doesn't exist (idempotent)
     `CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link)`,
   ],
+  // v11: conditional ALTERs run in ensureMemoryProvenance (SQLite lacks ADD COLUMN IF NOT EXISTS).
+  11: [],
 };
 
 const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
@@ -63,6 +67,20 @@ const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
   6: [], // Version bump only
   7: [], // split from PROJECT_SCHEMA; worktree tier gets sessions, content, todos, runs, events
 };
+
+function ensureMemoryProvenance(db: Db, scope: "global" | "repo"): void {
+  const table = scope === "global" ? "global_memory" : "memory";
+  let columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.length === 0) {
+    db.exec(scope === "global" ? GLOBAL_SCHEMA : REPO_SCHEMA);
+    columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  }
+  for (const field of ["justification", "evidence"]) {
+    if (!columns.some(column => column.name === field)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${field} TEXT`);
+    }
+  }
+}
 
 function repairGlobalProjectsRepoKey(db: Db): void {
   const columns = db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
@@ -116,8 +134,10 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
           // GLOBAL_SCHEMA cannot replace a malformed table created by an older
           // postinstall because its CREATE TABLE is intentionally idempotent.
           repairGlobalProjectsRepoKey(db);
+          ensureMemoryProvenance(db, "global");
         } else if (actualScope === "repo") {
           db.exec(REPO_SCHEMA);
+          ensureMemoryProvenance(db, "repo");
         } else {
           db.exec(WORKTREE_SCHEMA);
         }
@@ -135,6 +155,9 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
 
           if (actualScope === "global" && v === 10) {
             repairGlobalProjectsRepoKey(db);
+          }
+          if (v === 11 && actualScope !== "worktree") {
+            ensureMemoryProvenance(db, actualScope);
           }
           
           // IMPORTANT 5: After creating memory_fts (v8), populate it from memory

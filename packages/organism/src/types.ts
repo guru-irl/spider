@@ -20,7 +20,12 @@ export interface DigestBundle {
   sessionName?: string;
 }
 
-export interface MemoryCandidate { category: MemoryCategory; content: string; link?: string | null; confidence?: number; }
+export interface MemoryCandidate {
+  category: MemoryCategory; content: string; link?: string | null; confidence?: number;
+  scope?: "global" | "repo"; justification?: string; evidence?: string;
+  /** Set by learningPass after checking a real top-level user message; never parsed from model JSON. */
+  verifiedUserQuote?: boolean;
+}
 export interface TodoCandidate { text: string; }
 export interface SkillCandidate { name: string; category?: string; body: string; related?: string[]; }
 export interface DigestResult {
@@ -29,8 +34,13 @@ export interface DigestResult {
   skills: SkillCandidate[];
   summary?: string;
   selfName?: string;
+  capDropped?: number;
 }
 export function emptyResult(): DigestResult { return { memory: [], todos: [], skills: [] }; }
+
+export function capMemory(result: DigestResult, max: number): DigestResult {
+  return { ...result, memory: result.memory.slice(0, max), capDropped: Math.max(0, result.memory.length - max) };
+}
 
 // The ONLY non-purity in a pass: injected aux-model completion.
 export interface DigestModel { complete(system: string, messages: DigestMsg[]): Promise<string>; }
@@ -51,4 +61,5 @@ export interface DrainReport extends AppliedSummary {
   modelCalls: number;
   inputs: { messages: number; runs: number; runEvents: number; events: number; completedTodos: number };
   errors: DrainError[];
+  capDroppedByPass?: Partial<Record<PassName, number>>;
 }

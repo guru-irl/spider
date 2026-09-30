@@ -26,9 +26,9 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
   if (tableFor(scope) === "memory") {
     const insertRecord = db.transaction(() => {
       const result = db.prepare(`
-        INSERT INTO memory (uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(uuid, input.category, input.content, link, status, source, confidence, sessionId, createdAt, null);
+        INSERT INTO memory (uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at, justification, evidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(uuid, input.category, input.content, link, status, source, confidence, sessionId, createdAt, null, input.justification ?? null, input.evidence ?? null);
 
       // Only mirror to FTS if status is active
       if (status === "active") {
@@ -50,6 +50,8 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
         sessionId,
         createdAt,
         updatedAt: null,
+        ...(input.justification ? { justification: input.justification } : {}),
+        ...(input.evidence ? { evidence: input.evidence } : {}),
       };
     })();
 
@@ -59,9 +61,9 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
   } else {
     // Global scope: no session_id, no FTS, must set scope='global'
     const result = db.prepare(`
-      INSERT INTO global_memory (uuid, category, content, link, scope, status, source, confidence, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(uuid, input.category, input.content, link, "global", status, source, confidence, createdAt, null);
+      INSERT INTO global_memory (uuid, category, content, link, scope, status, source, confidence, created_at, updated_at, justification, evidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(uuid, input.category, input.content, link, "global", status, source, confidence, createdAt, null, input.justification ?? null, input.evidence ?? null);
 
     const record: MemoryRecord = {
       id: Number(result.lastInsertRowid),
@@ -75,6 +77,8 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
       sessionId: null,
       createdAt,
       updatedAt: null,
+      ...(input.justification ? { justification: input.justification } : {}),
+      ...(input.evidence ? { evidence: input.evidence } : {}),
     };
 
     // Global memory uses LIKE recall; its schema has no embed_queue.
@@ -86,7 +90,7 @@ export function getMemory(db: Db, scope: MemoryScope, uuid: string): MemoryRecor
   
   if (tableFor(scope) === "memory") {
     const row = db.prepare(`
-      SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
+      SELECT *
       FROM memory
       WHERE uuid = ?
     `).get(uuid) as any;
@@ -94,7 +98,7 @@ export function getMemory(db: Db, scope: MemoryScope, uuid: string): MemoryRecor
     return row ? mapRow(scope, row) : null;
   } else {
     const row = db.prepare(`
-      SELECT id, uuid, category, content, link, scope, status, source, confidence, created_at, updated_at
+      SELECT *
       FROM global_memory
       WHERE uuid = ?
     `).get(uuid) as any;
@@ -122,8 +126,7 @@ export function searchMemoryFts(
         WITH hits AS MATERIALIZED (
           SELECT uuid, bm25(memory_fts) AS score FROM memory_fts WHERE memory_fts MATCH ?
         )
-        SELECT m.id, m.uuid, m.category, m.content, m.link, m.status, m.source, m.confidence, m.session_id, m.created_at, m.updated_at,
-          MIN(h.score) AS score
+        SELECT m.*, MIN(h.score) AS score
         FROM hits h JOIN memory m ON m.uuid = h.uuid
         WHERE m.status = 'active'
       `;
@@ -147,7 +150,7 @@ export function searchMemoryFts(
   } else {
     // Global scope: fallback to LIKE (no FTS table)
     let sql = `
-      SELECT id, uuid, category, content, link, scope, status, source, confidence, created_at, updated_at
+      SELECT *
       FROM global_memory
       WHERE status = 'active'
       AND content LIKE ?

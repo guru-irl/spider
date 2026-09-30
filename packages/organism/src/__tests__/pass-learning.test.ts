@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { learningPass } from "../passes/learning.js";
 import type { DigestBundle, DigestModel } from "../types.js";
 
@@ -11,17 +11,19 @@ const bundle: DigestBundle = {
   events: [],
   todos: [],
   transcript: [
-    { role: "user", content: "stop being so verbose" },
+    { role: "user", content: "Please stop being so verbose in your answers to my questions." },
     { role: "assistant", content: "ok" },
   ],
 };
 
 describe("learningPass (co-equal capture)", () => {
+  beforeEach(() => vi.stubEnv("PI_SUBAGENT_CHILD", ""));
+  afterEach(() => vi.unstubAllEnvs());
   it("emits BOTH a staged memory AND a staged skill from one turn", async () => {
     const r = await learningPass(
       bundle,
       model({
-        memory: [{ category: "preference", content: "user prefers terse answers" }],
+        memory: [{ category: "preference", content: "user prefers terse answers", scope: "repo", justification: "Durable project preference useful to future agents.", evidence: 'User: "Please stop being so verbose in your answers to my questions."' }],
         todos: [],
         skills: [{ name: "answer-style", category: "communication", body: "# Answer style\nBe terse." }],
       }),
@@ -42,7 +44,7 @@ describe("learningPass (co-equal capture)", () => {
   it("guardrails still drop negative memory even in combined pass", async () => {
     const r = await learningPass(
       bundle,
-      model({ memory: [{ category: "failure", content: "browser tools do not work" }], todos: [], skills: [] }),
+      model({ memory: [{ category: "failure", content: "browser tools do not work", scope: "repo", justification: "A project tool constraint affecting future sessions.", evidence: "src/tools.ts:12" }], todos: [], skills: [] }),
     );
     expect(r.memory).toHaveLength(0);
   });

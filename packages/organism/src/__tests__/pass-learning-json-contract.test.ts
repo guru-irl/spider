@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { learningPass, COMBINED_REVIEW_PROMPT } from "../passes/learning.js";
 import type { DigestBundle, DigestModel } from "../types.js";
 
@@ -10,12 +10,14 @@ const bundle: DigestBundle = {
   events: [],
   todos: [],
   transcript: [
-    { role: "user", content: "stop being so verbose" },
+    { role: "user", content: "Please stop being so verbose in your answers to my questions." },
     { role: "assistant", content: "understood" },
   ],
 };
 
 describe("learningPass — F4 JSON output contract", () => {
+  beforeEach(() => vi.stubEnv("PI_SUBAGENT_CHILD", ""));
+  afterEach(() => vi.unstubAllEnvs());
   it("COMBINED_REVIEW_PROMPT explicitly states the candidate JSON output contract", () => {
     expect(COMBINED_REVIEW_PROMPT).toMatch(/JSON/);
     expect(COMBINED_REVIEW_PROMPT).toMatch(/"memory"/);
@@ -30,7 +32,7 @@ describe("learningPass — F4 JSON output contract", () => {
     const reply =
       "I found one durable preference and one skill worth adding.\n\n```\n" +
       JSON.stringify({
-        memory: [{ category: "preference", content: "user prefers terse answers" }],
+        memory: [{ category: "preference", content: "user prefers terse answers", scope: "repo", justification: "Durable project preference useful to future agents.", evidence: 'User: "Please stop being so verbose in your answers to my questions."' }],
         skills: [{ name: "answer-style", body: "# Answer style\nBe terse." }],
         todos: [],
       }) +
@@ -50,7 +52,7 @@ describe("learningPass — F4 JSON output contract", () => {
     const model: DigestModel = {
       complete: async () =>
         JSON.stringify({
-          memory: [{ category: "preference", content: "x" }],
+          memory: [{ category: "preference", content: "x", scope: "repo", justification: "Durable project preference useful to future agents.", evidence: 'User: "Please stop being so verbose in your answers to my questions."' }],
           skills: [{ name: "answer-style", body: "y" }],
           todos: [],
         }),

@@ -8,7 +8,7 @@ import { CURATOR_DEFAULTS } from "../curator.js";
 import { SkillStore } from "../skill-usage.js";
 import { buildLearningGraph } from "../learning-graph.js";
 import { listPending, addMemory } from "@spider/memory";
-import { paths } from "@spider/db-core";
+import { openDbAt, paths } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
 import type { WorkerDeps } from "../worker.js";
 import type { DigestModel } from "../types.js";
@@ -31,8 +31,8 @@ const fakeModel: DigestModel = {
       ? JSON.stringify({ summary: "shipped auth", selfName: "auth-refactor" })
       : JSON.stringify({
           memory: [
-            { category: "insight", content: "prefers small PRs" },
-            { category: "convention", content: "uses PKCE for auth" },
+            { category: "insight", content: "prefers small PRs", scope: "repo", justification: "Durable repo-specific practice useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" },
+            { category: "convention", content: "uses PKCE for auth", scope: "repo", justification: "Durable repo-specific practice useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" },
           ],
           todos: [{ text: "ship it" }],
           skills: [{ name: "auth-flow", category: "security", body: "# Auth flow\nUse PKCE." }],
@@ -41,9 +41,14 @@ const fakeModel: DigestModel = {
 
 let ctx: ReturnType<typeof makeOrgDb>;
 const transcripts: string[] = [];
+const globals: { db: Db; path: string }[] = [];
 afterEach(() => {
   ctx?.cleanup();
   for (const p of transcripts.splice(0)) rmSync(p, { force: true });
+  for (const { db, path } of globals.splice(0)) {
+    db.close();
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+  }
 });
 
 /** Seed one session's activity: run, run_event, tracked event, completed todo. */
@@ -85,10 +90,13 @@ function writeTranscript(sessionId: string): string {
 }
 
 function makeWorker(repoDb: Db, worktreeDb: Db, overrides?: Partial<WorkerDeps>): OrganismWorker {
+  const path = join(paths.scratch("worktree", process.cwd()), `smoke-global-${crypto.randomUUID()}.db`);
+  const globalDb = openDbAt(path, "global");
+  globals.push({ db: globalDb, path });
   return new OrganismWorker({
     db: repoDb,
     worktreeDb,
-    globalDb: repoDb,  // Use repo DB as global for test simplicity
+    globalDb,
     project: { projectKey: "k", realPath: process.cwd(), dbPath: "x" } as never,
     getEmbedder: async () => null,
     makeModel: () => fakeModel,

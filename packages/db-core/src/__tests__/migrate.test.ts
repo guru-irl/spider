@@ -50,6 +50,39 @@ describe("migrate", () => {
   });
 });
 
+describe("migrate — v11 provenance columns", () => {
+  for (const scope of ["global", "repo"] as const) {
+    const table = scope === "global" ? "global_memory" : "memory";
+    it(`${scope} upgrades a v10 table with data to the fresh v11 column definition`, () => {
+      const fresh = openDb(scratchDbPath(`v11-${scope}-fresh`)); opened.push(fresh);
+      migrate(fresh, scope);
+      const expected = fresh.raw.prepare(`PRAGMA table_info(${table})`).all();
+
+      const old = openDb(scratchDbPath(`v10-${scope}`)); opened.push(old);
+      migrate(old, scope);
+      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN evidence`);
+      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN justification`);
+      old.prepare(`INSERT INTO ${table} (uuid, category, content, created_at) VALUES ('old', 'insight', 'existing rule', 1)`).run();
+      old.raw.pragma("user_version = 10");
+      migrate(old, scope);
+      expect(old.raw.prepare(`PRAGMA table_info(${table})`).all()).toEqual(expected);
+      expect(old.prepare(`SELECT content, justification, evidence FROM ${table} WHERE uuid='old'`).get())
+        .toEqual({ content: "existing rule", justification: null, evidence: null });
+    });
+
+    it(`${scope} repairs a pre-existing v0 memory table missing the provenance columns`, () => {
+      const old = openDb(scratchDbPath(`v0-${scope}`)); opened.push(old);
+      migrate(old, scope);
+      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN evidence`);
+      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN justification`);
+      old.raw.pragma("user_version = 0");
+      migrate(old, scope);
+      const columns = old.raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      expect(columns.slice(-2).map(c => c.name)).toEqual(["justification", "evidence"]);
+    });
+  }
+});
+
 describe("migrate — thinking column (v1\u2192v2)", () => {
   it("adds runs.thinking to an existing v1 db without the column", () => {
     const db = openDb(scratchDbPath("mig-v1")); opened.push(db);

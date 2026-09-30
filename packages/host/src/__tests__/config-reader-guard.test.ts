@@ -86,6 +86,7 @@ describe("configuration schema truthfulness", () => {
       ...Object.fromEntries(Object.entries(ORGANISM_DEFAULTS.passes).map(([name, value]) => [`organism.passes.${name}`, value])),
       "organism.selfNaming": ORGANISM_DEFAULTS.selfNaming,
       "organism.autoWriteBudget": ORGANISM_DEFAULTS.autoWriteBudget,
+      "organism.maxMemoryProposals": ORGANISM_DEFAULTS.maxMemoryProposals,
       ...Object.fromEntries(Object.entries(CURATOR_DEFAULTS).map(([name, value]) => [`curator.${name}`, value])),
       "routing.tracking": DEFAULT_ROUTING_CONFIG.tracking,
       "routing.secret_scrub": DEFAULT_ROUTING_CONFIG.secretScrub,

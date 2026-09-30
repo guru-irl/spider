@@ -77,8 +77,10 @@ describe("diffUpstream", () => {
 
 // Hermetic: point openGlobal() at a scratch DB so tests never touch the real
 // ~/.pi/agent/spider/spider.db. Reset after.
-const scratchGlobalDb = testScratchPath(`uw-global-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
-beforeAll(() => { setGlobalDbPathForTests(scratchGlobalDb); });
+beforeAll(() => {
+  const scratchGlobalDb = testScratchPath(`uw-global-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
+  setGlobalDbPathForTests(scratchGlobalDb);
+});
 afterAll(() => { setGlobalDbPathForTests(null); });
 
 function scratchProject(): { cwd: string; sessionId: string } {

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { bindSession, openDbAt, openGlobal, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
+import { bindSession, getBinding, openDbAt, openGlobal, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import { makeRunHandler, teardownCoordinators, type ChildSpawnSpec } from "@spider/subagents";
 import spiderExtension, { buildActionCtx, openSessionRunDb } from "../extension";
 import { dispatch, registerAction, type SpiderArgs } from "../dispatch";
+import { HostOrganismRuntime } from "../organism-runtime";
 import { assertPreflightIsolation } from "./fixture-safety";
 
 const scratch = resolve(".spider/scratch/run-session-db-test");
@@ -57,12 +58,25 @@ function fixture() {
     handles.push(ctx.db, ctx.repoDb, ctx.globalDb);
     return dispatch(args, ctx);
   };
+  const sessionRows = (dir: string) => {
+    const dbPath = join(dir, ".spider", "project.db");
+    if (!existsSync(dbPath)) return [];
+    const db = openDbAt(dbPath, "project"); handles.push(db);
+    return db.prepare("SELECT id FROM sessions WHERE id = ?").all(sessionId);
+  };
+  const setupReceipts = (dir: string) => {
+    const dbPath = join(dir, ".spider", "project.db");
+    if (!existsSync(dbPath)) return [];
+    const db = openDbAt(dbPath, "project"); handles.push(db);
+    return db.prepare("SELECT summary FROM run_events WHERE session_id = ? AND summary = ?")
+      .all(sessionId, "organism drain (shutdown): failed (setup)");
+  };
   const rows = (repo: string) => {
     const db = openDbAt(join(paths.projectRoot(repo), "project.db"), "project");
     handles.push(db);
     return db.prepare("SELECT id, status FROM runs WHERE session_id = ?").all(sessionId) as Array<{ id: string; status: string }>;
   };
-  return { root, repoA, repoB, repoC, sessionId, pi, hooks, specs, kills, invoke, rows };
+  return { root, repoA, repoB, repoC, sessionId, pi, hooks, specs, kills, invoke, rows, sessionRows, setupReceipts };
 }
 
 const modes: Array<[string, Omit<SpiderArgs, "action" | "cwd">]> = [
@@ -199,4 +213,120 @@ describe("session-owned run records with an explicit child cwd", () => {
     await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" });
     expect(f.rows(f.repoA)).toHaveLength(1);
   });
+
+  it("a bound session's explicit skill cwd writes its organism row only in the target repo", async () => {
+    const f = fixture();
+    const globalDb = openGlobal(); handles.push(globalDb);
+    bindSession(globalDb, f.sessionId, f.repoC);
+    const before = getBinding(globalDb, f.sessionId);
+    await f.invoke({ action: "skill", op: "list", cwd: f.repoB });
+    expect(f.sessionRows(f.repoB)).toEqual([{ id: f.sessionId }]);
+    expect(f.sessionRows(f.repoC)).toEqual([]);
+    expect(getBinding(globalDb, f.sessionId)).toEqual(before);
+    for (const fn of f.hooks.session_shutdown ?? []) await fn();
+  });
+
+  it("an unbound session's explicit non-git skill cwd does not bind later runs", async () => {
+    const f = fixture();
+    const loose = join(f.root, "loose"); mkdirSync(loose);
+    vi.stubEnv("GIT_CEILING_DIRECTORIES", f.root);
+    const globalDb = openGlobal(); handles.push(globalDb);
+    expect(getBinding(globalDb, f.sessionId)).toBeUndefined();
+    await f.invoke({ action: "skill", op: "list", cwd: loose });
+    expect(f.sessionRows(loose)).toEqual([{ id: f.sessionId }]);
+    expect(f.sessionRows(f.repoA)).toEqual([]);
+    expect(getBinding(globalDb, f.sessionId)).toBeUndefined();
+    await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" });
+    expect(f.specs[0].env.PI_SPIDER_DB_PATH).toBe(join(f.repoA, ".spider", "project.db"));
+    expect(f.rows(f.repoA)).toHaveLength(1);
+    for (const fn of f.hooks.session_shutdown ?? []) await fn();
+  });
+
+  it.each(["nested", "bound"] as const)("%s session writes setup-failure receipts to its session run DB", mode => {
+    const f = fixture();
+    const sessionCwd = join(f.repoA, "nested"); mkdirSync(sessionCwd);
+    let owner = f.repoA;
+    if (mode === "bound") {
+      const globalDb = openGlobal(); handles.push(globalDb);
+      bindSession(globalDb, f.sessionId, f.repoC);
+      owner = f.repoC;
+    }
+    const organism = new HostOrganismRuntime(async () => null);
+    organism.recordSetupFailure("resolve", new Error("fixture failure"), {
+      cwd: sessionCwd, sessionManager: { getSessionId: () => f.sessionId },
+    } as never);
+    expect(f.setupReceipts(owner)).toEqual([{ summary: "organism drain (shutdown): failed (setup)" }]);
+    expect(f.setupReceipts(sessionCwd)).toEqual([]);
+    if (mode === "bound") expect(f.setupReceipts(f.repoA)).toEqual([]);
+    organism.dispose();
+  });
+
+  it("does not repeat the cause's error type when reporting a session run DB open failure", () => {
+    const f = fixture();
+    const dbPath = join(f.repoA, ".spider", "project.db");
+    mkdirSync(join(f.repoA, ".spider"));
+    writeFileSync(dbPath, "not a sqlite database");
+    let message = "";
+    try { openSessionRunDb(f.repoA, f.sessionId); }
+    catch (error) { message = (error as Error).message; }
+    expect(message).toBe(`cannot open session run DB (${dbPath}): file is not a database`);
+  });
+
+  it.each(["nested", "bound", "non-git"] as const)(
+    "%s session: mount, dispatch, reaper and shutdown drain share the session run DB",
+    async mode => {
+      const f = fixture();
+      let sessionCwd = f.repoA;
+      let owner = f.repoA;
+      if (mode === "nested") {
+        sessionCwd = join(f.repoA, "nested");
+        mkdirSync(sessionCwd);
+      } else if (mode === "bound") {
+        sessionCwd = join(f.repoA, "nested");
+        mkdirSync(sessionCwd);
+        const globalDb = openGlobal(); handles.push(globalDb);
+        bindSession(globalDb, f.sessionId, f.repoC);
+        owner = f.repoC;
+      } else {
+        // Stop git's parent walk at the scratch fixture, which is not itself a repo.
+        sessionCwd = join(f.root, "loose");
+        mkdirSync(sessionCwd);
+        vi.stubEnv("GIT_CEILING_DIRECTORIES", f.root);
+        owner = sessionCwd;
+      }
+      const dbPath = join(owner, ".spider", "project.db");
+      const ctx = {
+        cwd: sessionCwd, hasUI: true,
+        sessionManager: { getSessionId: () => f.sessionId, getBranch: () => [] },
+        ui: { setWidget: vi.fn(), custom: vi.fn(), notify: vi.fn() },
+      };
+      await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" }, sessionCwd);
+      expect(f.specs[0].env.PI_SPIDER_DB_PATH).toBe(dbPath);
+      expect(f.rows(owner)).toHaveLength(1);
+      f.hooks.session_start.at(-1)!({}, ctx);
+      expect(ctx.ui.setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });
+
+      // A dead host's row can only be reconciled if the reaper opened the same file.
+      const ownerDb = openDbAt(dbPath, "project"); handles.push(ownerDb);
+      ownerDb.prepare("INSERT INTO runs (id, session_id, agent, name, status, host_pid) VALUES (?, ?, ?, ?, ?, ?)")
+        .run("orphan-row", f.sessionId, "worker", "orphan", "running", 2147483647);
+      // The first session_start handler is the orphan reaper.
+      await f.hooks.session_start[0]({ reason: "startup" }, ctx);
+      expect(ownerDb.prepare("SELECT status FROM runs WHERE id = ?").get("orphan-row"))
+        .toEqual({ status: "cancelled" });
+
+      // The shutdown drain reads those runs and persists its receipt in that file.
+      // The penultimate shutdown handler is the organism drain.
+      await f.hooks.session_shutdown.at(-2)!({ reason: "quit" }, ctx);
+      const receipt = ownerDb.prepare(
+        "SELECT payload FROM run_events WHERE session_id = ? AND summary LIKE 'organism drain%' ORDER BY id DESC LIMIT 1",
+      ).get(f.sessionId) as { payload: string } | undefined;
+      expect(receipt).toBeDefined();
+      expect(JSON.parse(receipt!.payload).inputs.runs).toBeGreaterThan(0);
+      for (const fn of f.hooks.session_shutdown ?? []) {
+        if (fn === f.hooks.session_shutdown.at(-2)) continue;
+        await fn();
+      }
+    },
+  );
 });

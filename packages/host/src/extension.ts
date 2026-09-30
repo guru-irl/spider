@@ -2,6 +2,7 @@
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
+import type { ContextEvent } from "@earendil-works/pi-coding-agent";
 import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
@@ -10,7 +11,7 @@ import { HostOrganismRuntime } from "./organism-runtime";
 import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
-import { toToolResult, markToolCallError } from "./result";
+import { toToolResult, markToolCallError, rethrowWithMessage, repairBlankToolResults } from "./result";
 import { controlDoctor, controlConfig, controlMigrate, modelDefaultLayers, configReadErrors, execEnforcement } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, clearLocalModelDefault, listCatalog } from "./control/models-cmd";
@@ -696,6 +697,12 @@ async function dispatchWithDoctorSnapshot(
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
+  // Only error results need this backstop: empty successful reads are valid, and rewriting
+  // them makes pi replace the message list, disrupting prompt caching for ordinary sessions.
+  pi.on("context", (event: unknown) => {
+    try { return repairBlankToolResults((event as ContextEvent)?.messages ?? []); }
+    catch { return undefined; }
+  });
   const organism = new HostOrganismRuntime(getEmbedder, report => {
     const meaningful = report.status === "failed" || report.status === "partial" ||
       report.memoryStaged + report.skillsStaged + report.todosAdded > 0;
@@ -917,7 +924,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // Normalize the handler result into pi's AgentToolResult shape (content = model-facing
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
-      const r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, onPartial, abortSignal);
+      let r: unknown;
+      try {
+        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, onPartial, abortSignal);
+      } catch (error) {
+        rethrowWithMessage(error, `spider ${action || "call"}`);
+      }
       const result = toToolResult(r);
       // Mechanism (B) (pi-tool-error-contract-report.md §3): pi's AgentToolResult has no
       // isError field of its own — returning one here does nothing. Hand the

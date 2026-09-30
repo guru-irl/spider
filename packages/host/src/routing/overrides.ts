@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { recordResult } from "./tracking";
 import type { Db } from "@spider/db-core";
-import { markToolCallError } from "../result";
+import { ensureNonEmptyToolContent, markToolCallError, rethrowWithMessage } from "../result";
 
 export function validateDescription(desc: unknown): string | null {
   if (typeof desc !== "string" || desc.trim() === "")
@@ -62,13 +62,18 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       const err = validateDescription(params?.description);
       if (err) return errorResult(toolCallId, err);
       const { description, ...rest } = params;
-      const delegate = editDelegate(deps.getCwd());
-      const result: any = await delegate.execute(toolCallId, rest, signal, onUpdate, ctx);
+      let result: any;
+      try {
+        const delegate = editDelegate(deps.getCwd());
+        result = await delegate.execute(toolCallId, rest, signal, onUpdate, ctx);
+      } catch (error) {
+        rethrowWithMessage(error, "edit delegate");
+      }
       if (!result?.isError) {
         const { added, removed } = countPatchLines(result?.details?.patch ?? "");
         recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "edit", description, added, removed });
       }
-      return result;
+      return ensureNonEmptyToolContent(result);
     },
   });
   pi.registerTool({
@@ -91,10 +96,15 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
         if (existsSync(abs)) removed = readFileSync(abs, "utf-8").split("\n").length;
       } catch {}
       const added = String(rest.content ?? "").split("\n").length;
-      const delegate = writeDelegate(cwd);
-      const result: any = await delegate.execute(toolCallId, rest, signal, onUpdate, ctx);
+      let result: any;
+      try {
+        const delegate = writeDelegate(cwd);
+        result = await delegate.execute(toolCallId, rest, signal, onUpdate, ctx);
+      } catch (error) {
+        rethrowWithMessage(error, "write delegate");
+      }
       if (!result?.isError) recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "write", description, added, removed });
-      return result;
+      return ensureNonEmptyToolContent(result);
     },
   });
 }

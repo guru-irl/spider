@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { openGlobal, openProject, openRepo, openDbAt, paths, resolveProject, type ProjectInfo } from "@spider/db-core";
+import { openGlobal, openProject, openRepo, openDbAt, paths, type ProjectInfo } from "@spider/db-core";
+import { openSessionRunDb, resolveSessionRunProject } from "./session-run-db";
 import type { Embedder } from "@spider/memory";
 import { complete, pick } from "@spider/models";
 import { emitLog } from "@spider/subagents";
@@ -96,8 +97,8 @@ export class HostOrganismRuntime {
    * (`phase:"context"`), or the deps resolver/transcript capture throwing
    * (`phase:"resolve"`). Always kept in-memory (visible to doctor even when
    * nothing could be persisted); when a session id exists AND this runtime
-   * is not disposed, makes ONE independent, bounded `resolveProject`+
-   * `openProject` attempt to persist the same receipt into the real worktree
+   * is not disposed, makes ONE independent, bounded `openSessionRunDb`
+   * attempt to persist the same receipt into the real worktree
    * DB via the existing `readLastDrainReport` surface — NEVER by calling
    * `resolve()`/`fromContext()` (which could recurse into the very resolver
    * that just failed). The ad-hoc DB handle is always closed. Never invents
@@ -124,8 +125,7 @@ export class HostOrganismRuntime {
     if (this.#disposed) return; // Disposed runtime stays in-memory-only; no new resources.
     try {
       const cwd = cwdOf(ctx!) ?? process.cwd();
-      const project = resolveProject(cwd, { sessionId, explicitCwd: false });
-      const worktreeDb = openProject(project.projectKey);
+      const worktreeDb = openSessionRunDb(cwd, sessionId).db;
       try {
         worktreeDb.prepare("INSERT OR IGNORE INTO sessions(id,reason,started_at) VALUES (?,?,?)")
           .run(sessionId, "organism-setup-failure", now);
@@ -153,7 +153,7 @@ export class HostOrganismRuntime {
   resolve(context: RuntimeContext): OrganismActionDeps {
     if (this.#disposed) throw new Error("Organism runtime has shut down; reload the session before using it.");
     if (!context.sessionId) throw new Error("Organism needs an active pi session.");
-    const project = context.project ?? resolveProject(context.cwd, { sessionId: context.sessionId, explicitCwd: false });
+    const project = context.project ?? resolveSessionRunProject(context.cwd, context.sessionId);
     const key = JSON.stringify([context.sessionId, project.projectKey]);
     const existing = this.#entries.get(key);
     if (existing) {

@@ -56,7 +56,7 @@ describe("C1: memory routing to repo tier", () => {
     
     // Remember without explicit scope - should go to repo tier by default
     const rememberRes = await tool.execute("r1", {
-      action: "remember",
+      action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.",
       content: "important repo fact",
       category: "preference",
       cwd: repoDir,
@@ -124,7 +124,7 @@ describe("C1: memory routing to repo tier", () => {
     
     // Write from worktree A
     await tool.execute("r2", {
-      action: "remember",
+      action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.",
       content: "shared across worktrees",
       category: "convention",
       cwd: wtA,
@@ -167,7 +167,7 @@ describe("C1: memory routing to repo tier", () => {
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
     for (const args of [
-      { action: "remember", category: "insight", content: "removed scope fact" },
+      { action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.", category: "insight", content: "removed scope fact" },
       { action: "recall", query: "removed" },
       { action: "control", command: "memory", sub: "status" },
     ]) {
@@ -195,7 +195,7 @@ describe("C1: memory routing to repo tier", () => {
     
     // Should not throw
     const rememberRes = await tool.execute("r3", {
-      action: "remember",
+      action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.",
       content: "standalone memory fact",
       category: "tool-quirk",
       cwd: nonGitDir,
@@ -225,7 +225,7 @@ describe("C1: memory routing to repo tier", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
-    const result = await tool.execute("g1", { action: "remember", category: "preference", content: "global fact", scope: "global", cwd: dir }, {});
+    const result = await tool.execute("g1", { action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.", category: "preference", content: "global fact", scope: "global", cwd: dir }, {});
     expect(result.details.status).toBe("active");
     const recallResult = await tool.execute("g2", { action: "recall", query: "global fact", scope: "global", cwd: dir }, {});
     expect(JSON.stringify(recallResult.details)).toContain("global fact");
@@ -248,7 +248,7 @@ describe("C1: memory routing to repo tier", () => {
     
     // Explicitly request repo scope
     const rememberRes = await tool.execute("r4", {
-      action: "remember",
+      action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.",
       content: "explicit repo fact",
       category: "preference",
       scope: "repo",

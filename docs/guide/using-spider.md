@@ -108,14 +108,16 @@ Write a note that links to the file or skill it is about, rather than pasting th
 content:
 
 ```
-spider remember category:"convention" content:"Run the test gate with 'yarn fast'; see package.json scripts" link:"package.json"
+spider remember category:"convention" content:"Run the test gate specified in package.json" link:"package.json" justification:"The test gate remains useful after this task; other agents in this repo need it; it is specific to this project."
 ```
 
 Two rules keep the store useful:
 
-- **Approve or reject staged writes.** A foreground `remember` you make yourself
-  activates immediately. Background and auto-captured writes (including anything
-  the organism proposes after a session) are staged and fail closed: they do not
+- **Approve or reject staged writes.** A foreground `remember` requires a
+  justification and is reviewed for durability, overlap and scope before it
+  becomes active. If the review fails, it stores as requested and reports why.
+  Background and auto-captured writes (including anything the organism proposes
+  after a session) are staged and fail closed: they do not
   become active until a human approves them. Review them with the memory control
   command, which lists pending writes and lets you approve or reject each one:
 

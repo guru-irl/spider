@@ -9,6 +9,9 @@ export { controlMigrate } from "./control/migrate-cmd";
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
+  "memory.reviewer.enabled": true,
+  "memory.reviewer.model": "github-copilot/gpt-6-luna",
+  "memory.reviewer.timeoutMs": 20000,
 };
 
 function configFile(scopeRoot: string): string {
@@ -123,6 +126,10 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   mkdirSync(root, { recursive: true });
   const cur = readJson(file);
   if (key === undefined) throw new Error("control config set: key required");
+  if (op === "set" && key === "memory.reviewer.timeoutMs" &&
+    (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > 120000)) {
+    throw new Error("memory.reviewer.timeoutMs must be an integer from 1000 to 120000 ms");
+  }
   if (op === "unset") {
     // A global limit must not silently reappear after the user chooses unlimited.
     const global = readJson(configFile(paths.globalRoot));

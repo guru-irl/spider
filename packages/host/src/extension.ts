@@ -47,6 +47,8 @@ import { runUpstreamWatch, markReviewed, registerSuperpowers } from "@spider/sup
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
+import { openSessionRunDb } from "./session-run-db";
+export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
 
@@ -592,18 +594,6 @@ function safeRealpath(p: string): string {
 function isPathInside(root: string, target: string): boolean {
   const rel = path.relative(root, target);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-/** The session-owned runs DB, shared by dispatch and the mounted agents view. */
-export function openSessionRunDb(sessionCwd: string, sessionId: string): { db: Db; dbPath: string } {
-  let dbPath = path.join(path.resolve(sessionCwd), ".spider", "project.db");
-  try {
-    const project = resolveProject(sessionCwd, { sessionId, explicitCwd: false });
-    dbPath = project.dbPath;
-    return { db: openProject(project.projectKey), dbPath };
-  } catch (cause) {
-    throw new Error(`cannot open session run DB (${dbPath}): ${String(cause)}`, { cause });
-  }
 }
 
 /** Build ONE ActionCtx per dispatch (A2): both DBs, the resolved project, and the

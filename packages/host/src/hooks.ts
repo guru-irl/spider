@@ -18,7 +18,8 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { resolveProject, openGlobal, openProject, appendEvent, type Db } from "@spider/db-core";
+import { openGlobal, appendEvent, type Db } from "@spider/db-core";
+import { openSessionRunDb } from "./session-run-db";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cwdOf, sessionIdOf } from "./session-context";
 import { readInjectionSnapshot } from "./injection-snapshot";
@@ -78,8 +79,7 @@ export function registerHooks(pi: PiLikeAPI): void {
             } catch { /* a diagnostic must not break session start */ }
           };
           try {
-            const project = resolveProject(cwd, { sessionId, explicitCwd: false });
-            db = openProject(project.projectKey);
+            db = openSessionRunDb(cwd, sessionId).db;
             globalDb = openGlobal();
             const sm = (ctx as Partial<ExtensionContext>)?.sessionManager;
             const sessionName = sm?.getSessionName?.()?.trim() || null;

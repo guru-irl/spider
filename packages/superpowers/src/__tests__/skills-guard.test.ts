@@ -20,8 +20,14 @@ describe("skills vendoring guard", () => {
       expect(fs.existsSync(path.join(skillsDir, name, "SKILL.md")), `${name}/SKILL.md`).toBe(true);
     }
   });
-  it("contains the upstream-watch skill", () => {
-    expect(fs.existsSync(path.join(skillsDir, "upstream-watch", "SKILL.md"))).toBe(true);
+  it("has exactly 14 upstream skills plus upstream-watch", () => {
+    expect(fs.readdirSync(skillsDir).filter((name) => fs.statSync(path.join(skillsDir, name)).isDirectory()).sort()).toEqual(EXPECTED_15.sort());
+  });
+  it("ships the intended TDD, SDD, and writing-plans supporting files", () => {
+    expect(fs.existsSync(path.join(skillsDir, "test-driven-development", "writing-good-tests.md"))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, "test-driven-development", "testing-anti-patterns.md"))).toBe(false);
+    expect(fs.existsSync(path.join(skillsDir, "subagent-driven-development", "re-review-prompt.md"))).toBe(true);
+    expect(fs.existsSync(path.join(skillsDir, "writing-plans", "plan-document-reviewer-prompt.md"))).toBe(false);
   });
   it("keeps ONLY pi-tools.md under using-superpowers/references", () => {
     const refs = path.join(skillsDir, "using-superpowers", "references");

@@ -27,11 +27,16 @@ If AGENTS.md says "don't use TDD" and a skill says "always use TDD," follow the 
 
 ## How to Access Skills
 
-Pi discovers skills from its configured skill directories and installed pi
-packages. Pi has no dedicated skill-invocation tool: when a skill applies,
-**load and follow it** — use `spider skill` if available, otherwise `read` the
-skill's `SKILL.md` — before you respond. For the action→tool mapping on pi, see
-[pi-tools.md](references/pi-tools.md).
+Pi discovers skills globally in `~/.pi/agent/skills/` and
+`~/.agents/skills/`; in trusted projects, in `.pi/skills/` and
+`.agents/skills/` (current directory and ancestors); from installed package
+`skills/` directories or `pi.skills` entries; from the settings `skills`
+array; and from repeatable CLI `--skill <path>`. Direct root Markdown skills
+in the Pi-specific directories need valid frontmatter; recursive `SKILL.md`
+directories work at every location. Pi has no dedicated skill-invocation
+tool: **load and follow** an applicable skill via `spider skill` if available,
+otherwise `read` its `SKILL.md` before responding. See
+[pi-tools.md](references/pi-tools.md) for Pi's action→tool mapping.
 
 # Using Skills
 
@@ -105,6 +110,19 @@ When multiple skills could apply, use this order:
 **Flexible** (patterns): Adapt principles to context.
 
 The skill itself tells you which.
+
+## Execution Handoff
+
+When a reviewed plan is ready and the user has not already chosen a method,
+offer **Subagent-driven** (fresh worker and read-only reviewer per task) or
+**Inline** (implement tasks in this session, then one fresh whole-branch
+`spider run` reviewer). If the user supplied a method, keep it. The final
+review in either method uses `context:"fresh"`, an explicit
+provider-qualified `model:` resolved from reviewer role defaults via
+`spider control models`, and a read-only task. Children report asynchronously
+through `spider.subagent_done`; do not poll. `spider message` does not
+resume a headless child. Pipeline `handoff:"intercom"` starts a fresh
+continuation child.
 
 ## User Instructions
 

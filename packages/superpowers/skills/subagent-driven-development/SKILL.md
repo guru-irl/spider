@@ -5,435 +5,180 @@ description: Use when executing implementation plans with independent tasks in t
 
 # Subagent-Driven Development
 
-Execute plan by running a fresh implementer per task via `spider run`, a task review (spec compliance + code quality) after each, and a broad whole-branch review at the end.
-
-Every dispatch takes the spider form ``spider run { agent, role, task, model, context:"fresh" }`` — implementers run `role:"implementer"`, reviewers `role:"reviewer"`, both with `context:"fresh"` so they never inherit your session's history.
-
-**Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
-
-**Core principle:** Fresh subagent per task + task review (spec + quality) + broad final review = high quality, fast iteration
-
-**Narration:** between tool calls, narrate at most one short line — the
-ledger and the tool results carry the record.
-
-**Continuous execution:** Do not pause to check in with your human partner between tasks. Execute all tasks from the plan without stopping. The only reasons to stop are: BLOCKED status you cannot resolve, ambiguity that genuinely prevents progress, or all tasks complete. "Should I continue?" prompts and progress summaries waste their time — they asked you to execute the plan, so execute it.
-
-## When to Use
-
-```dot
-digraph when_to_use {
-    "Have implementation plan?" [shape=diamond];
-    "Tasks mostly independent?" [shape=diamond];
-    "Stay in this session?" [shape=diamond];
-    "subagent-driven-development" [shape=box];
-    "executing-plans" [shape=box];
-    "Manual execution or brainstorm first" [shape=box];
-
-    "Have implementation plan?" -> "Tasks mostly independent?" [label="yes"];
-    "Have implementation plan?" -> "Manual execution or brainstorm first" [label="no"];
-    "Tasks mostly independent?" -> "Stay in this session?" [label="yes"];
-    "Tasks mostly independent?" -> "Manual execution or brainstorm first" [label="no - tightly coupled"];
-    "Stay in this session?" -> "subagent-driven-development" [label="yes"];
-    "Stay in this session?" -> "executing-plans" [label="no - parallel session"];
-}
-```
-
-**vs. Executing Plans (parallel session):**
-- Same session (no context switch)
-- Fresh subagent per task (no context pollution)
-- Review after each task (spec compliance + code quality), broad review at the end
-- Faster iteration (no human-in-loop between tasks)
-
-## The Process
-
-```dot
-digraph process {
-    rankdir=TB;
-
-    subgraph cluster_per_task {
-        label="Per Task";
-        "spider run implementer (role:\"implementer\", context:\"fresh\", ./implementer-prompt.md)" [shape=box];
-        "Implementer subagent asks questions?" [shape=diamond];
-        "Answer questions, provide context" [shape=box];
-        "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
-        "Write diff file, spider run reviewer (role:\"reviewer\", context:\"fresh\", ./task-reviewer-prompt.md)" [shape=box];
-        "Task reviewer reports spec ✅ and quality approved?" [shape=diamond];
-        "spider run fix stage (role:\"implementer\", context:\"fresh\") for Critical/Important findings" [shape=box];
-        "Mark task complete in todo list and progress ledger" [shape=box];
-    }
-
-    "Read plan, note context and global constraints, create todos" [shape=box];
-    "More tasks remain?" [shape=diamond];
-    "spider run final code reviewer (role:\"reviewer\", context:\"fresh\", ../requesting-code-review/code-reviewer.md)" [shape=box];
-    "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
-
-    "Read plan, note context and global constraints, create todos" -> "spider run implementer (role:\"implementer\", context:\"fresh\", ./implementer-prompt.md)";
-    "spider run implementer (role:\"implementer\", context:\"fresh\", ./implementer-prompt.md)" -> "Implementer subagent asks questions?";
-    "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
-    "Answer questions, provide context" -> "spider run implementer (role:\"implementer\", context:\"fresh\", ./implementer-prompt.md)";
-    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
-    "Implementer subagent implements, tests, commits, self-reviews" -> "Write diff file, spider run reviewer (role:\"reviewer\", context:\"fresh\", ./task-reviewer-prompt.md)";
-    "Write diff file, spider run reviewer (role:\"reviewer\", context:\"fresh\", ./task-reviewer-prompt.md)" -> "Task reviewer reports spec ✅ and quality approved?";
-    "Task reviewer reports spec ✅ and quality approved?" -> "spider run fix stage (role:\"implementer\", context:\"fresh\") for Critical/Important findings" [label="no"];
-    "spider run fix stage (role:\"implementer\", context:\"fresh\") for Critical/Important findings" -> "Write diff file, spider run reviewer (role:\"reviewer\", context:\"fresh\", ./task-reviewer-prompt.md)" [label="re-review"];
-    "Task reviewer reports spec ✅ and quality approved?" -> "Mark task complete in todo list and progress ledger" [label="yes"];
-    "Mark task complete in todo list and progress ledger" -> "More tasks remain?";
-    "More tasks remain?" -> "spider run implementer (role:\"implementer\", context:\"fresh\", ./implementer-prompt.md)" [label="yes"];
-    "More tasks remain?" -> "spider run final code reviewer (role:\"reviewer\", context:\"fresh\", ../requesting-code-review/code-reviewer.md)" [label="no"];
-    "spider run final code reviewer (role:\"reviewer\", context:\"fresh\", ../requesting-code-review/code-reviewer.md)" -> "Use superpowers:finishing-a-development-branch";
-}
-```
-
-## Asynchronous Handoff (spider)
-
-Children report terminal status asynchronously. For a per-task implement →
-review handoff that can be fully specified in advance, wire a push pipeline:
-
-`spider run { pipeline: [ implementer, reviewer ], handoff: "intercom" }`
-
-Each pipeline hop starts a fresh child and passes the prior stage's report and
-review-package path through intercom; it never resumes a completed child. If a
-reviewer finds Critical/Important issues, the controller dispatches a fresh
-fix/re-review run after reading the report. Before whole-branch review, confirm
-all expected terminal completion events have arrived.
-
-## Pre-Flight Plan Review
-
-Before running Task 1's implementer, scan the plan once for conflicts:
-
-- tasks that contradict each other or the plan's Global Constraints
-- anything the plan explicitly mandates that the review rubric treats as a
-  defect (a test that asserts nothing, verbatim duplication of a logic block)
-
-Present everything you find to your human partner as one batched question —
-each finding beside the plan text that mandates it, asking which governs —
-before execution begins, not one interrupt per discovery mid-plan. If the
-scan is clean, proceed without comment. The review loop remains the net for
-conflicts that only emerge from implementation.
-
-## Model Selection
-
-Use the least powerful model that can handle each role to conserve cost and increase speed.
-
-**Mechanical implementation tasks** (isolated functions, clear specs, 1-2 files): use a fast, cheap model. Most implementation tasks are mechanical when the plan is well-specified.
-
-**Integration and judgment tasks** (multi-file coordination, pattern matching, debugging): use a standard model.
-
-**Architecture and design tasks**: use the most capable available model.
-The final whole-branch review is one of these — run it via `spider run` on the most
-capable available model, not the session default.
-
-**Review tasks**: choose the model with the same judgment, scaled to the
-diff's size, complexity, and risk. A small mechanical diff does not need the
-most capable model; a subtle concurrency change does.
-
-**Always pass `model:` explicitly on every `spider run`.** An
-omitted model inherits your session's model — often the most capable and
-most expensive — which silently defeats this section.
-
-**Turn count beats token price.** Wall-clock and context cost scale with how
-many turns a subagent takes, and the cheapest models routinely take 2-3× the
-turns on multi-step work — costing more overall. Use a mid-tier model as the
-floor for reviewers and for implementers working from prose descriptions.
-When the task's plan text contains the complete code to write, the
-implementation is transcription plus testing: use the cheapest tier for
-that implementer. Single-file mechanical fixes also take the cheapest tier.
-
-**Task complexity signals (implementation tasks):**
-- Touches 1-2 files with a complete spec → cheap model
-- Touches multiple files with integration concerns → standard model
-- Requires design judgment or broad codebase understanding → most capable model
-
-## Handling Implementer Status
-
-Implementer subagents report one of four statuses. Handle each appropriately:
-
-**DONE:** Generate the review package (`scripts/review-package BASE HEAD`, from this skill's directory — it prints the unique file path it wrote; BASE is the commit you recorded before running the implementer — never `HEAD~1`, which silently drops all but the last commit of a multi-commit task), then `spider run` the task reviewer (`role:"reviewer"`, `context:"fresh"`) with the printed path. With a wired pipeline the finishing implementer wakes the reviewer directly via intercom instead.
-
-**DONE_WITH_CONCERNS:** The implementer completed the work but flagged doubts. Read the concerns before proceeding. If the concerns are about correctness or scope, address them before review. If they're observations (e.g., "this file is getting large"), note them and proceed to review.
-
-**NEEDS_CONTEXT:** The implementer needs information that wasn't provided. Provide the missing context and `spider run` it again.
-
-**BLOCKED:** The implementer cannot complete the task. Assess the blocker:
-1. If it's a context problem, provide more context and `spider run` again with the same model
-2. If the task requires more reasoning, `spider run` again with a more capable model
-3. If the task is too large, break it into smaller pieces
-4. If the plan itself is wrong, escalate to the human
-
-**Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.
-
-## Handling Reviewer ⚠️ Items
-
-The task reviewer may report "⚠️ Cannot verify from diff" items — requirements
-that live in unchanged code or span tasks. These do not block the rest of the
-review, but you must resolve each one yourself before marking the task
-complete: you hold the plan and cross-task context the reviewer
-lacks. If you confirm an item is a real gap, treat it as a failed spec
-review — send it back to the implementer and re-review.
-
-## Constructing Reviewer Prompts
-
-Per-task reviews are task-scoped gates. The broad review happens once, at the
-final whole-branch review. When you fill a reviewer template:
-
-- Do not add open-ended directives like "check all uses" or "run race tests
-  if useful" without a concrete, task-specific reason
-- Do not ask a reviewer to re-run tests the implementer already ran on the
-  same code — the implementer's report carries the test evidence
-- Do not pre-judge findings for the reviewer — never instruct a reviewer to
-  ignore or not flag a specific issue. If you believe a finding would be a
-  false positive, let the reviewer raise it and adjudicate it in the review
-  loop. If the prompt you are writing contains "do not flag," "don't treat X
-  as a defect," "at most Minor," or "the plan chose" — stop: you are
-  pre-judging, usually to spare yourself a review loop.
-- The global-constraints block you hand the reviewer is its attention
-  lens. Copy the binding requirements verbatim from the plan's Global
-  Constraints section or the spec: exact values, exact formats, and the
-  stated relationships between components ("same layout as X", "matches
-  Y"). The reviewer's template already carries the process rules (YAGNI,
-  test hygiene, review method) — the constraints block is for what THIS
-  project's spec demands.
-- Hand the reviewer its diff as a file: run this skill's
-  `scripts/review-package BASE HEAD` (prefer `spider exec` for this bash
-  over large output) and pass the reviewer the file path
-  it prints (or, without bash: `git log --oneline`, `git diff --stat`,
-  and `git diff -U10` for the range, redirected to one uniquely named
-  file). The output never enters your own context, and the reviewer sees
-  the commit list, stat summary, and full diff with context in one Read
-  call. Use the BASE you recorded before running the implementer —
-  never `HEAD~1`, which silently truncates multi-commit tasks. Under a
-  wired pipeline the reviewer is WOKEN with the printed path via intercom
-  rather than dispatched by a blocking controller.
-- A `spider run` task prompt describes one task, not the session's history. Do not
-  paste accumulated prior-task summaries ("state after Tasks 1-3") into
-  later runs — a real session's run hit 42k chars of which 99%
-  was pasted history. A fresh subagent needs its task, the interfaces it
-  touches, and the global constraints. Nothing else.
-- `spider run` fix stages (`role:"implementer"`, `context:"fresh"`) for
-  Critical and Important findings. Record Minor
-  findings in the progress ledger as you go, and point the final
-  whole-branch review at that list so it can triage which must be fixed
-  before merge. A roll-up nobody reads is a silent discard.
-- A finding labeled plan-mandated — or any finding that conflicts with
-  what the plan's text requires — is the human's decision, like any plan
-  contradiction: present the finding and the plan text, ask which governs.
-  Do not dismiss the finding because the plan mandates it, and do not
-  run a fix that contradicts the plan without asking.
-- The final whole-branch review gets a package too: run
-  `scripts/review-package MERGE_BASE HEAD` (MERGE_BASE = the commit the
-  branch started from, e.g. `git merge-base main HEAD`; prefer `spider exec`
-  for this bash over large output) and include the
-  printed path in the final review run, so the final reviewer reads
-  one file instead of re-deriving the branch diff with git commands.
-- Every fix run carries the implementer contract: the fix stage
-  re-runs the tests covering its change and reports the results. Name the
-  covering test files in the run prompt — a one-line fix does not need the
-  whole suite. Before re-running the reviewer, confirm the fix report
-  contains the covering tests, the command run, and the output; run
-  the re-review once all three are present.
-- If the final whole-branch review returns findings, `spider run` ONE fix
-  stage with the complete findings list — not one fixer per finding.
-  Per-finding fixers each rebuild context and re-run suites; a real
-  session's final-review fix wave cost more than all its tasks combined.
-
-## File Handoffs
-
-Everything you paste into a `spider run` task prompt — and everything a subagent
-prints back — stays resident in your context for the rest of the session
-and is re-read on every later turn. Hand artifacts over as files:
-
-- **Task brief:** before running an implementer, run this skill's
-  `scripts/task-brief PLAN_FILE N` (prefer `spider exec` for this bash over
-  large output) — it extracts the task's full text to a
-  uniquely named file and prints the path. Compose the run prompt so the
-  brief stays the single source of requirements. Your run prompt should
-  contain: (1) one line on where this task fits in the project; (2) the
-  brief path, introduced as "read this first — it is your requirements,
-  with the exact values to use verbatim"; (3) interfaces and decisions
-  from earlier tasks that the brief cannot know; (4) your resolution of
-  any ambiguity you noticed in the brief; (5) the report-file path and
-  report contract. Exact values (numbers, magic strings, signatures, test
-  cases) appear only in the brief.
-- **Report file:** name the implementer's report file after the brief
-  (brief `…/task-N-brief.md` → report `…/task-N-report.md`) and put it in
-  the run prompt. The implementer writes the full report there and
-  returns only status, commits, a one-line test summary, and concerns.
-- **Reviewer inputs:** the task reviewer gets three paths — the same brief
-  file, the report file, and the review package — plus the global
-  constraints that bind the task.
-- Fix runs append their fix report (with test results) to the same
-  report file and return a short summary; re-reviews read the updated file.
-
-## Durable Progress
-
-Conversation memory does not survive compaction. In real sessions,
-controllers that lost their place have re-run entire completed task
-sequences — the single most expensive failure observed. Track progress in
-a ledger file, not only in todos.
-
-- At skill start, check for a ledger:
-  `cat "$(git rev-parse --show-toplevel)/.superpowers/sdd/progress.md"`. Tasks listed there
-  as complete are DONE — do not re-run them; resume at the first task
-  not marked complete.
-- When a task's review comes back clean, append one line to the ledger in
-  the same message as your other bookkeeping:
-  `Task N: complete (commits <base7>..<head7>, review clean)`.
-- The ledger is your recovery map: the commits it names exist in git even
-  when your context no longer remembers creating them. After compaction,
-  trust the ledger and `git log` over your own recollection.
-- `git clean -fdx` will destroy the ledger (it's git-ignored scratch); if
-  that happens, recover from `git log`.
-
-## Prompt Templates
-
-- [implementer-prompt.md](implementer-prompt.md) - `spider run` implementer (`role:"implementer"`, `context:"fresh"`)
-- [task-reviewer-prompt.md](task-reviewer-prompt.md) - `spider run` task reviewer (`role:"reviewer"`, `context:"fresh"`; spec compliance + code quality)
-- Final whole-branch review: use superpowers:requesting-code-review's [code-reviewer.md](../requesting-code-review/code-reviewer.md)
-
-## Example Workflow
-
-```
-You: I'm using Subagent-Driven Development to execute this plan.
-
-[Read plan file once: docs/superpowers/plans/feature-plan.md]
-[Create todos for all tasks]
-
-Task 1: Hook installation script
-
-[Run task-brief for Task 1; spider run implementer with brief + report paths + context]
-
-Implementer: "Before I begin - should the hook be installed at user or system level?"
-
-You: "User level (~/.config/superpowers/hooks/)"
-
-Implementer: "Got it. Implementing now..."
-[Later] Implementer:
-  - Implemented install-hook command
-  - Added tests, 5/5 passing
-  - Self-review: Found I missed --force flag, added it
-  - Committed
-
-[Run review-package, spider run task reviewer with the printed path]
-Task reviewer: Spec ✅ - all requirements met, nothing extra.
-  Strengths: Good test coverage, clean. Issues: None. Task quality: Approved.
-
-[Mark Task 1 complete]
-
-Task 2: Recovery modes
-
-[Run task-brief for Task 2; spider run implementer with brief + report paths + context]
-
-Implementer: [No questions, proceeds]
-Implementer:
-  - Added verify/repair modes
-  - 8/8 tests passing
-  - Self-review: All good
-  - Committed
-
-[Run review-package, spider run task reviewer with the printed path]
-Task reviewer: Spec ❌:
-  - Missing: Progress reporting (spec says "report every 100 items")
-  - Extra: Added --json flag (not requested)
-  Issues (Important): Magic number (100)
-
-[spider run fix stage with all findings]
-Fixer: Removed --json flag, added progress reporting, extracted PROGRESS_INTERVAL constant
-
-[Task reviewer reviews again]
-Task reviewer: Spec ✅. Task quality: Approved.
-
-[Mark Task 2 complete]
-
-...
-
-[After all tasks]
-[spider run final code-reviewer]
-Final reviewer: All requirements met, ready to merge
-
-Done!
-```
-
-## Advantages
-
-**vs. Manual execution:**
-- Subagents follow TDD naturally
-- Fresh context per task (no confusion)
-- Parallel-safe (subagents don't interfere)
-- Subagent can ask questions (before AND during work)
-
-**vs. Executing Plans:**
-- Same session (no handoff)
-- Continuous progress (no waiting)
-- Review checkpoints automatic
-
-**Efficiency gains:**
-- Controller curates exactly what context is needed; bulk artifacts move
-  as files, not pasted text
-- Subagent gets complete information upfront
-- Questions surfaced before work begins (not after)
-
-**Quality gates:**
-- Self-review catches issues before handoff
-- Task review carries two verdicts: spec compliance and code quality
-- Review loops ensure fixes actually work
-- Spec compliance prevents over/under-building
-- Code quality ensures implementation is well-built
-
-**Cost:**
-- More subagent invocations (implementer + reviewer per task)
-- Controller does more prep work (extracting all tasks upfront)
-- Review loops add iterations
-- But catches issues early (cheaper than debugging later)
-
-## Red Flags
-
-**Never:**
-- Start implementation on main/master branch without explicit user consent
-- Skip task review, or accept a report missing either verdict (spec compliance AND task quality are both required)
-- Proceed with unfixed issues
-- Run multiple implementation stages in parallel on the same branch (conflicts)
-- Make a subagent read the whole plan file (hand it its task brief —
-  `scripts/task-brief` — instead)
-- Skip scene-setting context (subagent needs to understand where task fits)
-- Ignore subagent questions (answer before letting them proceed)
-- Accept "close enough" on spec compliance (reviewer found spec issues = not done)
-- Skip review loops (reviewer found issues = implementer fixes = review again)
-- Let implementer self-review replace actual review (both are needed)
-- Tell a reviewer what not to flag, or pre-rate a finding's severity in the
-  run prompt ("treat it as Minor at most") — the plan's example code is
-  a starting point, not evidence that its weaknesses were chosen
-- `spider run` a task reviewer without a diff file — generate it first
-  (`scripts/review-package BASE HEAD`) and name the printed path in the
-  prompt
-- Move to next task while the review has open Critical/Important issues
-- Re-run a task the progress ledger already marks complete — check
-  the ledger (and `git log`) after any compaction or resume
-
-**If subagent asks questions:**
-- Answer clearly and completely
-- Provide additional context if needed
-- Don't rush them into implementation
-
-**If reviewer finds issues:**
-- Implementer (same subagent) fixes them
-- Reviewer reviews again
-- Repeat until approved
-- Don't skip the re-review
-
-**If subagent fails task:**
-- `spider run` a fix stage with specific instructions
-- Don't try to fix manually (context pollution)
-
-## Integration
-
-**Required workflow skills:**
-- **superpowers:using-git-worktrees** - Ensures isolated workspace (creates one or verifies existing)
-- **superpowers:writing-plans** - Creates the plan this skill executes
-- **superpowers:requesting-code-review** - Code review template for the final whole-branch review
-- **superpowers:finishing-a-development-branch** - Complete development after all tasks
-
-**Subagents should use:**
-- **superpowers:test-driven-development** - Subagents follow TDD for each task
-
-**Alternative workflow:**
-- **superpowers:executing-plans** - Use for parallel session instead of same-session execution
+Implement each task with a fresh `spider run` worker, review that task for both
+spec compliance and code quality with a fresh read-only reviewer, then review
+the whole branch. The controller owns the shared workspace and ledger; children
+receive brief, report and diff **paths**, not the entire plan or conversation.
+
+**Continuous execution:** Do not ask whether to continue between tasks. Work
+sequentially on a shared branch; do not run concurrent implementers there.
+
+**Escalation overrides upstream's "only four stops" and "rulings, not stalls":**
+Ledger only local, reversible decisions that cannot change the outcome, as
+`Ruling: <decision> - <reason> - <cost if wrong>`. Emit `ESCALATION[question]`
+for outcome-changing ambiguity, `ESCALATION[blocked]` if blocked, and
+`ESCALATION[warning]` before destructive or irreversible action or if the
+premise is wrong. Do not settle a plan/spec conflict that changes the result
+by yourself. Questions from a headless child are handled by dispatching a
+**fresh** child with the answer and partial-tree context, not messaging it.
+
+## Choosing an Execution Method
+
+Choose this skill for a plan with mostly independent tasks when per-task
+review is wanted. If the user chose **Inline**, follow
+[executing-plans](../executing-plans/SKILL.md) instead. Both methods share
+one plan-scoped `.superpowers/sdd/` workspace and ledger. Verify or create
+an isolated worktree with using-git-worktrees before starting; never implement
+on main without explicit consent.
+
+## Setup and Recovery
+
+1. Run `bash scripts/sdd-workspace PLAN_FILE` via `spider exec`. The script
+   returns an absolute workspace under `<repo>/.superpowers/sdd/`, creates
+   its self-ignoring `.gitignore`, and records the canonical plan path in
+   `plan-path`. Same-basename plans get different workspaces. Use that
+   returned path for briefs, reports, logs and review packages, not a
+   guessed slug. The first line of a **new** `<workspace>/progress.md` is
+   `# SDD ledger — plan: <canonical plan-path value>`. Append progress below
+   it. Do not overwrite an existing ledger.
+2. Read the ledger **before dispatching**. A first-line plan ID must match the
+   selected plan. Tasks marked `Task N: complete` are done; do not re-run
+   them. A last line naming a fix round resumes at the next round after
+   verifying its commits. Check `git log` after compaction; todos are a view,
+   the ledger is the recovery record.
+3. **Legacy rule:** An old flat `.superpowers/sdd/progress.md` or a markerless
+   ledger without a plan-ID first line is resumable, not a mismatch.
+   `sdd-workspace` returns the flat directory when it finds its ledger,
+   claims it using `plan-path` without changing its progress, and refuses a
+   second plan claiming it. Resume recorded tasks for the claimed plan.
+   An identity line naming another plan is a stop, not a reason to reset.
+   Never delete the flat legacy directory or its ledger during cleanup.
+   If ownership cannot be established safely, emit `ESCALATION[question]`.
+4. Read plan, spec (if supplied), Global Constraints and Review Focus. Add one
+   `spider todo` per task. Scan shared files and producer/consumer interfaces
+   for contradictions, plus each task's internal test/code consistency.
+   Record the checks and any local reversible rulings in the ledger. Escalate
+   outcome-changing conflicts before Task 1. If the workspace is lost to
+   `git clean -fdx`, reconstruct from `git log`, not memory.
+
+## Model Routing and Runtime
+
+Before **each** `spider run`, check `spider control models` for current role
+defaults, resolve a model for the role, and pass an explicit
+**provider-qualified** `model:`. Routing precedence is explicit model, then
+worktree-local override, then global default, then parent model. The role
+lookup does not itself supply the explicit argument: put its resolved value on
+every worker, fixer and reviewer run, including each pipeline stage. Scale
+reasoning to the task; if a default is unavailable, resolve it before dispatch,
+not by omitting `model:`. No model name in this skill is a fixed policy.
+
+`spider run` children start in the background and report via a
+`spider.subagent_done` message. **There is no blocking wait or polling.**
+Keep doing local ledger/report work and respond when the event arrives; never
+sleep, poll a run, or claim a missing result is DONE. Headless children cannot
+be messaged, redirected or resumed. `spider message` is peer delivery, **not**
+a way to instruct an in-flight or finished headless child. A fix round
+always runs a **fresh** child on the partial tree, supplied the brief, prior
+report, findings and diff paths.
+
+For phases fully specifiable up front, `spider run` supports
+`pipeline:[worker, reviewer], handoff:"intercom"`. Each stage is a **new**
+child and needs its own explicit provider-qualified model and fresh context.
+Specify how the reviewer obtains BASE, HEAD, report and package path from the
+worker's handoff. Do not pipeline an unexamined finding into an automatic fix:
+the controller must read the report and decide scope first.
+
+## Task Loop
+
+### 1. Prepare and implement
+
+Before dispatch, record exact `BASE=$(git rev-parse HEAD)` in the ledger, not
+`HEAD~1`. Run `bash scripts/task-brief PLAN_FILE N` through `spider exec` and
+use the plan-scoped path it prints. Name a sibling `task-N-report.md` and
+supply **absolute** brief and report paths, scene-setting context, relevant
+interfaces, Global Constraints, and the [implementer template](implementer-prompt.md).
+Never paste the whole plan or past conversation. A genuinely small batch of
+independent same-shape edits may share one brief and review, but name every
+file explicitly. Implementers must not dispatch nested workers or reviewers.
+
+Dispatch `spider run` with `agent:"worker"`, `context:"fresh"`, an explicit
+provider-qualified `model:` from the worker role default, and a concrete
+task. Ask for TDD RED/GREEN evidence, covering tests, self-review and report
+status. No two workers edit this branch at once. After dispatch, continue
+local work; process its terminal message when it arrives.
+
+### 2. Handle the report
+
+- **DONE:** Verify a real report and test evidence exist. Generate
+  `bash scripts/review-package PLAN_FILE BASE HEAD` with `spider exec`; the
+  script rejects empty and non-descendant ranges. Dispatch the task reviewer
+  with its printed package path.
+- **DONE_WITH_CONCERNS:** Read concerns. Correctness or scope concerns must
+  be resolved before the review; observational concerns can be ledgered.
+- **NEEDS_CONTEXT:** Supply context to a **fresh** worker, starting from the
+  partial tree and prior report. Escalate if the ambiguity changes outcome.
+- **BLOCKED**, missing report, or a clean exit with no result: not DONE.
+  Diagnose context versus capability versus task size. Dispatch a fresh
+  revised brief only if unblocked; otherwise `ESCALATION[blocked]`.
+
+### 3. Review and fix
+
+The task reviewer receives absolute brief, report and review-package paths
+plus exact Global Constraints via [task-reviewer-prompt.md](task-reviewer-prompt.md).
+Run with `agent:"reviewer"`, `context:"fresh"` and explicit role-default
+provider-qualified `model:`. Reviews are **read-only**: no source, index or
+branch edits, no nested subagents. Require **two verdicts**, spec compliance
+and task quality; resolve every `⚠️ Cannot verify from diff` yourself. Do not
+pre-rate findings or ask reviewers to ignore a named defect. Reviewers read
+test evidence rather than automatically re-running suites. For a batched
+brief, they check every file's promised change. Ledger Minor findings for
+the final review; Critical/Important and real spec gaps enter the fix loop.
+A plan-mandated defect that changes the result needs `ESCALATION[question]`.
+
+One fix round is **one fresh worker** plus **one scoped re-review**, at most
+five rounds per task. Send the open findings verbatim, the original brief,
+report and diff paths, and the partial-tree state to the new worker. Name the
+covering tests, require it to append its fix command/output to the report,
+and capture `FIX_BASE` (the HEAD the previous reviewer saw) before the fix.
+Rounds 4 and 5 may use a more capable available worker model after checking
+current role routing. Do not assume the original worker can be resumed, even
+in rounds 1 through 3. Check fix test evidence before review. Generate
+`bash scripts/review-package PLAN_FILE FIX_BASE HEAD`, then run a **fresh**
+read-only reviewer with [re-review-prompt.md](re-review-prompt.md). It marks
+each finding ADDRESSED or NOT ADDRESSED and checks the fix diff for new
+breakage only. Out-of-scope observations become deferred minors, not new loop
+work. Append `Task N: fix round R/5 (X addressed, Y open; commits A..B)` to
+the ledger after each round. Do not repeat a broad review for every fix.
+
+At round five, stop dispatching and adjudicate **each** remaining finding.
+Only local reversible non-load-bearing choices can be parked with a ledgered
+`Ruling:` including cost if wrong. Escalate outcome-changing or load-bearing
+ambiguity, blocked work and irreversible actions using the severity above;
+do not mark an unresolved load-bearing task complete. For an approved task,
+append `Task N: complete (commits BASE..HEAD, review clean)` (or the number
+parked after the breaker) and toggle its `spider todo`. Never advance with
+open unruled Critical/Important findings.
+
+## Final Review and Finish
+
+After all tasks, run `bash scripts/review-package PLAN_FILE MERGE_BASE HEAD`
+using the recorded branch merge base (not the last task BASE). Run a **fresh**
+read-only `spider run` reviewer with `context:"fresh"`, an explicit
+provider-qualified reviewer model from `spider control models`, the
+[whole-branch review template](../requesting-code-review/code-reviewer.md),
+and absolute package/plan/spec/ledger paths. Give it deferred minors and
+rulings to triage. Await the `spider.subagent_done` event, not a poll.
+
+If findings remain, dispatch **one fresh fix worker** for the complete list,
+with covering tests and report, then **one** scoped read-only re-review of
+that fix wave using `FIX_BASE..HEAD`. No second final fix wave. Ledger each
+residual finding and escalate unresolved load-bearing issues; do not declare
+a dirty final review clean.
+
+Before cleanup, copy **every** ledger `Ruling:` line to the final response
+under "Rulings I made" with the cost if wrong, and list deferred minors.
+Only after a **clean final review**, and only for a **plan-scoped workspace**,
+consider deleting that exact returned workspace. Deletion is destructive:
+emit `ESCALATION[warning]` before doing it and follow the user's approval
+requirements. Never remove the legacy flat workspace or siblings. Then use
+finishing-a-development-branch.

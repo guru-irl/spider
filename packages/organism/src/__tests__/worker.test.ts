@@ -4,7 +4,10 @@ import { OrganismWorker } from "../worker.js";
 import { curateAction, type OrganismActionDeps } from "../actions.js";
 import { ORGANISM_DEFAULTS } from "../config.js";
 import { CURATOR_DEFAULTS } from "../curator.js";
-import { listPending } from "@spider/memory";
+import { addMemory, listPending, upsertVector, type Embedder } from "@spider/memory";
+import { openDbAt, paths } from "@spider/db-core";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import type { DigestModel } from "../types.js";
 
 let ctx: ReturnType<typeof makeOrgDb>;
@@ -14,7 +17,7 @@ const model: DigestModel = {
   complete: async (system) =>
     system.includes("summary") // consolidation prompt
       ? JSON.stringify({ summary: "did auth", selfName: "auth-refactor" })
-      : JSON.stringify({ memory: [{ category: "insight", content: "prefers small PRs" }], todos: [], skills: [] }),
+      : JSON.stringify({ memory: [{ category: "insight", content: "prefers small PRs", scope: "repo", justification: "Durable repo-specific practice useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" }], todos: [], skills: [] }),
 };
 
 function seed(db: any): void {
@@ -26,6 +29,92 @@ function seed(db: any): void {
 }
 
 describe("OrganismWorker.runDrain", () => {
+  it("applies a configured per-pass cap to learning, run and todo, counting all truncated proposals", async () => {
+    ctx = makeOrgDb();
+    seed(ctx.db);
+    ctx.db.prepare("INSERT INTO todos(session_id, seq, text, done, created_at) VALUES ('s1', 1, 'Completed checklist', 1, 1)").run();
+    const org = { ...ORGANISM_DEFAULTS, autoWriteBudget: 20, maxMemoryProposals: 2,
+      passes: { ...ORGANISM_DEFAULTS.passes, consolidation: false, reflection: false, insights: false } };
+    const fake: DigestModel = { complete: async (system) => {
+      const pass = system.includes("completed todos") ? "todo" : system.includes("run activity") ? "run" : "learn";
+      return JSON.stringify({ memory: Array.from({ length: 4 }, (_, i) => ({ category: "convention",
+        content: `Stable ${pass} convention ${i}`, scope: "repo", justification: "Durable guidance for future agents in this repo",
+        evidence: "src/rules.ts:2" })), skills: [], todos: [] });
+    } };
+    const filename = join(paths.scratch("worktree", process.cwd()), `cap-global-${crypto.randomUUID()}.db`);
+    const globalDb = openDbAt(filename, "global");
+    try {
+      const w = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb,
+        project: { projectKey: "k" } as never, getEmbedder: async () => null, makeModel: () => fake,
+        org, curator: CURATOR_DEFAULTS });
+      const summary = await w.runDrain("s1", "shutdown", { transcript: [{ role: "user", content: "Discuss a stable convention" }] });
+      expect(w.getLastDrain()?.inputs.messages).toBe(1);
+      expect(w.getLastDrain()).toMatchObject({ modelCalls: 3, capDroppedByPass: { runMemoryTodo: 2, todoMemory: 2, learning: 2 } });
+      expect(summary).toMatchObject({ memoryStaged: 6, dropped: 6, rejected: 0 });
+      expect(w.getLastDrain()).toMatchObject({ dropped: 6, status: "completed" });
+      expect(listPending(ctx.repoDb, "repo")).toHaveLength(6);
+    } finally {
+      globalDb.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(filename + suffix, { force: true });
+    }
+  });
+
+  it("passes the configured cap to reflection and counts its dropped proposals", async () => {
+    ctx = makeOrgDb();
+    seed(ctx.db);
+    for (let i = 0; i < 3; i++) {
+      const row = addMemory(ctx.repoDb, "repo", { category: "insight", content: `cluster seed ${i}` });
+      upsertVector(ctx.repoDb, "memory", row.uuid, new Float32Array(8).fill(1), "test-model");
+    }
+    const embedder: Embedder = { model: "test", dim: 8, embed: async texts => texts.map(() => new Float32Array(8)) };
+    const filename = join(paths.scratch("worktree", process.cwd()), `reflection-global-${crypto.randomUUID()}.db`);
+    const globalDb = openDbAt(filename, "global");
+    try {
+      const w = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb,
+        project: { projectKey: "k" } as never, getEmbedder: async () => embedder,
+        makeModel: () => ({ complete: async () => JSON.stringify({ memory: Array.from({ length: 4 }, (_, i) => ({
+          category: "insight", content: `Reflection convention ${i}`, scope: "repo",
+          justification: "Durable synthesis for future sessions", evidence: "src/rules.ts:4",
+        })) }) }),
+        org: { ...ORGANISM_DEFAULTS, maxMemoryProposals: 1, passes: {
+          runMemoryTodo: false, todoMemory: false, learning: false, consolidation: false,
+          reflection: true, insights: false,
+        } }, curator: CURATOR_DEFAULTS });
+      const summary = await w.runDrain("s1", "shutdown");
+      expect(w.getLastDrain()).toMatchObject({ modelCalls: 1, capDroppedByPass: { reflection: 3 } });
+      expect(summary).toMatchObject({ memoryStaged: 1, dropped: 3 });
+      expect(listPending(ctx.repoDb, "repo")).toHaveLength(1);
+    } finally {
+      globalDb.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(filename + suffix, { force: true });
+    }
+  });
+
+  it("supplies active global and repo content, never staged content, to the learning model", async () => {
+    ctx = makeOrgDb();
+    seed(ctx.db);
+    const filename = join(paths.scratch("worktree", process.cwd()), `active-global-${crypto.randomUUID()}.db`);
+    const globalDb = openDbAt(filename, "global");
+    try {
+      addMemory(globalDb, "global", { category: "preference", content: "Global standing rule" });
+      addMemory(ctx.repoDb, "repo", { category: "convention", content: "Repo standing rule" });
+      addMemory(ctx.repoDb, "repo", { category: "insight", content: "Unapproved speculation", status: "staged" });
+      let learnerInput = "";
+      const w = new OrganismWorker({ db: ctx.repoDb, globalDb, worktreeDb: ctx.db,
+        project: { projectKey: "k" } as never, getEmbedder: async () => null,
+        makeModel: () => ({ complete: async (system) => { learnerInput = system; return '{"memory":[],"skills":[],"todos":[]}'; } }),
+        org: { ...ORGANISM_DEFAULTS, passes: { ...ORGANISM_DEFAULTS.passes, runMemoryTodo: false, todoMemory: false, consolidation: false, reflection: false, insights: false } },
+        curator: CURATOR_DEFAULTS });
+      await w.runDrain("s1", "shutdown", { transcript: [{ role: "user", content: "hello" }] });
+      expect(learnerInput).toContain("BEGIN ACTIVE MEMORY DATA");
+      expect(learnerInput).toContain("Global standing rule");
+      expect(learnerInput).toContain("Repo standing rule");
+      expect(learnerInput).not.toContain("Unapproved speculation");
+    } finally {
+      globalDb.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(filename + suffix, { force: true });
+    }
+  });
   it("runs enabled passes, stages under budget, and self-names the session", async () => {
     ctx = makeOrgDb();
     seed(ctx.db);

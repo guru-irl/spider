@@ -17,6 +17,40 @@ describe("reflectionPass", () => {
     expect(r.memory).toEqual([]);
   });
 
+  it("caps reflection proposals and keeps the scope bound to its repo input", async () => {
+    ctx = makeOrgDb();
+    for (let i = 0; i < 3; i++) {
+      const rec = addMemory(ctx.repoDb, "repo", { category: "insight", content: `shared rule ${i}` });
+      upsertVector(ctx.repoDb, "memory", rec.uuid, new Float32Array(8).fill(1), "test-model");
+    }
+    const stub: Embedder = { model: "test", dim: 8, embed: async texts => texts.map(() => new Float32Array(8)) };
+    const proposals = Array.from({ length: 5 }, (_, i) => ({ category: "insight", content: `Umbrella rule ${i}`,
+      scope: "global", justification: "Durable synthesis for this repo", evidence: "src/rules.ts:2" }));
+    const result = await reflectionPass(ctx.repoDb, stub, model({ memory: proposals }), { maxMemoryProposals: 2 });
+    expect(result.memory).toHaveLength(2);
+    expect(result.capDropped).toBe(3);
+    expect(result.memory.every(m => m.scope === "repo")).toBe(true);
+  });
+
+  it("caps reflection only after rejecting malformed metadata and guardrail failures", async () => {
+    ctx = makeOrgDb();
+    for (let i = 0; i < 3; i++) {
+      const rec = addMemory(ctx.repoDb, "repo", { category: "insight", content: `cluster item ${i}` });
+      upsertVector(ctx.repoDb, "memory", rec.uuid, new Float32Array(8).fill(1), "test-model");
+    }
+    const embedder: Embedder = { model: "test", dim: 8, embed: async texts => texts.map(() => new Float32Array(8)) };
+    const valid = { category: "insight", content: "Keep the stable repository check", scope: "repo",
+      justification: "Recurring check for future work", evidence: "src/checks.ts:4" };
+    const result = await reflectionPass(ctx.repoDb, embedder, model({ memory: [
+      { ...valid, content: "No citation", evidence: "unknown" },
+      { ...valid, content: "browser tools do not work" },
+      valid,
+      { ...valid, content: "Use the repository check on changes" },
+    ] }), { maxMemoryProposals: 1 });
+    expect(result.memory.map(m => m.content)).toEqual([valid.content]);
+    expect(result.capDropped).toBe(1);
+  });
+
   it("clusterMemory returns [] below minCluster", () => {
     ctx = makeOrgDb();
     addMemory(ctx.repoDb, "repo", { category: "insight", content: "a" });

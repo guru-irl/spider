@@ -11,6 +11,8 @@ export interface MemoryRecord {
   category: MemoryCategory;
   content: string;
   link: string | null;
+  justification?: string;
+  evidence?: string;
   status: MemoryStatus;
   source: MemorySource;
   confidence: number | null;
@@ -23,6 +25,8 @@ export interface AddMemoryInput {
   category: MemoryCategory;
   content: string;
   link?: string | null;
+  justification?: string;
+  evidence?: string;
   status?: MemoryStatus;
   source?: MemorySource;
   confidence?: number | null;

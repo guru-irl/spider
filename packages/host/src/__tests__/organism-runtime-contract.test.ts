@@ -114,7 +114,7 @@ describe("organism's actual pi runtime contract", () => {
         return system.includes("selfName")
           ? JSON.stringify({ summary: "Verified reusable regression fixtures.", selfName: "regression-fixtures" })
           : JSON.stringify({
-            memory: [{ category: "convention", content: "Use deterministic regression fixtures in tests." }],
+            memory: [{ category: "convention", content: "Use deterministic regression fixtures in tests.", scope: "repo", justification: "Durable repo-specific testing practice useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" }],
             skills: [{ name: "regression-fixtures", body: "# Regression fixtures\nUse an isolated fixture and verify RED before GREEN." }],
           });
       } }),

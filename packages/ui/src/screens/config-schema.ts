@@ -15,6 +15,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		...(["runMemoryTodo", "todoMemory", "learning", "consolidation", "reflection", "insights"] as const).map(name => ({ key: `organism.passes.${name}`, label: name, type: "boolean" as const, default: true, description: `Enable ${name} pass.` })),
 		{ key: "organism.selfNaming", label: "Self naming", type: "boolean", default: true, description: "Allow organism to name projects." },
 		{ key: "organism.autoWriteBudget", label: "Auto-write budget", type: "number", default: 20, min: 0, max: 1000, description: "Maximum staged writes per drain." },
+		{ key: "organism.maxMemoryProposals", label: "Memory proposals per pass", type: "number", default: 3, min: 0, max: 1000, description: "Maximum supported memory candidates from each memory-producing pass." },
 	]},
 	{ id: "curator", label: "Skill curator", fields: [
 		{ key: "curator.staleAfterDays", label: "Stale after (days)", type: "number", default: 30, min: 0, description: "Age at which skills become stale." },

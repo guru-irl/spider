@@ -140,7 +140,7 @@ describe("organism drain — reflection outcome accounting (G4a)", () => {
         complete: async (_system: string, messages: { content: string }[]) =>
           (messages[0]?.content ?? "").includes("insight 0-")
             ? "Sorry, I can't help with that request."
-            : JSON.stringify({ memory: [{ category: "insight", content: "group1 umbrella lesson" }] }),
+            : JSON.stringify({ memory: [{ category: "insight", content: "group1 umbrella lesson", scope: "repo", justification: "Durable project lesson useful to future agents.", evidence: "packages/organism/src/passes/reflection.ts:1" }] }),
       }),
     });
     seedReflectionClusters(f.repoDb, dim);
@@ -160,7 +160,7 @@ describe("organism drain — reflection outcome accounting (G4a)", () => {
         complete: async (system: string) =>
           system === REFLECTION_PROMPT
             ? "Sorry, I can't help with that request."
-            : JSON.stringify({ memory: [{ category: "insight", content: "learned something" }], todos: [], skills: [] }),
+            : JSON.stringify({ memory: [{ category: "insight", content: "learned something", scope: "repo", justification: "Durable project lesson useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" }], todos: [], skills: [] }),
       }),
     });
     seedReflectionClusters(f.repoDb, dim);

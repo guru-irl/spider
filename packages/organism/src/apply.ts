@@ -4,6 +4,7 @@ import type { MemoryScope } from "@spider/memory";
 import { addTodo } from "@spider/todo";
 import { SkillStore } from "./skill-usage.js";
 import type { AppliedSummary, DigestResult, WriteBudget } from "./types.js";
+import { isSupportedMemoryCandidate } from "./memory-candidate.js";
 
 export interface ApplyDeps {
   db: Db;           // repo DB: memory, skills
@@ -37,22 +38,28 @@ export function applyDigest(deps: ApplyDeps, result: DigestResult, budget: Write
   const summary: AppliedSummary = { memoryStaged: 0, todosAdded: 0, skillsStaged: 0, dropped: 0, rejected: 0 };
 
   for (const cand of result.memory) {
+    if (!isSupportedMemoryCandidate(cand)) {
+      summary.rejected++;
+      continue;
+    }
     if (budget.used >= budget.max) {
       summary.dropped++;
       continue;
     }
     const res = stageWrite(
-      deps.db,
-      deps.scope,
+      cand.scope === "global" ? deps.globalDb : deps.db,
+      cand.scope,
       {
         category: cand.category,
         content: cand.content,
+        justification: cand.justification,
+        evidence: cand.evidence,
         link: cand.link ?? null,
         confidence: cand.confidence ?? null,
         source: "auto",
         sessionId: deps.sessionId,
       },
-      { autoStage: true }
+      { autoStage: true, verifiedUserQuote: cand.verifiedUserQuote === true }
     );
     if (res.status === "rejected") {
       summary.rejected++;

@@ -98,7 +98,7 @@ async function setup(opts?: { noParentModel?: boolean }) {
     role: "assistant", api: model.api, provider: model.provider, model: model.id, stopReason: "stop", timestamp: 2,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     content: [{ type: "text", text: JSON.stringify({
-      memory: [{ category: "convention", content: "Record the failing assertion before implementing a fix." }],
+      memory: [{ category: "convention", content: "Record the failing assertion before implementing a fix.", scope: "repo", justification: "A durable project convention useful to future agents working in this repo.", evidence: "packages/organism/src/passes/learning.ts:1" }],
       skills: [{ name: "deterministic-tests", body: "# Deterministic tests\nVerify the regression with an isolated fixture." }],
       summary: "Verified deterministic regression tests.", selfName: "deterministic-tests",
     }) }],

@@ -1,8 +1,9 @@
 import type { Db } from "@spider/db-core";
 import type { Embedder, MemoryRecord } from "@spider/memory";
-import { knn, listActive, shouldCapture } from "@spider/memory";
+import { knn, listActive } from "@spider/memory";
+import { isSupportedMemoryCandidate } from "../memory-candidate.js";
 import type { DigestModel, DigestResult, MemoryCandidate } from "../types.js";
-import { emptyResult } from "../types.js";
+import { capMemory, emptyResult } from "../types.js";
 import { parseCandidates } from "../aux-model.js";
 
 // Distance below which two memory embeddings count as "related" for clustering.
@@ -15,7 +16,10 @@ export const REFLECTION_PROMPT: string =
   "durable umbrella insight that generalizes across the cluster — the shared " +
   "lesson, pattern, or preference they all point at. Do not restate each entry.\n\n" +
   "Reply with ONLY a JSON object of the form " +
-  '{ "memory": [ { "category": "insight", "content": "<the umbrella insight>" } ] }.';
+  '{ "memory": [ { "category": "insight", "content": "<the umbrella insight>", ' +
+  '"scope": "repo", "justification": "<why durable and useful to other agents in this repo>", ' +
+  '"evidence": "<current file:line or command output>" } ] }. ' +
+  "Return zero proposals if the cluster lacks verified evidence. Never invent a citation.";
 
 /**
  * Cluster ACTIVE repo memory by vector proximity. Pure & testable.
@@ -101,7 +105,7 @@ export async function reflectionPass(
   db: Db,
   embedder: Embedder | null,
   model: DigestModel,
-  opts?: { minCluster?: number; onClusterError?: (e: unknown, info: { failed: number; total: number }) => void }
+  opts?: { minCluster?: number; maxMemoryProposals?: number; onClusterError?: (e: unknown, info: { failed: number; total: number }) => void }
 ): Promise<DigestResult> {
   if (embedder === null) return emptyResult();
 
@@ -125,7 +129,7 @@ export async function reflectionPass(
       failedClusters++;
       continue;
     }
-    for (const m of parsed.memory) umbrellas.push({ category: "insight", content: m.content });
+    for (const m of parsed.memory) umbrellas.push({ ...m, category: "insight", scope: "repo" });
   }
 
   if (failedClusters > 0) {
@@ -140,8 +144,8 @@ export async function reflectionPass(
     opts?.onClusterError?.(aggregated, { failed: failedClusters, total: clusters.length });
   }
 
-  return {
+  return capMemory({
     ...emptyResult(),
-    memory: umbrellas.filter((m) => shouldCapture("insight", m.content).capture),
-  };
+    memory: umbrellas.filter((m) => !/^User(?: said)?:/i.test(m.evidence?.trim() ?? "") && isSupportedMemoryCandidate(m)),
+  }, opts?.maxMemoryProposals ?? 3);
 }

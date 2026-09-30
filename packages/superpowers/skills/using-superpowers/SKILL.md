@@ -28,8 +28,10 @@ If AGENTS.md says "don't use TDD" and a skill says "always use TDD," follow the 
 ## How to Access Skills
 
 Pi discovers skills globally in `~/.pi/agent/skills/` and
-`~/.agents/skills/`; in trusted projects, in `.pi/skills/` and
-`.agents/skills/` (current directory and ancestors); from installed package
+`~/.agents/skills/`; in trusted projects, in `.pi/skills/` (current directory
+only) and `.agents/skills/` (current directory and ancestors to the git root,
+or filesystem root when not in a repo);
+from installed package
 `skills/` directories or `pi.skills` entries; from the settings `skills`
 array; and from repeatable CLI `--skill <path>`. Direct root Markdown skills
 in the Pi-specific directories need valid frontmatter; recursive `SKILL.md`

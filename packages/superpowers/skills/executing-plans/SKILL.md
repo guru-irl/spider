@@ -43,15 +43,22 @@ verification-before-completion for each completion claim.
    DONE; trust it and verify the commit range with `git log` rather than
    repeating the task after compaction. An interrupted task resumes from its
    last valid ledger entry and partial tree.
-3. A flat legacy `.superpowers/sdd/progress.md`, or a ledger without a
-   plan-ID first line, remains readable and resumable. The script claims a
-   flat legacy ledger for the active plan without rewriting its first line,
-   and refuses a different claimant. If its ownership is unclear, emit
-   `ESCALATION[question]`. Never delete the legacy workspace during cleanup.
+3. Check legacy task titles and commit ranges against the selected plan before
+   trusting the ledger. An owned scoped ledger wins over a flat legacy one.
+   For a flat `.superpowers/sdd/progress.md`, the script compares its `Plan:`
+   header with the current plan and refuses a mismatch. With no plan evidence,
+   emit `ESCALATION[question]`, obtain explicit confirmation, then invoke
+   `sdd-workspace --adopt-legacy PLAN_FILE`. It retains the ledger's original
+   first line. To release a flat ledger with user approval, create
+   `.superpowers/sdd/legacy-<name>/` and move the flat `progress.md`,
+   `plan-path` and related task/review artifacts into it. Do not move or delete
+   the entire `.superpowers/sdd/` directory. Adopted legacy workspaces are
+   never eligible for cleanup.
 4. Read plan, Spec if named, Global Constraints and Review Focus. Add one
    `spider todo` for each task. Scan shared interfaces for contradictions,
    ledger the checked producer/consumer pairs, and escalate conflicts that
-   change the outcome. Each task's internal consistency is checked when
+   change the outcome. Note a missing/unreachable spec in the ledger; rulings
+   without a spec are provisional. Each task's internal consistency is checked when
    reading its brief. If a workspace is lost to `git clean -fdx`, recover
    from `git log`, not recollection.
 
@@ -62,7 +69,8 @@ verification-before-completion for each completion claim.
 Via `spider exec`, run `bash scripts/task-start PLAN_FILE N`. It calls the
 shared `task-brief` using bash, prints the **absolute** brief path and the
 exact full BASE SHA (`git rev-parse HEAD`). Read the brief, even if you
-remember its task title. Mark the `spider todo` in progress. A brief is one
+remember its task title. Keep its `spider todo` not done until completion; spider todos are binary,
+not an in-progress state. A brief is one
 task, not the entire plan. Redirect large outputs to files in the workspace
 and inspect the relevant tail, not a pasted transcript.
 
@@ -97,6 +105,23 @@ to the ledger, creating a plan-ID first line if this is a new ledger. A
 failed test adds no completion line. Read its output; then toggle the todo
 and take the next task. A legacy ledger keeps its original first line.
 
+## Common Rationalizations
+
+| Excuse | Reality |
+|--------|---------|
+| "I remember what Task N says" | The brief has exact values; read it. |
+| "The plan's code is right, skip watching the test fail" | A test never seen failing proves nothing. |
+| "I'll run the full suite at the end instead of per step" | Per-step RED/GREEN identifies which step broke; the final run is not a substitute. |
+| "The plan is wrong, I'll just do the right thing" | Ledger the ruling, or escalate if the decision changes the outcome. |
+| "I'll write ledger lines after a few tasks" | Compaction does not wait; record each task promptly. |
+| "Let me check in before the next task" | Ordinary tasks continue without a progress prompt; escalation still takes precedence. |
+| "I read my own diff; the final reviewer is redundant" | Author and reviewer have different blind spots. Never skip the fresh final review. |
+| "Tests should pass, the change was trivial" | Run them and inspect the real result. |
+| "Inline means I can skip the final review" | Inline removes per-task review, not the final review. |
+| "The reviewer said Minor, so it's Minor" | Re-grade by impact on a reasonable user. |
+| "The fix is obvious, no need for a failing test" | RED then GREEN is the evidence it was fixed. |
+| "I'll fix minors too" | Ledger deferred minors instead of expanding scope without approval. |
+
 ## Final Review and Rulings
 
 After all tasks, generate
@@ -116,7 +141,8 @@ not poll or block on a nonexistent wait command. A pipeline handoff starts
 a fresh child, not a resumed one. `spider message` cannot redirect a
 headless reviewer already running.
 
-Read the fresh review's findings and its "Declined to judge" list. Re-grade
+Never skip the fresh final review or replace it with your own read of the
+branch diff. Read its findings and its "Declined to judge" list. Re-grade
 by impact on a reasonable user, not by whether the spec named that input.
 Ledger and report Minor findings as deferred. Fix Critical and Important
 findings in **one** inline wave, each with a test you actually saw RED then
@@ -129,7 +155,7 @@ fix wave; do not claim the final review clean while its gate is open.
 Before cleanup, reproduce **every** ledger `Ruling:` with the cost if wrong
 under "Rulings I made" and each deferred minor under "Deferred minors" in
 your final message. Only after the final review is clean and fixes are
-verified may you consider removing **only this plan's scoped** workspace.
-Deletion is destructive: emit `ESCALATION[warning]` before it and follow
-the user's approval requirements. Never delete a flat legacy ledger or a
-sibling plan's workspace. Then use finishing-a-development-branch.
+verified may you consider removing **only this plan's scoped** workspace by running `bash ../subagent-driven-development/scripts/sdd-cleanup PLAN_FILE`
+through `spider exec`. Deletion is destructive: emit `ESCALATION[warning]`
+before it and follow the user's approval requirements. The script refuses
+flat and adopted legacy ledgers and sibling plan workspaces. Then use finishing-a-development-branch.

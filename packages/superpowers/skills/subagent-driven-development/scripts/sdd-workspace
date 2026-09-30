@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# Resolve the workspace for one plan. Preserve the old flat ledger for its
-# original plan; never silently overwrite or delete another plan's progress.
-# Usage: sdd-workspace PLAN_FILE
+# Resolve a plan workspace. Never silently claim or delete an unrelated ledger.
+# Usage: sdd-workspace [--adopt-legacy] [--lookup-only] PLAN_FILE
+# With user approval, release a flat ledger by moving its files into
+# .superpowers/sdd/legacy-<name>/; keep progress.md and its task logs together.
 set -euo pipefail
 
+adopt=0
+lookup=0
+while [ "${1:-}" = "--adopt-legacy" ] || [ "${1:-}" = "--lookup-only" ]; do
+  case "$1" in --adopt-legacy) adopt=1 ;; --lookup-only) lookup=1 ;; esac
+  shift
+done
 if [ $# -ne 1 ]; then
-  echo "usage: sdd-workspace PLAN_FILE" >&2
+  echo "usage: sdd-workspace [--adopt-legacy] [--lookup-only] PLAN_FILE" >&2
   exit 2
 fi
 plan=$1
@@ -15,6 +22,11 @@ slug=$(basename "$plan" .md)
   || { echo "cannot derive a workspace name from: $plan" >&2; exit 2; }
 root=$(git rev-parse --show-toplevel)
 base="$root/.superpowers/sdd"
+# Refuse a redirected parent before either lookup or creation can write outside.
+if [ -L "$root/.superpowers" ] || [ -L "$base" ]; then
+  echo "workspace base is symlinked: $base" >&2
+  exit 2
+fi
 plan_dir=$(CDPATH= cd -- "$(dirname "$plan")" && pwd -P)
 plan_abs="$plan_dir/$(basename "$plan")"
 case "$plan_abs" in
@@ -22,61 +34,123 @@ case "$plan_abs" in
   *) plan_id=$plan_abs ;;
 esac
 
-# A ledger without an identity line is legacy, not a mismatch. If an identity
-# exists, it is authoritative, even when a plan-path marker says otherwise.
-ledger_matches() {
-  [ -f "$1/progress.md" ] || return 0
+# Canonicalize references from a ledger header relative to the git root.
+# Strip the common hand-written ./ prefix, trailing whitespace and CRLF.
+normalize_ref() {
+  local ref=$1 dir abs
+  ref=$(printf '%s' "$ref" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  case "$ref" in /*) abs=$ref ;; *) abs="$root/$ref" ;; esac
+  dir=$(CDPATH= cd -- "$(dirname "$abs")" 2>/dev/null && pwd -P) || return 1
+  abs="$dir/$(basename "$abs")"
+  case "$abs" in "$root"/*) printf '%s\n' "${abs#"$root"/}" ;; *) printf '%s\n' "$abs" ;; esac
+}
+
+ledger_identity() {
+  local first
+  [ -f "$1/progress.md" ] || return 1
   IFS= read -r first < "$1/progress.md" || :
   case "$first" in
     '# SDD ledger — plan: '*)
-      ledger_plan=${first#'# SDD ledger — plan: '}
-      [ "$ledger_plan" = "$plan_id" ] || [ "$ledger_plan" = "$plan_abs" ] ;;
-    *) return 0 ;;
+      local raw
+      raw=$(printf '%s' "${first#'# SDD ledger — plan: '}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      normalize_ref "$raw" || printf '%s\n' "$raw" ;;
+    *) return 1 ;;
   esac
 }
 
-# The old flat workspace has no plan identity. Claim it for the first plan
-# that encounters it, without modifying its progress.md. A second plan must
-# stop and ask which plan owns the old ledger rather than assume it is safe.
+# An identity in a scoped ledger is authoritative even if plan-path matches.
+owns_existing() {
+  [ -d "$1" ] || return 1
+  [ -f "$1/plan-path" ] || [ -f "$1/progress.md" ] || return 1
+  if [ "$lookup" -eq 1 ] && [ ! -f "$1/plan-path" ]; then return 1; fi
+  local physical
+  physical=$(CDPATH= cd -- "$1" && pwd -P)
+  case "$physical" in "$base"/*) ;; *) echo "workspace escapes .superpowers/sdd: $1" >&2; return 2 ;; esac
+  if [ -f "$1/plan-path" ] && [ "$(< "$1/plan-path")" != "$plan_id" ]; then return 1; fi
+  if [ -f "$1/progress.md" ]; then
+    local identity
+    identity=$(ledger_identity "$1") || identity=
+    if [ -n "$identity" ] && [ "$identity" != "$plan_id" ]; then
+      if [ -f "$1/plan-path" ]; then
+        echo "workspace ledger identifies a different plan: $1/progress.md" >&2
+        return 2
+      fi
+      return 1
+    fi
+  fi
+  if [ "$lookup" -eq 0 ]; then
+    printf '%s\n' "$plan_id" > "$1/plan-path"
+    printf '*\n' > "$base/.gitignore"
+  fi
+  CDPATH= cd -- "$1" && pwd -P
+}
+
+# Look for an existing scoped workspace before considering a flat legacy one.
+parent=$(basename "$plan_dir")
+for dir in "$base/$slug" "$base/$slug-$parent"; do
+  if [ -d "$dir" ]; then
+    rc=0
+    owned=$(owns_existing "$dir") || rc=$?
+    if [ "$rc" -eq 2 ]; then exit 2; fi
+    if [ "$rc" -eq 0 ]; then printf '%s\n' "$owned"; exit 0; fi
+  fi
+done
+n=2
+while [ -d "$base/$slug-$parent-$n" ]; do
+  rc=0
+  owned=$(owns_existing "$base/$slug-$parent-$n") || rc=$?
+  if [ "$rc" -eq 2 ]; then exit 2; fi
+  if [ "$rc" -eq 0 ]; then printf '%s\n' "$owned"; exit 0; fi
+  n=$((n + 1))
+done
+
 if [ -f "$base/progress.md" ]; then
   if [ -f "$base/plan-path" ] && [ "$(< "$base/plan-path")" != "$plan_id" ]; then
-    echo "legacy ledger belongs to another plan; resolve its ownership before continuing: $base/progress.md" >&2
+    echo "legacy ledger belongs to another plan; with approval move its files aside into $base/legacy-<name>/" >&2
     exit 2
   fi
-  if ! ledger_matches "$base"; then
-    echo "legacy ledger identifies another plan: $base/progress.md" >&2
+  # The first ten lines may use a plain, emphasized, or list-item Plan: header.
+  header=$(head -n 10 "$base/progress.md")
+  reference=$(printf '%s\n' "$header" | grep -m 1 -E '^([[:space:]]*[-*+][[:space:]]*)?([*_`]*Plan[*_`]*:|# SDD ledger — plan: )' || :)
+  if [ -n "$reference" ]; then
+    case "$reference" in
+      '# SDD ledger — plan: '*) reference=${reference#'# SDD ledger — plan: '} ;;
+      *) reference=$(printf '%s\n' "$reference" | sed -E 's/^[[:space:]]*([-*+][[:space:]]*)?[*_`]*Plan[*_`]*:[*_`[:space:]]*//') ;;
+    esac
+    identity=$(normalize_ref "$reference") || identity=
+    if [ "$identity" != "$plan_id" ]; then
+      echo "legacy ledger names another plan; with approval move its files aside into $base/legacy-<name>/ before continuing" >&2
+      exit 2
+    fi
+  elif [ ! -f "$base/plan-path" ] && [ "$adopt" -ne 1 ]; then
+    echo "legacy ledger ownership unconfirmed; inspect task titles/ranges, ask for confirmation, then pass --adopt-legacy; or with approval move it aside into $base/legacy-<name>/" >&2
     exit 2
   fi
-  printf '%s\n' "$plan_id" > "$base/plan-path"
-  printf '*\n' > "$base/.gitignore"
-  CDPATH= cd -- "$base" && pwd
+  if [ "$lookup" -eq 0 ]; then
+    printf '%s\n' "$plan_id" > "$base/plan-path"
+    printf '*\n' > "$base/.gitignore"
+  fi
+  CDPATH= cd -- "$base" && pwd -P
   exit 0
 fi
 
-owns() {
-  if [ -f "$1/plan-path" ] && [ "$(< "$1/plan-path")" != "$plan_id" ]; then return 1; fi
-  if ! ledger_matches "$1"; then
-    # A matching marker with a mismatched ledger is corrupt, not an available
-    # slot to skip. The controller needs to inspect it before continuing.
-    if [ -f "$1/plan-path" ]; then
-      echo "workspace ledger identifies a different plan: $1/progress.md" >&2
-      exit 2
-    fi
-    return 1
-  fi
-  mkdir -p "$1"
-  printf '%s\n' "$plan_id" > "$1/plan-path"
-}
-
-dir="$base/$slug"
-if ! owns "$dir"; then
-  parent=$(basename "$plan_dir")
-  dir="$base/$slug-$parent"
-  if ! owns "$dir"; then
-    n=2
-    while ! owns "$base/$slug-$parent-$n"; do n=$((n + 1)); done
-    dir="$base/$slug-$parent-$n"
-  fi
+# A cleanup lookup never creates or claims a workspace.
+if [ "$lookup" -eq 1 ]; then
+  echo "no existing owned workspace for plan: $plan" >&2
+  exit 2
 fi
+
+# Pick the first unclaimed scoped slot. Never overwrite another plan's marker.
+for dir in "$base/$slug" "$base/$slug-$parent"; do
+  if [ ! -e "$dir" ]; then break; fi
+  dir=
+done
+if [ -z "${dir:-}" ] || [ -e "$dir" ]; then
+  n=2
+  while [ -e "$base/$slug-$parent-$n" ]; do n=$((n + 1)); done
+  dir="$base/$slug-$parent-$n"
+fi
+mkdir -p "$dir"
+printf '%s\n' "$plan_id" > "$dir/plan-path"
 printf '*\n' > "$base/.gitignore"
-CDPATH= cd -- "$dir" && pwd
+CDPATH= cd -- "$dir" && pwd -P

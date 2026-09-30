@@ -143,7 +143,7 @@ This will permanently delete:
 Type 'discard' to confirm.
 ```
 
-Wait for that exact confirmation. When it arrives, emit `ESCALATION[warning]` before taking the irreversible action, then continue only with explicit authorization:
+Wait for that exact confirmation. The typed `discard` is the authorization. Emit `ESCALATION[warning]` naming the branch and worktree immediately before running the commands below:
 
 ```bash
 MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)

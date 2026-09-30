@@ -189,7 +189,7 @@ them to review the plan and choose an execution method before implementation.
 **"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Please review the plan. Which execution approach would you prefer?**
 
 - **Subagent-driven** - A fresh subagent implements each task and a fresh reviewer checks it before the next one starts, then a whole-branch review at the end. Most thorough; costs a fresh context per task and per review.
-- **Inline** - I implement every task myself in this session, then use a fresh `spider run` reviewer with `context:"fresh"` and an explicit provider-qualified `model:` resolved from `spider control models` → `models.defaults.reviewer` to check the whole branch. Cheapest and fastest; no independent review until the end, and no hardcoded model name.
+- **Inline** - I implement every task myself in this session, then use a fresh `spider run` reviewer with `context:"fresh"` and an explicit provider-qualified `model:` resolved from `spider control models` → `models.defaults.reviewer` to check the whole branch. Cheapest and fastest; no independent review until the end.
 
 **For this plan I recommend <one of the two>, because <one sentence from the plan: how much the tasks depend on each other's interfaces, how many there are, what a shipped mistake would cost>. Does the plan capture what you want, and which approach should we use?"**
 

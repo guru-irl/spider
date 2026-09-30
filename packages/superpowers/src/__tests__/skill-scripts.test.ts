@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { testScratchPath } from "./testutil.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const polluterScript = path.join(packageRoot, "skills/systematic-debugging/find-polluter.sh");
 const renderScript = path.join(packageRoot, "skills/writing-skills/render-graphs.js");
-const brainstormScripts = path.join(packageRoot, "skills/brainstorming/scripts");
+const brainstormScripts = process.env.SUPERPOWERS_TEST_SCRIPTS_ROOT ?? path.join(packageRoot, "skills/brainstorming/scripts");
 const roots: string[] = [];
 let sequence = 0;
 
@@ -16,11 +17,13 @@ function freshRoot(label: string): string {
   const root = testScratchPath(`skill-scripts-${label}-${process.pid}-${sequence++}`);
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
+  expect(spawnSync("git", ["init", "-q"], { cwd: root }).status).toBe(0);
   roots.push(root);
   return root;
 }
 
 afterEach(() => {
+  const stopErrors: string[] = [];
   for (const root of roots.splice(0)) {
     for (const parent of [path.join(root, ".spider/scratch/superpowers/brainstorm"), path.join(root, ".superpowers/brainstorm")]) {
       if (fs.existsSync(parent)) {
@@ -28,13 +31,14 @@ afterEach(() => {
           const session = path.join(parent, name);
           if (fs.existsSync(path.join(session, "state/server.pid"))) {
             const result = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), session], { encoding: "utf8" });
-            if (result.status !== 0) throw new Error(`Failed to stop brainstorm server: ${result.stdout} ${result.stderr}`);
+            if (result.status !== 0) stopErrors.push(`Failed to stop brainstorm server: ${result.stdout} ${result.stderr}`);
           }
         }
       }
     }
     fs.rmSync(root, { recursive: true, force: true });
   }
+  if (stopErrors.length) throw new Error(stopErrors.join("\n"));
 });
 
 function polluterRun(pattern: string): ReturnType<typeof spawnSync> {
@@ -83,6 +87,115 @@ function renderFixture(): string {
 }
 
 describe("brainstorming companion scripts", () => {
+  it("rejects every value flag without its value instead of looping", () => {
+    const project = freshRoot("args");
+    for (const flag of ["--port", "--host", "--project-dir", "--url-host", "--idle-timeout-minutes"]) {
+      for (const suffix of [[], ["--open"], [""]]) {
+        const result = spawnSync("bash", [path.join(brainstormScripts, "start-server.sh"), flag, ...suffix], {
+          cwd: project, encoding: "utf8", timeout: 1200,
+        });
+        expect(result.error, flag).toBeUndefined();
+        expect(result.status, flag).toBe(1);
+        expect(JSON.parse(result.stdout).error, flag).toContain(`${flag} requires a value`);
+      }
+    }
+  });
+
+  it("uses the explicitly requested port and records it for a durable session", async () => {
+    const project = freshRoot("chosen-port");
+    const freePort = await new Promise<number>((resolve, reject) => {
+      const server = createServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        server.close((error) => error ? reject(error) : resolve(typeof address === "object" && address ? address.port : 0));
+      });
+    });
+    const result = spawnSync("bash", [path.join(brainstormScripts, "start-server.sh"), "--project-dir", project, "--port", String(freePort)], {
+      cwd: project, encoding: "utf8", timeout: 15000,
+      env: { ...process.env, BRAINSTORM_PORT: "" },
+    });
+    expect(result.status, `${result.stdout} ${result.stderr}`).toBe(0);
+    const info = JSON.parse(result.stdout.trim());
+    expect(info.port).toBe(freePort);
+    expect(fs.readFileSync(path.join(project, ".superpowers/brainstorm/.last-port"), "utf8").trim()).toBe(String(freePort));
+  });
+
+  it("removes a scratch session stopped through a relative path", async () => {
+    const { project, session } = await startSession(false);
+    const relative = path.relative(project, session);
+    const result = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), relative], {
+      cwd: project, encoding: "utf8", timeout: 15000,
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe("stopped");
+    expect(fs.existsSync(session)).toBe(false);
+  });
+
+  it("returns not_running for missing sessions and ignores CDPATH when stopping", async () => {
+    const { project, session } = await startSession(false);
+    const result = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), path.relative(project, session)], {
+      cwd: project, encoding: "utf8", env: { ...process.env, CDPATH: path.dirname(project) },
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).status).toBe("stopped");
+    expect(fs.existsSync(session)).toBe(false);
+    const again = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), session], { cwd: project, encoding: "utf8" });
+    expect(again.status).toBe(0);
+    expect(JSON.parse(again.stdout).status).toBe("not_running");
+  });
+
+  it("creates a 0600 session-key log with the documented Pi launch recipe", async () => {
+    const project = freshRoot("recipe");
+    const guide = fs.readFileSync(path.join(packageRoot, "skills/brainstorming/visual-companion.md"), "utf8");
+    const recipe = guide.split("**Launching from Pi:**")[1]?.split("```bash")[1]?.split("```")[0] ?? "";
+    const command = recipe.replaceAll("<id>", "recipe-fixture")
+      .replaceAll("<skill-dir>", path.join(packageRoot, "skills/brainstorming"))
+      .replaceAll(" --open", "");
+    const nested = path.join(project, "nested");
+    fs.mkdirSync(nested);
+    const result = spawnSync("bash", ["-c", `umask 022; ${command}`], {
+      cwd: nested, encoding: "utf8", timeout: 15000,
+      env: { ...process.env, BRAINSTORM_PORT: "0" },
+    });
+    expect(result.status, `${result.stdout} ${result.stderr}`).toBe(0);
+    const log = path.join(project, ".spider/scratch/superpowers/brainstorm/recipe-fixture/server.log");
+    let output = "";
+    for (let attempt = 0; attempt < 150; attempt++) {
+      if (fs.existsSync(log)) output = fs.readFileSync(log, "utf8");
+      if (output.includes('"type":"server-started"') || output.includes('"error"')) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(output).toContain('"type":"server-started"');
+    expect(fs.statSync(log).mode & 0o777).toBe(0o600);
+  });
+
+  it("rejects Pi launch outside a git repository without creating a root scratch path", () => {
+    const project = freshRoot("non-git");
+    const dir = path.join(project, "outside");
+    fs.mkdirSync(dir);
+    const guide = fs.readFileSync(path.join(packageRoot, "skills/brainstorming/visual-companion.md"), "utf8");
+    const recipe = guide.split("**Launching from Pi:")[1]?.split("```bash")[1]?.split("```")[0] ?? "";
+    const command = recipe.replaceAll("<id>", "non-git-fixture")
+      .replaceAll("<skill-dir>", path.join(packageRoot, "skills/brainstorming"))
+      .replaceAll(" --open", "");
+    const result = spawnSync("bash", ["-c", command], {
+      cwd: dir, encoding: "utf8", timeout: 15000,
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: project },
+    });
+    expect(result.status).not.toBe(0);
+    expect(fs.existsSync(path.join(project, ".spider/scratch/superpowers/brainstorm/non-git-fixture"))).toBe(false);
+  });
+
+  it("documents an owner-only Pi launch log and a consistent URL lookup", () => {
+    const guide = fs.readFileSync(path.join(packageRoot, "skills/brainstorming/visual-companion.md"), "utf8");
+    const recipe = guide.split("**Launching from Pi:**")[1]?.split("```bash")[1]?.split("```")[0] ?? "";
+    expect(recipe).toMatch(/umask 077/);
+    expect(recipe).toMatch(/<skill-dir>\/scripts\/start-server\.sh/);
+    expect(recipe).toMatch(/git rev-parse --show-toplevel/);
+    expect(guide).toMatch(/<id>\/server\.log[^\n]*url/);
+  });
+
   async function startSession(durable: boolean) {
     const project = freshRoot("brainstorm");
     const args = [path.join(brainstormScripts, "start-server.sh"), "--port", "0"];
@@ -91,7 +204,7 @@ describe("brainstorming companion scripts", () => {
       cwd: project,
       encoding: "utf8",
       timeout: 15000,
-      env: { ...process.env, BRAINSTORM_PORT: "", CODEX_CI: "" },
+      env: { ...process.env, BRAINSTORM_PORT: "" },
     });
     expect(result.status, `${result.stdout} ${result.stderr}`).toBe(0);
     const info = JSON.parse(result.stdout.trim());

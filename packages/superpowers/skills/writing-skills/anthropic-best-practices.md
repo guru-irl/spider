@@ -1140,7 +1140,7 @@ Before sharing a Skill, verify:
     Create your first Skill
   </Card>
 
-  <Card title="Use Skills in Pi" icon="terminal" href="../using-superpowers/references/pi-tools.md">
+  <Card title="Use Skills in Pi" icon="terminal" href="../using-superpowers/SKILL.md">
     Discover and load Skills in Pi
   </Card>
 

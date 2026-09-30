@@ -49,8 +49,8 @@ spider run:
 
     **While you work:** If a question changes the outcome, emit
     ESCALATION[question] and report NEEDS_CONTEXT, then exit. If blocked, emit
-    ESCALATION[blocked]. Warn before destructive/irreversible action or if
-    the premise is wrong. A headless child cannot receive a follow-up
+    ESCALATION[blocked]. Emit ESCALATION[warning] before destructive or
+    irreversible action or if the premise is wrong. A headless child cannot receive a follow-up
     message: the controller starts a fresh worker using this partial tree.
 
     While iterating, run the focused test for what you're changing; run the

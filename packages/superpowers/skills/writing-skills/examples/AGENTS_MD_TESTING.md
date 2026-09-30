@@ -85,7 +85,7 @@ Browse: `ls ~/.pi/agent/skills/`
 Search: `grep -r "keyword" ~/.pi/agent/skills/`
 ```
 
-### Variant C: Pi Emphatic Style
+### Variant C: Emphatic XML Style
 ```xml
 <available_skills>
 Your personal library of proven techniques, patterns, and tools

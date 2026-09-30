@@ -68,15 +68,16 @@ Each agent gets:
 Issue one `spider run` per independent domain in a single turn — they run
 concurrently:
 
-    spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts failures", model: "<provider-qualified worker default>" }
-    spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts failures", model: "<provider-qualified worker default>" }
-    spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts failures", model: "<provider-qualified worker default>" }
+    spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts failures", model: "<provider-qualified worker default>", thinking: "<level>" }
+    spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts failures", model: "<provider-qualified worker default>", thinking: "<level>" }
+    spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts failures", model: "<provider-qualified worker default>", thinking: "<level>" }
 
 Resolve the explicit provider-qualified model from `spider control models`
 (`models.defaults.worker`) before dispatch; do not hardcode a model family.
 Or dispatch the whole fan-out at once: `spider run { tasks: [ ... ], concurrency: 3 }`;
-each task still needs its own explicit model and concrete task. Children report
-terminal status asynchronously. Integrate each result as its completion event
+each task still needs its own explicit model, concrete task and per-task `thinking:`
+setting. Children report terminal status asynchronously via `spider.subagent_done`.
+Integrate each result as its completion event
 arrives instead of blocking on the slowest. A `pipeline` with `handoff:"intercom"`
 spawns a fresh next-stage child, never resumes the previous one; `spider message`
 does not redirect running children or restart completed ones.
@@ -151,9 +152,9 @@ Return: Summary of what you found and what you fixed.
 
 **Dispatch:**
 ```
-spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts", model: "<provider-qualified worker default>" }
-spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts", model: "<provider-qualified worker default>" }
-spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts", model: "<provider-qualified worker default>" }
+spider run { agent: "worker", task: "Fix agent-tool-abort.test.ts", model: "<provider-qualified worker default>", thinking: "<level>" }
+spider run { agent: "worker", task: "Fix batch-completion-behavior.test.ts", model: "<provider-qualified worker default>", thinking: "<level>" }
+spider run { agent: "worker", task: "Fix tool-approval-race-conditions.test.ts", model: "<provider-qualified worker default>", thinking: "<level>" }
 ```
 
 **Results:**

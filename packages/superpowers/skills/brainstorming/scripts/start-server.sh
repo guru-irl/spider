@@ -30,6 +30,14 @@ IDLE_TIMEOUT_MINUTES=""
 PORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --project-dir|--port|--host|--url-host|--idle-timeout-minutes)
+      if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+        printf '{"error": "%s requires a value"}\n' "$1"
+        exit 1
+      fi
+      ;;
+  esac
+  case "$1" in
     --project-dir)
       PROJECT_DIR="$2"
       shift 2

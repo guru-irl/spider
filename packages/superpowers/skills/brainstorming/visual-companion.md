@@ -63,12 +63,22 @@ shell command with output redirected to project scratch, not a spider
 background exec whose pipe can close when its launching session exits:
 
 ```bash
-mkdir -p .spider/scratch/superpowers/brainstorm/<id>
-nohup bash scripts/start-server.sh --project-dir /path/to/project --open --background \
-  > .spider/scratch/superpowers/brainstorm/<id>/server.log 2>&1 < /dev/null &
+( umask 077
+  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo 'A git project is required for the companion' >&2; exit 2; }
+  LOG_DIR="$PROJECT_ROOT/.spider/scratch/superpowers/brainstorm/<id>"
+  mkdir -p "$LOG_DIR"
+  nohup bash "<skill-dir>/scripts/start-server.sh" --project-dir "$PROJECT_ROOT" --open --background \
+    > "$LOG_DIR/server.log" 2>&1 < /dev/null &
+)
 ```
 
-Read `$STATE_DIR/server-info` for the complete URL. The script itself launches
+Run from inside a git repository (including a nested directory); outside git the
+recipe exits non-zero without creating any scratch path. Replace `<skill-dir>`
+with the absolute directory containing this guide, and
+`<id>` with a fresh unique name. After about 5 seconds, read the `server-started`
+JSON (or an `error` JSON) from `<id>/server.log` for the complete `url`, `screen_dir`
+and `state_dir`. The log holds the session key and is created with
+mode 0600 by the subshell's `umask 077`. The script itself launches
 the Node server and keeps its own state/log inside the chosen session directory.
 Do not substitute a foreign harness's foreground or resume mechanism. On
 Windows, use a persistent terminal if the shell backgrounds cannot survive.

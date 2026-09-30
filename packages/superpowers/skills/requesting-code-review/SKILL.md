@@ -33,7 +33,7 @@ HEAD_SHA=$(git rev-parse HEAD)
 
 `spider run { agent: "reviewer", context: "fresh", model: "<provider-qualified reviewer default>", task: "Review [specific range] against [requirements] using code-reviewer.md; report findings" }` — fill the template at [code-reviewer.md](code-reviewer.md) as the concrete task. Resolve `model` from `spider control models` (`models.defaults.reviewer`) and pass it explicitly. The fresh reviewer never inherits your session history.
 
-A `pipeline` with `handoff:"intercom"` spawns a **fresh** reviewer after the worker finishes only when the next task can be specified up front. Findings require a newly dispatched fix stage; `spider message` cannot resume a finished child or redirect a running one.
+Use a pipeline only when the reviewer's task can be written up front; when the worker's run ends, spider spawns a fresh reviewer with the worker's final output as `{previous}`. Findings require a newly dispatched fix stage; `spider message` cannot resume a finished child or redirect a running one.
 
 **Placeholders:**
 - `{DESCRIPTION}` - Brief summary of what you built
@@ -78,8 +78,8 @@ You: [Fix progress indicators]
 
 | Excuse | Reality |
 |--------|---------|
-| "I'll just review the diff myself instead of dispatching a reviewer" | The coordinator needs context to drive the work. Dispatch a fresh reviewer with the diff and requirements; only findings return. |
-| "The reviewer needs my whole session history" | Give precisely crafted context, never the session history. |
+| "I'll just review the diff myself instead of dispatching a reviewer" | You're the coordinator — reviewing the diff inline burns the context window you need to keep driving the work. Dispatch a fresh `spider run` reviewer: the diff and the evaluation live in its context, and only the findings come back to you. |
+| "The reviewer needs my whole session history to understand the change" | Hand it precisely crafted context, never your session's history. That keeps the reviewer on the work product, not your thought process. |
 
 ## Red Flags
 

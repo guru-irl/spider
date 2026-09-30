@@ -311,10 +311,11 @@ Can't check all boxes? You skipped TDD. Start over.
 
 ## Handoff on green (when running as a spider subagent)
 
-If you are a worker executing a task in a `handoff:"intercom"` pipeline, when
-the suite is green and you have committed, wake the next stage (reviewer) via
-intercom with your report + diff path — don't idle waiting to be polled. If you
-are not in a pipeline, return your status normally.
+If you are a stage in a `spider run { pipeline:[...] }`, finish with your
+report as your final response: status, commit SHA, the test command and its
+result, and the diff range. When your run ends, spider starts the next stage
+as a fresh child with that report as `{previous}`. You cannot message or wake
+it yourself. Outside a pipeline, return your status normally.
 
 ## When Stuck
 

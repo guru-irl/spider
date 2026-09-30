@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { testScratchPath } from "./testutil.js";
 
 const skills = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../skills");
-const sdd = path.join(skills, "subagent-driven-development/scripts");
-const inline = path.join(skills, "executing-plans/scripts");
+const sdd = process.env.SDD_SCRIPTS_ROOT ?? path.join(skills, "subagent-driven-development/scripts");
+const inline = process.env.INLINE_SCRIPTS_ROOT ?? path.join(skills, "executing-plans/scripts");
 const roots: string[] = [];
 let sequence = 0;
 
@@ -81,19 +81,175 @@ describe("plan-scoped SDD workspace and artifacts", () => {
     const root = fixture();
     const old = path.join(root, ".superpowers/sdd");
     fs.mkdirSync(old, { recursive: true });
-    fs.writeFileSync(path.join(old, "progress.md"), "Task 1: complete (commits abc..def, review clean)\n");
+    fs.writeFileSync(path.join(old, "progress.md"), "Plan: plan-a.md\nTask 1: complete (commits abc..def, review clean)\n");
     const result = workspace(root, "plan-a.md");
     expect(result).toBe(old);
     expect(fs.readFileSync(path.join(old, "progress.md"), "utf8")).toContain("Task 1: complete");
     expect(workspace(root, "plan-a.md")).toBe(old);
     expect(script(root, sdd, "task-brief", "plan-a.md", "2").status).toBe(0);
     expect(fs.readFileSync(path.join(old, "task-2-brief.md"), "utf8")).toContain("Second requirement");
-    // Cleanup is confined to plan-scoped workspaces. A legacy ledger is retained.
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(2);
     expect(fs.existsSync(path.join(old, "progress.md"))).toBe(true);
     const other = script(root, sdd, "sdd-workspace", "plan-b.md");
     expect(other.status).not.toBe(0);
-    expect(other.stderr).toMatch(/legacy|plan|ledger/i);
+    expect(other.stderr).toContain("legacy ledger belongs to another plan");
     expect(fs.existsSync(path.join(old, "progress.md"))).toBe(true);
+  });
+
+  it("refuses a flat legacy ledger naming another plan or lacking evidence without explicit opt-in", () => {
+    const root = fixture();
+    const old = path.join(root, ".superpowers/sdd");
+    fs.mkdirSync(old, { recursive: true });
+    const ledger = path.join(old, "progress.md");
+    fs.writeFileSync(ledger, "# old ledger\nTask 0: complete\nPlan: plan-b.md\nTask 1: complete\n");
+    const foreign = script(root, sdd, "sdd-workspace", "plan-a.md");
+    expect(foreign.status).toBe(2);
+    expect(foreign.stderr).toContain("legacy ledger names another plan");
+    expect(fs.existsSync(path.join(old, "plan-path"))).toBe(false);
+    const optInForeign = script(root, sdd, "sdd-workspace", "--adopt-legacy", "plan-a.md");
+    expect(optInForeign.status).toBe(2);
+    expect(optInForeign.stderr).toContain("legacy ledger names another plan");
+    expect(fs.existsSync(path.join(old, "plan-path"))).toBe(false);
+    fs.writeFileSync(ledger, "Task 1: complete\n");
+    const unknown = script(root, sdd, "sdd-workspace", "plan-a.md");
+    expect(unknown.status).toBe(2);
+    expect(unknown.stderr).toMatch(/adopt-legacy/);
+    expect(fs.existsSync(path.join(old, "plan-path"))).toBe(false);
+    const adopted = script(root, sdd, "sdd-workspace", "--adopt-legacy", "plan-a.md");
+    expect(adopted.status, adopted.stderr).toBe(0);
+    expect(adopted.stdout.trim()).toBe(old);
+    const second = script(root, sdd, "sdd-workspace", "plan-b.md");
+    expect(second.status).toBe(2);
+    expect(second.stderr).toContain("legacy ledger belongs to another plan");
+    expect(fs.readFileSync(path.join(old, "plan-path"), "utf8")).toBe("plan-a.md\n");
+  });
+
+  it("refuses flat legacy identity headers and formatted foreign plan references", () => {
+    const root = fixture();
+    const old = path.join(root, ".superpowers/sdd");
+    fs.mkdirSync(old, { recursive: true });
+    const ledger = path.join(old, "progress.md");
+    for (const header of ["# SDD ledger — plan: plan-b.md", "**Plan:** plan-b.md", "- `Plan:` plan-b.md"]) {
+      fs.writeFileSync(ledger, `${header}\nTask 1: complete\n`);
+      const result = script(root, sdd, "sdd-workspace", "--adopt-legacy", "plan-a.md");
+      expect(result.status, header).toBe(2);
+      expect(result.stderr, header).toContain("legacy ledger names another plan");
+      expect(fs.existsSync(path.join(old, "plan-path")), header).toBe(false);
+    }
+  });
+
+  it("prefers an owned scoped ledger over a foreign flat legacy ledger", () => {
+    const root = fixture();
+    const dir = workspace(root, "plan-a.md");
+    fs.writeFileSync(path.join(dir, "progress.md"), "# SDD ledger — plan: ./plan-a.md  \r\nTask 1: complete\n");
+    const old = path.join(root, ".superpowers/sdd");
+    fs.writeFileSync(path.join(old, "progress.md"), "Plan: plan-b.md\nTask 1: complete\n");
+    expect(workspace(root, "plan-a.md")).toBe(dir);
+    expect(fs.existsSync(path.join(old, "plan-path"))).toBe(false);
+  });
+
+  it("does not let an empty unowned scoped directory hide a foreign flat ledger", () => {
+    const root = fixture();
+    const base = path.join(root, ".superpowers/sdd");
+    fs.mkdirSync(path.join(base, "plan-a"), { recursive: true });
+    fs.writeFileSync(path.join(base, "progress.md"), "Plan: plan-b.md\nTask 1: complete\n");
+    const result = script(root, sdd, "sdd-workspace", "plan-a.md");
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/legacy ledger names another plan/);
+    expect(fs.existsSync(path.join(base, "plan-a/plan-path"))).toBe(false);
+  });
+
+  it("refuses cleanup of a canonically identified flat ledger even with a matching marker", () => {
+    const root = fixture();
+    const base = path.join(root, ".superpowers/sdd");
+    fs.mkdirSync(path.join(base, "plan-b"), { recursive: true });
+    fs.writeFileSync(path.join(base, "progress.md"), "# SDD ledger — plan: plan-a.md\n");
+    fs.writeFileSync(path.join(base, "plan-path"), "plan-a.md\n");
+    fs.writeFileSync(path.join(base, "plan-b/progress.md"), "sibling\n");
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(2);
+    expect(fs.readFileSync(path.join(base, "progress.md"), "utf8")).toContain("plan-a.md");
+    expect(fs.readFileSync(path.join(base, "plan-b/progress.md"), "utf8")).toBe("sibling\n");
+  });
+
+  it("cleanup deletes only an owned scoped workspace and preserves flat and sibling ledgers", () => {
+    const root = fixture();
+    const a = workspace(root, "plan-a.md");
+    const b = workspace(root, "plan-b.md");
+    const old = path.join(root, ".superpowers/sdd/progress.md");
+    fs.writeFileSync(path.join(a, "progress.md"), "# SDD ledger — plan: plan-a.md\nTask 1: complete\n");
+    fs.writeFileSync(path.join(b, "progress.md"), "# SDD ledger — plan: plan-b.md\nTask 1: complete\n");
+    fs.writeFileSync(old, "Plan: plan-b.md\nlegacy\n");
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(0);
+    expect(fs.existsSync(a)).toBe(false);
+    expect(fs.existsSync(path.join(b, "progress.md"))).toBe(true);
+    expect(fs.readFileSync(old, "utf8")).toContain("legacy");
+  });
+
+  it("cleanup accepts normalized identities and does not create a missing workspace", () => {
+    const root = fixture();
+    const base = path.join(root, ".superpowers/sdd");
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(2);
+    expect(fs.existsSync(base)).toBe(false);
+    const dir = workspace(root, "plan-a.md");
+    fs.writeFileSync(path.join(dir, "progress.md"), "# SDD ledger — plan: ./plan-a.md  \r\n");
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(0);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("cleanup accepts a normalized scoped identity", () => {
+    const root = fixture();
+    const dir = workspace(root, "plan-a.md");
+    fs.writeFileSync(path.join(dir, "progress.md"), "# SDD ledger — plan: ./plan-a.md  \r\n");
+    const result = script(root, sdd, "sdd-cleanup", "plan-a.md");
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("refuses a symlinked base on the first call without writing outside", () => {
+    for (const level of [".superpowers", ".superpowers/sdd"]) {
+      const root = fixture();
+      const outside = path.join(root, "outside");
+      fs.mkdirSync(outside);
+      if (level === ".superpowers/sdd") fs.mkdirSync(path.join(root, ".superpowers"));
+      fs.symlinkSync(outside, path.join(root, level));
+      const result = script(root, sdd, "sdd-workspace", "plan-a.md");
+      expect(result.status, level).toBe(2);
+      expect(fs.readdirSync(outside), level).toEqual([]);
+      expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(2);
+    }
+  });
+
+  it("does not claim a scoped ledger with an unresolved identity", () => {
+    const root = fixture();
+    const dir = path.join(root, ".superpowers/sdd/plan-a");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "progress.md"), "# SDD ledger — plan: gone/plan-a.md\n");
+    const result = script(root, sdd, "sdd-workspace", "plan-a.md");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).not.toBe(dir);
+    expect(fs.existsSync(path.join(dir, "plan-path"))).toBe(false);
+    fs.writeFileSync(path.join(dir, "plan-path"), "plan-a.md\n");
+    const second = script(root, sdd, "sdd-workspace", "plan-a.md");
+    expect(second.status).toBe(2);
+    expect(second.stderr).toContain("workspace ledger identifies a different plan");
+  });
+
+  it("cleanup refuses adopted markerless scoped workspaces and symlinked outside paths", () => {
+    const root = fixture();
+    const a = workspace(root, "plan-a.md");
+    fs.writeFileSync(path.join(a, "progress.md"), "Task 1: complete\n");
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(2);
+    expect(fs.existsSync(path.join(a, "progress.md"))).toBe(true);
+    const b = workspace(root, "plan-b.md");
+    fs.writeFileSync(path.join(b, "progress.md"), "# SDD ledger — plan: plan-b.md\n");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(outside);
+    fs.renameSync(b, path.join(outside, "saved"));
+    fs.symlinkSync(path.join(outside, "saved"), b);
+    fs.rmSync(path.join(outside, "saved/plan-path"));
+    expect(script(root, sdd, "sdd-cleanup", "plan-b.md").status).toBe(2);
+    expect(fs.existsSync(path.join(outside, "saved/plan-path"))).toBe(false);
+    expect(fs.existsSync(path.join(outside, "saved/progress.md"))).toBe(true);
   });
 
   it("refuses a scoped ledger whose first line identifies a different plan", () => {
@@ -102,7 +258,7 @@ describe("plan-scoped SDD workspace and artifacts", () => {
     fs.writeFileSync(path.join(dir, "progress.md"), "# SDD ledger — plan: plan-b.md\nTask 1: complete\n");
     const result = script(root, sdd, "sdd-workspace", "plan-a.md");
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/ledger|plan/i);
+    expect(result.stderr).toContain("workspace ledger identifies a different plan");
     expect(fs.readFileSync(path.join(dir, "progress.md"), "utf8")).toContain("plan-b.md");
   });
 
@@ -123,17 +279,88 @@ describe("plan-scoped SDD workspace and artifacts", () => {
     expect(reverse.stderr).toContain("not a descendant");
   });
 
+  it("ignores fenced task headings and writes an explicit brief destination", () => {
+    const root = fixture();
+    fs.writeFileSync(path.join(root, "plan-a.md"), "```md\n## Task 1: Fake\n```\n## Task 1: Real\nActual work.\n");
+    const out = path.join(root, "brief.md");
+    const result = script(root, sdd, "task-brief", "plan-a.md", "1", out);
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(out, "utf8")).toContain("Actual work.");
+    expect(fs.readFileSync(out, "utf8")).not.toContain("Fake");
+  });
+
+  it("uses a counter suffix, an absolute marker for external plans, and linked-worktree isolation", () => {
+    const root = fixture();
+    for (const name of ["alpha", "beta", "gamma"]) {
+      fs.mkdirSync(path.join(root, name));
+      fs.writeFileSync(path.join(root, name, "same.md"), "## Task 1: Work\n");
+    }
+    const first = workspace(root, "alpha/same.md");
+    for (const name of ["beta", "gamma"]) {
+      fs.mkdirSync(path.join(root, `.superpowers/sdd/same-${name}`), { recursive: true });
+      fs.writeFileSync(path.join(root, `.superpowers/sdd/same-${name}/plan-path`), "foreign.md\n");
+    }
+    const second = workspace(root, "beta/same.md");
+    const third = workspace(root, "gamma/same.md");
+    expect(new Set([first, second, third]).size).toBe(3);
+    expect(second).toMatch(/same-beta-2$/);
+    const linked = path.join(root, "linked");
+    expect(run(root, "git", "worktree", "add", "-qb", "linked", linked).status).toBe(0);
+    fs.copyFileSync(path.join(root, "plan-a.md"), path.join(linked, "plan-a.md"));
+    const linkedResult = script(linked, sdd, "sdd-workspace", "plan-a.md");
+    expect(linkedResult.status, linkedResult.stderr).toBe(0);
+    expect(linkedResult.stdout.trim()).toBe(path.join(linked, ".superpowers/sdd/plan-a"));
+    expect(workspace(root, "plan-a.md")).toBe(path.join(root, ".superpowers/sdd/plan-a"));
+    expect(run(root, "git", "add", "-A").status).toBe(0);
+    expect(run(root, "git", "diff", "--cached", "--name-only").stdout).not.toContain(".superpowers");
+  });
+
+  it("records an absolute marker for a plan outside the active git root", () => {
+    const root = fixture();
+    const other = fixture();
+    const plan = path.join(other, "plan-a.md");
+    const dir = workspace(root, plan);
+    expect(fs.readFileSync(path.join(dir, "plan-path"), "utf8")).toBe(`${plan}\n`);
+  });
+
+  it("adopts a markerless scoped ledger but cleanup refuses to delete it", () => {
+    const root = fixture();
+    const dir = path.join(root, ".superpowers/sdd/plan-a");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "progress.md"), "Task 1: complete\n");
+    expect(workspace(root, "plan-a.md")).toBe(dir);
+    expect(script(root, sdd, "sdd-cleanup", "plan-a.md").status).toBe(2);
+    expect(fs.readFileSync(path.join(dir, "progress.md"), "utf8")).toContain("Task 1");
+  });
+
   it("invokes sibling workspace scripts via bash when executable bits are stripped", () => {
     const root = fixture();
     const copies = path.join(root, "scripts");
     fs.mkdirSync(copies);
-    for (const name of ["sdd-workspace", "task-brief", "review-package"]) {
-      fs.copyFileSync(path.join(sdd, name), path.join(copies, name));
-      fs.chmodSync(path.join(copies, name), 0o644);
+    const mirroredSdd = path.join(copies, "subagent-driven-development/scripts");
+    const mirroredInline = path.join(copies, "executing-plans/scripts");
+    fs.mkdirSync(mirroredSdd, { recursive: true });
+    fs.mkdirSync(mirroredInline, { recursive: true });
+    for (const name of ["sdd-workspace", "sdd-cleanup", "task-brief", "review-package"]) {
+      fs.copyFileSync(path.join(sdd, name), path.join(mirroredSdd, name));
+      fs.chmodSync(path.join(mirroredSdd, name), 0o644);
     }
-    const brief = run(root, "bash", path.join(copies, "task-brief"), "plan-a.md", "1");
+    for (const name of ["task-start", "task-done"]) {
+      fs.copyFileSync(path.join(inline, name), path.join(mirroredInline, name));
+      fs.chmodSync(path.join(mirroredInline, name), 0o644);
+    }
+    const brief = run(root, "bash", path.join(mirroredSdd, "task-brief"), "plan-a.md", "1");
     expect(brief.status, brief.stderr).toBe(0);
-    expect(fs.readFileSync(path.join(workspace(root, "plan-a.md"), "task-1-brief.md"), "utf8")).toContain("A-only requirement");
+    const started = run(root, "bash", path.join(mirroredInline, "task-start"), "plan-a.md", "1");
+    expect(started.status, started.stderr).toBe(0);
+    const base = run(root, "git", "rev-parse", "HEAD").stdout.trim();
+    const done = run(root, "bash", path.join(mirroredInline, "task-done"), "plan-a.md", "1", base, "--", "true");
+    expect(done.status, done.stderr).toBe(0);
+    const dir = workspace(root, "plan-a.md");
+    expect(fs.readFileSync(path.join(dir, "task-1-brief.md"), "utf8")).toContain("A-only requirement");
+    const cleaned = run(root, "bash", path.join(mirroredSdd, "sdd-cleanup"), "plan-a.md");
+    expect(cleaned.status, cleaned.stderr).toBe(0);
+    expect(fs.existsSync(dir)).toBe(false);
   });
 });
 
@@ -154,7 +381,7 @@ describe("inline task scripts", () => {
     const base = run(root, "git", "rev-parse", "HEAD").stdout.trim();
     fs.writeFileSync(path.join(root, "plan-a.md"), "## Task 1: Finished\n");
     const head = commit(root, "implemented");
-    const good = script(root, inline, "task-done", "plan-a.md", "1", base, "--", "sh", "-c", "echo first; echo PASS");
+    const good = script(root, inline, "task-done", "./plan-a.md", "1", base, "--", "sh", "-c", "echo first; echo PASS");
     expect(good.status, good.stderr).toBe(0);
     expect(good.stdout).toContain("PASS");
     const dir = workspace(root, "plan-a.md");
@@ -166,5 +393,11 @@ describe("inline task scripts", () => {
     expect(bad.status).toBe(7);
     expect(bad.stdout).toContain("FAILED");
     expect(fs.readFileSync(ledger, "utf8")).not.toContain("Task 2: complete");
+    expect(script(root, inline, "task-done", "plan-a.md", "2", "missing", "--", "true").status).toBe(2);
+    expect(script(root, inline, "task-done", "plan-a.md", "2", head, "--", "true").status).toBe(0);
+    expect(run(root, "git", "checkout", "-qb", "divergent", base).status).toBe(0);
+    const divergent = commit(root, "other branch");
+    expect(run(root, "git", "checkout", "-q", "main").status).toBe(0);
+    expect(script(root, inline, "task-done", "plan-a.md", "2", divergent, "--", "true").status).toBe(3);
   });
 });

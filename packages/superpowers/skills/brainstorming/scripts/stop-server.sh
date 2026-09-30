@@ -13,6 +13,7 @@ if [[ -z "$SESSION_DIR" ]]; then
   exit 1
 fi
 
+SESSION_DIR="$(CDPATH= cd -- "$SESSION_DIR" 2>/dev/null && pwd -P)" || { echo '{"status": "not_running"}'; exit 0; }
 STATE_DIR="${SESSION_DIR}/state"
 PID_FILE="${STATE_DIR}/server.pid"
 SERVER_ID_FILE="${STATE_DIR}/server-instance-id"

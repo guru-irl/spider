@@ -53,8 +53,8 @@ This is a `spider run` reviewer brief.
 
     Your review is read-only on this checkout. Do not mutate the working tree, the index, HEAD, or branch state in any way. Use tools like `git show`, `git diff`, and `git log` to inspect history. If you need a working copy of another revision, add a worktree **under `.spider/scratch/`** (never `/tmp`) — e.g. `git worktree add "$(git rev-parse --show-toplevel)/.spider/scratch/review-[SHA]" [SHA]` — and never move HEAD on this checkout. <!-- guard-allow: prohibition -->
 
-    Delete any temporary review worktree under `.spider/scratch/` when done;
-    do not alter the source checkout.
+    Remove any temporary review worktree with `git worktree remove --force <path>`
+    when done; do not alter the source checkout.
 
     ## You Do Not Dispatch Subagents
 

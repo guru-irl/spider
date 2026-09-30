@@ -190,6 +190,13 @@ spider todo op:list
 spider todo op:toggle id:<id>
 ```
 
+Remove obsolete items with `op:remove id:<seq>`. `op:clear` only removes done
+items and reports removed and kept-open counts; `force:true` removes all items
+in the current session. `clear` rejects session selectors. `toggle` and `remove`
+accept `session` as an id, unique prefix, or unique name within this project DB.
+They default to the current session and reject `session:"all"`, unresolved or
+ambiguous selectors, and missing or unknown ids with an error.
+
 `op:sessions` lists which sessions have todos, and `op:view` shows another
 session's list. The `/todos` slash command opens a live overlay of the same
 data.

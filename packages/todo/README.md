@@ -1,6 +1,6 @@
 # @spider/todo
 
-Durable todo storage for spider. It owns the `todo` action (list, add, toggle,
+Durable todo storage for spider. It owns the `todo` action (list, add, toggle, remove,
 clear, sessions, view) and the `/todos` slash command, both scoped to a
 session inside a project's SQLite database.
 
@@ -11,7 +11,7 @@ This package owns:
 - The `todos` table and its `todos_fts` full-text shadow table in the
   per-project database (the table definitions live in `@spider/db-core`; this
   package is the only code that writes to them in normal operation).
-- The `todo` action handler and its six operations.
+- The `todo` action handler and its seven operations.
 - The `/todos` slash command, including its interactive overlay and a
   non-interactive fallback.
 - Plain renderers that turn todo state into themed `Component`s for both
@@ -58,7 +58,8 @@ From `store.ts`:
 | `listTodos(db, sessionId)` | All todos for one session, ordered by `seq`. |
 | `addTodo(db, sessionId, text)` | Inserts a todo at the next `seq` for the session and inserts the matching row into `todos_fts`. |
 | `toggleTodo(db, sessionId, seq)` | Flips `done` for the todo at `seq` in that session; returns `null` if not found. |
-| `clearTodos(db, sessionId)` | Deletes every todo for a session and removes the matching rows from `todos_fts`. |
+| `removeTodo(db, sessionId, seq)` | Deletes one todo and its FTS posting transactionally; returns the removed item or `null`. |
+| `clearTodos(db, sessionId, force = false)` | Deletes done todos by default, or all todos with `force: true`; returns `{ removed, kept }` counts and keeps FTS consistent. |
 | `sessionSummaries(db, currentSessionId)` | One row per session in the project, with total/done counts and a `current` flag. |
 | `resolveSession(db, selector)` | Resolves an exact session id, a unique session name, or a unique session id prefix to a session id. |
 | `viewSession(db, selector, currentSessionId)` | `SessionGroup[]` for `"all"` sessions or for one resolved session. |
@@ -68,8 +69,8 @@ From `actions.ts`:
 | Export | Purpose |
 | --- | --- |
 | `TodoDeps` | `{ projectDb, getSessionId }`, the fallback dependencies for the action handler. |
-| `ActionResult` | `{ display?, details }`, the shape every op returns. |
-| `makeTodo(deps?)` | Builds the `todo` action handler for ops `list \| add \| toggle \| clear \| sessions \| view`. |
+| `ActionResult` | `{ display?, details, isError? }`, the shape every op returns. |
+| `makeTodo(deps?)` | Builds the `todo` action handler for ops `list \| add \| toggle \| remove \| clear \| sessions \| view`. |
 
 From `command.ts`:
 
@@ -121,30 +122,39 @@ From `index.ts` directly:
 
 ## Notes
 
+Remove obsolete items with `op: "remove", id: <seq>`. `clear` only removes
+done items unless `force: true`, always in the current session; session selectors
+are rejected. Its result reports removed and kept-open counts.
+
 - **Per-session scope.** Every todo belongs to one `session_id`. `seq`
   numbers restart at 1 for each session (`COALESCE(MAX(seq), 0) + 1`, scoped
-  by `session_id`), not project-wide. The `toggle` op's `id` argument is
+  by `session_id`), not project-wide. The `toggle` and `remove` ops' `id` argument is
   matched against `seq`, not the underlying database row id; this only
   matters if the action is called directly with a raw id instead of the
-  `#seq` value shown by the renderers.
+  `#seq` value shown by the renderers. Numeric ids and displayed ids such as
+  `"#2"` are accepted; boolean and non-numeric ids are rejected. Removing the
+  highest item allows its seq to be reused on the next add, so stale ids can
+  refer to a different item. Both ops accept `session` as an exact
+  id, unique prefix, or unique name in this project DB. They default to the
+  current session and reject `session: "all"`. Missing or unknown ids and
+  unresolved or ambiguous selectors return an error, never a silent no-op.
 - **Per-project scope.** All sessions in a project share one `todos` table
   in that project's database. `sessionSummaries` and
   `viewSession("all", ...)` return every session's todos in the current
   project. There is no view across projects, since each project has its own
   database file. `resolveSession` accepts an exact session id, a session
   name (only if it identifies exactly one session), or a session id prefix
-  (only if it matches exactly one session); anything ambiguous or unmatched
-  returns `null`.
+  (only if it matches exactly one session); blank, ambiguous or unmatched
+  selectors return `null`. Names and id prefixes that match different sessions
+  are ambiguous, including collisions with an exact id.
 - **FTS sync is manual.** `todos_fts` is declared as an external-content
   FTS5 table (`content=todos, content_rowid=id`), and there are no triggers
   on `todos`. `addTodo` inserts the new row into `todos_fts` inside the same
-  transaction as the `todos` insert. `clearTodos` issues the FTS5 special
+  transaction as the `todos` insert. `removeTodo` and `clearTodos` issue the FTS5 special
   command (`INSERT INTO todos_fts(todos_fts, rowid, text) VALUES ('delete',
   ?, ?)`) for every row before deleting them from `todos`. `toggleTodo` only
   changes the `done` column and never touches `text`, so it does not touch
-  `todos_fts`. There is currently no operation that edits or deletes a
-  single todo's text; adding one would also need to update `todos_fts`, or
-  `@spider/context` search would return stale or missing text for that row.
+  `todos_fts`. There is no operation that edits a todo's text.
 - **Interactive vs. non-interactive.** `makeTodosCommand`'s handler opens
   the interactive overlay only when `ctx.ui.custom` is a function.
   Otherwise it falls back to one `ctx.ui.notify` call with the current

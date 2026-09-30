@@ -92,4 +92,20 @@ describe("model-facing control and run parameters", () => {
   it("fails closed on computed args keys", () => {
     expect(() => scanHandlerArgs("function handle(args: any, key: string) { return args[key]; }", "handle")).toThrow(/dynamic args key/);
   });
+
+  it("declares and describes config unset and todo remove", () => {
+    const { op } = SPIDER_PARAMETERS.properties;
+    for (const name of ["unset", "remove"]) {
+      expect(op.enum).toContain(name);
+      expect(op.description).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+  });
+
+  it("describes todo removal, safe clearing and cross-session selectors", () => {
+    const p = SPIDER_PARAMETERS.properties;
+    expect(p.op.enum).toContain("remove");
+    expect(p.force.description).toMatch(/todo.*clear.*all/i);
+    expect(p.session.description).toMatch(/toggle.*remove/i);
+    expect(p.session.description).toMatch(/all.*reject/i);
+  });
 });

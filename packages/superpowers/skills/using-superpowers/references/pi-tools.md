@@ -16,7 +16,7 @@ fallback.
 | Dispatch a subagent | `spider run` (single/chain/parallel/pipeline, all run in the background; `context:"fresh"\|"fork"`) | — |
 | Observe subagent completion | asynchronous `spider.subagent_done` message, no wait/poll | — |
 | Hand a finished stage to the next agent | `spider run { pipeline:[...], handoff:"intercom" }` | — |
-| Task tracking (create/mark a todo) | `spider todo` (`list`/`add`/`toggle`/`clear`/`sessions`/`view`) | plan file / `TODO.md` |
+| Task tracking (create/mark a todo) | `spider todo` (`list`/`add`/`toggle`/`remove`/`clear`/`sessions`/`view`) | plan file / `TODO.md` |
 | Invoke / distill a skill | `spider skill` | `read` the `SKILL.md` |
 | Import a past session | `spider import` | — |
 | Admin (stats/doctor/upstream-watch/memory/config) | `spider control <command>` | — |
@@ -63,3 +63,8 @@ repo; otherwise repo). The reviewer checks durability, overlap and scope;
 task-only details belong in the conversation. A failed review stores as
 requested and states `review skipped`. Background/`[auto]` writes are staged
 (fail-closed); approve with `spider control memory`.
+
+Remove obsolete todo items with `op=remove id=<seq>`. `clear` only removes done
+items unless `force:true`. `toggle` and `remove` accept a session id, unique
+prefix, or unique name in the project DB via `session`; `session:"all"` is
+rejected. Missing or unknown ids and unresolved or ambiguous selectors are errors.

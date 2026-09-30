@@ -1,5 +1,7 @@
 # Spider Phase 1 — Memory + Todo + Embeddings Implementation Plan
 
+> Later todo-ops update: `clear` now removes only done items in the current session unless `force:true`, returns removed/kept counts, and rejects session selectors; the wipe-all examples below describe the original behavior.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship DB-as-truth Hermes-port memory (records, staging, hardened threat scanner, frozen snapshot), fastembed+sqlite-vec embeddings with FTS degrade, and the pi-todo-sqlite CRUD port — all on Phase 0's shared SQLite layer, exposed as `remember`/`recall`/`todo` spider actions with bespoke renderers.
@@ -1026,8 +1028,8 @@ describe("todo view/resolve", () => {
 - Test: `spider/packages/todo/test/actions.test.ts`
 
 **Interfaces:**
-- Produces (`index.ts`): `export function registerTodo(pi: ExtensionAPI, deps: { projectDb: Db; getSessionId: () => string }): void;` — `registerAction("todo", …)` (`list|add|toggle|clear|sessions|view`), `pi.registerCommand("todos", …)` (interactive viewer, `ctx.hasUI` gated; `a` toggles current/all), renderers via `@spider/ui`.
-- `todo` handler args: `{ action:"todo", op:"list"|"add"|"toggle"|"clear"|"sessions"|"view", text?, id?, session? }` mapping to store fns; `op` defaults to `list`.
+- Produces (`index.ts`): `export function registerTodo(pi: ExtensionAPI, deps: { projectDb: Db; getSessionId: () => string }): void;` — `registerAction("todo", …)` (`list|add|toggle|remove|clear|sessions|view`), `pi.registerCommand("todos", …)` (interactive viewer, `ctx.hasUI` gated; `a` toggles current/all), renderers via `@spider/ui`.
+- `todo` handler args: `{ action:"todo", op:"list"|"add"|"toggle"|"remove"|"clear"|"sessions"|"view", text?, id?, session? }` mapping to store fns; `op` defaults to `list`.
 
 - [ ] **Step 1: Write failing test** `spider/packages/todo/test/actions.test.ts`
 
@@ -1110,6 +1112,6 @@ describe("todo action", () => {
 
 ## Self-Review
 
-- **Spec coverage:** categories/statuses/sources (Task 3 types), link-not-copy (Task 3), hard-reject overflow (Task 4), frozen snapshot via `before_agent_start` char-capped (Tasks 7, 12), write-approval staging fail-closed + `control memory pending/approve/reject` (Tasks 5, 12), hardened threat scanner scopes/NFKC/invisible/bounded-filler (Task 1), streaming scrubber + anti-poisoning guardrails (Tasks 2, 6), aux-model digest routing (Task 6), fastembed+BGE 384d lazy download (Task 8), background embed queue (Task 10), sqlite-vec KNN + brute-force fallback + FTS degrade (Tasks 9, 10, 11), todo CRUD list/add/toggle/clear/sessions/view + per-session seq + FTS (Tasks 13, 14, 15), `remember`/`recall`/`todo` via `registerAction` + bespoke renderers (Tasks 12, 15). All spec bullets map to a task.
+- **Spec coverage:** categories/statuses/sources (Task 3 types), link-not-copy (Task 3), hard-reject overflow (Task 4), frozen snapshot via `before_agent_start` char-capped (Tasks 7, 12), write-approval staging fail-closed + `control memory pending/approve/reject` (Tasks 5, 12), hardened threat scanner scopes/NFKC/invisible/bounded-filler (Task 1), streaming scrubber + anti-poisoning guardrails (Tasks 2, 6), aux-model digest routing (Task 6), fastembed+BGE 384d lazy download (Task 8), background embed queue (Task 10), sqlite-vec KNN + brute-force fallback + FTS degrade (Tasks 9, 10, 11), todo CRUD list/add/toggle/remove/clear/sessions/view + per-session seq + FTS (Tasks 13, 14, 15), `remember`/`recall`/`todo` via `registerAction` + bespoke renderers (Tasks 12, 15). All spec bullets map to a task.
 - **Type consistency:** `MemoryScope`/`MemoryCategory`/`MemoryStatus`/`MemorySource`, `MemoryRecord`, `addMemory(db, scope, input, cap?)`, `Embedder{model,dim,embed}`, `OwnerKind`, `Todo{seq,text,done}` used consistently across tasks.
 - **Placeholder scan:** every code step carries concrete test/impl code; the one explicit ellipsis (Task 1 `_PATTERNS`) is flagged as a verbatim 1:1 port with a source citation + reviewer diff note, not a vague "add patterns."

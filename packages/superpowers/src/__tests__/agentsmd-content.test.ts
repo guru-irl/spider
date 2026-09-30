@@ -19,4 +19,10 @@ describe("spider AGENTS.md block content", () => {
     expect(b.match(/<!-- spider:start -->/g)!.length).toBe(1);
     expect(b.match(/<!-- spider:end -->/g)!.length).toBe(1);
   });
+
+  it("documents removal of obsolete items and safe clear defaults", () => {
+    expect(SPIDER_BLOCK_BODY).toContain("`remove`");
+    expect(SPIDER_BLOCK_BODY).toMatch(/remove obsolete items with op=remove/i);
+    expect(SPIDER_BLOCK_BODY).toMatch(/clear only removes done items unless force:true/i);
+  });
 });

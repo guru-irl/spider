@@ -23,9 +23,9 @@ describe("todo store", () => {
     expect(toggleTodo(ctx.db, "s1", 1)?.done).toBe(true);
     expect(toggleTodo(ctx.db, "s1", 1)?.done).toBe(false);
   });
-  it("clears a session's todos", () => {
+  it("force clears a session's todos", () => {
     ctx = makeTodoDb();
-    addTodo(ctx.db, "s1", "x"); clearTodos(ctx.db, "s1");
+    addTodo(ctx.db, "s1", "x"); clearTodos(ctx.db, "s1", true);
     expect(listTodos(ctx.db, "s1")).toHaveLength(0);
   });
   it("summarizes sessions with counts + current flag", () => {

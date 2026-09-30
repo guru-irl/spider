@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Usage: task-done PLAN_FILE TASK_NUMBER BASE -- TEST_COMMAND [ARGS...]
+set -euo pipefail
+if [ $# -lt 5 ] || [ "$4" != "--" ]; then
+  echo "usage: task-done PLAN_FILE TASK_NUMBER BASE -- TEST_COMMAND [ARGS...]" >&2
+  exit 2
+fi
+plan=$1
+n=$2
+base=$3
+shift 4
+case "$n" in *[!0-9]*|'') echo "invalid task number: $n" >&2; exit 2 ;; esac
+git rev-parse --verify --quiet "${base}^{commit}" >/dev/null || { echo "bad BASE: $base" >&2; exit 2; }
+git merge-base --is-ancestor "$base" HEAD || { echo "HEAD is not a descendant of BASE: $base" >&2; exit 3; }
+sdd="$(cd "$(dirname "$0")/../../subagent-driven-development/scripts" && pwd)"
+dir=$(bash "$sdd/sdd-workspace" "$plan")
+log="$dir/task-${n}-tests.log"
+ledger="$dir/progress.md"
+cmd=""
+for a in "$@"; do
+  case "$a" in
+    *[[:space:]\"\;\|\&]*) cmd="$cmd '$a'" ;;
+    *) cmd="$cmd $a" ;;
+  esac
+done
+cmd=${cmd# }
+rc=0
+"$@" > "$log" 2>&1 || rc=$?
+tail -n 5 "$log"
+if [ "$rc" -ne 0 ]; then
+  echo "task-done: test command exited $rc; Task $n NOT recorded (full output: $log)" >&2
+  exit "$rc"
+fi
+last=$(grep -v '^[[:space:]]*$' "$log" | tail -n 1 || :)
+if [ ! -f "$ledger" ]; then
+  plan_id=$(< "$dir/plan-path")
+  printf '# SDD ledger — plan: %s\n' "$plan_id" > "$ledger"
+fi
+line="Task $n: complete (commits $(git rev-parse --short=7 "$base")..$(git rev-parse --short=7 HEAD), tests: $cmd → $last)"
+printf '%s\n' "$line" >> "$ledger"
+echo "ledger: $line"

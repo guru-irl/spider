@@ -2,9 +2,9 @@
 # Stop the brainstorm server and clean up
 # Usage: stop-server.sh <session_dir>
 #
-# Kills the server process. Only deletes session directory if it's
-# under /tmp (ephemeral). Persistent directories (.superpowers/) are
-# kept so mockups can be reviewed later.
+# Kills the server process. Only deletes session directories under the
+# project scratch fallback. Persistent directories (.superpowers/) are kept
+# so mockups can be reviewed later.
 
 SESSION_DIR="$1"
 
@@ -13,6 +13,7 @@ if [[ -z "$SESSION_DIR" ]]; then
   exit 1
 fi
 
+SESSION_DIR="$(CDPATH= cd -- "$SESSION_DIR" 2>/dev/null && pwd -P)" || { echo '{"status": "not_running"}'; exit 0; }
 STATE_DIR="${SESSION_DIR}/state"
 PID_FILE="${STATE_DIR}/server.pid"
 SERVER_ID_FILE="${STATE_DIR}/server-instance-id"
@@ -109,8 +110,8 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE" "$SERVER_ID_FILE" "${STATE_DIR}/server.log"
   mark_stopped "stop-server.sh"
 
-  # Only delete ephemeral /tmp directories
-  if [[ "$SESSION_DIR" == /tmp/* ]]; then
+  # Only delete sessions created in the project scratch fallback.
+  if [[ "$SESSION_DIR" == */.spider/scratch/superpowers/brainstorm/* ]]; then
     rm -rf "$SESSION_DIR"
   fi
 

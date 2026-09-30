@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Delete only a current plan's scoped, identified SDD workspace, after approval.
+# Usage: sdd-cleanup PLAN_FILE (never deletes the flat legacy ledger)
+set -euo pipefail
+if [ $# -ne 1 ]; then echo 'usage: sdd-cleanup PLAN_FILE' >&2; exit 2; fi
+script_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+dir=$(bash "$script_dir/sdd-workspace" --lookup-only "$1") || exit $?
+root=$(git rev-parse --show-toplevel)
+base="$root/.superpowers/sdd"
+# Reject symlinks, the flat base and any path escaping the workspace base.
+case "$dir" in "$base"/*) ;; *) echo "refusing cleanup outside scoped .superpowers/sdd: $dir" >&2; exit 2 ;; esac
+[ -d "$dir" ] && [ -f "$dir/plan-path" ] && [ -f "$dir/progress.md" ] \
+  || { echo "refusing cleanup without scoped marker and ledger: $dir" >&2; exit 2; }
+plan_dir=$(CDPATH= cd -- "$(dirname "$1")" && pwd -P)
+plan_abs="$plan_dir/$(basename "$1")"
+case "$plan_abs" in "$root"/*) plan_id=${plan_abs#"$root"/} ;; *) plan_id=$plan_abs ;; esac
+[ "$(< "$dir/plan-path")" = "$plan_id" ] \
+  || { echo "refusing cleanup: plan-path differs from current plan" >&2; exit 2; }
+IFS= read -r first < "$dir/progress.md" || :
+# Normalize the header exactly as sdd-workspace does, including ./, whitespace and CRLF.
+case "$first" in
+  '# SDD ledger — plan: '*) ref=${first#'# SDD ledger — plan: '} ;;
+  *) echo "refusing cleanup of adopted legacy or mismatched ledger: $dir" >&2; exit 2 ;;
+esac
+ref=$(printf '%s' "$ref" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+case "$ref" in /*) abs=$ref ;; *) abs="$root/$ref" ;; esac
+ref_dir=$(CDPATH= cd -- "$(dirname "$abs")" 2>/dev/null && pwd -P) \
+  || { echo "refusing cleanup of unresolved ledger: $dir" >&2; exit 2; }
+ref_abs="$ref_dir/$(basename "$abs")"
+case "$ref_abs" in "$root"/*) identity=${ref_abs#"$root"/} ;; *) identity=$ref_abs ;; esac
+[ "$identity" = "$plan_id" ] \
+  || { echo "refusing cleanup of adopted legacy or mismatched ledger: $dir" >&2; exit 2; }
+rm -rf -- "$dir"
+echo "removed scoped workspace: $dir"

@@ -1,18 +1,17 @@
 # Implementer Subagent Prompt Template
 
-Use this template when you `spider run` an implementer (`role:"implementer"`,
-`context:"fresh"`).
+Use this template in a `spider run` worker task with `context:"fresh"`.
+Resolve the explicit provider-qualified model from `spider control models`
+role defaults before dispatch.
 
 ```
 This is a `spider run` task brief.
 
 spider run:
-  agent: implementer
-  role: "implementer"
+  agent: worker
   context: "fresh"
-  description: "Implement Task N: [task name]"
-  model: [MODEL — REQUIRED: choose per SKILL.md Model Selection; an omitted
-         model silently inherits the session's most expensive one]
+  name: "Implement Task N: [task name]"
+  model: [PROVIDER-QUALIFIED WORKER MODEL FROM ROLE DEFAULTS]
   task: |
     You are implementing Task N: [task name]
 
@@ -33,13 +32,14 @@ spider run:
     - Dependencies or assumptions
     - Anything unclear in the task description
 
-    **Ask them now.** Raise any concerns before starting work.
+    **Report NEEDS_CONTEXT and exit before work** if an answer changes the
+    outcome. The controller can send the answer only in a fresh run.
 
     ## Your Job
 
     Once you're clear on requirements:
     1. Implement exactly what the task specifies
-    2. Write tests (following TDD if task says to)
+    2. Write tests with TDD: run and observe RED before implementing, then GREEN
     3. Verify implementation works
     4. Commit your work
     5. Self-review (see below)
@@ -47,11 +47,16 @@ spider run:
 
     Work from: [directory]
 
-    **While you work:** If you encounter something unexpected or unclear, **ask questions**.
-    It's always OK to pause and clarify. Don't guess or make assumptions.
+    **While you work:** If a question changes the outcome, emit
+    ESCALATION[question] and report NEEDS_CONTEXT, then exit. If blocked, emit
+    ESCALATION[blocked]. Emit ESCALATION[warning] before destructive or
+    irreversible action or if the premise is wrong. A headless child cannot receive a follow-up
+    message: the controller starts a fresh worker using this partial tree.
 
     While iterating, run the focused test for what you're changing; run the
-    full suite once before committing, not after every edit.
+    full suite once before committing when project instructions permit it.
+    Do not dispatch nested implementers or reviewers. The controller owns
+    task review; self-review is your own inspection, not another subagent.
 
     ## Code Organization
 
@@ -139,9 +144,9 @@ spider run:
     If BLOCKED or NEEDS_CONTEXT, put the specifics in the final message
     itself — the controller acts on it directly.
 
-    When done, wake the next stage per the controller's `handoff:"intercom"`
-    wiring (send your report + review-package path); if no pipeline was
-    wired, return status normally.
+    Return your status and report path. With a pre-wired pipeline,
+    `handoff:"intercom"` starts a fresh next-stage child using your output;
+    do not attempt to message or wake an in-flight child yourself.
 
     Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
     Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need

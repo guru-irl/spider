@@ -110,7 +110,7 @@ export interface CurateActionArgs {
 
 /**
  * `control skill curate` — run the curator decay pass through the worker.
- * `--force` bypasses the min-interval gate; `--consolidate` requests the
+ * `--force` bypasses the disabled, paused, and min-interval gates; `--consolidate` requests the
  * aux-model consolidation (honored by the worker when a model is available).
  * `details.consolidateRequested` reflects what was ASKED; `details.consolidated`
  * (from the worker) reflects what ACTUALLY ran — they are never conflated.

@@ -8,4 +8,4 @@ export const MessageParams: TObject = Type.Object({
 });
 
 export interface PipelineStage { agent: string; role?: string; phase?: string; task?: string; as?: string; model?: string; thinking?: string; skill?: string; context?: "fresh" | "fork"; count?: number; wakeOn?: "done" | "accepted"; }
-export interface RunPipelineArgs { pipeline: PipelineStage[]; handoff: "intercom" | "wait"; async?: boolean; }
+export interface RunPipelineArgs { pipeline: PipelineStage[]; handoff: "intercom" | "wait"; }

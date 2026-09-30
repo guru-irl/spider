@@ -1,6 +1,5 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
-import { sectionRule } from "../renderers/types.js";
+import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
 /** The learning-graph shape produced by @spider/organism `buildLearningGraph`
  *  (nodes = learned skills / active memories, edges = skill↔skill or memory→skill). */
@@ -17,9 +16,10 @@ const EDGE_CAP = 6;
  *  shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md): a stats line, a
  *  nodes list (skill/memory badge + label), and an edges list (`a → b`). Collapsed caps the lists. */
 export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: number, expanded = false): string[] {
+  const trim = resultTrimmer(expanded);
   const body: string[] = [];
   const pct = Math.round(g.stats?.linkedPct ?? 0);
-  body.push(truncateToWidth(theme.fg("muted", `${g.stats?.nodes ?? 0} nodes · ${g.stats?.edges ?? 0} edge${(g.stats?.edges ?? 0) === 1 ? "" : "s"} · ${pct}% linked`), width, ""));
+  body.push(trim(theme.fg("muted", `${g.stats?.nodes ?? 0} nodes · ${g.stats?.edges ?? 0} edge${(g.stats?.edges ?? 0) === 1 ? "" : "s"} · ${pct}% linked`), width, ""));
 
   const nodes = g.nodes ?? [];
   body.push(sectionRule(theme, `nodes (${nodes.length})`, width));
@@ -27,10 +27,10 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
   for (const n of shownNodes) {
     const badge = n.kind === "skill" ? theme.fg("success", "◆") : theme.fg("dim", "•");
     const cat = n.category ? theme.fg("muted", ` (${n.category})`) : "";
-    body.push(truncateToWidth(`${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
+    body.push(trim(`${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
   }
   if (!expanded && nodes.length > shownNodes.length) {
-    body.push(truncateToWidth(theme.fg("muted", `⎿ … ${nodes.length - shownNodes.length} more`), width, ""));
+    body.push(trim(theme.fg("muted", `⎿ … ${nodes.length - shownNodes.length} more`), width, ""));
   }
 
   const edges = g.edges ?? [];
@@ -38,13 +38,13 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
     body.push(sectionRule(theme, `edges (${edges.length})`, width));
     const shownEdges = expanded ? edges : edges.slice(0, EDGE_CAP);
     for (const e of shownEdges) {
-      body.push(truncateToWidth(`${theme.fg("text", e.source)} ${theme.fg("dim", "→")} ${theme.fg("text", e.target)}`, width, ""));
+      body.push(trim(`${theme.fg("text", e.source)} ${theme.fg("dim", "→")} ${theme.fg("text", e.target)}`, width, ""));
     }
     if (!expanded && edges.length > shownEdges.length) {
-      body.push(truncateToWidth(theme.fg("muted", `⎿ … ${edges.length - shownEdges.length} more`), width, ""));
+      body.push(trim(theme.fg("muted", `⎿ … ${edges.length - shownEdges.length} more`), width, ""));
     }
   }
-  return body;
+  return fitResultLines(body, width, expanded);
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

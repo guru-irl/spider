@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter } from "@spider/ui";
+import { renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -18,7 +18,6 @@ import { renderImportResult, isKnownFailureOutcome } from "@spider/context";
 import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { toToolResult } from "./result";
-const ANSI = /\x1b\[[0-9;]*m/g;
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 
 interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; }
@@ -50,18 +49,18 @@ function wrap(text: string, w: number, max: number): string[] {
   return out.slice(0, max).map((l) => clip(l, w));
 }
 
-function textComponent(result: any): Component {
+function textComponent(result: any, expanded = false): Component {
   const blocks: any[] = Array.isArray(result?.content) ? result.content : [];
   const raw = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string).join("\n");
   return {
-    render: (w: number) => raw.replace(ANSI, "").split("\n").map((l) => clip(l, w)),
+    render: (w: number) => fitResultLines((expanded ? raw : raw.replace(/\x1b\[[0-9;]*m/g, "")).split("\n"), w, expanded),
     invalidate() {},
   };
 }
 
-function plainBody(text: string): Component {
+function plainBody(text: string, expanded = false): Component {
   // The tool title already identifies the surface; drop only its duplicate heading.
-  return textComponent({ content: [{ type: "text", text: text.replace(/^## [^\n]*\n?/, "") }] });
+  return textComponent({ content: [{ type: "text", text: text.replace(/^## [^\n]*\n?/, "") }] }, expanded);
 }
 
 interface RunLike { id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
@@ -74,10 +73,10 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   const sep = t.fg("dim", "·");
   const thinkSeg = r.thinking ? ` ${sep} ${t.fg("muted", r.thinking)}` : "";
   const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
-  const lines = [clip(head, width)];
+  const lines = [expanded ? head : clip(head, width)];
   const task = (r.task ?? "").trim();
   if (task) {
-    const body = expanded ? wrap(task, width - 6, 12) : [clip(task, width - 6)];
+    const body = expanded ? task.split("\n") : [clip(task, width - 7)];
     for (let i = 0; i < body.length; i++) lines.push(`    ${t.fg("muted", (i === 0 ? "↳ " : "  ") + body[i])}`);
   }
   // Subagent output: collapsed to the first 2 lines by default, full on ctrl+o (expanded).
@@ -85,7 +84,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   if (out) {
     const outLines = out.split("\n");
     const shown = expanded ? outLines : outLines.slice(0, 2);
-    for (let i = 0; i < shown.length; i++) lines.push(`    ${t.fg("dim", (i === 0 ? "⤴ " : "  ") + clip(shown[i], width - 6))}`);
+    for (let i = 0; i < shown.length; i++) lines.push(`    ${t.fg("dim", (i === 0 ? "⤴ " : "  ") + (expanded ? shown[i] : clip(shown[i], width - 7)))}`);
     if (!expanded && outLines.length > 2) lines.push(`    ${t.fg("dim", `  … (+${outLines.length - 2} more lines)`)}`);
   }
   return lines;
@@ -102,7 +101,7 @@ function renderRun(t: T, details: any, expanded: boolean): Component {
       const anyTask = runs.some((r) => (r.task ?? "").trim());
       const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
       if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", `  ctrl+o to expand${anyOut ? " output" : " instructions"}`));
-      return ["", ...lines.map((l) => (l === "" ? l : " " + l))];
+      return fitResultLines(["", ...lines.map((l) => (l === "" ? l : " " + l))], width, expanded);
     },
     invalidate() {},
   };
@@ -137,11 +136,11 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
         const title = t.bold(String(r?.title || "untitled"));
         const kind = t.italic(t.fg("toolTitle", String(r?.kind ?? "")));
         const src = r?.source ? ` ${sep} ${t.fg("muted", String(r.source))}` : "";
-        lines.push(clip(`  ${num} ${glyph} ${title} ${sep} ${kind}${src}`, width));
-        const snippet = String(r?.snippet ?? "").replace(/\s+/g, " ").trim();
+        lines.push(expanded ? `  ${num} ${glyph} ${title} ${sep} ${kind}${src}` : clip(`  ${num} ${glyph} ${title} ${sep} ${kind}${src}`, width));
+        const snippet = expanded ? String(r?.snippet ?? "") : String(r?.snippet ?? "").replace(/\s+/g, " ").trim();
         if (snippet) {
           if (expanded) {
-            const body = wrap(snippet, width - 7, 8);
+            const body = snippet.split("\n");
             for (let j = 0; j < body.length; j++) lines.push(`     ${t.fg("dim", (j === 0 ? "↳ " : "  ") + body[j])}`);
           } else {
             lines.push(`     ${t.fg("dim", "↳ " + clip(snippet, Math.max(1, width - 7)))}`);
@@ -151,7 +150,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
       if (!expanded && list.some((r) => String(r?.snippet ?? "").length > 0)) {
         lines.push(t.fg("dim", "  ctrl+o to expand"));
       }
-      return ["", ...lines];
+      return fitResultLines(["", ...lines], width, expanded);
     },
     invalidate() {},
   };
@@ -160,7 +159,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
 /** Health-check output for `control doctor`. The call line already shows
  *  `🕸 spider · control · doctor`, so this renders only a status line + the checks
  *  (markdown heading/blank lines dropped, `- ` bullets stripped) with a `⎿` gutter. */
-function renderDoctor(t: T, details: any): Component {
+function renderDoctor(t: T, details: any, expanded: boolean): Component {
   // C-LOW: absence of evidence is neither a passing check nor a failure. Preserve an
   // explicit boolean and render a third, neutral state when malformed/empty input has
   // no `ok` field instead of claiming every check passed.
@@ -172,20 +171,21 @@ function renderDoctor(t: T, details: any): Component {
     .map((l) => l.replace(/^\s*[-*]\s+/, "").trim());
   return {
     render(width: number): string[] {
+      const clipDoctor = (line: string, w: number) => expanded ? line : clip(line, w);
       const glyph = t.fg(ok === undefined ? "dim" : "toolTitle", ok === true ? "✓" : ok === false ? "✗" : "○");
       const summary = ok === true ? "all checks passed" : ok === false ? "issues found" : "check status unknown";
-      const out = ["", clip(` ${glyph} ${t.fg("muted", summary)}`, width)];
+      const out = ["", clipDoctor(` ${glyph} ${t.fg("muted", summary)}`, width)];
       for (const c of checks) {
         const idx = c.indexOf(":");
         if (idx > 0) {
           const label = t.bold(c.slice(0, idx));
           const rest = t.fg("muted", c.slice(idx + 1).trim());
-          out.push(clip(` ${t.fg("dim", "⎿ ")}${label}${t.fg("dim", ":")} ${rest}`, width));
+          out.push(clipDoctor(` ${t.fg("dim", "⎿ ")}${label}${t.fg("dim", ":")} ${rest}`, width));
         } else {
-          out.push(clip(` ${t.fg("dim", "⎿ ")}${t.fg("muted", c)}`, width));
+          out.push(clipDoctor(` ${t.fg("dim", "⎿ ")}${t.fg("muted", c)}`, width));
         }
       }
-      return out;
+      return fitResultLines(out, width, expanded);
     },
     invalidate() {},
   };
@@ -203,16 +203,16 @@ function renderControlInsights(t: T, details: any, expanded: boolean): Component
 
 /** `control stats` — render the StatsSummary details as a body-only stats view (leading blank
  *  for the gutter style; the tool shell owns the header). Never throws on a missing/partial summary. */
-function renderControlStats(t: T, details: any): Component {
+function renderControlStats(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   const summary: StatsSummary = details ?? { tokenSavings: { indexedChunks: 0, estTokensSaved: 0 }, rowCounts: {}, models: [] };
-  return { render: (w: number) => ["", ...renderStats(summary, th, w)], invalidate() {} };
+  return { render: (w: number) => ["", ...renderStats(summary, th, w, expanded)], invalidate() {} };
 }
 
 /** `control models` — render the copilot catalog (tier-grouped, availability + role defaults)
  *  as a body-only models view. The `--set` path returns only a confirmation payload; render that as
  *  a single status line. Never throws on a missing/partial payload. */
-function renderControlModels(t: T, details: any, _expanded: boolean): Component {
+function renderControlModels(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.catalog === undefined && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.ok
@@ -223,34 +223,34 @@ function renderControlModels(t: T, details: any, _expanded: boolean): Component 
       : th.fg("error", "✗") + " " + th.fg("text", String(details.error ?? "failed"));
     const shadow = details.ok && details.shadowedBy
       ? `This worktree overrides it with ${String(details.shadowedBy.ref)} in ${String(details.shadowedBy.file)}` : "";
-    return { render: (w: number) => ["", truncateToWidth(line, w, ""), ...(shadow ? [truncateToWidth(shadow, w, "")] : []), ...renderConfigErrors(th, details, w)], invalidate() {} };
+    return { render: (w: number) => ["", ...fitResultLines([line, ...(shadow ? [shadow] : []), ...renderConfigErrors(th, details, w, expanded)], w, expanded)], invalidate() {} };
   }
   const catalog: ModelEntry[] = Array.isArray(details?.catalog) ? details.catalog : [];
   const defaults: Record<string, string> = (details?.defaults as Record<string, string>) ?? {};
   const origins = details?.sources && details?.global ? { sources: details.sources, global: details.global } : undefined;
-  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w, origins), ...renderConfigErrors(th, details, w)], invalidate() {} };
+  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w, origins, expanded), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
 }
 
-function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, width: number): string[] {
+function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, width: number, expanded = false): string[] {
   return Array.isArray(details?.errors)
-    ? details.errors.map((error: unknown) => truncateToWidth(th.fg("error", String(error)), width, "")) : [];
+    ? fitResultLines(details.errors.map((error: unknown) => th.fg("error", String(error))), width, expanded) : [];
 }
 
 /** `control config` — render the schema × current values as a body-only config view. The `set`
  *  path returns only a confirmation payload; render that as a single status line. Never throws. */
-function renderControlConfig(t: T, details: any, _expanded: boolean): Component {
+function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.config && typeof details.config === "object") {
-    return { render: (w: number) => ["", ...renderConfig(details.config, th, w), ...renderConfigErrors(th, details, w)], invalidate() {} };
+    return { render: (w: number) => ["", ...renderConfig(details.config, th, w, expanded), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
   }
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
       ? th.fg("error", "✗") + " " + th.fg("text", String(details.error))
       : th.fg("accent", "●") + " " + th.fg("text", `set ${String(details.key ?? "")} → ${String(details.value ?? "")}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
-    return { render: (w: number) => ["", truncateToWidth(line, w, "")], invalidate() {} };
+    return { render: (w: number) => ["", ...fitResultLines([line], w, expanded)], invalidate() {} };
   }
-  if (details?.key !== undefined) return { render: (w: number) => ["", `${String(details.key)}: ${String(details.value)}`, ...renderConfigErrors(th, details, w)], invalidate() {} };
-  return textComponent({ details });
+  if (details?.key !== undefined) return { render: (w: number) => ["", `${String(details.key)}: ${String(details.value)}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+  return textComponent({ details }, expanded);
 }
 
 /** `control memory consolidate` — body-only active-memory list: a `memory · N active · X chars`
@@ -262,18 +262,54 @@ function renderControlMemory(t: T, details: any, expanded = false): Component {
   return {
     render(w: number): string[] {
       const out = ["", sectionRule(th, `memory · ${entries.length} active · ${usage} chars`, w)];
-      if (!entries.length) out.push(truncateToWidth(th.fg("dim", " (no active memories)"), w, ""));
+      if (!entries.length) out.push(th.fg("dim", " (no active memories)"));
       for (const e of entries) {
         const cat = th.fg("accent", `[${String(e?.category ?? "?")}]`);
-        out.push(truncateToWidth(` ${th.fg("dim", "◆")} ${cat} ${th.fg("text", String(e?.uuid ?? ""))}`, w, ""));
-        for (const line of wrap(String(e?.content ?? ""), Math.max(1, w - 3), expanded ? 8 : 1)) {
-          out.push(truncateToWidth(` ${th.fg("dim", "│ ")}${th.fg("text", line)}`, w, ""));
+        out.push(` ${th.fg("dim", "◆")} ${cat} ${th.fg("text", String(e?.uuid ?? ""))}`);
+        for (const line of expanded ? String(e?.content ?? "").split("\n") : wrap(String(e?.content ?? ""), Math.max(1, w - 3), 1)) {
+          out.push(` ${th.fg("dim", "│ ")}${th.fg("text", line)}`);
         }
       }
-      return out;
+      return fitResultLines(out, w, expanded);
     },
     invalidate() {},
   };
+}
+
+/** Match pi's truncateTail defaults and reverse byte accounting (core/tools/truncate.js).
+ *  The stderr label is presentation only, so it does not consume the output cap. */
+function expandedExecTail(action: string, details: any): NonNullable<ExecDetails["expandedOutput"]> {
+  const entries = action === "batch" ? (Array.isArray(details) ? details : []) : [details];
+  const rows: { text: string; stream: "stdout" | "stderr" }[] = [];
+  for (const entry of entries) {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const text = String(entry?.[stream] ?? "");
+      const lines = text === "" ? [] : text.split("\n");
+      if (text.endsWith("\n")) lines.pop();
+      for (const line of lines) rows.push({ text: line, stream });
+    }
+  }
+  // pi's DEFAULT_MAX_LINES=2000, DEFAULT_MAX_BYTES=50*1024. Its tail includes
+  // a partial last line when that line alone exceeds the byte cap.
+  const maxLines = 2000;
+  const maxBytes = 50 * 1024;
+  let used = 0;
+  let start = rows.length;
+  while (start > 0 && rows.length - start < maxLines) {
+    const bytes = Buffer.byteLength(rows[start - 1].text, "utf-8") + (start < rows.length ? 1 : 0);
+    if (used + bytes > maxBytes) break;
+    used += bytes;
+    start--;
+  }
+  if (start === rows.length && rows.length) {
+    const row = rows[start - 1];
+    const buf = Buffer.from(row.text, "utf-8");
+    let offset = buf.length - maxBytes;
+    while (offset < buf.length && (buf[offset] & 0xc0) === 0x80) offset++;
+    return { rows: [{ ...row, text: buf.subarray(offset).toString("utf-8") }], hidden: start - 1,
+      partial: { line: rows.length, shownBytes: buf.length - offset, totalBytes: buf.length } };
+  }
+  return { rows: rows.slice(start), hidden: start };
 }
 
 /** Map the raw executor result(s) → ExecDetails for renderExecResult.
@@ -515,7 +551,7 @@ function toTodoDetails(args: any, details: any): TodoChecklistDetails {
   return { scope, items, done, total: items.length };
 }
 
-export function renderSpiderResult(
+function renderSpiderResultBody(
   result: any,
   options: any,
   theme: any,
@@ -529,8 +565,8 @@ export function renderSpiderResult(
   // Error payloads must not fall through into success-shaped zero-count cards.
   if (typeof details?.error === "string" && action !== "message") {
     return {
-      render: (w: number) => ["", ...wrap(details.error, Math.max(1, w - 3), expanded ? 24 : 4)
-        .map((line, i) => clip(` ${t.fg("error", i === 0 ? "✗ " : "  ")}${t.fg("toolOutput", line)}`, w))],
+      render: (w: number) => ["", ...fitResultLines((expanded ? details.error.split("\n") : wrap(details.error, Math.max(1, w - 3), 4))
+        .map((line: string, i: number) => ` ${t.fg("error", i === 0 ? "✗ " : "  ")}${t.fg("toolOutput", line)}`), w, expanded)],
       invalidate() {},
     };
   }
@@ -550,8 +586,16 @@ export function renderSpiderResult(
             : "")
         : undefined;
       const d = toExecDetails(action, context?.args, details, partialText);
+      if (expanded && !isPartial) d.expandedOutput = expandedExecTail(action, details);
       const th = adaptTheme(t);
-      return { render: (w: number) => renderExecResult(d, { theme: th, width: w, expanded }), invalidate() {} };
+      let cachedWidth: number | undefined;
+      let cachedRows: string[] | undefined;
+      return { render: (w: number) => {
+        if (cachedWidth === w && cachedRows) return cachedRows;
+        cachedRows = renderExecResult(d, { theme: th, width: w, expanded });
+        cachedWidth = w;
+        return cachedRows;
+      }, invalidate() { cachedRows = undefined; cachedWidth = undefined; } };
     }
     case "index": {
       const d = toIndexDetails(context?.args, details);
@@ -570,37 +614,37 @@ export function renderSpiderResult(
     }
     case "kill": {
       const th = adaptTheme(t);
-      return { render: (w: number) => renderKillResult(details as KillDetails, { theme: th, width: w }), invalidate() {} };
+      return { render: (w: number) => renderKillResult(details as KillDetails, { theme: th, width: w, expanded }), invalidate() {} };
     }
-    case "remember": return wrapBespoke(renderRememberResult(details as StageResult));
-    case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[]));
+    case "remember": return wrapBespoke(renderRememberResult(details as StageResult, expanded));
+    case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[], expanded));
     case "todo": {
       const d = toTodoDetails(context?.args, details);
       const th = adaptTheme(t);
-      return { render: (w: number) => renderTodoChecklist(d, { theme: th, width: w }), invalidate() {} };
+      return { render: (w: number) => renderTodoChecklist(d, { theme: th, width: w, expanded }), invalidate() {} };
     }
     case "search": return renderSearch(t, details, expanded);
     case "skill": {
       const op = String(context?.args?.op ?? "list");
-      if (op === "list") return plainBody(renderSkillList(Array.isArray(details) ? details : []));
-      if (op === "distill") return plainBody(renderDistill(String(details?.prompt ?? "")));
-      return plainBody(renderSkillView((details?.row ?? details ?? undefined) as SkillRow | undefined));
+      if (op === "list") return plainBody(renderSkillList(Array.isArray(details) ? details : []), expanded);
+      if (op === "distill") return plainBody(renderDistill(String(details?.prompt ?? "")), expanded);
+      return plainBody(renderSkillView((details?.row ?? details ?? undefined) as SkillRow | undefined), expanded);
     }
-    case "import": return wrapBespoke(renderImportResult(details as any));
+    case "import": return wrapBespoke(renderImportResult(details as any, expanded));
     case "control":
-      if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[]));
-      if (sub === "doctor") return renderDoctor(t, details);
-      if (sub === "stats") return renderControlStats(t, details);
+      if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[], expanded));
+      if (sub === "doctor") return renderDoctor(t, details, expanded);
+      if (sub === "stats") return renderControlStats(t, details, expanded);
       if (sub === "models") return renderControlModels(t, details, expanded);
       if (sub === "config") return renderControlConfig(t, details, expanded);
       if (sub === "insights") return renderControlInsights(t, details, expanded);
       if (sub === "migrate") {
         const th = adaptTheme(t);
-        return { render: (w: number) => renderMigrateResult(details as MigrateDetails, { theme: th, width: w }), invalidate() {} };
+        return { render: (w: number) => renderMigrateResult(details as MigrateDetails, { theme: th, width: w, expanded }), invalidate() {} };
       }
       if (sub === "bind" || sub === "unbind") {
         const th = adaptTheme(t);
-        return { render: (w: number) => renderBindResult(details as BindDetails, { theme: th, width: w }), invalidate() {} };
+        return { render: (w: number) => renderBindResult(details as BindDetails, { theme: th, width: w, expanded }), invalidate() {} };
       }
       if (context?.args?.command === "memory" && sub === "status") return renderControlMemory(t, details, expanded);
       if (context?.args?.command === "memory" && sub === "forget") {
@@ -608,21 +652,32 @@ export function renderSpiderResult(
         return {
           render: (w: number) => [
             "",
-            clip(` ${t.fg(archived ? "success" : "error", archived ? "✓ archived memory" : "✗ memory was not archived")}`, w),
-            clip(` ${t.fg("toolOutput", String(details?.uuid ?? ""))} ${t.fg("muted", String(details?.scope ?? ""))}`, w),
+            ...fitResultLines([` ${t.fg(archived ? "success" : "error", archived ? "✓ archived memory" : "✗ memory was not archived")}`], w, expanded),
+            ...fitResultLines([` ${t.fg("toolOutput", String(details?.uuid ?? ""))} ${t.fg("muted", String(details?.scope ?? ""))}`], w, expanded),
           ],
           invalidate() {},
         };
       }
-      if (context?.args?.command === "memory" && sub === "approve") return wrapBespoke(renderRememberResult(details as StageResult));
+      if (context?.args?.command === "memory" && sub === "approve") return wrapBespoke(renderRememberResult(details as StageResult, expanded));
       if (context?.args?.command === "memory" && sub === "reject") return {
-        render: (w: number) => ["", clip(` ${t.fg("toolOutput", `Rejected pending memory ${details?.uuid ?? ""}`)}`, w)], invalidate() {},
+        render: (w: number) => ["", ...fitResultLines([` ${t.fg("toolOutput", `Rejected pending memory ${details?.uuid ?? ""}`)}`], w, expanded)], invalidate() {},
       };
-      if (context?.args?.command === "skill" && sub === "curate") return plainBody(renderCurateResult(details));
-      return textComponent(result);
+      if (context?.args?.command === "skill" && sub === "curate") return plainBody(renderCurateResult(details), expanded);
+      return textComponent(result, expanded);
     default:
-      return textComponent(result);
+      return textComponent(result, expanded);
   }
+}
+
+/** The tool and command messages share the same render-time width boundary. */
+export function renderSpiderResult(result: any, options: any, theme: any, context: any): Component {
+  const body = renderSpiderResultBody(result, options, theme, context);
+  return {
+    render: (width: number) => ["exec", "exec_file", "batch"].includes(String(context?.args?.action ?? ""))
+      ? body.render(width)
+      : fitResultLines(body.render(width), width, options?.expanded === true),
+    invalidate: () => body.invalidate?.(),
+  };
 }
 
 /** In-progress CALL title. renderCall REPLACES the title (pi does NOT prepend the tool
@@ -747,7 +802,7 @@ export function renderOrganismEntry(entry: unknown, options: { expanded?: boolea
           lines.push(t.fg("toolOutput", "Review: spider control memory sub=pending · spider skill op=list"));
         }
       }
-      return lines.map(line => clip(line, Math.max(0, width)));
+      return fitResultLines(lines, width, options?.expanded === true);
     },
     invalidate() {},
   });

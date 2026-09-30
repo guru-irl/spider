@@ -22,7 +22,7 @@ export function renderSearchResult(rows: SearchResultRow[]): Component {
 }
 
 /** Panel summarizing an import/migrate run's imported/skipped/staged/committed counts. */
-export function renderImportResult(s: ImportSummary): Component {
+export function renderImportResult(s: ImportSummary, expanded = false): Component {
   const sum = s ?? ({} as ImportSummary);
   const body = [
     `imported: ${sum.imported ?? 0}`,
@@ -34,5 +34,5 @@ export function renderImportResult(s: ImportSummary): Component {
   for (const p of sessions) {
     body.push(`  · ${p.sessionId}: ${p.status} (${p.candidates} cand, ${p.chunks} chunks)`);
   }
-  return Panel({ title: `${GLYPH} import`, body });
+  return Panel({ title: `${GLYPH} import`, body, expanded });
 }

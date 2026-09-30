@@ -1,5 +1,74 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
+
+/** Active SGR at the end of a marker; closed attributes must not leak into its text. */
+function sgrCodes(marker: string): string {
+  const active = new Map<string, string>();
+  for (const match of marker.matchAll(/\x1b\[([0-9;]*)m/g)) {
+    const parts = match[1].split(";").map((part) => Number(part || 0));
+    for (let i = 0; i < parts.length; i++) {
+      const code = parts[i];
+      if (code === 0) active.clear();
+      else if (code === 22) { active.delete("1"); active.delete("2"); }
+      else if (code === 21) active.delete("1");
+      else if ([23, 24, 25, 27, 28, 29].includes(code)) active.delete(String(code - 20));
+      else if (code === 39) active.delete("fg");
+      else if (code === 49) active.delete("bg");
+      else if (code === 38 || code === 48) {
+        const length = parts[i + 1] === 5 ? 3 : parts[i + 1] === 2 ? 5 : 1;
+        if (length > 1 && i + length <= parts.length) {
+          active.set(code === 38 ? "fg" : "bg", parts.slice(i, i + length).join(";"));
+          i += length - 1;
+        }
+      } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) active.set("fg", String(code));
+      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) active.set("bg", String(code));
+      else if ([1, 2, 3, 4, 5, 7, 8, 9].includes(code)) active.set(String(code), String(code));
+    }
+  }
+  return [...active.values()].map((code) => `\x1b[${code}m`).join("");
+}
+
+/** Fit result rows at the final render boundary, preserving ANSI state across wraps. */
+export function fitResultLines(lines: readonly string[], width: number, expanded: boolean): string[] {
+  const w = Math.max(1, width);
+  return lines.flatMap((line) => {
+    if (!expanded) return [truncateToWidth(line, w, "…")];
+    // Locate the visible marker first; ANSI spans inside its styling do not count as cells.
+    const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
+    const prefix = /^([ \t]*(?:(?:\d+\.[ \t]+)?[⎿│↳⤴✓✗⚠●○■◆▪▣✉•·\-*](?:[ \t]*[→◆▪▣✉])?[ \t]+|\[[^\]\n]+\][ \t]+|\d+\.[ \t]+|[ \t]+))/u.exec(plain)?.[1];
+    if (prefix && visibleWidth(prefix) < w) {
+      // Long bracketed labels are not useful as hanging indents at narrow widths.
+      if (/^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
+        return wrapTextWithAnsi(line, w);
+      }
+      let end = 0;
+      let visible = 0;
+      while (visible < prefix.length) {
+        const sgr = /^\x1b\[[0-9;]*m/.exec(line.slice(end))?.[0];
+        if (sgr) end += sgr.length;
+        else {
+          const char = String.fromCodePoint(line.codePointAt(end)!);
+          end += char.length;
+          visible += char.length;
+        }
+      }
+      const marker = line.slice(0, end);
+      const indent = " ".repeat(visibleWidth(prefix));
+      const state = sgrCodes(marker);
+      return wrapTextWithAnsi(state + line.slice(end), w - visibleWidth(prefix))
+        .map((row, i) => (i === 0 ? marker + row.slice(state.length) : indent + row));
+    }
+    return wrapTextWithAnsi(line, w);
+  });
+}
+/** Keep full expanded content; retain the caller's collapsed truncation suffix. */
+export function trimResultLine(line: string, width: number, expanded: boolean, suffix = ""): string {
+  return expanded ? line : truncateToWidth(line, width, suffix);
+}
+
+export function resultTrimmer(expanded: boolean): (line: string, width: number, suffix?: string) => string {
+  return (line, width, suffix = "") => trimResultLine(line, width, expanded, suffix);
+}
 
 /** Shared render context for every pure spider renderer. */
 export interface RenderCtx { theme: ThemeAdapter; width: number; expanded?: boolean; }
@@ -19,6 +88,9 @@ export interface ExecDetails {
    *  fields. */
   exitCode: number | null;
   outLines: number; ms?: number; preview: string[]; indexed?: { source: string; chunks: number };
+  /** Captured tail in stdout-then-stderr order, populated only for expanded completed results. */
+  expandedOutput?: { rows: { text: string; stream: "stdout" | "stderr" }[]; hidden: number;
+    partial?: { line: number; shownBytes: number; totalBytes: number } };
   /** True while the command is still executing (pi's `options.isPartial`). The exit code is
    *  not known yet, so the status line must not claim one. */
   running?: boolean;

@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { paths } from "@spider/db-core";
 import { PolyglotExecutor } from "../executor";
+import { detectRuntimes } from "../runtime";
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
@@ -184,7 +185,7 @@ describe("background job directory — stable, caller-owned home (never a throwa
     try {
       const bgRoot = join(scratch, "bg");
       const sibling = join(bgRoot, "user-baseline-not-ours");
-      execFileSync("mkdir", ["-p", sibling]);
+      mkdirSync(sibling, { recursive: true });
       const exec = new PolyglotExecutor({ projectRoot: () => root });
       const r = await exec.execute({
         language: "shell", code: "sleep 3; echo end", background: true, timeout: 150,
@@ -270,25 +271,59 @@ describe("background job directory — stable, caller-owned home (never a throwa
     }
   }, 15_000);
 
-  it("I-4: language:'rust' + background:true never allocates a durable bg/<id> job directory, even when #compileAndRun runs (and fails to compile) in the foreground regardless of the flag", async () => {
+  it("Rust compilation invokes the configured compiler with the source and output paths", async () => {
+    const { root } = makeFixture();
+    try {
+      const argv = join(root, "compiler-argv");
+      const compiler = process.platform === "win32"
+        ? "C:\\definitely\\does\\not\\exist\\rustc-xyz.exe"
+        : join(root, "compiler-stub");
+      if (process.platform !== "win32") {
+        writeFileSync(compiler, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argv)}\nexit 39\n`, { mode: 0o755 });
+      }
+      const exec = new PolyglotExecutor({
+        projectRoot: root,
+        runtimes: { ...detectRuntimes(), rust: compiler },
+      });
+      const result = await exec.execute({ language: "rust", code: "fn main() {}" });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Compilation failed:");
+      if (process.platform === "win32") {
+        // A missing absolute path distinguishes this from any PATH rustc on
+        // Windows, where execFileSync cannot launch a POSIX script as a stub.
+        expect(result.stderr).toContain(compiler);
+      } else {
+        // The stub exits before producing a binary; its argv file proves the
+        // configured path ran rather than any installed rustc.
+        const args = readFileSync(argv, "utf-8").trimEnd().split("\n");
+        expect(args).toHaveLength(3);
+        expect(args[0]).toMatch(/script\.rs$/);
+        expect(args[1]).toBe("-o");
+        expect(args[2]).toBe(args[0].replace(/\.rs$/, ""));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 15_000);
+
+  it("I-4: language:'rust' + background:true never allocates a durable bg/<id> job directory, even when #compileAndRun fails in the foreground", async () => {
     const { root, scratch } = makeFixture();
     try {
       const before = bgDirs(scratch);
-      // Force the __rust_compile_run__ branch without needing a real rustc install
-      // (unavailable on this machine — see background-final-review.md's own
-      // verification-limit note): inject a truthy `runtimes.rust` so buildCommand()
-      // routes to #compileAndRun exactly as it would with a real toolchain. The
-      // ACTUAL `rustc` binary still doesn't exist, so compilation itself fails —
-      // but that failure is irrelevant to what's under test here: whether a
-      // durable bg/<id> directory was ever allocated for this request.
-      const { detectRuntimes } = await import("../runtime");
+      // A truthy Rust runtime selects #compileAndRun; the impossible absolute
+      // compiler path makes its failure deterministic on hosts with or without
+      // rustc, while still testing that no durable background directory is made.
+      const missingCompiler = "/definitely/does/not/exist/rustc-xyz";
       const exec = new PolyglotExecutor({
         projectRoot: () => root,
-        runtimes: { ...detectRuntimes(), rust: "rustc" },
+        runtimes: { ...detectRuntimes(), rust: missingCompiler },
       });
       const r = await exec.execute({
         language: "rust", code: 'fn main() { println!("hi"); }', background: true,
       });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Compilation failed:");
+      expect(r.stderr).toContain(missingCompiler);
       // #compileAndRun never forwards `background` — unaffected by this fix.
       expect(r.backgrounded).toBeFalsy();
       expect(r.backgroundJob).toBeUndefined();

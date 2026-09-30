@@ -21,26 +21,33 @@ function mountAndGetTool() {
 
 describe("Escape (pi's real AbortSignal) reaches the spawned process end-to-end", () => {
   // Mutation this catches: revert extension.ts to `_signal` (ignored) -> this call waits
-  // out the full 5s sleep instead of returning promptly, and the failure below is loud.
+  // out the full 8s sleep and prints SHOULD_NOT_RUN; the outcome check fails.
+  // No abort-latency bound: this tolerates scheduling load, but a late kill
+  // before the post-sleep output can still pass.
   it("aborting the real tool call kills the running exec instead of waiting it out", async () => {
     const tool = mountAndGetTool();
     const ac = new AbortController();
-    const start = Date.now();
+    let childPid: number | undefined;
     const resultPromise = tool.execute(
       "abort-1",
-      { action: "exec", language: "shell", code: "sleep 5" },
+      { action: "exec", language: "shell", code: "echo READY:$$; sleep 8; echo SHOULD_NOT_RUN" },
       ac.signal,
-      undefined,
+      (update: any) => {
+        const text = update?.content?.[0]?.text ?? "";
+        const match = text.match(/READY:(\d+)/);
+        if (match) { childPid = Number(match[1]); ac.abort(); }
+      },
       { cwd: fixtureCwd, sessionId: "s-abort-1" },
     );
-    setTimeout(() => ac.abort(), 150);
     const result: any = await resultPromise;
-    const elapsed = Date.now() - start;
 
-    expect(elapsed).toBeLessThan(2000);
-    // toToolResult surfaces the aborted marker in details/text — not a silent success.
-    expect(JSON.stringify(result)).toMatch(/abort/i);
-  });
+    expect(childPid).toBeGreaterThan(0); // output came from the running child
+    expect(result.details.aborted).toBe(true);
+    expect(result.details.outcome).toBe("aborted");
+    expect(JSON.stringify(result)).not.toContain("SHOULD_NOT_RUN");
+    // A dropped stream (without killing the command) cannot satisfy this.
+    expect(() => process.kill(childPid!, 0)).toThrow();
+  }, 20_000);
 
   // A signal slot that ISN'T a real AbortSignal (legacy test shape, or a future host that
   // passes something else) must degrade to "no signal" rather than crashing on

@@ -20,6 +20,8 @@ export function mapRow(
     session_id?: string | null;
     created_at: number;
     updated_at: number | null;
+    justification?: string | null;
+    evidence?: string | null;
   }
 ): MemoryRecord {
   tableFor(scope);
@@ -35,6 +37,8 @@ export function mapRow(
     sessionId: scope === "repo" ? (row.session_id ?? null) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(row.justification ? { justification: row.justification } : {}),
+    ...(row.evidence ? { evidence: row.evidence } : {}),
   };
 }
 
@@ -68,7 +72,7 @@ export function listActive(
 
   if (tableFor(scope) === "memory") {
     let sql = `
-      SELECT id, uuid, category, content, link, status, source, confidence, session_id, created_at, updated_at
+      SELECT *
       FROM memory
       WHERE status = 'active'
     `;
@@ -90,7 +94,7 @@ export function listActive(
     return rows.map((row) => mapRow(scope, row));
   } else {
     let sql = `
-      SELECT id, uuid, category, content, link, scope, status, source, confidence, created_at, updated_at
+      SELECT *
       FROM global_memory
       WHERE status = 'active'
     `;

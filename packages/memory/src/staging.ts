@@ -41,18 +41,19 @@ export function stageWrite(
   db: Db,
   scope: MemoryScope,
   input: AddMemoryInput,
-  opts?: { autoStage?: boolean; cap?: number }
+  opts?: { autoStage?: boolean; cap?: number; verifiedUserQuote?: boolean }
 ): StageResult {
   tableFor(scope);
   // 1. SCAN FIRST — no row inserted on threat.
-  const threat = firstThreatMessage(input.content, "strict");
+  const threat = [input.content, input.justification, input.evidence]
+    .map(field => field ? firstThreatMessage(field, "strict") : null).find(Boolean);
   if (threat) {
     return { status: "rejected", reason: threat };
   }
 
   // 2. GUARDRAIL (anti-poisoning) — background writes only. User writes bypass.
   if (input.source === "auto" || input.source === "import") {
-    const v = shouldCapture(input.category, input.content);
+    const v = shouldCapture(input.category, input.content, input.evidence, opts?.verifiedUserQuote);
     if (!v.capture) {
       return { status: "rejected", reason: v.reason };
     }
@@ -80,9 +81,8 @@ export function stageWrite(
 
 export function listPending(db: Db, scope: MemoryScope): MemoryRecord[] {
   const table = tableFor(scope);
-  const sessionId = table === "memory" ? "session_id" : "NULL AS session_id";
   const rows = db.prepare(`
-    SELECT id, uuid, category, content, link, status, source, confidence, ${sessionId}, created_at, updated_at
+    SELECT *
     FROM ${table}
     WHERE status = 'staged'
     ORDER BY created_at DESC

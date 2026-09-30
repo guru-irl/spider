@@ -32,11 +32,12 @@ function fixtureDir(): string {
 function makeWorker(dir: string): { worker: OrganismWorker; worktreeDb: Db; repoDb: Db } {
   const worktreeDb = openDbAt(join(dir, "worktree.db"), "worktree");
   const repoDb = openDbAt(join(dir, "repo.db"), "repo");
-  handles.push(worktreeDb, repoDb);
+  const globalDb = openDbAt(join(dir, "global.db"), "global");
+  handles.push(worktreeDb, repoDb, globalDb);
   const deps: WorkerDeps = {
     db: repoDb,
     worktreeDb,
-    globalDb: repoDb,
+    globalDb,
     project: { projectKey: dir, realPath: dir, dbPath: join(dir, "worktree.db") },
     getEmbedder: async () => null,
     makeModel: () => ({ complete: async () => { throw new Error("Provider unavailable in fixture"); } }),
@@ -62,7 +63,7 @@ describe("persisted drain receipt reload (G2a/G2b)", () => {
     expect(persisted).toMatchObject({
       status: "failed",
       sessionId: "session-a",
-      errors: [{ phase: "learning" }],
+      errors: [{ phase: "learning", message: "Provider unavailable in fixture" }],
     });
     expect(persisted!.inputs.messages).toBe(1);
   });

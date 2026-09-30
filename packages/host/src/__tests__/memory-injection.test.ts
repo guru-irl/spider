@@ -6,6 +6,7 @@ import { openDbAt, openDbReadOnlyAt, openGlobal, bindSession, setGlobalDbPathFor
 import { registerHooks } from "../hooks";
 import spiderExtension from "../extension";
 import { controlConfig } from "../control";
+import { getMemory, listActive, listPending, searchMemoryFts } from "@spider/memory";
 
 const root = join(process.cwd(), ".spider", "scratch", `memory-hook-${process.pid}`);
 afterEach(() => {
@@ -274,6 +275,47 @@ describe("production memory injection", () => {
       expect(existsSync(f.repoPath)).toBe(false);
     });
   }
+
+  it("injects and diagnoses active memory from pre-v11 tables without migrating them", async () => {
+    const f = fixture("pre-v11-memory");
+    const repo = openDbAt(f.repoPath, "repo");
+    repo.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES ('r-old', 'convention', 'REPO-LEGACY-FACT', 'active', 'user', 1)").run();
+    repo.prepare("INSERT INTO memory_fts (uuid, category, content) VALUES ('r-old', 'convention', 'REPO-LEGACY-FACT')").run();
+    repo.exec(`ALTER TABLE memory DROP COLUMN justification; ALTER TABLE memory DROP COLUMN evidence; PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
+    repo.close();
+    const global = openDbAt(f.globalPath, "global");
+    global.prepare("INSERT INTO global_memory (uuid, category, content, scope, status, source, created_at) VALUES ('g-old', 'preference', 'GLOBAL-LEGACY-FACT', 'global', 'active', 'user', 1)").run();
+    global.exec(`ALTER TABLE global_memory DROP COLUMN justification; ALTER TABLE global_memory DROP COLUMN evidence; PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
+    global.close();
+
+    const prompt = (f.inject() as { systemPrompt: string }).systemPrompt;
+    expect(prompt).toContain("REPO-LEGACY-FACT");
+    expect(prompt).toContain("GLOBAL-LEGACY-FACT");
+    for (const [path, scope, uuid, content] of [
+      [f.repoPath, "repo", "r-old", "REPO-LEGACY-FACT"],
+      [f.globalPath, "global", "g-old", "GLOBAL-LEGACY-FACT"],
+    ] as const) {
+      const unchanged = openDbReadOnlyAt(path)!;
+      try {
+        expect(unchanged.pragma("user_version")).toBe(SCHEMA_VERSION - 1);
+        expect((unchanged.prepare(`PRAGMA table_info(${scope === "repo" ? "memory" : "global_memory"})`).all() as { name: string }[]).map(col => col.name)).not.toContain("justification");
+        expect(listActive(unchanged, scope)[0].content).toBe(content);
+        expect(getMemory(unchanged, scope, uuid)?.content).toBe(content);
+        expect(searchMemoryFts(unchanged, scope, "LEGACY")[0].content).toBe(content);
+        expect(listPending(unchanged, scope)).toEqual([]);
+      } finally { unchanged.close(); }
+    }
+    let tool: any;
+    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    const result = await tool.execute("legacy-doc", { action: "control", command: "doctor" }, undefined, undefined,
+      { cwd: f.cwd, sessionManager: { getSessionId: () => "legacy-session" } });
+    const lines = (result.details as { lines: string[] }).lines.join("\n");
+    expect(lines).toContain("memory repo: active=1 injected=1");
+    expect(lines).toContain("memory global: active=1 injected=1");
+    expect(lines).not.toContain("unreadable");
+    const repoAfter = openDbReadOnlyAt(f.repoPath)!;
+    try { expect(repoAfter.pragma("user_version")).toBe(SCHEMA_VERSION - 1); } finally { repoAfter.close(); }
+  });
 
   it("doctor reports an older repo schema with migration guidance and leaves it unchanged", async () => {
     const f = fixture("old-schema");

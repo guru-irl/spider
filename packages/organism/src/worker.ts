@@ -1,5 +1,5 @@
 import type { Db, ProjectInfo } from "@spider/db-core";
-import type { Embedder } from "@spider/memory";
+import { listActive, type Embedder } from "@spider/memory";
 import { emitLog } from "@spider/subagents";
 import { drainSession, type DrainOpts } from "./drain.js";
 import { applyDigest } from "./apply.js";
@@ -91,7 +91,7 @@ export class OrganismWorker {
     const report: DrainReport = {
       ...summary, kind: "organism-drain", sessionId, reason, status: "completed",
       startedAt: Date.now(), finishedAt: 0, modelCalls: 0,
-      inputs: { messages: 0, runs: 0, runEvents: 0, events: 0, completedTodos: 0 }, errors: [],
+      inputs: { messages: 0, runs: 0, runEvents: 0, events: 0, completedTodos: 0 }, errors: [], capDroppedByPass: {},
     };
     if (!org.enabled) {
       this.#lastDrain = { ...report, status: "skipped", skipReason: "disabled", finishedAt: Date.now() };
@@ -131,15 +131,19 @@ export class OrganismWorker {
         const before = report.modelCalls;
         try {
           const result = await fn();
+          if (result.capDropped) report.capDroppedByPass![name] = result.capDropped;
           if (report.modelCalls > before) successfulPasses++;
           return result;
         } catch (e) { fail(name, e); return emptyResult(); }
       };
       const results: DigestResult[] = [];
       let consolidated: DigestResult | undefined;
-      if (org.passes.runMemoryTodo) results.push(await runPass("runMemoryTodo", () => runMemoryTodoPass(bundle, model)));
-      if (org.passes.todoMemory) results.push(await runPass("todoMemory", () => todoMemoryPass(bundle, model)));
-      if (org.passes.learning) results.push(await runPass("learning", () => learningPass(bundle, model)));
+      if (org.passes.runMemoryTodo) results.push(await runPass("runMemoryTodo", () => runMemoryTodoPass(bundle, model, org.maxMemoryProposals)));
+      if (org.passes.todoMemory) results.push(await runPass("todoMemory", () => todoMemoryPass(bundle, model, org.maxMemoryProposals)));
+      if (org.passes.learning && bundle.transcript.length > 0) results.push(await runPass("learning", () => learningPass(bundle, model, org.maxMemoryProposals, [
+        ...listActive(globalDb, "global", { limit: 60 }).map(({ content }) => ({ scope: "global" as const, content })),
+        ...listActive(db, "repo", { limit: 60 }).map(({ content }) => ({ scope: "repo" as const, content })),
+      ])));
       if (org.passes.consolidation) {
         consolidated = await runPass("consolidation", () => consolidationPass(bundle, model));
       }
@@ -152,12 +156,14 @@ export class OrganismWorker {
           try {
             const embedder = await abortable(this.#deps.getEmbedder(), controller.signal);
             const result = await reflectionPass(db, embedder, model, {
+              maxMemoryProposals: org.maxMemoryProposals,
               onClusterError: (e, info) => {
                 fail("reflection", e);
                 reflectionAllFailed = info.total > 0 && info.failed === info.total;
               },
             });
             results.push(result);
+            if (result.capDropped) report.capDroppedByPass!.reflection = result.capDropped;
             // A modelCalls-diff alone cannot tell success from failure here (every
             // cluster calls model.complete regardless of whether its reply
             // parses); only credit a genuine success when at least one cluster
@@ -176,12 +182,14 @@ export class OrganismWorker {
       }
       merged.summary = consolidated?.summary;
       merged.selfName = consolidated?.selfName;
+      const capDropped = Object.values(report.capDroppedByPass ?? {}).reduce((sum, n) => sum + n, 0);
       try {
         Object.assign(summary, applyDigest(
           { db, globalDb, worktreeDb, scope: "repo", sessionId, skills: new SkillStore(db), project },
           merged, { max: org.autoWriteBudget, used: 0 },
         ));
-      } catch (e) { fail("apply", e); }
+        summary.dropped += capDropped;
+      } catch (e) { summary.dropped += capDropped; fail("apply", e); }
       this.#persistConsolidation(sessionId, merged, fail);
       if (org.passes.insights) {
         try { buildLearningGraph(db, globalDb, { persist: true }); }

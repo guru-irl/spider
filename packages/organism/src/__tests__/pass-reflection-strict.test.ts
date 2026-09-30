@@ -35,7 +35,7 @@ describe("reflectionPass — strict JSON contract (no raw response dump)", () =>
     seedCluster(ctx, dim);
     const stub: Embedder = { model: "test", dim, embed: async (t: string[]) => t.map(() => new Float32Array(dim)) };
     const model: DigestModel = {
-      complete: async () => JSON.stringify({ memory: [{ category: "insight", content: "shared umbrella lesson" }] }),
+      complete: async () => JSON.stringify({ memory: [{ category: "insight", content: "shared umbrella lesson", scope: "repo", justification: "Durable shared synthesis for future sessions", evidence: "src/rules.ts:4" }] }),
     };
     const r = await reflectionPass(ctx.repoDb, stub, model);
     expect(r.memory.some((m) => m.content === "shared umbrella lesson")).toBe(true);
@@ -78,7 +78,7 @@ describe("reflectionPass — per-cluster failure accounting (G4a)", () => {
       complete: async (_system: string, messages: { content: string }[]) =>
         (messages[0]?.content ?? "").includes("insight 0-")
           ? "Sorry, I can't help with that request."
-          : JSON.stringify({ memory: [{ category: "insight", content: "group1 umbrella lesson" }] }),
+          : JSON.stringify({ memory: [{ category: "insight", content: "group1 umbrella lesson", scope: "repo", justification: "Durable group synthesis for future sessions", evidence: "src/rules.ts:5" }] }),
     };
     const calls: Array<{ error: unknown; info: { failed: number; total: number } }> = [];
     const r = await reflectionPass(ctx.repoDb, stub, model, { onClusterError: (error, info) => calls.push({ error, info }) });
@@ -94,7 +94,7 @@ describe("reflectionPass — per-cluster failure accounting (G4a)", () => {
     seedTwoClusters(ctx, dim);
     const stub: Embedder = { model: "test", dim, embed: async (t: string[]) => t.map(() => new Float32Array(dim)) };
     const model: DigestModel = {
-      complete: async () => JSON.stringify({ memory: [{ category: "insight", content: "umbrella lesson" }] }),
+      complete: async () => JSON.stringify({ memory: [{ category: "insight", content: "umbrella lesson", scope: "repo", justification: "Durable synthesis for future sessions", evidence: "src/rules.ts:6" }] }),
     };
     const onClusterError = vi.fn();
     await reflectionPass(ctx.repoDb, stub, model, { onClusterError });

@@ -25,8 +25,8 @@ describe("applyDigest (fail-closed + budget)", () => {
       deps(ctx.repoDb, ctx.db),
       {
         memory: [
-          { category: "preference", content: "terse" },
-          { category: "insight", content: "small PRs" },
+          { category: "preference", content: "terse", scope: "repo", justification: "Durable project preference useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" },
+          { category: "insight", content: "small PRs", scope: "repo", justification: "Durable project insight useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" },
         ],
         todos: [{ text: "add CI" }],
         skills: [{ name: "answer-style", body: "# Style" }],
@@ -38,6 +38,31 @@ describe("applyDigest (fail-closed + budget)", () => {
     expect(summary.todosAdded).toBe(1);
     expect(listPending(ctx.repoDb, "repo").length).toBe(summary.memoryStaged);
     expect(listTodos(ctx.db, "s1")).toHaveLength(1);
+  });
+
+  it("rejects malformed metadata from any pass before staging, even with an available budget", () => {
+    ctx = makeOrgDb();
+    const valid = { category: "convention" as const, content: "Use review checklists on releases", scope: "repo" as const,
+      justification: "Standing repo rule useful to future agents", evidence: "src/rules.ts:2" };
+    const bad = [
+      { ...valid, content: "Missing scope", scope: undefined },
+      { ...valid, content: "Wrong scope", scope: "Global" as never },
+      { ...valid, content: "Missing justification", justification: "" },
+      { ...valid, content: "Missing evidence", evidence: "" },
+    ];
+    const summary = applyDigest(deps(ctx.repoDb, ctx.db), { memory: bad, skills: [], todos: [] }, { max: 10, used: 0 });
+    expect(summary).toMatchObject({ memoryStaged: 0, rejected: 4, dropped: 0 });
+    expect(listPending(ctx.repoDb, "repo")).toHaveLength(0);
+  });
+
+  it("rejects model-invented USER evidence from run and todo passes", () => {
+    ctx = makeOrgDb();
+    const summary = applyDigest(deps(ctx.repoDb, ctx.db), { memory: [{
+      category: "preference", content: "I prefer concise replies", scope: "repo",
+      justification: "Standing user preference", evidence: 'User: "I prefer concise replies on every project."',
+    }], todos: [], skills: [] }, { max: 10, used: 0 });
+    expect(summary).toMatchObject({ memoryStaged: 0, rejected: 1 });
+    expect(listPending(ctx.repoDb, "repo")).toHaveLength(0);
   });
 
   it("rejected staging consumes no budget and is counted", () => {

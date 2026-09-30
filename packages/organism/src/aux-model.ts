@@ -134,6 +134,12 @@ export function parseCandidates(raw: string, opts?: { strict?: boolean }): Diges
       if (typeof link === "string" || link === null) cand.link = link as string | null;
       const confidence = readField(entry, "confidence");
       if (typeof confidence === "number") cand.confidence = confidence;
+      const scope = readField(entry, "scope");
+      if (scope === "global" || scope === "repo") cand.scope = scope;
+      const justification = nonEmptyStr(readField(entry, "justification"));
+      if (justification !== undefined) cand.justification = justification;
+      const evidence = nonEmptyStr(readField(entry, "evidence"));
+      if (evidence !== undefined) cand.evidence = evidence;
       result.memory.push(cand);
     }
   }

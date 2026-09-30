@@ -126,6 +126,21 @@ describe("fresh vs migrated schema parity", () => {
     );
   });
 
+  it.each(["global", "repo"] as const)("%s v10 migration has the same memory column definitions as fresh v11", scope => {
+    const table = scope === "global" ? "global_memory" : "memory";
+    const fresh = openDbAt(join(scratch, `fresh-${scope}.db`), scope);
+    const expected = fresh.raw.prepare(`PRAGMA table_info(${table})`).all();
+    fresh.close();
+    const old = openDbAt(join(scratch, `old-${scope}.db`), scope);
+    old.raw.exec(`ALTER TABLE ${table} DROP COLUMN evidence`);
+    old.raw.exec(`ALTER TABLE ${table} DROP COLUMN justification`);
+    old.raw.pragma("user_version = 10");
+    old.close();
+    const migrated = openDbAt(join(scratch, `old-${scope}.db`), scope);
+    expect(migrated.raw.prepare(`PRAGMA table_info(${table})`).all()).toEqual(expected);
+    migrated.close();
+  });
+
   it("migration is idempotent: opening an already-current db twice is a no-op", () => {
     const p = join(scratch, "idem.db");
     const a = openDbAt(p, "global");

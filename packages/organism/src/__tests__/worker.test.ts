@@ -123,6 +123,65 @@ describe("OrganismWorker.runDrain", () => {
   });
 });
 
+describe("OrganismWorker.runCurate consolidation", () => {
+  it("calls the model for an explicit consolidate request even when config defaults off", async () => {
+    ctx = makeOrgDb();
+    ctx.repoDb.prepare("INSERT INTO skills (name, source, use_count, last_used_at, created_at) VALUES ('candidate','auto',1,1,1)").run();
+    let calls = 0;
+    const worker = new OrganismWorker({
+      db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.db,
+      project: {} as any, getEmbedder: async () => null,
+      makeModel: () => ({ complete: async () => { calls++; return '{"absorbed":[]}'; } }),
+      org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS,
+    });
+    const result = await curateAction({ db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker }, { force: true, consolidate: true });
+    expect(calls).toBe(1);
+    expect((result.details as { consolidated: boolean }).consolidated).toBe(true);
+  });
+
+  it("reports the disabled gate instead of claiming consolidation ran", async () => {
+    ctx = makeOrgDb();
+    const worker = new OrganismWorker({
+      db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.db,
+      project: {} as any, getEmbedder: async () => null, makeModel: () => null,
+      org: { ...ORGANISM_DEFAULTS, enabled: false }, curator: CURATOR_DEFAULTS,
+    });
+    const result = await curateAction({ db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker }, { consolidate: true });
+    expect((result.details as { consolidated: boolean; skipReason?: string }).consolidated).toBe(false);
+    expect((result.details as { skipReason?: string }).skipReason).toBe("disabled");
+    expect(result.display).toMatch(/organism disabled/i);
+    expect(result.display).not.toMatch(/consolidation: ran/i);
+  });
+
+  it("reports the paused gate when curate is requested without force", async () => {
+    ctx = makeOrgDb();
+    ctx.repoDb.prepare("INSERT INTO curator_state (scope, last_run_at, paused) VALUES ('project', NULL, 1)").run();
+    const worker = new OrganismWorker({
+      db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.db,
+      project: {} as any, getEmbedder: async () => null, makeModel: () => null,
+      org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS,
+    });
+    const result = await curateAction({ db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker }, { consolidate: true });
+    expect(result.details).toMatchObject({ consolidated: false, skipReason: "paused" });
+    expect(result.display).toMatch(/curator: skipped \(paused; use force to override\)/i);
+    expect(result.display).toMatch(/consolidation: requested but did not run/i);
+  });
+
+  it("reports the interval gate when the previous run is too recent", async () => {
+    ctx = makeOrgDb();
+    ctx.repoDb.prepare("INSERT INTO curator_state (scope, last_run_at, paused) VALUES ('project', ?, 0)").run(Date.now());
+    const worker = new OrganismWorker({
+      db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.db,
+      project: {} as any, getEmbedder: async () => null, makeModel: () => null,
+      org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS,
+    });
+    const result = await curateAction({ db: ctx.repoDb, globalDb: ctx.db, project: {} as any, worker }, { consolidate: true });
+    expect(result.details).toMatchObject({ consolidated: false, skipReason: "interval" });
+    expect(result.display).toMatch(/curator: skipped \(minimum interval has not elapsed; use force to override\)/i);
+    expect(result.display).toMatch(/consolidation: requested but did not run/i);
+  });
+});
+
 describe("curateAction — honest consolidate passthrough (G5c)", () => {
   it("forwards the actual requested consolidate flag to the worker instead of dropping it", async () => {
     ctx = makeOrgDb();

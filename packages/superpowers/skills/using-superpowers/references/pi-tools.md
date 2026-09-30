@@ -13,7 +13,7 @@ fallback.
 | Run a shell command | `spider exec` / `spider batch` | — (`bash` is blocked) |
 | Analyze a large file without editing | `spider exec_file` | `read` (only if you will edit) |
 | Index / fetch docs for search | `spider index` / `spider fetch` | — |
-| Dispatch a subagent | `spider run` (single/chain/parallel/async, `context:"fresh"\|"fork"`) | — |
+| Dispatch a subagent | `spider run` (single/chain/parallel/pipeline, all run in the background; `context:"fresh"\|"fork"`) | — |
 | Observe subagent completion | asynchronous `spider.subagent_done` message, no wait/poll | — |
 | Hand a finished stage to the next agent | `spider run { pipeline:[...], handoff:"intercom" }` | — |
 | Task tracking (create/mark a todo) | `spider todo` (`list`/`add`/`toggle`/`clear`/`sessions`/`view`) | plan file / `TODO.md` |

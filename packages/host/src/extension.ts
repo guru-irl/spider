@@ -143,6 +143,9 @@ export const SPIDER_PARAMETERS = {
     // control
     command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory','bind','unbind')." },
     apply: { type: "boolean", description: "control migrate: apply changes (default is a dry-run)." },
+    mark: { type: "string", description: "control upstream-watch: mark a reviewed baseline as '<package> <ref>' (run the watch first to fetch the mirror)." },
+    force: { type: "boolean", description: "control skill sub=curate: run even when the organism is disabled, the curator is paused, or the minimum interval has not elapsed (decay can mark skills stale/archived). fetch: skip the cache TTL and refetch." },
+    consolidate: { type: "boolean", description: "control skill sub=curate: request aux-model consolidation of eligible agent-created skills when a model and candidates are available; absorbed skills are archived." },
     op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
@@ -155,6 +158,7 @@ export const SPIDER_PARAMETERS = {
     query: { type: "string", description: "Search matches any sanitized term. Repo recall ranks all-word matches first (AND), then fills from any-word matches (OR); FTS operators are ignored, and common words are removed unless all terms are common. Global recall matches the whole query as a substring." },
     category: { type: "string", description: "Memory category (remember) or filter (recall); optional skill category for action='skill' op=add." },
     limit: { type: "number", description: "Max results (search/recall)." },
+    kinds: { type: "array", items: { type: "string", enum: ["memory", "content", "session", "todo"] }, description: "search: restrict results to these kinds; default includes memory, content, session and todo." },
     // remember
     content: { type: "string", description: "Text to store for action 'remember' (or index/fetch body)." },
     link: { type: "string", description: "Optional link/url to attach to a remembered item." },
@@ -195,6 +199,7 @@ export const SPIDER_PARAMETERS = {
         },
       },
     },
+    handoff: { type: "string", enum: ["intercom", "wait"], description: "No effect; accepted for compatibility. Pipeline stages start a fresh child after a done, failed or cancelled stage with the previous result as {previous}/{handoff}; neither value sends a mailbox message or waits synchronously." },
     pipeline: {
       type: "array", description: "PIPELINE-mode stages (advanced push-based auto-wake).",
       items: { type: "object", properties: {
@@ -215,9 +220,10 @@ export const SPIDER_PARAMETERS = {
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
     message: { type: "string", description: "Message body for action 'message'." },
+    kind: { type: "string", description: "message: optional intercom message kind; defaults to 'message'." },
     // todo
     text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate BODY (markdown) for action='skill' op=add; free-form request for action='skill' op=distill." },
-    session: { type: "string", description: "For action 'todo' op 'view': which session's todos (session id/prefix/name or 'all')." },
+    session: { type: "string", description: "todo op=view: session id/prefix/name or 'all'. import: single transcript file path, taking precedence over sessions and select." },
     // exec
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
     language: { type: "string", description: "Language for action 'exec' (javascript, shell, python, ruby, go, rust, php, perl, r, elixir, csharp, typescript)." },
@@ -238,8 +244,15 @@ export const SPIDER_PARAMETERS = {
     },
     // index / fetch
     url: { type: "string", description: "URL for action 'fetch'." },
+    requests: { type: "array", items: { type: "object", properties: { url: { type: "string" }, source: { type: "string" } }, required: ["url"] }, description: "fetch: batch of {url, source?} requests; when supplied, replaces the single url/source request." },
+    ttl: { type: "number", description: "fetch: cache lifetime in milliseconds (24 h default); force bypasses this TTL." },
     source: { type: "string", description: "Source label for action 'index'/'fetch'." },
     path: { type: "string", description: "File/dir path for action 'index'/'exec_file'." },
+    // import
+    sessions: { type: "array", items: { type: "string" }, description: "import: session transcript file paths; used when session is absent." },
+    select: { type: "object", properties: { project: { type: "string" }, all: { type: "boolean" }, since: { type: "number" }, glob: { type: "string" } }, description: "import: select local pi session transcripts by project path (default cwd); all replaces project and searches all projects. since is an epoch timestamp in milliseconds: include files modified at or after it. glob is a path substring. Filters combine (AND); used when session and sessions are absent." },
+    commit: { type: "boolean", description: "import: approve staged memory/skill candidates immediately; default leaves them staged." },
+    sourceMode: { type: "string", enum: ["pi", "hermes-db", "todos-db", "context-db"], description: "import: only 'pi' session transcripts are implemented; other modes return an error." },
   },
   required: ["action"],
   additionalProperties: true,
@@ -255,6 +268,9 @@ function buildOrganismDeps(ctx: ActionCtx & { parentModel?: string }): OrganismA
   }
   return runtime.resolve(ctx);
 }
+
+// Test hosts can supply local watch sources without exposing them to JSON tool calls.
+export const UPSTREAM_REPOS_FOR_TESTS: unique symbol = Symbol("upstream-repos-for-tests");
 
 /** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
 /** Render a control upstream-watch report as a compact 🕸 panel string. */
@@ -516,10 +532,11 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
       });
       const mirrorRoot = path.join(paths.globalRoot, "upstream");
       const mark = (args as { mark?: unknown }).mark;
-      if (mark != null && mark !== false) {
-        const parts = Array.isArray(mark) ? mark.map(String) : String(mark).split(/\s+/).filter(Boolean);
+      const parts = Array.isArray(mark) ? mark.map(value => String(value).trim())
+        : mark == null || mark === false ? [] : String(mark).trim().split(/\s+/).filter(Boolean);
+      if (parts.some(Boolean)) {
         const [pkg, ref] = parts;
-        if (!pkg || !ref) return { error: "control upstream-watch --mark needs <package> <ref>" };
+        if (!pkg || !ref || parts.length !== 2) return { error: "control upstream-watch --mark needs <package> <ref>" };
         try {
           const sha = await markReviewed(ctx.globalDb, pkg, ref, { git, mirrorRoot });
           return {
@@ -530,9 +547,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
           return { error: error instanceof Error ? error.message : String(error) };
         }
       }
-      // `repos` is a hermetic-test hook: values replace upstream_repo sources,
-      // never mirror paths. Production always reads the URLs stored in the DB.
-      const upstreamRepos = (args as { repos?: Record<string, string> }).repos;
+      const upstreamRepos = (ctx.pi as { [UPSTREAM_REPOS_FOR_TESTS]?: Record<string, string> })[UPSTREAM_REPOS_FOR_TESTS];
       const report = await runUpstreamWatch(ctx.globalDb, ctx.db, ctx.sessionId, {
         git,
         mirrorRoot,

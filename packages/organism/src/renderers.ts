@@ -30,13 +30,16 @@ export function renderDistill(prompt: string): string {
 }
 
 /** Render the `control skill curate` decay result. */
-export function renderCurateResult(r: DecayResult & { consolidated?: boolean; consolidateRequested?: boolean }): string {
+export function renderCurateResult(r: DecayResult & { consolidated?: boolean; consolidateRequested?: boolean; skipReason?: "disabled" | "paused" | "interval" }): string {
   const lines = [
     "## curator 🧹",
     `- stale: ${r.toStale.length}`,
     `- archived: ${r.toArchived.length}`,
     `- skipped (pinned/protected): ${r.skipped.length}`,
   ];
+  if (r.skipReason === "disabled") lines.push("- curator: skipped (organism disabled; use force to override)");
+  if (r.skipReason === "paused") lines.push("- curator: skipped (paused; use force to override)");
+  if (r.skipReason === "interval") lines.push("- curator: skipped (minimum interval has not elapsed; use force to override)");
   if (r.consolidateRequested) {
     lines.push(r.consolidated ? "- consolidation: ran" : "- consolidation: requested but did not run");
   } else if (r.consolidated) {

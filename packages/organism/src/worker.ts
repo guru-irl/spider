@@ -81,7 +81,7 @@ export class OrganismWorker {
   runDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
     return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
   }
-  runCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean }> {
+  runCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }> {
     return this.#serialize(() => this.#doRunCurate(now, opts));
   }
 
@@ -247,11 +247,15 @@ export class OrganismWorker {
     }
   }
 
-  async #doRunCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean }> {
+  async #doRunCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }> {
     const { db, curator, org } = this.#deps;
     const ts = now ?? Date.now();
-    if ((!org.enabled && opts?.force !== true) || (opts?.force !== true && !curatorShouldRun(db, ts, curator))) {
-      return { toStale: [], toArchived: [], skipped: [], consolidated: false };
+    if (!org.enabled && opts?.force !== true) {
+      return { toStale: [], toArchived: [], skipped: [], consolidated: false, skipReason: "disabled" };
+    }
+    if (opts?.force !== true && !curatorShouldRun(db, ts, curator)) {
+      const state = db.prepare("SELECT paused FROM curator_state WHERE scope = 'project'").get() as { paused: number };
+      return { toStale: [], toArchived: [], skipped: [], consolidated: false, skipReason: state.paused ? "paused" : "interval" };
     }
     const skills = new SkillStore(db);
     const result = runCuratorDecay(db, skills, ts, curator);
@@ -261,7 +265,16 @@ export class OrganismWorker {
       const signal = AbortSignal.timeout(this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS);
       try {
         const model = this.#deps.makeModel(signal);
-        if (model) { await abortable(consolidateSkills(skills, model, curator), signal); consolidated = true; }
+        if (model) {
+          const observedModel: DigestModel = {
+            complete: async (system, messages) => {
+              const reply = await model.complete(system, messages);
+              consolidated = true;
+              return reply;
+            },
+          };
+          await abortable(consolidateSkills(skills, observedModel, { ...curator, consolidate: shouldConsolidate }), signal);
+        }
       } catch (e) {
         const sessionId = this.#lastDrain?.sessionId;
         if (sessionId) {

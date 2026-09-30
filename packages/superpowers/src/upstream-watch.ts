@@ -160,7 +160,7 @@ export const DEFAULT_UPSTREAM_REFS: UpstreamCheck[] = [
   { package: "superpowers", upstreamRepo: "https://github.com/obra/superpowers", upstreamRef: "main" },
   { package: "memory",      upstreamRepo: "https://github.com/guru-irl/pi-hermes-memory", upstreamRef: "main" },
   { package: "context",     upstreamRepo: "https://github.com/guru-irl/context-mode", upstreamRef: "main" },
-  { package: "todo",        upstreamRepo: "https://github.com/guru-irl/pi-todo-sqlite", upstreamRef: "main" },
+  { package: "todo",        upstreamRepo: "https://github.com/guru-irl/pi-todo-sqlite", upstreamRef: "master" },
   { package: "subagents",   upstreamRepo: "https://github.com/guru-irl/pi-subagents", upstreamRef: "main" },
   { package: "db-core",     upstreamRepo: "https://github.com/guru-irl/spider", upstreamRef: "main" },
 ];
@@ -175,6 +175,8 @@ export function seedUpstreamRefs(globalDb: Db): void {
   for (const c of DEFAULT_UPSTREAM_REFS) {
     stmt.run({ package: c.package, repo: c.upstreamRepo, ref: c.upstreamRef ?? "main" });
   }
+  // Only repair the old seeded default; do not overwrite a user-selected ref.
+  globalDb.prepare("UPDATE upstream_refs SET upstream_ref='master' WHERE package='todo' AND upstream_ref='main'").run();
 }
 
 /** Validate a baseline ref in the package mirror and persist its full commit SHA. */

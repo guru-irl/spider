@@ -223,6 +223,31 @@ describe("real upstream resolution", () => {
   });
 });
 
+describe("seedUpstreamRefs", () => {
+  it("repairs only todo's legacy main ref, preserves changed refs and remains idempotent", () => {
+    const dbPath = testScratchPath(`uw-seed-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
+    const db = openDbAt(dbPath, "global");
+    try {
+      migrate(db, "global");
+      seedUpstreamRefs(db);
+      const ref = (pkg: string) => (db.prepare("SELECT upstream_ref FROM upstream_refs WHERE package=?").get(pkg) as { upstream_ref: string }).upstream_ref;
+      expect(ref("todo")).toBe("master");
+      db.prepare("UPDATE upstream_refs SET upstream_ref='main', last_reviewed_commit='reviewed', upstream_repo='local-source' WHERE package='todo'").run();
+      db.prepare("UPDATE upstream_refs SET upstream_ref='custom' WHERE package='memory'").run();
+      seedUpstreamRefs(db);
+      seedUpstreamRefs(db);
+      expect(ref("todo")).toBe("master");
+      expect(db.prepare("SELECT upstream_repo, last_reviewed_commit FROM upstream_refs WHERE package='todo'").get()).toEqual({ upstream_repo: "local-source", last_reviewed_commit: "reviewed" });
+      expect(ref("memory")).toBe("custom");
+      db.prepare("UPDATE upstream_refs SET upstream_ref='release' WHERE package='todo'").run();
+      seedUpstreamRefs(db);
+      expect(ref("todo")).toBe("release");
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("runUpstreamWatch", () => {
   it("seeds refs, records candidates as todos, updates last_checked_at, and de-dupes on re-run", async () => {
     const r = tempRepo();

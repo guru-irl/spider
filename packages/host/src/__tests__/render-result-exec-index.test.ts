@@ -89,6 +89,25 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(short.every((row) => visibleWidth(row) <= 80)).toBe(true);
     expect(short.at(-1)).toContain("…");
   });
+  it("shows the config write destination and a local shadow in the confirmation", () => {
+    const out = lines("control", { ok: true, op: "set", key: "ui.footer", value: true, scope: "global", file: "fixture/global/config.json", shadowedBy: "local" }, { command: "config" }).join("\n");
+    expect(out).toContain("global");
+    expect(out).toContain("fixture/global/config.json");
+    expect(out).toMatch(/shadowed by local/i);
+  });
+
+  it("labels config unset confirmations as unset", () => {
+    const out = lines("control", { ok: true, op: "unset", key: "memory.reviewer.model", scope: "local", file: "fixture/local/config.json" }, { command: "config" }).join("\n");
+    expect(out).toContain("unset memory.reviewer.model");
+    expect(out).not.toContain("set memory.reviewer.model →");
+  });
+
+  it("shows the effective config value's source", () => {
+    const out = lines("control", { key: "ui.footer", value: false, source: "local", errors: [] }, { command: "config" }).join("\n");
+    expect(out).toContain("false");
+    expect(out).toContain("local");
+  });
+
   it("exec routes to the bespoke renderer (✓ exit 0, no duplicated header)", () => {
     const out = lines("exec", { stdout: "one\ntwo\nthree", stderr: "", exitCode: 0, timedOut: false }, { code: "ls -la" }).join("\n");
     expect(out).not.toMatch(/spider exec/);

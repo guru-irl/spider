@@ -105,37 +105,60 @@ export function modelDefaultLayerForEdit(cwd: string, scope: "local" | "global")
   return value as Record<string, unknown>;
 }
 
-function merged(cwd: string): Record<string, unknown> {
+type ConfigSource = "default" | "global" | "local" | Record<string, "global" | "local">;
+
+/** Effective config and its provenance come from the same read of both layers. */
+export function configValues(cwd: string): {
+  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[];
+} {
   const layers = configLayers(cwd);
   const g = layers.global.config;
   const p = layers.local.config;
   const all = { ...DEFAULTS, ...g, ...p };
-  if ("models.defaults" in g || "models.defaults" in p) all["models.defaults"] = { ...roleMap(g["models.defaults"]), ...roleMap(p["models.defaults"]) };
-  return all;
+  const sources: Record<string, ConfigSource> = Object.fromEntries(Object.keys(all).map(key =>
+    [key, Object.hasOwn(p, key) ? "local" : Object.hasOwn(g, key) ? "global" : "default"]));
+  if ("models.defaults" in g || "models.defaults" in p) {
+    const global = roleMap(g["models.defaults"]);
+    const local = roleMap(p["models.defaults"]);
+    all["models.defaults"] = { ...global, ...local };
+    sources["models.defaults"] = Object.fromEntries(Object.keys({ ...global, ...local }).map(role =>
+      [role, Object.hasOwn(local, role) ? "local" : "global"]));
+  }
+  return { config: all, sources, errors: layers.errors };
 }
 
+export interface ConfigWriteResult {
+  ok: true; op: "set" | "unset"; key: string; value: unknown;
+  scope: "local" | "global"; file: string; shadowedBy?: "local";
+}
+
+export function controlConfig(op: "set" | "unset", cwd: string, key: string, value?: unknown, scope?: "local" | "global"): ConfigWriteResult;
+export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: string, value?: unknown, scope?: "local" | "global"): unknown;
 export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: string, value?: unknown, scope: "local" | "global" = "local"): unknown {
   if (op === "get") {
-    const all = merged(cwd);
+    const all = configValues(cwd).config;
     return key === undefined ? all : all[key];
   }
-  // Ordinary config edits stay local. Model-role defaults explicitly choose global.
+  if (scope !== "local" && scope !== "global") throw new Error("control config: scope must be global or local");
+  if (key === undefined) throw new Error(`control config ${op}: key required`);
+  // Ordinary edits stay local unless the caller explicitly chooses global.
   const root = scope === "global" ? paths.globalRoot : paths.projectRoot(cwd);
   const file = configFile(root);
   assertTestConfigPath(file);
   mkdirSync(root, { recursive: true });
   const cur = readJson(file);
-  if (key === undefined) throw new Error("control config set: key required");
   if (op === "set" && key === "memory.reviewer.timeoutMs" &&
     (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > 120000)) {
     throw new Error("memory.reviewer.timeoutMs must be an integer from 1000 to 120000 ms");
   }
   if (op === "unset") {
-    // A global limit must not silently reappear after the user chooses unlimited.
-    const global = readJson(configFile(paths.globalRoot));
-    if (Object.prototype.hasOwnProperty.call(global, key)) cur[key] = "unlimited";
+    // Only the snapshot cap accepts unlimited. Other keys inherit after deletion.
+    const global = key === "memory.snapshotCharCap"
+      ? (scope === "global" ? cur : readJson(configFile(paths.globalRoot))) : {};
+    if (Object.hasOwn(global, key)) cur[key] = "unlimited";
     else delete cur[key];
   } else cur[key] = value;
+  const shadowed = scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   assertTestConfigPath(temp);
   try {
@@ -144,7 +167,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   } finally {
     rmSync(temp, { force: true });
   }
-  return { ok: true, key, value: op === "unset" ? undefined : value };
+  return { ok: true, op, key, value: cur[key], scope, file, ...(shadowed ? { shadowedBy: "local" } : {}) };
 }
 
 // ── doctor ──

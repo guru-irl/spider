@@ -74,7 +74,7 @@ describe("applyConfigEdit round-trip", () => {
     ["auxiliary.background_review.model", "model"],
   ])("accepts production reader %s through control config set", (key, raw) => {
     const dir = fixture();
-    expect(applyConfigEdit(dir, key, raw)).toEqual({ ok: true });
+    expect(applyConfigEdit(dir, key, raw)).toMatchObject({ ok: true, scope: "local", file: join(dir, ".spider", "config.json") });
     expect(controlConfig("get", dir, key)).toEqual(key.startsWith("auxiliary.") ? raw : JSON.parse(raw));
   });
   it("every reachable production reader has a schema field accepted by config set except the user-only enforcement switch", () => {
@@ -90,7 +90,7 @@ describe("applyConfigEdit round-trip", () => {
         if (key === "exec.enforce") {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
         } else {
-          expect(applyConfigEdit(dir, key, raw), key).toEqual({ ok: true });
+          expect(applyConfigEdit(dir, key, raw), key).toMatchObject({ ok: true, scope: "local", file: join(dir, ".spider", "config.json") });
         }
       }
     } finally { paths.globalRoot = previous; }

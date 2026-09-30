@@ -236,8 +236,7 @@ function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, wid
     ? fitResultLines(details.errors.map((error: unknown) => th.fg("error", String(error))), width, expanded) : [];
 }
 
-/** `control config` — render the schema × current values as a body-only config view. The `set`
- *  path returns only a confirmation payload; render that as a single status line. Never throws. */
+/** Render current config values or a scoped set/unset confirmation. Never throws. */
 function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.config && typeof details.config === "object") {
@@ -246,10 +245,15 @@ function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
       ? th.fg("error", "✗") + " " + th.fg("text", String(details.error))
-      : th.fg("accent", "●") + " " + th.fg("text", `set ${String(details.key ?? "")} → ${String(details.value ?? "")}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
-    return { render: (w: number) => ["", ...fitResultLines([line], w, expanded)], invalidate() {} };
+      : th.fg("accent", "●") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
+    const destination = details.ok && details.file ? `Config file: ${String(details.file)}` : "";
+    const shadow = details.ok && details.shadowedBy ? `Shadowed by ${String(details.shadowedBy)} config` : "";
+    return { render: (w: number) => ["", ...fitResultLines([line, ...(destination ? [destination] : []), ...(shadow ? [shadow] : [])], w, expanded)], invalidate() {} };
   }
-  if (details?.key !== undefined) return { render: (w: number) => ["", `${String(details.key)}: ${String(details.value)}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+  if (details?.key !== undefined) {
+    const source = details.source === undefined ? "" : ` (${typeof details.source === "string" ? details.source : JSON.stringify(details.source)})`;
+    return { render: (w: number) => ["", `${String(details.key)}: ${String(details.value)}${source}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+  }
   return textComponent({ details }, expanded);
 }
 

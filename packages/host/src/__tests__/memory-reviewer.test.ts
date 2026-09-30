@@ -186,10 +186,11 @@ describe("remember reviewer host", () => {
     const recallResult = await t.execute("filter", { action: "recall", category: "custom", cwd: dir }, undefined, undefined, { cwd: dir });
     expect(JSON.stringify(recallResult)).not.toContain("invalid memory category");
   });
-  it("rejects out-of-range timeout config values", () => {
+  it.each(["local", "global"] as const)("rejects invalid timeout config values at %s scope", (scope) => {
     const dir = fixture();
-    expect(() => controlConfig("set", dir, "memory.reviewer.timeoutMs", 0)).toThrow(/timeout/i);
-    expect(() => controlConfig("set", dir, "memory.reviewer.timeoutMs", 120001)).toThrow(/timeout/i);
+    for (const value of [0, 120001, 1500.5, "20000", null]) {
+      expect(() => controlConfig("set", dir, "memory.reviewer.timeoutMs", value, scope)).toThrow(/timeout/i);
+    }
   });
   it("missing or blank justification rejects even with reviewer disabled; unavailable registry fails open", async () => {
     const dir = fixture();

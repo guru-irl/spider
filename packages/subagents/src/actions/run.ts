@@ -67,7 +67,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const tailer = coords.tailer;
     const spawn = overrides.spawner ?? defaultSpawner;
     const scratchRoot = paths.scratch("project", ctx.cwd);
-    const dbPath = ctx.project?.dbPath ?? "";
+    const dbPath = ctx.runDbPath ?? ctx.project?.dbPath ?? "";
     const onComplete = makeAsyncNotifier(ctx);
     const runnerDeps = { store, tailer, spawn, scratchRoot, dbPath, onComplete };
     const runner = overrides.makeRunner

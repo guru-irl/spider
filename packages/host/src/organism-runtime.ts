@@ -34,6 +34,7 @@ function boundedPrompt(messages: readonly { role: string; content: string }[]): 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
+export const AUXILIARY_CONFIG_KEYS = ["auxiliary.background_review.provider", "auxiliary.background_review.model"] as const;
 function configuredAux(cfg: unknown): { provider?: string; model?: string } {
   const all = object(cfg);
   const nested = object(object(all.auxiliary).background_review);

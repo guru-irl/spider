@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildConfigModel, readPath } from "../config-model.js";
+import { getField } from "../config-schema.js";
 
 describe("config model", () => {
 	it("reads a dotted path (nested)", () => {
@@ -15,9 +16,12 @@ describe("config model", () => {
 		const footer = ui.rows.find((r) => r.field.key === "ui.footer")!;
 		expect(footer.value).toBe(false);
 		expect(footer.isDefault).toBe(false);
-		const theme = ui.rows.find((r) => r.field.key === "ui.theme")!;
-		expect(theme.value).toBe("auto");
-		expect(theme.isDefault).toBe(true);
+		expect(ui.rows.some((r) => r.field.key === "ui.theme")).toBe(false);
+	});
+	it("does not advertise an unsupported configurable grid shortcut or theme", () => {
+		expect(getField("ui.gridHotkey")).toBeUndefined();
+		expect(getField("ui.grid_hotkey")).toBeUndefined();
+		expect(getField("ui.theme")).toBeUndefined();
 	});
 	it("flags overridden values from a flat map", () => {
 		const groups = buildConfigModel({ "ui.footer": false });

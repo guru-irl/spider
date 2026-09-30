@@ -93,7 +93,7 @@ export class AgentStore {
 
   edges(): HandoffEdge[] { return this.handoffs; }
 
-  /** Footer selection (ctrl+shift+g): the footer widget itself renders a ▸ cursor on the
+  /** Footer selection (/agents or alt+shift+up): the footer widget itself renders a ▸ cursor on the
    *  selected row while a key-capturing overlay drives the index — so the footer stays put
    *  (the chat/editor never move). Selection runs over the current snapshot() order. */
   beginSelect(): void { const n = this.snapshot().length; if (n === 0) return; this.selecting = true; if (this.sel < 0 || this.sel >= n) this.sel = 0; this.emit(); }

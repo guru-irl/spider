@@ -1,40 +1,123 @@
 // packages/host/src/control.ts
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { openGlobal, resolveProject, paths, assertTestConfigPath } from "@spider/db-core";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
 // ── config (plain JSON; precedence defaults < global < project) ──
-const DEFAULTS: Record<string, unknown> = {
+export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
-  "ui.grid_hotkey": "ctrl+shift+g",
-  "embeddings.provider": "fastembed",
-  "embeddings.model": "BGE-small-en-v1.5",
-  "embeddings.dim": 384,
 };
 
 function configFile(scopeRoot: string): string {
   return join(scopeRoot, "config.json");
 }
+class ConfigParseError extends Error {}
+
 function readJson(file: string): Record<string, unknown> {
   assertTestConfigPath(file);
   if (!existsSync(file)) return {};
-  try { return JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>; } catch { return {}; }
+  let text: string;
+  try { text = readFileSync(file, "utf-8"); }
+  catch (error) {
+    throw new ConfigParseError(`unreadable config file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected a JSON object");
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    throw new ConfigParseError(`cannot parse config file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
-function merged(cwd: string): Record<string, unknown> {
-  const g = readJson(configFile(paths.globalRoot));
-  const p = readJson(configFile(paths.projectRoot(cwd)));
-  return { ...DEFAULTS, ...g, ...p };
+function readLayer(file: string): { config: Record<string, unknown>; error?: string } {
+  try { return { config: readJson(file) }; }
+  catch (error) {
+    if (!(error instanceof ConfigParseError)) throw error;
+    return { config: {}, error: error.message };
+  }
 }
 
-export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: string, value?: unknown): unknown {
+function configLayers(cwd: string) {
+  const globalFile = configFile(paths.globalRoot);
+  const localFile = configFile(paths.projectRoot(cwd));
+  const global = readLayer(globalFile);
+  const local = readLayer(localFile);
+  const errors = [global.error, local.error].filter((s): s is string => s !== undefined);
+  for (const [layer, file] of [[global, globalFile], [local, localFile]] as const) {
+    const value = layer.config["models.defaults"];
+    if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) {
+      errors.push(`invalid models.defaults in ${file}: expected an object`);
+    }
+    if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
+      errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
+    }
+  }
+  return { global, local, globalFile, localFile, errors };
+}
+
+/** One read of each layer supplies the effective enforcement value, parse errors, and diagnostics. */
+export function execEnforcement(cwd: string): { current: unknown; errors: string[]; diagnostics: string[] } {
+  const { global, local, globalFile, localFile, errors: diagnostics } = configLayers(cwd);
+  const localWins = Object.hasOwn(local.config, "exec.enforce");
+  const current = localWins ? local.config["exec.enforce"] : global.config["exec.enforce"];
+  const effectiveFile = localWins ? localFile : globalFile;
+  const errors = [global.error, local.error].filter((s): s is string => s !== undefined);
+  if (current !== undefined && typeof current !== "boolean") {
+    errors.push(`invalid value for exec.enforce in ${effectiveFile}: expected a boolean`);
+  }
+  return { current, errors, diagnostics };
+}
+
+/** Malformed read layers are skipped, but their paths remain visible to callers. */
+export function configReadErrors(cwd: string): string[] { return configLayers(cwd).errors; }
+
+function roleMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+/** Per-role precedence: explicit local roles shadow global roles, not the entire map. */
+export function modelDefaultLayers(cwd: string): {
+  global: Record<string, string>; local: Record<string, string>;
+  defaults: Record<string, string>; sources: Record<string, "global" | "local">; errors: string[];
+} {
+  const layers = configLayers(cwd);
+  const global = roleMap(layers.global.config["models.defaults"]);
+  const local = roleMap(layers.local.config["models.defaults"]);
+  return {
+    global, local, errors: layers.errors, defaults: { ...global, ...local },
+    sources: Object.fromEntries(Object.keys({ ...global, ...local }).map(role => [role, role in local ? "local" : "global"])),
+  };
+}
+
+/** Scoped model edits use the unfiltered map and the strict write-side parser. */
+export function modelDefaultLayerForEdit(cwd: string, scope: "local" | "global"): Record<string, unknown> {
+  const file = configFile(scope === "global" ? paths.globalRoot : paths.projectRoot(cwd));
+  const value = readJson(file)["models.defaults"];
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`invalid models.defaults in ${file}: expected an object`);
+  return value as Record<string, unknown>;
+}
+
+function merged(cwd: string): Record<string, unknown> {
+  const layers = configLayers(cwd);
+  const g = layers.global.config;
+  const p = layers.local.config;
+  const all = { ...DEFAULTS, ...g, ...p };
+  if ("models.defaults" in g || "models.defaults" in p) all["models.defaults"] = { ...roleMap(g["models.defaults"]), ...roleMap(p["models.defaults"]) };
+  return all;
+}
+
+export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: string, value?: unknown, scope: "local" | "global" = "local"): unknown {
   if (op === "get") {
     const all = merged(cwd);
     return key === undefined ? all : all[key];
   }
-  // set → write to the PROJECT config (project overrides global)
-  const root = paths.projectRoot(cwd);
+  // Ordinary config edits stay local. Model-role defaults explicitly choose global.
+  const root = scope === "global" ? paths.globalRoot : paths.projectRoot(cwd);
   const file = configFile(root);
   assertTestConfigPath(file);
   mkdirSync(root, { recursive: true });
@@ -46,7 +129,14 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     if (Object.prototype.hasOwnProperty.call(global, key)) cur[key] = "unlimited";
     else delete cur[key];
   } else cur[key] = value;
-  writeFileSync(file, JSON.stringify(cur, null, 2));
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  assertTestConfigPath(temp);
+  try {
+    writeFileSync(temp, JSON.stringify(cur, null, 2), { flag: "wx" });
+    renameSync(temp, file);
+  } finally {
+    rmSync(temp, { force: true });
+  }
   return { ok: true, key, value: op === "unset" ? undefined : value };
 }
 
@@ -77,6 +167,11 @@ export function controlDoctor(cwd: string, sessionId?: string): { ok: boolean; l
     ok = false;
     lines.push(`- registry: FAILED (${(e as Error).message})`);
   }
+
+  // Read diagnostics are separate from writes, which must never overwrite malformed JSON.
+  try {
+    for (const error of configReadErrors(cwd)) { ok = false; lines.push(`- config: FAILED (${error})`); }
+  } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }
 
   // 3. embedding provider reachability — lazy, not exercised in Phase 0
   lines.push("- embeddings: fastembed (lazy; model download deferred to Phase 1)");

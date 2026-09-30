@@ -74,6 +74,40 @@ describe("renderSpiderResult dispatcher", () => {
     expect(bleed).toHaveLength(0);
   });
 
+  it("control models set shows shadowing ref and file; clear identifies its local scope", () => {
+    const args = mkCtx({ action: "control", command: "models" });
+    const set = renderSpiderResult(mkResult({ ok: true, role: "worker", ref: "prov/new", shadowedBy: { ref: "prov/old", file: "/fixture/.spider/config.json" } }), opts, theme, args);
+    expect(set.render(140).join("\n")).toContain("prov/old");
+    expect(set.render(140).join("\n")).toContain("/fixture/.spider/config.json");
+    const clear = renderSpiderResult(mkResult({ ok: true, role: "worker", cleared: true }), opts, theme, args);
+    expect(clear.render(140).join("\n")).toMatch(/clear.*worker.*local/i);
+  });
+
+  it("renders malformed local config warning beneath a successful global model set", () => {
+    const c = renderSpiderResult(mkResult({ ok: true, role: "worker", ref: "prov/new", errors: ["cannot parse config file /fixture/.spider/config.json"] }), opts, theme, mkCtx({ action: "control", command: "models" }));
+    const text = c.render(150).join("\n");
+    expect(text).toContain("set worker");
+    expect(text).toContain("/fixture/.spider/config.json");
+  });
+
+  it("control models clear without an override reports no local override", () => {
+    const c = renderSpiderResult(mkResult({ ok: true, cleared: false, role: "worker" }), opts, theme, mkCtx({ action: "control", command: "models" }));
+    expect(c.render(140).join("\n")).toMatch(/no local override.*worker/i);
+  });
+
+  it("shows malformed config paths in config and models views", () => {
+    const errors = ["cannot parse config file /fixture/global/config.json: invalid JSON"];
+    const config = renderSpiderResult(mkResult({ config: { "ui.footer": true }, errors }), opts, theme, mkCtx({ action: "control", command: "config" }));
+    const models = renderSpiderResult(mkResult({ catalog: [], defaults: {}, errors }), opts, theme, mkCtx({ action: "control", command: "models" }));
+    expect(config.render(150).join("\n")).toContain("/fixture/global/config.json");
+    expect(models.render(150).join("\n")).toContain("/fixture/global/config.json");
+  });
+
+  it("control config set warns that footer changes from next session", () => {
+    const c = renderSpiderResult(mkResult({ ok: true, key: "ui.footer", value: "false" }), opts, theme, mkCtx({ action: "control", command: "config" }));
+    expect(c.render(140).join("\n")).toMatch(/next session/i);
+  });
+
   it("control doctor → status line + guttered checks (no raw JSON, heading stripped)", () => {
     const details = {
       ok: true,

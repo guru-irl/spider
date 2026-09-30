@@ -1,13 +1,21 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { paths } from "@spider/db-core";
 import { execFileSync } from "node:child_process";
-import { setModelDefault } from "../control/models-cmd.js";
-import { controlConfig } from "../control.js";
+import { setModelDefault, clearLocalModelDefault } from "../control/models-cmd.js";
+import { controlConfig, modelDefaultLayers } from "../control.js";
 import type { ModelEntry } from "@spider/models";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => { for (const c of cleanups.splice(0)) c(); });
+const originalGlobalRoot = paths.globalRoot;
+afterEach(() => { paths.globalRoot = originalGlobalRoot; for (const c of cleanups.splice(0)) c(); });
+
+function isolatedGlobal(): string {
+  const root = join(scratchDir(), "global");
+  paths.globalRoot = root;
+  return root;
+}
 
 // paths.projectRoot() resolves via `git rev-parse --show-toplevel` from cwd, walking UP to
 // the nearest enclosing repo. A bare mkdtemp'd dir nested inside THIS repo's worktree is
@@ -35,12 +43,63 @@ const CATALOG: ModelEntry[] = [
 ];
 
 describe("setModelDefault", () => {
+  for (const layer of ["global", "local"] as const) {
+    it(`reports invalid models.defaults in the ${layer} layer on read`, () => {
+      const root = isolatedGlobal();
+      const dir = scratchDir();
+      const file = join(layer === "global" ? root : join(dir, ".spider"), "config.json");
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, '{"models.defaults": ["not a map"]}');
+      const result = modelDefaultLayers(dir);
+      expect(result.defaults).toEqual({});
+      expect(result.errors.join(" ")).toContain(`invalid models.defaults in ${file}: expected an object`);
+    });
+  }
+
+  it("warns that a malformed local file may override a global model set", () => {
+    isolatedGlobal();
+    const dir = scratchDir();
+    const file = join(dir, ".spider", "config.json");
+    mkdirSync(join(dir, ".spider"), { recursive: true });
+    const bad = '{"models.defaults": {"worker": "older/model"}, }';
+    writeFileSync(file, bad);
+    const result = setModelDefault(dir, "worker", "github-copilot/claude-sonnet-5", CATALOG);
+    expect(result).toMatchObject({ ok: true });
+    expect(result.errors?.join(" ")).toContain(file);
+    expect(readFileSync(file, "utf8")).toBe(bad);
+  });
+  it("does not create a local file when clearing a role with no local override", () => {
+    isolatedGlobal();
+    const dir = scratchDir();
+    const file = join(dir, ".spider", "config.json");
+    expect(clearLocalModelDefault(dir, "worker")).toEqual({ ok: true, cleared: false });
+    expect(existsSync(file)).toBe(false);
+    controlConfig("set", dir, "models.defaults", { reviewer: "github-copilot/claude-opus-5" });
+    const before = readFileSync(file, "utf8");
+    expect(clearLocalModelDefault(dir, "worker")).toEqual({ ok: true, cleared: false });
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("preserves non-string map entries while changing only the requested role", () => {
+    const root = isolatedGlobal();
+    const dir = scratchDir();
+    controlConfig("set", dir, "models.defaults", { planner: { nested: 1 }, worker: "old/model" }, "global");
+    expect(setModelDefault(dir, "worker", "github-copilot/claude-sonnet-5", CATALOG)).toEqual({ ok: true });
+    expect(JSON.parse(readFileSync(join(root, "config.json"), "utf8"))["models.defaults"]).toEqual({ planner: { nested: 1 }, worker: "github-copilot/claude-sonnet-5" });
+    controlConfig("set", dir, "models.defaults", { planner: { nested: 1 }, worker: "old/model" });
+    expect(clearLocalModelDefault(dir, "worker")).toEqual({ ok: true, cleared: true });
+    expect((controlConfig("get", dir) as Record<string, unknown>)["models.defaults"]).toEqual({ worker: "github-copilot/claude-sonnet-5" });
+    expect(JSON.parse(readFileSync(join(dir, ".spider", "config.json"), "utf8"))["models.defaults"]).toEqual({ planner: { nested: 1 } });
+  });
   it("merges successive role defaults into models.defaults", () => {
+    const root = isolatedGlobal();
     const dir = scratchDir();
     expect(setModelDefault(dir, "worker", "github-copilot/claude-sonnet-5", CATALOG)).toEqual({ ok: true });
     expect(setModelDefault(dir, "reviewer", "github-copilot/claude-opus-5", CATALOG)).toEqual({ ok: true });
-    const cfg = controlConfig("get", dir, "models.defaults") as Record<string, string>;
+    const cfg = controlConfig("get", scratchDir(), "models.defaults") as Record<string, string>;
     expect(cfg).toEqual({ worker: "github-copilot/claude-sonnet-5", reviewer: "github-copilot/claude-opus-5" });
+    expect(existsSync(join(root, "config.json"))).toBe(true);
+    expect(existsSync(join(dir, ".spider", "config.json"))).toBe(false);
   });
 
   it("rejects an unknown role", () => {
@@ -64,6 +123,7 @@ describe("setModelDefault", () => {
   // Root cause this guards: the persisted refs named provider `copilot`, which is not a
   // real pi provider id and not an alias anywhere in spider — the real id is `github-copilot`.
   it("normalises the stale 'copilot/' prefix to 'github-copilot/' when the corrected ref resolves in the catalog", () => {
+    isolatedGlobal();
     const dir = scratchDir();
     expect(setModelDefault(dir, "worker", "copilot/claude-sonnet-5", CATALOG)).toEqual({ ok: true });
     expect(controlConfig("get", dir, "models.defaults")).toEqual({ worker: "github-copilot/claude-sonnet-5" });
@@ -75,7 +135,32 @@ describe("setModelDefault", () => {
     expect(r.ok).toBe(false);
   });
 
+  it("keeps a local role override while inheriting other roles from global defaults", () => {
+    isolatedGlobal();
+    const dir = scratchDir();
+    expect(setModelDefault(dir, "worker", "github-copilot/claude-sonnet-5", CATALOG)).toEqual({ ok: true });
+    expect(setModelDefault(dir, "reviewer", "github-copilot/claude-opus-5", CATALOG)).toEqual({ ok: true });
+    controlConfig("set", dir, "models.defaults", { worker: "github-copilot/claude-opus-5" });
+    expect(controlConfig("get", dir, "models.defaults")).toEqual({
+      worker: "github-copilot/claude-opus-5", reviewer: "github-copilot/claude-opus-5",
+    });
+  });
+
+  it("reports the local role and its file when a global set is shadowed", () => {
+    isolatedGlobal();
+    const dir = scratchDir();
+    controlConfig("set", dir, "models.defaults", { worker: "github-copilot/claude-opus-5", reviewer: "github-copilot/claude-opus-5" });
+    expect(setModelDefault(dir, "worker", "github-copilot/claude-sonnet-5", CATALOG)).toEqual({
+      ok: true, shadowedBy: { ref: "github-copilot/claude-opus-5", file: join(dir, ".spider", "config.json") },
+    });
+    expect(clearLocalModelDefault(dir, "worker")).toEqual({ ok: true, cleared: true });
+    expect(controlConfig("get", dir, "models.defaults")).toEqual({
+      worker: "github-copilot/claude-sonnet-5", reviewer: "github-copilot/claude-opus-5",
+    });
+  });
+
   it("accepts a bare model id (no provider) present in the catalog under any provider", () => {
+    isolatedGlobal();
     const dir = scratchDir();
     expect(setModelDefault(dir, "worker", "claude-sonnet-5", CATALOG)).toEqual({ ok: true });
   });

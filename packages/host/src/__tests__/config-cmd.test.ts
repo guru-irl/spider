@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { openDbAt, paths } from "@spider/db-core";
 import { readInjectionSnapshot } from "../injection-snapshot.js";
 import { applyConfigEdit } from "../control/config-cmd.js";
+import { CONFIG_SCHEMA, getField } from "@spider/ui";
+import { productionReaders } from "./config-reader-analysis.js";
+import { resolve } from "node:path";
 import { controlConfig } from "../control.js";
 
 const scratch = join(process.cwd(), "packages/host/.spider/scratch");
@@ -40,6 +43,9 @@ describe("applyConfigEdit round-trip", () => {
   });
   it("clears the UI cap despite a global cap, leaving an unlimited override", () => {
     const dir = fixture();
+    const previousGlobalRoot = paths.globalRoot;
+    paths.globalRoot = join(dir, "global");
+    mkdirSync(paths.globalRoot, { recursive: true });
     writeFileSync(join(paths.globalRoot, "config.json"), JSON.stringify({ "memory.snapshotCharCap": 100 }));
     try {
       const db = openDbAt(join(dir, ".git", "spider", "repo.db"), "repo");
@@ -52,7 +58,42 @@ describe("applyConfigEdit round-trip", () => {
       const snapshot = readInjectionSnapshot(dir);
       expect(snapshot.capped).toBe(false);
       expect(snapshot.counts.repo.injected).toBe(1);
-    } finally { rmSync(join(paths.globalRoot, "config.json"), { force: true }); }
+    } finally { paths.globalRoot = previousGlobalRoot; }
+  });
+  it.each([
+    ["organism.enabled", "false"], ["organism.passes.runMemoryTodo", "false"],
+    ["organism.passes.todoMemory", "false"], ["organism.passes.learning", "false"],
+    ["organism.passes.consolidation", "false"], ["organism.passes.reflection", "false"],
+    ["organism.passes.insights", "false"], ["organism.selfNaming", "false"],
+    ["organism.autoWriteBudget", "4"], ["curator.staleAfterDays", "10"],
+    ["curator.archiveAfterDays", "20"], ["curator.minIntervalHours", "12"],
+    ["curator.consolidate", "false"], ["routing.secret_scrub", "false"],
+    ["routing.injection_scan", "false"], ["routing.auto_index_threshold", "10000"],
+    ["models.defaults", '{"worker":"github-copilot/example"}'],
+    ["auxiliary.background_review.provider", "provider"],
+    ["auxiliary.background_review.model", "model"],
+  ])("accepts production reader %s through control config set", (key, raw) => {
+    const dir = fixture();
+    expect(applyConfigEdit(dir, key, raw)).toEqual({ ok: true });
+    expect(controlConfig("get", dir, key)).toEqual(key.startsWith("auxiliary.") ? raw : JSON.parse(raw));
+  });
+  it("every reachable production reader has a schema field accepted by config set except the user-only enforcement switch", () => {
+    const dir = fixture();
+    const previous = paths.globalRoot;
+    paths.globalRoot = join(dir, "global");
+    try {
+      const declared = new Set(CONFIG_SCHEMA.flatMap(group => group.fields.map(field => field.key)));
+      for (const key of productionReaders(resolve("packages"))) {
+        expect(declared.has(key), key).toBe(true);
+        const field = getField(key)!;
+        const raw = field.type === "model-map" ? "{}" : field.type === "number" ? String(field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
+        if (key === "exec.enforce") {
+          expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
+        } else {
+          expect(applyConfigEdit(dir, key, raw), key).toEqual({ ok: true });
+        }
+      }
+    } finally { paths.globalRoot = previous; }
   });
   it("rejects an unknown key", () => {
     const dir = fixture();

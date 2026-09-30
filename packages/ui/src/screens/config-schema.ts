@@ -1,4 +1,4 @@
-export type ConfigFieldType = "boolean" | "number" | "string" | "enum";
+export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
 	enum?: string[]; min?: number; max?: number; description: string; restart?: boolean;
@@ -6,49 +6,39 @@ export interface ConfigField {
 export interface ConfigGroup { id: string; label: string; fields: ConfigField[]; }
 
 export const CONFIG_SCHEMA: ConfigGroup[] = [
-	{ id: "organism", label: "Organism", fields: [
-		{ key: "organism.enabled", label: "Master enable", type: "boolean", default: true, description: "Autonomic organism master toggle." },
-		{ key: "organism.runToMemory", label: "run→memory", type: "boolean", default: true, description: "Digest run outputs into memory/todo." },
-		{ key: "organism.todoToMemory", label: "todo→memory", type: "boolean", default: true, description: "Digest completed todos into memory." },
-		{ key: "organism.learningLoop", label: "Learning loop", type: "boolean", default: true, description: "Failures/corrections learning pass." },
-		{ key: "organism.selfName", label: "Self-name update", type: "boolean", default: true, description: "Session self-naming pass." },
-		{ key: "organism.reflection", label: "Reflection", type: "boolean", default: true, description: "Vector-cluster umbrella memories." },
-		{ key: "organism.crossProject", label: "Cross-project insights", type: "boolean", default: true, description: "Cross-project insight graph pass." },
+	{ id: "auxiliary", label: "Auxiliary model", fields: [
+		{ key: "auxiliary.background_review.provider", label: "Provider", type: "string", default: "", description: "Optional provider for background review model." },
+		{ key: "auxiliary.background_review.model", label: "Model", type: "string", default: "", description: "Optional background review model id." },
 	]},
-	{ id: "embeddings", label: "Embeddings", fields: [
-		{ key: "embeddings.provider", label: "Provider", type: "enum", default: "fastembed", enum: ["fastembed", "copilot", "openai", "mistral", "google", "fts-only"], description: "Embedding backend.", restart: true },
-		{ key: "embeddings.model", label: "Model", type: "string", default: "BGE-small-en-v1.5", description: "Embedding model id (dim-locked).", restart: true },
-		{ key: "embeddings.dim", label: "Dimensions", type: "number", default: 384, min: 8, max: 4096, description: "Vector dim (change → control reembed).", restart: true },
-		{ key: "embeddings.queue", label: "Background queue", type: "boolean", default: true, description: "Async embed queue on/off." },
+	{ id: "organism", label: "Organism", fields: [
+		{ key: "organism.enabled", label: "Master enable", type: "boolean", default: true, description: "Enable organism background work." },
+		...(["runMemoryTodo", "todoMemory", "learning", "consolidation", "reflection", "insights"] as const).map(name => ({ key: `organism.passes.${name}`, label: name, type: "boolean" as const, default: true, description: `Enable ${name} pass.` })),
+		{ key: "organism.selfNaming", label: "Self naming", type: "boolean", default: true, description: "Allow organism to name projects." },
+		{ key: "organism.autoWriteBudget", label: "Auto-write budget", type: "number", default: 20, min: 0, max: 1000, description: "Maximum staged writes per drain." },
+	]},
+	{ id: "curator", label: "Skill curator", fields: [
+		{ key: "curator.staleAfterDays", label: "Stale after (days)", type: "number", default: 30, min: 0, description: "Age at which skills become stale." },
+		{ key: "curator.archiveAfterDays", label: "Archive after (days)", type: "number", default: 90, min: 0, description: "Age at which skills are archived." },
+		{ key: "curator.minIntervalHours", label: "Min interval (h)", type: "number", default: 24, min: 1, max: 336, description: "Minimum hours between curator runs." },
+		{ key: "curator.consolidate", label: "Consolidate", type: "boolean", default: false, description: "Consolidate skill candidates." },
 	]},
 	{ id: "memory", label: "Memory", fields: [
-		{ key: "memory.autoWriteBudget", label: "Auto-write budget", type: "number", default: 20, min: 0, max: 1000, description: "Per-session staged auto-write cap." },
-		{ key: "memory.stagingFailClosed", label: "Staging fail-closed", type: "boolean", default: true, description: "Stage all auto/background writes." },
 		{ key: "memory.snapshotCharCap", label: "Snapshot char cap", type: "number", default: "unlimited", min: 500, max: 40000, description: "Optional explicit snapshot body limit. By default inject all active memory; a lower cap may omit entries and reports their count." },
 	]},
 	{ id: "routing", label: "Routing / safety", fields: [
 		{ key: "routing.tracking", label: "Universal tracking", type: "boolean", default: true, description: "Log all tool intents/results." },
-		{ key: "routing.secretScrub", label: "Secret scrub", type: "boolean", default: true, description: "Scrub secrets from results." },
-		{ key: "routing.injectionScan", label: "Injection scan", type: "boolean", default: true, description: "Prompt-injection scan of results." },
-		{ key: "routing.autoIndexThreshold", label: "Auto-index threshold (bytes)", type: "number", default: 4000, min: 0, max: 1000000, description: "Large-output auto-index cutoff." },
+		{ key: "routing.secret_scrub", label: "Secret scrub", type: "boolean", default: true, description: "Scrub secrets from tool results." },
+		{ key: "routing.injection_scan", label: "Injection scan", type: "boolean", default: true, description: "Scan tool results for prompt injection." },
+		{ key: "routing.auto_index_threshold", label: "Auto-index threshold (bytes)", type: "number", default: 10000, min: 0, max: 1000000, description: "Large-output auto-index cutoff." },
+	]},
+	{ id: "models", label: "Model routing", fields: [
+		{ key: "models.defaults", label: "Role defaults", type: "model-map", default: {}, description: "JSON object mapping agent roles to model refs. Per-role local overrides global." },
 	]},
 	{ id: "exec", label: "Exec enforcement", fields: [
 		{ key: "exec.enforce", label: "Enforce spider exec", type: "boolean", default: true, description: "Block bash tool; model must use spider exec." },
 	]},
-	{ id: "curator", label: "Skill curator", fields: [
-		{ key: "curator.minIntervalHours", label: "Min interval (h)", type: "number", default: 24, min: 1, max: 336, description: "Minimum hours between curator runs." },
-	]},
-	{ id: "self_naming", label: "Self-naming", fields: [
-		{ key: "self_naming.enabled", label: "Enabled", type: "boolean", default: true, description: "Session self-naming on/off." },
-		{ key: "self_naming.budget", label: "Aux budget", type: "enum", default: "cheap", enum: ["cheap", "normal", "premium"], description: "Aux-model budget tier." },
-	]},
-	{ id: "models", label: "Model routing", fields: [
-		{ key: "models.autoSelect", label: "Auto-select", type: "boolean", default: true, description: "Router picks per-task model." },
-	]},
 	{ id: "ui", label: "UI", fields: [
-		{ key: "ui.footer", label: "Agents footer", type: "boolean", default: true, description: "Show the agents footer." },
-		{ key: "ui.gridHotkey", label: "Grid hotkey", type: "string", default: "ctrl+g", description: "Live grid toggle chord." },
-		{ key: "ui.theme", label: "Theme", type: "enum", default: "auto", enum: ["auto", "light", "dark"], description: "spider UI theme preference." },
+		{ key: "ui.footer", label: "Agents footer", type: "boolean", default: true, description: "Show the agents footer from the next session.", restart: true },
 	]},
 ];
 
@@ -72,6 +62,13 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 			if (field.min !== undefined && n < field.min) return { ok: false, error: `min ${field.min}` };
 			if (field.max !== undefined && n > field.max) return { ok: false, error: `max ${field.max}` };
 			return { ok: true, value: n };
+		}
+		case "model-map": {
+			try {
+				const value: unknown = JSON.parse(raw);
+				if (value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(v => typeof v === "string")) return { ok: true, value };
+			} catch { /* invalid JSON */ }
+			return { ok: false, error: "expected a JSON object of role-to-model strings" };
 		}
 		case "enum": {
 			if (!field.enum?.includes(raw)) return { ok: false, error: `one of ${field.enum?.join("|")}` };

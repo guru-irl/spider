@@ -1,5 +1,10 @@
 // packages/host/src/__tests__/agents-ui.test.ts
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { join, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { controlConfig } from "../control";
+import { mountAgentsUI } from "../agents/mount";
 import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import { installAgentsUI, buildAgentsSelector } from "../agents/agents-ui";
@@ -238,4 +243,39 @@ it("does not open the selector (input trap) when there are no agents (#trap)", a
   expect(ui.custom).not.toHaveBeenCalled();  // never opens a key-sink over an empty footer
   expect(ui.notify).toHaveBeenCalled();
   dispose();
+});
+
+it("does not open an invisible selector when the footer is disabled", async () => {
+  const db = openDb(scratchDbPath("aui-footer-off")); opened.push(db); migrate(db, "project");
+  db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+              VALUES ('r1','footer-off','worker','running',1,0,0)`).run();
+  const ui = fakeUi();
+  const dispose = installAgentsUI({ registerShortcut: vi.fn() }, { ui }, { db, sessionId: "footer-off", showFooter: false }) as (() => void) & { openOverlay(): Promise<void> };
+  await dispose.openOverlay();
+  expect(ui.custom).not.toHaveBeenCalled();
+  expect(ui.notify).toHaveBeenCalled();
+  dispose();
+});
+
+it("production mount suppresses the active agents footer when ui.footer is false", () => {
+  const root = resolve(".spider/scratch");
+  mkdirSync(root, { recursive: true });
+  const cwd = mkdtempSync(join(root, "footer-"));
+  execFileSync("git", ["init", "-q"], { cwd });
+  const db = openDb(scratchDbPath("footer-config")); opened.push(db); migrate(db, "project");
+  db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+              VALUES ('r1','footer','worker','running',1,0,0)`).run();
+  try {
+    controlConfig("set", cwd, "ui.footer", false);
+    const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn() };
+    const ui = fakeUi();
+    const dispose = mountAgentsUI(pi, { ui }, { db, sessionId: "footer", cwd });
+    expect(ui.widgets.has("spider-agents")).toBe(false);
+    dispose();
+    controlConfig("set", cwd, "ui.footer", true);
+    const enabledUi = fakeUi();
+    const enabled = mountAgentsUI(pi, { ui: enabledUi }, { db, sessionId: "footer", cwd });
+    expect(enabledUi.widgets.has("spider-agents")).toBe(true);
+    enabled();
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

@@ -29,6 +29,13 @@ export const ORGANISM_DEFAULTS: OrganismConfig = {
   autoWriteBudget: 20,
 };
 
+export const ORGANISM_CONFIG_KEYS: readonly string[] = [
+  "organism.enabled",
+  ...Object.keys(ORGANISM_DEFAULTS.passes).map(name => `organism.passes.${name}`),
+  "organism.selfNaming", "organism.autoWriteBudget",
+];
+export const CURATOR_CONFIG_KEYS: readonly string[] = Object.keys(CURATOR_DEFAULTS).map(name => `curator.${name}`);
+
 function asBool(v: unknown, dflt: boolean): boolean {
   return typeof v === "boolean" ? v : dflt;
 }

@@ -76,7 +76,7 @@ Run from inside a git repository (including a nested directory); outside git the
 recipe exits non-zero without creating any scratch path. Replace `<skill-dir>`
 with the absolute directory containing this guide, and
 `<id>` with a fresh unique name. After about 5 seconds, read the `server-started`
-JSON (or an `error` JSON) from `<id>/server.log` for the complete `url`, `screen_dir`
+JSON (or an `error` JSON) from `<project-root>/.spider/scratch/superpowers/brainstorm/<id>/server.log` for the complete `url`, `screen_dir`
 and `state_dir`. The log holds the session key and is created with
 mode 0600 by the subshell's `umask 077`. The script itself launches
 the Node server and keeps its own state/log inside the chosen session directory.

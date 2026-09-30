@@ -15,6 +15,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		...(["runMemoryTodo", "todoMemory", "learning", "consolidation", "reflection", "insights"] as const).map(name => ({ key: `organism.passes.${name}`, label: name, type: "boolean" as const, default: true, description: `Enable ${name} pass.` })),
 		{ key: "organism.selfNaming", label: "Self naming", type: "boolean", default: true, description: "Allow organism to name projects." },
 		{ key: "organism.autoWriteBudget", label: "Auto-write budget", type: "number", default: 20, min: 0, max: 1000, description: "Maximum staged writes per drain." },
+		{ key: "organism.maxSkillProposals", label: "Skill proposals per drain", type: "number", default: 1, min: 0, max: 1000, description: "Maximum deterministic-valid skill proposals before model review in a drain." },
 		{ key: "organism.maxMemoryProposals", label: "Memory proposals per pass", type: "number", default: 3, min: 0, max: 1000, description: "Maximum supported memory candidates from each memory-producing pass." },
 	]},
 	{ id: "curator", label: "Skill curator", fields: [
@@ -27,7 +28,14 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "memory.snapshotCharCap", label: "Snapshot char cap", type: "number", default: "unlimited", min: 500, max: 40000, description: "Optional explicit snapshot body limit. By default inject all active memory; a lower cap may omit entries and reports their count." },
 		{ key: "memory.reviewer.enabled", label: "Review remembers", type: "boolean", default: true, description: "Review foreground memory proposals before saving. Failures store as requested." },
 		{ key: "memory.reviewer.model", label: "Reviewer model", type: "string", default: "github-copilot/gpt-6-luna", description: "Authenticated provider/model for the foreground memory reviewer." },
-		{ key: "memory.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 20000, min: 1000, max: 120000, description: "Maximum wait before the proposed memory is stored as requested." },
+		{ key: "memory.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "medium", enum: ["minimal", "low", "medium", "high", "xhigh"], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
+		{ key: "memory.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 45000, min: 1000, max: 120000, description: "Maximum wait before the proposed memory is stored as requested." },
+	]},
+	{ id: "skills", label: "Skill reviewer", fields: [
+		{ key: "skills.reviewer.enabled", label: "Review skill proposals", type: "boolean", default: true, description: "Gate skill proposals. When disabled, learner skill proposals are off; agent requests stage with review skipped." },
+		{ key: "skills.reviewer.model", label: "Reviewer model", type: "string", default: "github-copilot/gpt-6-luna", description: "Authenticated provider/model for skill review." },
+		{ key: "skills.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "xhigh", enum: ["minimal", "low", "medium", "high", "xhigh"], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
+		{ key: "skills.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 180000, min: 1000, max: 600000, description: "Maximum skill review wait. Deterministic failures always reject." },
 	]},
 	{ id: "routing", label: "Routing / safety", fields: [
 		{ key: "routing.tracking", label: "Universal tracking", type: "boolean", default: true, description: "Log all tool intents/results." },

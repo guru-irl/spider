@@ -11,7 +11,12 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
   "memory.reviewer.enabled": true,
   "memory.reviewer.model": "github-copilot/gpt-6-luna",
-  "memory.reviewer.timeoutMs": 20000,
+  "memory.reviewer.timeoutMs": 45000,
+  "memory.reviewer.thinking": "medium",
+  "skills.reviewer.enabled": true,
+  "skills.reviewer.model": "github-copilot/gpt-6-luna",
+  "skills.reviewer.timeoutMs": 180000,
+  "skills.reviewer.thinking": "xhigh",
 };
 
 function configFile(scopeRoot: string): string {
@@ -147,9 +152,14 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   assertTestConfigPath(file);
   mkdirSync(root, { recursive: true });
   const cur = readJson(file);
-  if (op === "set" && key === "memory.reviewer.timeoutMs" &&
-    (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > 120000)) {
-    throw new Error("memory.reviewer.timeoutMs must be an integer from 1000 to 120000 ms");
+  const timeoutMax = key === "skills.reviewer.timeoutMs" ? 600000 : 120000;
+  if (op === "set" && ["memory.reviewer.timeoutMs", "skills.reviewer.timeoutMs"].includes(key) &&
+    (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > timeoutMax)) {
+    throw new Error(`${key} must be an integer from 1000 to ${timeoutMax} ms`);
+  }
+  if (op === "set" && ["memory.reviewer.thinking", "skills.reviewer.thinking"].includes(key) &&
+    (typeof value !== "string" || !["minimal", "low", "medium", "high", "xhigh"].includes(value))) {
+    throw new Error(`${key} thinking must be minimal, low, medium, high or xhigh`);
   }
   if (op === "unset") {
     // Only the snapshot cap accepts unlimited. Other keys inherit after deletion.

@@ -1,3 +1,4 @@
+import { finalSkillBody, newSkillReview } from "./helpers/skill.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ const DAY = 86_400_000;
 // the memory/todo/skill branch. See task-15 brief for the exact shape.
 const fakeModel: DigestModel = {
   complete: async (system) =>
-    system.includes("summary")
+    system.includes("selfName")
       ? JSON.stringify({ summary: "shipped auth", selfName: "auth-refactor" })
       : JSON.stringify({
           memory: [
@@ -35,7 +36,7 @@ const fakeModel: DigestModel = {
             { category: "convention", content: "uses PKCE for auth", scope: "repo", justification: "Durable repo-specific practice useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" },
           ],
           todos: [{ text: "ship it" }],
-          skills: [{ name: "auth-flow", category: "security", body: "# Auth flow\nUse PKCE." }],
+          skills: [{ name: "auth-flow", category: "security", body: finalSkillBody("auth-flow", "Use PKCE.") }],
         }),
 };
 
@@ -100,6 +101,7 @@ function makeWorker(repoDb: Db, worktreeDb: Db, overrides?: Partial<WorkerDeps>)
     project: { projectKey: "k", realPath: process.cwd(), dbPath: "x" } as never,
     getEmbedder: async () => null,
     makeModel: () => fakeModel,
+    skillReview: newSkillReview,
     org: ORGANISM_DEFAULTS,
     curator: CURATOR_DEFAULTS,
     ...overrides,
@@ -120,7 +122,7 @@ describe("Phase-6 integration smoke", () => {
     expect(listPending(ctx.repoDb, "repo").length).toBe(summary.memoryStaged);
 
     // The learning pass staged at least one skill candidate.
-    expect(new SkillStore(ctx.repoDb).list({ status: "staged" }).length).toBeGreaterThanOrEqual(1);
+    expect(ctx.repoDb.prepare("SELECT count(*) n FROM skill_review_queue").get()).toEqual({ n: 1 });
 
     // Consolidation self-named the session.
     const row = ctx.db.prepare("SELECT name FROM sessions WHERE id = 's1'").get() as { name: string };

@@ -30,6 +30,7 @@ export interface ReviewOptions {
   signal?: AbortSignal;
   skipReason?: string;
   contextLimit?: number;
+  onReviewError?: (error: string, raw: unknown) => void;
   /** No repository exists for this cwd, so a global entry cannot be redirected into a repo. */
   repoAvailable?: boolean;
 }
@@ -68,7 +69,10 @@ export function parseVerdict(raw: unknown, context: ReviewEntry[], requestedScop
   };
   if (typeof verdict !== "string" || !Object.hasOwn(fields, verdict)) throw Error("invalid reviewer verdict fields");
   const required = fields[verdict];
-  const keys = Object.keys(v).filter(key => required.includes(key) || v[key] !== null || !["scope", "supersedes", "existing_uuid"].includes(key));
+  const redundantScope = verdict !== "wrong_scope" && Object.hasOwn(v, "scope");
+  if (redundantScope && v.scope !== null && v.scope !== requestedScope) throw Error("invalid reviewer scope");
+  const keys = Object.keys(v).filter(key => !(redundantScope && key === "scope") &&
+    (required.includes(key) || v[key] !== null || !["scope", "supersedes", "existing_uuid"].includes(key)));
   if (keys.length !== required.length || required.some(key => !Object.hasOwn(v, key))) throw Error("invalid reviewer verdict fields");
   const known = (uuid: unknown) => typeof uuid === "string" && context.some(e => e.uuid === uuid);
   if (verdict === "already_present") {
@@ -89,7 +93,7 @@ export function parseVerdict(raw: unknown, context: ReviewEntry[], requestedScop
 }
 
 const MEMORY_CATEGORIES: readonly MemoryCategory[] = ["preference", "convention", "tool-quirk", "failure", "correction", "insight"];
-const DEFAULT_TIMEOUT_MS = 20000;
+const DEFAULT_TIMEOUT_MS = 45000;
 const MIN_TIMEOUT_MS = 1000;
 const MAX_TIMEOUT_MS = 120000;
 class RejectedSupersession extends Error {
@@ -139,6 +143,7 @@ export async function reviewedWrite(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   const controller = new AbortController();
+  let rawReply: unknown;
   let outcome: { verdict: Verdict; context: ReviewEntry[] };
   try {
     const context = reviewerContext(dbs, input.content, opts.contextLimit);
@@ -150,9 +155,12 @@ export async function reviewedWrite(
       timer = setTimeout(() => { reject(Error(`timeout after ${ms} ms`)); controller.abort(); }, ms);
     });
     const raw = await Promise.race([opts.reviewer(candidate, context, controller.signal), timeout, abort]);
+    rawReply = raw;
     outcome = { verdict: parseVerdict(raw, context, requestedScope), context };
   } catch (error) {
-    return skip(error instanceof Error ? error.message : String(error));
+    const reason = error instanceof Error ? error.message : String(error);
+    try { opts.onReviewError?.(reason, rawReply); } catch { /* Diagnostics must not change the write policy. */ }
+    return skip(reason);
   } finally {
     if (timer) clearTimeout(timer);
     if (onAbort) opts.signal?.removeEventListener("abort", onAbort);

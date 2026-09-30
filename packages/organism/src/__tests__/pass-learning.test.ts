@@ -31,12 +31,12 @@ describe("learningPass (co-equal capture)", () => {
     expect(r.skills[0].name).toBe("answer-style");
   });
 
-  it("rejects a session-artifact skill name (not class-level)", async () => {
+  it("retains a task-artifact proposal for counted validation at the shared review gate", async () => {
     const r = await learningPass(
       bundle,
       model({ memory: [], todos: [], skills: [{ name: "fix-pr-1234-today", body: "..." }] }),
     );
-    expect(r.skills).toHaveLength(0);
+    expect(r.skills).toEqual([{ name: "fix-pr-1234-today", body: "..." }]);
   });
 
   it("guardrails still drop negative memory even in combined pass", async () => {

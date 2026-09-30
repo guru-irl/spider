@@ -1,5 +1,6 @@
 import type { Db, ProjectInfo } from "@spider/db-core";
-import { SkillStore, skillNameErrors } from "./skill-usage.js";
+import { SkillStore } from "./skill-usage.js";
+import { reviewedStageSkill, type SkillReviewOptions } from "./skill-review.js";
 import { buildLearnPrompt } from "./learn.js";
 import { buildLearningGraph } from "./learning-graph.js";
 import type { OrganismWorker } from "./worker.js";
@@ -11,6 +12,7 @@ export interface OrganismActionDeps {
   globalDb: Db;
   project: ProjectInfo;
   worker: OrganismWorker;
+  skillReview?: SkillReviewOptions;
 }
 
 /** Normalized handler result: a rendered panel plus the structured payload. */
@@ -43,7 +45,7 @@ export interface SkillActionArgs {
  * host-visible error, never a silent fallthrough to `list` — a caller must
  * never mistake a successful listing for a save that never happened.
  */
-export function skillAction(deps: Pick<OrganismActionDeps, "db" | "project">, args: SkillActionArgs): OrganismActionResult {
+export function skillAction(deps: Pick<OrganismActionDeps, "db" | "project" | "skillReview">, args: SkillActionArgs): OrganismActionResult | Promise<OrganismActionResult> {
   const skills = new SkillStore(deps.db);
   switch (args.op ?? "list") {
     case "distill": {
@@ -55,20 +57,14 @@ export function skillAction(deps: Pick<OrganismActionDeps, "db" | "project">, ar
       return { display: renderSkillView(row), details: row ?? null };
     }
     case "add": {
-      const name = (args.name ?? "").trim();
-      const nameErrors = skillNameErrors(name);
-      if (nameErrors.length > 0) {
-        return { display: `Cannot stage skill: ${nameErrors.join("; ")}`, details: { ok: false, error: nameErrors.join("; ") } };
-      }
-      const body = args.text ?? "";
-      if (body.trim().length === 0) {
-        return { display: "Missing skill body text to stage (op=add requires `text`).", details: { ok: false, error: "missing text" } };
-      }
-      const result = skills.stageCandidate({ name, body, category: args.category });
-      const display = result.outcome === "staged"
-        ? `Staged skill candidate "${name}" for review — run \`spider skill op=approve name=${name}\` to activate it.`
-        : `Skill "${name}" not newly staged (${result.reason}).`;
-      return { display, details: { ok: true, ...result } };
+      const name = args.name ?? "";
+      return reviewedStageSkill(skills, { name, body: args.text ?? "", category: args.category, origin: "agent" }, deps.skillReview)
+        .then(result => ({
+          display: result.outcome === "staged"
+            ? `Staged skill candidate "${name}" for approval (${result.verdict ? `${result.verdict}: ` : ""}${result.reason ?? "review unavailable"}). Run \`spider skill op=approve name=${name}\` to activate it.`
+            : `Skill "${name}" not staged (${result.verdict ?? result.outcome}: ${result.reason ?? "not newly staged"}${result.existing_name ? `; existing: ${result.existing_name}` : ""}${result.failures ? `; failures: ${result.failures.join(", ")}` : ""}).`,
+          details: { ok: result.outcome === "staged", ...result },
+        }));
     }
     case "approve": {
       if (args.name === undefined || args.name.length === 0) {

@@ -56,3 +56,12 @@ describe("expanded result path coverage", () => {
     check(renderOrganismEntry({ data: report }, { expanded: true }, theme).render(80), 80);
   });
 });
+
+it.each([undefined, 1])("a drain with no staged skills never advertises listable skills (queued=%s)", skillsQueued => {
+  const report = { status: "completed", memoryStaged: 0, skillsStaged: 0, skillsQueued, todosAdded: 0, errors: [], modelCalls: 0, reason: "before_compact", startedAt: 0, finishedAt: 1 };
+  const text = renderOrganismEntry({ data: report }, { expanded: true }, theme).render(140).join("\n");
+  expect(text).not.toContain("skills staged");
+  expect(text).not.toContain("Review:");
+  expect(text).not.toContain("spider skill op=list");
+  expect(text).toContain(`${skillsQueued ?? 0} skills queued`);
+});

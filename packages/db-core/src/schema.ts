@@ -88,9 +88,24 @@ CREATE TABLE IF NOT EXISTS skills (
   last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
   candidate_body TEXT,
   related TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  review_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS skill_review_queue (
+  name TEXT PRIMARY KEY,
+  category TEXT, body TEXT NOT NULL, origin TEXT NOT NULL,
+  related TEXT, created_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_review_results (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, verdict TEXT NOT NULL,
+  reason TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_review_lock (
+  id INTEGER PRIMARY KEY CHECK (id=1), token TEXT NOT NULL, lease_until INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS curator_state (
   scope TEXT PRIMARY KEY,
   last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0

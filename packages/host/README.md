@@ -36,10 +36,10 @@ router once per dispatch, then hands control to those packages.
 | `result.ts` | `toToolResult` normalizes a handler return into pi's `AgentToolResult`: a model-facing text block plus the structured `details` payload, with ANSI stripped. |
 | `render-result.ts` | pi `renderResult`/`renderCall` for the tool, plus the `spider.subagent_done` and `spider.command` message renderers. Maps each action's `details` to a `@spider/ui` renderer. |
 | `slash.ts` | Registers the thin slash commands that forward to `dispatch` and emit a `spider.command` transcript message. `/learn` is a special case: it forwards to `skill` `op:"distill"` and delivers the FULL distilled prompt as a real queued turn via `sendUserMessage`/`sendMessage` (never just a display card). |
-| `control.ts` | Config read/write (JSON merge, precedence defaults then global then project) and the `doctor` health check. |
+| `control.ts` | Scoped config read/write (precedence defaults then global then local), effective-value provenance, and the `doctor` health check. |
 | `control/stats-cmd.ts` | `collectStats` builds the token-savings and row-count summary for `control stats`. |
 | `control/models-cmd.ts` | `setModelDefault` and `listCatalog` back `control models`. |
-| `control/config-cmd.ts` | `applyConfigEdit` validates and writes a config key for `control config set`. |
+| `control/config-cmd.ts` | `applyConfigEdit` and `applyConfigUnset` validate and write config keys in the selected global or local layer for `control config set/unset`. |
 | `routing/index.ts` | Registers the `tool_call`/`tool_result` handlers and the edit/write tool overrides. Records intent, scrubs secrets, scans for injection, and auto-indexes large output. |
 | `routing/safety.ts` | Secret scrubbing and prompt-injection scanning over tool content. |
 | `routing/tracking.ts` | Records tool intent and result rows; exempts the spider tool from its own tracking. |

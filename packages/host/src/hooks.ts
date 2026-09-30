@@ -24,7 +24,7 @@ import { cwdOf, sessionIdOf } from "./session-context";
 import { readInjectionSnapshot } from "./injection-snapshot";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
-import { controlConfig } from "./control";
+import { execEnforcement } from "./control";
 
 export interface PiLikeAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -116,18 +116,18 @@ export function registerHooks(pi: PiLikeAPI): void {
         }
       });
     } else if (name === "tool_call") {
-      // Mechanically enforce spider exec over bash. Best-effort: a hook failure
-      // must never break a turn.
+      // Mechanically enforce spider exec over bash. Unknown enforcement state
+      // must block bash, not silently permit it.
       pi.on(name, (event: any) => {
         try {
           const tool = event?.toolName;
           if (tool !== "bash") return undefined;
           
           const cwd = String(event?.cwd ?? process.cwd());
-          const enforce = controlConfig("get", cwd, "exec.enforce");
-          
-          // Default ON when unset; only disable if explicitly false
-          if (enforce === false) return undefined;
+          const { current, errors } = execEnforcement(cwd);
+
+          // Default ON when unset or a layer is malformed; only explicitly false is safe.
+          if (errors.length === 0 && current === false) return undefined;
           
           const cmd = String(event?.input?.command ?? "");
           // Cap command display at 500 chars to avoid bloating the reason
@@ -140,8 +140,8 @@ Replace this call with:
           
           return { block: true, reason };
         } catch {
-          // Enforcement is best-effort; never break a turn
-          return undefined;
+          // A lookup or event failure must not make bash available.
+          return { block: true, reason: "bash is disabled in this project; use spider exec" };
         }
       });
     } else {

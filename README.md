@@ -130,8 +130,10 @@ recorded as `cancelled`, and both `cancel()` and `finish()` refuse to overwrite
 that status — so a child that dies mid-write cannot rewrite its own death as
 `done`.
 
-In the `/agents` overlay, press `Enter` on a run to open its detail view, then
+Use `/agents` or `alt+shift+up` to select a run from the footer. With `ui.footer=false`, both notify without opening a selector; changes to this setting take effect in the next session. Press `Enter` on a run to open its detail view, then
 `k` twice to kill it (the second press within a few seconds confirms).
+
+`control models set <role> <model>` writes a global role default to the spider global `config.json` (`~/.pi/agent/spider/config.json` unless `SPIDER_GLOBAL_ROOT` is set). The current worktree's `.spider/config.json` can override each role independently. Resolution is explicit model, local role override, global role default, then parent model, including pipeline stages. A global set reports the worktree-local value and file if that role is shadowed. `control models clear <role>` removes only that role's local override in the current worktree; it does not change the global value or other local roles.
 
 Exiting a session tears down its subagents: `SIGTERM`, then `SIGKILL` after a
 short grace period. Runs orphaned by a hard kill (where the host died without

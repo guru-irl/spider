@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { openDbAt } from "@spider/db-core";
+import { openDbAt, bus } from "@spider/db-core";
 import { makeRunHandler } from "../actions/run";
 import { makeMessageHandler } from "../actions/message";
 import { makeKillHandler } from "../actions/kill";
@@ -143,6 +143,70 @@ describe("run action routing", () => {
     expect(calls).toContain("single:worker");
     expect((res as any).isError).not.toBe(true);
     expect((res as any).content).toContain("worker");
+  });
+
+  it("resolves each pipeline stage using the shared explicit, role-default, parent order", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    let stages: any[] = [];
+    const handler = makeRunHandler({
+      makeStore: () => store,
+      makeRunner: () => ({ runAsync: () => { throw new Error("stubbed coordinator"); } }) as any,
+      makePipeline: () => ({ start: (o: any) => { stages = o.pipeline; return { pipelineId: "p", firstRunId: "r" }; }, dispose() {} }) as any,
+    });
+    const ctx: any = { db, globalDb: db, sessionId: "pipeline-model", cwd: process.cwd(), project: { dbPath: testScratchPath("pipeline.db") }, pi: { events: { on() {}, emit() {} } }, model: { id: "prov/parent:low" }, modelDefaults: { reviewer: "prov/reviewer:high" } };
+    await handler({ pipeline: [{ agent: "reviewer", task: "review" }, { agent: "worker", task: "work" }, { agent: "reviewer", task: "explicit", model: "prov/explicit:medium" }] }, ctx);
+    expect(stages.map(s => [s.model, s.thinking])).toEqual([["prov/reviewer", "high"], ["prov/parent", "low"], ["prov/explicit", "medium"]]);
+  });
+
+  it("forwards resolved thinking to the runner for single, parallel and chain modes", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const seen: any[] = [];
+    const makeRow = (o: any) => {
+      seen.push(o);
+      const { id } = store.create({ sessionId: "other-modes", agent: o.agent, model: o.model, thinking: o.thinking });
+      return store.get(id);
+    };
+    const handler = makeRunHandler({ makeStore: () => store, makeRunner: () => ({ runAsync: makeRow, runForeground: async (o: any) => makeRow(o) }) as any });
+    const ctx: any = { db, globalDb: db, sessionId: "other-modes", cwd: process.cwd(), project: { dbPath: testScratchPath("other-modes.db") }, pi: { events: { on() {}, emit() {} } }, model: { id: "prov/parent:low" }, modelDefaults: { reviewer: "prov/review:high" } };
+    await handler({ agent: "worker", task: "single", model: "prov/explicit:xhigh" }, ctx);
+    await handler({ tasks: [{ agent: "reviewer", task: "parallel" }] }, ctx);
+    await handler({ chain: [{ agent: "worker", task: "chain", model: "prov/chain:medium" }] }, ctx);
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    expect(seen.map(s => [s.model, s.thinking])).toEqual([["prov/explicit", "xhigh"], ["prov/review", "high"], ["prov/chain", "medium"]]);
+  });
+
+  it("forwards resolved thinking through the real coordinator at initial and handoff stages", async () => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const seen: any[] = [];
+    const spawned: string[] = [];
+    const handler = makeRunHandler({
+      makeStore: () => store,
+      makeRunner: () => ({ runAsync: (o: any) => {
+        seen.push(o);
+        const { id } = store.create({ sessionId: "pipeline-thinking", agent: o.agent, model: o.model, thinking: o.thinking });
+        spawned.push(id);
+        store.start(id);
+        return store.get(id);
+      } }) as any,
+    });
+    const ctx: any = { db, globalDb: db, sessionId: "pipeline-thinking", cwd: process.cwd(), project: { dbPath: testScratchPath("thinking.db") }, pi: { events: { on() {}, emit() {} } }, model: { id: "prov/parent:low" }, modelDefaults: { reviewer: "prov/reviewer:high" } };
+    const stages = [
+      { agent: "worker", task: "explicit", model: "prov/explicit:xhigh" },
+      { agent: "reviewer", task: "review {previous}" },
+      { agent: "worker", task: "override", model: "prov/explicit:low", thinking: "medium" },
+    ];
+    await handler({ pipeline: stages, handoff: "intercom" } as any, ctx);
+    expect(seen[0]).toMatchObject({ model: "prov/explicit", thinking: "xhigh" });
+    for (const [index, expected] of [[0, "high"], [1, "medium"]] as const) {
+      const runId = spawned[index];
+      store.finish(runId, { status: "done", result: "finished" });
+      bus.emit({ runId, sessionId: "pipeline-thinking", ts: Date.now(), type: "status", payload: { status: "done" } });
+      expect(seen[index + 1].thinking).toBe(expected);
+    }
+    expect(seen.map(s => s.model)).toEqual(["prov/explicit", "prov/reviewer", "prov/explicit"]);
   });
 
   it("routes {pipeline,handoff} to the pipeline coordinator", async () => {

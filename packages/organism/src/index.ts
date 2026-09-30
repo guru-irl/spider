@@ -37,6 +37,8 @@ export { emptyResult } from "./types.js";
 
 export {
   ORGANISM_DEFAULTS,
+  ORGANISM_CONFIG_KEYS,
+  CURATOR_CONFIG_KEYS,
   readOrganismConfig,
   readCuratorConfig,
   type OrganismConfig,

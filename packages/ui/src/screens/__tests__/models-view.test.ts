@@ -30,6 +30,13 @@ describe("renderModels", () => {
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
 
+  it("shows effective model defaults with their origins and a shadowed global ref", () => {
+    const lines = renderModels(entries, defaults, id, 100, {
+      sources: { worker: "local" }, global: { worker: "copilot/flash" },
+    });
+    expect(lines.join("\n")).toContain("worker: copilot/claude-sonnet-5 (local; shadows global copilot/flash)");
+  });
+
   it("never throws on empty input (empty body — tool shell still shows the header)", () => {
     const lines = renderModels([], {}, id, 40);
     expect(lines).toEqual([]);
@@ -38,6 +45,10 @@ describe("renderModels", () => {
 });
 
 describe("ModelsView", () => {
+  it("shows origins when supplied to the component", () => {
+    const view = new ModelsView(entries, defaults, id, { sources: { worker: "local" }, global: { worker: "copilot/flash" } });
+    expect(view.render(100).join("\n")).toContain("worker: copilot/claude-sonnet-5 (local; shadows global copilot/flash)");
+  });
   it("caches by width", () => {
     const v = new ModelsView(entries, defaults, id);
     const a = v.render(50);

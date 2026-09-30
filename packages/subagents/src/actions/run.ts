@@ -98,7 +98,8 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
         ? overrides.makePipeline({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId })
         : new PipelineCoordinator({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId });
       coords.pipelines.push(coord);
-      const { pipelineId, firstRunId } = coord.start({ pipeline: args.pipeline, handoff: args.handoff ?? "intercom", async: true });
+      const pipeline = args.pipeline.map((stage: any) => ({ ...stage, ...resolveMT(stage.model, stage.thinking, stage.agent ?? "worker") }));
+      const { pipelineId, firstRunId } = coord.start({ pipeline, handoff: args.handoff ?? "intercom", async: true });
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: { pipelineId, firstRunId } };
     }
     if (Array.isArray(args.chain)) {

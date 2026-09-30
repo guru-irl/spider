@@ -2,9 +2,15 @@ import { describe, it, expect } from "vitest";
 import { CONFIG_SCHEMA, getField, coerce } from "../config-schema.js";
 
 describe("config schema", () => {
-	it("declares all nine groups", () => {
+	it("declares only groups with working settings", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["curator", "embeddings", "exec", "memory", "models", "organism", "routing", "self_naming", "ui"].sort());
+		expect(ids).toEqual(["auxiliary", "curator", "exec", "memory", "models", "organism", "routing", "ui"]);
+	});
+	it("curator consolidation defaults to the runtime's disabled value", () => {
+		expect(getField("curator.consolidate")?.default).toBe(false);
+	});
+	it("marks the agents footer as applying from the next session", () => {
+		expect(getField("ui.footer")?.restart).toBe(true);
 	});
 	it("snapshot cap is optional and warns that an explicit limit may omit entries", () => {
 		const field = getField("memory.snapshotCharCap")!;
@@ -16,18 +22,18 @@ describe("config schema", () => {
 		const cap = getField("memory.snapshotCharCap")!;
 		expect(coerce(cap, "unlimited")).toEqual({ ok: true, value: undefined });
 		expect(coerce(cap, "")).toEqual({ ok: true, value: undefined });
-		expect(coerce(getField("embeddings.dim")!, "unlimited").ok).toBe(false);
+		expect(coerce({ key: "example.dim", label: "Dim", description: "Dim", type: "number", default: 384 }, "unlimited").ok).toBe(false);
 	});
 	it("every field key is dotted-prefixed by its group id", () => {
 		for (const g of CONFIG_SCHEMA) for (const f of g.fields) expect(f.key.startsWith(g.id + ".")).toBe(true);
 	});
 	it("coerce validates booleans, enums and numeric ranges", () => {
-		const boolF = getField("organism.enabled")!;
+		const boolF = getField("ui.footer")!;
 		expect(coerce(boolF, "true")).toEqual({ ok: true, value: true });
 		const numF = getField("memory.snapshotCharCap")!;
 		expect(coerce(numF, "abc").ok).toBe(false);
 		expect(coerce(numF, String((numF.max ?? 100000) + 1)).ok).toBe(false);
-		const enumF = CONFIG_SCHEMA.flatMap((g) => g.fields).find((f) => f.type === "enum")!;
+		const enumF = { key: "example.choice", label: "Choice", description: "Choice", type: "enum" as const, default: "a", enum: ["a", "b"] };
 		expect(coerce(enumF, "___not_in_enum___").ok).toBe(false);
 		expect(coerce(enumF, enumF.enum![0])).toEqual({ ok: true, value: enumF.enum![0] });
 	});

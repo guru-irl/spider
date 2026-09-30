@@ -29,7 +29,7 @@ This package owns:
 This package does not own:
 
 - Rendering. `@spider/ui` reads the `runs` and `run_events` tables this
-  package writes and owns the agents grid, detail view, and footer.
+  package writes and owns the agents selector, detail view, and footer.
 - Per-run control. There is no interrupt, resume, or message-by-run-id
   surface. `packages/host/src/agents/actions.ts` notes this directly and
   degrades those UI actions to an "unavailable" notice.
@@ -65,7 +65,7 @@ This package does not own:
 | `intercom.ts` | `sendIntercom`/`mirrorMessage`: sends a message to another session through the host `pi` runtime and records it in `message_mirror`. |
 | `self-name.ts` | `deriveRunName`: a short label for a run, derived from its agent, role, and task. |
 | `completion-output.ts` | `latestRunOutput`: the child's most recent assistant message for a run, used to build the completion report. Used only by `actions/run.ts`, not re-exported from `index.ts`. |
-| `schemas.ts` | `RunParams`/`MessageParams` (the typebox argument schemas for the `run`/`message` tool actions) and the `PipelineStage`/`RunPipelineArgs` types. |
+| `schemas.ts` | `MessageParams` (the message argument schema) and the `PipelineStage`/`RunPipelineArgs` types. The registered spider tool schema is `SPIDER_PARAMETERS` in `packages/host/src/extension.ts`. |
 | `modes-index.ts` | Re-exports `runSingle`, `runChain`, `runParallel` together. |
 | `mcp-direct-tool-allowlist.ts` | `resolveMcpDirectToolNames`: resolves which MCP direct-tool names a child should receive, from cached MCP metadata and config files. Vendored from pi-subagents; used only by `pi-args.ts`, not re-exported from `index.ts`. |
 
@@ -96,7 +96,7 @@ separately exports `makeRunHandler` and `makeMessageHandler`, and defines
 | `qualifyModelProvider`, `listPiModels`, `ListedModel` | Add a provider prefix to a bare model id, from pi's live list of available models. |
 | `makeChildReporter`, `attachChildReporter`, `isSubagentChild` | The child-side event wiring described under Key modules. |
 | `sendIntercom`, `mirrorMessage`, `SUBAGENT_RESULT_INTERCOM_EVENT`, `SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT` | The intercom message primitive and its event names. |
-| `RunParams`, `MessageParams`, `PipelineStage`, `RunPipelineArgs` | The typebox argument schemas and the pipeline stage types. |
+| `MessageParams`, `PipelineStage`, `RunPipelineArgs` | The message argument schema and pipeline stage types. The registered run fields are in `SPIDER_PARAMETERS` (`packages/host/src/extension.ts`); top-level `model`/`thinking` apply to single runs, while tasks, chain and pipeline use per-item fields. |
 
 Not exported from `index.ts`: `latestRunOutput` (`completion-output.ts`) and
 `resolveMcpDirectToolNames`/`computeMcpServerHash`
@@ -239,8 +239,9 @@ mechanism that starts the next stage's child process.
   process, not resuming a suspended one.
 - The `run` action does not expose a blocking wait. A test in
   `__tests__/actions.test.ts` asserts directly that no `wait` action is
-  registered. `RunParams.async` exists in the schema but `actions/run.ts`
-  never reads `args.async`: single-mode calls always pass `async: true`,
+  registered. The registered `SPIDER_PARAMETERS` schema (`packages/host/src/extension.ts`)
+  has no `async` field; `actions/run.ts` never reads `args.async`:
+  single-mode calls always pass `async: true`,
   parallel-mode calls always pass `async: true`, and chain/pipeline are
   inherently backgrounded by their own coordinators.
 - A spawned child never re-registers `run`/`message`. `registerSubagentActions`
@@ -258,7 +259,8 @@ mechanism that starts the next stage's child process.
   prompt today, so that path is not currently exercised in production.
   Either spill throws if no scratch root is supplied, so a caller cannot
   fall back to the system temp directory.
-- `RunParams.handoff`/`RunPipelineArgs.handoff` is typed as `"intercom" |
+- The registered `SPIDER_PARAMETERS` schema (`packages/host/src/extension.ts`)
+  has no `handoff` field. `RunPipelineArgs.handoff` is typed as `"intercom" |
   "wait"`, and `actions/run.ts` defaults it to `"intercom"`, but
   `PipelineCoordinator` never reads `args.handoff` at all. Every pipeline
   runs the same way (spawn the next stage directly, then send an intercom

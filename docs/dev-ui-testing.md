@@ -1,6 +1,6 @@
 # Spider — realtime dev loop + manual UI test plan
 
-A live loop for iterating on the subagents UI (footer + Ctrl+Shift+G grid) against a real pi.
+A live loop for iterating on the subagents UI (footer + alt+shift+up selector) against a real pi.
 
 ## How the loop works
 - **Bundler:** Vite 8 (Rolldown + Oxc) builds `packages/host/src/extension.ts` → `dist/extension.js`
@@ -30,24 +30,24 @@ edit a UI file → vite rebuilds (Terminal 1 shows `built in NNms`) → in pi ty
 - [ ] In pi, ask: *"call the spider tool with action control, command doctor"* → returns health output.
       (Definitive: it means discovery + the shim loaded the bundle.)
 
-### B. Grid overlay (no agents required)
-- [ ] Type `/agents` → the agents **grid overlay** opens (empty "no agents" state is fine).
-- [ ] Press `q` or `Esc` → it closes.
-- [ ] Press **Ctrl+Shift+G** → grid toggles. (`ctrl+g` alone is pi's built-in external-editor
-      binding; we use `ctrl+shift+g` to avoid the conflict. `/agents` is the always-available fallback.)
+### B. Agents selector
+- [ ] With no active agents, type `/agents` → a notification appears, without capturing input.
+- [ ] With an active agent, type `/agents` → the footer selection becomes active; `Esc` closes it.
+- [ ] Press **alt+shift+up** → the same selector opens. `/agents` is the fallback.
+- [ ] Set `ui.footer=false`, start a new session and invoke `/agents` → a disabled notice appears.
 
-### C. Footer + grid with a LIVE agent
+### C. Footer + selector with a LIVE agent
 - [ ] Ask pi: *"use spider to run a subagent — action run, a single scout agent whose task is to list the
       files in this repo."* (Any real `spider run` works.)
 - [ ] The **footer** appears above the editor: agent name + animated spinner + status glyph (◆ running).
-- [ ] Open the grid (`/agents`): the agent shows as a **cell** (header + activity tail + progress).
-- [ ] Arrow keys move focus; **Enter** drills into the full-screen **AgentDetail**; `Esc` returns to grid.
-- [ ] When the child finishes: footer/cell show **✓** (done); after the retention window the footer clears.
+- [ ] Open the selector (`/agents`): the footer highlights a run.
+- [ ] Arrow keys move selection; **Enter** drills into **AgentDetail**; `Esc` returns to the footer.
+- [ ] When the child finishes: the footer shows **✓** (done); after the retention window it clears.
 - [ ] Trigger a failing run (e.g. task that errors) → status shows **✗** (failed) / **⚠** (cancelled).
 
 ### D. Handoff edges (chain / pipeline)
 - [ ] Ask: *"use spider to run a chain: step 1 a scout lists files, step 2 a worker summarizes step 1."*
-- [ ] In the grid, a **handoff edge** renders between the two agents as stage 1 hands to stage 2.
+- [ ] Inspect the runs in the footer and their details as stage 1 hands to stage 2.
 
 ### E. renderResult (themed tool output)
 - [ ] Run `spider remember` (stage a memory), `recall`, and `search` → each tool result renders as a
@@ -62,7 +62,7 @@ edit a UI file → vite rebuilds (Terminal 1 shows `built in NNms`) → in pi ty
 - [ ] Edit a visible string, e.g. the spinner frames or a label in
       `packages/ui/src/agents/footer.ts` (or the glyph in `packages/ui/src/index.ts`).
 - [ ] Terminal 1 shows `built in NNms`.
-- [ ] In pi: `/reload`, then re-open the footer/grid → your change is visible.
+- [ ] In pi: `/reload`, then re-open the footer/selector → your change is visible.
 
 ## Teardown
 - `npm run dev:unlink` (removes the global shim; stops loading spider in every pi session)

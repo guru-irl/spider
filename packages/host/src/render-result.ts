@@ -550,6 +550,7 @@ function toTodoDetails(args: any, details: any): TodoChecklistDetails {
   } else if (details && (details.seq !== undefined || details.text !== undefined)) {
     // add/toggle → single Todo
     items = [toItem(details)];
+    if (details.session) scope = details.name ? `${details.session} (${details.name})` : String(details.session);
   }
   const done = items.filter((it) => it.done).length;
   return { scope, items, done, total: items.length };
@@ -623,6 +624,15 @@ function renderSpiderResultBody(
     case "remember": return wrapBespoke(renderRememberResult(details as StageResult, expanded));
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[], expanded));
     case "todo": {
+      const op = context?.args?.op;
+      if (op === "remove" && details?.seq !== undefined) {
+        const session = details?.session ?? "current";
+        const label = details?.name ? `${session} (${details.name})` : session;
+        return plainBody(`Removed #${details.seq} ${details.text} from session ${label}`, expanded);
+      }
+      if (op === "clear" && details?.removed !== undefined) {
+        return plainBody(`Removed ${details.removed} todos; kept ${details.kept} open todos`, expanded);
+      }
       const d = toTodoDetails(context?.args, details);
       const th = adaptTheme(t);
       return { render: (w: number) => renderTodoChecklist(d, { theme: th, width: w, expanded }), invalidate() {} };

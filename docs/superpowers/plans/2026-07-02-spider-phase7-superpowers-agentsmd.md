@@ -407,7 +407,7 @@ fallback.
 | Dispatch a subagent | `spider run` (single/chain/parallel/async, `context:"fresh"\|"fork"`) | — |
 | Await subagents | `spider wait` | — |
 | Hand a finished stage to the next agent | `spider run { pipeline:[...], handoff:"intercom" }` / `spider message` | — |
-| Task tracking (create/mark a todo) | `spider todo` (`list`/`add`/`toggle`/`clear`/`sessions`/`view`) | plan file / `TODO.md` |
+| Task tracking (create/mark a todo) | `spider todo` (`list`/`add`/`toggle`/`remove`/`clear`/`sessions`/`view`) | plan file / `TODO.md` |
 | Invoke / distill a skill | `spider skill` | `read` the `SKILL.md` |
 | Import a past session | `spider import` | — |
 | Admin (stats/doctor/upstream-watch/memory/config) | `spider control <command>` | — |

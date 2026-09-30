@@ -45,8 +45,11 @@ built-ins:
   \`pipeline:[worker, reviewer], handoff:"intercom"\`. Give review-only children
   \`context:"fresh"\` and tell them not to edit source.
 - \`spider todo\` — durable, per-project + per-session task tracking
-  (\`list\`/\`add\`/\`toggle\`/\`clear\`/\`sessions\`/\`view\`). One todo per
-  checklist item; toggle as you complete each.
+  (\`list\`/\`add\`/\`toggle\`/\`remove\`/\`clear\`/\`sessions\`/\`view\`). One todo per
+  checklist item; toggle as you complete each. Remove obsolete items with op=remove;
+  clear only removes done items unless force:true, always in the current session;
+  clear rejects session selectors. Use session id/prefix/name for
+  toggle/remove in another session in this project; session:"all" is rejected.
 - \`spider message\` — wake a specific peer/reviewer session directly.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
   \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,

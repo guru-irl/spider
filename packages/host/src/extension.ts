@@ -145,9 +145,9 @@ export const SPIDER_PARAMETERS = {
     command: { type: "string", description: "Sub-command when action='control' (e.g. 'doctor','config','memory','bind','unbind')." },
     apply: { type: "boolean", description: "control migrate: apply changes (default is a dry-run)." },
     mark: { type: "string", description: "control upstream-watch: mark a reviewed baseline as '<package> <ref>' (run the watch first to fetch the mirror)." },
-    force: { type: "boolean", description: "control skill sub=curate: run even when the organism is disabled, the curator is paused, or the minimum interval has not elapsed (decay can mark skills stale/archived). fetch: skip the cache TTL and refetch." },
+    force: { type: "boolean", description: "control skill sub=curate: run even when the organism is disabled, the curator is paused, or the minimum interval has not elapsed (decay can mark skills stale/archived). fetch: skip the cache TTL and refetch. todo op=clear: remove all todos in the current session, including open items (default removes only done items; session selectors are rejected)." },
     consolidate: { type: "boolean", description: "control skill sub=curate: request aux-model consolidation of eligible agent-created skills when a model and candidates are available; absorbed skills are archived." },
-    op: { type: "string", enum: ["get", "set", "unset", "add", "list", "toggle", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set/unset. todo: add/list/toggle/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
+    op: { type: "string", enum: ["get", "set", "unset", "add", "list", "toggle", "remove", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set/unset. todo: add/list/toggle/remove/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command (pending|approve|reject|status|forget; consolidate is deprecated -> status + forget)." },
@@ -217,7 +217,7 @@ export const SPIDER_PARAMETERS = {
     thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "SINGLE-mode reasoning/thinking level; overrides the resolved model suffix. Tasks, chain and pipeline use per-item thinking fields." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
-    id: { type: "string", description: "Run id/prefix (also a todo id). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
+    id: { type: "string", description: "Run id/prefix (todo toggle/remove: per-session seq). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
@@ -225,7 +225,7 @@ export const SPIDER_PARAMETERS = {
     kind: { type: "string", description: "message: optional intercom message kind; defaults to 'message'." },
     // todo
     text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate BODY (markdown) for action='skill' op=add; free-form request for action='skill' op=distill." },
-    session: { type: "string", description: "todo op=view: session id/prefix/name or 'all'. import: single transcript file path, taking precedence over sessions and select." },
+    session: { type: "string", description: "todo op=view/toggle/remove: session id/prefix/name in the same project DB; toggle/remove default to current session; 'all' is rejected for toggle/remove and accepted for view. import: single transcript file path, taking precedence over sessions and select." },
     // exec
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
     language: { type: "string", description: "Language for action 'exec' (javascript, shell, python, ruby, go, rust, php, perl, r, elixir, csharp, typescript)." },
@@ -950,7 +950,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification (durability, usefulness to other agents, correct scope; reviewer checks overlap and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification (durability, usefulness to other agents, correct scope; reviewer checks overlap and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,

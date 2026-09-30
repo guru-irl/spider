@@ -11,6 +11,8 @@ export interface KillOpts {
   kill?: (pid: number, sig: NodeJS.Signals | number) => void;
   /** Injected for tests; defaults to process.platform. */
   platform?: string;
+  /** The run owner rechecks spawn identity before either signal. */
+  canSignal?: () => boolean;
 }
 
 const DEFAULT_GRACE_MS = 3000;
@@ -25,6 +27,13 @@ export function isProcessAlive(pid: number, kill: (p: number, s: NodeJS.Signals 
     // EPERM means it exists but belongs to another user — still alive.
     return (err as { code?: string })?.code === "EPERM";
   }
+}
+
+/** Probe the process group, including members whose leader has exited. */
+export function isProcessGroupAlive(pid: number, kill: (p: number, s: NodeJS.Signals | number) => void = process.kill): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { kill(-pid, 0); return true; }
+  catch (error) { return (error as { code?: string })?.code === "EPERM"; }
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => {
@@ -44,6 +53,10 @@ export async function killProcessGroup(pid: number, opts: KillOpts = {}): Promis
   const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
   const target = platform === "win32" ? pid : -pid;
 
+  if (opts.canSignal && !opts.canSignal()) {
+    if (isProcessAlive(pid, kill) || (platform !== "win32" && isProcessGroupAlive(pid, kill))) throw new Error("Process identity unconfirmed; no signal sent.");
+    return "already-dead";
+  }
   try {
     kill(target, "SIGTERM");
   } catch (err: unknown) {
@@ -53,10 +66,13 @@ export async function killProcessGroup(pid: number, opts: KillOpts = {}): Promis
 
   await sleep(graceMs);
 
-  // Probe the LEADER pid, not the group: a group probe reports alive while any
-  // member lingers, and the leader is what the run row records.
-  if (!isProcessAlive(pid, kill)) return "terminated";
+  // A group may retain tool processes after its leader exits.
+  if (!(platform === "win32" ? isProcessAlive(pid, kill) : isProcessGroupAlive(pid, kill))) return "terminated";
 
+  if (opts.canSignal && !opts.canSignal()) {
+    if (isProcessAlive(pid, kill) || (platform !== "win32" && isProcessGroupAlive(pid, kill))) throw new Error("Process identity unconfirmed; no signal sent.");
+    return "already-dead";
+  }
   try {
     kill(target, "SIGKILL");
   } catch (err: unknown) {

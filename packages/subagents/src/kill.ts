@@ -1,25 +1,28 @@
-import type { Db } from "@spider/db-core";
+import { appendRunEvent, type Db } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
 import { killProcessGroup, isProcessAlive, type KillOpts } from "./kill-process";
 import { getChild, unregisterChild } from "./coordinators";
+import { checkProcessIdentity } from "./process-identity";
 
 export interface KillResult {
   runId: string;
   name: string;
-  outcome: "killed" | "already-finished" | "no-process" | "failed";
+  outcome: "killed" | "already-finished" | "no-process" | "unconfirmed" | "failed";
   via: "handle" | "pid" | "none";
   /** What the child was last doing — so a kill mid-`edit` is visible. */
   lastActivity?: string;
-  /** Kill error message (only for outcome="failed"). */
+  /** Why termination failed or could not be confirmed. */
   error?: string;
 }
 
 export interface KillDeps {
   store: RunStore;
   db: Db;
-  getChild?: (sessionId: string, runId: string) => { kill(): void } | undefined;
+  getChild?: (sessionId: string, runId: string) => { kill(reason?: string): void; killAsync?(graceMs?: number, reason?: string): Promise<void> } | undefined;
   kill?: (pid: number, opts?: KillOpts) => Promise<"terminated" | "forced" | "already-dead">;
   alive?: (pid: number) => boolean;
+  probeStartTime?: (pid: number) => string | null;
+  probeCommand?: (pid: number) => string | null;
 }
 
 const TERMINAL = new Set(["done", "failed", "cancelled"]);
@@ -84,22 +87,50 @@ export async function killRun(deps: KillDeps, sessionId: string, run: RunRow): P
   const child = (deps.getChild ?? getChild)(sessionId, run.id);
 
   if (child) {
-    try { child.kill(); } catch { /* best-effort */ }
-    unregisterChild(sessionId, run.id);
-    deps.store.cancel(run.id, `killed (was: ${lastActivity ?? "no recorded activity"})`);
-    return { runId: run.id, name, outcome: "killed", via: "handle", lastActivity };
+    const reason = "killed by spider kill from this session";
+    try {
+      if (child.killAsync) await child.killAsync(250, reason);
+      else child.kill(reason);
+      unregisterChild(sessionId, run.id);
+      // Runner-owned handles already cancel before signalling. Keep this idempotent
+      // reconciliation for injected handles that do not own their run row (kill.test).
+      deps.store.cancel(run.id, reason);
+      return { runId: run.id, name, outcome: "killed", via: "handle", lastActivity };
+    } catch (error) {
+      const terminal = TERMINAL.has(deps.store.get(run.id)?.status ?? "");
+      try { appendRunEvent(deps.db, { runId: run.id, sessionId, ts: Date.now(), type: "warning", summary: `Owned handle kill failed; ${terminal ? "run is terminal; group termination unconfirmed" : "run remains active"}: ${String(error)}`, payload: { killFailed: true, error: String(error) } }); } catch { /* keep the truthful tool result if recording fails */ }
+      return { runId: run.id, name, outcome: "failed", via: "handle", lastActivity, error: String(error) };
+    }
+  }
+
+  // Only pid-only paths require a persisted start identity. An owned process
+  // object cannot have its live pid reused before Node reaps it.
+  const identity = () => checkProcessIdentity(run.pid!, run.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand });
+  if (run.pid != null) {
+    const checked = identity();
+    if (!checked.matches) {
+      deps.store.cancel(run.id, `Run lost: ${checked.reason}`);
+      const alive = (deps.alive ?? isProcessAlive)(run.pid);
+      return { runId: run.id, name, outcome: alive ? "unconfirmed" : "no-process", via: "none", lastActivity, error: checked.reason };
+    }
   }
 
   const pid = run.pid ?? undefined;
   const aliveFn = deps.alive ?? isProcessAlive;
   if (pid === undefined || !aliveFn(pid)) {
     // No process to signal (never spawned, or already gone) — reconcile the row.
-    deps.store.cancel(run.id, `cancelled — no live process (was: ${lastActivity ?? "no recorded activity"})`);
+    deps.store.cancel(run.id, `Run lost: no live process (was: ${lastActivity ?? "no recorded activity"}).`);
     return { runId: run.id, name, outcome: "no-process", via: "none", lastActivity };
   }
 
   const killFn = deps.kill ?? killProcessGroup;
-  try { await killFn(pid); } catch { /* best-effort */ }
-  deps.store.cancel(run.id, `killed via pid ${pid} (was: ${lastActivity ?? "no recorded activity"})`);
+  try {
+    if (deps.kill) await killFn(pid);
+    else await killFn(pid, { canSignal: () => identity().matches });
+  } catch (error) {
+    deps.store.cancel(run.id, `Run lost: termination failed: ${String(error)}`);
+    return { runId: run.id, name, outcome: "failed", via: "pid", lastActivity, error: String(error) };
+  }
+  deps.store.cancel(run.id, "killed by spider kill from this session");
   return { runId: run.id, name, outcome: "killed", via: "pid", lastActivity };
 }

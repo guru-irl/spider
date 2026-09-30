@@ -50,6 +50,45 @@ describe("migrate", () => {
   });
 });
 
+describe("migrate v13 child routes", () => {
+  it("keeps pre-upgrade runs print-only without inventing an intercom target", () => {
+    const db = openDb(scratchDbPath("v11-runs")); opened.push(db);
+    db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT); INSERT INTO runs VALUES ('legacy','running')");
+    db.raw.pragma("user_version = 11");
+    migrate(db, "worktree");
+    expect(db.prepare("SELECT child_mode,intercom_session,pid_start_time,status FROM runs WHERE id='legacy'").get())
+      .toEqual({ child_mode: "print", intercom_session: null, pid_start_time: null, status: "running" });
+    expect(() => migrate(db, "worktree")).not.toThrow();
+  });
+  it("adds the locator to an existing global database without copying run contents", () => {
+    const db = openDb(scratchDbPath("v11-routes")); opened.push(db); db.raw.pragma("user_version = 11");
+    migrate(db, "global");
+    db.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES ('r','owner','fixture.db')").run();
+    expect(db.prepare("SELECT session_id,db_path FROM run_routes WHERE run_id='r'").get()).toEqual({ session_id: "owner", db_path: "fixture.db" });
+  });
+});
+
+describe("v13 ladder replay", () => {
+  it.each([[], ["child_mode"], ["child_mode", "intercom_session"], ["child_mode", "intercom_session", "pid_start_time"]].map(fields => ({fields})))("conditionally adds missing columns without changing existing values ($fields)", ({fields}) => {
+    const db = openDb(scratchDbPath("partial-v13")); opened.push(db);
+    db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT)");
+    for (const field of fields) db.exec(`ALTER TABLE runs ADD COLUMN ${field} TEXT`);
+    db.prepare("INSERT INTO runs (id,status) VALUES ('live','running')").run();
+    if (fields.includes("child_mode")) db.prepare("UPDATE runs SET child_mode='rpc'").run();
+    db.raw.pragma("user_version = 11");
+    expect(() => migrate(db, "worktree")).not.toThrow();
+    expect(db.prepare("SELECT child_mode,intercom_session,pid_start_time,status FROM runs").get()).toEqual({child_mode:fields.includes("child_mode") ? "rpc" : "print",intercom_session:null,pid_start_time:null,status:"running"});
+    db.raw.pragma("user_version = 11");
+    expect(() => migrate(db, "worktree")).not.toThrow();
+  });
+  it("replays global routes safely and retains its existing locators", () => {
+    const db = openDb(scratchDbPath("replay-routes")); opened.push(db);
+    migrate(db,"global"); db.prepare("INSERT INTO run_routes VALUES ('run','owner','fixture.db')").run();
+    db.raw.pragma("user_version = 11"); expect(() => migrate(db,"global")).not.toThrow();
+    expect(db.prepare("SELECT * FROM run_routes").all()).toEqual([{run_id:"run",session_id:"owner",db_path:"fixture.db"}]);
+  });
+});
+
 describe("migrate — v11 provenance columns", () => {
   for (const scope of ["global", "repo"] as const) {
     const table = scope === "global" ? "global_memory" : "memory";

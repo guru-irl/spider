@@ -24,8 +24,10 @@ export async function runChain(
       thinking: s.thinking,
       context: s.context ?? base.context,
       phase: `step-${i + 1}`,
+      async: true, // Foreground within the chain, but the dispatch tool already returned.
     });
     out.push(row);
+    if (row.status === "cancelled") break;
     previous = row.result ?? "";
   }
   return out;

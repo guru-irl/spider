@@ -37,11 +37,14 @@ describe("child reporter", () => {
     // Regression: getSessionName() throws under `pi -p --mode json`; the old code called it
     // unguarded, so attachChildReporter threw (silently swallowed) and NO child ever reported.
     const dbFile = scratchDbPath("child-reporter-headless");
+    const seed = openDbAt(dbFile, "project");
+    const { id: runId } = new RunStore(seed).create({sessionId: "child-sess", agent: "worker"});
+    seed.close();
     const KEYS = ["PI_SUBAGENT_CHILD", "PI_SPIDER_DB_PATH", "PI_SUBAGENT_RUN_ID"] as const;
     const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
     process.env.PI_SUBAGENT_CHILD = "1";
     process.env.PI_SPIDER_DB_PATH = dbFile;
-    process.env.PI_SUBAGENT_RUN_ID = "run-headless-1";
+    process.env.PI_SUBAGENT_RUN_ID = runId;
     try {
       const handlers: Record<string, (e: any) => void> = {};
       const pi = {
@@ -53,8 +56,9 @@ describe("child reporter", () => {
       expect(handlers["agent_start"]).toBeTypeOf("function");
       handlers["agent_start"]({}); // → onStatus("running")
       const db = openDbAt(dbFile, "project");
-      const rows = db.prepare("SELECT summary FROM run_events WHERE run_id=? AND type='status'").all("run-headless-1") as any[];
+      const rows = db.prepare("SELECT summary FROM run_events WHERE run_id=? AND type='status'").all(runId) as any[];
       expect(rows.some((r) => r.summary === "running")).toBe(true);
+      db.close(); handlers["session_shutdown"]({});
       dispose?.();
     } finally {
       for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }

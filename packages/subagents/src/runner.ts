@@ -1,4 +1,4 @@
-import type { Db } from "@spider/db-core";
+import { appendRunEvent, type Db } from "@spider/db-core";
 import { RunStore, type RunRow, type RunStatus } from "./run-store";
 import { RunEventTailer } from "./event-tailer";
 import { emitStatus } from "./run-events";
@@ -10,8 +10,12 @@ export { NO_DELIVERABLE_RESULT };
 
 export interface ChildHandle {
   pid?: number;
+  startTime?: string | null;
+  cancellationReason?: string;
   wait(): Promise<{ exitCode: number; result?: string }>;
-  kill(): void;
+  kill(reason?: string): void;
+  killAsync?(graceMs?: number, reason?: string): Promise<void>;
+  steer?(message: string): Promise<import("./rpc-child").SteerAck>;
   detach(): void;
 }
 
@@ -76,7 +80,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; intercomExtensions?: string[]; orchestratorTarget?: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -100,6 +104,9 @@ export class Runner {
       sessionId: this.sessionId,
       agent: opts.agent,
       role: opts.role,
+      name: run.name ?? undefined,
+      childMode: this.deps.childMode,
+      intercomExtensions: this.deps.intercomExtensions,
       task: opts.task,
       model: opts.model,
       thinking: opts.thinking,
@@ -109,11 +116,100 @@ export class Runner {
       skill: opts.skill,
       dbPath: this.deps.dbPath,
       scratchRoot: this.deps.scratchRoot,
-      orchestratorTarget: opts.orchestratorTarget,
+      orchestratorTarget: opts.orchestratorTarget ?? this.deps.orchestratorTarget,
       intercomSessionName: opts.intercomSessionName ?? run.name ?? undefined,
       cwd: this.cwd,
     });
+    this.deps.store.setLaunch(run.id, {
+      childMode: spec.childMode ?? "print",
+      intercomSession: spec.childMode === "rpc" && this.deps.intercomExtensions?.length
+        ? spec.env.PI_SUBAGENT_INTERCOM_SESSION_NAME : undefined,
+    });
+    this.deps.globalDb?.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
+      .run(run.id, this.sessionId, this.deps.dbPath);
+    spec.onRpcEvent = event => {
+      if (["warning", "extension_error", "queue_update", "steer_delivery"].includes(event.type)) {
+        appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: event.type,
+          summary: event.message ?? event.error ?? "Child pending queue changed.", payload: event });
+      }
+    };
+    if (spec.launchWarning) spec.onRpcEvent({ type: "warning", message: spec.launchWarning, launchWarning: true, printFallback: spec.childMode === "print" });
     return this.deps.spawn(spec);
+  }
+
+  private ownHandle(run: RunRow, handle: ChildHandle): ChildHandle {
+    const kill = handle.kill.bind(handle);
+    const killAsync = handle.killAsync?.bind(handle);
+    let exited = false;
+    const exit = handle.wait().then(value => { exited = true; return value; }, error => { exited = true; throw error; });
+    handle.wait = () => exit;
+    const restore = (reason: string, before: RunRow | undefined, previousReason: string | undefined) => {
+      // An exit report is final even if group termination later fails during grace.
+      if (exited) { this.removeRoute(run.id); return; }
+      handle.cancellationReason = previousReason;
+      this.uncancel(run.id, reason, before);
+    };
+    handle.kill = (reason = "Run killed from another path.") => {
+      const previousReason = handle.cancellationReason;
+      const before = this.deps.store.get(run.id);
+      handle.cancellationReason = reason;
+      try { this.deps.store.cancel(run.id, reason); } catch { /* the kill must still run; finalize records the reason */ }
+      try { kill(); } catch (error) {
+        restore(reason, before, previousReason);
+        throw error;
+      }
+      this.removeRoute(run.id);
+    };
+    if (killAsync) handle.killAsync = async (graceMs, reason = "Run killed from another path.") => {
+      const previousReason = handle.cancellationReason;
+      const before = this.deps.store.get(run.id);
+      handle.cancellationReason = reason;
+      try { this.deps.store.cancel(run.id, reason); } catch { /* the kill must still run; finalize records the reason */ }
+      try { await killAsync(graceMs); } catch (error) {
+        restore(reason, before, previousReason);
+        throw error;
+      }
+      this.removeRoute(run.id);
+    };
+    registerChild(this.sessionId, run.id, handle);
+    return handle;
+  }
+
+  /** Undo only our optimistic cancellation, never a different terminal outcome. */
+  private uncancel(runId: string, reason: string, before: RunRow | undefined): void {
+    if (!before || !["queued", "running", "paused"].includes(before.status)) return;
+    const changed = this.db.prepare("UPDATE runs SET status=?, ended_at=?, result=? WHERE id=? AND status='cancelled' AND result IS ?")
+      .run(before.status, before.ended_at, before.result, runId, reason).changes;
+    if (!changed) return;
+    this.deps.globalDb?.prepare("INSERT OR REPLACE INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
+      .run(runId, this.sessionId, this.deps.dbPath);
+    emitStatus(this.db, { runId, sessionId: this.sessionId, status: before.status, summary: before.name ?? undefined });
+  }
+
+  private removeRoute(runId: string): void {
+    try { this.deps.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(runId); } catch { /* cleanup cannot mask the run outcome */ }
+  }
+
+  private launch(run: RunRow, opts: RunOpts): ChildHandle | undefined {
+    let handle: ChildHandle | undefined;
+    try {
+      this.deps.store.start(run.id);
+      this.deps.tailer.track(run.id);
+      emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
+      handle = this.spawnFor(run, opts);
+      if (handle.pid !== undefined) this.deps.store.setPid(run.id, handle.pid, process.pid, handle.startTime);
+      return this.ownHandle(run, handle);
+    } catch (error) {
+      const result = `Child launch failed: ${String((error as Error)?.message ?? error)}`;
+      try {
+        this.deps.store.finish(run.id, { status: "failed", result });
+        emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "failed", summary: result });
+      } finally {
+        try { handle?.kill(); } finally { unregisterChild(this.sessionId, run.id); this.removeRoute(run.id); }
+      }
+      this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, "failed", result);
+      return undefined;
+    }
   }
 
   /**
@@ -132,54 +228,67 @@ export class Runner {
    * via `decideOutcome` (which itself defers to `genuineCompletion`/run_events rather
    * than the production spawner's always-absent `waitResult`).
    */
-  private finalize(run: RunRow, exitCode: number, waitResult: string | undefined): { status: RunStatus; result?: string } {
+  private finalize(run: RunRow, exitCode: number, waitResult: string | undefined, cancellationReason?: string): { status: RunStatus; result?: string } {
+    this.removeRoute(run.id);
     const cur = this.deps.store.get(run.id);
     if (cur && (cur.status === "queued" || cur.status === "running" || cur.status === "paused")) {
-      const outcome = decideOutcome(this.db, run.id, exitCode, waitResult);
+      const outcome = this.withSteerSummary(run.id, cancellationReason ? { status: "cancelled" as const, result: cancellationReason } : decideOutcome(this.db, run.id, exitCode, waitResult));
       this.deps.store.finish(run.id, outcome);
       emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: outcome.status, summary: run.name ?? undefined });
       return outcome;
     }
-    return { status: (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed"), result: cur?.result ?? undefined };
+    const outcome = this.withSteerSummary(run.id, { status: (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed"), result: cur?.result ?? undefined });
+    if (outcome.result !== cur?.result) this.db.prepare("UPDATE runs SET result=? WHERE id=?").run(outcome.result ?? null, run.id);
+    return outcome;
+  }
+
+  private withSteerSummary(runId: string, outcome: { status: RunStatus; result?: string }): { status: RunStatus; result?: string } {
+    const events = this.db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='steer_delivery'").all(runId) as Array<{ payload: string }>;
+    const undelivered = new Set<string>();
+    for (const event of events) {
+      try { const payload = JSON.parse(event.payload); if (payload.delivered === false) undelivered.add(payload.requestId); } catch { /* malformed diagnostics do not change the outcome */ }
+    }
+    if (!undelivered.size) return outcome;
+    const summary = `${undelivered.size} accepted steer(s) were not delivered.`;
+    const result = outcome.result?.includes(summary) ? outcome.result : [outcome.result, summary].filter(Boolean).join("\n\n");
+    return { ...outcome, result };
   }
 
   async runForeground(opts: RunOpts): Promise<RunRow> {
     const run = this.makeRun(opts);
-    this.deps.store.start(run.id);
-    // Track even foreground runs so the child's tool activity (written to the DB in the
-    // child process) is tailed back onto the in-process bus → the live UI feed.
-    this.deps.tailer.track(run.id);
-    emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
-    const handle = this.spawnFor(run, opts);
-    const { exitCode, result } = await handle.wait();
-    this.finalize(run, exitCode, result);
-    return this.deps.store.get(run.id)!;
+    const handle = this.launch(run, opts);
+    if (!handle) return this.deps.store.get(run.id)!;
+    try {
+      const { exitCode, result } = await handle.wait();
+      this.finalize(run, exitCode, result, handle.cancellationReason);
+      const finished = this.deps.store.get(run.id)!;
+      if (!opts.async && finished.status === "cancelled") this.deps.onComplete?.(finished, finished.status, finished.result ?? undefined);
+      return finished;
+    } catch (error) {
+      const outcome = this.finalize(run, 1, `Child wait failed: ${String(error)}`, handle.cancellationReason);
+      this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
+      return this.deps.store.get(run.id)!;
+    } finally {
+      unregisterChild(this.sessionId, run.id);
+    }
   }
 
   runAsync(opts: RunOpts): RunRow {
     const run = this.makeRun(opts);
-    this.deps.store.start(run.id);
-    this.deps.tailer.track(run.id);
-    emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
-    const handle = this.spawnFor(run, opts);
-    // Retain the handle (in-process fast path for kill + session_shutdown teardown) and
-    // persist the pid (fallback path after a host reload, when the map is empty but the
-    // child is still alive). Previously the handle was detached and DROPPED, which is
-    // why killing a subagent meant hunting the pi process by hand.
-    registerChild(this.sessionId, run.id, handle);
-    if (handle.pid !== undefined) {
-      try { this.deps.store.setPid(run.id, handle.pid, process.pid); } catch { /* best-effort */ }
-    }
+    const handle = this.launch(run, opts);
+    if (!handle) return this.deps.store.get(run.id)!;
     // Finalize the row on child EXIT even if the child-reporter missed session_shutdown
     // (headless/killed children) — otherwise the run is stuck "running" in the UI.
     void handle.wait().then(({ exitCode, result }) => {
-      const outcome = this.finalize(run, exitCode, result);
+      const outcome = this.finalize(run, exitCode, result, handle.cancellationReason);
       // Async completion notification: let the parent agent (and human) know a background
       // subagent finished. Fired EXACTLY ONCE per child exit, whether the parent or the child
-      // finalized the row. A CANCELLED run is a deliberate stop — the notifier suppresses it
-      // (see makeAsyncNotifier), so killing an agent does not wake the orchestrator.
+      // finalized the row. Cancellation carries the persisted cause as well.
       this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
-    }).catch(() => { /* best-effort finalize */ }).finally(() => {
+    }).catch(error => {
+      const outcome = this.finalize(run, 1, `Child wait failed: ${String(error)}`, handle.cancellationReason);
+      this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
+    }).finally(() => {
       unregisterChild(this.sessionId, run.id);
     });
     handle.detach();

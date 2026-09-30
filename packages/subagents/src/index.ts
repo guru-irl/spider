@@ -7,6 +7,7 @@ export * from "./event-tailer";
 export * from "./runner";
 export * from "./modes-index";
 export * from "./intercom";
+export * from "./child-intercom";
 export * from "./schemas";
 export * from "./pipeline";
 export * from "./coordinators";

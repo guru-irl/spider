@@ -39,24 +39,24 @@ describe("killProcessGroup", () => {
   it("sends SIGTERM to the negative pid on unix", async () => {
     const kill = vi.fn((p: number, sig: NodeJS.Signals | number) => {
       if (p === -123 && sig === "SIGTERM") return;          // group SIGTERM: expected
-      if (p === 123 && sig === 0) { const e: any = new Error("gone"); e.code = "ESRCH"; throw e; } // leader probe: correct
+      if (p === -123 && sig === 0) { const e: any = new Error("gone"); e.code = "ESRCH"; throw e; } // group probe: gone
       throw new Error(`unexpected kill(${p}, ${String(sig)})`);
     });
     const res = await killProcessGroup(123, { kill, platform: "darwin", graceMs: 5 });
     expect(kill).toHaveBeenCalledWith(-123, "SIGTERM");
-    expect(kill).toHaveBeenCalledWith(123, 0); // Must probe LEADER, not group
+    expect(kill).toHaveBeenCalledWith(-123, 0); // Surviving members retain the group
     expect(res).toBe("terminated");
   });
 
   it("escalates to SIGKILL when the process survives the grace period", async () => {
     const kill = vi.fn((p: number, sig: NodeJS.Signals | number) => {
       if (p === -123 && (sig === "SIGTERM" || sig === "SIGKILL")) return; // group signals: expected
-      if (p === 123 && sig === 0) return; // leader probe: still alive
+      if (p === -123 && sig === 0) return; // group probe: still alive
       throw new Error(`unexpected kill(${p}, ${String(sig)})`);
     });
     const res = await killProcessGroup(123, { kill, platform: "darwin", graceMs: 5 });
     expect(kill).toHaveBeenCalledWith(-123, "SIGTERM");
-    expect(kill).toHaveBeenCalledWith(123, 0); // Must probe LEADER, not group
+    expect(kill).toHaveBeenCalledWith(-123, 0); // Surviving members retain the group
     expect(kill).toHaveBeenCalledWith(-123, "SIGKILL");
     expect(res).toBe("forced");
   });
@@ -66,4 +66,15 @@ describe("killProcessGroup", () => {
     await killProcessGroup(123, { kill, platform: "win32", graceMs: 5 });
     expect(kill).toHaveBeenCalledWith(123, "SIGTERM");
   });
+});
+
+it("rechecks identity before SIGKILL and reports uncertainty when it is lost", async () => {
+  const sent: Array<[number, NodeJS.Signals | number]> = [];
+  let checks = 0;
+  await expect(killProcessGroup(123, { platform: "darwin", graceMs: 1,
+    canSignal: () => ++checks === 1,
+    kill: (pid, sig) => { sent.push([pid, sig]); },
+  })).rejects.toThrow(/identity unconfirmed/i);
+  expect(sent).toContainEqual([-123, "SIGTERM"]);
+  expect(sent).not.toContainEqual([-123, "SIGKILL"]);
 });

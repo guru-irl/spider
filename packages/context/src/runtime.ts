@@ -1,3 +1,4 @@
+import { commandEnv } from "@spider/db-core";
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
@@ -79,7 +80,7 @@ const isWindows = process.platform === "win32";
 function commandExists(cmd: string): boolean {
   try {
     const check = isWindows ? `where ${cmd}` : `command -v ${cmd}`;
-    execSync(check, { stdio: "pipe" });
+    execSync(check, { env: commandEnv(), stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -98,7 +99,7 @@ function runnableExists(cmd: string): boolean {
   if (isWindows) {
     // Reject if every `where` hit lives under Microsoft\WindowsApps (Store stubs).
     try {
-      const out = execSync(`where ${cmd}`, { encoding: "utf-8", stdio: "pipe" });
+      const out = execSync(`where ${cmd}`, { env: commandEnv(), encoding: "utf-8", stdio: "pipe" });
       const hits = out.trim().split(/\r?\n/).map(p => p.trim()).filter(Boolean);
       if (hits.length === 0) return false;
       const realHits = hits.filter(p => !/\\Microsoft\\WindowsApps\\/i.test(p));
@@ -117,9 +118,9 @@ function runnableExists(cmd: string): boolean {
     // Use execSync with a command string when shell is required;
     // keep execFileSync (no shell) on POSIX.
     if (isWindows) {
-      execSync(`"${cmd}" --version`, { stdio: "pipe", timeout: 5000 });
+      execSync(`"${cmd}" --version`, { env: commandEnv(), stdio: "pipe", timeout: 5000 });
     } else {
-      execFileSync(cmd, ["--version"], { stdio: "pipe", timeout: 1500 });
+      execFileSync(cmd, ["--version"], { env: commandEnv(), stdio: "pipe", timeout: 1500 });
     }
     return true;
   } catch {
@@ -199,7 +200,7 @@ const KNOWN_GIT_BASH_PATHS = [
 function resolveWindowsBash(): string | null {
   let candidates: string[];
   try {
-    const result = execSync("where bash", { encoding: "utf-8", stdio: "pipe" });
+    const result = execSync("where bash", { env: commandEnv(), encoding: "utf-8", stdio: "pipe" });
     candidates = result.trim().split(/\r?\n/).map(p => p.trim()).filter(Boolean);
   } catch {
     // bash not on PATH → genuinely unavailable. Fall through to pwsh/etc.
@@ -247,7 +248,7 @@ function getVersion(cmd: string, args: string[] = ["--version"]): string {
       const cmdStr = [cmd, ...args]
         .map(a => /[\s"&|<>^()%!]/.test(a) ? JSON.stringify(a) : a)
         .join(" ");
-      return execSync(cmdStr, {
+      return execSync(cmdStr, { env: commandEnv(),
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
         timeout: 5000,
@@ -255,7 +256,7 @@ function getVersion(cmd: string, args: string[] = ["--version"]): string {
         .trim()
         .split(/\r?\n/)[0];
     } else {
-      return execFileSync(cmd, args, {
+      return execFileSync(cmd, args, { env: commandEnv(),
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
         timeout: 5000,
@@ -519,14 +520,14 @@ export function resolveHookRuntime(): HookRuntime {
     let versionOutput: string;
     try {
       if (process.platform === "win32") {
-        const out = execSync(`"${bun}" --version`, {
+        const out = execSync(`"${bun}" --version`, { env: commandEnv(),
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
           timeout: 5000,
         });
         versionOutput = String(out);
       } else {
-        const out = execFileSync(bun, ["--version"], {
+        const out = execFileSync(bun, ["--version"], { env: commandEnv(),
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"],
           timeout: 5000,

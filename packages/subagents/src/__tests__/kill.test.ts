@@ -68,7 +68,7 @@ describe("killRun", () => {
     const { db, store, a } = seed();
     store.setPid(a.id, 555, process.pid);
     const handle = { pid: 555, killed: false, wait: async () => ({ exitCode: 0 }), kill() { handle.killed = true; }, detach() {} };
-    const res = await killRun({ store, db, getChild: () => handle as any }, "s1", store.get(a.id)!);
+    const res = await killRun({ store, db, getChild: () => handle as any, probeCommand: () => "pi --mode json -p" }, "s1", store.get(a.id)!);
     expect(handle.killed).toBe(true);
     expect(res.via).toBe("handle");
     expect(res.outcome).toBe("killed");
@@ -84,7 +84,7 @@ describe("killRun", () => {
     store.setPid(a.id, 777, 4242);
     const kill = vi.fn(async () => "terminated" as const);
     const res = await killRun(
-      { store, db, getChild: () => undefined, kill, alive: () => true },
+      { store, db, getChild: () => undefined, kill, alive: () => true, probeCommand: () => "pi --mode json -p" },
       "s1", store.get(a.id)!,
     );
     expect(kill).toHaveBeenCalledWith(777);

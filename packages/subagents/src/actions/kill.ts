@@ -6,7 +6,7 @@ export interface KillDetails { killed: KillResult[]; requested: string; error?: 
 /** The `kill` action handler. Resolves a target to runs and terminates each. */
 export function makeKillHandler(): (args: any, ctx: any) => Promise<{ content: string; isError?: boolean; details: KillDetails }> {
   return async function killHandler(args: any, ctx: any) {
-    const store = new RunStore(ctx.db);
+    const store = new RunStore(ctx.db, ctx.globalDb);
     const requested = String(args?.id ?? "");
     let targets;
     try {
@@ -36,13 +36,14 @@ export function makeKillHandler(): (args: any, ctx: any) => Promise<{ content: s
         });
       }
     }
+    anyFailed ||= killed.some(k => k.outcome === "failed" || k.outcome === "unconfirmed");
     const actuallyKilled = killed.filter(k => k.outcome === "killed").length;
-    const lines = killed.map((k) => `  • ${k.name} — ${k.outcome}${k.via !== "none" ? ` (via ${k.via})` : ""}${k.lastActivity ? ` (${k.lastActivity})` : ""}`).join("\n");
-    const errorMsg = anyFailed ? ` (${killed.filter(k => k.outcome === "failed").length} failed)` : "";
+    const lines = killed.map((k) => `  • ${k.name} — ${k.outcome}${k.via !== "none" ? ` (via ${k.via})` : ""}${k.error ? `: ${k.error}` : ""}${k.lastActivity ? ` (${k.lastActivity})` : ""}`).join("\n");
+    const errorMsg = anyFailed ? ` (${killed.filter(k => (k.outcome === "failed" || k.outcome === "unconfirmed")).length} failed)` : "";
     return {
       content: `killed ${actuallyKilled} of ${targets.length} subagent(s)${errorMsg}\n${lines}`,
       isError: anyFailed,
-      details: { killed, requested, error: anyFailed ? `${killed.filter(k => k.outcome === "failed").length} kill(s) failed` : undefined },
+      details: { killed, requested, error: anyFailed ? `${killed.filter(k => (k.outcome === "failed" || k.outcome === "unconfirmed")).length} kill(s) failed` : undefined },
     };
   };
 }

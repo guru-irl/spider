@@ -45,9 +45,9 @@ All exports come from `src/index.ts`.
 | `repoRoot(cwd)` | `paths.ts` | Returns `<git-common-dir>/spider`, or `undefined` outside a git repo. |
 | `Scope` (type) | `paths.ts` | One of `"global"`, `"repo"`, `"worktree"`, or the deprecated alias `"project"` (treated identically to `"worktree"` everywhere it is read). |
 | `migrate(db, scope)` | `migrate.ts` | Brings a `Db` to `SCHEMA_VERSION`: full schema on a fresh database, incremental steps on an existing one. Updates `user_version`. |
-| `SCHEMA_VERSION` | `migrate.ts` | The schema version migrations bring a database to. Currently 11. |
-| `GLOBAL_SCHEMA` | `schema.ts` | DDL string for the registry database: `projects`, `global_memory`, `upstream_refs`, `message_mirror`, `insights`, `model_stats`, `session_bindings`. |
-| `REPO_SCHEMA` | `schema.ts` | DDL string for the repo database: `memory` (+ `memory_fts`), `vector_map`, `embed_queue`, `skills`, `curator_state`. |
+| `SCHEMA_VERSION` | `migrate.ts` | The schema version migrations bring a database to. Currently 13. Repo skill review objects are v12; global run routes and worktree child columns are v13. |
+| `GLOBAL_SCHEMA` | `schema.ts` | DDL string for the registry database: `projects`, `global_memory`, `upstream_refs`, `message_mirror`, `insights`, `model_stats`, `session_bindings`, `run_routes`. |
+| `REPO_SCHEMA` | `schema.ts` | DDL string for the repo database: `memory` (+ `memory_fts`), `vector_map`, `embed_queue`, `skills`, `curator_state`, `skill_review_queue`, `skill_review_results`, `skill_review_lock`. |
 | `WORKTREE_SCHEMA` | `schema.ts` | DDL string for a worktree database: `sessions` (+ `sessions_fts`), `content` (+ `content_fts`), `todos` (+ `todos_fts`), `runs`, `run_events`, `events`, `vector_map`, `embed_queue`, and their FTS5 virtual tables. |
 | `resolveProject(cwd)` | `registry.ts` | Computes a worktree's key (its worktree root — *not* the git common directory, so two worktrees of one repo never collide) and its separate repo key (git common directory, for the repo-tier database), registers it, and returns a `ProjectInfo`. |
 | `registerProject(info)` | `registry.ts` | Inserts or updates a row in the global `projects` table. |

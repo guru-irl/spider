@@ -11,17 +11,31 @@ import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
 import { qualifyModelProvider, listPiModels, resolveRoleModel } from "../model-resolve";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
+import { resolveChildIntercom } from "../child-intercom";
 
 /** Async-completion notifier: injects a message the parent agent sees next turn (so it
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
 export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
   return (run, status, result) => {
-    // A cancelled run was killed deliberately. Waking the orchestrator with a
-    // "subagent done" card + triggerTurn for something the user just stopped is
-    // noise — the kill action already reported the outcome.
-    if (status === "cancelled") return;
+    // The caller's own kill result already reported this cancellation.
+    const completion = result ?? run.result ?? "";
+    if (status === "cancelled" && completion.startsWith("killed by spider kill from this session") && !/\d+ accepted steer\(s\) were not delivered\./.test(completion)) return;
+    const shutdown = status === "cancelled" && /session shutdown/i.test(result ?? run.result ?? "");
     try {
-      const output = latestRunOutput(ctx.db, run.id, result);
+      let output = status === "cancelled" ? result ?? run.result : latestRunOutput(ctx.db, run.id, result);
+      // Compatibility notes are notification metadata, never stage deliverables.
+      // Unknown versions stay in events/tool details only to avoid noisy completions.
+      let warnings: Array<{ payload: string }> = [];
+      try { warnings = ctx.db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='warning'").all(run.id); }
+      catch { /* optional diagnostics cannot suppress the cancellation cause */ }
+      const notes = new Set<string>();
+      for (const warning of warnings) {
+        try {
+          const payload = JSON.parse(warning.payload);
+          if (payload.launchWarning === true && payload.printFallback === true && typeof payload.message === "string") notes.add(payload.message);
+        } catch { /* malformed diagnostics do not hide completion */ }
+      }
+      if (notes.size) output = [output, ...notes].filter(Boolean).join("\n\n");
       const name = run?.name ?? run?.agent ?? "subagent";
       const agent = run?.agent ?? "worker";
       // UI standard: italic verb (`subagent`) + italic status, mirroring the tool titles.
@@ -38,7 +52,7 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
           display: true,
           details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output },
         },
-        { triggerTurn: true },
+        shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
       );
     } catch { /* best-effort */ }
   };
@@ -49,13 +63,14 @@ interface RunDeps {
   makeRunner?: (db: any, sessionId: string, cwd: string, deps: any) => any;
   makePipeline?: (deps: any) => any;
   spawner?: Spawner;
+  resolveIntercom?: (cwd: string) => Promise<string[]>;
   getCoordinators?: (ctx: any) => SessionCoordinators;
 }
 
 /** The `run` action handler. Routes by args shape: pipeline > chain > tasks > single. */
 export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) => Promise<{ content: string; details: any }> {
   return async function runHandler(args: any, ctx: any) {
-    const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db);
+    const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db, ctx.globalDb);
     const coords =
       overrides.getCoordinators?.(ctx) ??
       getCoordinators(ctx.sessionId, () => {
@@ -69,7 +84,18 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const scratchRoot = paths.scratch("project", ctx.cwd);
     const dbPath = ctx.runDbPath ?? ctx.project?.dbPath ?? "";
     const onComplete = makeAsyncNotifier(ctx);
-    const runnerDeps = { store, tailer, spawn, scratchRoot, dbPath, onComplete };
+    const childMode = ctx.childMode ?? "rpc";
+    let intercomExtensions: string[] = [], warning: string | undefined;
+    if (childMode === "rpc" && ((!overrides.spawner && !overrides.makeRunner) || overrides.resolveIntercom)) {
+      try { intercomExtensions = await (overrides.resolveIntercom ?? resolveChildIntercom)(ctx.cwd); }
+      catch (error) { warning = `Cross-session steering unavailable: ${String((error as Error)?.message ?? error)}`; }
+    }
+    const withWarning = (details: any) => warning ? { ...details, warning } : details;
+    const orchestratorTarget = childMode === "rpc" ? process.env.PI_INTERCOM_SESSION_ID ?? ctx.sessionId : undefined;
+    const runnerDeps = { globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
+      if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
+      return spawn(spec);
+    }, scratchRoot, dbPath, onComplete, childMode, intercomExtensions, orchestratorTarget };
     const runner = overrides.makeRunner
       ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
       : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);
@@ -100,7 +126,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       coords.pipelines.push(coord);
       const pipeline = args.pipeline.map((stage: any) => ({ ...stage, ...resolveMT(stage.model, stage.thinking, stage.agent ?? "worker") }));
       const { pipelineId, firstRunId } = coord.start({ pipeline, handoff: args.handoff ?? "intercom", async: true });
-      return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: { pipelineId, firstRunId } };
+      return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: withWarning({ pipelineId, firstRunId }) };
     }
     if (Array.isArray(args.chain)) {
       // Async by design: kick the chain off in the background and report back when the last
@@ -113,16 +139,16 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
         })
         .catch(() => { /* best-effort */ });
       const first = chain[0] ?? {};
-      return { content: `chain started: ${chain.length} step(s)`, details: { chain: chain.length, first: first.name ?? first.agent } };
+      return { content: `chain started: ${chain.length} step(s)`, details: withWarning({ chain: chain.length, first: first.name ?? first.agent }) };
     }
     if (Array.isArray(args.tasks)) {
       const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking, t.agent) }));
       const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: true });
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
-      return { content: `parallel started: ${rows.length} run(s)\n${list}`, details: { runs: rows } };
+      return { content: `parallel started: ${rows.length} run(s)\n${list}`, details: withWarning({ runs: rows }) };
     }
     const { model: singleModel, thinking: singleThinking } = resolveMT(args.model, args.thinking, args.agent ?? "worker");
     const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill: args.skill, thinking: singleThinking, context: args.context ?? "fresh", async: true });
-    return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: { run: row } };
+    return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: withWarning({ run: row }) };
   };
 }

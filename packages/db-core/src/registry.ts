@@ -1,3 +1,4 @@
+import { commandEnv } from "./command-env";
 // packages/db-core/src/registry.ts
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -42,7 +43,7 @@ export const openDbReadOnlyAt = (dbPath: string): Db | undefined => openDbReadOn
 
 function gitCommonDir(cwd: string): string | undefined {
   try {
-    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], { env: commandEnv(),
       cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (!out) return undefined;

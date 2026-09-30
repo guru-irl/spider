@@ -4,6 +4,7 @@ import type { RunEventTailer } from "./event-tailer";
 import type { PipelineCoordinator } from "./pipeline";
 import type { ChildHandle } from "./runner";
 import type { RunStore } from "./run-store";
+import { cancelPendingIntercom } from "./intercom";
 
 export interface SessionCoordinators {
   tailer: RunEventTailer;
@@ -71,11 +72,12 @@ export function listChildSessions(): string[] {
 }
 
 export function teardownCoordinators(sessionId: string): void {
+  cancelPendingIntercom(sessionId);
   const c = registry.get(sessionId);
   if (!c) return;
   // Kill children FIRST: the tailer is what surfaces their final events, and a
   // stopped tailer would swallow them.
-  for (const [, h] of c.children ?? []) { try { h.kill(); } catch {} }
+  for (const [, h] of c.children ?? []) { try { h.kill("Session shutdown cancelled this run."); } catch {} }
   c.children?.clear();
   try { c.tailer?.stop(); } catch {}
   for (const p of c.pipelines) { try { p.dispose(); } catch {} }
@@ -84,6 +86,7 @@ export function teardownCoordinators(sessionId: string): void {
 }
 
 export function teardownAll(): void {
+  cancelPendingIntercom();
   for (const id of [...registry.keys()]) teardownCoordinators(id);
 }
 
@@ -103,6 +106,7 @@ export interface TeardownAsyncOpts {
  *  Escalation is parallel (N children take ~graceMs total, not N*graceMs).
  *  Best-effort: never throws. */
 export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<void> {
+  cancelPendingIntercom();
   const graceMs = opts.graceMs ?? SESSION_EXIT_GRACE_MS;
   const sessions = [...registry.keys()];
   
@@ -120,11 +124,11 @@ export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<vo
           // Check if handle supports async kill with escalation
           if (typeof (h as any).killAsync === "function") {
             killPromises.push(
-              (h as any).killAsync(graceMs).catch(() => { /* best-effort */ })
+              (h as any).killAsync(graceMs, "Session shutdown cancelled this run.").catch(() => { /* best-effort */ })
             );
           } else {
             // Fallback: sync kill (no escalation guarantee)
-            h.kill();
+            h.kill("Session shutdown cancelled this run.");
           }
         } catch { /* best-effort */ }
       }

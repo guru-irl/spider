@@ -188,7 +188,7 @@ describe("Runner completion integrity", () => {
       // listeners, and exit-code capture are all the actual production code path.
       const spawn: Spawner = (spec) => defaultSpawner({ ...spec, argv: ["node", "-e", "process.exit(0)"] });
       const cwd = realSpawnCwd("real-defaultspawner-message-cwd");
-      const runner = new Runner(db, "sess1", cwd, { store, tailer, onComplete, ...deps(spawn) });
+      const runner = new Runner(db, "sess1", cwd, { store, tailer, onComplete, ...deps(spawn), childMode: "print" });
 
       const row = runner.runAsync({ agent: "worker", task: "do it", context: "fresh" });
       store.setPid(row.id, process.pid, process.pid);
@@ -211,7 +211,7 @@ describe("Runner completion integrity", () => {
       const onComplete = vi.fn();
       const spawn: Spawner = (spec) => defaultSpawner({ ...spec, argv: ["node", "-e", "process.exit(0)"] });
       const cwd = realSpawnCwd("real-defaultspawner-nothing-cwd");
-      const runner = new Runner(db, "sess1", cwd, { store, tailer, onComplete, ...deps(spawn) });
+      const runner = new Runner(db, "sess1", cwd, { store, tailer, onComplete, ...deps(spawn), childMode: "print" });
 
       const row = runner.runAsync({ agent: "worker", task: "do it", context: "fresh" });
       store.setPid(row.id, process.pid, process.pid);

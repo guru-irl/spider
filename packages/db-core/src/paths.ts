@@ -1,3 +1,4 @@
+import { commandEnv } from "./command-env";
 // packages/db-core/src/paths.ts
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -24,7 +25,7 @@ const GLOBAL_ROOT = configuredGlobalRoot
  *  Never throws. */
 export function worktreeRoot(cwd: string): string {
   try {
-    const out = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+    const out = execFileSync("git", ["rev-parse", "--show-toplevel"], { env: commandEnv(),
       cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (!out) return realpathSync(cwd);
@@ -49,7 +50,7 @@ export function projectRoot(cwd: string): string {
  *  Falls back to worktree tier for non-git directories. */
 export function repoRoot(cwd: string): string | undefined {
   try {
-    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], { env: commandEnv(),
       cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (!out) return undefined;

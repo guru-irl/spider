@@ -4,6 +4,15 @@ import { appendRunEvent } from "@spider/db-core";
 import { freshDb } from "./helpers/testutil";
 
 describe("makeAsyncNotifier", () => {
+  it("still queues shutdown when the optional diagnostic DB is already closed", () => {
+    const db = freshDb(); db.close();
+    const sendMessage = vi.fn();
+    makeAsyncNotifier({ db, pi: { sendMessage } })({ id: "closed", agent: "worker" }, "cancelled", "Session shutdown cancelled this run.");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][0].details.output).toBe("Session shutdown cancelled this run.");
+    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: false, deliverAs: "nextTurn" });
+  });
+
   it("sends the child's real final output to the parent on completion", () => {
     const db = freshDb();
     appendRunEvent(db, { runId: "r1", sessionId: "s", ts: 1, type: "message", summary: "early" });
@@ -30,14 +39,14 @@ describe("makeAsyncNotifier", () => {
     expect(sendMessage.mock.calls[0][0].content).toContain("crash trace");
   });
 
-  it("does not notify or trigger a turn for a cancelled run", () => {
+  it("notifies a cancelled run with its real cause", () => {
     const sendMessage = vi.fn();
     const notify = vi.fn();
     const ctx: any = { db: freshDb(), pi: { sendMessage }, ui: { notify } };
     const notifier = makeAsyncNotifier(ctx);
-    notifier({ id: "r1", name: "alpha", agent: "worker" } as any, "cancelled", undefined);
-    expect(sendMessage).not.toHaveBeenCalled();
-    expect(notify).not.toHaveBeenCalled();
+    notifier({ id: "r1", name: "alpha", agent: "worker" } as any, "cancelled", "Session shutdown cancelled this run.");
+    expect(sendMessage.mock.calls[0][0].details).toMatchObject({ status: "cancelled", output: "Session shutdown cancelled this run." });
+    expect(notify).toHaveBeenCalled();
   });
 
   it("still notifies for a failed run", () => {

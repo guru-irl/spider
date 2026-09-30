@@ -67,9 +67,8 @@ function makeFixture(): string {
  * into a single dependency-free .mjs via esbuild, so it can be run with plain
  * `node` as a genuinely separate OS process — no pipe/fd shared with vitest.
  *
- * `@spider/db-core` is aliased straight to its `paths.ts` file (not the
- * package barrel) so the bundle never pulls in better-sqlite3/sqlite-vec —
- * executor.ts only needs `paths.scratch(...)` from that package.
+ * `@spider/db-core` is aliased to a fixture barrel of the real paths and
+ * commandEnv primitives, so the bundle never pulls in better-sqlite3/sqlite-vec.
  */
 async function buildHarness(outDir: string): Promise<string> {
   const esbuild = await import("esbuild");
@@ -82,7 +81,7 @@ async function buildHarness(outDir: string): Promise<string> {
     target: "node22",
     outfile,
     alias: {
-      "@spider/db-core": join(__dirname, "../../../db-core/src/paths.ts"),
+      "@spider/db-core": join(__dirname, "helpers/db-core-command-fixture.ts"),
     },
   });
   return outfile;

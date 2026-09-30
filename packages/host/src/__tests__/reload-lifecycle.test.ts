@@ -228,6 +228,9 @@ it("cleanup runs in finally when a routing db.close throws", async () => {
 it("keeps agents command handlers local to each pi activation across UI remounts", async () => {
   const first = host();
   const second = host();
+  // Factories were registered in child mode, so no organism hooks can make model
+  // calls. UI mounting itself is parent-only and must be tested in parent mode.
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const ui = () => ({ setWidget() {}, custom: async () => {}, notify: vi.fn() });
   const ctx = (id: string, view: ReturnType<typeof ui>) => ({ cwd: scratch, hasUI: true,
     sessionManager: { getSessionId: () => id, getEntries: () => [], getBranch: () => [] }, ui: view });

@@ -180,6 +180,27 @@ describe("session-owned run records with an explicit child cwd", () => {
     expect(f.specs[0].env.PI_SPIDER_DB_PATH).toBe(join(f.repoC, ".spider", "project.db"));
   });
 
+  it.each(["0", "1"])("agents UI mounts only in parent mode (PI_SUBAGENT_CHILD=%s)", async child => {
+    // Disable organism wiring for this UI-only fixture, then exercise the real UI hook.
+    vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+    const f = fixture();
+    vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+    await f.invoke({ action: "run", agent: "worker", task: "inspect" });
+    vi.stubEnv("PI_SUBAGENT_CHILD", child);
+    const setWidget = vi.fn();
+    const ctx = { cwd: f.repoA, sessionManager: { getSessionId: () => f.sessionId }, hasUI: true, mode: "rpc",
+      ui: { setWidget, custom: vi.fn(), notify: vi.fn() } };
+    try {
+      // Hook order varies with organism wiring. Always invoke every registered hook.
+      for (const hook of f.hooks.session_start) await hook({}, ctx);
+      if (child === "1") expect(setWidget).not.toHaveBeenCalled();
+      else expect(setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });
+    } finally {
+      vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+      for (const hook of f.hooks.session_shutdown ?? []) await hook();
+    }
+  });
+
   it("the mounted view and dispatch use the same session run DB file after a bind", async () => {
     const f = fixture();
     const globalDb = openGlobal(); handles.push(globalDb);
@@ -195,7 +216,7 @@ describe("session-owned run records with an explicit child cwd", () => {
     const setWidget = vi.fn();
     const ctx = { cwd: f.repoA, sessionManager: { getSessionId: () => f.sessionId }, hasUI: true,
       ui: { setWidget, custom: vi.fn(), notify: vi.fn() } };
-    // The last session_start handler mounts the production agents view, which reads
+    // The agents session_start handler mounts the production view, which reads
     // existing runs immediately and creates a widget only when it sees one.
     for (const fn of f.hooks.session_start) await fn({}, ctx);
     expect(setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });

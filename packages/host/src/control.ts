@@ -10,6 +10,7 @@ export { controlMigrate } from "./control/migrate-cmd";
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
+  "subagents.childMode": "rpc",
   "memory.reviewer.enabled": true,
   "memory.reviewer.model": "github-copilot/gpt-6-luna",
   "memory.reviewer.timeoutMs": 45000,
@@ -161,6 +162,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   if (op === "set" && ["memory.reviewer.thinking", "skills.reviewer.thinking"].includes(key) &&
     (typeof value !== "string" || !["minimal", "low", "medium", "high", "xhigh"].includes(value))) {
     throw new Error(`${key} thinking must be minimal, low, medium, high or xhigh`);
+  }
+  if (op === "set" && key === "subagents.childMode" && value !== "rpc" && value !== "print") {
+    throw new Error("subagents.childMode must be rpc or print");
   }
   if (op === "unset") {
     // Only the snapshot cap accepts unlimited. Other keys inherit after deletion.

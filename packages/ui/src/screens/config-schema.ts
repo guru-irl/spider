@@ -46,6 +46,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	{ id: "models", label: "Model routing", fields: [
 		{ key: "models.defaults", label: "Role defaults", type: "model-map", default: {}, description: "JSON object mapping agent roles to model refs. Per-role local overrides global." },
 	]},
+	{ id: "subagents", label: "Subagents", fields: [
+		{ key: "subagents.childMode", label: "Child mode", type: "enum", enum: ["rpc", "print"], default: "rpc", description: "RPC permits steering. Print retains legacy one-shot behavior. Applies to new runs." },
+	]},
 	{ id: "exec", label: "Exec enforcement", fields: [
 		{ key: "exec.enforce", label: "Enforce spider exec", type: "boolean", default: true, description: "Block bash tool; model must use spider exec." },
 	]},

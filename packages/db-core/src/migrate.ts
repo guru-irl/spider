@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -41,6 +41,8 @@ const GLOBAL_MIGRATIONS: Record<number, readonly string[]> = {
   10: [],
   // v11: conditional ALTERs run in ensureMemoryProvenance (SQLite lacks ADD COLUMN IF NOT EXISTS).
   11: [],
+  12: [], // Repo-only skill review deployment.
+  13: ["CREATE TABLE IF NOT EXISTS run_routes (run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, db_path TEXT NOT NULL)"],
 };
 
 const REPO_MIGRATIONS: Record<number, readonly string[]> = {
@@ -70,6 +72,9 @@ CREATE TABLE IF NOT EXISTS skill_review_lock (
 );
 `],
 };
+// Pre-rebase branch builds stamped repo DBs v12 without these tables. Replay
+// the deployed, idempotent DDL at v13; healthy main v12 DBs remain unchanged.
+REPO_MIGRATIONS[13] = REPO_MIGRATIONS[12];
 
 const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
   2: ["ALTER TABLE runs ADD COLUMN thinking TEXT"],
@@ -81,7 +86,20 @@ const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
   5: [], // Version bump only
   6: [], // Version bump only
   7: [], // split from PROJECT_SCHEMA; worktree tier gets sessions, content, todos, runs, events
+  12: [], // Repo-only skill review deployment.
+  13: [], // Conditional ALTERs in ensureChildColumns below.
 };
+
+function ensureChildColumns(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+  for (const [name, definition] of [
+    ["child_mode", "TEXT NOT NULL DEFAULT 'print'"],
+    ["intercom_session", "TEXT"],
+    ["pid_start_time", "TEXT"],
+  ]) {
+    if (!columns.some(column => column.name === name)) db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
+  }
+}
 
 function ensureMemoryProvenance(db: Db, scope: "global" | "repo"): void {
   const table = scope === "global" ? "global_memory" : "memory";
@@ -176,6 +194,7 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
           }
           for (const s of steps) db.exec(s);
 
+          if (actualScope === "worktree" && v === 13) ensureChildColumns(db);
           if (actualScope === "global" && v === 10) {
             repairGlobalProjectsRepoKey(db);
           }
@@ -184,6 +203,7 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
           }
           
           if (v === 12 && actualScope === "repo") ensureSkillReviewReason(db);
+          if (v === 13 && actualScope === "repo") ensureSkillReviewReason(db);
 
           // IMPORTANT 5: After creating memory_fts (v8), populate it from memory
           if (actualScope === "repo" && v === 8) {

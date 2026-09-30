@@ -4,7 +4,7 @@ import { CONFIG_SCHEMA, getField, coerce } from "../config-schema.js";
 describe("config schema", () => {
 	it("declares only groups with working settings", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["auxiliary", "curator", "exec", "memory", "models", "organism", "routing", "skills", "ui"]);
+		expect(ids).toEqual(["auxiliary", "curator", "exec", "memory", "models", "organism", "routing", "skills", "subagents", "ui"]);
 	});
 	it("curator consolidation defaults to the runtime's disabled value", () => {
 		expect(getField("curator.consolidate")?.default).toBe(false);

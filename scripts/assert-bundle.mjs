@@ -1,5 +1,8 @@
 // scripts/assert-bundle.mjs — post-bundle invariants.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { parseBuildId } from "./build-id.mjs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const OUT = "dist/extension.js";
 if (!existsSync(OUT)) {
@@ -25,6 +28,10 @@ if (distEntries.length !== 1 || distEntries[0] !== "extension.js") {
 }
 
 const src = readFileSync(OUT, "utf-8");
+if (!parseBuildId(src.slice(0, 16 * 1024))) {
+  console.error("assert-bundle: build marker missing or malformed in bundle header (expected SPIDER_BUILD_ID=<sha>[-dirty]@<ISO timestamp>)");
+  process.exit(1);
+}
 
 // Two classes must be require()'d at runtime, not inlined:
 //  - native modules (better-sqlite3 etc) — a prebuild loader string would leak in.
@@ -44,4 +51,14 @@ if (!/export\s*\{[^}]*\bas default\b|export default/.test(src) && !src.includes(
   console.error("assert-bundle: no default export found in bundle");
   process.exit(1);
 }
-console.log("assert-bundle: OK (bundle present, natives external, default export present)");
+// The bundle's top level only defines schemas, constants and lazy factories:
+// no DB opens, model initialization, timers or activation. Keep it natively
+// linkable, with no top-level await of optional modules (see README).
+try {
+  const mod = await import(pathToFileURL(resolve(OUT)).href);
+  if (typeof mod.default !== "function") throw new Error("default export is not a function");
+} catch (error) {
+  console.error(`assert-bundle: native import failed: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+console.log("assert-bundle: OK (single-file bundle, build marker valid, natives external, native import and default export verified)");

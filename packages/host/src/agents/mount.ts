@@ -2,7 +2,7 @@
 // Production mount seam — wires actions + installAgentsUI. This function exists
 // so tests can verify the complete production wiring (that actions are passed).
 import type { Db } from "@spider/db-core";
-import { installAgentsUI } from "./agents-ui";
+import { installAgentsUI, type AgentsUIRegistration } from "./agents-ui";
 import { createAgentActions } from "./actions";
 import { controlConfig } from "../control.js";
 
@@ -21,6 +21,7 @@ export interface MountOpts {
   db: Db;
   sessionId: string;
   cwd: string;
+  registration?: AgentsUIRegistration;
   // Injectable for tests — defaults to real dispatch that calls into spider action handler
   dispatch?: (action: string, args: Record<string, unknown>) => Promise<unknown>;
 }
@@ -40,6 +41,7 @@ export function mountAgentsUI(
     db,
     sessionId,
     showFooter: controlConfig("get", opts.cwd, "ui.footer") !== false,
+    registration: opts.registration,
     actions: createAgentActions(pi, {
       ui: ctx.ui,
       dispatch,

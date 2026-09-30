@@ -7,7 +7,7 @@ import { controlConfig } from "../control";
 import { mountAgentsUI } from "../agents/mount";
 import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { installAgentsUI, buildAgentsSelector } from "../agents/agents-ui";
+import { installAgentsUI, registerAgentsUI, buildAgentsSelector } from "../agents/agents-ui";
 import { AgentStore } from "@spider/ui";
 import { createRunSource } from "../agents/run-source";
 
@@ -32,12 +32,14 @@ describe("installAgentsUI", () => {
     db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
                 VALUES ('r1','s2','worker','running',1,0,0)`).run();
     
-    // Shared pi mock to capture the handler (module-level guard means it's registered once)
+    // A single activation owns the registration across session_start remounts.
     const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
     
+    const registration = registerAgentsUI(pi);
+
     // First install with ui1
     const ui1 = fakeUi();
-    const dispose1 = installAgentsUI(pi as never, { ui: ui1 } as never, { db, sessionId: "s1" });
+    const dispose1 = installAgentsUI(pi as never, { ui: ui1 } as never, { db, sessionId: "s1", registration });
     
     // Check if shortcut was registered
     expect(pi.registerShortcut).toHaveBeenCalledTimes(1);
@@ -48,7 +50,7 @@ describe("installAgentsUI", () => {
     
     // Second install with ui2 (simulating session_start re-fire with same pi)
     const ui2 = fakeUi();
-    const dispose2 = installAgentsUI(pi as never, { ui: ui2 } as never, { db, sessionId: "s2" });
+    const dispose2 = installAgentsUI(pi as never, { ui: ui2 } as never, { db, sessionId: "s2", registration });
     
     // Shortcut should not be registered again
     expect(pi.registerShortcut).toHaveBeenCalledTimes(1);
@@ -76,7 +78,6 @@ describe("installAgentsUI", () => {
     const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
     const dispose = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
     expect(ui.setWidget).toHaveBeenCalledWith("spider-agents", expect.anything(), { placement: "aboveEditor" });
-    // Note: registerShortcut may not be called here if a prior test already triggered the module-level guard
     dispose();
     expect(ui.setWidget).toHaveBeenLastCalledWith("spider-agents", undefined);
   });
@@ -90,48 +91,7 @@ describe("installAgentsUI", () => {
     dispose();
   });
 
-  it("shortcut and command target the current install, not a stale closure", () => {
-    const db = openDb(scratchDbPath("aui-reinst")); opened.push(db); migrate(db, "project");
-    db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
-                VALUES ('r1','s2','worker','running',1,0,0)`).run();
-    
-    // Shared pi mock to capture the handler (module-level guard means it's registered once)
-    const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
-    
-    // First install with ui1
-    const ui1 = fakeUi();
-    const dispose1 = installAgentsUI(pi as never, { ui: ui1 } as never, { db, sessionId: "s1" });
-    
-    // Check if shortcut was registered (might be 0 if already done by another test)
-    const handlerIdx = pi.registerShortcut.mock.calls.length - 1;
-    if (handlerIdx < 0) {
-      // Module guard prevented registration; can't test without resetting module state
-      // This is acceptable; we'll verify the fix works in isolation
-      dispose1();
-      return;
-    }
-    
-    const handler = pi.registerShortcut.mock.calls[handlerIdx][1].handler;
-    
-    // Second install with ui2 (simulating session_start re-fire with same pi)
-    const ui2 = fakeUi();
-    const dispose2 = installAgentsUI(pi as never, { ui: ui2 } as never, { db, sessionId: "s2" });
-    
-    // Shortcut should not be registered again
-    expect(pi.registerShortcut).toHaveBeenCalledTimes(handlerIdx + 1);
-    
-    // THE BUG: handler currently closes over ui1's openGrid
-    // After fix: handler should call current (ui2) install's openGrid
-    handler({});
-    
-    // With the bug: ui1.custom would be called (FAILS)
-    // After fix: ui2.custom should be called (PASSES)
-    expect(ui2.custom).toHaveBeenCalled();
-    expect(ui1.custom).not.toHaveBeenCalled();
-    
-    dispose1();
-    dispose2();
-  });
+
 });
 
 const th = { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
@@ -165,12 +125,15 @@ it("selector routes keys via matchesKey: arrows move, enter drills, esc steps ba
 
 it("openOverlay opens a pure key-sink overlay and focuses it via onHandle (#56)", async () => {
   const db = openDb(scratchDbPath("aui-anchor")); opened.push(db); migrate(db, "project");
+  db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at)
+              VALUES ('r1','s','worker','running',1,0,0)`).run();
   const ui = fakeUi();
   const pi = { registerShortcut: vi.fn(), registerCommand: vi.fn(), on: vi.fn() };
   const dispose = installAgentsUI(pi as never, { ui } as never, { db, sessionId: "s" });
-  // trigger the (module-guarded) shortcut/command handler if reachable
+  // Every install has a reachable shortcut.
   const calls = pi.registerShortcut.mock.calls;
-  if (calls.length) {
+  expect(calls).toHaveLength(1);
+  {
     calls.at(-1)![1].handler({});
     await new Promise((r) => setImmediate(r));
     expect(ui.custom).toHaveBeenCalled();

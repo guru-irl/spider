@@ -5,7 +5,7 @@ import { persistReviewError } from "@spider/memory";
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
 import type { ContextEvent } from "@earendil-works/pi-coding-agent";
-import { dispatch, registerAction, type ActionCtx, type SpiderArgs } from "./dispatch";
+import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
@@ -13,8 +13,9 @@ import { HostOrganismRuntime } from "./organism-runtime";
 import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
-import { toToolResult, markToolCallError, rethrowWithMessage, repairBlankToolResults } from "./result";
+import { toToolResult, markToolCallError, clearToolCallErrors, rethrowWithMessage, repairBlankToolResults } from "./result";
 import { controlDoctor, controlConfig, controlMigrate, modelDefaultLayers, configValues, execEnforcement } from "./control";
+import { LOADED_BUILD, type LoadedBundle } from "./build-id";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, clearLocalModelDefault, listCatalog } from "./control/models-cmd";
 import { applyConfigEdit, applyConfigUnset } from "./control/config-cmd";
@@ -26,7 +27,7 @@ import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db } from "@spider/db-core";
 import {
   stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
-  activeCharTotal, listActive, resolveEmbedder, type Embedder,
+  activeCharTotal, listActive, resolveEmbedder,
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
@@ -52,15 +53,17 @@ import * as path from "node:path";
 import { openSessionRunDb } from "./session-run-db";
 export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
+import { registerAgentsUI } from "./agents/agents-ui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
 import { modelReviewer } from "./memory-reviewer";
 
-export { registerAction };
+export { registerGlobalAction as registerAction };
 
-// Lazily-cached embedder shared across recall calls (avoids re-resolving the
-// model per dispatch). resolveEmbedder degrades to null → recall falls back to FTS.
-let _emb: Promise<Embedder | null> | undefined;
-const getEmbedder = () => (_emb ??= resolveEmbedder());
+// resolveEmbedder owns the process-wide, versioned cache; null falls back to FTS.
+// The running module owns the comparison location, regardless of session cwd.
+export const loadedBundle: LoadedBundle = { identity: LOADED_BUILD, url: import.meta.url };
+
+const getEmbedder = resolveEmbedder;
 
 // Each loaded extension owns its runtime; manual actions reuse its serialized workers.
 const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
@@ -69,7 +72,7 @@ const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
 // setup failure, read by doctor so it is surfaced instead of fully swallowed. Mirrors
 // `organismRuntimes`'s own WeakMap-per-pi-instance pattern, used for the identical class
 // of problem (registerOrganism's own setup-failure reporting).
-const routingSetupErrors = new WeakMap<object, string>();
+const routingSetupErrors = new WeakMap<object, { message: string }>();
 
 /** DEFAULT_ROUTING_CONFIG merged with any overrides stored under routing.* keys.
  *  Best-effort: never throws; on any doubt returns a fresh default clone. */
@@ -323,7 +326,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
   const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
-      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId);
+      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle);
       if (ctx) {
         // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
         // registration must not break extension load") with NOTHING anywhere
@@ -334,7 +337,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         const routingError = routingSetupErrors.get(ctx.pi as object);
         if (routingError) {
           report.ok = false;
-          report.lines.push(`- routing: NOT WIRED (registration failed: ${routingError})`);
+          report.lines.push(`- routing: NOT WIRED (registration failed: ${routingError.message})`);
         }
         if (process.env.PI_SUBAGENT_CHILD === "1") {
           report.lines.push("- organism: disabled in subagent sessions");
@@ -705,7 +708,8 @@ export function buildActionCtx(
 }
 
 async function dispatchWithDoctorSnapshot(
-  pi: PiToolAPI, params: SpiderArgs, ctx: unknown, onPartial?: (text: string) => void, signal?: AbortSignal,
+  pi: PiToolAPI, params: SpiderArgs, ctx: unknown, ownedActions: ReadonlyMap<string, ActionHandler>,
+  onPartial?: (text: string) => void, signal?: AbortSignal,
 ): Promise<unknown> {
   const sessionId = sessionIdOf(ctx);
   const injectionSnapshot = params.action === "control" && params.command === "doctor"
@@ -728,7 +732,7 @@ async function dispatchWithDoctorSnapshot(
     }
     const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
       (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx));
-    return await dispatch(params, actionCtx);
+    return await dispatch(params, actionCtx, ownedActions);
   } catch (e) {
     if (!injectionSnapshot) throw e;
     const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId) as { ok: boolean; lines: string[] };
@@ -739,6 +743,16 @@ async function dispatchWithDoctorSnapshot(
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
+  const ownedActions = new Map<string, ActionHandler>();
+  const registerAction = (name: string, handler: ActionHandler) => {
+    // Context packages reuse module-level functions. Wrap even those handlers so
+    // registry identity always identifies one activation, not a shared function.
+    const ownedHandler: ActionHandler = (args, ctx) => handler(args, ctx);
+    ownedActions.set(name, ownedHandler);
+    registerGlobalAction(name, ownedHandler, true);
+  };
+  const errorOwner = {};
+  const agentsUI = registerAgentsUI(pi as any);
   // Only error results need this backstop: empty successful reads are valid, and rewriting
   // them makes pi replace the message list, disrupting prompt caching for ordinary sessions.
   pi.on("context", (event: unknown) => {
@@ -843,7 +857,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
 
   registerSlashCommands(pi as any, {
     run: (a, ctx) =>
-      dispatchWithDoctorSnapshot(pi, a as SpiderArgs, ctx) as Promise<{
+      dispatchWithDoctorSnapshot(pi, a as SpiderArgs, ctx, ownedActions) as Promise<{
         content: string;
         details?: unknown;
       }>,
@@ -991,7 +1005,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // (renderResult, wired in the UI phase).
       let r: unknown;
       try {
-        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, onPartial, abortSignal);
+        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, ownedActions, onPartial, abortSignal);
       } catch (error) {
         rethrowWithMessage(error, `spider ${action || "call"}`);
       }
@@ -1001,7 +1015,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // already-computed signal off, keyed by this exact toolCallId, for the
       // tool_result hook (routing/index.ts) to pick up and flip isError on, without
       // altering content/details returned to pi below.
-      if (result.isError) markToolCallError(toolCallId);
+      if (result.isError) markToolCallError(toolCallId, errorOwner);
       return result;
     },
   });
@@ -1069,7 +1083,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
         db,
         sessionId,
         cwd,
-        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx))),
+        registration: agentsUI,
+        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions),
       });
     } catch { /* UI mount best-effort; never break the session */ }
     return undefined;
@@ -1082,8 +1097,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // Register tools now, but resolve their DB/CWD only when a session uses them.
   // Getters keep /bind and session replacement from sending activity to the
   // directory in which this extension happened to be loaded.
+  let routingSetupError: { message: string } | undefined;
   try {
     registerRouting(pi as any, {
+      toolErrorOwner: errorOwner,
       get db() { return routingDb(); },
       getSessionId: () => sessionIdOf(currentContext) || currentSessionId,
       getCwd: () => routingProject().realPath,
@@ -1095,7 +1112,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     // load still must not throw (routing is best-effort against the rest of the
     // session), but the failure is now recorded per pi-instance and surfaced by
     // doctor above.
-    routingSetupErrors.set(pi as object, safeError(e));
+    routingSetupError = { message: safeError(e) };
+    routingSetupErrors.set(pi as object, routingSetupError);
   }
 
   // Cancel reviewers in every prior binding before any shutdown drain starts.
@@ -1105,12 +1123,21 @@ export default function spiderExtension(pi: PiToolAPI): void {
   }
   // Registered LAST: shutdown awaits the worker before closing its resources.
   pi.on("session_shutdown", async () => {
-    await organism.stopSkillReviews();
-    organism.dispose();
-    organismRuntimes.delete(pi);
-    for (const db of routingDbs.values()) db.close();
-    routingDbs.clear();
-    currentContext = undefined;
-    currentSessionId = "";
+    try {
+      await organism.stopSkillReviews();
+      organism.dispose();
+      for (const db of routingDbs.values()) db.close();
+    } finally {
+      // Node retains the module record after a rebuilt reload. Release its heavy
+      // references only after the earlier organism shutdown handler has drained.
+      clearActions(ownedActions);
+      ownedActions.clear();
+      clearToolCallErrors(errorOwner);
+      if (organismRuntimes.get(pi) === organism) organismRuntimes.delete(pi);
+      if (routingSetupErrors.get(pi) === routingSetupError) routingSetupErrors.delete(pi);
+      routingDbs.clear();
+      currentContext = undefined;
+      currentSessionId = "";
+    }
   });
 }

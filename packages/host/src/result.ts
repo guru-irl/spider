@@ -99,12 +99,20 @@ export function ensureNonEmptyToolContent<T extends { content?: Array<{ type: st
 // `details` is a `pi.on("tool_result", ...)` handler returning `{isError:true, ...}`
 // (routing/index.ts). This module-level store is the same-process handoff from
 // extension.ts's `execute()` (which computes the real isError via `toToolResult`) to
-// that hook, keyed by `toolCallId` — a Set, never a scalar, because pi documents/
+// that hook, keyed by `toolCallId` with an activation owner, never a scalar, because pi documents/
 // traces that `tool_result` may interleave under parallel tool execution (a scalar
 // would let one call's flag leak onto a different, concurrently-resolving call).
 // `consumeToolCallError` deletes on read: one-shot, so a mark never lingers past the
 // single `tool_result` event it was meant for.
-const erroredCalls = new Set<string>();
+const erroredCalls = new Map<string, object | undefined>();
+
+/** Release only this activation's marks. Omit ownership only for test reset. */
+export function clearToolCallErrors(owner?: object): void {
+  if (!owner) { erroredCalls.clear(); return; }
+  for (const [id, registeredOwner] of erroredCalls) {
+    if (registeredOwner === owner) erroredCalls.delete(id);
+  }
+}
 
 // A-M3 (branch-review A-architecture.md): if whatever is supposed to drain marks never
 // runs at all (e.g. `registerRouting` fails to wire the `tool_result` hook — see
@@ -113,17 +121,17 @@ const erroredCalls = new Set<string>();
 // backstop against that specific failure mode, independent of whether it's ALSO
 // surfaced elsewhere: far above any real number of concurrently in-flight tool calls,
 // so it never trims a legitimately busy session, but never unbounded either. Evicts the
-// OLDEST marks first (Set iterates in insertion order), on the reasoning that a mark's
+// OLDEST marks first (Map iterates in insertion order), on the reasoning that a mark's
 // value decays with age — the `tool_result` event it was meant for either already
 // consumed it or, past this many other calls, almost certainly never will.
 const MAX_ERRORED_CALLS = 500;
 
 /** Record that `toolCallId` resolved to an error result. Called once, from
  *  extension.ts's `execute()`, right after `toToolResult` computes `isError: true`. */
-export function markToolCallError(toolCallId: string): void {
-  erroredCalls.add(toolCallId);
+export function markToolCallError(toolCallId: string, owner?: object): void {
+  erroredCalls.set(toolCallId, owner);
   while (erroredCalls.size > MAX_ERRORED_CALLS) {
-    const oldest = erroredCalls.values().next().value;
+    const oldest = erroredCalls.keys().next().value;
     if (oldest === undefined) break;
     erroredCalls.delete(oldest);
   }
@@ -132,8 +140,8 @@ export function markToolCallError(toolCallId: string): void {
 /** Consume (delete-on-read) a prior mark for `toolCallId`. Returns `false` — never
  *  throws — for an unmarked, empty, or non-string id, so a defensive `event?.toolCallId`
  *  read at the call site is always safe. */
-export function consumeToolCallError(toolCallId: string | null | undefined): boolean {
-  if (!toolCallId) return false;
+export function consumeToolCallError(toolCallId: string | null | undefined, owner?: object): boolean {
+  if (!toolCallId || (owner && erroredCalls.get(toolCallId) !== owner)) return false;
   return erroredCalls.delete(toolCallId);
 }
 

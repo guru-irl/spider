@@ -24,7 +24,7 @@ export function countPatchLines(patch: string): { added: number; removed: number
   return { added, removed };
 }
 
-function errorResult(toolCallId: string, message: string) {
+function errorResult(toolCallId: string, message: string, owner?: object) {
   // A-M1 (branch-review A-architecture.md): pi's `AgentTool.execute()` contract has NO
   // `isError` field — verified against pi's own types (see A-architecture.md's M1) — so
   // returning one on the resolved value here is INERT; pi's runtime never reads it. The
@@ -34,11 +34,12 @@ function errorResult(toolCallId: string, message: string) {
   // `isError: true` stays on the returned object too: harmless (pi ignores it), still an
   // honest description of what happened, and read by nothing but this module's own
   // (pre-existing) `!result?.isError` checks after a delegate call.
-  markToolCallError(toolCallId);
+  markToolCallError(toolCallId, owner);
   return { content: [{ type: "text", text: message }], details: {}, isError: true };
 }
 
 export interface OverrideDeps {
+  toolErrorOwner?: object;
   db: Db;
   getSessionId: () => string;
   getCwd: () => string;
@@ -60,7 +61,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
       const err = validateDescription(params?.description);
-      if (err) return errorResult(toolCallId, err);
+      if (err) return errorResult(toolCallId, err, deps.toolErrorOwner);
       const { description, ...rest } = params;
       let result: any;
       try {
@@ -87,7 +88,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
       const err = validateDescription(params?.description);
-      if (err) return errorResult(toolCallId, err);
+      if (err) return errorResult(toolCallId, err, deps.toolErrorOwner);
       const { description, ...rest } = params;
       const cwd = deps.getCwd();
       const abs = isAbsolute(rest.path) ? rest.path : join(cwd, rest.path);

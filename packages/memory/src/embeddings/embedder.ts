@@ -10,11 +10,40 @@ export interface Embedder {
   embed(texts: string[]): Promise<Float32Array[]>;
 }
 
-export async function resolveEmbedder(cfg?: {
+interface EmbedderConfig {
   provider?: string;
   model?: string;
   modelsDir?: string;
-}): Promise<Embedder | null> {
+}
+
+// v1 describes this slot's shape and Embedder API. Incompatible future versions
+// must use a new key. The fixed model is shared even across rebuilt bundle URLs.
+const embedderKey = Symbol.for("spider.embedder.v1:" + EMBED_MODEL);
+interface EmbedderSlot { promise: Promise<Embedder | null>; embedder?: Embedder; retryAt?: number; }
+const UNAVAILABLE_COOLDOWN_MS = 10 * 60 * 1000;
+const processCache = globalThis as typeof globalThis & { [key: symbol]: EmbedderSlot | undefined };
+
+export function isEmbedderLoaded(): boolean {
+  return processCache[embedderKey]?.embedder !== undefined;
+}
+
+export function resolveEmbedder(cfg?: EmbedderConfig, now: () => number = Date.now): Promise<Embedder | null> {
+  const existing = processCache[embedderKey];
+  if (existing && (existing.retryAt === undefined || now() < existing.retryAt)) return existing.promise;
+  const slot: EmbedderSlot = { promise: Promise.resolve().then(() => initializeEmbedder(cfg)).then(embedder => {
+    if (embedder) slot.embedder = embedder;
+    else slot.retryAt = now() + UNAVAILABLE_COOLDOWN_MS;
+    return embedder;
+  }, error => {
+    // Rejections retry on the next call; unavailable providers use the cooldown.
+    if (processCache[embedderKey] === slot) delete processCache[embedderKey];
+    throw error;
+  }) };
+  processCache[embedderKey] = slot;
+  return slot.promise;
+}
+
+async function initializeEmbedder(cfg?: EmbedderConfig): Promise<Embedder | null> {
   const modelsDir = cfg?.modelsDir ?? paths.models;
 
   // PROVIDER 1: fastembed (onnxruntime, native — preferred).

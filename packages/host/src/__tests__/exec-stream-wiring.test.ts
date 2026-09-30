@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import spiderExtension, { registerAction } from "../extension";
-import { getAction } from "../dispatch";
+import { describe, it, expect, vi } from "vitest";
+import spiderExtension from "../extension";
+import * as context from "@spider/context";
 import { isolatedCwd } from "./isolated-cwd";
 const fixtureCwd = isolatedCwd("exec-stream-wiring");
 
@@ -87,10 +87,14 @@ describe("exec streaming is wired into the real tool", () => {
   });
 
   it.each([new Error(""), new TypeError(""), "", new Error("original failure")])("keeps thrown handler errors model-readable: %o", async (thrown) => {
-    const tool = mountAndGetTool();
-    const original = getAction("exec")!;
-    registerAction("exec", () => { throw thrown; });
+    const register = context.registerContextActions;
+    // Install the fault before the activation captures its own handlers. A
+    // global replacement must not override a live activation's exec closure.
+    const injection = vi.spyOn(context, "registerContextActions").mockImplementation(registerAction => {
+      register((name, handler) => registerAction(name, name === "exec" ? () => { throw thrown; } : handler));
+    });
     try {
+      const tool = mountAndGetTool();
       const call = tool.execute("id-throw", { action: "exec" }, undefined, undefined,
         { cwd: fixtureCwd, sessionId: "s-throw" });
       if (thrown instanceof Error && thrown.message) {
@@ -99,7 +103,7 @@ describe("exec streaming is wired into the real tool", () => {
         const kind = thrown instanceof Error ? thrown.constructor.name : typeof thrown;
         await expect(call).rejects.toMatchObject({ message: `spider exec failed: ${kind} with no message`, cause: thrown });
       }
-    } finally { registerAction("exec", original); }
+    } finally { injection.mockRestore(); }
   });
 
   it("keeps the empty priming update UI-only while settling to non-empty text", async () => {

@@ -2,6 +2,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { bundleDoctorLine, type LoadedBundle } from "./build-id";
 import { openGlobal, resolveProject, paths, assertTestConfigPath } from "@spider/db-core";
 
 export { controlMigrate } from "./control/migrate-cmd";
@@ -181,8 +182,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
 }
 
 // ── doctor ──
-export function controlDoctor(cwd: string, sessionId?: string): { ok: boolean; lines: string[] } {
+export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBundle): { ok: boolean; lines: string[] } {
   const lines: string[] = ["## spider doctor 🕸", ""];
+  if (bundle) lines.push(bundleDoctorLine(bundle));
   let ok = true;
 
   // 1. native deps load

@@ -53,25 +53,32 @@ const VALID: ReadonlySet<string> = new Set<SpiderAction>([
   "index", "fetch", "run", "todo", "skill", "import", "message", "control", "kill",
 ]);
 
-const handlers = new Map<string, ActionHandler>();
+const handlers = new Map<string, { handler: ActionHandler; activationOwned: boolean }>();
 
-export function registerAction(name: string, handler: ActionHandler): void {
-  handlers.set(name, handler);
+/** External registrations are the default; the host tags its activation closures. */
+export function registerAction(name: string, handler: ActionHandler, activationOwned = false): void {
+  handlers.set(name, { handler, activationOwned });
 }
 
 export function getAction(name: string): ActionHandler | undefined {
-  return handlers.get(name);
+  return handlers.get(name)?.handler;
 }
 
-/** Test-only: reset the registry between cases. */
-export function clearActions(): void {
-  handlers.clear();
+/** Release only this activation's closures. Omit ownership only for test reset. */
+export function clearActions(owned?: ReadonlyMap<string, ActionHandler>): void {
+  if (!owned) { handlers.clear(); return; }
+  for (const [name, handler] of owned) {
+    if (handlers.get(name)?.handler === handler) handlers.delete(name);
+  }
 }
 
-export async function dispatch(args: SpiderArgs, ctx: ActionCtx): Promise<unknown> {
+export async function dispatch(args: SpiderArgs, ctx: ActionCtx, owned?: ReadonlyMap<string, ActionHandler>): Promise<unknown> {
   const name = args?.action;
   if (!name || !VALID.has(name)) return { error: `unknown action: ${String(name)}` };
-  const handler = handlers.get(name);
+  const registered = handlers.get(name);
+  // A live activation never borrows another activation's closures. Direct
+  // callers without an activation map retain the global dispatcher contract.
+  const handler = owned?.get(name) ?? ((!owned || !registered?.activationOwned) ? registered?.handler : undefined);
   if (!handler) {
     if (process.env.PI_SUBAGENT_CHILD === "1" && ["run", "message", "kill"].includes(name)) {
       return {

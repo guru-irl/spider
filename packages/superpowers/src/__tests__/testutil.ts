@@ -3,11 +3,18 @@
 // to prevent cross-test pollution now that projectRoot() resolves to worktree root.
 
 import { mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const PROC_SCRATCH = join(process.env.SUPERPOWERS_TEST_SCRATCH_ROOT ?? join(pkgRoot, ".spider", "scratch"), String(process.pid));
+// Relative overrides are checkout-relative, regardless of the process cwd.
+const checkout = resolve(pkgRoot, "../..");
+const PROC_SCRATCH = join(
+  process.env.SUPERPOWERS_TEST_SCRATCH_ROOT
+    ? resolve(checkout, process.env.SUPERPOWERS_TEST_SCRATCH_ROOT)
+    : join(pkgRoot, ".spider", "scratch"),
+  String(process.pid),
+);
 
 export function testScratchPath(name: string): string {
   mkdirSync(PROC_SCRATCH, { recursive: true });

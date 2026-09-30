@@ -68,6 +68,11 @@ is NOT a failure — failing silently is worse.
 
 Memory is **DB-as-truth**. Use \`spider remember\` to store structured truths
 that **link to** a file/skill — never duplicate a document or commit history.
+Every remember requires a \`justification\`: why the fact remains true and useful
+after this task, how it helps other agents, and why its scope is correct (global
+only if true in every repo, otherwise repo). A reviewer checks durability,
+overlap, and scope before storing; task-only facts belong in the conversation.
+If review fails, the write is stored as requested and marked \`review skipped\`.
 Categories: preference, convention, tool-quirk, failure, correction, insight.
 Background/\`[auto]\` writes are **staged and fail-closed**; approve or reject via
 \`spider control memory\`. A frozen memory snapshot is injected each session —

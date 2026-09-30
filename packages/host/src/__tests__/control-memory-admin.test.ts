@@ -75,7 +75,7 @@ describe("control memory admin: status / consolidate / forget", () => {
   it("auto remember stages, control memory pending lists it, approval activates it while user remember is active", async () => {
     const dir = join(scratch, "auto-staging-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
-    const auto: any = await tool.execute("auto", { action: "remember", category: "preference", content: "Always check the preview before publishing", auto: true, cwd: dir }, {});
+    const auto: any = await tool.execute("auto", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "preference", content: "Always check the preview before publishing", auto: true, cwd: dir }, {});
     expect(auto.details.status).toBe("staged");
     const pending: any = await tool.execute("pending", { action: "control", command: "memory", sub: "pending", cwd: dir }, {});
     expect(pending.details.map((entry: { uuid: string }) => entry.uuid)).toContain(auto.details.uuid);
@@ -83,7 +83,7 @@ describe("control memory admin: status / consolidate / forget", () => {
     expect(status.details.entries.map((entry: { uuid: string }) => entry.uuid)).not.toContain(auto.details.uuid);
     const approved: any = await tool.execute("approve", { action: "control", command: "memory", sub: "approve", uuid: auto.details.uuid, cwd: dir }, {});
     expect(approved.details.status).toBe("active");
-    const user: any = await tool.execute("user", { action: "remember", category: "preference", content: "Show the diff before publishing", cwd: dir }, {});
+    const user: any = await tool.execute("user", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "preference", content: "Show the diff before publishing", cwd: dir }, {});
     expect(user.details.status).toBe("active");
     const after: any = await tool.execute("after", { action: "control", command: "memory", sub: "status", cwd: dir }, {});
     expect(after.details.entries.map((entry: { uuid: string }) => entry.uuid)).toEqual(expect.arrayContaining([auto.details.uuid, user.details.uuid]));
@@ -91,7 +91,7 @@ describe("control memory admin: status / consolidate / forget", () => {
   it("status reports active entries with uuids and usage", async () => {
     const dir = join(scratch, "status-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
-    await tool.execute("r1", { action: "remember", category: "tool-quirk", content: "widget alpha", cwd: dir }, {});
+    await tool.execute("r1", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "widget alpha", cwd: dir }, {});
 
     const res = await tool.execute("s1", { action: "control", command: "memory", sub: "status", cwd: dir }, {});
     const details = res.details as { entries: Array<{ uuid: string; content: string }>; usage: number };
@@ -126,7 +126,7 @@ describe("control memory admin: status / consolidate / forget", () => {
   it("forget removes an entry by uuid so it's gone from status and recall", async () => {
     const dir = join(scratch, "forget-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
-    const w = await tool.execute("r2", { action: "remember", category: "tool-quirk", content: "widget beta", cwd: dir }, {});
+    const w = await tool.execute("r2", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "widget beta", cwd: dir }, {});
     const uuid = (w.details as { uuid?: string }).uuid!;
     expect(uuid).toBeTruthy();
 
@@ -147,7 +147,7 @@ describe("control memory admin: status / consolidate / forget", () => {
   it("remember, forget, then remember the same text succeeds via the production tool", async () => {
     const dir = join(scratch, "dedupe-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
-    const args = { action: "remember", category: "preference", content: "reuse after forget", cwd: dir };
+    const args = { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "preference", content: "reuse after forget", cwd: dir };
     const first: any = await tool.execute("d1", args, {});
     const uuid = first.details.uuid;
     await tool.execute("d2", { action: "control", command: "memory", sub: "forget", uuid, cwd: dir }, {});
@@ -188,7 +188,7 @@ describe("control memory admin: status / consolidate / forget", () => {
     const tool = makeTool();
     const w = await tool.execute(
       "r3",
-      { action: "remember", category: "tool-quirk", content: "repo scoped fact", cwd: dir, scope: "repo" },
+      { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "repo scoped fact", cwd: dir, scope: "repo" },
       {},
     );
     const uuid = (w.details as { uuid?: string }).uuid!;
@@ -227,14 +227,14 @@ describe("control memory admin: status / consolidate / forget", () => {
 
     // Blocked: 7999 + 50 > 8000. Before this feature, this was a dead end short of raw SQL.
     await expect(
-      tool.execute("r4", { action: "remember", category: "tool-quirk", content: "y".repeat(50), cwd: dir }, {}),
+      tool.execute("r4", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "y".repeat(50), cwd: dir }, {}),
     ).rejects.toThrow(/Memory cap exceeded/);
 
     const forgetRes = await tool.execute("f5", { action: "control", command: "memory", sub: "forget", uuid: seededUuid, cwd: dir }, {});
     expect((forgetRes.details as { ok?: boolean }).ok).toBe(true);
 
     // The SAME write that was blocked now succeeds.
-    const retry = await tool.execute("r5", { action: "remember", category: "tool-quirk", content: "y".repeat(50), cwd: dir }, {});
+    const retry = await tool.execute("r5", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "y".repeat(50), cwd: dir }, {});
     expect((retry.details as { status?: string }).status).toBe("active");
   });
 });

@@ -106,7 +106,7 @@ describe("spider extension entry", () => {
         const run = (args: object) => tool.execute("bad-config", { ...args, cwd }, undefined, undefined, { cwd });
         const todo = await run({ action: "todo", op: "list" });
         expect(todo.details).toEqual([]);
-        const memory = await run({ action: "remember", category: "insight", content: "fixture note" });
+        const memory = await run({ action: "remember", category: "insight", content: "fixture note", justification: "Reusable by future agents; fixture-specific; repo scope." });
         expect(memory.details.content).toBe("fixture note");
         const config = await run({ action: "control", command: "config", op: "get" });
         expect(config.details.config["ui.footer"]).toBe(true);

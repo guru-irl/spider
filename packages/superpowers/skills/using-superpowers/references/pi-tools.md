@@ -8,7 +8,7 @@ fallback.
 | Action skills request | spider verb (primary) | pi built-in (fallback) |
 | --- | --- | --- |
 | Search memory / code / sessions / todos | `spider search` | `grep` / `find` |
-| Remember a durable fact | `spider remember` (staged if `[auto]`) | — |
+| Remember a durable fact | `spider remember` with required `justification` (staged if `[auto]`) | — |
 | Recall stored facts | `spider recall` | — |
 | Run a shell command | `spider exec` / `spider batch` | — (`bash` is blocked) |
 | Analyze a large file without editing | `spider exec_file` | `read` (only if you will edit) |
@@ -56,5 +56,10 @@ from the partial tree, not a message to the original worker.
 ## Memory discipline
 
 Memory is DB-as-truth: `spider remember` stores structured truths that **link
-to** files/skills — never duplicate a doc or commit history. Background/`[auto]`
-writes are staged (fail-closed); approve with `spider control memory`.
+to** files/skills — never duplicate a doc or commit history. Every call needs a
+`justification`: why it stays true and useful after the current task, how it
+helps other agents, and why the scope is right (global means true in every
+repo; otherwise repo). The reviewer checks durability, overlap and scope;
+task-only details belong in the conversation. A failed review stores as
+requested and states `review skipped`. Background/`[auto]` writes are staged
+(fail-closed); approve with `spider control memory`.

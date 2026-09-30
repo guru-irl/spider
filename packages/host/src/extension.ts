@@ -23,7 +23,7 @@ import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db } from "@spider/db-core";
 import {
-  stageWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
+  stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
   activeCharTotal, listActive, resolveEmbedder, type Embedder,
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
@@ -51,6 +51,7 @@ import { openSessionRunDb } from "./session-run-db";
 export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
+import { modelReviewer } from "./memory-reviewer";
 
 export { registerAction };
 
@@ -160,7 +161,8 @@ export const SPIDER_PARAMETERS = {
     limit: { type: "number", description: "Max results (search/recall)." },
     kinds: { type: "array", items: { type: "string", enum: ["memory", "content", "session", "todo"] }, description: "search: restrict results to these kinds; default includes memory, content, session and todo." },
     // remember
-    content: { type: "string", description: "Text to store for action 'remember' (or index/fetch body)." },
+    content: { type: "string", description: "Text proposed for action 'remember' (or index/fetch body). Remember is reviewed for durability, overlap and scope before storage; on review failure it stores as requested." },
+    justification: { type: "string", description: "Required for remember: state why the fact is durable (still true and useful after the current task ends), how it helps other agents in this project (repo) or in any repo (global), and why the chosen scope is right (global only if true in every repo; otherwise repo)." },
     link: { type: "string", description: "Optional link/url to attach to a remembered item." },
     auto: { type: "boolean", description: "Mark a remembered item as auto-captured." },
     // run / subagents
@@ -755,16 +757,29 @@ export default function spiderExtension(pi: PiToolAPI): void {
   registerAction("remember", async (args, ctx) => {
     if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };
     const scope = scopeOf(args);
-    const r = stageWrite(dbFor(scope, ctx), scope, {
+    // Justification is deterministic, even when the model is disabled or unavailable.
+    if (typeof args.justification !== "string" || !args.justification.trim()) {
+      return { error: "justification required: say why the fact is durable after this task, how it helps other agents, and why the chosen scope is right (global in every repo, otherwise repo)" };
+    }
+    const enabled = controlConfig("get", ctx.cwd, "memory.reviewer.enabled") !== false;
+    const model = controlConfig("get", ctx.cwd, "memory.reviewer.model");
+    const timeoutMs = controlConfig("get", ctx.cwd, "memory.reviewer.timeoutMs");
+    const r = await reviewedWrite({ repo: ctx.repoDb, global: ctx.globalDb }, scope, {
       category: args.category as any,
       content: args.content as string,
       link: (args.link as string | null) ?? null,
       source: args.auto ? "auto" : "user",
+    }, args.justification, {
+      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry) : undefined,
+      skipReason: "reviewer disabled",
+      timeoutMs: timeoutMs as number,
+      signal: ctx.signal,
+      repoAvailable: Boolean(ctx.project.repoKey),
     });
     // Carry the saved content/category/scope on BOTH the rendered panel and the serialized
     // details payload, so a programmatic caller gets back what was actually remembered.
-    const details = { ...r, content: args.content as string, category: args.category as any, scope };
-    return { display: renderRememberResult(details), details };
+    const details = { ...r, content: args.content as string, category: args.category as any, justification: args.justification };
+    return { text: r.message, display: renderRememberResult(details), details };
   });
 
   registerAction("recall", async (args, ctx) => {
@@ -915,7 +930,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content(+category); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification (durability, usefulness to other agents, correct scope; reviewer checks overlap and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle(+text or id); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,

@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paths } from "@spider/db-core";
-import { PolyglotExecutor } from "../executor";
+import { PolyglotExecutor, type ExecResult } from "../executor";
+import { groupHasLiveMembers, readReceiptSafe } from "../background-job";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -17,8 +18,27 @@ const isAlive = (pid: number): boolean => {
   }
 };
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((r) => setTimeout(r, ms));
+async function waitFor<T>(condition: () => T | false | undefined, what: string, timeoutMs = 15_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = condition();
+    if (value) return value;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`Timed out waiting for ${what}`);
+}
+
+// The shell's exit does not finish the job: the independent supervisor still
+// writes exit.json.<pid>.<random>.tmp, renames it to exit.json, then exits.
+// Both the receipt and supervisor death are needed before removing its directory.
+async function waitForJob(r: ExecResult): Promise<NonNullable<ReturnType<typeof readReceiptSafe>>> {
+  expect(r.backgroundJob).toBeTruthy();
+  expect(r.pid).toBeGreaterThan(0);
+  const receipt = await waitFor(
+    () => !isAlive(r.pid!) && readReceiptSafe(r.backgroundJob!.receipt),
+    "background receipt and supervisor exit",
+  );
+  return receipt;
 }
 
 /**
@@ -87,16 +107,22 @@ describe("backgrounded process survives the LAUNCHING PROCESS exiting", () => {
     const scratchRoot = paths.scratch("project", fixtureRoot);
     mkdirSync(scratchRoot, { recursive: true });
     const workDir = mkdtempSync(join(scratchRoot, ".bgtest-"));
-    let nestedTmpDir: string | undefined;
+    const handoffPath = join(workDir, "handoff.json");
+    let job: ExecResult | undefined;
+    let releasePath: string | undefined;
+    let testError: unknown;
 
     try {
       const harnessPath = await buildHarness(workDir);
-      const handoffPath = join(workDir, "handoff.json");
 
       const TOTAL_TICKS = 20;
       const TICK_MS = 150; // ~3s of total grandchild runtime
+      releasePath = join(workDir, "release");
       const shellCode = [
         `echo "PID:$$"`,
+        // Keep the work unfinished until AFTER the launcher is confirmed dead.
+        // A delayed test worker cannot accidentally miss this observation.
+        `while [ ! -f ${JSON.stringify(releasePath)} ]; do sleep 0.05; done`,
         `i=1`,
         `while [ $i -le ${TOTAL_TICKS} ]; do`,
         `  echo "TICK $i"`,
@@ -106,33 +132,30 @@ describe("backgrounded process survives the LAUNCHING PROCESS exiting", () => {
         `echo DONE`,
       ].join("\n");
 
-      // The harness backgrounds after 200ms then exits immediately — the
-      // grandchild has ~2.8s of scripted work left at that point.
+      // The harness hands off after 200ms and exits; the shell cannot start
+      // its tick loop until this test releases it after observing that exit.
       const BACKGROUND_AFTER_MS = 200;
 
-      const launcherStart = Date.now();
       execFileSync(
         process.execPath,
         [harnessPath, fixtureRoot, shellCode, String(BACKGROUND_AFTER_MS), handoffPath],
-        { encoding: "utf-8", timeout: 10_000 },
+        { encoding: "utf-8", timeout: 25_000 },
       );
-      const launcherElapsed = Date.now() - launcherStart;
-      // Sanity check this test actually exercises the early-return path, not a
-      // launcher that happened to wait out the whole 3s command.
-      expect(launcherElapsed).toBeLessThan(2000);
-
-      const handoff = JSON.parse(readFileSync(handoffPath, "utf-8"));
+      const handoff: ExecResult = JSON.parse(readFileSync(handoffPath, "utf-8"));
+      job = handoff;
       expect(handoff.backgrounded).toBe(true);
       expect(handoff.timedOut).toBe(true);
       expect(handoff.backgroundLogs?.stdout).toBeTruthy();
 
-      const logPath = handoff.backgroundLogs.stdout as string;
-      nestedTmpDir = dirname(logPath);
+      const logPath = handoff.backgroundLogs!.stdout;
 
       // The launching process (the harness) is now COMPLETELY gone — execFileSync
       // only returns once it has exited. Everything from here on is observing
       // what the grandchild does with no launcher alive at all.
-      const soonAfterLauncherDeath = readFileSync(logPath, "utf-8");
+      const soonAfterLauncherDeath = await waitFor(
+        () => { const log = readFileSync(logPath, "utf-8"); return log.includes("PID:") ? log : undefined; },
+        "shell PID marker after launcher exit",
+      );
       const pidMatch = soonAfterLauncherDeath.match(/PID:(\d+)/);
       expect(pidMatch).toBeTruthy();
       const grandchildPid = Number(pidMatch![1]);
@@ -147,34 +170,46 @@ describe("backgrounded process survives the LAUNCHING PROCESS exiting", () => {
       // launcher exited can NEVER reach this — there is no way to "catch up"
       // once it's dead. This is why this assertion (not an instantaneous
       // liveness snapshot) is the real test of the fix.
-      const deadline = Date.now() + 8000;
-      let finalContent = "";
-      while (Date.now() < deadline) {
-        finalContent = readFileSync(logPath, "utf-8");
-        if (finalContent.includes("DONE")) break;
-        await sleep(150);
-      }
-
+      writeFileSync(releasePath, "go");
+      const finalContent = await waitFor(
+        () => { const log = readFileSync(logPath, "utf-8"); return log.includes("DONE") ? log : undefined; },
+        "shell completion marker after launcher exit",
+      );
       expect(finalContent).toContain(`TICK ${TOTAL_TICKS}`);
       expect(finalContent).toContain("DONE");
 
-      // The grandchild finishes its script and exits on its own — confirm it's
-      // not left running forever (good hygiene, not the point of the test).
-      const diedOnItsOwn = await (async () => {
-        const d = Date.now() + 2000;
-        while (Date.now() < d) {
-          if (!isAlive(grandchildPid)) return true;
-          await sleep(50);
-        }
-        return !isAlive(grandchildPid);
-      })();
-      expect(diedOnItsOwn).toBe(true);
+      await waitFor(() => groupHasLiveMembers(handoff.pid!) === false, "background process group to empty");
+      const receipt = readReceiptSafe(handoff.backgroundJob!.receipt);
+      expect(receipt, "background receipt missing after process group exit").toBeTruthy();
+      expect(receipt!.state).toBe("exited");
+      expect(receipt!.exitCode).toBe(0);
+      expect(isAlive(grandchildPid)).toBe(false);
+    } catch (error) {
+      testError = error;
+      throw error;
     } finally {
-      if (nestedTmpDir) rmSync(nestedTmpDir, { recursive: true, force: true });
-      rmSync(workDir, { recursive: true, force: true });
-      rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      // A missing receipt must fail in the test body. Cleanup only needs proof
+      // that no process in the job's group can write into the fixture anymore.
+      try {
+        if (releasePath) writeFileSync(releasePath, "go");
+        if (!job && existsSync(handoffPath)) job = JSON.parse(readFileSync(handoffPath, "utf-8")) as ExecResult;
+        if (job?.backgroundJob && job.pid) {
+          const pgid = job.pid;
+          await waitFor(() => groupHasLiveMembers(pgid) === false, "background process group to empty");
+        } else {
+          const bgRoot = join(scratchRoot, "bg");
+          if (existsSync(bgRoot) && readdirSync(bgRoot).length > 0) {
+            throw new Error("Background job has no handoff handle; fixture retained to avoid deleting an unknown writer");
+          }
+        }
+        rmSync(workDir, { recursive: true, force: true });
+        rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      } catch (cleanupError) {
+        console.error("Background survival fixture retained: cleanup could not prove it is safe to remove", cleanupError);
+        if (testError === undefined) throw cleanupError;
+      }
     }
-  }, 20_000);
+  }, 35_000);
 });
 
 describe("background result reports where the output went", () => {
@@ -182,47 +217,56 @@ describe("background result reports where the output went", () => {
   // the shape of the result without paying for a second OS process.
   it("backgroundLogs points at real files under the project's .spider scratch area, never /tmp", async () => {
     const fixtureRoot = makeFixture();
+    let job: ExecResult | undefined;
+    const releasePath = join(fixtureRoot, "release-logs-test");
     try {
       const exec = new PolyglotExecutor({ projectRoot: () => fixtureRoot });
       const r = await exec.execute({
         language: "shell",
-        code: `echo start; i=0; while [ $i -lt 6 ]; do echo "n$i"; sleep 0.1; i=$((i+1)); done; echo end`,
+        code: `echo start; while [ ! -f ${JSON.stringify(releasePath)} ]; do sleep 0.05; done; echo end`,
         background: true,
         timeout: 120,
       });
 
+      job = r;
       expect(r.backgrounded).toBe(true);
       expect(r.backgroundLogs).toBeTruthy();
       const scratchRoot = paths.scratch("project", fixtureRoot);
       expect(r.backgroundLogs!.stdout.startsWith(scratchRoot)).toBe(true);
       expect(r.backgroundLogs!.stdout.includes("/tmp/")).toBe(false);
-      expect(readFileSync(r.backgroundLogs!.stdout, "utf-8")).toContain("start");
-
-      // let the short-lived grandchild finish on its own before removing the fixture
-      await sleep(900);
+      await waitFor(
+        () => readFileSync(r.backgroundLogs!.stdout, "utf-8").includes("start"),
+        "first redirected log write",
+      );
     } finally {
+      writeFileSync(releasePath, "go");
+      if (job?.backgroundJob) await waitForJob(job);
       rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-  }, 10_000);
+  }, 25_000);
 
   it("also reports the pid of the detached process, so a caller who wants to manage it explicitly can", async () => {
     const fixtureRoot = makeFixture();
+    let job: ExecResult | undefined;
+    const releasePath = join(fixtureRoot, "release-pid-test");
     try {
       const exec = new PolyglotExecutor({ projectRoot: () => fixtureRoot });
       const r = await exec.execute({
         language: "shell",
-        code: `sleep 0.6; echo done`,
+        code: `echo READY; while [ ! -f ${JSON.stringify(releasePath)} ]; do sleep 0.05; done; echo done`,
         background: true,
         timeout: 80,
       });
+      job = r;
       expect(r.backgrounded).toBe(true);
       expect(typeof r.pid).toBe("number");
       expect(isAlive(r.pid!)).toBe(true);
-      await sleep(900);
     } finally {
+      writeFileSync(releasePath, "go");
+      if (job?.backgroundJob) await waitForJob(job);
       rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-  }, 10_000);
+  }, 25_000);
 });
 
 describe("background:true does not change behaviour when the process finishes before the timeout", () => {

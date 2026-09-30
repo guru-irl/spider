@@ -20,7 +20,7 @@ function isAlive(pid: number): boolean {
 
 /** Poll for death instead of a fixed sleep: fast on the happy path, not flaky under
  *  CI scheduling jitter. */
-async function waitUntilDead(pid: number, deadlineMs = 1000): Promise<boolean> {
+async function waitUntilDead(pid: number, deadlineMs = 10_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < deadlineMs) {
     if (!isAlive(pid)) return true;
@@ -43,7 +43,9 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
       language: "shell",
       // The backgrounded `sleep` is a child of the spawned shell — a GRANDCHILD of this
       // test process. A kill that only targets the shell's own pid would miss it.
-      code: "sleep 6 & echo GRANDCHILD_PID:$!; wait",
+      // 30s is longer than the 10s liveness guard: a surviving child cannot
+      // finish naturally during the guard and make the mutant look correct.
+      code: "sleep 30 >/dev/null 2>&1 & echo GRANDCHILD_PID:$!; wait",
       signal: ac.signal,
       onData: (chunk: string) => {
         const m = chunk.match(/GRANDCHILD_PID:(\d+)/);
@@ -54,24 +56,33 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
       },
     } as any);
 
-    const r = await p;
-    expect(childPid).toBeGreaterThan(0);
-    expect(r.aborted).toBe(true);
-    expect(r.exitCode).not.toBe(0);
-    // Directly proves the process-tree kill reached the grandchild.
-    expect(await waitUntilDead(childPid!)).toBe(true);
+    try {
+      const r = await p;
+      expect(childPid).toBeGreaterThan(0);
+      expect(r.aborted).toBe(true);
+      expect(r.exitCode).not.toBe(0);
+      // Directly proves the process-tree kill reached the grandchild.
+      expect(await waitUntilDead(childPid!)).toBe(true);
+    } finally {
+      // Also reap an orphan in the kill-only-the-shell mutant run.
+      if (childPid && isAlive(childPid)) {
+        try { process.kill(childPid, "SIGKILL"); } catch { /* exited between probe and signal */ }
+      }
+    }
   });
 
   // Mutation this catches: remove the `signal.addEventListener("abort", ...)` wiring ->
   // nothing calls killTree, so the command reaches the echo after its full sleep.
+  // We deliberately do not bound abort latency: the proof is that post-sleep
+  // work never runs, at the cost of not catching a slower kill before that work.
   it("abort stops the command before code after its sleep can run", async () => {
     const ac = new AbortController();
     const p = ex().execute({
       language: "shell",
       code: "echo before-abort; sleep 5; echo should-not-run",
       signal: ac.signal,
+      onData: (chunk: string) => { if (chunk.includes("before-abort")) ac.abort(); },
     } as any);
-    setTimeout(() => ac.abort(), 100);
     const r = await p;
     expect(r.stdout).toContain("before-abort");
     expect(r.stdout).not.toContain("should-not-run");
@@ -98,8 +109,8 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
       language: "shell",
       code: "echo before-abort; sleep 5; echo after-abort",
       signal: ac.signal,
+      onData: (chunk: string) => { if (chunk.includes("before-abort")) ac.abort(); },
     } as any);
-    setTimeout(() => ac.abort(), 150);
     const r = await p;
     expect(r.stdout).toContain("before-abort");
     expect(r.stdout).not.toContain("after-abort");
@@ -125,8 +136,10 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
     expect(getEventListeners(ac.signal, "abort").length).toBe(0);
 
     const ac2 = new AbortController();
-    const p = ex().execute({ language: "shell", code: "sleep 5", signal: ac2.signal } as any);
-    setTimeout(() => ac2.abort(), 100);
+    const p = ex().execute({
+      language: "shell", code: "echo running; sleep 5", signal: ac2.signal,
+      onData: (chunk: string) => { if (chunk.includes("running")) ac2.abort(); },
+    } as any);
     await p;
     expect(getEventListeners(ac2.signal, "abort").length).toBe(0);
   });
@@ -153,9 +166,9 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
       const ac = new AbortController();
       const p = runExecFile(
         { action: "exec_file", path: "package.json", language: "shell", code: "echo before; sleep 5; echo after" } as any,
-        { cwd: process.cwd(), signal: ac.signal } as any,
+        { cwd: process.cwd(), signal: ac.signal,
+          onPartial: (text: string) => { if (text.includes("before")) ac.abort(); } } as any,
       );
-      setTimeout(() => ac.abort(), 100);
       const r = await p;
       expect(r.text).toContain("before");
       expect(r.text).not.toContain("after");
@@ -180,9 +193,9 @@ describe("exec abort — Escape mid-run must kill the process, not just drop the
           { language: "shell", code: "echo cmd1; sleep 5" },
           { language: "shell", code: "echo SHOULD_NOT_RUN" },
         ] } as any,
-        { cwd: process.cwd(), signal: ac.signal } as any,
+        { cwd: process.cwd(), signal: ac.signal,
+          onPartial: (text: string) => { if (text.includes("cmd1")) ac.abort(); } } as any,
       );
-      setTimeout(() => ac.abort(), 100);
       const r = await p;
       expect(r.text).toContain("cmd1");
       expect(r.text).not.toContain("SHOULD_NOT_RUN");

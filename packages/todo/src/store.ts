@@ -49,17 +49,31 @@ export function toggleTodo(db: Db, sessionId: string, seq: number): Todo | null 
   return { seq: cur.seq, text: cur.text, done: !!done };
 }
 
-export function clearTodos(db: Db, sessionId: string): void {
-  const run = db.transaction(() => {
+export function removeTodo(db: Db, sessionId: string, seq: number): Todo | null {
+  return db.raw.transaction(() => {
+    const row = db
+      .prepare("SELECT id, seq, text, done FROM todos WHERE session_id = ? AND seq = ?")
+      .get(sessionId, seq) as TodoRow | undefined;
+    if (!row) return null;
+    db.prepare("INSERT INTO todos_fts(todos_fts, rowid, text) VALUES ('delete', ?, ?)").run(row.id, row.text);
+    db.prepare("DELETE FROM todos WHERE id = ?").run(row.id);
+    return toTodo(row);
+  }).immediate();
+}
+
+export function clearTodos(db: Db, sessionId: string, force = false): { removed: number; kept: number } {
+  const run = db.raw.transaction(() => {
     const rows = db
-      .prepare("SELECT id, text FROM todos WHERE session_id = ?")
-      .all(sessionId) as Array<{ id: number; text: string }>;
+      .prepare("SELECT id, text FROM todos WHERE session_id = ? AND (? OR done = 1)")
+      .all(sessionId, force ? 1 : 0) as Array<{ id: number; text: string }>;
     for (const row of rows) {
       db.prepare("INSERT INTO todos_fts(todos_fts, rowid, text) VALUES ('delete', ?, ?)").run(row.id, row.text);
     }
-    db.prepare("DELETE FROM todos WHERE session_id = ?").run(sessionId);
+    db.prepare("DELETE FROM todos WHERE session_id = ? AND (? OR done = 1)").run(sessionId, force ? 1 : 0);
+    const kept = db.prepare("SELECT COUNT(*) AS count FROM todos WHERE session_id = ? AND done = 0").get(sessionId) as { count: number };
+    return { removed: rows.length, kept: Number(kept.count) };
   });
-  run();
+  return run.immediate();
 }
 
 interface SummaryRow {
@@ -88,30 +102,30 @@ export function sessionSummaries(db: Db, currentSessionId: string): SessionSumma
 }
 
 export function resolveSession(db: Db, selector: string): string | null {
+  selector = selector.trim();
+  if (!selector) return null;
   const rows = db
     .prepare(
       `SELECT DISTINCT t.session_id AS session, s.name AS name
        FROM todos t
-       LEFT JOIN sessions s ON s.id = t.session_id`
+       LEFT JOIN sessions s ON s.id = t.session_id
+       UNION
+       SELECT id AS session, name FROM sessions`
     )
     .all() as Array<{ session: string; name: string | null }>;
 
   const exact = rows.find((r) => r.session === selector);
-  if (exact) return exact.session;
-
-  const nameMatches = rows.filter(
-    (r) => r.name != null && r.name.toLowerCase() === selector.toLowerCase()
+  const matches = rows.filter(
+    (r) => (exact ? r.session === selector : r.session.startsWith(selector)) ||
+      (r.name != null && r.name.toLowerCase() === selector.toLowerCase())
   );
-  if (nameMatches.length === 1) return nameMatches[0].session;
-  if (nameMatches.length > 1) return null;
-
-  const prefixMatches = rows.filter((r) => r.session.startsWith(selector));
-  if (prefixMatches.length === 1) return prefixMatches[0].session;
+  if (matches.length === 1) return matches[0].session;
 
   return null;
 }
 
 export function viewSession(db: Db, selector: string, currentSessionId: string): SessionGroup[] {
+  selector = selector.trim();
   if (selector === "all") {
     const summaries = sessionSummaries(db, currentSessionId);
     return summaries.map((s) => ({

@@ -659,3 +659,27 @@ describe("renderSpiderCall shows the command while it runs", () => {
     expect(text).toContain("remember");
   });
 });
+
+describe("todo mutation results", () => {
+  it("todo remove identifies the removed item and resolved session rather than a live checklist", () => {
+    const c = renderSpiderResult(mkResult({ seq: 2, text: "obsolete", done: false, session: "previous-session", name: "Cleanup" }), opts, theme, mkCtx({ action: "todo", op: "remove", session: "previous" }));
+    const text = c.render(100).join("\n");
+    expect(text).toMatch(/removed.*#2.*obsolete/i);
+    expect(text).toContain("previous-session");
+    expect(text).toContain("Cleanup");
+    expect(text).not.toContain("completed");
+  });
+
+  it("todo toggle shows the resolved session id and name", () => {
+    const c = renderSpiderResult(mkResult({ seq: 2, text: "leftover", done: true, session: "previous-session", name: "Cleanup" }), opts, theme, mkCtx({ action: "todo", op: "toggle", session: "previous" }));
+    const text = c.render(100).join("\n");
+    expect(text).toContain("#2");
+    expect(text).toContain("previous-session");
+    expect(text).toContain("Cleanup");
+  });
+
+  it.each([{ removed: 1, kept: 2 }, { removed: 3, kept: 0 }])("todo clear displays counts %j", (details) => {
+    const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "todo", op: "clear" }));
+    expect(c.render(100).join("\n")).toContain(`Removed ${details.removed} todos; kept ${details.kept} open todos`);
+  });
+});

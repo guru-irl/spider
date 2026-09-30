@@ -118,6 +118,14 @@ Slash commands (thin front for the same actions):
 /bind       bind session to worktree   /exec-enforce  toggle bash enforcement
 ```
 
+Todo ops: `add`, `list`, `toggle`, `remove`, `clear`, `sessions`, `view`.
+Use `remove id:<seq>` for obsolete items. `clear` removes only done items and
+reports removed and kept-open counts; `force:true` removes all items in the
+current session. `clear` rejects session selectors. `toggle` and `remove`
+accept a session id, unique prefix, or unique name via `session` within this
+project DB, defaulting to the current session. They reject `session:"all"`,
+unresolved or ambiguous selectors, and missing or unknown ids with an error.
+
 ## Config layers
 
 Config precedence is built-in defaults, then global config, then worktree-local

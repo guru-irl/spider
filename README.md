@@ -122,6 +122,12 @@ Slash commands (thin front for the same actions):
 
 `spider run` dispatches subagents in the background (single, chain, parallel,
 and pipeline modes) and reports back via a `spider.subagent_done` message.
+Run records and child events stay in the dispatching session's worktree database
+(or its `/bind` target), which is also the database read by `/agents`. A `cwd`
+on `run` changes the child's working directory and supplies that target's model
+defaults, but does not move run records. Child scratch files and transcripts
+stay in the target project's `.spider/scratch`. Other actions with an explicit
+`cwd`, such as `todo`, continue to use that directory's project database.
 
 `spider kill` stops them. It accepts a run id, an id prefix, a run name, or
 `"all"`. Kill signals the whole **process group**, so a subagent's own children

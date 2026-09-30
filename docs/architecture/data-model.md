@@ -61,6 +61,9 @@ The diagram below shows the main tables across all three databases. `projects`,
 and `session_bindings` live in the **global** registry database. `memory` and
 `skills`/`curator_state` live in the **repo** database. `sessions`, `content`,
 `todos`, `runs`, `run_events`, and `events` live in the **worktree** database.
+Runs and run events belong to the dispatching session's worktree (or its
+`/bind` target), even when `run` sets a different working directory for the
+child. The agents view and the child reporter both use that session run database.
 `vector_map` and `embed_queue` are defined **twice** — once in `REPO_SCHEMA` and
 once in `WORKTREE_SCHEMA` — as two separate tables with identical structure in
 two separate files (repo-tier embeddings for `memory`; worktree-tier embeddings

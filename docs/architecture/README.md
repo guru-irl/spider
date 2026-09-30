@@ -173,8 +173,12 @@ through a renderer. The steps below match `execute` in
    (`sessionIdOf`, `cwdOf`), then calls `buildActionCtx`. That resolves the
    project, opens the per-project and global databases through `db-core`, and
    attaches the `@spider/models` router. The result is one `ActionCtx` for this
-   dispatch, carrying `db`, `globalDb`, `project`, `sessionId`, `cwd`, `pi`, and
-   `models`.
+   dispatch, carrying `db`, `runDbPath`, `globalDb`, `project`, `sessionId`,
+   `cwd`, `pi`, and `models`. For `run`, `kill`, and `message`, `db` is the
+   dispatching session's run database (its `/bind` target when the session is
+   bound), resolved by the same helper used to mount `/agents`. An explicit `run` cwd still chooses the child's
+   working directory, scratch files and target model defaults. Non-run-record
+   actions with an explicit cwd use that target project's database.
 3. `dispatch(args, ctx)` validates `args.action` against the known set and looks
    up the handler registered for it. Handlers register through `registerAction`:
    `@spider/context` registers `exec`, `exec_file`, `batch`, `index`, `fetch`,

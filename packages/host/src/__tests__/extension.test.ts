@@ -386,7 +386,7 @@ describe("spider extension entry", () => {
     const dir = join(scratch, "global-model-project"); mkdirSync(dir, { recursive: true });
     try {
       controlConfig("set", dir, "models.defaults", { reviewer: "provider/review" }, "global");
-      const ctx = buildActionCtx(fakePi() as never, { action: "run", cwd: dir }, "s-global-model");
+      const ctx = buildActionCtx(fakePi() as never, { action: "run", cwd: dir }, "s-global-model", dir);
       probeHandles.push(ctx.db, ctx.repoDb, ctx.globalDb);
       expect(ctx.modelDefaults).toEqual({ reviewer: "provider/review" });
       expect(controlConfig("get", dir, "models.defaults")).toEqual(ctx.modelDefaults);

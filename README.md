@@ -118,6 +118,35 @@ Slash commands (thin front for the same actions):
 /bind       bind session to worktree   /exec-enforce  toggle bash enforcement
 ```
 
+## Config layers
+
+Config precedence is built-in defaults, then global config, then worktree-local
+config. Use `scope:"global"` with `control config` `op:"set"` or `op:"unset"`
+to edit `~/.pi/agent/spider/config.json` (or the config under `SPIDER_GLOBAL_ROOT`).
+Omit scope or use `scope:"repo"` to edit the current worktree's `.spider/config.json`.
+Here `repo` selects the local config, not the shared repository database.
+Other config write scopes, including `worktree` and `project`, are rejected.
+
+```
+spider control command:"config" op:"set" key:"memory.reviewer.model" value:"provider/model" scope:"global"
+spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"repo"
+spider control command:"config" op:"get" key:"memory.reviewer.model"
+```
+
+Write results report `scope` (`global` or `local`), the destination `file`, and
+`shadowedBy:"local"` when a global edit is overridden by a local key. A keyed
+`get` reports the effective `value` and its `source` (`default`, `global`, or
+`local`). If neither a built-in default nor a layer supplies the key, `value` is
+undefined and `source` is `unset`. An unkeyed `get` reports `config` and `sources`.
+For `models.defaults`, provenance is a per-role source map, matching `control models`.
+
+Unset normally removes the key from the chosen layer, allowing lower layers to
+supply the value. Only `memory.snapshotCharCap` accepts `"unlimited"`: if a
+global cap exists, unset writes that sentinel in the chosen layer so the cap
+does not reappear. Setting this key to `"unlimited"` or an empty string uses the
+same scoped unset path. Other numeric keys and model ids never receive that
+sentinel. `exec.enforce` remains protected from both model-facing set and unset.
+
 ## Subagents and killing them
 
 `spider run` dispatches subagents in the background (single, chain, parallel,

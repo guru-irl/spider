@@ -1,5 +1,5 @@
 // packages/host/src/__tests__/extension.test.ts
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,6 +86,165 @@ function fakePi() {
     _tools: tools, _hooks: hooks, _commands: commands,
   };
 }
+
+describe("control config scoped edits", () => {
+  let previousGlobalRoot: string;
+  let globalFile: string;
+  let localFile: string;
+  let run: (args: Record<string, unknown>) => Promise<any>;
+  const globalConfig = { "ui.footer": true, "memory.reviewer.model": "provider/global", "memory.snapshotCharCap": 1000 };
+  const localConfig = { "ui.footer": false, "memory.reviewer.model": "provider/local", "memory.snapshotCharCap": 500 };
+  const read = (file: string) => JSON.parse(readFileSync(file, "utf8"));
+
+  beforeEach(() => {
+    gitInitScratch();
+    setGlobalDbPathForTests(join(scratch, "g-config-scope.db"));
+    previousGlobalRoot = paths.globalRoot;
+    paths.globalRoot = join(scratch, "global");
+    globalFile = join(paths.globalRoot, "config.json");
+    localFile = join(scratch, ".spider", "config.json");
+    for (const [file, config] of [[globalFile, globalConfig], [localFile, localConfig]] as const) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(config));
+    }
+    const pi = fakePi(); spiderExtension(pi as never);
+    const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
+    run = (args) => {
+      const params = { action: "control", command: "config", cwd: scratch, ...args } as SpiderArgs;
+      assertPreActionIsolation(params, "", scratch);
+      return tool.execute("config-scope", params, undefined, undefined, { cwd: scratch });
+    };
+  });
+  afterEach(() => { paths.globalRoot = previousGlobalRoot; });
+
+  it("writes a global set only to the global fixture and reports the local shadow", async () => {
+    const localBefore = readFileSync(localFile, "utf8");
+    const result = await run({ op: "set", key: "memory.reviewer.model", value: "provider/new", scope: "global" });
+    expect(read(globalFile)).toEqual({ ...globalConfig, "memory.reviewer.model": "provider/new" });
+    expect(readFileSync(localFile, "utf8")).toBe(localBefore);
+    expect(result.details).toMatchObject({ ok: true, scope: "global", file: globalFile, shadowedBy: "local" });
+  });
+
+  it("does not report a shadow when the local layer lacks the globally set key", async () => {
+    writeFileSync(localFile, JSON.stringify({ "ui.footer": false }));
+    const result = await run({ op: "set", key: "memory.reviewer.model", value: "provider/new", scope: "global" });
+    expect(result.details).toMatchObject({ ok: true, scope: "global", file: globalFile });
+    expect(result.details.shadowedBy).toBeUndefined();
+    expect((await run({ op: "get", key: "memory.reviewer.model" })).details).toMatchObject({ value: "provider/new", source: "global" });
+  });
+
+  it.each([undefined, "repo"])("keeps scope %s sets local and reports the destination", async (scope) => {
+    const globalBefore = readFileSync(globalFile, "utf8");
+    const result = await run({ op: "set", key: "ui.footer", value: true, scope });
+    expect(read(localFile)).toEqual({ ...localConfig, "ui.footer": true });
+    expect(readFileSync(globalFile, "utf8")).toBe(globalBefore);
+    expect(result.details).toMatchObject({ ok: true, scope: "local", file: localFile });
+    expect(result.details.shadowedBy).toBeUndefined();
+  });
+
+  it.each(["set", "unset"])("rejects unsupported scopes for %s without changing either fixture", async (op) => {
+    const before = [readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")];
+    for (const scope of ["worktree", "project", "local", "globla", "", null]) {
+      const result = await run({ op, key: "ui.footer", value: true, scope });
+      expect(result.isError, String(scope)).toBe(true);
+      expect(JSON.stringify(result)).toMatch(/scope.*global.*repo/i);
+      expect([readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")]).toEqual(before);
+    }
+  });
+
+  it("removes a non-limit key from global without changing local and reports the shadow", async () => {
+    const localBefore = readFileSync(localFile, "utf8");
+    const result = await run({ op: "unset", key: "memory.reviewer.model", scope: "global" });
+    expect(read(globalFile)).toEqual({ "ui.footer": true, "memory.snapshotCharCap": 1000 });
+    expect(readFileSync(localFile, "utf8")).toBe(localBefore);
+    expect(result.details).toMatchObject({ ok: true, op: "unset", scope: "global", file: globalFile, shadowedBy: "local" });
+  });
+
+  it.each([undefined, "repo"])("removes a non-limit key locally with scope %s instead of storing unlimited", async (scope) => {
+    const globalBefore = readFileSync(globalFile, "utf8");
+    const result = await run({ op: "unset", key: "memory.reviewer.model", scope });
+    expect(read(localFile)).toEqual({ "ui.footer": false, "memory.snapshotCharCap": 500 });
+    expect(readFileSync(globalFile, "utf8")).toBe(globalBefore);
+    expect(result.details).toMatchObject({ ok: true, op: "unset", scope: "local", file: localFile });
+    expect((await run({ op: "get", key: "memory.reviewer.model" })).details).toMatchObject({ value: "provider/global", source: "global" });
+  });
+
+  it("removes numeric keys that do not accept unlimited", async () => {
+    writeFileSync(globalFile, JSON.stringify({ "memory.reviewer.timeoutMs": 20000 }));
+    writeFileSync(localFile, JSON.stringify({ "memory.reviewer.timeoutMs": 30000 }));
+    const result = await run({ op: "unset", key: "memory.reviewer.timeoutMs" });
+    expect(result.details.ok).toBe(true);
+    expect(read(localFile)).toEqual({});
+    expect((await run({ key: "memory.reviewer.timeoutMs" })).details).toMatchObject({ value: 20000, source: "global" });
+  });
+
+  it.each([undefined, "repo", "global"])("preserves unlimited snapshot-cap unset behaviour with scope %s", async (scope) => {
+    const result = await run({ op: "unset", key: "memory.snapshotCharCap", scope });
+    const target = scope === "global" ? globalFile : localFile;
+    const untouched = scope === "global" ? localFile : globalFile;
+    expect(read(target)["memory.snapshotCharCap"]).toBe("unlimited");
+    expect(read(untouched)).toEqual(scope === "global" ? localConfig : globalConfig);
+    expect(result.details).toMatchObject({ ok: true, op: "unset", file: target, value: "unlimited" });
+  });
+
+  it("forwards global scope when set unlimited becomes an unset", async () => {
+    const localBefore = readFileSync(localFile, "utf8");
+    const result = await run({ op: "set", key: "memory.snapshotCharCap", value: "unlimited", scope: "global" });
+    expect(read(globalFile)["memory.snapshotCharCap"]).toBe("unlimited");
+    expect(readFileSync(localFile, "utf8")).toBe(localBefore);
+    expect(result.details).toMatchObject({ ok: true, scope: "global", file: globalFile, shadowedBy: "local" });
+  });
+
+  it.each(["global", "repo"])("keeps exec.enforce protected from unset with scope %s", async (scope) => {
+    const before = [readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")];
+    const result = await run({ op: "unset", key: "exec.enforce", scope });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("protected");
+    expect([readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")]).toEqual(before);
+  });
+
+  it.each(["set", "unset"])("rejects missing keys for %s", async (op) => {
+    const before = [readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")];
+    const result = await run({ op, scope: "global", value: true });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toMatch(/key required/i);
+    expect([readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")]).toEqual(before);
+  });
+
+  it.each(["clear", "list", "add", "unknown", ""])("rejects unsupported config op %s without changing either fixture", async (op) => {
+    const before = [readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")];
+    const result = await run({ op, key: "ui.footer", value: true });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toMatch(/op.*get.*set.*unset/i);
+    expect([readFileSync(globalFile, "utf8"), readFileSync(localFile, "utf8")]).toEqual(before);
+  });
+
+  it.each(["routing.tracking", "organism.enabled"])("reports an explicit unset source for absent schema key %s", async (key) => {
+    const result = await run({ op: "get", key });
+    expect(result.details).toHaveProperty("value", undefined);
+    expect(result.details.source).toBe("unset");
+    expect(result.isError).not.toBe(true);
+  });
+
+  it("reports local, global, and default sources alongside effective values", async () => {
+    expect((await run({ key: "ui.footer" })).details).toMatchObject({ value: false, source: "local" });
+    expect((await run({ key: "memory.reviewer.enabled" })).details).toMatchObject({ value: true, source: "default" });
+    const all = (await run({ op: "get" })).details;
+    expect(all.config["ui.footer"]).toBe(false);
+    expect(all.sources).toMatchObject({ "ui.footer": "local", "memory.reviewer.enabled": "default" });
+  });
+
+  it("reports per-role config sources consistently with control models", async () => {
+    writeFileSync(globalFile, JSON.stringify({ "models.defaults": { worker: "provider/global", reviewer: "provider/review" } }));
+    writeFileSync(localFile, JSON.stringify({ "models.defaults": { worker: "provider/local" } }));
+    const result = await run({ key: "models.defaults" });
+    expect(result.details.value).toEqual({ worker: "provider/local", reviewer: "provider/review" });
+    expect(result.details.source).toEqual({ worker: "local", reviewer: "global" });
+    const all = (await run({})).details;
+    expect(all.sources["models.defaults"]).toEqual({ worker: "local", reviewer: "global" });
+    expect((await run({ command: "models" })).details.sources).toEqual(result.details.source);
+  });
+});
 
 describe("spider extension entry", () => {
   for (const layer of ["global", "worktree"] as const) {

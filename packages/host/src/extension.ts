@@ -12,10 +12,10 @@ import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult, markToolCallError, rethrowWithMessage, repairBlankToolResults } from "./result";
-import { controlDoctor, controlConfig, controlMigrate, modelDefaultLayers, configReadErrors, execEnforcement } from "./control";
+import { controlDoctor, controlConfig, controlMigrate, modelDefaultLayers, configValues, execEnforcement } from "./control";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, clearLocalModelDefault, listCatalog } from "./control/models-cmd";
-import { applyConfigEdit } from "./control/config-cmd";
+import { applyConfigEdit, applyConfigUnset } from "./control/config-cmd";
 import { readInjectionSnapshot, type InjectionSnapshot } from "./injection-snapshot";
 import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./routing/index";
 import { ContentStore } from "@spider/context";
@@ -147,13 +147,13 @@ export const SPIDER_PARAMETERS = {
     mark: { type: "string", description: "control upstream-watch: mark a reviewed baseline as '<package> <ref>' (run the watch first to fetch the mirror)." },
     force: { type: "boolean", description: "control skill sub=curate: run even when the organism is disabled, the curator is paused, or the minimum interval has not elapsed (decay can mark skills stale/archived). fetch: skip the cache TTL and refetch." },
     consolidate: { type: "boolean", description: "control skill sub=curate: request aux-model consolidation of eligible agent-created skills when a model and candidates are available; absorbed skills are archived." },
-    op: { type: "string", enum: ["get", "set", "add", "list", "toggle", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set. todo: add/list/toggle/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
+    op: { type: "string", enum: ["get", "set", "unset", "add", "list", "toggle", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set/unset. todo: add/list/toggle/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command (pending|approve|reject|status|forget; consolidate is deprecated -> status + forget)." },
     uuid: { type: "string", description: "memory uuid for approve/reject/forget." },
     // scope / cwd (most actions)
-    scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "Memory scope (default repo). \"Is this true in every repo?\" → **global**; otherwise → **repo**. Worktree/project memory was removed; use repo." },
+    scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "control config set/unset: global writes the global config; repo or omitted writes the worktree-local config. Other config scopes are rejected. Memory scope (default repo). \"Is this true in every repo?\" → **global**; otherwise → **repo**. Worktree/project memory was removed; use repo." },
     cwd: { type: "string", description: "Working-directory override. For run: sets the child's working directory and which project's model defaults apply; the run is still recorded in this session's database (or its /bind target), so kill and message find it without a cwd. Other actions use the override's project database." },
     // search / recall
     query: { type: "string", description: "Search matches any sanitized term. Repo recall ranks all-word matches first (AND), then fills from any-word matches (OR); FTS operators are ignored, and common words are removed unless all terms are common. Global recall matches the whole query as a substring." },
@@ -430,17 +430,24 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
       return report;
     }
     case "config": {
-      const op = (args.op as "get" | "set") ?? "get";
-      if (op === "set" && args.key) {
-        // Protected key: exec.enforce can only be changed by the user via slash command
-        if (String(args.key) === "exec.enforce") {
-          return { error: "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command" };
-        }
-        const r = applyConfigEdit(cwd, String(args.key), String(args.value));
-        return { details: { ok: r.ok, error: r.error, key: args.key, value: args.value } };
+      const op = args.op ?? "get";
+      if (op !== "get" && op !== "set" && op !== "unset") {
+        return { error: `control config: unsupported op '${String(op)}'; supported ops: get/set/unset` };
       }
-      if (args.key) return { details: { key: args.key, value: controlConfig("get", cwd, String(args.key)), errors: configReadErrors(cwd) } };
-      return { details: { config: controlConfig("get", cwd), errors: configReadErrors(cwd) } };
+      if (op === "set" || op === "unset") {
+        if (args.scope !== undefined && args.scope !== "global" && args.scope !== "repo") {
+          return { error: "control config: scope must be global or repo (omit scope for local config)" };
+        }
+        if (!args.key) return { error: `control config ${op}: key required` };
+        const scope = args.scope === "global" ? "global" : "local";
+        const r = op === "unset"
+          ? applyConfigUnset(cwd, String(args.key), scope)
+          : applyConfigEdit(cwd, String(args.key), String(args.value), scope);
+        return { details: r };
+      }
+      const { config, sources, errors } = configValues(cwd);
+      if (args.key) return { details: { key: args.key, value: config[String(args.key)], source: sources[String(args.key)] ?? "unset", errors } };
+      return { details: { config, sources, errors } };
     }
     case "memory": {
       if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };

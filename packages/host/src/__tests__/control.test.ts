@@ -65,6 +65,27 @@ describe("control config", () => {
     } finally { paths.globalRoot = previous; }
   });
 
+  it.each(["local", "global"] as const)("unsets a model id in %s by removing it, not storing unlimited", (scope) => {
+    const dir = configFixture(`unset-model-${scope}`);
+    const previous = paths.globalRoot;
+    paths.globalRoot = join(dir, "global");
+    try {
+      controlConfig("set", dir, "memory.reviewer.model", "provider/global", "global");
+      controlConfig("set", dir, "memory.reviewer.model", "provider/local");
+      controlConfig("unset", dir, "memory.reviewer.model", undefined, scope);
+      const file = join(scope === "global" ? paths.globalRoot : paths.projectRoot(dir), "config.json");
+      expect(JSON.parse(readFileSync(file, "utf8"))).not.toHaveProperty("memory.reviewer.model");
+      expect(controlConfig("get", dir, "memory.reviewer.model")).toBe(scope === "global" ? "provider/local" : "provider/global");
+    } finally { paths.globalRoot = previous; }
+  });
+
+  it.each(["set", "unset"] as const)("rejects an invalid writer scope for %s before creating a config directory", (op) => {
+    const dir = configFixture(`bad-scope-${op}`);
+    const localRoot = paths.projectRoot(dir);
+    expect(() => controlConfig(op, dir, "ui.footer", false, "globla" as never)).toThrow(/scope.*global.*local|scope.*local.*global/i);
+    expect(existsSync(localRoot)).toBe(false);
+  });
+
   it("returns a default when unset, then round-trips a set", () => {
     const dir = configFixture("cfg");
     controlConfig("set", dir, "ui.footer", true);

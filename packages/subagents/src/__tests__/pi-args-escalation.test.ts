@@ -18,7 +18,7 @@ afterAll(() => {
   // Clean up test scratch
   if (scratchRoot) {
     try {
-      fs.rmSync(path.dirname(path.dirname(scratchRoot)), { recursive: true, force: true });
+      fs.rmSync(scratchRoot, { recursive: true, force: true });
     } catch {
       // ignore cleanup failures
     }

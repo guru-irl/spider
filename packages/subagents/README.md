@@ -30,9 +30,8 @@ This package does not own:
 
 - Rendering. `@spider/ui` reads the `runs` and `run_events` tables this
   package writes and owns the agents selector, detail view, and footer.
-- Per-run control. There is no interrupt, resume, or message-by-run-id
-  surface. `packages/host/src/agents/actions.ts` notes this directly and
-  degrades those UI actions to an "unavailable" notice.
+- Per-run UI affordances. Steering is available through `spider message` for
+  running RPC children, but this package does not implement the agents UI.
 - The structured-output capture runtime from upstream pi-subagents. Only the
   two env-var name constants were carried over
   (`STRUCTURED_OUTPUT_SCHEMA_ENV`, `STRUCTURED_OUTPUT_CAPTURE_ENV`); nothing in
@@ -47,7 +46,7 @@ This package does not own:
 | --- | --- |
 | `index.ts` | Barrel export for the package. Defines `registerSubagentActions(host, pi)`, the entry point the host calls to wire up `run`/`message`. |
 | `actions/run.ts` | The `run` action handler. Reads the shape of the arguments and routes to pipeline, chain, parallel, or single dispatch. Builds the background completion notifier. |
-| `actions/message.ts` | The `message` action handler, a thin wrapper over `sendIntercom`. |
+| `actions/message.ts` | Routes live RPC runs through owned pipes or their persisted intercom target; refuses terminal and print runs. Peer messages remain queue-first. |
 | `single.ts` | `runSingle()`: one run, foreground or background, through a `Runner`. |
 | `chain.ts` | `runChain()`: sequential steps whose task text can reference `{task}` and `{previous}`. |
 | `parallel.ts` | `runParallel()`: expands a task list (repeating a task `count` times) and runs the expansion either as a concurrency-limited foreground pool or as fully backgrounded spawns. |
@@ -60,7 +59,9 @@ This package does not own:
 | `child-reporter.ts` | `makeChildReporter`/`attachChildReporter`: the child-side hooks (tool start/end, assistant messages, turns, shutdown) that write `run_events` and finalize the run row from inside the child process. |
 | `pi-args.ts` | `buildPiArgs`/`buildChildSpawnSpec`: builds the full argv and environment for a child `pi` invocation, including the `PI_SUBAGENT_*`/`PI_SPIDER_*` environment variables. |
 | `pi-spawn.ts` | `getPiSpawnCommand`: resolves which command to execute for `pi` itself (an explicit override env var, a resolved Windows CLI script, or `pi` on `PATH`). |
-| `spawn-default.ts` | `defaultSpawner`: the production `Spawner`, backed by `node:child_process.spawn` with `stdio: "ignore"`. |
+| `spawn-default.ts` | `defaultSpawner`: detached process-group spawning with parent-owned RPC pipes, or ignored stdio in print mode. |
+| `rpc-child.ts` | Strict LF-JSONL drainage, prompt and steer acknowledgements, dialog cancellation, settled completion and abort. |
+| `child-intercom.ts` | Resolves enabled installed intercom resources through Pi's public package manager without installing missing packages. |
 | `model-resolve.ts` | `qualifyModelProvider`/`listPiModels`: adds a provider prefix to a bare model id using pi's list of available models. |
 | `intercom.ts` | `sendIntercom`/`mirrorMessage`: sends a message to another session through the host `pi` runtime and records it in `message_mirror`. |
 | `self-name.ts` | `deriveRunName`: a short label for a run, derived from its agent, role, and task. |
@@ -122,6 +123,86 @@ through this package.
 (both databases, the resolved project, `pi`, `@spider/models`) and calls the
 registered `run` handler with it. From there:
 
+### Child lifecycle and steering
+
+`subagents.childMode` defaults to `"rpc"`; `"print"` retains legacy argv for new
+launches. RPC children are named before extension startup, receive exactly one
+prompt over stdin. Prompt acknowledgement has no startup deadline. A child that
+exits before acknowledging fails with its stderr tail. After `agent_settled`,
+in-flight steering is reconciled and any stranded idle queue is discarded before
+stdin closes; no extra prompt is sent to drain it. Outcomes still use
+`genuineCompletion` and `run_events`. A clean exit without a deliverable is not
+success.
+
+The parent owns the pipes. Shutdown and reload still kill children. RPC abort
+clears queued continuations, sends `abort`, closes stdin, and retains the
+process-group kill fallback. Abrupt parent death produces stdin EOF. The reaper
+still collects children whose owning host died. Spawn identity is recorded as pid
+plus start time, which survives Pi's process-title change. Pid-only kill and
+reaper paths signal only a matching identity. The owning session always uses its
+in-process handle, even when capturing a start time failed. A surviving process
+group can still be signalled after its leader exits. Legacy rows use the old command check and fail
+closed with a truthful lost/orphan reason when it cannot confirm the process.
+
+A returned background dispatch is never tied to the parent turn's abort signal,
+in either mode. All tool dispatches are asynchronous; there is no foreground
+abort-signal subscription. Shutdown cancels every registered child, including chain steps
+and pipeline stages, and pending intercom calls. Cancellation reports retain the
+actual cause. Own-session kill completion is already reported by the kill result
+and sends no extra notification unless an undelivered steer needs reporting. Cancellation is persisted before termination so the child's shutdown reporter cannot replace it. A failed owned kill restores the previous row and its route only while the child has not reported exit and the row still holds that kill's cancellation. A late group-termination failure never resurrects a dead run. Shutdown notifications use `nextTurn` without
+triggering a model turn, including during reload. A cancelled chain or pipeline
+does not launch another stage.
+
+Running children can be steered by run ID in their owner session. The RPC reply
+reports "accepted, delivered at the next turn boundary" as soon as Pi replies
+success. The acceptance deadline is cleared at that point, even if the current
+tool call takes minutes. Queue consumption is tracked separately as a later
+`steer_delivery` run event, not proof of model consumption. A previously accepted
+steer stranded at settlement or exit gets a truthful non-delivery event and a
+summary in the final result and completion notification. If pi acknowledges the
+steer only after settlement, the message tool refuses it as finished, not delivered.
+It does not hang the run. Other sessions use the persisted
+intercom name when that child launched with enabled intercom. A global
+`run_routes` locator points to the owner's runs DB for cross-worktree lookup;
+it stores no transport messages and is deleted when the run finalizes. Without
+intercom, foreign steering refuses. Optional package resolution failures degrade
+to a cross-session-steering warning on the dispatch result instead of failing launch.
+Terminal, queued, paused and print runs also refuse. Child orchestration remains
+blocked. RPC children load intercom to receive steering but are launched with
+`--exclude-tools intercom,contact_supervisor`. The installed package's other
+commands are a TUI-only overlay, an identity snippet and alias changes; they do
+not initiate contact in RPC. Its bus relays require an explicit extension event,
+not an automatic completion send. Automatic presence and inbound receipts remain;
+the busy non-UI auto-reply branch is unreachable in RPC. Child escalations stay on
+`run_events`, not `contact_supervisor`.
+
+RPC dialogs are cancelled immediately and recorded as warnings. Fire-and-forget
+UI requests are ignored. No project trust override is added: print and RPC use
+Pi's non-interactive trust resolution. Default RPC mode requires Pi 0.85.1 or
+later for `--exclude-tools`, `--name`, `agent_settled` and `clear_queue`; these
+features were verified in 0.85.1 and 0.87.0. Older child binaries automatically
+use print mode, without an orchestrator target. The compatibility reason appears in
+run tool details, run events and completion output, never the persisted result or
+chain/pipeline handoff. Metadata is read from the resolved PATH binary or
+`PI_SUBAGENT_PI_BINARY`, cached by resolved path plus file mtime and size,
+and never obtained by launching pi. PATH uses the first executable file, skipping
+directories. CLI or package metadata upgrades invalidate the cache. Unknown
+versions keep RPC with a warning in run events and tool details only, not the
+completion notification.
+
+At activation the child atomically claims its run's pid (and start time when the
+column exists). Every reporter write requires ownership by this process; any
+mismatch permanently disables that reporter. Spider-owned commands strip
+`PI_SUBAGENT_RUN_ID`, `PI_SPIDER_DB_PATH`, `PI_SPIDER_SESSION_ID`,
+`PI_SUBAGENT_CHILD_AGENT`, `PI_SUBAGENT_CHILD_INDEX` and pi-intercom identity
+and orchestration variables, so a command cannot act as its parent's reporter
+or intercom peer. They keep `PI_SUBAGENT_CHILD=1`, so a pi started from a child's
+commands runs in child mode without the agents UI, organism, learner or
+run/message/kill capabilities. Long-lived processes those commands start, such
+as tmux or an editor, also inherit this flag and pass it to any pi they launch.
+Run `unset PI_SUBAGENT_CHILD` in that shell before starting pi to get a top-level
+session.
+
 ### Single dispatch
 
 The default when the arguments name neither `pipeline`, `chain`, nor `tasks`.
@@ -156,12 +237,13 @@ Given `pipeline: [...]`, `actions/run.ts` builds a `PipelineCoordinator` and
 calls `start()`, which spawns stage 0 through `Runner.runAsync` and
 subscribes to `status` events on the run event bus for the most recently
 spawned run. When that run reaches a terminal status (`done`, `failed`, or
-`cancelled`), `onRunTerminal` reads its result, expands the next stage's
+`cancelled`), cancellation ends the pipeline. For `done` and `failed`,
+`onRunTerminal` reads its result and expands the next stage's
 `task` template (`{task}`, `{previous}`, and `{handoff}` all resolve to the
 prior stage's result), spawns the next stage, records a `handoff` row in
-`run_events` linking the two runs, and sends an intercom message to a session
-name derived from the next stage's role or agent and its run id, carrying
-the prior result as the message body. This repeats until the last stage
+`run_events` linking the two runs. The expanded initial task is the handoff;
+no automatic broker message duplicates it in the next child's conversation.
+This repeats until the last stage
 finishes, at which point the coordinator unsubscribes. No stage is awaited
 synchronously by the caller. Because each stage is also spawned through
 `Runner.runAsync`, every stage additionally triggers its own completion
@@ -177,7 +259,7 @@ schema also documents an `{outputs.<as>}` template variable and a per-stage
 
 ### Model resolution
 
-Before spawning, `actions/run.ts` calls `listPiModels(ctx.pi)` for pi's
+Before spawning, `actions/run.ts` calls `listPiModels(ctx.modelRegistry)` for pi's
 current list of available models, then passes any bare model id (one with no
 `/`) through `qualifyModelProvider`. That function matches the id against the
 list and, if a match is marked available, prefixes the id with that match's
@@ -186,9 +268,8 @@ provider (for example `claude-sonnet-5` becomes
 available for that model). An id that already contains `/` passes through
 unchanged. This step exists because a bare id passed straight to a child pi
 process resolves to that family's default provider, which may not be
-authenticated in the child's environment; since the default spawner uses
-`stdio: "ignore"`, a child that fails at startup for a missing key reports
-"done" with no output, so the failure is otherwise silent. A run with no
+authenticated in the child's environment. Startup failure is finalized as failed;
+exit zero alone is never treated as proof of a deliverable. A run with no
 explicit model inherits the parent's current model and thinking level
 (`ctx.model.id`, split into base model and thinking suffix by
 `stripThinkingSuffix`/`thinkingFromModel`), so a dispatched run is never
@@ -200,35 +281,36 @@ missing that information in the UI.
 spawned child's process exits, whether the child's own `session_shutdown`
 hook finalized the run row first or the parent had to finalize it because the
 child never reached that hook (a headless or killed process). `actions/run.ts`
-supplies that callback as `makeAsyncNotifier`, which reads the child's most
-recent assistant message from `run_events` (`latestRunOutput`, falling back
-to the raw result string if there is no recorded message), sends the parent
+supplies that callback as `makeAsyncNotifier`, which prefers the finalized run
+result (`latestRunOutput`, falling back to genuine recorded completion), sends the parent
 session a message with `customType: "spider.subagent_done"` carrying a short
 headline (the run's name, agent, and status) followed by that output text,
-and asks pi to trigger the next turn (`{ triggerTurn: true }`) so an idle
-parent session continues the conversation on its own instead of waiting for
-the user. It also raises a short human-facing notification, using severity
-`error` for a failed run and `info` otherwise. In production, the run's
-`result` string itself is rarely populated: `defaultSpawner`'s `wait()`
-resolves only an exit code, and the child's own `onShutdown` call passes no
-result text either, so the output shown in the completion report almost
-always comes from the child's last recorded assistant message rather than
-from a value threaded through the process exit path.
+and normally asks pi to trigger the next turn (`{ triggerTurn: true }`).
+Session-shutdown cancellations instead queue with `{ triggerTurn: false,
+deliverAs: "nextTurn" }`, so they cannot start a new turn. Own-session kills
+suppress redundant completion notifications unless an undelivered steer needs reporting. It also raises a short human-facing notification, using severity
+`error` for a failed run and `info` otherwise. The child reporter or parent
+finalizer populates the run result from genuine recorded completion, not from
+an RPC command acknowledgement. Cancelled notifications use the cancellation
+cause rather than an earlier assistant reply. Launch-time persistence failures
+kill any spawned child and finalize failed; they do not leave a running row with
+no owner identity.
 
-### Intercom handoff
+### Intercom transport
 
-`sendIntercom(pi, globalDb, { to, message, ... })` is the underlying primitive
-for both the `message` action and pipeline handoff. It emits a
-`subagent:result-intercom` event carrying a request id, then waits (10
-seconds by default, or `timeoutMs`) for a matching
-`subagent:result-intercom-delivery` event. Whether or not a reply arrives in
-time, the message is recorded in the `message_mirror` table; the returned
-`{ delivered, error }` reflects only whether a delivery confirmation was
-seen. The `message` action is this primitive with no other logic attached.
-Pipeline handoff uses the same primitive to notify the next stage's session
-name after that stage's process has already been spawned directly, so the
-intercom send there is a handoff record for `message_mirror`, not the
-mechanism that starts the next stage's child process.
+`sendIntercom(pi, globalDb, { to, message, ... })` is the queue-first primitive
+for peer-session messages and foreign-session RPC steering. It records the
+message in `message_mirror` before emitting `subagent:result-intercom`, then
+waits (10 seconds by default, or `timeoutMs`) for the matching delivery event.
+A positive response proves broker acceptance, not recipient acknowledgement
+or model consumption. Without confirmation, peer messages remain pending. A
+foreign-run steer instead returns an error and removes its undelivered mailbox
+row, since a one-shot child's name is not a resumable peer mailbox.
+
+Owner-session RPC steering bypasses this primitive and uses the live pipe.
+Pipeline continuation also does not use it: the prior result is already in
+the next child's one initial prompt. `handoff: "intercom"` remains a
+compatibility spelling, not an extra conversational message.
 
 ## Notes
 
@@ -251,20 +333,13 @@ mechanism that starts the next stage's child process.
   separate `PI_SUBAGENT_FANOUT_CHILD` flag is threaded to the child based on
   whether the parent declared the `subagent` tool for it, independent of that
   guard.
-- Task text over 8000 characters is written to a file under an explicit
-  scratch root and referenced from argv as `@<path>` instead of being inlined.
-  `buildPiArgs` also has a separate file-spill path for a system prompt
-  string that applies regardless of length, but `buildChildSpawnSpec` (the
-  only caller of `buildPiArgs` inside this package) never supplies a system
-  prompt today, so that path is not currently exercised in production.
-  Either spill throws if no scratch root is supplied, so a caller cannot
-  fall back to the system temp directory.
-- The registered `SPIDER_PARAMETERS` schema (`packages/host/src/extension.ts`)
-  has no `handoff` field. `RunPipelineArgs.handoff` is typed as `"intercom" |
-  "wait"`, and `actions/run.ts` defaults it to `"intercom"`, but
-  `PipelineCoordinator` never reads `args.handoff` at all. Every pipeline
-  runs the same way (spawn the next stage directly, then send an intercom
-  notification) regardless of which value is passed.
+- RPC task text is sent over stdin, including oversized tasks. Print-mode task
+  text over 8000 characters is written under an explicit scratch root and
+  referenced as `@<path>` in argv. Both modes retain the scratch-backed child
+  system prompt. File spill never falls back to the system temp directory.
+- `RunPipelineArgs.handoff` accepts `"intercom" | "wait"` for compatibility.
+  The coordinator always spawns a fresh continuation child with the prior
+  result in its task. Neither spelling adds a blocking wait or broker injection.
 - Foreground runs are tracked by `RunEventTailer` as well as background ones.
   A child process writes its own `run_events` rows from inside itself
   (through `attachChildReporter`), so tailing is what makes those rows reach

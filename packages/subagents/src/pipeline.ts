@@ -10,9 +10,9 @@ import type { PipelineStage, RunPipelineArgs } from "./schemas";
  * Spawns stage 0 async, then advances stage-by-stage when the previous stage's run
  * reaches a terminal status on the bus: records a `handoff` run_event edge and
  * spawns a fresh child pre-wired with the prior result as {previous}/{handoff}.
- * `handoff:"intercom"` remains accepted for compatibility, but a one-shot child
- * loads only spider, not the intercom extension. Its task is the actual handoff;
- * a broker message would only create an unread mailbox row. No blocking wait.
+ * `handoff:"intercom"` remains accepted for compatibility. The expanded task is
+ * the actual handoff; a duplicate broker message is not needed. Cancellation
+ * ends the pipeline without launching another stage. No blocking wait.
  *
  * NOTE: `stage.count > 1` fan-out (advance only when ALL N terminal) and
  * `wakeOn:"accepted"` (acceptance ledger, Phase 8) are deferred — the single-worker
@@ -63,7 +63,7 @@ export class PipelineCoordinator {
   onRunTerminal(runId: string): void {
     const finished = this.deps.store.get(runId);
     const nextIndex = this.stageIndex + 1;
-    if (!finished || nextIndex >= this.stages.length) { this.dispose(); return; }
+    if (!finished || finished.status === "cancelled" || nextIndex >= this.stages.length) { this.dispose(); return; }
     const previous = finished.result ?? "";
     const nextStage = this.stages[nextIndex];
     // Spawn first so the durable handoff edge can identify the new process.

@@ -1,4 +1,5 @@
 import { openDbAt, type Db } from "@spider/db-core";
+import { processStartTime } from "./process-identity";
 import { RunStore, type RunRow } from "./run-store";
 import { emitIntent, emitToolResult, emitStatus, emitMessage, emitEscalation } from "./run-events";
 import { thinkingFromModel, stripThinkingSuffix } from "./pi-args";
@@ -79,49 +80,21 @@ function extractAssistantText(msg: any): string {
 
 export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: string }) {
   const store = new RunStore(db);
-  /**
-   * Ownership guard for INCIDENT-premature-run-finalization.md — shared by EVERY
-   * mutating method below, not only `onShutdown`. `runs.pid` is written by the PARENT
-   * synchronously right after spawning the real child (`runner.ts` sets it immediately
-   * once `spawn()` resolves a pid, long before the child's own extensions could possibly
-   * finish loading), so by the time a genuine child reaches ANY event here a foreign
-   * process cannot yet have beaten it to a matching pid.
-   *
-   * Gating `onShutdown` alone (the original fix) left every OTHER path open:
-   * `attachChildReporter` performs no ownership check of its own, so a pid-MISMATCHED
-   * process — e.g. a vitest worker spawned by a subagent's own `npm test` verification
-   * gate, which INHERITS PI_SUBAGENT_CHILD/PI_SPIDER_DB_PATH/PI_SUBAGENT_RUN_ID — could
-   * still attach and call `onTurn`/`onModel` (rewriting a live run's `step_count`/`model`)
-   * or `onMessage` (injecting a `message` run_event). Because `genuineCompletion`
-   * (completion-output.ts) takes the MOST RECENT `message` run_event, the genuine owner
-   * would then hand out the foreign process's mid-stream sentence as its own final
-   * result — the incident's exact symptom, reproduced on a row whose pid is correct.
-   *
-   * The row is re-read FRESH on every call (never a decision cached at attach time), so a
-   * pid recorded by the parent AFTER this reporter attached (a startup race) still closes
-   * the window on the very next event, not only at shutdown.
-   *
-   * NULL-pid / no-row policy: ACCEPT (do not gate on it). Rows spawned via the async path
-   * (`runner.ts`'s `runAsync` — the ACTUAL path exploited by this incident; the real
-   * leaked rows' PIDs, 49643/49644, were live OS pids, never NULL) always have `pid` set
-   * immediately after spawn, well before their own child could plausibly reach any event,
-   * so that is the case that matters in production and it is fully covered below.
-   * Refusing on NULL/missing was considered and rejected: `runForeground`-spawned rows
-   * (single sync mode, each chain step, parallel's foreground fallback) never get a `pid`
-   * at all and rely on the child's own reporter to self-report exactly like this; and it
-   * would fail a pre-existing, intentionally in-process fixture that already relies on
-   * this attach-without-a-recorded-pid shape (`child-terminal-message.test.ts`, out of
-   * scope for this incident).
-   *
-   * What is ACTUALLY unprotected (this replaces a narrower, materially incomplete claim
-   * that used to live only on `onShutdown` and implied NULL-pid rows were the sole gap):
-   * a row that no process has EVER recorded a pid for — a raw/manual insert, or any
-   * event fired in the narrow window before a pid lands at all. That is exactly the
-   * NULL-pid set above, nothing more — every row that DOES carry a live, mismatched pid
-   * is now refused on every write this reporter can make, not only on finalize.
-   */
+  // Claim legacy NULL-pid rows atomically before any event can be written.
+  // A grandchild with inherited env cannot replace its parent's existing pid.
+  let disabled = false;
+  try {
+    const hasStart = (db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).some(c => c.name === "pid_start_time");
+    const claim = hasStart
+      ? db.prepare("UPDATE runs SET pid=?, pid_start_time=COALESCE(?,pid_start_time) WHERE id=? AND (pid IS NULL OR pid=?)")
+          .run(process.pid, processStartTime(process.pid), ctx.runId, process.pid)
+      : db.prepare("UPDATE runs SET pid=? WHERE id=? AND (pid IS NULL OR pid=?)")
+          .run(process.pid, ctx.runId, process.pid);
+    disabled = claim.changes === 0;
+  } catch { disabled = true; }
   function isForeignRow(row: RunRow | undefined): boolean {
-    return !!row && row.pid !== null && row.pid !== process.pid;
+    if (!row || row.pid !== process.pid) disabled = true;
+    return disabled;
   }
   return {
     onToolStart(tool: string, summary?: string, payload?: unknown): void {
@@ -168,12 +141,8 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     },
     onShutdown(status: "done" | "error" | "interrupted", result?: string): void {
       const before = store.get(ctx.runId);
-      if (!before || ["done", "failed", "cancelled"].includes(before.status)) return;
-      // Same ownership rule as every write above — applied to the row already fetched for
-      // the terminal-status check, so this is not a second read or a second source of
-      // truth. See `isForeignRow`'s doc comment (above, in this function) for the full
-      // incident writeup and the NULL-pid policy.
       if (isForeignRow(before)) return;
+      if (!before || ["done", "failed", "cancelled"].includes(before.status)) return;
       let runStatus: "done" | "failed" | "cancelled" = status === "done" ? "done" : status === "error" ? "failed" : "cancelled";
       let finalResult = result;
       // An explicit, non-blank result is a direct claim from the caller — trust it as-is

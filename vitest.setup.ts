@@ -40,6 +40,10 @@ const ownedPidScratch = Object.values(pidScratchRoots)
 mkdirSync(testGlobalRoot, { recursive: true });
 process.env.SPIDER_TEST_FIXTURE_CHECKOUT = checkout;
 process.env.SPIDER_GLOBAL_ROOT = testGlobalRoot;
+// Pi's public trust reader takes a filesystem lock. Its agent directory must be
+// isolated before any test module imports Pi or resolves optional packages.
+process.env.PI_CODING_AGENT_DIR = resolve(testGlobalRoot, "pi-agent");
+mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 
 // File-level afterAll hooks may throw or time out, stopping later afterAll hooks.
 // This wrapper runs its finally even if the file's own teardown fails.

@@ -19,7 +19,7 @@ import {
   type RuntimeMap,
   type Language,
 } from "./runtime";
-import { paths } from "@spider/db-core";
+import { paths, commandEnv } from "@spider/db-core";
 import { tailLogs, type LogTail } from "./log-tail";
 import {
   newJobId,
@@ -364,7 +364,7 @@ export function createSettleGuard(): () => boolean {
 function killTree(proc: ReturnType<typeof spawn>): void {
   if (isWin && proc.pid) {
     try {
-      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
+      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe", env: commandEnv() });
     } catch { /* already dead */ }
   } else if (proc.pid) {
     try {
@@ -672,6 +672,7 @@ export class PolyglotExecutor {
     // caller is fine with a long-running binary afterwards).
     try {
       execFileSync(this.#runtimes.rust!, [srcPath, "-o", binPath], {
+        env: commandEnv(),
         cwd,
         timeout: timeout === undefined ? 60_000 : Math.min(timeout, 60_000),
         encoding: "utf-8",
@@ -1427,7 +1428,7 @@ export class PolyglotExecutor {
       }
     }
 
-    return env;
+    return commandEnv(env) as Record<string, string>;
   }
 
   #wrapWithFileContent(

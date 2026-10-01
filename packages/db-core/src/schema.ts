@@ -1,4 +1,5 @@
-// Canonical two-tier schema — column/table names are canonical (plans/README.md).
+// Canonical three-tier schema — column/table names are canonical (plans/README.md).
+// Fresh v13 DBs include repo skill review (v12), global run routes and worktree child columns (v13).
 // Do not rename. `vectors` (vec0) is created at runtime by Db.loadVec(), not here.
 
 export const GLOBAL_SCHEMA = `
@@ -44,6 +45,12 @@ CREATE TABLE IF NOT EXISTS insights (
 
 CREATE TABLE IF NOT EXISTS model_stats (
   id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_routes (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  db_path TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS session_bindings (
@@ -145,7 +152,10 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at INTEGER, ended_at INTEGER,
   step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
   result TEXT,
-  pid INTEGER, host_pid INTEGER
+  pid INTEGER, host_pid INTEGER,
+  child_mode TEXT NOT NULL DEFAULT 'print',
+  intercom_session TEXT,
+  pid_start_time TEXT
 );
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,

@@ -1,0 +1,118 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { openDbAt, type Db } from "@spider/db-core";
+import { makeMessageHandler } from "../actions/message";
+import { registerChild, teardownAll } from "../coordinators";
+import { RunStore } from "../run-store";
+import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
+const dbs: Db[] = [], roots: string[] = [];
+afterEach(() => { vi.useRealTimers(); teardownAll(); for (const db of dbs.splice(0)) db.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+function fixture(mode: "rpc" | "print" = "rpc", intercom = false) {
+  const scratch = resolve(".spider/scratch/rpc-message"); mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(join(scratch, "case-")); roots.push(root);
+  const db = openDbAt(join(root, "project.db"), "worktree"), globalDb = openDbAt(join(root, "global.db"), "global"); dbs.push(db, globalDb);
+  const store = new RunStore(db);
+  const { id } = store.create({ sessionId: "owner", agent: "worker", name: "task" }); store.start(id);
+  // Launch capability is durable, not guessed from today's settings or installed packages.
+  expect(typeof (store as any).setLaunch).toBe("function");
+  (store as any).setLaunch(id, { childMode: mode, intercomSession: intercom ? "task-child-unique" : undefined });
+  const routed: any[] = [];
+  const events = new EventEmitter();
+  events.on(SUBAGENT_RESULT_INTERCOM_EVENT, p => { routed.push(p); events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, { requestId: p.requestId, delivered: true }); });
+  const pi = { events: { on: (n: string, f: (...args: any[]) => void) => { events.on(n, f); return () => { events.off(n, f); }; }, emit: (n: string, p: unknown) => events.emit(n, p) } };
+  return { db, globalDb, store, id, routed, pi, root, dbPath: join(root, "project.db") };
+}
+describe("steerable child message routing", () => {
+  it("uses the owner's live pipe, records a steer, and calls acceptance queued rather than delivered", async () => {
+    const f = fixture(); const stdin: string[] = [];
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async (message: string) => { stdin.push(message); return { accepted: true }; } } as any);
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "owner" });
+    expect(result.isError).toBe(false);
+    expect(result.details).toMatchObject({ accepted: true, delivered: false, delivery: "child-accepted" });
+    expect(result.content).toMatch(/accepted by child/i);
+    expect(stdin).toEqual(["correction"]);
+    expect(f.routed).toHaveLength(0);
+    expect(f.db.prepare("SELECT type FROM run_events WHERE run_id=? AND type='steer'").all(f.id)).toHaveLength(1);
+  });
+  it("distinguishes a late child queue acknowledgement from usable steering acceptance", async () => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async () => ({ accepted: false, childAccepted: true, error: "Run settled; any remaining queue was discarded. Model consumption is unconfirmed." }) });
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "owner" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/acknowledged/i);
+    expect(result.content).toMatch(/settled|discarded/);
+    expect(result.details).toMatchObject({ childAccepted: true, delivered: false, queued: false });
+  });
+  it("routes a foreign run only to its persisted intercom name without claiming model receipt", async () => {
+    const f = fixture("rpc", true);
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "peer" });
+    expect(result.isError).toBe(false);
+    expect(f.routed.map(r => r.to)).toEqual(["task-child-unique"]);
+    expect(result.details).toMatchObject({ delivery: "broker-accepted", recipientAcknowledged: false });
+  });
+  it("routes a run from another worktree through its owner's persisted capability", async () => {
+    const f = fixture("rpc", true);
+    f.globalDb.exec("CREATE TABLE IF NOT EXISTS run_routes (run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, db_path TEXT NOT NULL)");
+    f.globalDb.prepare("INSERT INTO run_routes VALUES (?,?,?)").run(f.id, "owner", f.dbPath);
+    const peerDb = openDbAt(join(f.root, "peer.db"), "worktree"); dbs.push(peerDb);
+    const result = await makeMessageHandler()({ to: f.id, message: "cross-worktree correction" }, { ...f, db: peerDb, sessionId: "peer" });
+    expect(result.isError).toBe(false);
+    expect(f.routed.map(r => r.to)).toEqual(["task-child-unique"]);
+    expect(f.db.prepare("SELECT type FROM run_events WHERE run_id=? AND type='steer'").all(f.id)).toHaveLength(1);
+  });
+  it("reports a broker-rejected foreign steer as not delivered, not a deferred success", async () => {
+    const f = fixture("rpc", true);
+    const events = new EventEmitter();
+    events.on(SUBAGENT_RESULT_INTERCOM_EVENT, p => events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, { requestId: p.requestId, delivered: false, error: "Child disconnected" }));
+    const pi = { events: { on: (n: string, fn: any) => { events.on(n, fn); return () => events.off(n, fn); }, emit: (n: string, p: any) => events.emit(n, p) } };
+    const result = await makeMessageHandler()({ to: f.id, message: "late" }, { ...f, pi, sessionId: "peer" });
+    expect(result.isError).toBe(true);
+    expect(result.details).toMatchObject({ delivered: false, queued: false });
+    expect(result.content).toMatch(/unconfirmed/i);
+    expect(f.globalDb.prepare("SELECT id FROM message_mirror WHERE delivered_at IS NULL").all()).toEqual([]);
+  });
+  it("reports a broker timeout as unconfirmed without claiming non-delivery", async () => {
+    vi.useFakeTimers(); const f = fixture("rpc", true);
+    const pi = { events: { on: () => () => {}, emit() {} } };
+    const pending = makeMessageHandler()({ to: f.id, message: "correction", timeoutMs: 10 }, { ...f, pi, sessionId: "peer" });
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/unconfirmed/i);
+    expect(result.content).not.toMatch(/was not delivered/i);
+    expect(f.globalDb.prepare("SELECT id FROM message_mirror WHERE delivered_at IS NULL").all()).toEqual([]);
+  });
+  it("reports a peer broker timeout as queued and unconfirmed", async () => {
+    vi.useFakeTimers(); const f = fixture(); const pi = { events: { on: () => () => {}, emit() {} } };
+    const pending = makeMessageHandler()({ to: "other-session", message: "hello", timeoutMs: 10 }, { ...f, pi, sessionId: "peer" });
+    await vi.advanceTimersByTimeAsync(100); const result = await pending;
+    expect(result.isError).toBe(false); expect(result.details.queued).toBe(true);
+    expect(result.content).toMatch(/unconfirmed/i);
+    expect(result.content).not.toMatch(/not delivered|use a peer session/i);
+  });
+  it("preserves an accepted steer when event persistence fails", async () => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async () => ({ accepted: true }) });
+    const db = { ...f.db, prepare(sql: string) { if (sql.includes("INSERT INTO run_events")) throw new Error("fixture event write failed"); return f.db.prepare(sql); } };
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, db, sessionId: "owner" });
+    expect(result.isError).toBe(false);
+    expect(result.details.accepted).toBe(true);
+    expect(result.details.warning).toMatch(/event.*record|record.*event/i);
+  });
+  it("truthfully refuses foreign RPC runs without intercom", async () => {
+    const f = fixture();
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "peer" });
+    expect(result.isError).toBe(true); expect(result.content).toMatch(/owned by session owner/i); expect(result.content).toContain("pi-intercom");
+    expect(f.routed).toHaveLength(0);
+  });
+  it.each(["done", "failed", "cancelled", "paused", "queued", "print"])("refuses %s runs without writing a steer", async status => {
+    const f = fixture(status === "print" ? "print" : "rpc", true);
+    if (status !== "print") f.db.prepare("UPDATE runs SET status=? WHERE id=?").run(status, f.id);
+    const writes: string[] = [];
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async (message: string) => { writes.push(message); return { accepted: true }; } } as any);
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "owner" });
+    expect(result.isError).toBe(true); expect(writes).toHaveLength(0); expect(f.routed).toHaveLength(0);
+  });
+});

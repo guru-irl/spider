@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist";
 import { getPiSpawnCommand } from "./pi-spawn";
+import { piRpcCompatibility } from "./pi-version";
 
 // Vendored locally from pi-subagents' structured-output module: these are just
 // the two env-name constants (the full structured-output runtime is not ported).
@@ -38,6 +39,8 @@ export const SPIDER_SESSION_ID_ENV = "PI_SPIDER_SESSION_ID";
 interface BuildPiArgsInput {
 	baseArgs: string[];
 	task: string;
+	/** RPC sends the task over stdin, never as a positional argument. */
+	rpc?: boolean;
 	sessionEnabled: boolean;
 	sessionDir?: string;
 	sessionFile?: string;
@@ -185,7 +188,9 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		args.push(input.systemPromptMode === "replace" ? "--system-prompt" : "--append-system-prompt", promptPath);
 	}
 
-	if (input.task.length > TASK_ARG_LIMIT) {
+	if (input.rpc) {
+		// The parent sends exactly one RPC prompt after spawn.
+	} else if (input.task.length > TASK_ARG_LIMIT) {
 		if (!tempDir) {
 			tempDir = mkdtempInScratch(input.scratchRoot);
 		}
@@ -237,6 +242,11 @@ export interface ChildSpawnSpec {
 	env: Record<string, string>;
 	cwd: string;
 	sessionFile: string;
+	childMode?: "rpc" | "print";
+	prompt?: string;
+	onRpcEvent?: (event: Record<string, any>) => void;
+	/** Compatibility fallback reason, persisted by the runner in run details. */
+	launchWarning?: string;
 }
 
 /**
@@ -264,6 +274,9 @@ export interface BuildChildSpawnSpecInput {
 	sessionId: string;
 	agent: string;
 	role?: string;
+	name?: string;
+	childMode?: "rpc" | "print";
+	intercomExtensions?: string[];
 	task: string;
 	model?: string;
 	thinking?: string;
@@ -301,14 +314,22 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	}
 
 	const isFork = input.context === "fork";
-	// The child loads ONLY the spider bundle (child-mode → run-event reporter); disable
-	// pi's extension auto-discovery so nothing else is pulled in.
+	// Disable extension discovery. Load the spider reporter plus only explicitly
+	// resolved, enabled intercom resources for RPC children.
 	const spiderExtension = input.childExtensionPath ?? fileURLToPath(import.meta.url);
 	// --session is threaded through baseArgs (not the sessionFile input) so
 	// buildPiArgs does not hard-mkdir the session dir; buildChildSpawnSpec owns
 	// that best-effort mkdir above.
-	const { args, env: builtEnv, tempDir } = buildPiArgs({
-		baseArgs: ["--mode", "json", "-p", "--session", sessionFile],
+	const spawnCommand = getPiSpawnCommand([]);
+	const compatibility = input.childMode === "print" ? undefined : piRpcCompatibility(spawnCommand, cwd);
+	const launchWarning = compatibility?.warning;
+	const childMode = compatibility?.fallback ? "print" : input.childMode ?? "rpc";
+	const sessionName = `${input.name ?? input.agent}-${input.runId.slice(0, 8)}`;
+	const { args, env: builtEnv } = buildPiArgs({
+		baseArgs: childMode === "print"
+			? ["--mode", "json", "-p", "--session", sessionFile]
+			: ["--mode", "rpc", "--session", sessionFile, "--name", sessionName, "--exclude-tools", "intercom,contact_supervisor"],
+		rpc: childMode === "rpc",
 		task: input.task,
 		sessionEnabled: true,
 		forkFromSessionId: isFork ? input.parentSessionId : undefined,
@@ -321,14 +342,13 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		childIndex: input.childIndex,
 		scratchRoot: input.scratchRoot,
 		dbPath: input.dbPath,
-		extensions: [spiderExtension],
+		extensions: [spiderExtension, ...(childMode === "rpc" ? input.intercomExtensions ?? [] : [])],
 		intercomSessionName: input.intercomSessionName,
-		orchestratorIntercomTarget: input.orchestratorTarget,
+		orchestratorIntercomTarget: childMode === "rpc" ? input.orchestratorTarget : undefined,
 		systemPrompt: composeChildSystemPrompt(),
 	});
 
-	const { command, args: spawnArgs } = getPiSpawnCommand(args);
-	const argv = [command, ...spawnArgs];
+	const argv = [spawnCommand.command, ...spawnCommand.args, ...args];
 
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(builtEnv)) {
@@ -340,12 +360,20 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	env[SUBAGENT_RUN_ID_ENV] = input.runId;
 	env[SUBAGENT_CHILD_AGENT_ENV] = input.agent;
 	env[SUBAGENT_CHILD_INDEX_ENV] = String(input.childIndex);
-	if (input.orchestratorTarget) {
+	if (childMode === "rpc" && input.orchestratorTarget) {
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget;
 	}
 	if (input.intercomSessionName) {
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = input.intercomSessionName;
 	}
 
-	return { argv, env, cwd, sessionFile };
+	if (childMode === "rpc" && input.intercomExtensions?.length) {
+		env.PI_INTERCOM_STABLE_ID = `spider-${input.runId}`;
+		env.PI_INTERCOM_SESSION_ID = `spider-${input.runId}`;
+		env.PI_SUBAGENT_SUPERVISOR_CHANNEL_DIR = "";
+		env.PI_SUBAGENT_ORCHESTRATOR_SESSION_ID = input.orchestratorTarget ?? input.sessionId;
+		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
+		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
+	}
+	return { argv, env, cwd, sessionFile, childMode, ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${input.task}` } : {}) };
 }

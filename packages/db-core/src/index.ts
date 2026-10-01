@@ -13,3 +13,5 @@ export type { ProjectInfo } from "./registry";
 export { bindSession, unbindSession, getBinding } from "./bindings";
 export { appendRunEvent, bus, appendEvent, listEvents, eventCountsByTool } from "./events";
 export type { RunEvent, EventRow } from "./events";
+
+export { commandEnv } from "./command-env";

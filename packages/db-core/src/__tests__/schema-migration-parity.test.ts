@@ -17,7 +17,8 @@ import { mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDbAt } from "../registry";
-import { SCHEMA_VERSION } from "../migrate";
+import { migrate, SCHEMA_VERSION } from "../migrate";
+import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "../schema";
 import DatabaseConstructor from "better-sqlite3";
 
 const scratch = join(
@@ -53,6 +54,96 @@ function tablesOf(dbPath: string): string[] {
 }
 
 const TIERS = ["global", "repo", "worktree"] as const;
+
+function schemaShape(db: ReturnType<typeof openDbAt>) {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>;
+  return tables.map(({ name }) => ({ name, columns: db.prepare(`PRAGMA table_info(${name})`).all() }));
+}
+
+// Deployed main v12 has skill review tables, but no routes or child columns.
+// These fixtures use the main DDL shape, not a DB already migrated by this branch.
+const MAIN_SCHEMAS = {
+  global: GLOBAL_SCHEMA.replace(/CREATE TABLE IF NOT EXISTS run_routes \([\s\S]*?\);/, ""),
+  worktree: WORKTREE_SCHEMA.replace(/,\n  child_mode TEXT NOT NULL DEFAULT 'print',\n  intercom_session TEXT,\n  pid_start_time TEXT/, ""),
+  repo: REPO_SCHEMA,
+};
+
+describe("v13 fresh and deployed-main migration parity", () => {
+  it.each(TIERS)("fresh %s DB is v13", scope => {
+    const db = openDbAt(join(scratch, `v13-fresh-${scope}.db`), scope);
+    try { expect(Number(db.pragma("user_version"))).toBe(13); }
+    finally { db.close(); }
+  });
+
+  it.each(TIERS.flatMap(scope => [11, 12].map(version => ({ scope, version }))))(
+    "$scope main v$version reaches v13 with fresh schema and a no-op second migration", ({ scope, version }) => {
+      const fresh = openDbAt(join(scratch, `fresh-${scope}-${version}.db`), scope);
+      const expected = schemaShape(fresh); fresh.close();
+      const p = join(scratch, `main-${scope}-${version}.db`);
+      const raw = new DatabaseConstructor(p);
+      raw.exec(MAIN_SCHEMAS[scope]);
+      if (scope === "repo" && version === 11) raw.exec("ALTER TABLE skills DROP COLUMN review_reason; DROP TABLE skill_review_queue; DROP TABLE skill_review_results; DROP TABLE skill_review_lock");
+      if (scope === "worktree") raw.exec("INSERT INTO runs (id, session_id, agent, status) VALUES ('legacy', 'owner', 'worker', 'running')");
+      if (scope === "global") expect(raw.prepare("SELECT name FROM sqlite_master WHERE name='run_routes'").get()).toBeUndefined();
+      if (scope === "worktree") expect((raw.prepare("PRAGMA table_info(runs)").all() as Array<{name:string}>).map(c => c.name)).not.toContain("child_mode");
+      raw.pragma(`user_version = ${version}`); raw.close();
+      const db = openDbAt(p, scope);
+      try {
+        expect(schemaShape(db)).toEqual(expected);
+        expect(Number(db.pragma("user_version"))).toBe(13);
+        if (scope === "worktree") expect(db.prepare("SELECT status, child_mode, intercom_session, pid_start_time FROM runs WHERE id='legacy'").get()).toEqual({ status: "running", child_mode: "print", intercom_session: null, pid_start_time: null });
+        const before = { changes: db.prepare("SELECT total_changes() AS count").get(), schemaVersion: db.pragma("schema_version") };
+        migrate(db, scope);
+        expect(schemaShape(db)).toEqual(expected);
+        expect({ changes: db.prepare("SELECT total_changes() AS count").get(), schemaVersion: db.pragma("schema_version") }).toEqual(before);
+      } finally { db.close(); }
+    },
+  );
+});
+
+function fullSchemaShape(raw: DatabaseConstructor.Database) {
+  const objects = raw.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all() as Array<{type: string; name: string; sql: string | null}>;
+  return objects.map(({type, name, sql}) => type === "table"
+    ? { type, name, columns: raw.prepare(`PRAGMA table_xinfo(${name})`).all() }
+    : type === "index" ? { type, name, sql, columns: raw.prepare(`PRAGMA index_xinfo(${name})`).all() }
+    : { type, name, sql });
+}
+
+it.each([false, true])("repo stamped v12 repairs branch omissions without changing healthy main DBs (healthy=%s)", healthy => {
+  const fresh = openDbAt(join(scratch, `repo-v13-${healthy}.db`), "repo");
+  const expected = fullSchemaShape(fresh.raw); fresh.close();
+  const path = join(scratch, `repo-v12-${healthy}.db`);
+  const raw = new DatabaseConstructor(path);
+  raw.exec(REPO_SCHEMA);
+  raw.exec("INSERT INTO skills (name, created_at) VALUES ('legacy-skill', 123)");
+  if (!healthy) raw.exec("ALTER TABLE skills DROP COLUMN review_reason; DROP TABLE skill_review_queue; DROP TABLE skill_review_results; DROP TABLE skill_review_lock");
+  else {
+    raw.exec("UPDATE skills SET review_reason='retained'; INSERT INTO skill_review_queue (name, body, origin, created_at) VALUES ('pending', 'body', 'agent', 456)");
+  }
+  raw.pragma("user_version = 12");
+  const beforeShape = fullSchemaShape(raw);
+  const beforeSchemaVersion = raw.pragma("schema_version", {simple: true});
+  const beforeSkills = raw.prepare("SELECT name, created_at FROM skills").all();
+  raw.close();
+  const db = openDbAt(path, "repo");
+  try {
+    expect(Number(db.pragma("user_version"))).toBe(13);
+    expect(fullSchemaShape(db.raw)).toEqual(expected);
+    expect(db.prepare("SELECT name, created_at FROM skills").all()).toEqual(beforeSkills);
+    if (healthy) {
+      expect(fullSchemaShape(db.raw)).toEqual(beforeShape);
+      expect(db.raw.pragma("schema_version", {simple: true})).toBe(beforeSchemaVersion);
+      expect(db.prepare("SELECT total_changes() AS n").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT review_reason FROM skills").get()).toEqual({ review_reason: "retained" });
+      expect(db.prepare("SELECT name, body, origin, created_at FROM skill_review_queue").all()).toEqual([{name: "pending", body: "body", origin: "agent", created_at: 456}]);
+    }
+    const before = { changes: db.prepare("SELECT total_changes() AS n").get(), schema: db.pragma("schema_version") };
+    migrate(db, "repo");
+    migrate(db, "repo");
+    expect(fullSchemaShape(db.raw)).toEqual(expected);
+    expect({ changes: db.prepare("SELECT total_changes() AS n").get(), schema: db.pragma("schema_version") }).toEqual(before);
+  } finally { db.close(); }
+});
 
 // Tables that predate the migration ladder. They are only ever created by the
 // `user_version === 0` full-schema branch, which is correct for them because any
@@ -154,7 +245,7 @@ describe("fresh vs migrated schema parity", () => {
   });
 });
 
-it("repo v11 skills and queue column definitions match fresh v12", () => {
+it("repo v11 skills and queue column definitions match fresh v13", () => {
   mkdirSync(scratch, { recursive: true });
   const fresh = openDbAt(join(scratch, "fresh-skills.db"), "repo");
   const expectedSkills = fresh.prepare("PRAGMA table_info(skills)").all();

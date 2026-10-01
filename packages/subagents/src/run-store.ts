@@ -38,6 +38,9 @@ export interface RunRow {
   result: string | null;
   pid: number | null;
   host_pid: number | null;
+  pid_start_time?: string | null;
+  child_mode?: "rpc" | "print";
+  intercom_session?: string | null;
 }
 
 function toRow(r: NewRun & { id: string; name: string; status: RunStatus }) {
@@ -57,7 +60,11 @@ function toRow(r: NewRun & { id: string; name: string; status: RunStatus }) {
 }
 
 export class RunStore {
-  constructor(private db: Db) {}
+  constructor(private db: Db, private globalDb?: Db) {}
+
+  private removeRoute(id: string): void {
+    try { this.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(id); } catch { /* outcome persistence takes priority over locator cleanup */ }
+  }
 
   create(r: NewRun): { id: string; name: string } {
     const id = randomUUID();
@@ -109,12 +116,18 @@ export class RunStore {
          WHERE id = @id AND status IN ('queued', 'running', 'paused')`
       )
       .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null });
+    if (["done", "failed", "cancelled"].includes(patch.status)) this.removeRoute(id);
   }
 
-  setPid(id: string, pid: number, hostPid: number): void {
+  setLaunch(id: string, launch: { childMode: "rpc" | "print"; intercomSession?: string }): void {
+    this.db.prepare("UPDATE runs SET child_mode=?, intercom_session=? WHERE id=?")
+      .run(launch.childMode, launch.intercomSession ?? null, id);
+  }
+
+  setPid(id: string, pid: number, hostPid: number, startTime?: string | null): void {
     this.db
-      .prepare(`UPDATE runs SET pid = @pid, host_pid = @hostPid WHERE id = @id`)
-      .run({ id, pid, hostPid });
+      .prepare(`UPDATE runs SET pid = @pid, host_pid = @hostPid, pid_start_time = @startTime WHERE id = @id`)
+      .run({ id, pid, hostPid, startTime: startTime ?? null });
   }
 
   /** Terminal-cancel a run. No-op if it already reached a terminal status, so a
@@ -128,6 +141,7 @@ export class RunStore {
       )
       .run({ id, now: Date.now(), reason: reason ?? null });
     if (result.changes === 0) return false;
+    this.removeRoute(id);
 
     const row = this.get(id)!;
     emitStatus(this.db, {

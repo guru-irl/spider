@@ -1,5 +1,6 @@
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError } from "@spider/memory";
+import { commandEnv } from "@spider/db-core";
 // packages/host/src/extension.ts
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
@@ -206,7 +207,7 @@ export const SPIDER_PARAMETERS = {
         },
       },
     },
-    handoff: { type: "string", enum: ["intercom", "wait"], description: "No effect; accepted for compatibility. Pipeline stages start a fresh child after a done, failed or cancelled stage with the previous result as {previous}/{handoff}; neither value sends a mailbox message or waits synchronously." },
+    handoff: { type: "string", enum: ["intercom", "wait"], description: "No effect; accepted for compatibility. Pipeline stages start a fresh child after a done or failed stage with the previous result as {previous}/{handoff}; cancellation ends the pipeline. Neither value sends a mailbox message or waits synchronously." },
     pipeline: {
       type: "array", description: "PIPELINE-mode stages (advanced push-based auto-wake).",
       items: { type: "object", properties: {
@@ -544,7 +545,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
           cwd: repo,
           encoding: "utf8",
           timeout: options.timeoutMs,
-          env: { ...process.env, ...options.env },
+          env: commandEnv({ ...process.env, ...options.env }),
         }, (error, stdout, stderr) => {
           if (error) {
             Object.assign(error, { stderr });
@@ -704,7 +705,10 @@ export function buildActionCtx(
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
   const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  return { db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel };
+  const configuredChildMode = controlConfig("get", cwd, "subagents.childMode");
+  if (args.action === "run" && configuredChildMode !== "rpc" && configuredChildMode !== "print") throw new Error("subagents.childMode must be rpc or print");
+  const childMode = configuredChildMode === "print" ? "print" : "rpc";
+  return { db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode };
 }
 
 async function dispatchWithDoctorSnapshot(
@@ -973,7 +977,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification (durability, usefulness to other agents, correct scope; reviewer checks overlap and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message}; kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification (durability, usefulness to other agents, correct scope; reviewer checks overlap and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: accepted, delivered at the next turn boundary after current tool calls; acceptance is not proof of model consumption); kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,
@@ -1074,7 +1078,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   let disposeAgentsUI: (() => void) | undefined;
   pi.on("session_start", (_event: any, ctx: any) => {
     try {
-      if (!ctx?.hasUI) return undefined;
+      if (!ctx?.hasUI || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       disposeAgentsUI?.();
       const cwd = cwdOf(ctx) ?? process.cwd();
       const sessionId = sessionIdOf(ctx) || currentSessionId;

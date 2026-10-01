@@ -92,7 +92,7 @@ export function registerHooks(pi: PiLikeAPI): void {
             // Keep these connection lifetimes through the asynchronous operations,
             // then close them. Startup must never poll a made-up session ID.
             await Promise.all([
-              reapOrphanRuns({ db }).then(r => { if (r.error) logFailure("reaper", r.error); })
+              reapOrphanRuns({ db, globalDb }).then(r => { if (r.error) logFailure("reaper", r.error); })
                 .catch(e => logFailure("reaper", e)),
               pollPendingMessages(globalDb, sessionId, pi).catch(e => logFailure("poller", e)),
             ]);

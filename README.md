@@ -30,7 +30,7 @@ result look identical.
   repo builds or tests on anything below 26.x, so it is unverified. On a
   different major version the native modules fail to load and vector search
   degrades to full-text search only.
-- pi coding-agent 0.80 or later (peer dependency).
+- pi coding-agent 0.85.1 or later for default RPC children. RPC requires `--exclude-tools`, `--name`, `agent_settled` and `clear_queue`, verified in 0.85.1 and 0.87.0. The legacy peer range still allows 0.80; older child Pi binaries automatically use print mode and record the reason in run details and completion output. Version checks read metadata from the launched binary on PATH or `PI_SUBAGENT_PI_BINARY`. Unknown versions keep RPC mode with a recorded warning.
 
 ## Install
 
@@ -260,10 +260,19 @@ Use `/agents` or `alt+shift+up` to select a run from the footer. With `ui.footer
 
 `control models set <role> <model>` writes a global role default to the spider global `config.json` (`~/.pi/agent/spider/config.json` unless `SPIDER_GLOBAL_ROOT` is set). The current worktree's `.spider/config.json` can override each role independently. Resolution is explicit model, local role override, global role default, then parent model, including pipeline stages. A global set reports the worktree-local value and file if that role is shadowed. `control models clear <role>` removes only that role's local override in the current worktree; it does not change the global value or other local roles.
 
-Exiting any session tears down all subagents registered in that module, not just
-that activation's children: `SIGTERM`, then `SIGKILL` after a short grace period. Runs orphaned by a hard kill (where the host died without
+Children default to `pi --mode rpc`. The dispatching session owns their pipes
+and sends exactly one task prompt. Set `subagents.childMode` to `"print"` using
+`spider control command:config op:set` to retain legacy `--mode json -p` for
+new launches. Runs retain their launch mode; changing the setting does not
+upgrade existing children.
+
+Exiting or reloading any session tears down all subagents registered in that
+module, not just that activation's children. RPC children receive
+`clear_queue`, then `abort`, then stdin EOF; process-group `SIGTERM` and
+`SIGKILL` remain the fallback after a short grace period. Runs orphaned by a hard kill (where the host died without
 running shutdown) are reaped at the next `session_start` — but only after
-checking that the recorded pid still looks like a pi subagent, so pid reuse
+checking that the pid's current start time matches the recorded spawn identity
+(legacy rows without a start time use the old command check), so pid reuse
 cannot make the reaper signal an unrelated process, and only when the owning
 host is actually dead, so one session never kills another's agents.
 
@@ -291,11 +300,37 @@ Subagents escalate to their parent by emitting a structured marker
 themed card **while the run is still going**, not at the end — so a blocked
 child is visible immediately.
 
-Session-to-session messages (`spider message`) go through a durable queue rather
-than a live broker. A message to a session that is not currently listening is
-**queued, not lost**, and delivered when that session next starts. A queued
-message reports as queued rather than as an error. Delivery is only marked once
-it has actually succeeded, so a failed send stays pending and is retried.
+`spider message` to a running RPC run in its dispatching session sends a `steer`
+over the owned pipe. A successful response means the child accepted the message
+for delivery at the next turn boundary, after its current tool calls. Acceptance
+has no delivery deadline and does not prove model consumption. If a run ends
+without delivery, a later `steer_delivery` run event records the cause; acceptance
+is not retracted.
+Completed, queued, paused and print-mode runs refuse steering.
+
+If an installed, enabled pi-intercom package is available at launch, RPC children
+load it and appear as named live peers (`<run name>-<short run id>`). Another
+session can message a run by ID through its persisted intercom target. Without
+that capability, steering must come from the dispatching session. The child
+still cannot call spider `run`, `message` or `kill`, or the outbound `intercom`
+and `contact_supervisor` tools. Optional intercom resolution failure does not
+prevent the child from running; dispatch details report steering unavailable.
+
+Peer-session messages are stored durably before attempting broker delivery.
+Broker acceptance does not prove recipient acknowledgement or model consumption.
+An unconfirmed message remains queued and is retried when its target session
+starts. This deferred-delivery policy is for peer sessions, not one-shot run
+names: an undelivered run steer is an error, not a queued success. Background
+children are independent of later parent-turn Escape. Shutdown still cancels
+all session-owned children and reports the cause without starting a model turn,
+including on reload. A kill from this session reports through its tool result,
+not an extra completion notification unless an accepted steer was not delivered.
+A cancelled pipeline ends.
+Owned handles remain killable even if spawn start-time capture failed; only
+pid-only kill and reaper paths require the identity check.
+Dialogs requested by child extensions are cancelled with a run-event
+warning. RPC and print children use Pi's same non-interactive project-trust
+policy; RPC does not grant additional project trust.
 
 ## Databases: three tiers
 

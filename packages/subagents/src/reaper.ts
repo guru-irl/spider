@@ -1,15 +1,17 @@
 import type { Db } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
 import { isProcessAlive, killProcessGroup } from "./kill-process";
-import { looksLikeSubagent } from "./process-identity";
+import { checkProcessIdentity } from "./process-identity";
 
 export interface ReapDeps {
   db: Db;
+  globalDb?: Db;
   store?: RunStore;
   alive?: (pid: number) => boolean;
   kill?: (pid: number) => Promise<unknown>;
   selfPid?: number;
   probeCommand?: (pid: number) => string | null;
+  probeStartTime?: (pid: number) => string | null;
 }
 
 /**
@@ -20,9 +22,9 @@ export interface ReapDeps {
  * work.
  */
 export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]; error?: string }> {
-  const store = deps.store ?? new RunStore(deps.db);
+  const store = deps.store ?? new RunStore(deps.db, deps.globalDb);
   const alive = deps.alive ?? isProcessAlive;
-  const kill = deps.kill ?? ((pid: number) => killProcessGroup(pid));
+  const identity = (row: RunRow) => checkProcessIdentity(row.pid!, row.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand });
   const selfPid = deps.selfPid ?? process.pid;
   const reaped: string[] = [];
 
@@ -35,31 +37,29 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
     return { reaped, error: String((err as Error)?.message ?? err) };
   }
 
-  // Document pid-reuse limitation. isProcessAlive answers "some process has this pid",
-  // not "the original host/child". No start-time/generation counter disambiguates today.
-  // Signalling a reused row.pid would SIGTERM/SIGKILL an unrelated process group, so we
-  // confirm the command line still looks like a spawned subagent before kill(). If the
-  // probe returns null (win32, ps unavailable, EPERM), we reconcile the row but do NOT
-  // signal — reaping the row is safe; signalling an unidentified pid is not.
+  // Child identity is pid plus spawn start time. Legacy rows use the old command
+  // signature and fail closed when title replacement hides it.
   const work = rows.map(async (row) => {
     const hostPid = row.host_pid;
     if (hostPid === null || hostPid === selfPid) return null; // ours, or unknown owner
     if (alive(hostPid)) return null;                          // another live session owns it
 
+    let reason = "Child process is missing; no signal sent.";
     if (row.pid !== null && alive(row.pid)) {
-      // Before signalling, confirm the pid still looks like our spawned subagent.
-      // Fail-safe: if probe returns null (unknown), reconcile the row but do NOT signal.
-      const identityConfirmed = deps.probeCommand
-        ? looksLikeSubagent(row.pid, deps.probeCommand)
-        : looksLikeSubagent(row.pid);
-      if (identityConfirmed) {
-        try { await kill(row.pid); } catch { /* best-effort */ }
+      const checked = identity(row);
+      reason = checked.reason;
+      if (checked.matches) {
+        try {
+          if (deps.kill) await deps.kill(row.pid);
+          else await killProcessGroup(row.pid, { canSignal: () => identity(row).matches });
+          reason = "Matching child was terminated.";
+        } catch (error) { reason = `Termination failed: ${String(error)}`; }
       }
     }
     try {
       // cancel() emits the terminal status event and returns false if a natural
       // completion won the race, so neither the event nor this result is fabricated.
-      if (store.cancel(row.id, "cancelled — orphaned by a host that exited without shutdown")) return row.id;
+      if (store.cancel(row.id, `Run orphaned by a host that exited without shutdown. ${reason}`)) return row.id;
     } catch { /* best-effort */ }
     return null;
   });

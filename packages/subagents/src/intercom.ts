@@ -22,10 +22,16 @@ export interface IntercomResult {
   error?: string;
 }
 
+const pendingCalls = new Set<{ sessionId?: string; cancel: () => void }>();
+
+export function cancelPendingIntercom(sessionId?: string): void {
+  for (const call of [...pendingCalls]) if (!sessionId || call.sessionId === sessionId) call.cancel();
+}
+
 export async function sendIntercom(
   pi: any,
   globalDb: Db,
-  m: { to: string; message: string; fromSession?: string; kind?: string; timeoutMs?: number }
+  m: { to: string; message: string; fromSession?: string; kind?: string; timeoutMs?: number; ephemeral?: boolean }
 ): Promise<IntercomResult> {
   const requestId = randomUUID();
   const store = new MessageStore(globalDb);
@@ -39,9 +45,13 @@ export async function sendIntercom(
     body: m.message,
   });
 
-  const queued = (error: string): IntercomResult => ({
-    delivered: false, queued: true, messageId, delivery: "queued", recipientAcknowledged: false, error,
-  });
+  const queued = (error: string): IntercomResult => {
+    if (m.ephemeral) {
+      try { globalDb.prepare("DELETE FROM message_mirror WHERE id=? AND delivered_at IS NULL").run(messageId); }
+      catch { error += " The undelivered mailbox row could not be removed."; }
+    }
+    return { delivered: false, queued: !m.ephemeral, messageId, delivery: "queued", recipientAcknowledged: false, error };
+  };
   if (typeof pi?.events?.on !== "function" || typeof pi.events.emit !== "function") {
     return queued("No intercom broker available; message stored, delivery unconfirmed.");
   }
@@ -54,9 +64,12 @@ export async function sendIntercom(
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (typeof off === "function") off();
+      pendingCalls.delete(call);
+      try { if (typeof off === "function") off(); } catch { /* cleanup cannot alter delivery truth */ }
       resolve(result);
     };
+    const call = { sessionId: m.fromSession, cancel: () => finish(queued("Session shutdown cancelled the pending intercom call; delivery is unconfirmed.")) };
+    pendingCalls.add(call);
     try {
       off = pi.events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (p: any) => {
         if (p?.requestId !== requestId || settled) return;
@@ -71,7 +84,7 @@ export async function sendIntercom(
         catch { error = "Broker accepted the message, but its durable delivery marker could not be updated."; }
         finish({ delivered: true, queued: true, messageId, delivery: "broker-accepted", recipientAcknowledged: false, ...(error ? { error } : {}) });
       });
-      timer = setTimeout(() => finish(queued("Recipient offline or no broker response; queued, not delivered.")), m.timeoutMs ?? 10_000);
+      timer = setTimeout(() => finish(queued("No broker response; delivery unconfirmed.")), m.timeoutMs ?? 10_000);
       timer.unref();
       pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { to: m.to, message: m.message, requestId });
     } catch (error) {

@@ -37,7 +37,7 @@ async function buildHarness(outDir: string): Promise<string> {
     format: "esm",
     target: "node22",
     outfile,
-    alias: { "@spider/db-core": join(__dirname, "../../../db-core/src/paths.ts") },
+    alias: { "@spider/db-core": join(__dirname, "helpers/db-core-command-fixture.ts") },
   });
   return outfile;
 }

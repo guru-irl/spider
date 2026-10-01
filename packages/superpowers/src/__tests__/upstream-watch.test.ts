@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { openGlobal, openDbAt, migrate, setGlobalDbPathForTests } from "@spider/db-core";
-import { diffUpstream, runUpstreamWatch, seedUpstreamRefs, markReviewed, type GitRunner } from "../upstream-watch.js";
+import { diffUpstream, runUpstreamWatch, seedUpstreamRefs, markReviewed, DEFAULT_UPSTREAM_REFS, type GitRunner } from "../upstream-watch.js";
 import { testScratchPath } from "./testutil.js";
+import { setImmediate } from "node:timers/promises";
 
 type TestGitOptions = Parameters<GitRunner>[2];
 
@@ -282,6 +283,69 @@ describe("runUpstreamWatch", () => {
     const rep2 = await runUpstreamWatch(gdb, pdb, sessionId, deps);
     expect(rep2.todosAdded).toBe(0);
     expect(todoCount()).toBe(2);
+  });
+});
+
+describe("runUpstreamWatch concurrency", () => {
+  it("overlaps four blocked fetches, continues after failure, and publishes in input order", async () => {
+    const gdb = configureUpstream("fixture", "baseline");
+    gdb.prepare("UPDATE upstream_refs SET last_reviewed_commit='baseline'").run();
+    const input = DEFAULT_UPSTREAM_REFS.map((ref) => ref.package);
+    // Exercise a different SQLite scan plan instead of mirroring the production query.
+    gdb.pragma("reverse_unordered_selects = ON");
+    const { projectDb, sessionId } = watchProject();
+    const gates = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+    const started: string[] = [];
+    let active = 0;
+    let peak = 0;
+    let releasing = false;
+    const git: GitRunner = async (repo, args, options) => {
+      const pkg = decodeURIComponent(path.basename(repo));
+      if (args[0] === "fetch") {
+        expect(options.timeoutMs).toBe(60_000);
+        started.push(pkg);
+        active++;
+        peak = Math.max(peak, active);
+        try {
+          if (!releasing) await new Promise<void>((resolve, reject) => gates.set(pkg, { resolve, reject }));
+        } finally { active--; }
+      }
+      if (args[0] === "for-each-ref") return "refs/remotes/origin/main\nrefs/remotes/origin/master\n";
+      if (args[0] === "rev-parse") return args.at(-1) === "baseline^{commit}" ? "baseline" : `${pkg}-head`;
+      if (args[0] === "log") return `${pkg}-commit\x1ffeat: ${pkg}`;
+      return "";
+    };
+    const pending = runUpstreamWatch(gdb, projectDb, sessionId, { git, mirrorRoot: mirrorRoot("barriers") });
+    try {
+      // One event-loop turn drains setup promises. No gate can finish until released.
+      await setImmediate();
+      expect(started).toEqual(input.slice(0, 4));
+      expect(active).toBe(4);
+      gates.get(input[3])!.reject(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }));
+      await setImmediate();
+      expect(started).toEqual(input.slice(0, 5));
+      gates.get(input[2])!.resolve();
+      await setImmediate();
+      expect(started).toEqual(input);
+      expect(peak).toBe(4);
+      for (const pkg of [input[5], input[4], input[1], input[0]]) {
+        gates.get(pkg)!.resolve();
+        await setImmediate();
+      }
+      const report = await pending;
+      expect(report.packages.map((result) => result.package)).toEqual(input);
+      expect(report.packages[3].state).toBe("fetch-failed");
+      expect(report.packages[3].reason).toContain("60000ms");
+      expect(report.packages.filter((result) => result.state === "candidates")).toHaveLength(5);
+      expect(report.todosAdded).toBe(5);
+      const todos = projectDb.prepare("SELECT text FROM todos ORDER BY seq").all() as Array<{ text: string }>;
+      expect(todos.map((todo) => todo.text.match(/^upstream-watch\(([^)]+)\)/)![1])).toEqual(input.filter((_, index) => index !== 3));
+    } finally {
+      releasing = true;
+      for (const gate of gates.values()) gate.resolve();
+      await pending;
+      gdb.pragma("reverse_unordered_selects = OFF");
+    }
   });
 });
 

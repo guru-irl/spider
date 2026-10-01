@@ -39,6 +39,7 @@ export interface UpstreamWatchDeps {
 const UNIT = "\x1f";
 const LOCAL_GIT_TIMEOUT_MS = 10_000;
 const NETWORK_GIT_TIMEOUT_MS = 60_000;
+const UPSTREAM_CONCURRENCY = 4;
 const NON_INTERACTIVE_GIT_ENV = Object.freeze({
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "true",
@@ -214,7 +215,7 @@ export async function runUpstreamWatch(
   seedUpstreamRefs(globalDb);
   const now = Date.now();
   const rows = globalDb
-    .prepare(`SELECT package, upstream_repo, upstream_ref, last_reviewed_commit FROM upstream_refs`)
+    .prepare(`SELECT package, upstream_repo, upstream_ref, last_reviewed_commit FROM upstream_refs ORDER BY rowid`)
     .all() as Array<{ package: string; upstream_repo: string; upstream_ref: string | null; last_reviewed_commit: string | null }>;
   const selected = deps.packages ? new Set(deps.packages) : undefined;
   const packages: PackageResult[] = [];
@@ -230,8 +231,8 @@ export async function runUpstreamWatch(
   const insFts = projectDb.prepare(`INSERT INTO todos_fts(rowid, text) VALUES (?, ?)`);
   const touch = globalDb.prepare(`UPDATE upstream_refs SET last_checked_at=@now, notes=@notes WHERE package=@pkg`);
 
-  for (const row of rows) {
-    if (selected && !selected.has(row.package)) continue;
+  const checks = rows.filter((row) => !selected || selected.has(row.package));
+  async function checkPackage(row: typeof rows[number]): Promise<PackageResult> {
     const check: UpstreamCheck = {
       package: row.package,
       upstreamRepo: deps.upstreamRepos?.[row.package] ?? row.upstream_repo,
@@ -243,16 +244,14 @@ export async function runUpstreamWatch(
     try {
       repoPath = await fetchUpstreamMirror(check, deps.mirrorRoot, deps.git);
     } catch (error) {
-      const result: PackageResult = {
+      return {
         package: row.package,
         state: "fetch-failed",
         head: "",
         candidates: [],
         reason: errorMessage(error),
       };
-      packages.push(result);
-      touch.run({ now, notes: `fetch-failed: ${result.reason}`, pkg: row.package });
-      continue;
+
     }
 
     let result: PackageResult;
@@ -267,11 +266,25 @@ export async function runUpstreamWatch(
         reason: errorMessage(error),
       };
     }
-    packages.push(result);
+    return result;
+  }
+
+  // Workers claim input indices synchronously before awaiting. Slow or failed
+  // fetches cannot block other workers, and completion order never changes output.
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(UPSTREAM_CONCURRENCY, checks.length) }, async () => {
+    while (nextIndex < checks.length) {
+      const index = nextIndex++;
+      packages[index] = await checkPackage(checks[index]);
+    }
+  }));
+
+  // Keep DB updates and todo sequence numbers deterministic too.
+  for (const result of packages) {
     touch.run({
       now,
       notes: result.head || `${result.state}: ${result.reason ?? "unknown error"}`,
-      pkg: row.package,
+      pkg: result.package,
     });
 
     for (const candidate of result.candidates) {

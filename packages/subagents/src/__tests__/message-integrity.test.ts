@@ -84,7 +84,7 @@ describe("honest message delivery", () => {
       ...f, pi: broker({ delivered: true }), sessionId: "parent",
     });
     expect(result.isError).toBe(true);
-    expect(result.details).toMatchObject({ delivered: false, queued: false, delivery: "unavailable" });
+    expect(result.details).toMatchObject({ delivered: false, queued: false, delivery: "refused" });
     expect(result.content).toMatch(/fresh|new run/i);
     expect(f.globalDb.prepare("SELECT COUNT(*) n FROM message_mirror").get()).toEqual({ n: 0 });
   });

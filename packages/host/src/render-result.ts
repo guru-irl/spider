@@ -522,12 +522,12 @@ function toFetchDetails(_args: any, details: any): IndexDetails {
 function toMessageDetails(args: any, details: any): MessageDetails {
   const kind = String(args?.kind ?? "");
   const verb: MessageDetails["verb"] = kind === "ask" ? "ask" : kind === "reply" ? "reply" : kind === "broadcast" ? "broadcast" : "send";
-  const delivery = ["broker-accepted", "queued", "unavailable"].includes(details?.delivery)
+  const delivery = ["child-accepted", "broker-accepted", "queued", "unavailable", "delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"].includes(details?.delivery)
     ? details.delivery : typeof details?.error === "string" && !details?.queued ? "unavailable" : undefined;
   return {
     verb, to: args?.to ? String(args.to) : undefined, kind: kind || undefined,
     body: String(args?.message ?? ""), delivered: details?.delivered === true,
-    delivery, recipientAcknowledged: details?.recipientAcknowledged,
+    delivery, transformed: details?.transformed === true, recipientAcknowledged: details?.recipientAcknowledged,
     error: typeof details?.error === "string" ? details.error : undefined,
   };
 }
@@ -586,7 +586,7 @@ function renderSpiderResultBody(
     && Reflect.ownKeys(details).length === 0);
   const rememberReceipt = action === "remember" || (action === "control" && context?.args?.command === "memory" && sub === "approve");
   const messageNote = action === "message" && details?.delivery !== "unavailable"
-    && (details?.queued === true || ["queued", "broker-accepted"].includes(details?.delivery));
+    && (details?.queued === true || ["child-accepted", "queued", "broker-accepted", "delivered", "accepted but not confirmed", "no reply yet, delivery unknown"].includes(details?.delivery));
   if ((context?.isError === true && bareDetails) || (details?.error != null && !messageNote) || (rememberReceipt && !details?.status)) {
     const content = Array.isArray(result?.content)
       ? result.content.filter((block: any) => block?.type === "text" && typeof block.text === "string")
@@ -597,7 +597,7 @@ function renderSpiderResultBody(
       || content || (typeof details?.message === "string" ? details.message : "")
       || "Call failed (no error message)";
     const th = adaptTheme(t);
-    if (action === "message" && ["queued", "broker-accepted", "unavailable"].includes(details?.delivery)) {
+    if (action === "message" && ["queued", "broker-accepted", "unavailable", "refused"].includes(details?.delivery)) {
       const d = { ...toMessageDetails(context?.args, details), error: message };
       return { render: (width: number) => renderMessageResult(d, { theme: th, width, expanded }), invalidate() {} };
     }

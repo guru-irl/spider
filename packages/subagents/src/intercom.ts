@@ -19,6 +19,9 @@ export interface IntercomResult {
   delivery: "broker-accepted" | "queued";
   /** No recipient/agent acknowledgement protocol is implied by a broker response. */
   recipientAcknowledged: false;
+  timedOut?: boolean;
+  /** An explicit negative broker response, not a timeout or unavailable broker. */
+  brokerRefused?: boolean;
   error?: string;
 }
 
@@ -76,7 +79,7 @@ export async function sendIntercom(
         // The REAL broker also replies with delivered:false and an error. A matching
         // request ID alone is not a successful acknowledgement.
         if (p.delivered !== true) {
-          finish(queued(typeof p.error === "string" ? p.error : "Broker did not confirm delivery; message remains queued."));
+          finish({ ...queued(typeof p.error === "string" ? p.error : "Broker did not confirm delivery; message remains queued."), brokerRefused: true });
           return;
         }
         let error: string | undefined;
@@ -84,7 +87,7 @@ export async function sendIntercom(
         catch { error = "Broker accepted the message, but its durable delivery marker could not be updated."; }
         finish({ delivered: true, queued: true, messageId, delivery: "broker-accepted", recipientAcknowledged: false, ...(error ? { error } : {}) });
       });
-      timer = setTimeout(() => finish(queued("No broker response; delivery unconfirmed.")), m.timeoutMs ?? 10_000);
+      timer = setTimeout(() => finish({ ...queued("No broker response; delivery unconfirmed."), timedOut: true }), m.timeoutMs ?? 10_000);
       timer.unref();
       pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { to: m.to, message: m.message, requestId });
     } catch (error) {

@@ -333,12 +333,32 @@ themed card **while the run is still going**, not at the end — so a blocked
 child is visible immediately.
 
 `spider message` to a running RPC run in its dispatching session sends a `steer`
-over the owned pipe. A successful response means the child accepted the message
-for delivery at the next turn boundary, after its current tool calls. Acceptance
-has no delivery deadline and does not prove model consumption. If a run ends
-without delivery, a later `steer_delivery` run event records the cause; acceptance
-is not retracted.
-Completed, queued, paused and print-mode runs refuse steering.
+over the owned pipe. RPC success means **accepted but not confirmed**, not
+promised delivery: Pi input handlers can swallow or transform it. **Delivered**
+requires a correlated user `message_start` entering the conversation. This is
+conversation-entry evidence, not proof of model consumption. Exact steer text
+is preferred among all queue additions in its serialized acceptance window;
+a differing text counts as **delivered, transformed** only after a successful
+reply and when it was the sole addition. Several additions without an exact match remain unconfirmed. Pi has
+no request IDs on these events, so swallowed input plus one unrelated injection
+can still look like a transform.
+
+After 10 seconds without a reply, the result is **no reply yet, delivery unknown**.
+Tracking continues until the run settles, exits or stops: a late success becomes
+**accepted but not confirmed**, and observed conversation entry becomes
+**delivered**. While the run is still active, do not resend an unknown steer; it
+may still be delivered. Each later steer waits at most 10 seconds for an earlier reply, then is **refused** as
+not sent; if written, it has its own 10-second reply deadline. A late reply before
+settlement releases the next waiter without permanently disabling steering.
+Settlement finalizes unanswered writes as unknown, refuses unwritten waiters and
+closes stdin so the run can complete. On settlement, exit or stop before a reply,
+only an exact-text conversation entry counts as delivered; a differing injection
+remains unknown. Observed delivery is never downgraded. Completion results and
+notifications count delivered, accepted but not confirmed, no reply yet, delivery
+unknown, and refused steers. **Refused** means an actual rejection or no write.
+Completed, queued, paused and print-mode runs refuse steering. Slash-prefixed
+steers are refused: Pi can expand skills/templates or reject extension commands,
+and RPC steer has no literal-text option.
 
 If an installed, enabled pi-intercom package is available at launch, RPC children
 load it and appear as named live peers (`<run name>-<short run id>`). Another
@@ -352,11 +372,14 @@ Peer-session messages are stored durably before attempting broker delivery.
 Broker acceptance does not prove recipient acknowledgement or model consumption.
 An unconfirmed message remains queued and is retried when its target session
 starts. This deferred-delivery policy is for peer sessions, not one-shot run
-names: an undelivered run steer is an error, not a queued success. Background
+names: run steers are not durably retried. Cross-session broker acceptance is
+accepted but not confirmed and renders as a warning, not proof of conversation
+entry. Background
 children are independent of later parent-turn Escape. Shutdown still cancels
 all session-owned children and reports the cause without starting a model turn,
 including on reload. A kill from this session reports through its tool result,
-not an extra completion notification unless an accepted steer was not delivered.
+not an extra completion notification unless a steer is accepted but not confirmed
+or has no reply yet, delivery unknown.
 A cancelled pipeline ends.
 Owned handles remain killable even if spawn start-time capture failed; only
 pid-only kill and reaper paths require the identity check.

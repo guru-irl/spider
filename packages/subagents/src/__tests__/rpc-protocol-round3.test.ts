@@ -34,7 +34,7 @@ it("records non-delivery at settlement without retracting pi's acceptance or han
   f.out({ type: "queue_update", steering: ["late correction"], followUp: [] }); f.response("steer");
   f.out({ type: "agent_settled" });
   expect(await ack).toMatchObject({ accepted: true });
-  expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: false, message: expect.stringMatching(/not delivered.*settle/i) }));
+  expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: false, message: expect.stringMatching(/accepted but not confirmed.*settle/i) }));
   expect(f.commands.some(c => c.type === "clear_queue")).toBe(true);
   expect(f.child.stdin.writableEnded).toBe(true);
 });
@@ -45,42 +45,45 @@ it("accepts steering during a long tool call and clears the acceptance deadline"
   f.out({ type: "queue_update", steering: ["correction"], followUp: [] }); f.response("steer");
   // Success is returned at acceptance, not after the tool eventually finishes.
   let accepted: any; void ack.then(value => { accepted = value; }); await vi.advanceTimersByTimeAsync(0);
-  expect(accepted).toEqual({ accepted: true });
+  expect(accepted).toMatchObject({ accepted: true, delivery: "accepted but not confirmed" });
   expect(vi.getTimerCount()).toBe(0);
   await vi.advanceTimersByTimeAsync(120_000);
   expect(f.child.stdin.writableEnded).toBe(false);
   f.out({ type: "tool_execution_end", toolCallId: "long" });
   f.out({ type: "queue_update", steering: [], followUp: [] });
+  f.out({ type: "message_start", message: { role: "user", content: "correction" } });
   f.out({ type: "agent_settled" });
   expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: true }));
-  expect(f.events.some(e => e.type === "steer_delivery" && e.delivered === false)).toBe(false);
+  expect(f.events.filter(e => e.type === "steer_delivery").at(-1)?.delivered).toBe(true);
   expect(f.child.stdin.writableEnded).toBe(true);
 });
-it("refuses a steer accepted only after settlement", async () => {
+it("finalizes an unanswered steer at settlement without awaiting or crediting a late reply", async () => {
   const f = fixture(); f.response("prompt"); f.out({ type: "agent_start" });
   const ack = f.rpc.steer("too late"); f.out({ type: "agent_settled" }); f.response("steer");
-  expect(await ack).toMatchObject({ accepted: false, childAccepted: true, error: expect.stringMatching(/finished|settled/i) });
+  expect(await ack).toMatchObject({ accepted: false, delivery: "no reply yet, delivery unknown", error: expect.stringMatching(/settled before the child replied/i) });
+  expect(f.child.stdin.writableEnded).toBe(true);
+  expect(f.events.filter(e => e.type === "steer_delivery").map(e => e.delivery)).toEqual(["no reply yet, delivery unknown"]);
   expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: false }));
 });
 it("does not accept a steer that pi rejects", async () => {
   const f = fixture(); f.response("prompt");
   const ack = f.rpc.steer("reject me");
   f.out({ type: "response", id: f.commands.find(c => c.type === "steer").id, success: false, error: "fixture rejection" });
-  expect(await ack).toEqual({ accepted: false, error: "fixture rejection" });
+  expect(await ack).toMatchObject({ accepted: false, delivery: "refused", error: "fixture rejection" });
 });
 it("does not accept a steer pi never answers", async () => {
   vi.useFakeTimers(); const f = fixture(); f.response("prompt");
   const ack = f.rpc.steer("unanswered");
   await vi.advanceTimersByTimeAsync(10_000);
-  expect(await ack).toMatchObject({ accepted: false, error: expect.stringMatching(/unconfirmed/i) });
+  expect(await ack).toMatchObject({ accepted: false, delivery: "no reply yet, delivery unknown" });
 });
 it.each(["exit", "abort", "pipe"])("records non-delivery for an accepted pending steer on %s", async cause => {
   const f = fixture(); f.response("prompt"); f.out({ type: "agent_start" });
-  const ack = f.rpc.steer("pending correction"); f.response("steer"); expect(await ack).toEqual({ accepted: true });
+  const ack = f.rpc.steer("pending correction"); f.response("steer"); expect(await ack).toMatchObject({ accepted: true, delivery: "accepted but not confirmed" });
   if (cause === "exit") f.child.emit("exit", 1);
   else if (cause === "pipe") f.child.stdin.emit("error", new Error("fixture pipe failure"));
   else { const stop = f.rpc.abort(); f.response("abort"); await stop; }
-  expect(f.events.filter(e => e.type === "steer_delivery")).toEqual([expect.objectContaining({ delivered: false, steer: "pending correction", message: expect.stringMatching(/not delivered/i) })]);
+  expect(f.events.filter(e => e.type === "steer_delivery").slice(-1)).toEqual([expect.objectContaining({ delivered: false, steer: "pending correction", message: expect.stringMatching(/accepted but not confirmed/i) })]);
 });
 it("reports prompt rejection as the failure rather than losing the child reason", async () => {
   const f = fixture();

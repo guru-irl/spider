@@ -67,7 +67,7 @@ process.stdin.on('data', chunk => {
       if (process.env.SCENARIO === 'consumed') {
         out({ type: 'queue_update', steering: [c.message], followUp: [] });
         out({ type: 'queue_update', steering: [], followUp: [] });
-        out({ type: 'message_end', message: { role: 'user', content: c.message } });
+        out({ type: 'message_start', message: { role: 'user', content: c.message } });
         waiting = true; out({ type: 'agent_settled' });
         setTimeout(() => { waiting = false; out({ type: 'response', id: c.id, command: 'steer', success: true }); }, 50); continue;
       }
@@ -168,26 +168,26 @@ describe("parent-owned RPC child", () => {
     const f = fixture("queued");
     expect(await bounded(f.h.wait())).toEqual({ exitCode: 0 });
   });
-  it("waits for an in-flight steer response before completing a settled child", async () => {
+  it("finalizes an in-flight steer as unknown and completes a settled child without waiting", async () => {
     const f = fixture("race");
     expect(await bounded(f.h.wait())).toEqual({ exitCode: 0 });
-    expect(await f.racingAck()).toMatchObject({ accepted: false, childAccepted: true });
+    expect(await f.racingAck()).toMatchObject({ accepted: false, delivery: "no reply yet, delivery unknown", error: expect.stringMatching(/settled before the child replied/i) });
     expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: false }));
   });
   it("clears an idle steer queued after settlement rather than hanging or starting an extra prompt", async () => {
     const f = fixture("late-queue");
     expect(await bounded(f.h.wait())).toEqual({ exitCode: 0 });
-    expect(await f.racingAck()).toMatchObject({ accepted: false, childAccepted: true });
+    expect(await f.racingAck()).toMatchObject({ accepted: false, delivery: "no reply yet, delivery unknown", error: expect.stringMatching(/settled before the child replied/i) });
     expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: false }));
     expect(f.commands().filter(c => c.type === "prompt")).toHaveLength(1);
     expect(f.commands().some(c => c.type === "clear_queue")).toBe(true);
   });
-  it("does not infer individual consumption from uncorrelated turn text after a late acknowledgement", async () => {
+  it("retains observed conversation entry when acceptance arrives after settlement", async () => {
     const f = fixture("consumed");
     expect(await bounded(f.h.wait())).toEqual({ exitCode: 0 });
-    expect(await f.racingAck()).toMatchObject({ accepted: false, childAccepted: true });
-    expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: false }));
-    expect(f.events.find(e => e.type === "steer_delivery").message).toMatch(/confirm/i);
+    expect(await f.racingAck()).toMatchObject({ accepted: true, delivered: true, delivery: "delivered" });
+    expect(f.events).toContainEqual(expect.objectContaining({ type: "steer_delivery", delivered: true }));
+    expect(f.events.find(e => e.type === "steer_delivery" && e.delivered).message).not.toContain("delivery not confirmed");
   });
   it("updates settlement state before notifying observers so they cannot write a late steer", async () => {
     const f = fixture("callback-late");

@@ -97,6 +97,9 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
     context.systemPrompt?.startsWith("Review a skill candidate.")
       ? { ...answer, content: [{ type: "text", text: '{"verdict":"new","reason":"a reusable testing technique"}' }] }
       : answer);
+  // The completion facade now uses the authenticated provider-neutral boundary.
+  vi.spyOn(models, "streamSimple").mockImplementation((model, context, options) =>
+    ({ result: () => complete(model, context, options as any) }) as any);
   let shutDown = false;
   let piApi: any;
   const loader = new DefaultResourceLoader({
@@ -443,14 +446,15 @@ describe("the installed pi contract through the full spider extension", () => {
     ]);
   });
 
-  it("uses the authenticated registry for luna with low thinking, not the different parent model, and stages proposals", async () => {
+  it("uses authenticated streamSimple without requiring raw complete, with low thinking and staged proposals", async () => {
     const f = await setup();
+    Object.defineProperty(f.registry, "complete", { value: undefined });
     await f.runner.emit({ type: "session_shutdown", reason: "quit" });
     expect(f.errors).toEqual([]);
     expect(f.complete).toHaveBeenCalled();
     const [model, context] = f.complete.mock.calls[0];
     expect(model).toMatchObject({ provider: "github-copilot", id: "gpt-6-luna" });
-    expect(f.complete.mock.calls[0][2]).toMatchObject({ reasoningEffort: "low" });
+    expect(f.complete.mock.calls[0][2]).toMatchObject({ reasoning: "low" });
     expect(context.systemPrompt).toBeTruthy();
     expect(JSON.stringify(context.messages)).toContain("record the failing assertion");
     expect(listPending(f.repoDb, "repo")).toHaveLength(1);
@@ -621,7 +625,7 @@ it("organism queued reviewer includes pi-loaded catalog and doctor shows queue a
     deps.worker.startSkillReviews();
     await vi.waitFor(() => expect(f.repoDb.prepare("SELECT count(*) n FROM skill_review_queue").get()).toEqual({ n: 0 }));
     const call = f.complete.mock.calls.find(call => call[1].systemPrompt?.startsWith("Review a skill candidate."))!;
-    expect(call[2]).toMatchObject({ reasoningEffort: "medium" });
+    expect(call[2]).toMatchObject({ reasoning: "medium" });
     expect(JSON.parse(call[1].messages[0].content as string).existing_skills).toEqual(expect.arrayContaining([{ name: "external-reference", description: "Use when tracing external writers" }]));
     const result = await tool.execute("recent", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
     expect(JSON.stringify(result.content)).toContain("duplicate: same method");
@@ -630,7 +634,7 @@ it("organism queued reviewer includes pi-loaded catalog and doctor shows queue a
 
 it("shutdown cancels queue reviewers from every previously bound repo before closing their DBs", async () => {
   const f = await setup();
-  const registry = { find: () => ({ provider: "fixture-provider", id: "fixture-model" }), complete: async () => new Promise<never>(() => {}) };
+  const registry = { find: () => ({ provider: "fixture-provider", id: "fixture-model" }), complete: async () => new Promise<never>(() => {}), streamSimple: () => ({ result: () => new Promise<never>(() => {}) }) };
   const runtime = new HostOrganismRuntime(async () => null);
   const old = runtime.resolve({ sessionId: f.session.getSessionId(), cwd: f.cwd, modelRegistry: registry });
   old.db.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,?,1)").run("queued-example", finalSkillBody("queued-example", "Trace ownership."), "learner");

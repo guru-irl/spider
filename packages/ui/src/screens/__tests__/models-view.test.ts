@@ -59,3 +59,11 @@ describe("ModelsView", () => {
     expect(v.render(50)).not.toBe(a);
   });
 });
+
+
+it("shows max capability and associates a suffix default with its base model", () => {
+  const model = E({ provider: "acme", id: "reasoner", thinking: true, thinkingLevelMap: { max: "maximum" } } as any);
+  const lines = renderModels([model], { worker: "acme/reasoner:max" }, id, 200, undefined, false, { levelsByRef: { "acme/reasoner": ["off", "minimal", "low", "medium", "high", "max"] }, baseDefaults: { worker: "acme/reasoner" } }).join("\n");
+  expect(lines).toMatch(/thinking.*max/);
+  expect(lines).toMatch(/⟵.*worker/);
+});

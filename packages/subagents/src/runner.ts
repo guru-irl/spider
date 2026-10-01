@@ -4,6 +4,7 @@ import { RunEventTailer } from "./event-tailer";
 import { emitStatus } from "./run-events";
 import { buildChildSpawnSpec, type ChildSpawnSpec } from "./pi-args";
 import { registerChild, unregisterChild } from "./coordinators";
+import { resolveModelThinking } from "./model-resolve";
 import { genuineCompletion, NO_DELIVERABLE_RESULT } from "./completion-output";
 
 export { NO_DELIVERABLE_RESULT };
@@ -80,10 +81,11 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; intercomExtensions?: string[]; orchestratorTarget?: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; intercomExtensions?: string[]; orchestratorTarget?: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
+    const thinking = this.deps.modelRegistry === undefined ? undefined : resolveModelThinking(this.deps.modelRegistry, opts.model, opts.thinking);
     const { id } = this.deps.store.create({
       sessionId: this.sessionId,
       parentRunId: opts.parentRunId,
@@ -93,11 +95,12 @@ export class Runner {
       phase: opts.phase,
       model: opts.model,
       task: opts.task,
-      thinking: opts.thinking,
+      thinking: thinking ? thinking.effective : opts.thinking,
       // Even if both launch status transactions fail, the reaper can find this
       // queued row once its owning host exits. No child has been spawned yet.
       hostPid: process.pid,
     });
+    if (thinking?.notice) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: "warning", summary: thinking.notice, payload: { thinkingNotice: true, ...thinking, message: thinking.notice } });
     return this.deps.store.get(id)!;
   }
 
@@ -112,7 +115,8 @@ export class Runner {
       intercomExtensions: this.deps.intercomExtensions,
       task: opts.task,
       model: opts.model,
-      thinking: opts.thinking,
+      // The run row holds only the verified level. Unknown models pass the request to pi.
+      thinking: run.thinking ?? opts.thinking,
       context: opts.context,
       parentSessionId: this.sessionId,
       childIndex: opts.childIndex ?? 0,

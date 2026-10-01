@@ -48,8 +48,8 @@ function configuredAux(cfg: unknown): { provider?: string; model?: string } {
 }
 function completionRegistry(value: unknown): ModelRegistry {
   const r = value as Partial<ModelRegistry> | undefined;
-  if (typeof r?.find !== "function" || typeof r.complete !== "function") {
-    throw new Error("Organism needs pi's authenticated ModelRegistry.complete API. Reload the updated extension in pi 0.85.1 or newer.");
+  if (typeof r?.find !== "function" || typeof r.streamSimple !== "function") {
+    throw new Error("Organism needs pi's authenticated ModelRegistry.streamSimple API. Reload the updated extension in pi 0.87.0 or newer.");
   }
   return r as ModelRegistry;
 }

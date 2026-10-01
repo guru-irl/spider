@@ -99,7 +99,7 @@ describe("buildChildSpawnSpec", () => {
   });
 });
 
-import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
+import { buildPiArgs, thinkingFromModel, stripThinkingSuffix } from "../pi-args";
 describe("thinking suffix parsing", () => {
   it("thinkingFromModel extracts a whitelisted level, else undefined", () => {
     expect(thinkingFromModel("github-copilot/claude-opus-4.8:high")).toBe("high");
@@ -113,4 +113,13 @@ describe("thinking suffix parsing", () => {
     expect(stripThinkingSuffix("prov/m:notalevel")).toBe("prov/m:notalevel");
     expect(stripThinkingSuffix("prov/m")).toBe("prov/m");
   });
+});
+
+
+it("recognizes max suffixes and passes max through the explicit pi CLI flag", () => {
+  expect(thinkingFromModel("acme/model:max")).toBe("max");
+  expect(stripThinkingSuffix("acme/model:max")).toBe("acme/model");
+  const built = buildPiArgs({ baseArgs: [], task: "hi", sessionEnabled: false, inheritProjectContext: false, inheritSkills: false, model: "acme/model:max" });
+  expect(built.args.slice(built.args.indexOf("--model"), built.args.indexOf("--model") + 2)).toEqual(["--model", "acme/model"]);
+  expect(built.args.slice(built.args.indexOf("--thinking"), built.args.indexOf("--thinking") + 2)).toEqual(["--thinking", "max"]);
 });

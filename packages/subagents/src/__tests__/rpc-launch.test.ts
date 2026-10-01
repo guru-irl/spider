@@ -7,7 +7,7 @@ import { looksLikeSubagent } from "../process-identity";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function spec(mode?: "rpc" | "print") {
-  const scratch = resolve(".spider/scratch/rpc-launch"); mkdirSync(scratch, { recursive: true });
+  const scratch = resolve(".spider/scratch/thinking-policy-tests/rpc-launch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "case-")); roots.push(root);
   return buildChildSpawnSpec({ runId: "abcdef12-1234-4000-8000-000000000000", sessionId: "parent", agent: "worker", name: "fix-it", task: "do work", model: "test/model", thinking: "high", context: "fresh", parentSessionId: "parent", childIndex: 0, scratchRoot: root, dbPath: join(root, "fixture.db"), childExtensionPath: "fixture-extension.ts", cwd: root, childMode: mode } as any);
 }
@@ -21,14 +21,15 @@ describe("RPC launch contract", () => {
     expect(exclusions).toContain("contact_supervisor");
     expect(s.argv).not.toContain("Task: do work");
     expect(s.argv.slice(s.argv.indexOf("--name") + 1, s.argv.indexOf("--name") + 2)).toEqual(["fix-it-abcdef12"]);
-    expect(s.argv).toContain("test/model:high");
+    expect(s.argv).toContain("test/model");
+    expect(s.argv.slice(s.argv.indexOf("--thinking"), s.argv.indexOf("--thinking") + 2)).toEqual(["--thinking", "high"]);
     expect(s).toMatchObject({ childMode: "rpc", prompt: "Task: do work" });
   });
   it("retains legacy print argv and positional task", () => {
     const s = spec("print");
     expect(s.argv.slice(s.argv.indexOf("--mode"))).toEqual([
       "--mode", "json", "-p", "--session", s.sessionFile,
-      "--model", "test/model:high", "--no-extensions", "--extension", "fixture-extension.ts",
+      "--model", "test/model", "--thinking", "high", "--no-extensions", "--extension", "fixture-extension.ts",
       "--append-system-prompt", expect.stringMatching(/[/\\]prompt\.md$/), "Task: do work",
     ]);
     expect(s.argv.at(-1)).toBe("Task: do work");

@@ -310,7 +310,7 @@ import { getModel, streamProxy } from "@earendil-works/pi-ai";
 export type Tier = "nano" | "mini" | "standard" | "capable" | "reasoning";
 export interface ModelEntry { provider: string; id: string; tier: Tier; reasoning: boolean; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean; }
 export function catalog(pi: PiCtx): ModelEntry[];   // GITHUB_COPILOT_MODELS ∩ creds.availableModelIds + models.json providers, enriched
-export interface PickProfile { role?: string; complexity?: "low"|"med"|"high"; needsReasoning?: boolean; needsVision?: boolean; budget?: "cheap"|"normal"|"premium"; thinkingLevel?: "off"|"minimal"|"low"|"medium"|"high"|"xhigh"; }
+export interface PickProfile { role?: string; complexity?: "low"|"med"|"high"; needsReasoning?: boolean; needsVision?: boolean; budget?: "cheap"|"normal"|"premium"; thinkingLevel?: ThinkingLevel; }
 export function pick(profile: PickProfile): ModelEntry;      // explicit override > config default > policy; only AVAILABLE; degrade a tier if unavailable
 export function complete(model: ModelEntry, prompt: string, opts?: { system?: string; thinkingLevel?: string; maxTokens?: number }): Promise<string>;  // getModel()+streamProxy(); THE single aux-completion path (digests, self-name, upstream-watch). Exempt from routing.
 export function recordModelStat(db: Db, s: { model: string; ms: number; ok: boolean; tokens: number }): void;
@@ -373,7 +373,7 @@ Rationale (validated against the live GitHub Copilot catalog + this account's `a
 
 ```ts
 export type Tier = "light" | "standard" | "heavy";                       // was nano|mini|standard|capable|reasoning
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type { ThinkingLevel } from "@spider/db-core"; // shared list includes max
 export interface ModelEntry { provider: string; id: string; tier: Tier; thinking: boolean; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean; }  // reasoning -> thinking
 // Ordered copilot ids; pick() returns the FIRST AVAILABLE per tier (auto-handles a model missing from this account, e.g. no *-nano):
 export const TIER_PREFERENCE: Record<Tier, string[]> = {

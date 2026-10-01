@@ -1,3 +1,4 @@
+import { UI_CONFIG_SCHEMA } from "../ui-thinking.js";
 import { coerce, getField } from "@spider/ui";
 import { controlConfig, type ConfigWriteResult } from "../control.js";
 
@@ -8,7 +9,7 @@ function keyError(key: string): string | undefined {
 	if (key === "exec.enforce") {
 		return "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command";
 	}
-	if (!getField(key)) return `unknown key ${key}`;
+	if (!getField(key, UI_CONFIG_SCHEMA)) return `unknown key ${key}`;
 	return undefined;
 }
 
@@ -16,7 +17,7 @@ function keyError(key: string): string | undefined {
 export function applyConfigEdit(cwd: string, key: string, raw: string, scope: "local" | "global" = "local"): ConfigEditResult {
 	const error = keyError(key);
 	if (error) return { ok: false, error };
-	const c = coerce(getField(key)!, raw);
+	const c = coerce(getField(key, UI_CONFIG_SCHEMA)!, raw);
 	if (!c.ok) return { ok: false, error: c.error ?? "invalid value" };
 	if (key === "memory.snapshotCharCap" && c.value === undefined) return controlConfig("unset", cwd, key, undefined, scope);
 	return controlConfig("set", cwd, key, c.value, scope);

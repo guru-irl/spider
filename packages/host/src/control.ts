@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync 
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { bundleDoctorLine, type LoadedBundle } from "./build-id";
-import { openGlobal, resolveProject, paths, assertTestConfigPath } from "@spider/db-core";
+import { openGlobal, resolveProject, paths, assertTestConfigPath, isThinkingLevel, THINKING_LEVELS } from "@spider/db-core";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
@@ -160,8 +160,8 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     throw new Error(`${key} must be an integer from 1000 to ${timeoutMax} ms`);
   }
   if (op === "set" && ["memory.reviewer.thinking", "skills.reviewer.thinking"].includes(key) &&
-    (typeof value !== "string" || !["minimal", "low", "medium", "high", "xhigh"].includes(value))) {
-    throw new Error(`${key} thinking must be minimal, low, medium, high or xhigh`);
+    !isThinkingLevel(value)) {
+    throw new Error(`${key} thinking must be one of ${THINKING_LEVELS.join(", ")}`);
   }
   if (op === "set" && key === "subagents.childMode" && value !== "rpc" && value !== "print") {
     throw new Error("subagents.childMode must be rpc or print");

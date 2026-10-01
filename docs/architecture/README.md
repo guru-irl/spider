@@ -41,8 +41,8 @@ from packages below it.
 | Layer | Package | Role |
 | --- | --- | --- |
 | Foundation | `@spider/db-core` | Opens and migrates the three database tiers, defines the schema, resolves a project, and runs the `run_events` bus. No `@spider/*` dependency. |
-| Model routing | `@spider/models` | Model catalog, tiers, selection, and one-shot completion. Depends on `db-core` for the `Db` type only. |
-| Rendering | `@spider/ui` | Pure themed renderers and TUI components. Takes plain data and a theme, returns strings. Depends only on `@spider/models` types. Touches no database and does not import pi. |
+| Model routing | `@spider/models` | Model catalog, tiers, selection, and one-shot completion. Depends on `db-core` for the `Db` type and shared runtime thinking policy; does not open databases. |
+| Rendering | `@spider/ui` | Pure themed renderers and TUI components. Takes plain data and a theme, returns strings. Uses `@spider/models` and `db-core` types only, plus `pi-tui` display helpers. The host injects thinking enums, supported levels and normalized default refs as plain data. No runtime database dependency or pi extension API. |
 | Action and service | `@spider/memory` | Structured memory: staging, approval, the active snapshot, embeddings. Depends on `db-core` and `ui`. |
 | Action and service | `@spider/todo` | Durable per-session todos and the `/todos` surface. Depends on `db-core` and `ui`. |
 | Action and service | `@spider/context` | Unified search, sandboxed exec, the content store, fetch, and session import. Depends on `db-core`, `memory`, and `ui`. |

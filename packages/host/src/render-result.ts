@@ -17,6 +17,7 @@ import {
 import { renderImportResult, isKnownFailureOutcome } from "@spider/context";
 import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
+import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { toToolResult } from "./result";
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 
@@ -90,14 +91,23 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   return lines;
 }
 
+/** Caps and unverified/off levels are visible, not hidden in serialized details. */
+function thinkingNoticeLines(t: T, details: any, width: number, expanded: boolean): string[] {
+  const diagnostics: any[] = Array.isArray(details?.thinkingDiagnostics) ? details.thinkingDiagnostics : [];
+  return [...new Set(diagnostics.filter(info => info?.effective === "off" || info?.requested !== info?.effective)
+    .map(info => info?.notice).filter((notice): notice is string => typeof notice === "string"))]
+    .map(notice => t.fg("muted", expanded ? `  ${notice}` : clip(`  ${notice}`, width)));
+}
+
 function renderRun(t: T, details: any, expanded: boolean): Component {
   const runs: RunLike[] = Array.isArray(details?.runs) ? details.runs : details?.run ? [details.run] : [];
   return {
     render(width: number): string[] {
-      if (runs.length === 0) return ["", t.fg("muted", "   (no runs)")];
+      if (runs.length === 0) return fitResultLines(["", t.fg("muted", "   (no runs)"), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded);
       const lines: string[] = [];
       const multi = runs.length > 1;
       for (const r of runs) { lines.push(...runBlock(t, r, width, expanded)); if (multi) lines.push(""); }
+      lines.push(...thinkingNoticeLines(t, details, width, expanded));
       const anyTask = runs.some((r) => (r.task ?? "").trim());
       const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
       if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", `  ctrl+o to expand${anyOut ? " output" : " instructions"}`));
@@ -228,7 +238,7 @@ function renderControlModels(t: T, details: any, expanded: boolean): Component {
   const catalog: ModelEntry[] = Array.isArray(details?.catalog) ? details.catalog : [];
   const defaults: Record<string, string> = (details?.defaults as Record<string, string>) ?? {};
   const origins = details?.sources && details?.global ? { sources: details.sources, global: details.global } : undefined;
-  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w, origins, expanded), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w, origins, expanded, modelThinkingDisplay(catalog, defaults)), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
 }
 
 function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, width: number, expanded = false): string[] {
@@ -240,7 +250,7 @@ function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, wid
 function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.config && typeof details.config === "object") {
-    return { render: (w: number) => ["", ...renderConfig(details.config, th, w, expanded), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+    return { render: (w: number) => ["", ...renderConfig(details.config, th, w, expanded, UI_CONFIG_SCHEMA), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
   }
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
@@ -639,7 +649,10 @@ function renderSpiderResultBody(
       const th = adaptTheme(t);
       return { render: (w: number) => renderKillResult(details as KillDetails, { theme: th, width: w, expanded }), invalidate() {} };
     }
-    case "remember": return wrapBespoke(renderRememberResult(details as StageResult, expanded));
+    case "remember": {
+      const body = wrapBespoke(renderRememberResult(details as StageResult, expanded));
+      return { render: (width: number) => fitResultLines([...body.render(width), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded), invalidate: () => body.invalidate?.() };
+    }
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[], expanded));
     case "todo": {
       const op = context?.args?.op;

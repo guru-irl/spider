@@ -419,7 +419,7 @@ describe("spider extension entry", () => {
     const pi = fakePi();
     spiderExtension(pi as never);
     const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
-    const levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     for (const thinking of [props.thinking, props.tasks.items.properties.thinking, props.chain.items.properties.thinking, props.pipeline.items.properties.thinking]) {
       expect(thinking.enum).toEqual(levels);
       expect(thinking.description).toMatch(/thinking|reasoning/i);

@@ -71,9 +71,9 @@ This package deliberately does not:
 | `stats-collect.ts` | `summarizeStats`: folds raw row counts and per-model timing samples into a token-savings estimate and per-model aggregates. |
 | `stats-view.ts` | `renderStats` and `StatsView`: token savings, row counts, and a per-model table. |
 | `insights-view.ts` | `renderInsights` and `InsightsView`: the organism's learning graph as a stats line, a capped node list, and a capped edge list. |
-| `models-model.ts` | `catalogRows`, `resolveDefault`, `MODEL_ROLES`: groups the model catalog by tier and marks which entries are configured role defaults. |
+| `models-model.ts` | `catalogRows`, `resolveDefault`, `MODEL_ROLES`, `ModelThinkingDisplay`: groups the model catalog by tier and marks which entries are configured role defaults. |
 | `models-view.ts` | `renderModels` and `ModelsView`: one section per tier, one line per model with an availability glyph, thinking/vision badges, and role-default markers. |
-| `config-schema.ts` | `CONFIG_SCHEMA`, `getField`, `coerce`: the declarative schema (organism, embeddings, memory, routing, curator, self_naming, models, ui groups) and string-to-typed-value coercion with min/max/enum checks. |
+| `config-schema.ts` | `CONFIG_SCHEMA`, `createConfigSchema`, `getField`, `coerce`: the declarative schema with host-injected reviewer thinking enums and string-to-typed-value coercion with min/max/enum checks. |
 | `config-model.ts` | `buildConfigModel`, `readPath`: resolves each field's current value against a config object, checking the flat dotted key first, then falling back to nested traversal. |
 | `config-view.ts` | `renderConfig` and `ConfigView`: one section per group, one default/overridden status row per field, with a restart marker where relevant. |
 
@@ -151,16 +151,25 @@ Read from `packages/ui/src/index.ts`.
 | `summarizeStats`, `StatsInput`, `StatsSummary`, `ModelStatRow` | Pure stats aggregation. |
 | `renderStats`, `StatsView` | Stats body and its cached-by-width component wrapper. |
 | `renderInsights`, `InsightsView`, `InsightGraphView` | Learning-graph body and wrapper. |
-| `catalogRows`, `resolveDefault`, `MODEL_ROLES`, `CatalogRow`, `TierGroup` | Model catalog grouping and role-default resolution. |
+| `catalogRows`, `resolveDefault`, `MODEL_ROLES`, `CatalogRow`, `TierGroup`, `ModelThinkingDisplay` | Model catalog grouping and role-default resolution. |
 | `renderModels`, `ModelsView` | Model catalog body and wrapper. |
-| `CONFIG_SCHEMA`, `getField`, `coerce`, `ConfigField`, `ConfigGroup`, `ConfigFieldType` | The config schema and value coercion. |
+| `CONFIG_SCHEMA`, `createConfigSchema`, `getField`, `coerce`, `ConfigField`, `ConfigGroup`, `ConfigFieldType` | The config schema and value coercion. |
 | `buildConfigModel`, `readPath`, `ConfigFieldRow`, `ConfigGroupModel` | Resolves current config values against the schema. |
 | `renderConfig`, `ConfigView` | Config body and wrapper. |
 
 ## How it fits
 
-This package has one workspace dependency, `@spider/models` (only for the `ModelEntry` and
-`Tier` types used to group the model catalog in `screens/models-model.ts`), and one peer
+This package declares one workspace dependency, `@spider/models`, used only for
+`ModelEntry` and `Tier` types. Its `RunEvent` reference to `@spider/db-core` is also
+type-only. It has no runtime workspace dependency: importing UI loads no database
+code or native SQLite modules. The host supplies `createConfigSchema(THINKING_LEVELS)`
+and passes that schema to config lookup/coercion and rendering. It also supplies
+`ModelThinkingDisplay` (supported levels by model ref and normalized default refs)
+to model grouping and rendering. UI does not copy the level list or resolve model
+capabilities. Without supplied thinking data, the standalone schema has empty
+reviewer enums and the models view omits capability lines.
+
+The package has one peer
 dependency, `@earendil-works/pi-tui` (`>=0.87.0`), for width-safe string helpers
 (`truncateToWidth`, `visibleWidth`) and key matching (`Key`, `matchesKey`). `pi-tui` is a
 display-utility library, not the pi extension host: this package has no reference to pi's tool

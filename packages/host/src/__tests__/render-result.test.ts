@@ -683,3 +683,11 @@ describe("todo mutation results", () => {
     expect(c.render(100).join("\n")).toContain(`Removed ${details.removed} todos; kept ${details.kept} open todos`);
   });
 });
+
+
+it.each(["run", "remember"])("%s rendering shows a thinking cap plainly", action => {
+  const notice = "thinking capped: requested max, model supports up to xhigh; using xhigh";
+  const details = { run: { agent: "worker", thinking: "xhigh", status: "running" }, status: "active", uuid: "fixture", content: "fixture", category: "convention", thinkingDiagnostics: [{ requested: "max", effective: "xhigh", notice }] };
+  const component = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action }));
+  expect(component.render(140).join("\n")).toContain(notice);
+});

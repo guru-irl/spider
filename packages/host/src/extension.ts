@@ -1,6 +1,7 @@
+import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError } from "@spider/memory";
-import { commandEnv } from "@spider/db-core";
+import { commandEnv, THINKING_LEVELS } from "@spider/db-core";
 // packages/host/src/extension.ts
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
@@ -186,7 +187,7 @@ export const SPIDER_PARAMETERS = {
           task: { type: "string" },
           count: { type: "integer", minimum: 1 },
           model: { type: "string", description: "Per-item model override for this task." },
-          thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "Per-item reasoning/thinking level for this task; overrides the resolved model suffix." },
+          thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "Per-item reasoning/thinking level for this task; overrides the resolved model suffix." },
           context: { type: "string", enum: ["fresh", "fork"] },
         },
         required: ["agent", "task"],
@@ -202,7 +203,7 @@ export const SPIDER_PARAMETERS = {
           name: { type: "string", description: "Short display name surfaced in the UI." },
           task: { type: "string" },
           model: { type: "string", description: "Per-item model override for this chain step." },
-          thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "Per-item reasoning/thinking level for this chain step; overrides the resolved model suffix." },
+          thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "Per-item reasoning/thinking level for this chain step; overrides the resolved model suffix." },
           context: { type: "string", enum: ["fresh", "fork"] },
         },
       },
@@ -213,14 +214,14 @@ export const SPIDER_PARAMETERS = {
       items: { type: "object", properties: {
         agent: { type: "string" }, role: { type: "string" }, phase: { type: "string" },
         task: { type: "string", description: "Template: {task}, {previous}, {handoff}, {outputs.<as>}." },
-        as: { type: "string" }, model: { type: "string", description: "Per-stage model override for this pipeline stage." }, thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "Per-stage reasoning/thinking level for this pipeline stage; overrides the resolved model suffix." },
+        as: { type: "string" }, model: { type: "string", description: "Per-stage model override for this pipeline stage." }, thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "Per-stage reasoning/thinking level for this pipeline stage; overrides the resolved model suffix." },
         skill: { type: "string" }, context: { type: "string", enum: ["fresh", "fork"] },
         count: { type: "integer", minimum: 1 }, wakeOn: { type: "string", enum: ["done", "accepted"] },
       }, required: ["agent"] },
     },
     concurrency: { type: "integer", minimum: 1, description: "PARALLEL max concurrent (default 4)." },
     model: { type: "string", description: "SINGLE-mode model override; tasks, chain and pipeline use per-item model fields." },
-    thinking: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh"], description: "SINGLE-mode reasoning/thinking level; overrides the resolved model suffix. Tasks, chain and pipeline use per-item thinking fields." },
+    thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "SINGLE-mode reasoning/thinking level; overrides the resolved model suffix. Tasks, chain and pipeline use per-item thinking fields." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
     id: { type: "string", description: "Run id/prefix (todo toggle/remove: per-session seq). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
@@ -805,13 +806,15 @@ export default function spiderExtension(pi: PiToolAPI): void {
     const enabled = controlConfig("get", ctx.cwd, "memory.reviewer.enabled") !== false;
     const model = controlConfig("get", ctx.cwd, "memory.reviewer.model");
     const timeoutMs = controlConfig("get", ctx.cwd, "memory.reviewer.timeoutMs");
+    const thinkingDiagnostics: import("@spider/db-core").ThinkingResolution[] = [];
+    const recordThinking = reviewerThinkingDiagnostic(ctx.cwd, "memory", String(model));
     const r = await reviewedWrite({ repo: ctx.repoDb, global: ctx.globalDb }, scope, {
       category: args.category as any,
       content: args.content as string,
       link: (args.link as string | null) ?? null,
       source: args.auto ? "auto" : "user",
     }, args.justification, {
-      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry, controlConfig("get", ctx.cwd, "memory.reviewer.thinking") as import("@earendil-works/pi-ai").ThinkingLevel) : undefined,
+      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry, controlConfig("get", ctx.cwd, "memory.reviewer.thinking") as import("@spider/db-core").ThinkingLevel, info => { thinkingDiagnostics.push(info); recordThinking(info); }) : undefined,
       skipReason: "reviewer disabled",
       timeoutMs: timeoutMs as number,
       signal: ctx.signal,
@@ -820,8 +823,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
     });
     // Carry the saved content/category/scope on BOTH the rendered panel and the serialized
     // details payload, so a programmatic caller gets back what was actually remembered.
-    const details = { ...r, content: args.content as string, category: args.category as any, justification: args.justification };
-    return { text: r.message, display: renderRememberResult(details), details };
+    const details = { ...r, content: args.content as string, category: args.category as any, justification: args.justification, thinkingDiagnostics };
+    const notes = thinkingDiagnostics.filter(info => info.effective === "off" || info.requested !== info.effective).map(info => info.notice).filter(Boolean).join("\n");
+    return { text: [r.message, notes].filter(Boolean).join("\n"), display: [renderRememberResult(details), notes].filter(Boolean).join("\n"), details };
   });
 
   registerAction("recall", async (args, ctx) => {

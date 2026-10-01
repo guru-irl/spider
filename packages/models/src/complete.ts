@@ -1,19 +1,21 @@
 import type { ModelEntry } from "./catalog";
 import type { PickResult } from "./pick";
-import type { Db } from "@spider/db-core";
+import { resolveThinking, type Db, type ThinkingLevel, type ThinkingResolution } from "@spider/db-core";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 export interface CompleteOpts {
   system?: string;
-  thinkingLevel?: string;
+  thinkingLevel?: ThinkingLevel;
+  /** Effective level and any cap/adjustment, emitted before the request. */
+  onThinking?: (info: ThinkingResolution) => void;
   maxTokens?: number;
   /**
-   * Authenticated pi ModelRegistry (or a stand-in exposing just find/complete).
+   * Authenticated pi ModelRegistry (or a stand-in exposing just find/streamSimple).
    * Required for the default (non-CompleteDeps) path — production callers must
    * supply the real registry from ExtensionContext (ctx.modelRegistry).
    */
-  registry?: Pick<ModelRegistry, "find" | "complete">;
-  /** Forwarded to registry.complete() so callers can cancel in-flight requests. */
+  registry?: Pick<ModelRegistry, "find" | "streamSimple">;
+  /** Forwarded to registry.streamSimple() so callers can cancel in-flight requests. */
   signal?: AbortSignal;
 }
 export interface CompleteDeps {
@@ -25,11 +27,11 @@ export interface CompleteDeps {
 //
 // Two seams:
 //  - `deps` (CompleteDeps): explicit injection kept for existing callers/tests. Unchanged shape.
-//  - default path (no deps): uses `opts.registry`, a pi ModelRegistry (Pick<'find'|'complete'>).
+//  - default path (no deps): uses `opts.registry`, a pi ModelRegistry (Pick<'find'|'streamSimple'>).
 //    This is the production path — it resolves the FULL handle via registry.find() (so custom
 //    model/provider configuration on the resolved handle is preserved) and calls
-//    registry.complete(handle, context, options), the public authenticated completion API in
-//    pi 0.85.1. There is no unauthenticated fallback: a missing registry or an unresolvable
+//    registry.streamSimple(handle, context, options).result(), the public authenticated completion API in
+//    pi 0.87. There is no unauthenticated fallback: a missing registry or an unresolvable
 //    model is a thrown, actionable error, never a silent/empty success.
 export async function complete(model: ModelEntry | PickResult, prompt: string, opts: CompleteOpts = {}, deps?: CompleteDeps): Promise<string> {
   const entry = "entry" in model ? model.entry : model;
@@ -55,6 +57,9 @@ async function completeViaRegistry(entry: ModelEntry, prompt: string, opts: Comp
   }
 
   const handle = registry.find(entry.provider, entry.id);
+  const thinking = resolveThinking(handle, opts.thinkingLevel);
+  // Diagnostics must not prevent a completion.
+  try { opts.onThinking?.(thinking); } catch { /* best effort */ }
   if (!handle) {
     throw new Error(`@spider/models: model not found in registry: ${entry.provider}/${entry.id}`);
   }
@@ -64,15 +69,12 @@ async function completeViaRegistry(entry: ModelEntry, prompt: string, opts: Comp
     messages: [{ role: "user" as const, content: prompt, timestamp: Date.now() }],
   };
 
-  // ModelsApiStreamOptions<TApi> is per-API-literal (each provider's option type is different).
-  // The widened Model<Api> handle returned by find() resolves the generic fallback branch
-  // (StreamOptions & Record<string, unknown>), where reasoningEffort lives for OpenAI-family
-  // options types. Cast at this one narrow boundary rather than hiding the whole module's types.
-  const message = await registry.complete(handle, context, {
-    reasoningEffort: opts.thinkingLevel,
+  // pi 0.87 accepts provider-neutral reasoning, not reasoningEffort. Off is omission.
+  const message = await registry.streamSimple(handle, context, {
+    reasoning: thinking.effective === "off" ? undefined : thinking.effective,
     maxTokens: opts.maxTokens,
     signal: opts.signal,
-  } as Parameters<typeof registry.complete>[2]);
+  }).result();
 
   if (message.stopReason === "aborted") {
     throw new Error(`@spider/models: completion aborted for ${entry.provider}/${entry.id}${message.errorMessage ? `: ${message.errorMessage}` : ""}`);
@@ -86,7 +88,7 @@ async function completeViaRegistry(entry: ModelEntry, prompt: string, opts: Comp
     .map((c) => c.text)
     .join("");
 
-  if (!text) {
+  if (!text.trim()) {
     throw new Error(`@spider/models: completion for ${entry.provider}/${entry.id} returned no text content (stopReason=${message.stopReason})`);
   }
 

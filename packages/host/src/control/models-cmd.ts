@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { paths } from "@spider/db-core";
+import { paths, thinkingFromModel, stripThinkingSuffix, type ThinkingModel } from "@spider/db-core";
 import { catalog, type ModelEntry, type EnumeratedModel } from "@spider/models";
 import { MODEL_ROLES } from "@spider/ui";
 import { controlConfig, modelDefaultLayers, modelDefaultLayerForEdit } from "../control.js";
@@ -43,8 +43,10 @@ export function setModelDefault(cwd: string, role: string, ref: string, models: 
   if (!MODEL_ROLES.includes(role)) {
     return { ok: false, error: `unknown role '${role}' (valid: ${MODEL_ROLES.join(", ")})` };
   }
-  const normalized = normalizeStaleProvider(ref, models);
-  if (!isKnownRef(normalized, models)) {
+  const thinking = thinkingFromModel(ref);
+  const base = normalizeStaleProvider(stripThinkingSuffix(ref)!, models);
+  const normalized = thinking ? `${base}:${thinking}` : base;
+  if (!isKnownRef(base, models)) {
     const valid = models.map(refOf).join(", ");
     return { ok: false, error: `unknown model '${ref}' (valid: ${valid || "no models available"})` };
   }
@@ -99,6 +101,7 @@ function enumerate(registry: unknown): EnumeratedModel[] {
       id: String(m.id ?? ""),
       available: true, // by construction: everything here is usable
       thinking: !!m.reasoning,
+      thinkingLevelMap: m.thinkingLevelMap as ThinkingModel["thinkingLevelMap"],
       vision: input.includes("image"),
       ctx: Number(m.contextWindow ?? 0) || undefined,
     };

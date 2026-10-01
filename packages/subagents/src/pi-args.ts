@@ -1,3 +1,5 @@
+import { isThinkingLevel, thinkingFromModel, stripThinkingSuffix } from "@spider/db-core";
+export { thinkingFromModel, stripThinkingSuffix } from "@spider/db-core";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +15,6 @@ export const STRUCTURED_OUTPUT_CAPTURE_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_CAPT
 // Inlined from pi-subagents' shared/types (only this alias was used here).
 type JsonSchemaObject = Record<string, unknown>;
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const TASK_ARG_LIMIT = 8000;
 // The spider subagent CHILD loads the spider extension bundle itself; in child mode
 // (PI_SUBAGENT_CHILD=1) it self-attaches the run-event reporter (see subagents/index.ts).
@@ -84,27 +85,10 @@ interface BuildPiArgsResult {
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined, replaceExisting = false): string | undefined {
 	if (!model || !thinking) return model;
 	const colonIdx = model.lastIndexOf(":");
-	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) {
+	if (colonIdx !== -1 && isThinkingLevel(model.substring(colonIdx + 1))) {
 		return replaceExisting ? `${model.slice(0, colonIdx)}:${thinking}` : model;
 	}
 	return `${model}:${thinking}`;
-}
-
-/** Extract a thinking-level suffix from a model id (e.g. "prov/model:high" → "high"), or undefined.
- *  Only recognises whitelisted levels so a stray colon in a base id is never mistaken for one. */
-export function thinkingFromModel(model: string | undefined): string | undefined {
-	if (!model) return undefined;
-	const colonIdx = model.lastIndexOf(":");
-	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model.substring(colonIdx + 1);
-	return undefined;
-}
-
-/** Return the base model id with any thinking-level suffix removed. */
-export function stripThinkingSuffix(model: string | undefined): string | undefined {
-	if (!model) return model;
-	const colonIdx = model.lastIndexOf(":");
-	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model.slice(0, colonIdx);
-	return model;
 }
 
 function mkdtempInScratch(scratchRoot: string | undefined): string {
@@ -135,10 +119,14 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 		}
 	}
 
-	const modelArg = applyThinkingSuffix(input.model, input.thinking);
+	const thinking = input.thinking ?? thinkingFromModel(input.model);
+	if (thinking !== undefined && !isThinkingLevel(thinking)) throw Error(`invalid thinking level: ${thinking}`);
+	const modelArg = stripThinkingSuffix(input.model);
 	if (modelArg) {
 		args.push("--model", modelArg);
 	}
+
+	if (thinking) args.push("--thinking", thinking);
 
 	const declaredBuiltinToolsBase = input.tools?.filter((tool) => !(tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) ?? [];
 	const declaredBuiltinTools = input.requireReadTool && input.tools?.length && !declaredBuiltinToolsBase.includes("read")

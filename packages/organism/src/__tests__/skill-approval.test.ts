@@ -1,3 +1,4 @@
+import { finalSkillBody } from "./helpers/skill.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -35,7 +36,7 @@ function skillFilePath(root: string, name: string): string {
 }
 
 describe("SkillStore.approveCandidate — safe materialization", () => {
-  it("rejects an unsafe name (path traversal attempt) without touching the DB row or filesystem", () => {
+  it("rejects an unsafe name (path traversal attempt) without touching the DB row or filesystem", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -49,7 +50,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     expect(existsSync(join(projectRoot, ".spider"))).toBe(false);
   });
 
-  it("rejects names with invalid characters (uppercase, underscores, leading hyphen, consecutive hyphens, too long)", () => {
+  it("rejects names with invalid characters (uppercase, underscores, leading hyphen, consecutive hyphens, too long)", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -59,7 +60,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     }
   });
 
-  it("requires a staged candidate with content — no candidate, and an already-active skill, both fail", () => {
+  it("requires a staged candidate with content — no candidate, and an already-active skill, both fail", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -73,7 +74,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     expect(alreadyActive.error).toMatch(/already active/i);
   });
 
-  it("never overwrites a pinned or protected skill, even when a candidate is staged over it", () => {
+  it("never overwrites a pinned or protected skill, even when a candidate is staged over it", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -96,7 +97,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     expect(res2.ok).toBe(false);
   });
 
-  it("no-clobber: refuses to overwrite an existing SKILL.md file, leaving the row staged with its body intact", () => {
+  it("no-clobber: refuses to overwrite an existing SKILL.md file, leaving the row staged with its body intact", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -117,7 +118,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     expect(readFileSync(file, "utf-8")).toBe("pre-existing content, not ours");
   });
 
-  it("refuses to write outside the project root when .spider/skills is a symlink escape", () => {
+  it("refuses to write outside the project root when .spider/skills is a symlink escape", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const outside = join(paths.scratch("worktree", process.cwd()), `outside-${crypto.randomUUID()}`);
@@ -135,7 +136,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     expect(existsSync(join(outside, "escape-attempt"))).toBe(false);
   });
 
-  it("on success, the materialized SKILL.md is loadable by pi's public loadSkillsFromDir (not just present on disk)", () => {
+  it("on success, the materialized SKILL.md is loadable by pi's public loadSkillsFromDir (not just present on disk)", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -158,7 +159,7 @@ describe("SkillStore.approveCandidate — safe materialization", () => {
     expect(diagnostics.filter((d) => d.path === loaded!.filePath)).toHaveLength(0);
   });
 
-  it("rejection changes status without installing any file", () => {
+  it("rejection changes status without installing any file", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const s = new SkillStore(ctx.repoDb);
@@ -179,56 +180,56 @@ describe("skillAction — approve/reject op surface", () => {
     };
   }
 
-  it("exposes op:'approve' — activates a staged candidate and reports its path", () => {
+  it("exposes op:'approve' — activates a staged candidate and reports its path", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const store = new SkillStore(ctx.repoDb);
     store.stageCandidate({ name: "answer-style", body: "# Style\nBe terse." });
 
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "approve", name: "answer-style" } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "approve", name: "answer-style" } as any);
     expect(store.get("answer-style")!.status).toBe("active"); // was: falls through to "list", status stays "staged"
     expect((result.details as { ok: boolean }).ok).toBe(true);
     expect(result.display).toContain("answer-style");
   });
 
-  it("exposes op:'reject' — leaves status rejected, no file, and a compatible sync result", () => {
+  it("exposes op:'reject' — leaves status rejected, no file, and a compatible sync result", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const store = new SkillStore(ctx.repoDb);
     store.stageCandidate({ name: "skip-me", body: "# nah" });
 
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "reject", name: "skip-me" } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "reject", name: "skip-me" } as any);
     expect(store.get("skip-me")!.status).toBe("rejected");
     expect(existsSync(skillFilePath(projectRoot, "skip-me"))).toBe(false);
     expect(result.details).not.toBeNull();
   });
 
-  it("approve reports an actionable error (not a thrown exception) for an unknown candidate", () => {
+  it("approve reports an actionable error (not a thrown exception) for an unknown candidate", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "approve", name: "ghost" } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "approve", name: "ghost" } as any);
     expect((result.details as { ok: boolean }).ok).toBe(false);
     expect(result.display).toMatch(/could not approve/i);
   });
 
-  it("still supports list/view/distill unchanged", () => {
+  it("still supports list/view/distill unchanged", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const store = new SkillStore(ctx.repoDb);
     store.upsert({ name: "release-flow" });
-    const list = skillAction(deps(ctx.repoDb, projectRoot), { op: "list" } as any);
+    const list = await skillAction(deps(ctx.repoDb, projectRoot), { op: "list" } as any);
     expect((list.details as unknown[]).length).toBeGreaterThan(0);
-    const view = skillAction(deps(ctx.repoDb, projectRoot), { op: "view", name: "release-flow" } as any);
+    const view = await skillAction(deps(ctx.repoDb, projectRoot), { op: "view", name: "release-flow" } as any);
     expect(view.details).not.toBeNull();
-    const distill = skillAction(deps(ctx.repoDb, projectRoot), { op: "distill", text: "hi" } as any);
+    const distill = await skillAction(deps(ctx.repoDb, projectRoot), { op: "distill", text: "hi" } as any);
     expect(typeof distill.display).toBe("string");
   });
 
-  it("exposes op:'add' — stages a real candidate via SkillStore.stageCandidate (G5a)", () => {
+  it("exposes op:'add' — stages a real candidate via SkillStore.stageCandidate (G5a)", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const store = new SkillStore(ctx.repoDb);
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "add", name: "release-notes", text: "# Release notes\nDraft from merged PR titles." } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "add", name: "release-notes", text: finalSkillBody("release-notes", "Draft from merged PR titles.") } as any);
     expect((result.details as { ok: boolean }).ok).toBe(true);
     const row = store.get("release-notes");
     expect(row?.status).toBe("staged");
@@ -238,28 +239,28 @@ describe("skillAction — approve/reject op surface", () => {
     expect(existsSync(skillFilePath(projectRoot, "release-notes"))).toBe(false);
   });
 
-  it("op:'add' rejects an invalid name without staging anything", () => {
+  it("op:'add' rejects an invalid name without staging anything", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const store = new SkillStore(ctx.repoDb);
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "add", name: "Not Valid", text: "body" } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "add", name: "Not Valid", text: "body" } as any);
     expect((result.details as { ok: boolean }).ok).toBe(false);
     expect(store.get("Not Valid")).toBeUndefined();
   });
 
-  it("op:'add' rejects an empty body without staging anything", () => {
+  it("op:'add' rejects an empty body without staging anything", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
     const store = new SkillStore(ctx.repoDb);
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "add", name: "valid-name", text: "   " } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "add", name: "valid-name", text: "   " } as any);
     expect((result.details as { ok: boolean }).ok).toBe(false);
     expect(store.get("valid-name")).toBeUndefined();
   });
 
-  it("an unknown op (including the hallucinated 'create') reports a host-visible error, never a successful listing (G5a)", () => {
+  it("an unknown op (including the hallucinated 'create') reports a host-visible error, never a successful listing (G5a)", async () => {
     ctx = makeOrgDb();
     projectRoot = makeProjectRoot();
-    const result = skillAction(deps(ctx.repoDb, projectRoot), { op: "create" } as any);
+    const result = await skillAction(deps(ctx.repoDb, projectRoot), { op: "create" } as any);
     expect((result.details as { ok: boolean }).ok).toBe(false);
     expect(Array.isArray(result.details)).toBe(false);
     expect(result.display).toMatch(/unknown skill op/i);

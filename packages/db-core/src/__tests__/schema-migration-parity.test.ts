@@ -153,3 +153,19 @@ describe("fresh vs migrated schema parity", () => {
     expect(tablesOf(p)).toEqual(before);
   });
 });
+
+it("repo v11 skills and queue column definitions match fresh v12", () => {
+  mkdirSync(scratch, { recursive: true });
+  const fresh = openDbAt(join(scratch, "fresh-skills.db"), "repo");
+  const expectedSkills = fresh.prepare("PRAGMA table_info(skills)").all();
+  const expectedQueue = fresh.prepare("PRAGMA table_info(skill_review_queue)").all();
+  expect(expectedQueue.length).toBeGreaterThan(0);
+  fresh.close();
+  const old = openDbAt(join(scratch, "old-skills.db"), "repo");
+  old.raw.exec("ALTER TABLE skills DROP COLUMN review_reason; DROP TABLE IF EXISTS skill_review_queue; DROP TABLE IF EXISTS skill_review_results; DROP TABLE IF EXISTS skill_review_lock");
+  old.raw.pragma("user_version = 11"); old.close();
+  const migrated = openDbAt(join(scratch, "old-skills.db"), "repo");
+  expect(migrated.prepare("PRAGMA table_info(skills)").all()).toEqual(expectedSkills);
+  expect(migrated.prepare("PRAGMA table_info(skill_review_queue)").all()).toEqual(expectedQueue);
+  migrated.close();
+});

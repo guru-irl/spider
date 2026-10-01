@@ -807,7 +807,7 @@ export function renderOrganismEntry(entry: unknown, options: { expanded?: boolea
       const icon = bad ? "⚠" : state === "completed" ? "✓" : "○";
       const lines = [t.fg(bad ? "error" : "toolTitle", `${icon} organism · ${state}`)];
       if (report) {
-        lines.push(t.fg("toolOutput", `${report.memoryStaged} memories · ${report.skillsStaged} skills staged · ${report.todosAdded} todos`));
+        lines.push(t.fg("toolOutput", `${report.memoryStaged} memories · ${report.skillsQueued === undefined && report.skillsStaged > 0 ? `${report.skillsStaged} skills staged` : `${report.skillsQueued ?? 0} skills queued`} · ${report.todosAdded} todos`));
         if (report.skipReason) lines.push(t.fg("toolOutput", report.skipReason));
         const errors = options?.expanded ? report.errors : report.errors.slice(0, 1);
         for (const error of errors) lines.push(t.fg("toolOutput", `${error.phase}: ${error.message}`));

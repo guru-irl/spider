@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { paths, setGlobalDbPathForTests } from "@spider/db-core";
+import { paths, setGlobalDbPathForTests, openDbReadOnlyAt } from "@spider/db-core";
 import spiderExtension, { SPIDER_PARAMETERS } from "../extension";
 import { controlConfig } from "../control";
 import { reviewerPrompt, REVIEWER_INSTRUCTIONS } from "../memory-reviewer";
@@ -17,9 +17,9 @@ function fixture(git = true) {
   setGlobalDbPathForTests(join(root, "global", "spider.db"));
   return root;
 }
-function tool() {
+function tool(getCommands?: () => any[]) {
   const tools: Record<string, any> = {};
-  spiderExtension({ registerTool: (t: any) => { tools[t.name] = t; }, on() {}, registerCommand() {} } as never);
+  spiderExtension({ registerTool: (t: any) => { tools[t.name] = t; }, on() {}, registerCommand() {}, getCommands } as never);
   return tools.spider as { execute: (...args: any[]) => Promise<any> };
 }
 const justification = "It will still matter in future sessions; other agents building this project can reuse it; it only applies to this repo.";
@@ -72,7 +72,7 @@ describe("remember reviewer host", () => {
     expect(SPIDER_PARAMETERS.properties.justification.description).toMatch(/durable.*other agents.*scope/i);
     expect(controlConfig("get", dir, "memory.reviewer.enabled")).toBe(true);
     expect(controlConfig("get", dir, "memory.reviewer.model")).toBe("github-copilot/gpt-6-luna");
-    expect(controlConfig("get", dir, "memory.reviewer.timeoutMs")).toBe(20000);
+    expect(controlConfig("get", dir, "memory.reviewer.timeoutMs")).toBe(45000);
     for (const [key, globalValue, localValue] of [
       ["memory.reviewer.enabled", false, true],
       ["memory.reviewer.model", "example/global", "example/local"],
@@ -97,9 +97,10 @@ describe("remember reviewer host", () => {
       expect(controlConfig("get", dir, key)).toBe(expected);
     }
   });
-  it("uses configured registry model and low thinking and applies the parsed verdict", async () => {
+  it("uses configured registry model and configured thinking and applies the parsed verdict", async () => {
     const dir = fixture();
     controlConfig("set", dir, "memory.reviewer.model", "example/custom");
+    controlConfig("set", dir, "memory.reviewer.thinking", "high");
     const model = { provider: "example", id: "custom" };
     const registry = {
       find: vi.fn((_provider: string, _id: string) => model),
@@ -107,7 +108,7 @@ describe("remember reviewer host", () => {
     };
     const result = await tool().execute("reviewed", { ...args, cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry });
     expect(registry.find).toHaveBeenCalledWith("example", "custom");
-    expect(registry.complete.mock.calls[0][2]).toMatchObject({ reasoningEffort: "low" });
+    expect(registry.complete.mock.calls[0][2]).toMatchObject({ reasoningEffort: "high" });
     const prompt = registry.complete.mock.calls[0][1];
     expect(prompt.systemPrompt).toBe(REVIEWER_INSTRUCTIONS);
     const dataText: string = prompt.messages[0].content;
@@ -207,4 +208,133 @@ describe("remember reviewer host", () => {
     expect(unavailable.details.message).toMatch(/review skipped:.*model not found/i);
     expect(unavailable.details.status).toBe("active");
   });
+});
+
+
+describe("skill reviewer host and reviewer diagnostics", () => {
+  const skillBody = "---\nname: tracing-writers\ndescription: Use when asynchronous writes outlive their process\n---\n# Writers\nTrack writer ownership and verify the last writer has closed its output.";
+  it("registers editable skill review defaults and validates timeout", async () => {
+    const dir = fixture(); const t = tool();
+    for (const [key, expected] of [["skills.reviewer.enabled", true], ["skills.reviewer.model", "github-copilot/gpt-6-luna"], ["skills.reviewer.timeoutMs", 180000]] as const) expect(controlConfig("get", dir, key)).toBe(expected);
+    for (const [key, value, expected] of [["skills.reviewer.enabled", "false", false], ["skills.reviewer.model", "example/custom", "example/custom"], ["skills.reviewer.timeoutMs", "1000", 1000]] as const) {
+      const result = await t.execute("set-" + key, { action: "control", command: "config", op: "set", key, value, cwd: dir }, undefined, undefined, { cwd: dir });
+      expect(result.details).toMatchObject({ ok: true }); expect(controlConfig("get", dir, key)).toBe(expected);
+    }
+    for (const invalid of [0, 600001, 1000.5, Infinity]) expect(() => controlConfig("set", dir, "skills.reviewer.timeoutMs", invalid)).toThrow(/timeout/);
+  });
+  it("reviews agent add with configured model, configured thinking and ONE JSON data block", async () => {
+    const dir = fixture(); controlConfig("set", dir, "skills.reviewer.model", "example/custom");
+    controlConfig("set", dir, "skills.reviewer.thinking", "medium");
+    const registry = { find: vi.fn(() => ({ provider: "example", id: "custom" })), complete: vi.fn(async (..._params: any[]) => ({ stopReason: "stop", content: [{ type: "text", text: '{"verdict":"not_durable","reason":"one task only"}' }] })) };
+    const result = await tool().execute("skill", { action: "skill", op: "add", name: "tracing-writers", text: skillBody, cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry, sessionManager: { getSessionId: () => "skill-review-session" } });
+    expect(result.details).toMatchObject({ outcome: "rejected", verdict: "not_durable" }); expect(result.content[0].text).toContain("one task only");
+    expect(registry.find).toHaveBeenCalledWith("example", "custom"); expect(registry.complete.mock.calls[0][2]).toMatchObject({ reasoningEffort: "medium" });
+    const context = registry.complete.mock.calls[0][1];
+    expect(context.systemPrompt).toContain("# Writing Skills"); expect(context.systemPrompt).toContain("DURABILITY first");
+    const data = JSON.parse(context.messages[0].content);
+    expect(data.candidate).toEqual({ name: "tracing-writers", category: null, body: skillBody, origin: "agent" });
+    expect(data.existing_skills).toEqual(expect.arrayContaining([expect.objectContaining({ name: "writing-skills", description: expect.any(String) })]));
+  });
+  it.each(["remember", "skill"])("persists invalid %s replies under project logs, capped at 2 KiB and excluded from tool results", async action => {
+    const dir = fixture(); const reply = "RAW_UNTRUSTED_REPLY " + "🎈".repeat(2000);
+    const registry = { find: () => ({ provider: "example", id: "custom" }), complete: async () => ({ stopReason: "stop", content: [{ type: "text", text: reply }] }) };
+    const params = action === "remember" ? args : { action: "skill", op: "add", name: "tracing-writers", text: skillBody };
+    const result = await tool().execute("invalid", { ...params, cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry, sessionManager: { getSessionId: () => "skill-review-session" } });
+    const log = join(dir, ".spider", "logs", "reviewer-errors.jsonl");
+    expect(existsSync(log)).toBe(true);
+    const diagnostic = JSON.parse(readFileSync(log, "utf8").trim());
+    expect(diagnostic.reviewer).toBe(action === "remember" ? "memory" : "skill");
+    expect(diagnostic.error).toMatch(/JSON/); expect(diagnostic.rawReply).toContain("RAW_UNTRUSTED_REPLY");
+    expect(Buffer.byteLength(diagnostic.rawReply, "utf8")).toBeLessThanOrEqual(2048);
+    expect(JSON.stringify(result)).not.toContain("RAW_UNTRUSTED_REPLY");
+  });
+  it("persists errored reviewer calls with the error and an empty raw reply", async () => {
+    const dir = fixture(); const registry = { find: () => ({ provider: "example", id: "custom" }), complete: async () => { throw Error("review service unavailable"); } };
+    await tool().execute("error", { ...args, cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry, sessionManager: { getSessionId: () => "skill-review-session" } });
+    const diagnostic = JSON.parse(readFileSync(join(dir, ".spider", "logs", "reviewer-errors.jsonl"), "utf8").trim());
+    expect(diagnostic.error).toContain("review service unavailable"); expect(diagnostic.rawReply).toBe("");
+  });
+  it("memory prompt treats information-preserving same-scope condensation as supersedes, then archives the old entry", async () => {
+    const dir = fixture(); const t = tool(); controlConfig("set", dir, "memory.reviewer.enabled", false);
+    const prior = await t.execute("old", { ...args, content: "Always verify generated metadata before release, checking its contents before release", cwd: dir }, undefined, undefined, { cwd: dir });
+    controlConfig("set", dir, "memory.reviewer.enabled", true);
+    const registry = { find: () => ({ provider: "example", id: "custom" }), complete: async (_model: unknown, context: any) => {
+      expect(context.systemPrompt).toContain("more concisely or accurately, without dropping information");
+      expect(context.systemPrompt).toContain("return supersedes, not already_present");
+      const data = JSON.parse(context.messages[0].content.split("\nThe data above")[0]);
+      expect(data.active_entries).toEqual(expect.arrayContaining([expect.objectContaining({ uuid: prior.details.uuid, scope: "repo" })]));
+      return { stopReason: "stop", content: [{ type: "text", text: JSON.stringify({ verdict: "supersedes", supersedes: [prior.details.uuid], reason: "same information, more concise" }) }] };
+    } };
+    const result = await t.execute("condense", { ...args, content: "Verify generated metadata contents before release", cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry, sessionManager: { getSessionId: () => "skill-review-session" } });
+    expect(result.details).toMatchObject({ verdict: "supersedes", archived: [prior.details.uuid], status: "active" });
+    const db = openDbReadOnlyAt(join(dir, ".git", "spider", "repo.db"))!;
+    try { expect(db.prepare("SELECT status FROM memory WHERE uuid=?").get(prior.details.uuid)).toEqual({ status: "archived" }); }
+    finally { db.close(); }
+  });
+});
+
+it("skill reviewer cheaply includes pi-loaded skill names/descriptions from getCommands, without reading their paths", async () => {
+  const dir = fixture(); let catalog: unknown;
+  const registry = { find: () => ({ provider: "example", id: "custom" }), complete: async (_m: unknown, context: any) => {
+    catalog = JSON.parse(context.messages[0].content).existing_skills;
+    return { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"duplicate","existing_name":"external-technique","reason":"existing loaded coverage"}' }] };
+  } };
+  const t = tool(() => [
+    { name: "skill:external-technique", source: "skill", description: "Use when external coverage applies", sourceInfo: { path: "not-a-readable-path" } },
+    { name: "other-command", source: "extension", description: "not a skill", sourceInfo: { path: "none" } },
+  ]);
+  const text = "---\nname: tracing-writers\ndescription: Use when asynchronous writes outlive their process\n---\n# Writers\nTrack writer ownership.";
+  const result = await t.execute("loaded", { action: "skill", op: "add", name: "tracing-writers", text, cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry, sessionManager: { getSessionId: () => "skill-review-session" } });
+  expect(catalog).toEqual(expect.arrayContaining([{ name: "external-technique", description: "Use when external coverage applies" }]));
+  expect(catalog).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "other-command" })]));
+  expect(result.details.verdict).toBe("duplicate");
+});
+
+it("memory condensation may preserve a standing user instruction without inventing a newer user statement", async () => {
+  const dir = fixture();
+  const registry = { find: () => ({ provider: "example", id: "custom" }), complete: async (_model: unknown, context: any) => {
+    expect(context.systemPrompt).toContain("For user preference and standing-instruction entries, allow ONLY pure condensation that drops no information; corrections require a newer user statement.");
+    return { stopReason: "stop", content: [{ type: "text", text: '{"verdict":"new","reason":"standing instruction"}' }] };
+  } };
+  const result = await tool().execute("standing", { ...args, category: "preference", content: "Prefer concise replies", cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry });
+  expect(result.details.verdict).toBe("new"); expect(result.details.reviewSkipped).toBeUndefined();
+});
+
+it.each(["local", "global"] as const)("validates reviewer thinking and restores scoped defaults at %s", scope => {
+  const dir = fixture();
+  for (const kind of ["memory", "skills"]) {
+    const key = `${kind}.reviewer.thinking`;
+    expect(controlConfig("get", dir, key)).toBe(kind === "memory" ? "medium" : "xhigh");
+    for (const invalid of ["off", "max", "HIGH", "", null, 1]) expect(() => controlConfig("set", dir, key, invalid, scope)).toThrow(/thinking/);
+    for (const level of ["minimal", "low", "medium", "high", "xhigh"]) { controlConfig("set", dir, key, level, scope); expect(controlConfig("get", dir, key)).toBe(level); }
+    controlConfig("unset", dir, key, undefined, scope);
+    expect(controlConfig("get", dir, key)).toBe(kind === "memory" ? "medium" : "xhigh");
+  }
+});
+it("disabled skill review stages agents with an accurate reason and makes no model call", async () => {
+  const dir = fixture(); controlConfig("set", dir, "skills.reviewer.enabled", false);
+  const registry = { find: vi.fn(), complete: vi.fn() };
+  const text = "---\nname: tracing-writers\ndescription: Use when writers are asynchronous\n---\nTrace ownership.";
+  const result = await tool().execute("disabled", { action: "skill", op: "add", name: "tracing-writers", text, cwd: dir }, undefined, undefined, { cwd: dir, modelRegistry: registry });
+  expect(result.details).toMatchObject({ outcome: "staged", reviewSkipped: "reviewer disabled" });
+  expect(result.content[0].text).not.toContain("review skipped: review skipped:");
+  expect(registry.complete).not.toHaveBeenCalled();
+});
+it("skill timeout and tool abort reach the configured reviewer request", async () => {
+  const dir = fixture(); controlConfig("set", dir, "skills.reviewer.timeoutMs", 1000);
+  const seen: AbortSignal[] = [];
+  const registry = { find: () => ({ provider: "example", id: "custom" }), complete: async (_m: unknown, _c: unknown, opts: any) => { seen.push(opts.signal); return new Promise<never>(() => {}); } };
+  const text = "---\nname: tracing-writers\ndescription: Use when writers are asynchronous\n---\nTrace ownership.";
+  vi.useFakeTimers();
+  try {
+    const t = tool();
+    const params = { action: "skill", op: "add", name: "tracing-writers", text, cwd: dir };
+    const timed = t.execute("timeout", params, undefined, undefined, { cwd: dir, modelRegistry: registry });
+    await vi.advanceTimersByTimeAsync(999); expect(seen[0].aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1); expect((await timed).details.reviewSkipped).toBe("timeout after 1000 ms"); expect(seen[0].aborted).toBe(true);
+    const controller = new AbortController();
+    const aborted = t.execute("abort", params, controller.signal, undefined, { cwd: dir, modelRegistry: registry, signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(0); controller.abort();
+    expect((await aborted).details.reviewSkipped).toBe("aborted"); expect(seen[1].aborted).toBe(true);
+  } finally { vi.useRealTimers(); }
 });

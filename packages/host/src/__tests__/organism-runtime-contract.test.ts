@@ -1,3 +1,4 @@
+import { finalSkillBody, newSkillReview } from "../../../organism/src/__tests__/helpers/skill.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -123,18 +124,20 @@ describe("organism's actual pi runtime contract", () => {
           ? JSON.stringify({ summary: "Verified reusable regression fixtures.", selfName: "regression-fixtures" })
           : JSON.stringify({
             memory: [{ category: "convention", content: "Use deterministic regression fixtures in tests.", scope: "repo", justification: "Durable repo-specific testing practice useful to future agents.", evidence: "packages/organism/src/passes/learning.ts:1" }],
-            skills: [{ name: "regression-fixtures", body: "# Regression fixtures\nUse an isolated fixture and verify RED before GREEN." }],
+            skills: [{ name: "regression-fixtures", body: finalSkillBody("regression-fixtures", "Use an isolated fixture and verify RED before GREEN.") }],
           });
       } }),
       org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: true, consolidation: true, reflection: false, insights: false } },
       curator: CURATOR_DEFAULTS,
+      skillReview: newSkillReview,
     });
     await f.runner.emit(start);
     await f.runner.emit(shutdown);
 
     expect(requests.join("\n")).toContain("keep regression fixtures deterministic");
     expect(listPending(f.repoDb, "repo")).toHaveLength(1);
-    expect(new SkillStore(f.repoDb).list({ status: "staged" })).toHaveLength(1);
+    expect(new SkillStore(f.repoDb).list({ status: "staged" })).toHaveLength(0);
+    expect(f.repoDb.prepare("SELECT count(*) n FROM skill_review_queue").get()).toEqual({ n: 1 });
     expect(f.worktreeDb.prepare("SELECT summary FROM sessions WHERE id = ?").get(f.session.getSessionId()))
       .toEqual({ summary: "Verified reusable regression fixtures." });
     expect(f.worktreeDb.prepare("SELECT COUNT(*) AS n FROM run_events WHERE session_id = ? AND summary LIKE 'organism %'").get(f.session.getSessionId()))

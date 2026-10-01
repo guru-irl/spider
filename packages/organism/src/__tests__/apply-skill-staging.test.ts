@@ -1,5 +1,7 @@
+import { finalSkillBody, newSkillReview } from "./helpers/skill.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { makeOrgDb } from "./helpers/tmpdb.js";
+import { runSkillReviewQueue } from "../skill-review-queue.js";
 import { applyDigest } from "../apply.js";
 import { SkillStore } from "../skill-usage.js";
 
@@ -20,20 +22,22 @@ function deps(repoDb: any, worktreeDb: any) {
     scope: "repo" as const,
     sessionId: "s1",
     skills: new SkillStore(repoDb),
+    skillReview: newSkillReview,
+    maxSkillProposals: 20,
     project: { projectKey: "k", realPath: "/x", dbPath: "/x/.spider/project.db" } as any,
     worktreeDb,
   };
 }
 
 describe("applyDigest — safe skill staging", () => {
-  it("does not count a proposal against an already-active skill as skillsStaged", () => {
+  it("does not count a proposal against an already-active skill as skillsStaged", async () => {
     ctx = makeOrgDb();
     const skills = new SkillStore(ctx.repoDb);
     skills.upsert({ name: "release-flow" }); // active by default
 
-    const summary = applyDigest(
+    const summary = await applyDigest(
       deps(ctx.repoDb, ctx.db),
-      { memory: [], todos: [], skills: [{ name: "release-flow", body: "replacement body" }] },
+      { memory: [], todos: [], skills: [{ name: "release-flow", body: finalSkillBody("release-flow", "replacement body") }] },
       { max: 5, used: 0 }
     );
 
@@ -42,15 +46,15 @@ describe("applyDigest — safe skill staging", () => {
     expect(skills.get("release-flow")!.status).toBe("active"); // never downgraded to staged
   });
 
-  it("does not count a proposal against a pinned skill as skillsStaged", () => {
+  it("does not count a proposal against a pinned skill as skillsStaged", async () => {
     ctx = makeOrgDb();
     const skills = new SkillStore(ctx.repoDb);
     skills.upsert({ name: "pinned-skill" });
     skills.setPinned("pinned-skill", true);
 
-    const summary = applyDigest(
+    const summary = await applyDigest(
       deps(ctx.repoDb, ctx.db),
-      { memory: [], todos: [], skills: [{ name: "pinned-skill", body: "replacement" }] },
+      { memory: [], todos: [], skills: [{ name: "pinned-skill", body: finalSkillBody("pinned-skill", "replacement") }] },
       { max: 5, used: 0 }
     );
 
@@ -58,7 +62,7 @@ describe("applyDigest — safe skill staging", () => {
     expect(summary.rejected).toBe(1);
   });
 
-  it("does not count a proposal against a protected or user-owned skill as skillsStaged", () => {
+  it("does not count a proposal against a protected or user-owned skill as skillsStaged", async () => {
     ctx = makeOrgDb();
     const skills = new SkillStore(ctx.repoDb);
     skills.upsert({ name: "protected-skill", protected: true });
@@ -67,14 +71,14 @@ describe("applyDigest — safe skill staging", () => {
     // alone (not just the active check) blocks the downgrade.
     ctx.repoDb.prepare("UPDATE skills SET status = 'rejected' WHERE name = 'user-skill'").run();
 
-    const summary = applyDigest(
+    const summary = await applyDigest(
       deps(ctx.repoDb, ctx.db),
       {
         memory: [],
         todos: [],
         skills: [
-          { name: "protected-skill", body: "replacement" },
-          { name: "user-skill", body: "replacement" },
+          { name: "protected-skill", body: finalSkillBody("protected-skill", "replacement") },
+          { name: "user-skill", body: finalSkillBody("user-skill", "replacement") },
         ],
       },
       { max: 5, used: 0 }
@@ -86,60 +90,64 @@ describe("applyDigest — safe skill staging", () => {
     expect(skills.get("user-skill")!.source).toBe("user");
   });
 
-  it("a byte-identical duplicate re-proposal of an already-staged candidate does not inflate skillsStaged", () => {
+  it("a byte-identical duplicate re-proposal of an already-staged candidate does not inflate skillsStaged", async () => {
     ctx = makeOrgDb();
-    const summary1 = applyDigest(
+    const summary1 = await applyDigest(
       deps(ctx.repoDb, ctx.db),
-      { memory: [], todos: [], skills: [{ name: "answer-style", body: "# Style" }] },
+      { memory: [], todos: [], skills: [{ name: "answer-style", body: finalSkillBody("answer-style", "# Style") }] },
       { max: 5, used: 0 }
     );
-    expect(summary1.skillsStaged).toBe(1);
+    expect(summary1.skillsQueued).toBe(1);
+    await runSkillReviewQueue(ctx.repoDb, newSkillReview);
 
-    const summary2 = applyDigest(
+    const summary2 = await applyDigest(
       deps(ctx.repoDb, ctx.db),
-      { memory: [], todos: [], skills: [{ name: "answer-style", body: "# Style" }] }, // same body again
+      { memory: [], todos: [], skills: [{ name: "answer-style", body: finalSkillBody("answer-style", "# Style") }] }, // same body again
       { max: 5, used: 0 }
     );
     expect(summary2.skillsStaged).toBe(0);
     expect(summary2.rejected).toBe(1);
   });
 
-  it("a genuinely revised staged proposal (different body) is still staged, not treated as a duplicate", () => {
+  it("a genuinely revised staged proposal (different body) is still staged, not treated as a duplicate", async () => {
     ctx = makeOrgDb();
-    applyDigest(
+    await applyDigest(
       deps(ctx.repoDb, ctx.db),
-      { memory: [], todos: [], skills: [{ name: "answer-style", body: "# Style v1" }] },
+      { memory: [], todos: [], skills: [{ name: "answer-style", body: finalSkillBody("answer-style", "# Style v1") }] },
       { max: 5, used: 0 }
     );
-    const summary2 = applyDigest(
+    await runSkillReviewQueue(ctx.repoDb, newSkillReview);
+    const summary2 = await applyDigest(
       deps(ctx.repoDb, ctx.db),
-      { memory: [], todos: [], skills: [{ name: "answer-style", body: "# Style v2" }] },
+      { memory: [], todos: [], skills: [{ name: "answer-style", body: finalSkillBody("answer-style", "# Style v2") }] },
       { max: 5, used: 0 }
     );
-    expect(summary2.skillsStaged).toBe(1);
+    expect(summary2.skillsQueued).toBe(1);
+    await runSkillReviewQueue(ctx.repoDb, newSkillReview);
+    expect(new SkillStore(ctx.repoDb).get("answer-style")?.candidateBody).toContain("Style v2");
     expect(summary2.rejected).toBe(0);
   });
 
-  it("a rejected/skipped skill proposal consumes no write budget", () => {
+  it("a rejected/skipped skill proposal consumes no write budget", async () => {
     ctx = makeOrgDb();
     const skills = new SkillStore(ctx.repoDb);
     skills.upsert({ name: "active-skill" });
 
-    const summary = applyDigest(
+    const summary = await applyDigest(
       deps(ctx.repoDb, ctx.db),
       {
         memory: [],
         todos: [],
         skills: [
-          { name: "active-skill", body: "nope" }, // skipped
-          { name: "fresh-one", body: "# Fresh" }, // staged
+          { name: "active-skill", body: finalSkillBody("active-skill", "nope") }, // skipped
+          { name: "fresh-one", body: finalSkillBody("fresh-one", "# Fresh") }, // staged
         ],
       },
       { max: 1, used: 0 } // budget for exactly one real write
     );
 
     expect(summary.rejected).toBe(1);
-    expect(summary.skillsStaged).toBe(1);
+    expect(summary.skillsQueued).toBe(1);
     expect(summary.dropped).toBe(0);
   });
 });

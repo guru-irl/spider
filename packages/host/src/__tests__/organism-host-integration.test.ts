@@ -1,3 +1,5 @@
+import { finalSkillBody } from "../../../organism/src/__tests__/helpers/skill.js";
+import { SkillStore } from "@spider/organism";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -53,6 +55,7 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
   vi.spyOn(process, "cwd").mockReturnValue(unrelated);
   controlConfig("set", cwd, "organism.passes.reflection", false);
   controlConfig("set", cwd, "organism.passes.insights", false);
+  controlConfig("set", cwd, "skills.reviewer.model", "fixture-provider/fixture-model");
   const session = SessionManager.inMemory(cwd);
   session.appendMessage({ role: "user", content: "Use deterministic tests and record the failing assertion before a fix.", timestamp: 1 });
   const project = resolveProject(cwd, { sessionId: session.getSessionId(), explicitCwd: false });
@@ -86,17 +89,21 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     content: [{ type: "text", text: JSON.stringify({
       memory: [{ category: "convention", content: "Record the failing assertion before implementing a fix.", scope: "repo", justification: "A durable project convention useful to future agents working in this repo.", evidence: "packages/organism/src/passes/learning.ts:1" }],
-      skills: [{ name: "deterministic-tests", body: "# Deterministic tests\nVerify the regression with an isolated fixture." }],
+      skills: [{ name: "deterministic-tests", body: finalSkillBody("deterministic-tests", "Verify the regression with an isolated fixture.") }],
       summary: "Verified deterministic regression tests.", selfName: "deterministic-tests",
     }) }],
   };
-  const complete = vi.spyOn(models, "complete").mockResolvedValue(answer);
+  const complete = vi.spyOn(models, "complete").mockImplementation(async (_model, context) =>
+    context.systemPrompt?.startsWith("Review a skill candidate.")
+      ? { ...answer, content: [{ type: "text", text: '{"verdict":"new","reason":"a reusable testing technique"}' }] }
+      : answer);
   let shutDown = false;
+  let piApi: any;
   const loader = new DefaultResourceLoader({
     cwd, agentDir: join(root, "agent"), settingsManager: SettingsManager.inMemory({}),
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [
-      { name: "spider-contract", factory: pi => spiderExtension(pi as never) },
+      { name: "spider-contract", factory: pi => { piApi = pi; spiderExtension(pi as never); } },
       { name: "cleanup-observer", factory: pi => { pi.on("session_shutdown", () => { shutDown = true; }); } },
     ],
   });
@@ -123,7 +130,7 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
     runner.invalidate();
   });
   await runner.emit({ type: "session_start", reason: "startup" });
-  return { root, cwd, unrelated, db, repoDb, globalDb, session, runner, registry, complete, models, answer, errors };
+  return { root, cwd, unrelated, db, repoDb, globalDb, session, runner, registry, complete, models, answer, errors, piApi };
 }
 
 function compactEvent(session: SessionManager): SessionBeforeCompactEvent {
@@ -144,6 +151,7 @@ describe("the installed pi contract through the full spider extension", () => {
     const f = await setup();
     await f.runner.emit(compactEvent(f.session));
     await vi.waitFor(() => expect(listPending(f.repoDb, "repo")).toHaveLength(1));
+    await vi.waitFor(() => expect(new SkillStore(f.repoDb).list({ status: "staged" })).toHaveLength(1));
     const tool = f.runner.getToolDefinition("spider")!;
     const ctx = f.runner.createContext();
     const listArgs = { action: "skill", op: "list" };
@@ -246,24 +254,28 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(f.db.prepare("SELECT COUNT(*) n FROM run_events WHERE summary LIKE 'organism %'").get()).toEqual({ n: 0 });
   });
 
-  it("allows child skill staging, listing and viewing from the repo without resolving an organism or model", async () => {
+  it("reviews child skill add with only the reviewer model, without resolving an organism", async () => {
     const resolveWorker = vi.spyOn(HostOrganismRuntime.prototype, "resolve");
     const f = await setup({ child: true });
     // Any attempt to inspect the registry for skill access is a regression.
     const catalog = vi.spyOn(f.registry, "getAvailable").mockImplementation(() => { throw new Error("unexpected model construction"); });
     const tool = f.runner.getToolDefinition("spider")!;
     const ctx = f.runner.createContext();
-    const staged = await tool.execute("add", { action: "skill", op: "add", name: "child-fixture", text: "# Child fixture\nUse deterministic fixtures." }, undefined, undefined, ctx);
+    const staged = await tool.execute("add", { action: "skill", op: "add", name: "child-fixture", text: finalSkillBody("child-fixture", "Use deterministic fixtures.") }, undefined, undefined, ctx);
     expect(staged.details).toMatchObject({ ok: true, outcome: "staged" });
     const listed = await tool.execute("list", { action: "skill", op: "list" }, undefined, undefined, ctx);
     expect(listed.details).toEqual(expect.arrayContaining([expect.objectContaining({ name: "child-fixture", status: "staged" })]));
     const viewed = await tool.execute("view", { action: "skill", op: "view", name: "child-fixture" }, undefined, undefined, ctx);
-    expect(viewed.details).toMatchObject({ name: "child-fixture", status: "staged", candidateBody: "# Child fixture\nUse deterministic fixtures." });
+    expect(viewed.details).toMatchObject({ name: "child-fixture", status: "staged", candidateBody: finalSkillBody("child-fixture", "Use deterministic fixtures.") });
     expect(f.repoDb.prepare("SELECT name FROM skills WHERE name='child-fixture'").get()).toEqual({ name: "child-fixture" });
     expect(f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='skills'").get()).toBeUndefined();
     expect(resolveWorker).not.toHaveBeenCalled();
     expect(catalog).not.toHaveBeenCalled();
-    expect(f.complete).not.toHaveBeenCalled();
+    expect(f.complete).toHaveBeenCalledTimes(1);
+    expect(f.complete.mock.calls[0][0]).toMatchObject({ provider: "fixture-provider", id: "fixture-model" });
+    const invalid = await tool.execute("invalid", { action: "skill", op: "add", name: "bad/child", text: "no metadata" }, undefined, undefined, ctx);
+    expect(invalid.details).toMatchObject({ outcome: "rejected", verdict: "deterministic_failure" });
+    expect(f.complete).toHaveBeenCalledTimes(1);
   });
 
   it("reports the organism as disabled in a child without reading a parent's failed drain", async () => {
@@ -525,6 +537,7 @@ describe("F3 \u2014 a FRESH runtime + the REAL doctor reads a prior real receipt
     vi.spyOn(process, "cwd").mockReturnValue(other);
     controlConfig("set", cwd, "organism.passes.reflection", false);
     controlConfig("set", cwd, "organism.passes.insights", false);
+  controlConfig("set", cwd, "skills.reviewer.model", "fixture-provider/fixture-model");
 
     // Session A: a real drain that fails and persists a real receipt.
     const a = await freshHost(root, cwd, "F3 probe session A seed message");
@@ -587,4 +600,76 @@ describe("F2 \u2014 doctor's receipt fallback and pending counts survive a resol
     expect(text).toMatch(/last drain in this worktree|- organism: (failed|partial|completed|skipped)/); // receipt fallback reachable
     expect(res.ok).toBe(false); // the failure IS surfaced (not silent)
   });
+});
+
+it("organism queued reviewer includes pi-loaded catalog and doctor shows queue and recent results", async () => {
+  const f = await setup();
+  controlConfig("set", f.cwd, "skills.reviewer.thinking", "medium");
+  vi.spyOn(f.piApi, "getCommands").mockReturnValue([{ name: "skill:external-reference", source: "skill", description: "Use when tracing external writers" }]);
+  f.complete.mockImplementation(async (_m, context) => context.systemPrompt?.startsWith("Review a skill candidate.")
+    ? { ...f.answer, content: [{ type: "text", text: '{"verdict":"duplicate","existing_name":"external-reference","reason":"same method"}' }] } : f.answer);
+  // Drain independently to inspect durable queued work before the live hook starts its runner.
+  const runtime = new HostOrganismRuntime(async () => null, undefined, () => [{ name: "external-reference", description: "Use when tracing external writers" }]);
+  const deps = runtime.fromContext(f.runner.createContext());
+  try {
+    await deps.worker.runDrain(f.session.getSessionId(), "before_compact", { transcript: [{ role: "user", content: "Trace writer ownership" }] });
+    const tool = f.runner.getToolDefinition("spider")!;
+    const doctor = await tool.execute("queue", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    expect(JSON.stringify(doctor.content)).toContain("skill review queue: 1");
+    deps.worker.startSkillReviews();
+    await vi.waitFor(() => expect(f.repoDb.prepare("SELECT count(*) n FROM skill_review_queue").get()).toEqual({ n: 0 }));
+    const call = f.complete.mock.calls.find(call => call[1].systemPrompt?.startsWith("Review a skill candidate."))!;
+    expect(call[2]).toMatchObject({ reasoningEffort: "medium" });
+    expect(JSON.parse(call[1].messages[0].content as string).existing_skills).toEqual(expect.arrayContaining([{ name: "external-reference", description: "Use when tracing external writers" }]));
+    const result = await tool.execute("recent", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    expect(JSON.stringify(result.content)).toContain("duplicate: same method");
+  } finally { await deps.worker.stopSkillReviews(); runtime.dispose(); }
+});
+
+it("shutdown cancels queue reviewers from every previously bound repo before closing their DBs", async () => {
+  const f = await setup();
+  const registry = { find: () => ({ provider: "fixture-provider", id: "fixture-model" }), complete: async () => new Promise<never>(() => {}) };
+  const runtime = new HostOrganismRuntime(async () => null);
+  const old = runtime.resolve({ sessionId: f.session.getSessionId(), cwd: f.cwd, modelRegistry: registry });
+  old.db.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,?,1)").run("queued-example", finalSkillBody("queued-example", "Trace ownership."), "learner");
+  old.worker.startSkillReviews();
+  runtime.resolve({ sessionId: f.session.getSessionId(), cwd: f.unrelated, modelRegistry: registry });
+  await runtime.stopSkillReviews();
+  expect(old.db.prepare("SELECT attempts,last_error FROM skill_review_queue").get()).toEqual({ attempts: 0, last_error: null });
+  runtime.dispose();
+});
+
+it("real shutdown aborts a previous binding's review before starting the current binding's learner", async () => {
+  const resolveRuntime = vi.spyOn(HostOrganismRuntime.prototype, "resolve");
+  const f = await setup();
+  const old = resolveRuntime.mock.results.find(result => result.type === "return")!.value as ReturnType<HostOrganismRuntime["resolve"]>;
+  old.db.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,?,1)").run("queued-example", finalSkillBody("queued-example", "Trace ownership."), "learner");
+  f.complete.mockImplementation(async (_m, context) => {
+    if (context.systemPrompt?.startsWith("Review a skill candidate.")) return new Promise<AssistantMessage>(() => {});
+    expect(old.db.prepare("SELECT attempts,last_error FROM skill_review_queue WHERE name='queued-example'").get()).toEqual({ attempts: 0, last_error: null });
+    return f.answer;
+  });
+  old.worker.startSkillReviews();
+  await vi.waitFor(() => expect(f.complete).toHaveBeenCalledTimes(1));
+  controlBind(f.globalDb, f.session.getSessionId(), f.unrelated);
+  await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+  expect(f.errors).toEqual([]);
+  const bound = resolveProject(f.unrelated, { sessionId: f.session.getSessionId() });
+  const boundDb = openRepo(bound.repoKey!); handles.push(boundDb);
+  expect(listPending(boundDb, "repo")).toHaveLength(1);
+});
+
+it("a skill-only drain emits a UI receipt that counts queued, not staged, skills", async () => {
+  const f = await setup();
+  f.complete.mockImplementation(async (_m, context) => context.systemPrompt?.startsWith("Review a skill candidate.")
+    ? { ...f.answer, content: [{ type: "text", text: '{"verdict":"new","reason":"reusable"}' }] }
+    : { ...f.answer, content: [{ type: "text", text: JSON.stringify({ memory: [], todos: [], skills: [{ name: "queued-technique", body: finalSkillBody("queued-technique", "Trace writer ownership.") }] }) }] });
+  await f.runner.emit(compactEvent(f.session));
+  await vi.waitFor(() => expect(f.db.prepare("SELECT count(*) n FROM run_events WHERE summary LIKE 'organism drain%'").get()).toEqual({ n: 1 }));
+  const entry = f.session.getEntries().find(e => e.type === "custom" && e.customType === "spider.organism");
+  expect(entry).toMatchObject({ data: { skillsQueued: 1, skillsStaged: 0 } });
+  const renderer = f.runner.getEntryRenderer("spider.organism")!;
+  const theme = { fg: (_t: string, text: string) => text, bg: (_t: string, text: string) => text, bold: (text: string) => text };
+  const text = renderer(entry as never, { expanded: true }, theme as never)!.render(140).join("\n");
+  expect(text).toContain("1 skills queued"); expect(text).not.toContain("0 skills staged");
 });

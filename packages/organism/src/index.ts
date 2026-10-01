@@ -75,24 +75,13 @@ export type OrganismDepsResolver = WorkerDeps | ((ctx: ExtensionContext) => Work
 
 /**
  * Wire the autonomic organism onto a live pi host. Builds a single
- * {@link OrganismWorker} and registers two lifecycle hooks:
+ * {@link OrganismWorker} and registers three lifecycle hooks:
  *
+ *   - `session_start` → fire-and-forget queued review in a live top-level session.
  *   - `session_before_compact` → best-effort `runDrain(reason:"before_compact")`.
  *     It MUST NOT cancel or alter compaction: it never returns `false`, never
- *     calls a cancel API, and swallows every error.
- *   - `session_shutdown` → `runDrain("shutdown")` then a min-interval-gated
- *     `runCurate()`. Errors are swallowed so shutdown never breaks.
- *
- * `pi.on` chains, so these handlers coexist with any others already registered.
- */
-/**
- * Wire the autonomic organism onto a live pi host. Builds a single
- * {@link OrganismWorker} and registers two lifecycle hooks:
- *
- *   - `session_before_compact` → best-effort `runDrain(reason:"before_compact")`.
- *     It MUST NOT cancel or alter compaction: it never returns `false`, never
- *     calls a cancel API, and swallows every error.
- *   - `session_shutdown` → `runDrain("shutdown")` then a min-interval-gated
+ *     calls a cancel API, and swallows every error. Queue review starts after the drain.
+ *   - `session_shutdown` → cancel reviews, `runDrain("shutdown")` then a min-interval-gated
  *     `runCurate()`. Errors are swallowed so shutdown never breaks.
  *
  * `pi.on` chains, so these handlers coexist with any others already registered.
@@ -137,7 +126,16 @@ export function registerOrganism(
   };
 
   try {
+    pi?.on?.("session_start", (_event: unknown, ctx?: ExtensionContext) => {
+      if (process.env.PI_SUBAGENT_CHILD === "1" || !ctx?.sessionManager?.getSessionId?.()) return undefined;
+      try { workerFor(ctx).startSkillReviews(); } catch (error) { reportSetupError("resolve", error, ctx); }
+      return undefined;
+    });
+  } catch (error) { reportSetupError("register", error); }
+
+  try {
     pi?.on?.("session_before_compact", (event: any, ctx?: ExtensionContext) => {
+      if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = ctx?.sessionManager?.getSessionId?.();
       if (!ctx || !sessionId) {
         reportSetupError("context", new Error("session_before_compact fired without a resolvable context/session id"), ctx);
@@ -147,7 +145,8 @@ export function registerOrganism(
         // Capture before awaiting anything: /tree or a later compaction must not
         // change what this particular drain learns from. Never mutate the event.
         const opts = capture(ctx, Array.isArray(event?.branchEntries) ? event.branchEntries : undefined);
-        void workerFor(ctx).runDrain(sessionId, "before_compact", opts).catch(() => undefined);
+        const worker = workerFor(ctx);
+        void worker.runDrain(sessionId, "before_compact", opts).then(() => worker.startSkillReviews()).catch(() => undefined);
       } catch (e) {
         reportSetupError("resolve", e, ctx);
         /* never block or alter pi's compaction */
@@ -161,6 +160,7 @@ export function registerOrganism(
 
   try {
     pi?.on?.("session_shutdown", async (_event: any, ctx?: ExtensionContext) => {
+      if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = ctx?.sessionManager?.getSessionId?.();
       if (!ctx || !sessionId) {
         reportSetupError("context", new Error("session_shutdown fired without a resolvable context/session id"), ctx);
@@ -169,6 +169,7 @@ export function registerOrganism(
       try {
         const opts = capture(ctx);
         const worker = workerFor(ctx);
+        await worker.stopSkillReviews();
         await worker.runDrain(sessionId, "shutdown", opts);
         await worker.runCurate();
       } catch (e) {
@@ -182,3 +183,7 @@ export function registerOrganism(
     /* best-effort registration */
   }
 }
+
+export * from "./skill-review.js";
+
+export * from "./skill-review-queue.js";

@@ -64,7 +64,7 @@ author the `SKILL.md`.
 From `index.ts`:
 
 - `registerOrganism(host, pi, deps)`: build one `OrganismWorker` and register
-  the two lifecycle hooks (`session_before_compact`, `session_shutdown`).
+  three lifecycle hooks (`session_start`, `session_before_compact`, `session_shutdown`).
 - `drainSession(db, sessionId, reason, opts)` / `DrainOpts`: read a session
   into a `DigestBundle`.
 - `OrganismWorker` / `WorkerDeps`: the serialized worker with `runDrain` and
@@ -92,7 +92,8 @@ From `index.ts`:
 
 The host does not register the organism in subagent children
 (`PI_SUBAGENT_CHILD=1`). Children can use `skill list`, `view`, and `add`
-directly against the repo DB without constructing a worker or model.
+directly against the repo DB without constructing a worker or learner. Explicit
+`add` does run the foreground skill reviewer, including in children.
 `skill distill`, `approve`, and `reject`, `control skill curate` (including
 forced consolidation), and `control insights` actions refuse with
 `organism is disabled in subagent sessions`. Worker drains and curation also
@@ -107,14 +108,15 @@ provider if supplied, without using the session provider.
 An unavailable model records a failed drain with a model error;
 there is no fallback to the session model or another available model.
 
-`registerOrganism` attaches two hooks. `pi.on` chains, so they coexist with any
+`registerOrganism` attaches three hooks. `pi.on` chains, so they coexist with any
 other handlers.
 
+- `session_start` starts queued skill review asynchronously in live top-level sessions.
 - `session_before_compact` fires a best-effort drain with
   `reason: "before_compact"`. It is fire-and-forget: compaction proceeds
-  regardless. The handler never returns `false`, never calls a cancel API, and
+  regardless. After the drain completes it starts queued reviews. The handler never returns `false`, never calls a cancel API, and
   swallows every error, so it cannot block or alter compaction.
-- `session_shutdown` awaits a drain with `reason: "shutdown"`, then runs a
+- `session_shutdown` cancels in-flight reviews, then awaits a drain with `reason: "shutdown"`, then runs a
   curator pass gated by the min-interval. Errors are swallowed so shutdown is
   never broken.
 
@@ -156,10 +158,10 @@ passes, reporting a failed or partial outcome.
    todos.
 3. **learning**: drive the aux model over the transcript with the combined
    review prompt and the "do not capture" block, emitting staged memory and
-   staged skill candidates co-equally. Memory candidates are guardrail-filtered;
-   skill candidates are dropped when the body is empty or the name looks like a
-   session artifact (a PR or issue number, a `fix-`/`debug-`/`audit-` prefix, or
-   a `-today` suffix) rather than a class-level name.
+   queued skill candidates. Memory candidates are guardrail-filtered; skill strings
+   retain their exact formatting for counted deterministic checks. Missing or
+   disabled skill guidance omits the skill section without losing memory learning.
+
 4. **consolidation**: produce a 1 to 3 sentence session summary and a short
    self-name slug for the broad ongoing task. Emits no candidates.
    Short-circuits when there is neither a transcript nor any runs.
@@ -197,20 +199,22 @@ Two different mechanisms decide what survives.
 **Staging** is what `applyDigest` does to the merged candidates. It is
 fail-closed: nothing becomes active memory or an active skill directly. A shared
 `WriteBudget` (default max 20 per drain) is spent one unit per memory stage and
-one unit per skill stage, in memory-then-skills order. When the budget is
+one unit per skill queue insert, in memory-then-skills order. When the budget is
 exhausted, remaining stageable candidates are dropped and counted, never
 silently discarded.
 
 - Memory goes through `stageWrite` with `source: "auto"` and `autoStage: true`.
   A rejected result is counted and consumes no budget.
-- Skills go through `SkillStore.stageCandidate`, which writes a
-  `status='staged'`, `source='auto'` row carrying a `candidate_body`. A human
-  later approves it (the body is cleared and the status becomes active) or
-  rejects it.
+- Skills pass deterministic validation and the proposal cap into a durable repo
+  queue. The drain never waits for deep review. The live-session runner uses a
+  repo DB lease, stages only `new`, records other verdicts, and retains failed
+  reviews for up to three attempts. Only human approval activates a candidate.
+  Doctor shows the queue length and recent results. See the root README for
+  reviewer thinking/timeouts, origin ceilings and bounded prompt/catalog settings.
 - Todos are added directly and are not budget-limited, but are counted.
 
 `applyDigest` returns an `AppliedSummary` counting `memoryStaged`, `todosAdded`,
-`skillsStaged`, `dropped`, and `rejected`.
+`skillsQueued`, `skillsStaged` (zero in learner drains), `dropped`, and `rejected`.
 
 **Curation** is what the curator does to skills that already exist. On shutdown
 `runCurate` runs `runCuratorDecay`, gated by `curatorShouldRun` (paused, or less
@@ -223,7 +227,7 @@ A never-used skill is not archived before it is at least stale-age old. Nothing
 is ever deleted; archiving is recoverable. When `curator.consolidate` is on and
 a model is available, `consolidateSkills` runs an umbrella-building pass that
 archives absorbed or pruned agent-created skills, re-checking pin and protected
-flags before each mutation.
+flags before each mutation. The curator only archives; it does not stage new skills.
 
 ### Self-naming
 
@@ -264,7 +268,7 @@ Staged writes are reviewed with `spider control memory` (memory) and the skill
 approval surface (skills). The `/learn` path is separate: `buildLearnPrompt`
 returns a prompt that instructs the live agent to gather the named sources with
 its own tools and STAGE one skill candidate via the `skill` action's `op:"add"`
-(name + full markdown body); activation is always a separate, explicit
+(name + final-format SKILL.md with exactly name and a Use when description); activation is always a separate, explicit
 `op:"approve"` — the agent never self-approves, and there is no `create`
 operation or separate scripts-upload path.
 

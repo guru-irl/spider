@@ -13,6 +13,7 @@ export interface OrganismConfig {
   selfNaming: boolean;
   autoWriteBudget: number;
   maxMemoryProposals: number;
+  maxSkillProposals: number;
 }
 
 /** Ship defaults: everything on, budget 20 staged writes per drain. */
@@ -29,12 +30,13 @@ export const ORGANISM_DEFAULTS: OrganismConfig = {
   selfNaming: true,
   autoWriteBudget: 20,
   maxMemoryProposals: 3,
+  maxSkillProposals: 1,
 };
 
 export const ORGANISM_CONFIG_KEYS: readonly string[] = [
   "organism.enabled",
   ...Object.keys(ORGANISM_DEFAULTS.passes).map(name => `organism.passes.${name}`),
-  "organism.selfNaming", "organism.autoWriteBudget", "organism.maxMemoryProposals",
+  "organism.selfNaming", "organism.autoWriteBudget", "organism.maxMemoryProposals", "organism.maxSkillProposals",
 ];
 export const CURATOR_CONFIG_KEYS: readonly string[] = Object.keys(CURATOR_DEFAULTS).map(name => `curator.${name}`);
 
@@ -99,6 +101,10 @@ export function readOrganismConfig(cfg: unknown): OrganismConfig {
     autoWriteBudget: asWriteBudget(
       dottedOrNested(cfg, "organism.autoWriteBudget", readField(org, "autoWriteBudget")),
       ORGANISM_DEFAULTS.autoWriteBudget,
+    ),
+    maxSkillProposals: asWriteBudget(
+      dottedOrNested(cfg, "organism.maxSkillProposals", readField(org, "maxSkillProposals")),
+      ORGANISM_DEFAULTS.maxSkillProposals,
     ),
     maxMemoryProposals: asWriteBudget(
       dottedOrNested(cfg, "organism.maxMemoryProposals", readField(org, "maxMemoryProposals")),

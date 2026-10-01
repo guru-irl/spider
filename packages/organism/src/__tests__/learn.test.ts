@@ -6,7 +6,8 @@ describe("buildLearnPrompt", () => {
     const p = buildLearnPrompt("turn our release steps into a skill");
     expect(p).toContain("turn our release steps into a skill");
     expect(p).toContain(AUTHORING_STANDARDS.slice(0, 40));
-    expect(p).toMatch(/<=?\s*60/); // the ≤60-char description rule survives the port
+    expect(p).toContain("exactly name and description");
+    expect(p).toContain("1500 words");
   });
   it("empty request falls back to 'the workflow we just went through'", () => {
     expect(buildLearnPrompt("")).toContain("workflow we just went through");

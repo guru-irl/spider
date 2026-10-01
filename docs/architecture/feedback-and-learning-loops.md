@@ -249,9 +249,9 @@ does not stop the remaining passes; its error remains in the drain report:
 - **todoMemory**: digest completed todos into durable memory candidates.
 - **learning**: drive the aux model over the transcript with the combined
   review prompt and the "do not capture" block, emitting staged memory and
-  staged skill candidates co-equally. Skill candidates with an empty body or a
-  session-artifact name (a PR or issue number, a `fix-`/`debug-`/`audit-`
-  prefix, or a `-today` suffix) are dropped.
+  staged skill candidates co-equally, with zero proposals as the default.
+  Typed skill names and bodies are preserved verbatim for counted deterministic
+  validation and durability review at apply. The learner does not patch existing skills.
 - **consolidation**: produce a one to three sentence session summary and a short
   self-name slug for the ongoing task. Emits no candidates.
 - **reflection**: cluster active repo memory by vector proximity and ask the
@@ -263,14 +263,34 @@ which enforces the six-category taxonomy and the anti-poisoning rules.
 
 **Staging versus curation.** These are two different mechanisms.
 
-Staging is what `applyDigest` does to the merged candidate lists. It is
-fail-closed: nothing becomes active memory or an active skill directly. A shared
-`WriteBudget` (default `autoWriteBudget` of 20 per drain) is spent one unit per
-memory stage and one unit per skill stage, in memory-then-skills order. Memory
-goes through `stageWrite` with `source: "auto"` and `autoStage: true`; skills go
-through `SkillStore.stageCandidate`. When the budget is exhausted, remaining
-stageable candidates are dropped and counted, never silently discarded. Todos
-are added directly and are not budget-limited.
+Staging is what `applyDigest` does to the merged candidates. Nothing becomes
+active directly. A shared `WriteBudget` (default 20 per drain) is spent one unit
+per memory stage and one unit per accepted skill queue insert, memory first.
+Skills pass deterministic checks and `organism.maxSkillProposals` (default 1)
+before entering the repo `skill_review_queue`. The drain never calls the skill
+reviewer; its receipt counts `skillsQueued`. Only a live top-level session starts
+the asynchronous runner, at session start and after a before-compact drain.
+Shutdown cancels existing reviewers before closing DBs, never starting new ones.
+Children cannot run the queue; explicit child `skill op=add` uses inline review.
+
+A repo DB lease allows only one queued review at a time, across handles and
+processes. The review uses its own timeout (180000 ms by default, configurable
+1000-600000) and thinking (`xhigh` by default). Only `new` stages with review_reason.
+Other verdicts are removed and recorded in the bounded recent-results table.
+Reviewer failures keep the candidate with attempts++ and last_error; the third
+failure drops it with a recorded reason. Doctor shows queue length and recent
+verdicts. Unavailable rubric/catalog omits learner skill guidance without losing
+memory proposals; disabled skill review also omits it. Raw failures are restricted
+to the local diagnostics log, rotated at 1 MiB with a 2 KiB raw-reply limit.
+
+Both reviewer catalogs and learner guidance are bounded: 150 skills ordered
+bundled, active, pi-loaded, newest staged; 300-character descriptions; a total
+learner system prompt ceiling of 180000 UTF-8 bytes including the full runtime
+rubric. Oversized guidance is omitted while memory learning continues. The
+reviewer judges structure, discovery triggers, token efficiency and anti-patterns,
+not deployment evidence. Agent-origin skills allow 1500 words/16 KB; learner and
+curator validation retains 500 words/8000 bytes. Frontmatter is exactly name and
+a Use when description for all origins. Todos are not budget-limited.
 
 Curation is what `runCurate` does to skills that already exist. On shutdown it
 runs `runCuratorDecay`, gated by `curatorShouldRun` (paused state, or less than
@@ -282,7 +302,8 @@ into `.spider/skills/.archive/`. Pinned and protected skills are never
 transitioned, a never-used skill is not archived before it is at least stale-age
 old, and nothing is ever deleted. When `curator.consolidate` is on and a model
 is available, `consolidateSkills` runs an umbrella-building pass that archives
-absorbed or pruned agent-created skills.
+absorbed or pruned agent-created skills. It only archives existing skills and
+never stages candidates; unsolicited `skills` reply fields are ignored.
 
 **Self-naming.** After apply, `persistConsolidation` writes the self-name slug
 to `sessions.name` and the summary to `sessions.summary`, keeps `sessions_fts`

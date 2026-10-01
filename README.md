@@ -108,9 +108,15 @@ pi remove git:github.com/guru-irl/spider
 ```
 
 `npm install` also runs `scripts/postinstall.mjs`, which loads `better-sqlite3`,
-opens a `vec0` table through `sqlite-vec`, and bootstraps the global registry
-database. It prints diagnostics to stderr and never blocks the install. If a
-native module fails, run `npm rebuild better-sqlite3` in the package directory.
+opens a `vec0` table through `sqlite-vec`, and bootstraps the global database
+file (schema is deferred to db-core). If `SPIDER_GLOBAL_ROOT` is an absolute
+path (drive-qualified or UNC on Windows), the bootstrap uses it. Only an unset
+or empty value uses the default `~/.pi/agent/spider`. Other values, including
+Windows root-relative paths, skip the bootstrap with a warning because npm's
+working directory differs from the runtime working directory. The bootstrap is
+also skipped when `CI=true` or `VITEST` is set; native self-checks still run.
+It prints diagnostics to stderr and never blocks the install. If a native
+module fails, run `npm rebuild better-sqlite3` in the package directory.
 
 ## Develop against a working tree
 

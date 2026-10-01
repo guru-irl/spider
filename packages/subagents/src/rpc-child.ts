@@ -2,11 +2,17 @@ import type { ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 
+export type SteerDelivery = "delivered" | "accepted but not confirmed" | "no reply yet, delivery unknown" | "refused";
 export interface SteerAck {
-  /** Pi accepted delivery at the next turn boundary, not proof of model consumption. */
+  /** RPC success is acceptance, not evidence of conversation entry. */
   accepted: boolean;
-  /** Pi acknowledged queue insertion, but the parent refused future delivery after settlement. */
+  requestId?: string;
   childAccepted?: boolean;
+  delivered?: boolean;
+  queued?: boolean;
+  delivery?: SteerDelivery;
+  transformed?: boolean;
+  observedText?: string;
   error?: string;
 }
 
@@ -33,17 +39,65 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   let closed = false, settled = false, stopping = false, discardAfterSettle = false;
   let steering: string[] = [], followUp: string[] = [];
   let promptAccepted = false, failureReason: string | undefined, stderrTail = "";
-  const pending = new Map<string, { command: string; message?: string; childAccepted?: boolean; queued?: boolean; consumed?: boolean; finish: (ack: SteerAck) => void; timer?: ReturnType<typeof setTimeout> }>();
+  type Pending = { command: string; message?: string; childAccepted?: boolean; additions?: string[]; entries?: string[]; queuedText?: string; observed?: boolean; reportedDelivery?: SteerDelivery; finish: (ack: SteerAck) => void; timer?: ReturnType<typeof setTimeout> };
+  const pending = new Map<string, Pending>();
+  let activeSteer: string | undefined;
+  let steerBusy = false;
+  const waitingSteers: Array<{ message: string; finish: (ack: SteerAck) => void; timer: ReturnType<typeof setTimeout> }> = [];
   const report = (event: Record<string, any>) => { try { onEvent?.(event); } catch { /* reporting cannot block pipe drainage */ } };
-  const undelivered = (id: string, message: string, reason: string) => report({
-    type: "steer_delivery", requestId: id, steer: message, delivered: false,
-    message: `Accepted steer was not delivered: ${reason}`,
-  });
+  const deliveryAck = (p: Pending): SteerAck => ({ accepted: p.childAccepted === true || p.observed === true, delivered: p.observed === true,
+    queued: !p.observed && p.queuedText !== undefined && steering.includes(p.queuedText),
+    delivery: p.observed ? "delivered" : p.childAccepted ? "accepted but not confirmed" : "no reply yet, delivery unknown",
+    ...(p.observed ? { observedText: p.queuedText, transformed: p.queuedText !== p.message } : {}) });
+  const deliveryEvent = (id: string, p: Pending, reason?: string) => {
+    const ack = deliveryAck(p);
+    if (p.reportedDelivery === "delivered") return;
+    p.reportedDelivery = ack.delivery;
+    report({ type: "steer_delivery", requestId: id, steer: p.message, ...ack,
+      message: `Steer ${ack.delivery}.${ack.transformed ? " Child input transformed the text." : ""}${reason ? ` ${reason}` : ""}` });
+  };
+  const refused = (message: string, error: string, id: string = randomUUID()): SteerAck => {
+    const ack: SteerAck = { accepted: false, requestId: id, delivered: false, delivery: "refused", error };
+    report({ type: "steer_delivery", requestId: id, steer: message, ...ack, message: `Steer refused: ${error}` });
+    return ack;
+  };
+  // Queue events have no request IDs. Exact text wins; a rewrite needs a
+  // sole addition across the whole acceptance window and a success reply.
+  // Exit/abort/settlement without a reply cannot confirm a tentative rewrite.
+  const correlate = (p: Pending) => {
+    const additions = p.additions ?? [];
+    p.queuedText = additions.includes(p.message!) ? p.message : additions.length === 1 ? additions[0] : undefined;
+    p.observed = p.queuedText !== undefined && (p.entries ?? []).includes(p.queuedText)
+      && (p.queuedText === p.message || p.childAccepted === true);
+  };
+  const releaseSteer = (id: string) => {
+    if (activeSteer !== id) return;
+    activeSteer = undefined; steerBusy = false;
+    const next = waitingSteers.shift();
+    if (next) { clearTimeout(next.timer); void startSteer(next.message).then(next.finish); }
+  };
   const failPending = (error: string) => {
     for (const [id, p] of pending) {
       clearTimeout(p.timer); pending.delete(id);
-      if (p.childAccepted) undelivered(id, p.message!, error);
-      else p.finish({ accepted: false, error });
+      if (p.command === "steer") {
+        correlate(p);
+        deliveryEvent(id, p, error);
+        p.finish({ ...deliveryAck(p), requestId: id, error });
+      } else p.finish({ accepted: false, error });
+    }
+    activeSteer = undefined; steerBusy = false;
+    for (const next of waitingSteers.splice(0)) { clearTimeout(next.timer); next.finish(refused(next.message, `Not sent: ${error}`)); }
+  };
+  const finalizeSettledSteers = () => {
+    for (const [id, p] of pending) if (p.command === "steer") {
+      clearTimeout(p.timer); pending.delete(id);
+      const reason = p.observed ? undefined : p.childAccepted ? `Run settled; accepted, delivery not confirmed.${steering.length || followUp.length ? " Remaining queue was discarded." : ""}` : "Run settled before the child replied; delivery unknown.";
+      deliveryEvent(id, p, reason);
+      p.finish({ ...deliveryAck(p), requestId: id, ...(reason ? { error: reason } : {}) });
+    }
+    activeSteer = undefined; steerBusy = false;
+    for (const next of waitingSteers.splice(0)) {
+      clearTimeout(next.timer); next.finish(refused(next.message, "Not sent: run settled; start a fresh run."));
     }
   };
   const close = () => { if (closed) return; closed = true; child.stdin?.end(); };
@@ -58,14 +112,28 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   const request = (command: Record<string, any>, timeoutMs?: number): Promise<SteerAck> => new Promise(resolve => {
     const id = randomUUID();
     const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
-      pending.delete(id);
-      if (command.type === "steer" && settled) { discardAfterSettle = true; send({ type: "clear_queue" }); }
-      resolve({ accepted: false, error: "No RPC acceptance response; delivery is unconfirmed." }); maybeComplete();
+      const p = pending.get(id);
+      if (!p) return;
+      p.timer = undefined;
+      if (command.type === "steer") {
+        // The bytes were written. No reply is uncertainty, not rejection.
+        // Retain the request and its serialized window for late replies/events.
+        deliveryEvent(id, p);
+        resolve({ ...deliveryAck(p), requestId: id });
+      } else {
+        pending.delete(id);
+        resolve({ accepted: false, error: "No RPC acceptance response." });
+      }
+      maybeComplete();
     }, timeoutMs);
     timer?.unref();
     pending.set(id, { command: command.type, message: command.message, finish: resolve, timer });
+    if (command.type === "steer") activeSteer = id;
     if (!send({ ...command, id })) {
-      clearTimeout(timer); pending.delete(id); resolve({ accepted: false, error: "Child RPC pipe is closed." });
+      clearTimeout(timer); pending.delete(id);
+      const error = "Child RPC pipe is closed.";
+      resolve(command.type === "steer" ? refused(command.message, error, id) : { accepted: false, error });
+      if (command.type === "steer") releaseSteer(id);
     }
   });
   const onExit = () => {
@@ -78,9 +146,9 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   };
   child.on("exit", onExit); child.on("error", onExit);
   child.stdin?.on("error", () => { closed = true; failPending("Child RPC pipe failed."); });
-  // A child's diagnostics must not fill stderr while the parent is busy.
   child.stdout?.on("error", error => report({ type: "warning", message: `Child stdout failed: ${error.message}` }));
   child.stderr?.on("error", error => report({ type: "warning", message: `Child stderr failed: ${error.message}` }));
+  // A child's diagnostics must not fill stderr while the parent is busy.
   child.stderr?.on("data", chunk => { stderrTail = (stderrTail + String(chunk)).slice(-4096); });
   attachRpcReader(child.stdout!, event => {
     if (event.type === "extension_ui_request") {
@@ -94,22 +162,16 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
         if (p.command === "prompt" && event.success === true) promptAccepted = true;
         clearTimeout(p.timer); p.timer = undefined;
         if (p.command === "steer" && event.success === true) {
-          p.childAccepted = true;
-          if (settled || discardAfterSettle) {
-            p.finish({ accepted: false, childAccepted: true, error: "Run finished; accepted steer was not delivered because the remaining queue was discarded." });
-            pending.delete(event.id); discardAfterSettle = true; send({ type: "clear_queue" });
-            undelivered(event.id, p.message!, "Run settled before delivery could be confirmed; remaining queue was discarded.");
-          } else {
-            p.finish({ accepted: true });
-            if (p.consumed) {
-              pending.delete(event.id);
-              report({ type: "steer_delivery", requestId: event.id, steer: p.message, delivered: true, message: "Accepted steer queue consumed at a turn boundary; model consumption is unconfirmed." });
-            }
-          }
+          p.childAccepted = true; correlate(p);
+          p.finish({ ...deliveryAck(p), requestId: event.id });
+          deliveryEvent(event.id, p);
+          if (p.observed) pending.delete(event.id);
         } else {
           pending.delete(event.id);
-          p.finish({ accepted: event.success === true, ...(event.success === true ? {} : { error: event.error ?? "Child rejected the command." }) });
+          const error = event.error ?? "Child rejected the command.";
+          p.finish(p.command === "steer" ? p.observed ? { ...deliveryAck(p), requestId: event.id } : refused(p.message!, error, event.id) : { accepted: event.success === true, ...(event.success === true ? {} : { error }) });
         }
+        if (p.command === "steer") releaseSteer(event.id);
       }
     } else if (event.type === "agent_start") {
       settled = false;
@@ -117,47 +179,72 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       settled = true;
       if (steering.length || followUp.length || [...pending.values()].some(p => p.command === "steer")) {
         discardAfterSettle = true; send({ type: "clear_queue" });
-        for (const [id, p] of pending) if (p.command === "steer" && p.childAccepted) {
-          clearTimeout(p.timer); pending.delete(id);
-          undelivered(id, p.message!, "Run settled before delivery; remaining queue was discarded.");
-        }
+        finalizeSettledSteers();
       }
     } else if (event.type === "queue_update") {
-      steering = Array.isArray(event.steering) ? event.steering : [];
-      followUp = Array.isArray(event.followUp) ? event.followUp : [];
-      for (const [id, p] of pending) if (p.command === "steer") {
-        if (steering.includes(p.message!)) p.queued = true;
-        else if (p.queued && !settled && !stopping) {
-          p.consumed = true;
-          if (p.childAccepted) {
-            pending.delete(id);
-            report({ type: "steer_delivery", requestId: id, steer: p.message, delivered: true, message: "Accepted steer queue consumed at a turn boundary; model consumption is unconfirmed." });
-          }
-        }
+      const next: string[] = Array.isArray(event.steering) ? event.steering : [];
+      // RPC events have no request IDs. Serialize steer acceptance windows and
+      // collect all additions in that window, including rewrites.
+      const remaining = [...steering], added: string[] = [];
+      for (const text of next) {
+        const i = remaining.indexOf(text);
+        if (i < 0) added.push(text); else remaining.splice(i, 1);
       }
+      const p = activeSteer ? pending.get(activeSteer) : undefined;
+      if (p && !p.childAccepted) { p.additions = [...(p.additions ?? []), ...added]; correlate(p); }
+      steering = next;
+      followUp = Array.isArray(event.followUp) ? event.followUp : [];
+      // Queue removal alone is not delivery: clear_queue also removes entries.
       if (settled && (steering.length > 0 || followUp.length > 0)) {
-        discardAfterSettle = true; send({ type: "clear_queue" });
+        discardAfterSettle = true; send({ type: "clear_queue" }); finalizeSettledSteers();
+      }
+    } else if (event.type === "message_start" && event.message?.role === "user" && !stopping) {
+      const content = event.message.content;
+      const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter(c => c.type === "text").map(c => c.text).join("") : undefined;
+      // One conversation event confirms at most one steer, even for duplicate text.
+      for (const [id, p] of pending) if (p.command === "steer" && !p.observed && p.queuedText !== undefined && p.queuedText === text) {
+        (p.entries ??= []).push(text); correlate(p);
+        if (p.observed) { deliveryEvent(id, p); if (p.childAccepted) pending.delete(id); }
+        break;
       }
     }
-    // Observers see the updated boundary, so a callback cannot sneak a steer in
-    // after receiving agent_settled but before this controller notices it.
+    // Update boundaries before notifying observers, preventing late steering.
     report(event);
     maybeComplete();
   }, error => {
     report({ type: "warning", message: `Invalid child RPC record: ${error.message}` });
   });
-  // Exactly one prompt per child. No heartbeat or lifecycle command triggers a turn.
+  // Exactly one prompt per child. No lifecycle command triggers a turn.
   void request({ type: "prompt", message: prompt }, undefined).then(ack => {
     if (!ack.accepted && !stopping && !failureReason) {
       failureReason = ack.error;
       report({ type: "warning", message: failureReason }); close();
     }
   });
+  const startSteer = (message: string): Promise<SteerAck> => {
+    if (closed || stopping || settled || discardAfterSettle) {
+      const error = "Child has completed or is shutting down; start a fresh run.";
+      for (const next of waitingSteers.splice(0)) { clearTimeout(next.timer); next.finish(refused(next.message, error)); }
+      return Promise.resolve(refused(message, error));
+    }
+    steerBusy = true;
+    const ack = request({ type: "steer", message }, 10_000);
+    return ack;
+  };
   return {
     failureReason: (): string | undefined => failureReason,
-    async steer(message: string): Promise<SteerAck> {
-      if (closed || stopping || settled || discardAfterSettle) return { accepted: false, error: "Child has completed or is shutting down; start a fresh run." };
-      return request({ type: "steer", message }, 10_000);
+    steer(message: string): Promise<SteerAck> {
+      if (message.trimStart().startsWith("/")) return Promise.resolve(refused(message, "Steer text starting with '/' can be expanded by the child as a skill or prompt template, or rejected as an extension command; RPC steer has no literal-text option. Rephrase so it does not start with '/'."));
+      if (steerBusy) return new Promise(finish => {
+        const waiter = { message, finish, timer: setTimeout(() => {
+          const index = waitingSteers.indexOf(waiter);
+          if (index < 0) return;
+          waitingSteers.splice(index, 1);
+          finish(refused(message, "Not sent: timed out waiting for an earlier steer's reply."));
+        }, 10_000) };
+        waiter.timer.unref(); waitingSteers.push(waiter);
+      });
+      return startSteer(message);
     },
     async abort(graceMs = 250): Promise<void> {
       if (closed || stopping) return;

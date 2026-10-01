@@ -176,7 +176,7 @@ it.each(["fallback", "steer", "both"])("shutdown with %s diagnostics queues the 
     expect(sent[0].options).toEqual({triggerTurn: false, deliverAs: "nextTurn"});
     expect(sent[0].message.details.output).toMatch(/Session shutdown cancelled this run/);
     if (diagnostic !== "steer") expect(sent[0].message.content).toMatch(/Using print mode/);
-    if (diagnostic !== "fallback") expect(sent[0].message.content).toMatch(/1 accepted steer.*not delivered/);
+    if (diagnostic !== "fallback") expect(sent[0].message.content).toMatch(/1 steer.*accepted but not confirmed/);
     expect(new RunStore(db).get(result.details.run.id)?.result).not.toMatch(/Using print mode/);
   } finally { finish({exitCode: 143}); await teardownAllAsync(); db.close(); }
 });

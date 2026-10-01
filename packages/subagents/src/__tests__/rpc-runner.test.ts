@@ -34,7 +34,7 @@ it("persists later non-delivery without rewriting the successful steer tool resu
   const steer=commands.find(c=>c.type==="steer");
   out({type:"queue_update",steering:["correction"],followUp:[]}); out({type:"response",id:steer.id,success:true});
   const result=await message; expect(result.isError).toBe(false); expect(result.details.accepted).toBe(true);
-  expect(result.content).toMatch(/accepted, delivered at the next turn boundary/);
+  expect(result.content).toMatch(/accepted but not confirmed/);
   await vi.advanceTimersByTimeAsync(120_000); out({type:"agent_settled"});
   const event=db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='steer_delivery'").get(row.id) as {payload:string};
   expect(event).toBeTruthy();
@@ -43,10 +43,10 @@ it("persists later non-delivery without rewriting the successful steer tool resu
   } finally {
     finish({exitCode:0,result:"report"}); await exit; await Promise.resolve();
   }
-  expect(store.get(row.id)?.result).toMatch(/1 accepted steer.*not delivered/i);
+  expect(store.get(row.id)?.result).toMatch(/1 steer.*accepted but not confirmed/i);
   expect(notifications).toHaveLength(1);
-  expect(notifications[0].content).toMatch(/1 accepted steer.*not delivered/i);
-  expect(notifications[0].details.output).toMatch(/1 accepted steer.*not delivered/i);
+  expect(notifications[0].content).toMatch(/1 steer.*accepted but not confirmed/i);
+  expect(notifications[0].details.output).toMatch(/1 steer.*accepted but not confirmed/i);
 });
 it.each(["rpc", "print"] as const)("persists actual %s launch and intercom capability before spawning", async childMode => {
   const db = freshDb(); dbs.push(db); const store = new RunStore(db); let spec: any;
@@ -198,8 +198,8 @@ it("completion includes non-delivery even when the child finalized its row first
   appendRunEvent(db, { runId: row.id, sessionId: "self-finalized", ts: Date.now(), type: "steer_delivery", payload: { requestId: "accepted-steer", delivered: false }, summary: "Accepted steer was not delivered." });
   store.finish(row.id, { status: "done", result: "child terminal report" });
   finish({ exitCode: 0 }); await exit; await Promise.resolve();
-  expect(store.get(row.id)).toMatchObject({ status: "done", result: expect.stringMatching(/child terminal report[\s\S]*1 accepted steer.*not delivered/i) });
-  expect(sent).toHaveLength(1); expect(sent[0].details.output).toMatch(/1 accepted steer.*not delivered/i);
+  expect(store.get(row.id)).toMatchObject({ status: "done", result: expect.stringMatching(/child terminal report[\s\S]*1 steer.*accepted but not confirmed/i) });
+  expect(sent).toHaveLength(1); expect(sent[0].details.output).toMatch(/1 steer.*accepted but not confirmed/i);
 });
 
 // Real pi runs session_shutdown and tries to write failed before killAsync returns.
@@ -251,24 +251,24 @@ it("a delivered steer never appears in the undelivered summary", async () => {
     onComplete: makeAsyncNotifier({ db, pi: { sendMessage(m: any) { sent.push(m); } } }) });
   const row = runner.runAsync({ agent: "worker", task: "work", context: "fresh" });
   await vi.waitFor(() => expect(sent).toHaveLength(1));
-  expect(store.get(row.id)?.result).toBe("unchanged report");
-  expect(sent[0].details.output).toBe("unchanged report");
+  expect(store.get(row.id)?.result).toBe("unchanged report\n\n1 steer(s) delivered.");
+  expect(sent[0].details.output).toBe("unchanged report\n\n1 steer(s) delivered.");
   expect(sent[0].content).not.toMatch(/not delivered/);
 });
 
-it("own kill reports an undelivered steer rather than suppressing its completion notification", async () => {
+it.each(["accepted but not confirmed", "no reply yet, delivery unknown"])("own kill reports a %s steer rather than suppressing its completion notification", async delivery => {
   const db = freshDb(); dbs.push(db); const store = new RunStore(db); const sent: any[] = [];
   let finish!: (v: any) => void; const exit = new Promise<{ exitCode: number }>(resolve => { finish = resolve; });
   const runner = new Runner(db, "steer-kill", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("steer-kill"), dbPath: "fixture.db",
     spawn: () => ({ wait: () => exit, detach() {}, kill() { finish({ exitCode: 143 }); } }),
     onComplete: makeAsyncNotifier({ db, pi: { sendMessage(m: any) { sent.push(m); } } }) });
   const row = runner.runAsync({ agent: "worker", task: "work", context: "fresh" });
-  appendRunEvent(db, { runId: row.id, sessionId: "steer-kill", ts: Date.now(), type: "steer_delivery", payload: { requestId: "undelivered-steer", delivered: false }, summary: "Accepted steer was not delivered." });
+  appendRunEvent(db, { runId: row.id, sessionId: "steer-kill", ts: Date.now(), type: "steer_delivery", payload: { requestId: "undelivered-steer", delivered: false, delivery }, summary: "Accepted steer was not delivered." });
   expect(await killRun({ store, db }, "steer-kill", store.get(row.id)!)).toMatchObject({ outcome: "killed" });
   await exit; await Promise.resolve();
-  expect(store.get(row.id)).toMatchObject({ status: "cancelled", result: expect.stringMatching(/killed by spider kill[\s\S]*1 accepted steer.*not delivered/) });
+  expect(store.get(row.id)).toMatchObject({ status: "cancelled", result: expect.stringContaining(`1 steer(s) ${delivery}.`) });
   expect(sent).toHaveLength(1);
-  expect(sent[0].details.output).toMatch(/1 accepted steer.*not delivered/);
+  expect(sent[0].details.output).toContain(`1 steer(s) ${delivery}.`);
 });
 
 // Reproduces review-r6-late-fail: the leader exits during grace, then group termination fails.
@@ -320,4 +320,42 @@ it.each([
     expect(store.get(id)).toMatchObject({ ...terminal, ended_at: 123 });
     expect(globalDb.prepare("SELECT run_id FROM run_routes WHERE run_id=?").all(id)).toEqual([]);
   } finally { finish({ exitCode: 143 }); await exit; await Promise.resolve(); }
+});
+
+it("later tool acceptance cannot overwrite observed delivery in completion", async () => {
+  const db = freshDb(); dbs.push(db); const store = new RunStore(db);
+  const runner = new Runner(db, "ordering", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("ordering"), dbPath: "fixture.db",
+    spawn: spec => {
+      for (const [type, payload] of [["steer_delivery", { requestId: "ordered", delivery: "delivered", delivered: true }], ["steer", { requestId: "ordered", delivery: "accepted but not confirmed", accepted: true, delivered: false }]] as const)
+        appendRunEvent(db, { runId: spec.env.PI_SUBAGENT_RUN_ID, sessionId: "ordering", ts: Date.now(), type, payload, summary: type });
+      return { wait: async () => ({ exitCode: 0, result: "report" }), kill() {}, detach() {} };
+    } });
+  const row = await runner.runForeground({ agent: "worker", task: "work", context: "fresh" });
+  expect(row.result).toBe("report\n\n1 steer(s) delivered.");
+});
+it("completion counts no-reply uncertainty separately from refusals", async () => {
+  const db = freshDb(); dbs.push(db); const store = new RunStore(db);
+  const runner = new Runner(db, "unknown", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("unknown"), dbPath: "fixture.db",
+    spawn: spec => {
+      appendRunEvent(db, { runId: spec.env.PI_SUBAGENT_RUN_ID, sessionId: "unknown", ts: Date.now(), type: "steer_delivery", payload: { requestId: "slow", delivery: "no reply yet, delivery unknown", accepted: false, delivered: false }, summary: "No reply yet." });
+      return { wait: async () => ({ exitCode: 0, result: "report" }), kill() {}, detach() {} };
+    } });
+  const row = await runner.runForeground({ agent: "worker", task: "work", context: "fresh" });
+  expect(row.result).toBe("report\n\n1 steer(s) no reply yet, delivery unknown.");
+});
+
+it("mixed-version broker acceptance is counted as unconfirmed, not conversation delivery", async () => {
+  const db = freshDb(); dbs.push(db); const store = new RunStore(db);
+  const runner = new Runner(db, "mixed-version", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("mixed-version"), dbPath: "fixture.db",
+    spawn: spec => {
+      for (const [type, payload] of [
+        ["steer", { transport: "intercom", delivery: "broker-accepted", delivered: true }],
+        ["steer", { delivery: "broker-accepted", delivered: true }],
+        ["steer_delivery", { requestId: "old-entry", delivered: true }],
+        ["steer_delivery", { requestId: "old-acceptance", delivered: false }],
+      ] as const) appendRunEvent(db, { runId: spec.env.PI_SUBAGENT_RUN_ID, sessionId: "mixed-version", ts: Date.now(), type, payload, summary: type });
+      return { wait: async () => ({ exitCode: 0, result: "report" }), kill() {}, detach() {} };
+    } });
+  const row = await runner.runForeground({ agent: "worker", task: "work", context: "fresh" });
+  expect(row.result).toBe("report\n\n1 steer(s) delivered.\n3 steer(s) accepted but not confirmed.");
 });

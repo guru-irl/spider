@@ -6,6 +6,19 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
 describe("message renderer", () => {
+  it.each([
+    { delivery: "delivered", delivered: true, transformed: false, icon: "✓", status: "delivered" },
+    { delivery: "delivered", delivered: true, transformed: true, icon: "✓", status: "delivered, transformed" },
+    { delivery: "accepted but not confirmed", delivered: false, icon: "⚠", status: "accepted but not confirmed" },
+    { delivery: "no reply yet, delivery unknown", delivered: false, icon: "⚠", status: "no reply yet, delivery unknown" },
+    { delivery: "child-accepted", delivered: false, icon: "⚠", status: "accepted but not confirmed" },
+    { delivery: "refused", delivered: false, icon: "✗", status: "refused" },
+    { delivery: "broker-accepted", delivered: false, icon: "⚠", status: "broker accepted · acknowledgement unconfirmed" },
+  ] as const)("renders $delivery (transformed=$transformed) with truthful severity", row => {
+    const text = renderMessageResult({ verb: "send", body: "correction", to: "run", ...row, error: "Delivery diagnostic." }, { theme: id, width: 120 }).join("\n");
+    expect(text).toContain(row.icon); expect(text).toContain(row.status);
+    if (row.icon !== "✗") expect(text).not.toContain("✗");
+  });
   it.each(["queued", "broker-accepted", undefined] as const)("keeps %s delivery notes neutral instead of turning them into error headlines", delivery => {
     const colored = { ...id, fg: (token: string, text: string) => token === "error" ? `\x1b[31m${text}\x1b[39m` : text };
     const out = renderMessageResult({ verb: "send", to: "peer", body: "ping", delivered: false, delivery, error: "Peer is offline.\nRetry later." }, { theme: colored, width: 120 }).join("\n");

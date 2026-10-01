@@ -150,19 +150,47 @@ in either mode. All tool dispatches are asynchronous; there is no foreground
 abort-signal subscription. Shutdown cancels every registered child, including chain steps
 and pipeline stages, and pending intercom calls. Cancellation reports retain the
 actual cause. Own-session kill completion is already reported by the kill result
-and sends no extra notification unless an undelivered steer needs reporting. Cancellation is persisted before termination so the child's shutdown reporter cannot replace it. A failed owned kill restores the previous row and its route only while the child has not reported exit and the row still holds that kill's cancellation. A late group-termination failure never resurrects a dead run. Shutdown notifications use `nextTurn` without
+and sends no extra notification unless a steer is accepted but not confirmed or
+has no reply yet, delivery unknown. Cancellation is persisted before termination so the child's shutdown reporter cannot replace it. A failed owned kill restores the previous row and its route only while the child has not reported exit and the row still holds that kill's cancellation. A late group-termination failure never resurrects a dead run. Shutdown notifications use `nextTurn` without
 triggering a model turn, including during reload. A cancelled chain or pipeline
 does not launch another stage.
 
-Running children can be steered by run ID in their owner session. The RPC reply
-reports "accepted, delivered at the next turn boundary" as soon as Pi replies
-success. The acceptance deadline is cleared at that point, even if the current
-tool call takes minutes. Queue consumption is tracked separately as a later
-`steer_delivery` run event, not proof of model consumption. A previously accepted
-steer stranded at settlement or exit gets a truthful non-delivery event and a
-summary in the final result and completion notification. If pi acknowledges the
-steer only after settlement, the message tool refuses it as finished, not delivered.
-It does not hang the run. Other sessions use the persisted
+Running children can be steered by run ID in their owner session. RPC success
+means **accepted but not confirmed**, since Pi input handlers can swallow or
+transform steers. A `steer_delivery` run event reports **delivered** only after a
+correlated user `message_start` enters the conversation. Queue removal alone is
+not delivery. Steer acceptance windows are serialized. Exact steer text is
+preferred among all additions across that window's queue updates; differing text
+counts as **delivered, transformed** only after a successful reply and when it
+was the sole addition. Several additions without an exact match remain
+**accepted but not confirmed**. Events lack request IDs:
+a handler that swallows the steer and independently injects one unrelated message
+can still look like a transform; another source injecting identical text is also
+indistinguishable. Unrelated injections followed by an unchanged steer prefer
+that exact steer text. Exit, stop or settlement before a reply never promotes a
+differing injection to transformed delivery; only exact-text entry counts. This is evidence of conversation entry, not
+proof of model consumption.
+
+After 10 seconds without an RPC reply, the result is **no reply yet, delivery
+unknown**, not a refusal. While the run is still active, do not resend; the written
+steer may still be delivered.
+The request and its acceptance window remain tracked until settlement, exit or
+stop; late RPC success before settlement upgrades it to **accepted but not
+confirmed**, and observed entry to **delivered**. Each later steer waits at most
+10 seconds for an earlier reply, then is **refused** as not sent. If written, it
+has its own 10-second reply deadline. A late reply releases the next waiter in
+order. Settlement finalizes unanswered writes as unknown, refuses unwritten
+waiters and closes stdin, allowing the run to complete without a reply. Exit or
+stop before acceptance likewise leaves written input unknown unless an exact-text
+entry was observed. Already observed delivery stays delivered, including exit,
+abort, settlement or timeout before the reply. Accepted but unobserved steers at settlement,
+exit or abort remain **accepted but not confirmed**. Every completion with steers
+includes counts for delivered, accepted but not confirmed, no reply yet, delivery
+unknown, and refused in its result and notification, including pipeline handoffs.
+
+Rejections and steers not written use **refused**. Slash-prefixed steers are
+refused because Pi can expand skills/templates or reject registered extension
+commands, and RPC steer has no literal-text option. Other sessions use the persisted
 intercom name when that child launched with enabled intercom. A global
 `run_routes` locator points to the owner's runs DB for cross-worktree lookup;
 it stores no transport messages and is deleted when the run finalizes. Without

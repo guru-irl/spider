@@ -19,7 +19,7 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
   return (run, status, result, steps) => {
     // The caller's own kill result already reported this cancellation.
     const completion = result ?? run.result ?? "";
-    if (status === "cancelled" && completion.startsWith("killed by spider kill from this session") && !/\d+ accepted steer\(s\) were not delivered\./.test(completion)) return;
+    if (status === "cancelled" && completion.startsWith("killed by spider kill from this session") && !/\d+ steer\(s\) (?:accepted but not confirmed|no reply yet, delivery unknown)\./.test(completion)) return;
     const shutdown = status === "cancelled" && /session shutdown/i.test(result ?? run.result ?? "");
     try {
       let output = status === "cancelled" ? result ?? run.result : latestRunOutput(ctx.db, run.id, result);

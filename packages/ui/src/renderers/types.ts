@@ -154,7 +154,8 @@ export interface RunResultDetails { runs: RunView[]; pipeline: { from: string; t
 export interface MessageDetails {
   verb: "send" | "ask" | "reply" | "broadcast";
   to?: string; from?: string; kind?: string; body: string; delivered: boolean;
-  delivery?: "broker-accepted" | "queued" | "unavailable";
+  delivery?: "child-accepted" | "broker-accepted" | "queued" | "unavailable" | "delivered" | "accepted but not confirmed" | "no reply yet, delivery unknown" | "refused";
+  transformed?: boolean;
   recipientAcknowledged?: boolean;
   error?: string;
 }

@@ -18,8 +18,8 @@ function childTarget(db: Db | undefined, target: string, sessionId: string): Tar
 /** Peer transport is queue-first. Live RPC children use their owner's stdin directly. */
 export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content: string; isError: boolean; details: any }> {
   return async function messageHandler(args: any, ctx: any) {
-    const refuse = (error: string, runId?: string, childAccepted = false) => ({ content: error, isError: true,
-      details: { error, delivered: false, queued: false, delivery: "unavailable", recipientAcknowledged: false, ...(runId ? { runId } : {}), ...(childAccepted ? { childAccepted: true } : {}) } });
+    const refuse = (error: string, runId?: string, childAccepted = false) => ({ content: `Message refused: ${error}`, isError: true,
+      details: { error, accepted: false, delivered: false, queued: false, delivery: "refused", recipientAcknowledged: false, ...(runId ? { runId } : {}), ...(childAccepted ? { childAccepted: true } : {}) } });
     let remoteDb: Db | undefined;
     try {
       const to = typeof args.to === "string" ? args.to.trim() : "";
@@ -43,7 +43,7 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
       }
       let warning: string | undefined;
       const recordSteer = (run: TargetRun, payload: any) => {
-        try { appendRunEvent(eventDb, { runId: run.id, sessionId: run.session_id, ts: Date.now(), type: "steer", summary: args.message, payload }); }
+        try { appendRunEvent(eventDb, { runId: run.id, sessionId: run.session_id, ts: Date.now(), type: "steer", summary: `Steer ${payload.delivery}: ${args.message}`, payload }); }
         catch { warning = "The steer transport result is unchanged, but its run event could not be recorded."; }
       };
       let destination = to;
@@ -54,19 +54,24 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
         if (["done", "failed", "cancelled"].includes(run.status)) return refuse(`Subagent ${run.id} is ${run.status}. Messaging cannot resume it. Start a fresh run with the corrected brief.`, run.id);
         if (run.status !== "running") return refuse(`Subagent ${run.id} is ${run.status}, not running. It cannot accept a steer.`, run.id);
         if (run.child_mode !== "rpc") return refuse(`Subagent ${run.id} is a one-shot headless print-mode child. Messages cannot steer it. Cancel and confirm termination before starting a new run.`, run.id);
+        if (args.message.trimStart().startsWith("/")) {
+          const error = "Steer text starting with '/' can be expanded by the child as a skill or prompt template, or rejected as an extension command; RPC steer has no literal-text option. Rephrase so it does not start with '/'.";
+          recordSteer(run, { accepted: false, delivered: false, delivery: "refused", error });
+          return refuse(error, run.id);
+        }
         if (run.session_id === ctx.sessionId) {
           const child = getChild(ctx.sessionId, run.id);
           if (!child?.steer) return refuse(`Subagent ${run.id} has no live RPC pipe in its owning session. It may have completed or been stopped; start a fresh run.`, run.id);
           const ack = await child.steer(args.message);
-          recordSteer(run, { transport: "rpc", ...ack });
-          if (!ack.accepted) {
-            const content = ack.childAccepted
-              ? `Subagent ${run.id} acknowledged queue insertion, but no live steering window remains. ${ack.error}`
-              : `Subagent ${run.id} did not confirm steering acceptance: ${ack.error ?? "unconfirmed"}`;
-            return refuse(content, run.id, ack.childAccepted === true);
+          const delivery = ack.delivered ? "delivered" : ack.delivery === "no reply yet, delivery unknown" ? ack.delivery : ack.accepted || ack.childAccepted ? "accepted but not confirmed" : "refused";
+          recordSteer(run, { transport: "rpc", ...ack, delivery });
+          if (delivery === "refused") {
+            return refuse(ack.error?.startsWith("Not sent:")
+              ? `Steer to Subagent ${run.id} was not sent: ${ack.error.slice("Not sent:".length).trim()}`
+              : `Subagent ${run.id} did not confirm steering acceptance: ${ack.error ?? "unconfirmed"}`, run.id);
           }
-          return { content: `Message accepted by child ${run.id} (accepted, delivered at the next turn boundary); model consumption is unconfirmed.`, isError: false,
-            details: { runId: run.id, accepted: true, delivered: false, queued: true, delivery: "child-accepted", recipientAcknowledged: false, ...(warning ? { warning } : {}) } };
+          return { content: `Message to child ${run.id}: ${delivery}.${delivery === "no reply yet, delivery unknown" ? ack.error ? " The steer was not delivered and the run has ended. Start a fresh run if the instruction still matters." : " The steer was written and may still be delivered; do not resend." : ""}${ack.transformed ? " Child input transformed the text." : ""}${ack.error ? ` ${ack.error}` : ""}`, isError: false,
+            details: { ...ack, runId: run.id, accepted: delivery !== "no reply yet, delivery unknown", delivered: ack.delivered === true, queued: ack.queued === true && !ack.childAccepted, delivery, recipientAcknowledged: false, ...(warning ? { warning } : {}) } };
         }
         if (!run.intercom_session) return refuse(`This run is owned by session ${run.session_id}; steer it from there, or install pi-intercom before launching a new run.`, run.id);
         destination = run.intercom_session;
@@ -75,12 +80,16 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
         to: destination, message: args.message, fromSession: ctx.sessionId,
         kind: args.kind, timeoutMs: args.timeoutMs, ephemeral: !!run,
       });
-      if (run) recordSteer(run, { transport: "intercom", ...res });
+      if (run) recordSteer(run, { transport: "intercom", ...res, accepted: res.delivered, delivered: false, delivery: res.delivered ? "accepted but not confirmed" : res.timedOut ? "no reply yet, delivery unknown" : "refused" });
+      if (run && res.timedOut) return { content: `Message to child ${run.id}: no reply yet, delivery unknown. The steer may still be delivered; do not resend. ${res.error ?? ""}`, isError: false,
+        details: { ...res, accepted: false, delivered: false, delivery: "no reply yet, delivery unknown", runId: run.id, ...(warning ? { warning } : {}) } };
+      if (run && res.delivered) return { content: `Message to child ${run.id}: accepted but not confirmed. Broker acceptance is not evidence of conversation entry.`, isError: false,
+        details: { ...res, accepted: true, delivered: false, delivery: "broker-accepted", runId: run.id, ...(warning ? { warning } : {}) } };
       if (res.delivered) {
         return { content: `Broker accepted the message for ${destination}; recipient acknowledgement is unconfirmed.${res.error ? ` ${res.error}` : ""}`, isError: false, details: { ...res, ...(run ? { runId: run.id } : {}), ...(warning ? { warning } : {}) } };
       }
-      if (run) return refuse(`Steer to child ${run.id} is unconfirmed. ${res.error ?? "No broker delivery confirmation."} Steer from its owning session or start a fresh run.`, run.id);
-      return { content: `message queued for ${destination}; delivery is unconfirmed. ${res.error ?? "No broker delivery confirmation."}`, isError: false, details: res };
+      if (run) return refuse(`${res.brokerRefused ? "The broker did not accept" : "The broker has not confirmed acceptance of"} the steer for child ${run.id}. ${res.error ?? "No broker delivery confirmation."} Steer from its owning session or start a fresh run.`, run.id);
+      return { content: `message queued for ${destination}; ${res.brokerRefused ? "delivery was not accepted by the broker" : "delivery is unconfirmed"}. ${res.error ?? "No broker delivery confirmation."}`, isError: false, details: res };
     } catch (err: unknown) {
       const error = String((err as Error)?.message ?? err);
       return refuse(`message failed: ${error}`);

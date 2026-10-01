@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter } from "@spider/ui";
+import { renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -251,8 +251,9 @@ function renderControlConfig(t: T, details: any, expanded: boolean): Component {
     return { render: (w: number) => ["", ...fitResultLines([line, ...(destination ? [destination] : []), ...(shadow ? [shadow] : [])], w, expanded)], invalidate() {} };
   }
   if (details?.key !== undefined) {
-    const source = details.source === undefined ? "" : ` (${typeof details.source === "string" ? details.source : JSON.stringify(details.source)})`;
-    return { render: (w: number) => ["", `${String(details.key)}: ${String(details.value)}${source}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+    const source = details.source === undefined || (details.value === undefined && details.source === "unset")
+      ? "" : ` (${typeof details.source === "string" ? details.source : JSON.stringify(details.source)})`;
+    return { render: (w: number) => ["", `${String(details.key)}: ${details.value === undefined ? "(unset)" : String(details.value)}${source}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
   }
   return textComponent({ details }, expanded);
 }
@@ -348,8 +349,8 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     const failLabel = (r: any): string =>
       r?.outcome === "signal" ? `signal ${typeof r?.signal === "string" ? r.signal : "?"}`
       : r?.outcome === "spawn-error" ? "spawn error"
-      : r?.outcome === "aborted" ? `aborted · exit ${r?.exitCode}`
-      : `exit ${r?.exitCode}`;
+      : r?.outcome === "aborted" ? `aborted${typeof r?.exitCode === "number" ? ` · exit ${r.exitCode}` : ""}`
+      : `exit ${r?.exitCode ?? "unknown"}`;
     const anyNumericFail = arr.some(isNumericFail);
     const anyKnownFailOutcome = arr.some(isKnownFailOutcome);
     const anyFail = anyNumericFail || anyKnownFailOutcome;
@@ -567,13 +568,30 @@ function renderSpiderResultBody(
   const action = String(context?.args?.action ?? "");
   const sub = String(context?.args?.sub ?? context?.args?.command ?? "");
   const details = result?.details;
-  // Error payloads must not fall through into success-shaped zero-count cards.
-  if (typeof details?.error === "string" && action !== "message") {
-    return {
-      render: (w: number) => ["", ...fitResultLines((expanded ? details.error.split("\n") : wrap(details.error, Math.max(1, w - 3), 4))
-        .map((line: string, i: number) => ` ${t.fg("error", i === 0 ? "✗ " : "  ")}${t.fg("toolOutput", line)}`), w, expanded)],
-      invalidate() {},
-    };
+  // Pi passes {content, details} here, with isError on context, not result.
+  // Thrown errors have bare details. Rich results may also set context.isError
+  // (exec exit != 0, doctor issues, etc.) and must retain their action cards.
+  const bareDetails = details == null || (typeof details === "object"
+    && [Object.prototype, null].includes(Object.getPrototypeOf(details))
+    && Reflect.ownKeys(details).length === 0);
+  const rememberReceipt = action === "remember" || (action === "control" && context?.args?.command === "memory" && sub === "approve");
+  const messageNote = action === "message" && details?.delivery !== "unavailable"
+    && (details?.queued === true || ["queued", "broker-accepted"].includes(details?.delivery));
+  if ((context?.isError === true && bareDetails) || (details?.error != null && !messageNote) || (rememberReceipt && !details?.status)) {
+    const content = Array.isArray(result?.content)
+      ? result.content.filter((block: any) => block?.type === "text" && typeof block.text === "string")
+        .map((block: any) => block.text).join("\n").trim()
+      : "";
+    const error = details?.error;
+    const message = (error instanceof Error ? error.message : error != null ? String(error) : "").trim()
+      || content || (typeof details?.message === "string" ? details.message : "")
+      || "Call failed (no error message)";
+    const th = adaptTheme(t);
+    if (action === "message" && ["queued", "broker-accepted", "unavailable"].includes(details?.delivery)) {
+      const d = { ...toMessageDetails(context?.args, details), error: message };
+      return { render: (width: number) => renderMessageResult(d, { theme: th, width, expanded }), invalidate() {} };
+    }
+    return { render: (width: number) => renderErrorResult(message, { theme: th, width, expanded }), invalidate() {} };
   }
 
   switch (action) {
@@ -628,10 +646,10 @@ function renderSpiderResultBody(
       if (op === "remove" && details?.seq !== undefined) {
         const session = details?.session ?? "current";
         const label = details?.name ? `${session} (${details.name})` : session;
-        return plainBody(`Removed #${details.seq} ${details.text} from session ${label}`, expanded);
+        return plainBody(`Removed #${details.seq}${details.text ? ` ${details.text}` : ""} from session ${label}`, expanded);
       }
       if (op === "clear" && details?.removed !== undefined) {
-        return plainBody(`Removed ${details.removed} todos; kept ${details.kept} open todos`, expanded);
+        return plainBody(`Removed ${details.removed} todos${details.kept === undefined ? "" : `; kept ${details.kept} open todos`}`, expanded);
       }
       const d = toTodoDetails(context?.args, details);
       const th = adaptTheme(t);
@@ -787,7 +805,10 @@ export function renderCommandOutput(message: any, options: { expanded?: boolean 
   const bgFn = (text: string) => { try { return typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text; } catch { return text; } };
   const box = new Box(1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, {}) as any);
-  box.addChild(renderSpiderResult(toToolResult(result), { expanded }, theme, { args }) as any);
+  // Normalize internal command output to the same boundary pi uses for tool rows.
+  // Its isError flag describes the shell, not whether a rich report should be hidden.
+  const normalized = toToolResult(result);
+  box.addChild(renderSpiderResult({ content: normalized.content, details: normalized.details }, { expanded }, theme, { args, isError: normalized.isError }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);

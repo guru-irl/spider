@@ -1,7 +1,7 @@
 import { sanitizeQuery, type Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types";
-import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow";
+import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP, memoryCharLength } from "./overflow";
 import { mapRow, tableFor } from "./internal";
 import { enqueueEmbed } from "./embeddings/queue";
 
@@ -19,7 +19,7 @@ export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap
 
   // Guard against overflow for active writes
   if (status === "active") {
-    assertWithinCap(db, scope, input.content.length, cap);
+    assertWithinCap(db, scope, memoryCharLength(input.content), cap);
   }
 
 

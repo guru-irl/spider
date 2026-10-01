@@ -23,9 +23,16 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
   const body = expanded ? details.body ?? "" : (details.body ?? "").replace(/\s+/g, " ").trim();
   if (body) out.push(trim(` ${theme.fg("dim", "⎿ ")}${theme.fg("toolOutput", body)}`, width, ""));
   if (details.error) {
-    const lines = expanded ? details.error.split("\n") : wrapTextWithAnsi(details.error.replace(/\s+/g, " ").trim(), Math.max(1, width - 3)).slice(0, 4);
-    for (const line of lines) {
-      out.push(trim(` ${theme.fg("dim", "│ ")}${theme.fg("toolOutput", line)}`, width, ""));
+    if (details.delivery === "unavailable") {
+      const lines = details.error.split("\n");
+      const shown = expanded ? lines : lines.slice(0, 1);
+      const rows = fitResultLines(shown.map((line, i) =>
+        ` ${theme.fg("dim", "│ ")}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true);
+      out.push(...(expanded ? rows : rows.slice(0, 4)));
+    }
+    else {
+      const lines = expanded ? details.error.split("\n") : wrapTextWithAnsi(details.error.replace(/\s+/g, " ").trim(), Math.max(1, width - 3)).slice(0, 4);
+      for (const line of lines) out.push(trim(` ${theme.fg("dim", "│ ")}${theme.fg("toolOutput", line)}`, width, ""));
     }
   }
   return fitResultLines(out, width, expanded);

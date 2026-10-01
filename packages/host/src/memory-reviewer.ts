@@ -1,4 +1,4 @@
-import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import type { ThinkingLevel, ThinkingResolution } from "@spider/db-core";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { complete, type ModelEntry } from "@spider/models";
 import type { ReviewCandidate, ReviewEntry } from "@spider/memory";
@@ -32,15 +32,15 @@ export function reviewerPrompt(candidate: ReviewCandidate, context: ReviewEntry[
 }
 
 /** The injected reviewer returns raw JSON; the memory package validates it against shown UUIDs. */
-export function modelReviewer(modelRef: string, registry: unknown, thinking: ThinkingLevel = "medium"): (candidate: ReviewCandidate, context: ReviewEntry[], signal: AbortSignal) => Promise<string> {
+export function modelReviewer(modelRef: string, registry: unknown, thinking: ThinkingLevel = "medium", onThinking?: (info: ThinkingResolution) => void): (candidate: ReviewCandidate, context: ReviewEntry[], signal: AbortSignal) => Promise<string> {
   return (candidate, context, signal) => {
     const slash = modelRef.indexOf("/");
     if (slash <= 0 || slash === modelRef.length - 1) throw Error(`invalid reviewer model: ${modelRef}`);
     const entry = { provider: modelRef.slice(0, slash), id: modelRef.slice(slash + 1) } as ModelEntry;
     return complete(entry, reviewerPrompt(candidate, context), {
       system: REVIEWER_INSTRUCTIONS,
-      registry: registry as Pick<ModelRegistry, "find" | "complete"> | undefined,
-      thinkingLevel: thinking, signal,
+      registry: registry as Pick<ModelRegistry, "find" | "streamSimple"> | undefined,
+      thinkingLevel: thinking, signal, onThinking,
     });
   };
 }

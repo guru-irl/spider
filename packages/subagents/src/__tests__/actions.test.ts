@@ -7,6 +7,7 @@ import { makeMessageHandler } from "../actions/message";
 import { makeKillHandler } from "../actions/kill";
 import { SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
 import { RunStore } from "../run-store";
+import { Runner } from "../runner";
 import { teardownAll, registerChild, getChild } from "../coordinators";
 import { freshDb, testScratchPath } from "./helpers/testutil";
 import { registerSubagentActions } from "../index";
@@ -406,4 +407,84 @@ describe("session_shutdown wiring", () => {
       if (savedEnv !== undefined) process.env.PI_SUBAGENT_CHILD = savedEnv;
     }
   });
+});
+
+
+it("accepts max in single, tasks, chain, and pipeline without dropping it", async () => {
+  const db = freshDb();
+  const store = new RunStore(db);
+  const seen: any[] = [];
+  const save = (o: any) => { seen.push(o); const { id } = store.create({ sessionId: "max-surfaces", agent: o.agent, task: o.task, thinking: o.thinking, model: o.model }); store.finish(id, { status: "done", result: "ok" }); return store.get(id); };
+  const handler = makeRunHandler({ makeRunner: () => ({ runAsync: save, runForeground: async (o: any) => save(o) }), makeStore: () => store, makePipeline: () => ({ start: (o: any) => { seen.push(...o.pipeline); return { pipelineId: "p", firstRunId: "r" }; } }) });
+  const ctx: any = { db, sessionId: "max-surfaces", cwd: process.cwd(), project: { dbPath: testScratchPath("max.db") }, pi: {} };
+  try {
+    await handler({ agent: "worker", task: "single", model: "acme/model:max" }, ctx);
+    await handler({ tasks: [{ agent: "worker", task: "parallel", model: "acme/model", thinking: "max" }] }, ctx);
+    await handler({ chain: [{ agent: "worker", task: "chain", model: "acme/model", thinking: "max" }] }, ctx);
+    await handler({ pipeline: [{ agent: "worker", task: "pipeline", model: "acme/model", thinking: "max" }] }, ctx);
+    expect(seen.map(o => o.thinking)).toEqual(["max", "max", "max", "max"]);
+    expect(seen.map(o => o.model)).toEqual(["acme/model", "acme/model", "acme/model", "acme/model"]);
+  } finally { teardownAll(); db.close(); }
+});
+
+
+it("run tool result carries the cap notice produced by model resolution", async () => {
+  const db = freshDb();
+  const store = new RunStore(db);
+  const handler = makeRunHandler({ makeStore: () => store, makeRunner: () => ({ runAsync: (o: any) => {
+    const { id } = store.create({ sessionId: "cap-result", agent: o.agent, model: o.model, thinking: o.thinking });
+    return store.get(id);
+  } }) as any });
+  const ctx: any = { db, sessionId: "cap-result", cwd: process.cwd(), project: { dbPath: testScratchPath("cap-result.db") }, pi: {},
+    modelRegistry: { find: (provider: string, id: string) => provider === "acme" && id === "model" ? { reasoning: true, thinkingLevelMap: { xhigh: "extra", max: null } } : undefined } };
+  try {
+    const result = await handler({ agent: "worker", task: "fixture", model: "acme/model", thinking: "max" }, ctx);
+    expect(result.details.thinkingDiagnostics?.[0]).toMatchObject({ requested: "max", effective: "xhigh", notice: expect.stringMatching(/thinking capped: requested max.*xhigh/) });
+  } finally { teardownAll(); db.close(); }
+});
+
+
+it("delivers every chain step's thinking notice in dispatch text and the final completion", async () => {
+  const db = freshDb();
+  const notices: string[] = [];
+  let resolveCompletion!: () => void;
+  const completed = new Promise<void>(resolve => { resolveCompletion = resolve; });
+  const handler = makeRunHandler({
+    makeRunner: (db, sessionId, cwd, deps) => new Runner(db, sessionId, cwd, deps),
+    spawner: () => ({ wait: async () => ({ exitCode: 0, result: "deliverable" }), kill() {}, detach() {} }),
+  });
+  const ctx: any = { db, sessionId: "chain-notices", cwd: process.cwd(), childMode: "print",
+    project: { dbPath: testScratchPath("chain-notices.db") },
+    pi: { sendMessage: (message: any) => { notices.push(message.content); resolveCompletion(); } },
+    modelRegistry: { find: (provider: string, id: string) => provider === "acme" && id === "model"
+      ? { reasoning: true, thinkingLevelMap: { xhigh: "extra", max: null, minimal: null, low: null } } : undefined },
+  };
+  try {
+    const result = await handler({ chain: [
+      { task: "cap", model: "acme/model", thinking: "max" },
+      { task: "raise", model: "acme/model", thinking: "low" },
+      { task: "unchanged", model: "acme/model", thinking: "high" },
+    ] }, ctx);
+    await completed;
+    for (const text of [result.content, notices.join("\n")]) {
+      expect(text).toMatch(/step 1: thinking capped: requested max.*xhigh/);
+      expect(text).toMatch(/step 2: thinking adjusted: requested low.*medium/);
+      expect(text).not.toMatch(/step 3: thinking/);
+    }
+  } finally { teardownAll(); db.close(); }
+});
+
+it("verifies unknown capabilities even when the action context has no registry", async () => {
+  const db = freshDb();
+  let resolveCompletion!: (message: any) => void;
+  const completed = new Promise<any>(resolve => { resolveCompletion = resolve; });
+  const handler = makeRunHandler({ spawner: () => ({ wait: async () => ({ exitCode: 0, result: "ok" }), kill() {}, detach() {} }) });
+  const ctx: any = { db, sessionId: "no-registry", cwd: process.cwd(), childMode: "print",
+    project: { dbPath: testScratchPath("no-registry.db") }, pi: { sendMessage: (message: any) => resolveCompletion(message) } };
+  try {
+    const result = await handler({ task: "fixture", model: "acme/model", thinking: "max" }, ctx);
+    const notice = await completed;
+    expect(notice.content).toMatch(/thinking unverified: unknown model/);
+    expect(new RunStore(db).get(result.details.run.id)?.thinking).toBeNull();
+  } finally { teardownAll(); db.close(); }
 });

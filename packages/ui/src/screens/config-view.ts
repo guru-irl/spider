@@ -1,4 +1,5 @@
 import type { ThemeAdapter } from "../agents/types.js";
+import { CONFIG_SCHEMA, type ConfigGroup } from "./config-schema.js";
 import { buildConfigModel } from "./config-model.js";
 import { sectionRule, statusIcon, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
@@ -6,10 +7,10 @@ import { sectionRule, statusIcon, fitResultLines, resultTrimmer } from "../rende
  *  `sectionRule`, then one row per field — ○ default / ● overridden status glyph, the field
  *  label, its current value, and a warning ` ⚠restart` marker. Every line is width-guarded.
  *  See docs/output-ui-guidelines.md. */
-export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, expanded = false): string[] {
+export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, expanded = false, schema: ConfigGroup[] = CONFIG_SCHEMA): string[] {
 	const trim = resultTrimmer(expanded);
 	const body: string[] = [];
-	for (const group of buildConfigModel(cfg)) {
+	for (const group of buildConfigModel(cfg, schema)) {
 		body.push(sectionRule(theme, group.label, width));
 		for (const r of group.rows) {
 			const glyph = statusIcon(theme, r.isDefault ? "off" : "on");
@@ -25,11 +26,11 @@ export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, e
 export class ConfigView {
 	private cachedWidth = -1;
 	private cachedLines: string[] = [];
-	constructor(private cfg: unknown, private theme: ThemeAdapter) {}
+	constructor(private cfg: unknown, private theme: ThemeAdapter, private schema: ConfigGroup[] = CONFIG_SCHEMA) {}
 	invalidate(): void { this.cachedWidth = -1; }
 	render(width: number): string[] {
 		if (width === this.cachedWidth) return this.cachedLines;
-		this.cachedLines = renderConfig(this.cfg, this.theme, width);
+		this.cachedLines = renderConfig(this.cfg, this.theme, width, false, this.schema);
 		this.cachedWidth = width;
 		return this.cachedLines;
 	}

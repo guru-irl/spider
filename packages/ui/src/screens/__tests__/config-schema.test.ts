@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CONFIG_SCHEMA, getField, coerce } from "../config-schema.js";
+import { CONFIG_SCHEMA, createConfigSchema, getField, coerce } from "../config-schema.js";
 
 describe("config schema", () => {
 	it("declares only groups with working settings", () => {
@@ -41,12 +41,19 @@ describe("config schema", () => {
 
 it("reviewers expose independent thinking and timeout settings", () => {
   for (const [kind, thinking, timeout, max] of [["memory", "medium", 45000, 120000], ["skills", "xhigh", 180000, 600000]] as const) {
-    const field = getField(`${kind}.reviewer.thinking`)!;
+    const schema = createConfigSchema(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    const field = getField(`${kind}.reviewer.thinking`, schema)!;
     expect(field?.default).toBe(thinking);
-    expect(field.enum).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
-    expect(coerce(field, "off").ok).toBe(false);
+    expect(field.enum).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(coerce(field, "max")).toEqual({ ok: true, value: "max" });
+    expect(coerce(field, "off").ok).toBe(true);
     const time = getField(`${kind}.reviewer.timeoutMs`)!;
     expect(time.default).toBe(timeout); expect(time.max).toBe(max);
   }
   expect(getField("skills.reviewer.enabled")?.description).toContain("learner skill proposals are off");
+});
+
+
+it("explains that enum policy must be injected instead of reporting an empty option list", () => {
+  expect(coerce(getField("memory.reviewer.thinking")!, "max")).toMatchObject({ ok: false, error: expect.stringMatching(/host must inject.*levels/i) });
 });

@@ -82,3 +82,15 @@ describe("AgentDetail kill affordance", () => {
     expect(killed).toHaveLength(0);
   });
 });
+
+
+it("run details retain a thinking cap above the conversation tail", () => {
+  const notice = "thinking capped: requested max, model supports up to xhigh; using xhigh";
+  const src = new Src();
+  const events: RunEvent[] = [{ runId: "r1", sessionId: "s", ts: 0, type: "warning", summary: notice, payload: { thinkingNotice: true } },
+    ...Array.from({ length: 130 }, (_, i) => ({ runId: "r1", sessionId: "s", ts: i + 1, type: "message", summary: "fixture conversation" }))];
+  const store = new AgentStore({ listActive: () => src.listActive(), getRun: id => src.getRun(id), subscribe: () => () => {}, listEvents: () => events });
+  store.start();
+  try { expect(new AgentDetail(store, "r1", id).render(140).join("\n")).toContain(notice); }
+  finally { store.stop(); }
+});

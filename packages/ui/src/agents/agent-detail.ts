@@ -55,13 +55,17 @@ export class AgentDetail implements Component {
     const meta = fit("  " + t.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)}${a.thinking ? ` · ${a.thinking}` : ""} · ${turns} · ${formatDuration(elapsedMs)}`));
     const idLine = fit("  " + t.fg("dim", `#${a.runId}`));
 
+    const events = this.store.events(this.runId);
+    const thinkingNotes = events.filter(e => e.type === "warning" && e.summary &&
+      (e.payload as { thinkingNotice?: boolean } | undefined)?.thinkingNotice === true)
+      .flatMap(e => wrapText(e.summary!, Math.max(1, inner - 2), 8).map(line => fit("  " + t.fg("muted", line))));
     const instructions = (a.task ?? "").trim()
       ? wrapText(a.task!.trim(), Math.max(1, inner - 2), 8).map((l) => "  " + t.fg("muted", l))
       : ["  " + t.fg("dim", "(no instructions)")];
 
     // Full live conversation: assistant prose + tool calls + results, chronological.
     const convo: string[] = [];
-    for (const e of this.store.events(this.runId)) {
+    for (const e of events) {
       if (e.type === "message" && e.summary) {
         for (const l of wrapText(e.summary, Math.max(1, inner - 2), 60)) convo.push(fit("  " + t.fg("text", l)));
         convo.push("");
@@ -78,7 +82,7 @@ export class AgentDetail implements Component {
     const convoTail = convo.length ? convo.slice(-120) : ["  " + t.fg("dim", "(waiting for the agent…)")];
 
     const body = [
-      head, meta, idLine, "",
+      head, meta, idLine, ...thinkingNotes, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
       t.fg("dim", `${t.glyph} conversation`), ...convoTail,
       "", fit(this.isArmed()

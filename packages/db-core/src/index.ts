@@ -15,3 +15,5 @@ export { appendRunEvent, bus, appendEvent, listEvents, eventCountsByTool } from 
 export type { RunEvent, EventRow } from "./events";
 
 export { commandEnv } from "./command-env";
+
+export * from "./thinking";

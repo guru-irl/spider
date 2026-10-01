@@ -1,6 +1,6 @@
 import type { ThemeAdapter } from "../agents/types.js";
 import type { ModelEntry } from "@spider/models";
-import { catalogRows } from "./models-model.js";
+import { catalogRows, type ModelThinkingDisplay } from "./models-model.js";
 import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
 /** Pure: the copilot model catalog grouped by tier, framed as a 🕸 models card. Each tier is
@@ -12,10 +12,10 @@ export interface ModelDefaultOrigins {
   global: Record<string, string>;
 }
 
-export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number, origins?: ModelDefaultOrigins, expanded = false): string[] {
+export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number, origins?: ModelDefaultOrigins, expanded = false, thinking?: ModelThinkingDisplay): string[] {
   const trim = resultTrimmer(expanded);
   const body: string[] = [];
-  for (const group of catalogRows(entries, defaults)) {
+  for (const group of catalogRows(entries, defaults, thinking)) {
     body.push(sectionRule(theme, group.tier, width));
     for (const row of group.rows) {
       const glyph = row.available ? theme.fg("accent", "●") : theme.fg("muted", "○");
@@ -25,6 +25,7 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       const badge = badges.length ? ` ${badges.join("")}` : "";
       const dflt = row.isDefaultFor.length ? theme.fg("success", ` ⟵ ${row.isDefaultFor.join(",")}`) : "";
       body.push(trim(`${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
+      if (row.thinkingLevels.length) body.push(trim(theme.fg("dim", `  thinking: ${row.thinkingLevels.join(", ")}`), width, ""));
     }
   }
   if (origins && Object.keys(defaults).length) {
@@ -43,11 +44,11 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
 export class ModelsView {
   private cachedWidth = -1;
   private cachedLines: string[] = [];
-  constructor(private entries: ModelEntry[], private defaults: Record<string, string>, private theme: ThemeAdapter, private origins?: ModelDefaultOrigins) {}
+  constructor(private entries: ModelEntry[], private defaults: Record<string, string>, private theme: ThemeAdapter, private origins?: ModelDefaultOrigins, private thinking?: ModelThinkingDisplay) {}
   invalidate(): void { this.cachedWidth = -1; }
   render(width: number): string[] {
     if (width === this.cachedWidth) return this.cachedLines;
-    this.cachedLines = renderModels(this.entries, this.defaults, this.theme, width, this.origins);
+    this.cachedLines = renderModels(this.entries, this.defaults, this.theme, width, this.origins, false, this.thinking);
     this.cachedWidth = width;
     return this.cachedLines;
   }

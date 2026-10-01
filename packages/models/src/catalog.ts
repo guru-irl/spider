@@ -1,11 +1,12 @@
 import { deriveTier, type Tier } from "./tiers";
 export type { Tier }; // re-export so consumers (pick.ts) keep importing Tier from catalog
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+import type { ThinkingModel } from "@spider/db-core";
+export type { ThinkingLevel } from "@spider/db-core";
 export interface ModelEntry {
   provider: string; id: string; tier: Tier;
-  thinking: boolean; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean;
+  thinking: boolean; thinkingLevelMap?: ThinkingModel["thinkingLevelMap"]; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean;
 }
-export type EnumeratedModel = { provider: string; id: string; available: boolean; thinking?: boolean; reasoning?: boolean; vision?: boolean; ctx?: number };
+export type EnumeratedModel = { provider: string; id: string; available: boolean; thinking?: boolean; reasoning?: boolean; thinkingLevelMap?: ThinkingModel["thinkingLevelMap"]; vision?: boolean; ctx?: number };
 // Ordered copilot ids per tier; pick() returns the FIRST AVAILABLE (A8). Host may override via cfg.tierPreference.
 export const TIER_PREFERENCE: Record<Tier, string[]> = {
   light:    ["mai-code-1-flash-picker", "claude-haiku-4.5", "gpt-5.4-nano", "gpt-5-mini", "gemini-3.5-flash"],
@@ -22,6 +23,7 @@ export function catalog(enumerate: () => EnumeratedModel[], overrides: Record<st
       thinking: !!(m.thinking ?? m.reasoning), vision: !!m.vision,
       ctx: m.ctx ?? 128_000, speed: SPEED[tier], costHint: COST[tier], available: m.available,
     };
+    if (m.thinkingLevelMap) base.thinkingLevelMap = m.thinkingLevelMap;
     return { ...base, ...overrides[`${m.provider}/${m.id}`] };
   });
 }

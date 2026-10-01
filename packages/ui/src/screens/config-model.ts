@@ -1,5 +1,5 @@
 import { CONFIG_SCHEMA } from "./config-schema.js";
-import type { ConfigField } from "./config-schema.js";
+import type { ConfigField, ConfigGroup } from "./config-schema.js";
 
 export interface ConfigFieldRow { field: ConfigField; value: unknown; isDefault: boolean; }
 export interface ConfigGroupModel { id: string; label: string; rows: ConfigFieldRow[]; }
@@ -18,8 +18,8 @@ export function readPath(cfg: unknown, key: string): unknown {
 	return cur;
 }
 
-export function buildConfigModel(cfg: unknown): ConfigGroupModel[] {
-	return CONFIG_SCHEMA.map((g) => ({
+export function buildConfigModel(cfg: unknown, schema: ConfigGroup[] = CONFIG_SCHEMA): ConfigGroupModel[] {
+	return schema.map((g) => ({
 		id: g.id, label: g.label,
 		rows: g.fields.map((field) => {
 			const raw = readPath(cfg, field.key);

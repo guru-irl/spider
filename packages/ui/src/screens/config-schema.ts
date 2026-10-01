@@ -1,7 +1,7 @@
 export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
-	enum?: string[]; min?: number; max?: number; description: string; restart?: boolean;
+	enum?: readonly string[]; min?: number; max?: number; description: string; restart?: boolean;
 }
 export interface ConfigGroup { id: string; label: string; fields: ConfigField[]; }
 
@@ -28,13 +28,13 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "memory.snapshotCharCap", label: "Snapshot char cap", type: "number", default: "unlimited", min: 500, max: 40000, description: "Optional explicit snapshot body limit. By default inject all active memory; a lower cap may omit entries and reports their count." },
 		{ key: "memory.reviewer.enabled", label: "Review remembers", type: "boolean", default: true, description: "Review foreground memory proposals before saving. Failures store as requested." },
 		{ key: "memory.reviewer.model", label: "Reviewer model", type: "string", default: "github-copilot/gpt-6-luna", description: "Authenticated provider/model for the foreground memory reviewer." },
-		{ key: "memory.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "medium", enum: ["minimal", "low", "medium", "high", "xhigh"], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
+		{ key: "memory.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "medium", enum: [], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
 		{ key: "memory.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 45000, min: 1000, max: 120000, description: "Maximum wait before the proposed memory is stored as requested." },
 	]},
 	{ id: "skills", label: "Skill reviewer", fields: [
 		{ key: "skills.reviewer.enabled", label: "Review skill proposals", type: "boolean", default: true, description: "Gate skill proposals. When disabled, learner skill proposals are off; agent requests stage with review skipped." },
 		{ key: "skills.reviewer.model", label: "Reviewer model", type: "string", default: "github-copilot/gpt-6-luna", description: "Authenticated provider/model for skill review." },
-		{ key: "skills.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "xhigh", enum: ["minimal", "low", "medium", "high", "xhigh"], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
+		{ key: "skills.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "xhigh", enum: [], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
 		{ key: "skills.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 180000, min: 1000, max: 600000, description: "Maximum skill review wait. Deterministic failures always reject." },
 	]},
 	{ id: "routing", label: "Routing / safety", fields: [
@@ -57,8 +57,15 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	]},
 ];
 
-export function getField(key: string): ConfigField | undefined {
-	for (const g of CONFIG_SCHEMA) for (const f of g.fields) if (f.key === key) return f;
+/** Fill the reviewer enums from the host's single shared policy. No runtime
+ * database or model dependencies belong in this data-only UI schema. */
+export function createConfigSchema(thinkingLevels: readonly string[]): ConfigGroup[] {
+  return CONFIG_SCHEMA.map(group => ({ ...group, fields: group.fields.map(field =>
+    field.key.endsWith(".reviewer.thinking") ? { ...field, enum: thinkingLevels } : field) }));
+}
+
+export function getField(key: string, schema: ConfigGroup[] = CONFIG_SCHEMA): ConfigField | undefined {
+	for (const g of schema) for (const f of g.fields) if (f.key === key) return f;
 	return undefined;
 }
 
@@ -86,7 +93,8 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 			return { ok: false, error: "expected a JSON object of role-to-model strings" };
 		}
 		case "enum": {
-			if (!field.enum?.includes(raw)) return { ok: false, error: `one of ${field.enum?.join("|")}` };
+			if (!field.enum?.length) return { ok: false, error: "host must inject supported enum levels before editing this field" };
+			if (!field.enum.includes(raw)) return { ok: false, error: `one of ${field.enum?.join("|")}` };
 			return { ok: true, value: raw };
 		}
 		default:

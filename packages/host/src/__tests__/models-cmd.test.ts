@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { paths } from "@spider/db-core";
 import { execFileSync } from "node:child_process";
-import { setModelDefault, clearLocalModelDefault } from "../control/models-cmd.js";
+import { setModelDefault, clearLocalModelDefault, listCatalog } from "../control/models-cmd.js";
 import { controlConfig, modelDefaultLayers } from "../control.js";
 import type { ModelEntry } from "@spider/models";
+import { renderSpiderResult } from "../render-result";
 
 const cleanups: (() => void)[] = [];
 const originalGlobalRoot = paths.globalRoot;
@@ -24,7 +25,7 @@ function isolatedGlobal(): string {
 // with test literals). git-init the temp dir so it is its own worktree root, same pattern as
 // exec-enforce-protection.test.ts.
 function scratchDir(): string {
-  const scratch = join(process.cwd(), "packages/host/.spider/scratch");
+  const scratch = join(process.cwd(), ".spider/scratch/host-tests");
   mkdirSync(scratch, { recursive: true });
   const dir = mkdtempSync(join(scratch, "mdl-"));
   execFileSync("git", ["init", "-q"], { cwd: dir });
@@ -164,4 +165,32 @@ describe("setModelDefault", () => {
     const dir = scratchDir();
     expect(setModelDefault(dir, "worker", "claude-sonnet-5", CATALOG)).toEqual({ ok: true });
   });
+});
+
+
+it("control models accepts a max suffix while validating the base model", () => {
+  isolatedGlobal();
+  const dir = scratchDir();
+  expect(setModelDefault(dir, "worker", "github-copilot/claude-sonnet-5:max", CATALOG)).toMatchObject({ ok: true });
+  expect(modelDefaultLayers(dir).defaults.worker).toBe("github-copilot/claude-sonnet-5:max");
+});
+
+
+it("control models card retains max support through registry enumeration and catalog", () => {
+  const entries = listCatalog({ getAvailable: () => [{ provider: "acme", id: "reasoner", reasoning: true, thinkingLevelMap: { max: "maximum" }, input: ["text"] }] });
+  const theme = { fg: (_token: string, text: string) => text, bg: (_token: string, text: string) => text, bold: (text: string) => text, glyph: "🕸" };
+  const result = renderSpiderResult({ details: { catalog: entries, defaults: { worker: "acme/reasoner:max" } } }, { expanded: false }, theme, { args: { action: "control", command: "models" } });
+  const text = result.render(200).join("\n");
+  expect(text).toMatch(/thinking:.*\bmax\b/);
+  expect(text).toMatch(/⟵.*worker/);
+});
+
+
+it("control models card shows only off for a non-reasoning model", () => {
+  const entries = listCatalog({ getAvailable: () => [{ provider: "acme", id: "plain", reasoning: false, input: ["text"] }] });
+  const theme = { fg: (_token: string, text: string) => text, bg: (_token: string, text: string) => text, bold: (text: string) => text, glyph: "🕸" };
+  const result = renderSpiderResult({ details: { catalog: entries, defaults: {} } }, { expanded: false }, theme, { args: { action: "control", command: "models" } });
+  const text = result.render(200).join("\n");
+  expect(text).toMatch(/thinking: off/);
+  expect(text).not.toMatch(/minimal|medium|high|max/);
 });

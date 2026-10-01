@@ -273,6 +273,25 @@ Use `/agents` or `alt+shift+up` to select a run from the footer. With `ui.footer
 
 `control models set <role> <model>` writes a global role default to the spider global `config.json` (`~/.pi/agent/spider/config.json` unless `SPIDER_GLOBAL_ROOT` is set). The current worktree's `.spider/config.json` can override each role independently. Resolution is explicit model, local role override, global role default, then parent model, including pipeline stages. A global set reports the worktree-local value and file if that role is shadowed. `control models clear <role>` removes only that role's local override in the current worktree; it does not change the global value or other local roles.
 
+Thinking choices come from one shared definition in `@spider/db-core`: `off`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Use `thinking:"max"` for a
+single run, or put it on each task, chain step or pipeline stage. A model suffix
+such as `provider/model:max` also works, including in `control models set` role
+defaults; an explicit thinking field overrides the suffix. Children receive the
+resolved choice as `--thinking <level>`.
+
+The models card lists each model's supported thinking levels. Spider follows
+pi 0.87's `reasoning` and `thinkingLevelMap`: omitted `xhigh`/`max` and explicit
+`null` levels are unsupported. Pi fills a hole with the next supported higher
+level first, then falls back lower. Run details and completion notices report
+`thinking capped` for a lower level or `thinking adjusted` for a higher one.
+A level requested on a non-reasoning model reports thinking off. Honored levels
+and non-reasoning models with no request create no warning. Unknown models leave the effective
+level unverified rather than claiming the requested level was used. Cap and
+adjustment diagnostics also name an explicit provider mapping when its value
+differs from the pi level. Honored aliases stay in structured memory receipt
+metadata without creating a warning.
+
 Children default to `pi --mode rpc`. The dispatching session owns their pipes
 and sends exactly one task prompt. Set `subagents.childMode` to `"print"` using
 `spider control command:config op:set` to retain legacy `--mode json -p` for
@@ -425,11 +444,21 @@ approve and reject remain unavailable.
 Configure `skills.reviewer.enabled` (default `true`), `skills.reviewer.model`
 (default `github-copilot/gpt-6-luna`), `skills.reviewer.thinking` (default `xhigh`)
 and `skills.reviewer.timeoutMs` (default `180000`, integer from `1000` to `600000`).
-Both thinking settings accept `minimal`, `low`, `medium`, `high` or `xhigh`,
+Both thinking settings accept `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`,
 independently of the learner/session model. Disabling the skill reviewer omits
 the learner skill section and leaves its queued reviews pending; agent adds
 still validate and stage as review-skipped. The learner defaults to no skill,
 proposes new techniques only and cannot patch existing skills.
+
+In-process completions use pi's authenticated `streamSimple(...).result()` with
+provider-neutral `reasoning`, so thinking reaches both OpenAI-family and
+Anthropic adapters. `ModelRegistry.complete()` takes provider-specific options;
+passing the old OpenAI-only `reasoningEffort` did not enable non-OpenAI reviewer
+thinking. Abort signals, provider errors and empty-response checks are preserved.
+When thinking changes or cannot be verified, both reviewers record the
+requested/effective levels and notices in
+`.spider/logs/reviewer-thinking.jsonl`, rotating at 1 MiB to one previous file.
+Memory review receipts also show caps, adjustments, off and unknown-model notes.
 
 Both reviewers persist parse and transport failures in
 `.spider/logs/reviewer-errors.jsonl`: redacted error text and at most 2 KiB of

@@ -8,15 +8,15 @@ import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
 import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
-import { qualifyModelProvider, listPiModels, resolveRoleModel } from "../model-resolve";
+import { qualifyModelProvider, listPiModels, resolveRoleModel, resolveModelThinking } from "../model-resolve";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
 import { resolveChildIntercom } from "../child-intercom";
 
 /** Async-completion notifier: injects a message the parent agent sees next turn (so it
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
-export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string) => void {
-  return (run, status, result) => {
+export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?: string, steps?: any[]) => void {
+  return (run, status, result, steps) => {
     // The caller's own kill result already reported this cancellation.
     const completion = result ?? run.result ?? "";
     if (status === "cancelled" && completion.startsWith("killed by spider kill from this session") && !/\d+ accepted steer\(s\) were not delivered\./.test(completion)) return;
@@ -25,15 +25,19 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
       let output = status === "cancelled" ? result ?? run.result : latestRunOutput(ctx.db, run.id, result);
       // Compatibility notes are notification metadata, never stage deliverables.
       // Unknown versions stay in events/tool details only to avoid noisy completions.
-      let warnings: Array<{ payload: string }> = [];
-      try { warnings = ctx.db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='warning'").all(run.id); }
-      catch { /* optional diagnostics cannot suppress the cancellation cause */ }
       const notes = new Set<string>();
-      for (const warning of warnings) {
-        try {
-          const payload = JSON.parse(warning.payload);
-          if (payload.launchWarning === true && payload.printFallback === true && typeof payload.message === "string") notes.add(payload.message);
-        } catch { /* malformed diagnostics do not hide completion */ }
+      for (const [index, step] of (steps ?? [run]).entries()) {
+        let warnings: Array<{ payload: string }> = [];
+        try { warnings = ctx.db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='warning'").all(step.id); }
+        catch { /* optional diagnostics cannot suppress the cancellation cause */ }
+        for (const warning of warnings) {
+          try {
+            const payload = JSON.parse(warning.payload);
+            if ((payload.thinkingNotice === true || (payload.launchWarning === true && payload.printFallback === true)) && typeof payload.message === "string") {
+              notes.add(steps ? `step ${index + 1}: ${payload.message}` : payload.message);
+            }
+          } catch { /* malformed diagnostics do not hide completion */ }
+        }
       }
       if (notes.size) output = [output, ...notes].filter(Boolean).join("\n\n");
       const name = run?.name ?? run?.agent ?? "subagent";
@@ -90,9 +94,10 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       try { intercomExtensions = await (overrides.resolveIntercom ?? resolveChildIntercom)(ctx.cwd); }
       catch (error) { warning = `Cross-session steering unavailable: ${String((error as Error)?.message ?? error)}`; }
     }
-    const withWarning = (details: any) => warning ? { ...details, warning } : details;
+    const thinkingDiagnostics: Array<{ model?: string; requested?: string; effective?: string; notice?: string; step?: number }> = [];
+    const withWarning = (details: any) => ({ ...details, ...(warning ? { warning } : {}), ...(thinkingDiagnostics.length ? { thinkingDiagnostics } : {}) });
     const orchestratorTarget = childMode === "rpc" ? process.env.PI_INTERCOM_SESSION_ID ?? ctx.sessionId : undefined;
-    const runnerDeps = { globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
+    const runnerDeps = { modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
     }, scratchRoot, dbPath, onComplete, childMode, intercomExtensions, orchestratorTarget };
@@ -103,7 +108,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     // Stamp the parent's current model + thinking level on runs that don't name one, so the
     // (static) run block and footer show them immediately instead of "—". Thinking is often
     // encoded as a model suffix (e.g. "prov/opus:high"); split it out so the model column stays
-    // clean and the thinking level renders as its own segment. spawnFor re-applies the suffix.
+    // clean and the thinking level renders as its own segment. spawnFor uses the explicit --thinking flag.
     const parentModel: string | undefined = ctx.model?.id;
     // pi resolves a BARE model id (e.g. "claude-sonnet-5") to its default provider, which may
     // be unauthenticated in the child (→ silent "No API key" death). Qualify to the provider
@@ -114,9 +119,13 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     // model: on the call -> the role's configured default -> inherit the parent (last
     // resort, so nothing regresses when no default is configured).
     const modelDefaults = (ctx as { modelDefaults?: Record<string, string> }).modelDefaults;
-    const resolveMT = (m?: string, th?: string, role?: string): { model?: string; thinking?: string } => {
+    const resolveMT = (m?: string, th?: string, role?: string, step?: number): { model?: string; thinking?: string } => {
       const full = resolveRoleModel(m, role, modelDefaults, parentModel);
-      return { model: qualifyModelProvider(stripThinkingSuffix(full), piModels), thinking: th ?? thinkingFromModel(full) };
+      const model = qualifyModelProvider(stripThinkingSuffix(full), piModels);
+      const thinking = th ?? thinkingFromModel(full);
+      const resolution = resolveModelThinking(ctx.modelRegistry, model, thinking);
+      if (resolution.notice) thinkingDiagnostics.push({ model, ...resolution, ...(step !== undefined ? { step } : {}) });
+      return { model, thinking };
     };
 
     if (Array.isArray(args.pipeline)) {
@@ -131,15 +140,15 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     if (Array.isArray(args.chain)) {
       // Async by design: kick the chain off in the background and report back when the last
       // step finishes (each step feeds the next). The tool returns immediately.
-      const chain = args.chain.map((c: any) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker") }));
+      const chain = args.chain.map((c: any, index: number) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker", index + 1) }));
       void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh" })
         .then((rows: any[]) => {
           const last = rows[rows.length - 1];
-          if (last) onComplete(last, last.status, last.result ?? undefined);
+          if (last) onComplete(last, last.status, last.result ?? undefined, rows);
         })
         .catch(() => { /* best-effort */ });
       const first = chain[0] ?? {};
-      return { content: `chain started: ${chain.length} step(s)`, details: withWarning({ chain: chain.length, first: first.name ?? first.agent }) };
+      return { content: [`chain started: ${chain.length} step(s)`, ...thinkingDiagnostics.map(info => `step ${info.step}: ${info.notice}`)].join("\n"), details: withWarning({ chain: chain.length, first: first.name ?? first.agent }) };
     }
     if (Array.isArray(args.tasks)) {
       const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking, t.agent) }));

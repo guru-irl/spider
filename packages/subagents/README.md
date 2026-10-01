@@ -13,8 +13,8 @@ This package owns:
   (`makeRunHandler`, `makeMessageHandler`).
 - The four dispatch strategies (single, chain, parallel, pipeline), all built
   on one `Runner`.
-- Building the argv and environment for a child `pi` process: model and
-  thinking suffix, session file or fork target, tool and extension flags,
+- Building the argv and environment for a child `pi` process: separate `--model` and
+  `--thinking` flags, session file or fork target, tool and extension flags,
   system prompt file, and task text that overflows an argv-length limit.
 - Resolving a bare model id to a provider-qualified one before a child spawns.
 - The `runs` and `run_events` tables: creating run rows, and recording tool
@@ -90,7 +90,8 @@ separately exports `makeRunHandler` and `makeMessageHandler`, and defines
 | `PipelineCoordinator` | The pipeline coordinator described under Pipeline dispatch below. |
 | `getCoordinators`, `teardownCoordinators`, `teardownAll`, `SessionCoordinators` | The per-session registry of event tailers and pipelines. |
 | `runSingle`, `runChain`, `runParallel` | The single, chain, and parallel dispatch functions. Pipeline dispatch is `PipelineCoordinator`, used directly from `actions/run.ts` rather than through `modes-index.ts`. |
-| `buildPiArgs`, `buildChildSpawnSpec`, `applyThinkingSuffix`, `thinkingFromModel`, `stripThinkingSuffix` | Build a child's argv/env and split or apply the `model:thinking` suffix convention. |
+| `buildPiArgs`, `buildChildSpawnSpec`, `thinkingFromModel`, `stripThinkingSuffix` | Build a child's argv/env and parse the input `model:thinking` suffix. Children receive separate model and thinking flags. |
+| `applyThinkingSuffix` | Legacy exported helper, unused by production dispatch. |
 | `SUBAGENT_CHILD_ENV`, `SUBAGENT_RUN_ID_ENV`, `SUBAGENT_CHILD_AGENT_ENV`, `SUBAGENT_CHILD_INDEX_ENV`, `SUBAGENT_FANOUT_CHILD_ENV`, `SUBAGENT_ORCHESTRATOR_TARGET_ENV`, `SUBAGENT_INTERCOM_SESSION_NAME_ENV`, `SPIDER_DB_PATH_ENV`, `SPIDER_SESSION_ID_ENV` | The environment variable names threaded from parent to child. |
 | `getPiSpawnCommand`, `resolveWindowsPiCliScript`, `resolvePiPackageRoot`, `resolveInstalledPiPackageRoot`, `findPiPackageRootFromEntry` | Resolve the command used to launch `pi` for a child process. |
 | `defaultSpawner` | The real `child_process`-backed `Spawner`. |
@@ -105,8 +106,8 @@ Not exported from `index.ts`: `latestRunOutput` (`completion-output.ts`) and
 
 ## How it fits
 
-**Depends on:** `@spider/db-core` for `Db`, `openDbAt`, `paths`, the `bus`, and
-`appendRunEvent`; `typebox` for the argument schemas. `package.json` also
+**Depends on:** `@spider/db-core` for `Db`, `openDbAt`, `paths`, the `bus`,
+`appendRunEvent`, and the shared thinking capability policy; `typebox` for the argument schemas. `package.json` also
 lists `@spider/ui` as a dependency, but nothing under `src/` currently imports
 it.
 
@@ -274,6 +275,17 @@ explicit model inherits the parent's current model and thinking level
 (`ctx.model.id`, split into base model and thinking suffix by
 `stripThinkingSuffix`/`thinkingFromModel`), so a dispatched run is never
 missing that information in the UI.
+
+Thinking accepts the shared ordered levels `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max`. Explicit per-item thinking overrides the input model
+suffix. Before launch, `resolveModelThinking` applies pi's capability clamp using
+`reasoning` and `thinkingLevelMap`: explicit null entries and omitted extended
+levels are unsupported, with higher supported levels preferred across a hole.
+The run row and `--thinking` flag carry the effective level, not an unsupported
+request. The run tool result, warning event, agent detail and completion note
+report caps or upward adjustments. An unchanged level creates no warning; a
+non-reasoning model with no request creates no off notice. Unknown model requests
+are marked unverified and never recorded as a confirmed effective level.
 
 ### Completion report
 

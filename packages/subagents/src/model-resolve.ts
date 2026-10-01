@@ -1,3 +1,5 @@
+import { resolveThinking, type ThinkingModel, type ThinkingResolution } from "@spider/db-core";
+
 /**
  * Resolve a subagent model id to a provider-qualified ref.
  *
@@ -87,4 +89,17 @@ export function listPiModels(registry: unknown): ListedModel[] {
   } catch {
     return [];
   }
+}
+
+
+/** Resolve capabilities from pi's public registry, never from family heuristics. */
+export function resolveModelThinking(registry: unknown, ref?: string, requested?: string): ThinkingResolution {
+  const r = registry as { find?: (provider: string, id: string) => ThinkingModel | undefined; getAll?: () => Array<ThinkingModel & { provider: string; id: string }> } | undefined;
+  const slash = ref?.indexOf("/") ?? -1;
+  let model: ThinkingModel | undefined;
+  try {
+    if (ref && slash > 0 && r?.find) model = r.find(ref.slice(0, slash), ref.slice(slash + 1));
+    else model = r?.getAll?.().find(m => `${m.provider}/${m.id}` === ref || m.id === ref);
+  } catch { /* Missing capabilities must be reported as unknown, not claimed. */ }
+  return resolveThinking(model, requested);
 }

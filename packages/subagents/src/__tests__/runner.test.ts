@@ -5,6 +5,7 @@ import { RunEventTailer } from "../event-tailer";
 import { getChild } from "../coordinators";
 import { freshDb, testScratchPath } from "./helpers/testutil";
 import { appendRunEvent } from "@spider/db-core";
+import { makeAsyncNotifier } from "../actions/run";
 import { latestRunOutput } from "../completion-output";
 
 function fakeSpawn(result: { exitCode: number; result?: string }): Spawner {
@@ -191,5 +192,43 @@ describe("Runner", () => {
     
     // The handle should be unregistered even though wait() rejected
     expect(getChild(sessionId, run.id)).toBeUndefined();
+  });
+});
+
+
+describe("thinking diagnostics on real runs with fixture registries", () => {
+  it.each([
+    ["supported", { reasoning: true, thinkingLevelMap: { max: "maximum" } }, "max", "max", undefined],
+    ["unchanged high", { reasoning: true }, "high", "high", undefined],
+    ["no request on non-reasoning", { reasoning: false }, undefined, "off", undefined],
+    ["explicit off", { reasoning: false }, "off", "off", undefined],
+    ["capped", { reasoning: true, thinkingLevelMap: { xhigh: "extra", max: null } }, "max", "xhigh", /thinking capped: requested max.*xhigh/],
+    ["off", { reasoning: false }, "max", "off", /thinking is off for this model/],
+    ["unknown", undefined, "max", null, /unknown model.*cannot verify/],
+  ])("records actual thinking and reports %s in completion notices", async (_name, model, requested, effective, note) => {
+    const db = freshDb();
+    const store = new RunStore(db);
+    const tailer = new RunEventTailer(db);
+    const notices: string[] = [];
+    let argv: string[] = [];
+    const ctx = { db, pi: { sendMessage: (message: any) => notices.push(message.content) } };
+    const runner = new Runner(db, "thinking-diagnostics", process.cwd(), {
+      store, tailer, ...deps(spec => { argv = spec.argv; return fakeSpawn({ exitCode: 0, result: "deliverable" })(spec); }),
+      childMode: "print", modelRegistry: { find: (provider: string, id: string) => provider === "acme" && id === "model" ? model : undefined }, onComplete: makeAsyncNotifier(ctx),
+    } as any);
+    try {
+      const run = await runner.runForeground({ agent: "worker", task: "fixture", model: "acme/model", thinking: requested, context: "fresh" });
+      expect(run.thinking).toBe(effective);
+      const eventText = db.prepare("SELECT summary FROM run_events WHERE run_id=?").all(run.id).map((e: any) => e.summary).join("\n");
+      makeAsyncNotifier(ctx)(run, run.status, run.result ?? undefined);
+      if (note) {
+        expect(eventText).toMatch(note);
+        expect(notices.join("\n")).toMatch(note);
+      } else {
+        expect(eventText).not.toMatch(/thinking:|thinking (?:capped|adjusted|is off)/);
+        expect(notices.join("\n")).not.toMatch(/thinking:|thinking (?:capped|adjusted|is off)/);
+      }
+      expect(argv.slice(argv.indexOf("--thinking"), argv.indexOf("--thinking") + 2)).toEqual(["--thinking", effective ?? requested]);
+    } finally { tailer.stop(); db.close(); }
   });
 });

@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { openDbAt, paths } from "@spider/db-core";
 import { readInjectionSnapshot } from "../injection-snapshot.js";
 import { applyConfigEdit } from "../control/config-cmd.js";
-import { CONFIG_SCHEMA, getField } from "@spider/ui";
+import { getField } from "@spider/ui";
+import { UI_CONFIG_SCHEMA } from "../ui-thinking";
 import { productionReaders } from "./config-reader-analysis.js";
 import { resolve } from "node:path";
 import { controlConfig } from "../control.js";
 
-const scratch = join(process.cwd(), "packages/host/.spider/scratch");
+const scratch = join(process.cwd(), ".spider/scratch/host-tests/config-cmd");
 mkdirSync(scratch, { recursive: true });
 const fixtures: string[] = [];
 function fixture(): string {
@@ -69,23 +70,24 @@ describe("applyConfigEdit round-trip", () => {
     ["curator.archiveAfterDays", "20"], ["curator.minIntervalHours", "12"],
     ["curator.consolidate", "false"], ["routing.secret_scrub", "false"],
     ["routing.injection_scan", "false"], ["routing.auto_index_threshold", "10000"],
+    ["memory.reviewer.thinking", "max"], ["skills.reviewer.thinking", "off"],
     ["models.defaults", '{"worker":"github-copilot/example"}'],
     ["auxiliary.background_review.provider", "provider"],
     ["auxiliary.background_review.model", "model"],
   ])("accepts production reader %s through control config set", (key, raw) => {
     const dir = fixture();
     expect(applyConfigEdit(dir, key, raw)).toMatchObject({ ok: true, scope: "local", file: join(dir, ".spider", "config.json") });
-    expect(controlConfig("get", dir, key)).toEqual(key.startsWith("auxiliary.") ? raw : JSON.parse(raw));
+    expect(controlConfig("get", dir, key)).toEqual((key.startsWith("auxiliary.") || key.endsWith(".thinking")) ? raw : JSON.parse(raw));
   });
   it("every reachable production reader has a schema field accepted by config set except the user-only enforcement switch", () => {
     const dir = fixture();
     const previous = paths.globalRoot;
     paths.globalRoot = join(dir, "global");
     try {
-      const declared = new Set(CONFIG_SCHEMA.flatMap(group => group.fields.map(field => field.key)));
+      const declared = new Set(UI_CONFIG_SCHEMA.flatMap(group => group.fields.map(field => field.key)));
       for (const key of productionReaders(resolve("packages"))) {
         expect(declared.has(key), key).toBe(true);
-        const field = getField(key)!;
+        const field = getField(key, UI_CONFIG_SCHEMA)!;
         const raw = field.type === "model-map" ? "{}" : field.type === "number" ? String(field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
         if (key === "exec.enforce") {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);

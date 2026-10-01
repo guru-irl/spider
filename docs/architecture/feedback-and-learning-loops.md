@@ -275,7 +275,13 @@ Children cannot run the queue; explicit child `skill op=add` uses inline review.
 
 A repo DB lease allows only one queued review at a time, across handles and
 processes. The review uses its own timeout (180000 ms by default, configurable
-1000-600000) and thinking (`xhigh` by default). Only `new` stages with review_reason.
+1000-600000) and thinking (`xhigh` by default). Both reviewers accept the shared
+`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` levels. The authenticated
+pi `streamSimple(...).result()` path maps provider-neutral reasoning. Per-model
+capabilities follow pi's upward-first hole filling, then downward fallback;
+non-reasoning models use off. Requested/effective levels and plain cap or
+adjustment notices are recorded in `.spider/logs/reviewer-thinking.jsonl`.
+Only `new` stages with review_reason.
 Other verdicts are removed and recorded in the bounded recent-results table.
 Reviewer failures keep the candidate with attempts++ and last_error; the third
 failure drops it with a recorded reason. Doctor shows queue length and recent

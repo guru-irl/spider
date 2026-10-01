@@ -20,7 +20,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { setGlobalDbPathForTests, openRepo, resolveProject } from "@spider/db-core";
-import { addMemory } from "@spider/memory";
+import { addMemory, MemoryOverflowError } from "@spider/memory";
 import spiderExtension from "../extension";
 import { renderSpiderResult } from "../render-result";
 
@@ -173,6 +173,23 @@ describe("control memory admin: status / consolidate / forget", () => {
     expect(res.content[0].text).toContain(uuid);
   });
 
+  it.each(["unknown", "active", "archived"])("approval of a %s UUID names the missing staged entry instead of rendering null", async status => {
+    const dir = join(scratch, "approve-missing-repo"); mkdirSync(dir, { recursive: true });
+    const tool = makeTool();
+    let uuid = "00000000-0000-0000-0000-000000000000";
+    if (status !== "unknown") {
+      const saved: any = await tool.execute("save", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "preference", content: "approval fixture", cwd: dir }, {});
+      uuid = saved.details.uuid;
+      if (status === "archived") await tool.execute("forget", { action: "control", command: "memory", sub: "forget", uuid, cwd: dir }, {});
+    }
+    const res = await tool.execute("approve", { action: "control", command: "memory", sub: "approve", uuid, scope: "repo", cwd: dir }, {});
+    const want = `control memory approve: no staged entry '${uuid}' in scope 'repo'`;
+    expect(res.content[0].text).toContain(want);
+    const out = rendered(res, "approve");
+    expect(out).toContain(want);
+    expect(out).not.toContain("✗ null");
+  });
+
   it("forget without a uuid returns a clear error", async () => {
     const dir = join(scratch, "forget-no-uuid-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
@@ -226,9 +243,10 @@ describe("control memory admin: status / consolidate / forget", () => {
     }
 
     // Blocked: 7999 + 50 > 8000. Before this feature, this was a dead end short of raw SQL.
-    await expect(
-      tool.execute("r4", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "y".repeat(50), cwd: dir }, {}),
-    ).rejects.toThrow(/Memory cap exceeded/);
+    const blocked = tool.execute("r4", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "y".repeat(50), cwd: dir }, {});
+    await expect(blocked).rejects.toThrow(MemoryOverflowError);
+    await expect(blocked).rejects.toThrow("Not stored: repo memory is full (7,999 of 8,000 chars used). This entry is 50 chars; free at least 49.");
+    await expect(blocked).rejects.toThrow("spider control memory sub=forget uuid=<uuid> scope=repo");
 
     const forgetRes = await tool.execute("f5", { action: "control", command: "memory", sub: "forget", uuid: seededUuid, cwd: dir }, {});
     expect((forgetRes.details as { ok?: boolean }).ok).toBe(true);

@@ -100,6 +100,7 @@ export type {
   TodoItemView, TodoChecklistDetails, RunView, RunResultDetails, MessageDetails,
 } from "./renderers/types";
 export { card, kv, statusIcon, sectionRule, fitResultLines } from "./renderers/types";
+export { renderErrorResult } from "./renderers/error";
 export { renderExecCall, renderExecResult } from "./renderers/exec";
 export { renderIndexResult } from "./renderers/index-fetch";
 export { renderMessageResult } from "./renderers/message";

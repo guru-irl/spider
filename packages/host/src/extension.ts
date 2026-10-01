@@ -469,8 +469,12 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
           const recs = listPending(db, scope);
           return { display: renderPending(recs), details: recs };
         }
-        case "approve":
-          return { details: approvePending(db, scope, args.uuid as string) };
+        case "approve": {
+          const uuid = args.uuid as string;
+          const approved = approvePending(db, scope, uuid);
+          if (!approved) return { error: `control memory approve: no staged entry '${uuid}' in scope '${scope}'` };
+          return { details: approved };
+        }
         case "reject":
           rejectPending(db, scope, args.uuid as string);
           return { details: { ok: true, uuid: args.uuid } };

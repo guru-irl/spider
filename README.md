@@ -352,6 +352,12 @@ Which scope to use, when writing memory:
 > *"Is this true in every repo?"* → **global**. Otherwise → **repo**.
 > Worktree memory was removed; use repo for repository-specific facts.
 
+Active memory has a fixed 8,000-character cap per scope. Free space with
+`spider control memory sub=forget uuid=<uuid> scope=<global|repo>` (then remember
+a shorter version to condense), and keep repo-specific facts in repo scope.
+`memory.snapshotCharCap` limits prompt injection only; it does not change this
+storage cap.
+
 Every `spider remember` call needs a nonblank `justification`: why the fact
 will stay true and useful after this task, how other agents can use it, and why
 its scope is correct. The foreground reviewer checks durability first, then

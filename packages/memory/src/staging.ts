@@ -1,7 +1,7 @@
 import type { Db } from "@spider/db-core";
 import type { MemoryScope, MemoryRecord, AddMemoryInput } from "./types";
 import { firstThreatMessage } from "./scanner";
-import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP } from "./overflow";
+import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP, memoryCharLength } from "./overflow";
 import { addMemory, setStatus, isDuplicate, getMemory, removeMemory } from "./store";
 import { tableFor, mapRow } from "./internal";
 import { shouldCapture } from "./guardrails";
@@ -96,7 +96,7 @@ export function approvePending(db: Db, scope: MemoryScope, uuid: string): Memory
     return null;
   }
   // Re-run cap check; MemoryOverflowError propagates ("curate then retry").
-  assertWithinCap(db, scope, rec.content.length, DEFAULT_MEMORY_CHAR_CAP);
+  assertWithinCap(db, scope, memoryCharLength(rec.content), DEFAULT_MEMORY_CHAR_CAP, uuid);
   setStatus(db, scope, uuid, "active");
   return getMemory(db, scope, uuid);
 }

@@ -4,6 +4,7 @@ import { firstThreatMessage } from "./scanner";
 import { shouldCapture } from "./guardrails";
 import { isDuplicate, getMemory, searchMemoryFts } from "./store";
 import { forgetMemory, stageWrite, type StageResult } from "./staging";
+import { MemoryOverflowError } from "./overflow";
 
 export type ReviewerDbs = { repo: Db; global: Db };
 export interface ReviewEntry { uuid: string; scope: MemoryScope; category: MemoryCategory; content: string }
@@ -124,7 +125,15 @@ export async function reviewedWrite(
 
   const label = (saved: StageResult) => saved.status === "staged" ? `staged for approval as ${saved.uuid}` : `stored as ${saved.uuid}`;
   const store = (scope: MemoryScope, message: (saved: StageResult) => string, more: Partial<ReviewedResult> = {}): ReviewedResult => {
-    const saved = stageWrite(dbs[scope], scope, { ...input, justification });
+    let saved: StageResult;
+    try {
+      saved = stageWrite(dbs[scope], scope, { ...input, justification });
+    } catch (error) {
+      if (scope !== requestedScope && error instanceof MemoryOverflowError) {
+        error.message = error.message.replace(/^Not stored: /, `Not stored: redirected from ${requestedScope} to ${scope}; `);
+      }
+      throw error;
+    }
     return { ...saved, scope, requestedScope, timeoutNote,
       message: saved.status === "rejected"
         ? (scope !== requestedScope && saved.reason === "duplicate"
@@ -214,7 +223,8 @@ export async function reviewedWrite(
           message: `${label(saved)}${action}${related.length ? `; ${related.join("; ")}` : ""} (${verdict.reason})` };
       } catch (error) {
         if (error instanceof RejectedSupersession) return rejected(error.saved.reason ?? "insert rejected");
-        return { ...rejected(`supersession failed, nothing written: ${error instanceof Error ? error.message : String(error)}`), archived: [] };
+        const reason = (error instanceof Error ? error.message : String(error)).replace(/^not stored:\s*/i, "");
+        return { ...rejected(`supersession failed, nothing written: ${reason}`), archived: [] };
       }
     }
     case "new": return store(requestedScope, saved => `${label(saved)} (reviewer: new; ${verdict.reason})`, { verdict: "new", reason: verdict.reason });

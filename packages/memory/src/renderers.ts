@@ -1,13 +1,18 @@
-import { Panel, type Component } from "@spider/ui";
+import { Panel, renderErrorResult, type Component, type ThemeAdapter } from "@spider/ui";
 import type { MemoryRecord } from "./types";
 import type { StageResult } from "./staging";
 
 const GLYPH = "🕸";
 
 export function renderRememberResult(
-  r: StageResult & { content?: string; category?: string; scope?: string; source?: string; message?: string },
+  r: (Partial<StageResult> & { content?: string; category?: string; scope?: string; source?: string; message?: string; error?: string }) | null | undefined,
   expanded = false,
+  theme: ThemeAdapter = { fg: (_token, text) => text, bg: (_token, text) => text, bold: text => text, glyph: GLYPH },
 ): Component {
+  if (r?.error || !r?.status) {
+    const message = r?.error || r?.message || "Remember failed (no status or error message)";
+    return { render: width => renderErrorResult(message, { theme, width, expanded }) };
+  }
   const body: string[] = [];
   if (r.content) {
     const preview = r.content.trim().replace(/\s+/g, " ");

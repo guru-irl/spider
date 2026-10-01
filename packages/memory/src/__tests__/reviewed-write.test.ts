@@ -4,6 +4,8 @@ import { makeGlobalMemDb, makeMemDb } from "./helpers/tmpdb";
 import { reviewedWrite, reviewerContext, parseVerdict } from "../reviewed-write";
 import { stageWrite, rejectPending, forgetMemory } from "../staging";
 import { getMemory, searchMemoryFts } from "../store";
+import { MemoryOverflowError } from "../overflow";
+import { activeCharTotal, listActive } from "../internal";
 
 let repo: ReturnType<typeof makeMemDb>;
 let global: ReturnType<typeof makeGlobalMemDb>;
@@ -51,6 +53,23 @@ describe("reviewed remember", () => {
     expect(searchMemoryFts(dbs.repo, "repo", "reproducible").map(r => r.uuid)).toContain(result.uuid);
     expect(getMemory(dbs.repo, "repo", result.uuid!)).toMatchObject({ justification });
   });
+  it("supersession overflow preserves active entries and does not double the not-stored prefix", async () => {
+    const dbs = setup();
+    const old = stageWrite(dbs.repo, "repo", { ...fact, content: "old reproducible flags" });
+    const filler = stageWrite(dbs.repo, "repo", { ...fact, content: "x".repeat(7900) });
+    const result = await reviewedWrite(dbs, "repo", { ...fact, content: "reproducible flags " + "y".repeat(470) }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "updated flags" }),
+    });
+    expect(result.status).toBe("rejected");
+    expect(result.message!.match(/not stored:/gi)).toHaveLength(1);
+    expect(result.message).toContain("repo memory is full (7,900 of 8,000 chars used)");
+    expect(result.message).toContain("nothing written");
+    expect(result.archived).toEqual([]);
+    expect(getMemory(dbs.repo, "repo", old.uuid!)?.status).toBe("active");
+    expect(getMemory(dbs.repo, "repo", filler.uuid!)?.status).toBe("active");
+    expect(dbs.repo.prepare("SELECT count(*) n FROM memory").get()).toMatchObject({ n: 2 });
+  });
+
   it("does not archive superseded entries if insertion loses a duplicate race", async () => {
     const dbs = setup();
     const old = stageWrite(dbs.repo, "repo", { ...fact, content: "outdated reproducible build flags" });
@@ -67,6 +86,20 @@ describe("reviewed remember", () => {
     expect(result).toMatchObject({ verdict: "wrong_scope", requestedScope: "repo", scope: "global", reason: "true everywhere" });
     expect(getMemory(dbs.global, "global", result.uuid!)).toMatchObject({ status: "active", justification });
     expect(dbs.repo.prepare("SELECT count(*) n FROM memory").get()).toMatchObject({ n: 0 });
+  });
+  it.each(["repo", "global"] as const)("names the redirect and full target when requested %s storage overflows", async requestedScope => {
+    const dbs = setup();
+    const target = requestedScope === "repo" ? "global" : "repo";
+    stageWrite(dbs[target], target, { ...fact, content: "x".repeat(8000) });
+    const pending = reviewedWrite(dbs, requestedScope, fact, justification, {
+      reviewer: async () => ({ verdict: "wrong_scope", scope: target, reason: "belongs in target" }),
+    });
+    await expect(pending).rejects.toBeInstanceOf(MemoryOverflowError);
+    await expect(pending).rejects.toThrow(`Not stored: redirected from ${requestedScope} to ${target}; ${target} memory is full (8,000 of 8,000 chars used)`);
+    await expect(pending).rejects.toThrow(`sub=forget uuid=<uuid> scope=${target}`);
+    expect(listActive(dbs[requestedScope], requestedScope)).toHaveLength(0);
+    expect(listActive(dbs[target], target)).toHaveLength(1);
+    expect(activeCharTotal(dbs[target], target)).toBe(8000);
   });
   it("wrong_scope does not claim storage if destination has an exact duplicate", async () => {
     const dbs = setup();

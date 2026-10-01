@@ -2,6 +2,14 @@ import { describe, it, expect } from "vitest";
 import { renderRememberResult } from "../renderers";
 
 describe("renderRememberResult", () => {
+  it.each([undefined, null, {}, { error: "Not stored: memory is full" }, { message: "Not stored: memory is full" }])("shows an error when the receipt has no status (%j)", result => {
+    const text = renderRememberResult(result as any).render(160).join("\n");
+    expect(text).toContain("✗");
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("status:");
+    if (result && ("error" in result || "message" in result)) expect(text).toContain("Not stored: memory is full");
+  });
+
   it("shows the remembered content + meta and drops the duplicate glyph/rule header", () => {
     const out = renderRememberResult({
       status: "active",

@@ -5,5 +5,5 @@
   "main": "src/index.ts",
   "scripts": { "test": "vitest run" },
   "dependencies": { "@spider/db-core": "*", "@spider/ui": "*" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" }
+  "peerDependencies": { "@earendil-works/pi-coding-agent": ">=0.87.0" }
 }

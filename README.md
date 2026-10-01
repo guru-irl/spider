@@ -30,7 +30,7 @@ result look identical.
   repo builds or tests on anything below 26.x, so it is unverified. On a
   different major version the native modules fail to load and vector search
   degrades to full-text search only.
-- pi coding-agent 0.85.1 or later for default RPC children. RPC requires `--exclude-tools`, `--name`, `agent_settled` and `clear_queue`, verified in 0.85.1 and 0.87.0. The legacy peer range still allows 0.80; older child Pi binaries automatically use print mode and record the reason in run details and completion output. Version checks read metadata from the launched binary on PATH or `PI_SUBAGENT_PI_BINARY`. Unknown versions keep RPC mode with a recorded warning.
+- pi coding-agent 0.87 or later (peer dependency). Subagent children default to RPC mode, which needs `--exclude-tools`, `--name`, `agent_settled` and `clear_queue` (verified in 0.85.1 and 0.87). A child pi binary older than 0.85.1 automatically uses print mode and records the reason in run details and completion output. Version checks read metadata from the launched binary on PATH or `PI_SUBAGENT_PI_BINARY`; unknown versions keep RPC mode with a recorded warning.
 
 ## Install
 
@@ -167,6 +167,13 @@ that directory — `pi update` manages installed packages, not a linked working
 tree.
 
 ### Contributor notes
+
+Installs behind a private mirror must run `npm run check:lockfile -- --fix` before committing.
+It maps mirror URLs that use the `/npm/registry/` path layout to public npm tarballs
+and upgrades SHA-1 integrity to SHA-512 after downloading through the configured
+registry and verifying the existing SHA-1. Other mirror layouts need a manual URL
+fix. CHECK is offline and rejects non-public tarball sources, integrity without
+SHA-512, and tracked `.npmrc` settings outside the harmless allowlist.
 
 The process-wide embedder slot also retains the adapter object from whichever
 bundle initialized it first. A rebuilt reload does not replace that adapter, so

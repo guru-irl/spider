@@ -161,12 +161,13 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(text).toContain("staged");
     expect(text).not.toMatch(/\{|"candidateBody"/);
 
-    const before = await f.runner.emitBeforeAgentStart("next", undefined, "Base prompt", { cwd: f.cwd });
-    expect(before?.systemPrompt ?? "").not.toContain("Record the failing assertion");
+    const before = await f.runner.emitBeforeAgentStart("next", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
+    expect(before.systemPromptOptions.forceSystemPrompt).toBeUndefined();
+    expect(before.systemPromptOptions.customPrompt).toBe("Base prompt");
     const pending = listPending(f.repoDb, "repo")[0];
     await tool.execute("approve-memory", { action: "control", command: "memory", sub: "approve", uuid: pending.uuid }, undefined, undefined, ctx);
-    const after = await f.runner.emitBeforeAgentStart("next", undefined, "Base prompt", { cwd: f.cwd });
-    expect(after?.systemPrompt).toContain("Record the failing assertion");
+    const after = await f.runner.emitBeforeAgentStart("next", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
+    expect(after.systemPromptOptions.forceSystemPrompt).toContain("Record the failing assertion");
 
     const approveArgs = { action: "skill", op: "approve", name: "deterministic-tests" };
     const approved = await tool.execute("approve-skill", approveArgs, undefined, undefined, ctx);

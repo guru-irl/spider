@@ -36,6 +36,9 @@ jobs:
           node-version: '26.x'
           cache: npm
 
+      - name: Check lockfile registry
+        run: node scripts/check-lockfile-registry.mjs
+
       - name: Install
         run: npm ci
 

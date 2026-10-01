@@ -47,6 +47,9 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Check lockfile registry
+        run: node scripts/check-lockfile-registry.mjs
+
       - name: Install
         run: npm ci
 

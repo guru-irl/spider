@@ -33,7 +33,7 @@ import {
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
-import { registerSubagentActions } from "@spider/subagents";
+import { registerSubagentActions, adoptReloadedChildren, adoptableFor } from "@spider/subagents";
 import {
   registerOrganism,
   readOrganismConfig,
@@ -1099,6 +1099,24 @@ export default function spiderExtension(pi: PiToolAPI): void {
         dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions),
       });
     } catch { /* UI mount best-effort; never break the session */ }
+    return undefined;
+  });
+  // A /reload keeps this session's async subagents running (see subagents/child-registry.ts).
+  // The reloaded activation takes them over here, against ITS pi, db and notifier. Runs on any
+  // session_start reason and only does work when this session has detached children waiting.
+  pi.on("session_start", (_event: any, ctx: any) => {
+    try {
+      if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+      const sessionId = sessionIdOf(ctx);
+      if (!sessionId || !adoptableFor(sessionId).length) return undefined;
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const actionCtx = buildActionCtx(pi, { action: "kill" } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx));
+      // The action ctx has no ui of its own; hand over the session's so a refused adoption is visible.
+      adoptReloadedChildren({ ...actionCtx, ui: ctx.ui });
+    } catch (error) {
+      // Best-effort, but never silent: the registry TTL will stop whatever is left detached.
+      try { ctx.ui?.notify?.(`Subagents could not be re-adopted after the reload: ${String((error as Error)?.message ?? error)}. Detached runs will be stopped shortly.`, "warning"); } catch { /* no UI */ }
+    }
     return undefined;
   });
   pi.on("session_shutdown", () => {

@@ -5,6 +5,8 @@ import type { PipelineCoordinator } from "./pipeline";
 import type { ChildHandle } from "./runner";
 import type { RunStore } from "./run-store";
 import { cancelPendingIntercom } from "./intercom";
+import { disposeSessionRegistries, killSharedEntry, parkSession, releaseShared, sharedRegistry, sharedSessionIds } from "./child-registry";
+import { shutdownReason } from "./shutdown-reason";
 
 export interface SessionCoordinators {
   tailer: RunEventTailer;
@@ -14,9 +16,12 @@ export interface SessionCoordinators {
   children: Map<string, ChildHandle>;
   /** Cleanup function for the escalation notifier (watches bus for escalation events). */
   escalationNotifierCleanup?: () => void;
+  /** Extra run DBs opened at their recorded paths during adoption after a binding change. */
+  adoptionCleanup?: () => void;
 }
 
-// Module-scoped registry — one extension activation owns it; NO globalThis singletons.
+// Module-scoped registry — one extension activation owns it. The ONLY cross-build state is the
+// versioned child registry in child-registry.ts (live child handles that survive /reload).
 const registry = new Map<string, SessionCoordinators>();
 
 export function getCoordinators(sessionId: string, make: () => SessionCoordinators): SessionCoordinators {
@@ -77,11 +82,12 @@ export function teardownCoordinators(sessionId: string): void {
   if (!c) return;
   // Kill children FIRST: the tailer is what surfaces their final events, and a
   // stopped tailer would swallow them.
-  for (const [, h] of c.children ?? []) { try { h.kill("Session shutdown cancelled this run."); } catch {} }
+  for (const [runId, h] of c.children ?? []) { try { h.kill(shutdownReason("quit")); } catch {} releaseShared(runId); }
   c.children?.clear();
   try { c.tailer?.stop(); } catch {}
   for (const p of c.pipelines) { try { p.dispose(); } catch {} }
   try { c.escalationNotifierCleanup?.(); } catch {}
+  try { c.adoptionCleanup?.(); } catch {}
   registry.delete(sessionId);
 }
 
@@ -101,56 +107,101 @@ export interface TeardownAsyncOpts {
   graceMs?: number;
 }
 
-/** Async teardown: kill children, await a bounded grace, then SIGKILL survivors.
- *  Used by session_shutdown to ensure wedged processes don't survive exit.
- *  Escalation is parallel (N children take ~graceMs total, not N*graceMs).
- *  Best-effort: never throws. */
-export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<void> {
-  cancelPendingIntercom();
+/** Quit, new, resume or fork of ONE session: kill that session's children, await a bounded grace,
+ *  then SIGKILL survivors. Children this session left detached by an earlier reload (never adopted)
+ *  are killed and their rows finalized too. Other sessions are never touched.
+ *  Escalation is parallel (N children take ~graceMs total, not N*graceMs). Best-effort: never throws. */
+export async function teardownSessionAsync(sessionId: string, opts: TeardownAsyncOpts = {}): Promise<void> {
+  cancelPendingIntercom(sessionId);
   const graceMs = opts.graceMs ?? SESSION_EXIT_GRACE_MS;
-  const sessions = [...registry.keys()];
-  
+  const reason = shutdownReason("quit");
+  const killed = new Set<string>();
   try {
-    // Kill all children in parallel across all sessions
-    const killPromises: Promise<void>[] = [];
-    
-    for (const id of sessions) {
-      const c = registry.get(id);
-      if (!c) continue;
-      
-      // Kill children FIRST: the tailer surfaces their final events
-      for (const [, h] of c.children ?? []) {
-        try {
-          // Check if handle supports async kill with escalation
-          if (typeof (h as any).killAsync === "function") {
-            killPromises.push(
-              (h as any).killAsync(graceMs, "Session shutdown cancelled this run.").catch(() => { /* best-effort */ })
-            );
-          } else {
-            // Fallback: sync kill (no escalation guarantee)
-            h.kill("Session shutdown cancelled this run.");
-          }
-        } catch { /* best-effort */ }
-      }
+    const c = registry.get(sessionId);
+    const kills: Promise<void>[] = [];
+    // Kill children FIRST: the tailer surfaces their final events
+    for (const [runId, h] of c?.children ?? []) {
+      killed.add(runId);
+      try {
+        if (typeof h.killAsync === "function") kills.push(h.killAsync(graceMs, reason).catch(() => { /* best-effort */ }));
+        else h.kill(reason); // no escalation guarantee
+      } catch { /* best-effort */ }
     }
-    
-    // Wait for all kills to complete (parallel, bounded by graceMs)
-    await Promise.all(killPromises);
-    
-    // Clean up coordinators
-    for (const id of sessions) {
-      const c = registry.get(id);
-      if (!c) continue;
-      
+    await Promise.all(kills);
+    // Whatever the shared registry still holds for this session (children detached by an earlier
+    // reload and never adopted, or parked by another build version) must not outlive it either.
+    await disposeSessionRegistries(sessionId, reason, { exclude: killed });
+    for (const runId of killed) releaseShared(runId);
+    if (c) {
       c.children?.clear();
       try { c.tailer?.stop(); } catch {}
       for (const p of c.pipelines) { try { p.dispose(); } catch {} }
-      // IMPORTANT 3: Call escalation disposer through production path
       try { c.escalationNotifierCleanup?.(); } catch {}
-      registry.delete(id);
+      try { c.adoptionCleanup?.(); } catch {}
+      registry.delete(sessionId);
     }
   } catch {
     // Best-effort: never let cleanup errors block session exit
+  }
+}
+
+/** Every session this process knows (this activation's coordinators and the shared registry).
+ *  An explicit all-sessions helper for tests and process-wide teardown; the session_shutdown
+ *  hook never uses it when the ending session is known. */
+export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<void> {
+  cancelPendingIntercom();
+  const ids = [...new Set([...registry.keys(), ...sharedSessionIds()])];
+  await Promise.all(ids.map(id => teardownSessionAsync(id, opts)));
+}
+
+export interface DetachForReloadOpts extends TeardownAsyncOpts {
+  /** Overrides the unadopted-child TTL (tests). */
+  ttlMs?: number;
+}
+
+/**
+ * session_shutdown{reason:"reload"} for ONE session: keep its async children running and hand them
+ * to the reloaded activation (see child-registry.ts). Everything that calls back into this
+ * activation is detached: the tailer stops (its position is saved), pipelines end, the notifier is
+ * removed, and each child's completion sink and RPC event sink are dropped. Children that cannot
+ * survive (foreground chain steps) are killed with the shutdown reason, so the notifier starts no
+ * model turn for them. Other sessions are untouched. Best-effort; never throws.
+ */
+export async function detachForReload(sessionId: string, opts: DetachForReloadOpts = {}): Promise<void> {
+  cancelPendingIntercom(sessionId);
+  const graceMs = opts.graceMs ?? SESSION_EXIT_GRACE_MS;
+  const reason = shutdownReason("reload");
+  try {
+    const shared = sharedRegistry();
+    // Park first and synchronously: from here no old sink can fire for a survivable child, even if
+    // it exits while the foreground kills below are still waiting out their grace period.
+    const doomed = parkSession(sessionId, { ttlMs: opts.ttlMs, graceMs });
+    const c = registry.get(sessionId);
+    const kills: Promise<void>[] = [];
+    // Foreground children through their activation-owned handles (cancel bookkeeping).
+    const viaHandle = new Set<string>();
+    for (const [runId, h] of c?.children ?? []) {
+      if (!doomed.some(e => e.runId === runId)) continue;
+      viaHandle.add(runId);
+      try {
+        if (typeof h.killAsync === "function") kills.push(h.killAsync(graceMs, reason).catch(() => {}));
+        else h.kill(reason);
+      } catch { /* best-effort */ }
+    }
+    // Any doomed entry without an activation handle is killed through the registry.
+    for (const e of doomed) if (!viaHandle.has(e.runId)) kills.push(killSharedEntry(e, reason, graceMs));
+    await Promise.all(kills);
+    if (c) {
+      if (c.tailer) shared.tailCursors.set(sessionId, c.tailer.cursor);
+      try { c.tailer?.stop(); } catch {}
+      for (const p of c.pipelines) { try { (p as { abandonForReload?: () => void }).abandonForReload?.() ?? p.dispose(); } catch {} }
+      try { c.escalationNotifierCleanup?.(); } catch {}
+      c.children?.clear();
+      try { c.adoptionCleanup?.(); } catch {}
+      registry.delete(sessionId);
+    }
+  } catch {
+    // Best-effort: the TTL timers, the exit sweep and the reaper are the backstops.
   }
 }
 

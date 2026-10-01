@@ -52,7 +52,8 @@ This package does not own:
 | `parallel.ts` | `runParallel()`: expands a task list (repeating a task `count` times) and runs the expansion either as a concurrency-limited foreground pool or as fully backgrounded spawns. |
 | `pipeline.ts` | `PipelineCoordinator`: a multi-stage pipeline that advances itself when a stage's run reaches a terminal status on the event bus. |
 | `runner.ts` | `Runner`: creates a run row, spawns the child through an injected `Spawner`, and finalizes the row on exit, for both foreground and background runs. |
-| `coordinators.ts` | A per-session registry of the event tailer and any active pipelines, with teardown on session shutdown. |
+| `coordinators.ts` | A per-session registry of the event tailer and any active pipelines, with teardown on session shutdown and `detachForReload` for `/reload`. |
+| `child-registry.ts` | The process-wide, versioned (`Symbol.for("spider.childRegistry.v1")`) registry of live child handles that lets background subagents outlive a `/reload`: detach, adopt (same session only, once), exactly-once completion claim, unadopted-child TTL, and disposal of one session's children in every registry version at quit. Every operation is scoped to a session (`disposeSession(sessionId, reason)` is the version-1 contract). |
 | `run-store.ts` | `RunStore`: reads and writes the `runs` table (create, start, progress, finish, get, list, link to a parent run). Re-exports `deriveRunName`. |
 | `run-events.ts` | `emitIntent`, `emitToolResult`, `emitStatus`, `emitHandoff`, `emitMessage`, `emitLog`: typed helpers that append rows to `run_events`. |
 | `event-tailer.ts` | `RunEventTailer`: polls `run_events` for the run ids it is tracking and republishes them on the in-process event bus, for the live UI feed. |
@@ -135,8 +136,9 @@ stdin closes; no extra prompt is sent to drain it. Outcomes still use
 `genuineCompletion` and `run_events`. A clean exit without a deliverable is not
 success.
 
-The parent owns the pipes. Shutdown and reload still kill children. RPC abort
-clears queued continuations, sends `abort`, closes stdin, and retains the
+The parent owns the pipes. Quit, `/new`, `/resume` and `/fork` kill children;
+`/reload` keeps background children running and stops foreground chain steps.
+RPC abort clears queued continuations, sends `abort`, closes stdin, and retains the
 process-group kill fallback. Abrupt parent death produces stdin EOF. The reaper
 still collects children whose owning host died. Spawn identity is recorded as pid
 plus start time, which survives Pi's process-title change. Pid-only kill and
@@ -147,12 +149,12 @@ closed with a truthful lost/orphan reason when it cannot confirm the process.
 
 A returned background dispatch is never tied to the parent turn's abort signal,
 in either mode. All tool dispatches are asynchronous; there is no foreground
-abort-signal subscription. Shutdown cancels every registered child, including chain steps
-and pipeline stages, and pending intercom calls. Cancellation reports retain the
+abort-signal subscription. Quit, `/new`, `/resume` and `/fork` cancel every child of the ending session, including chain steps
+and pipeline stages, and its pending intercom calls; `/reload` keeps background children running and stops chain steps. Cancellation reports retain the
 actual cause. Own-session kill completion is already reported by the kill result
 and sends no extra notification unless a steer is accepted but not confirmed or
 has no reply yet, delivery unknown. Cancellation is persisted before termination so the child's shutdown reporter cannot replace it. A failed owned kill restores the previous row and its route only while the child has not reported exit and the row still holds that kill's cancellation. A late group-termination failure never resurrects a dead run. Shutdown notifications use `nextTurn` without
-triggering a model turn, including during reload. A cancelled chain or pipeline
+triggering a model turn, including during reload. The reason text and the notifier's check both come from `shutdown-reason.ts`, so they cannot drift apart. A cancelled chain or pipeline
 does not launch another stage.
 
 Running children can be steered by run ID in their owner session. RPC success
@@ -169,7 +171,8 @@ can still look like a transform; another source injecting identical text is also
 indistinguishable. Unrelated injections followed by an unchanged steer prefer
 that exact steer text. Exit, stop or settlement before a reply never promotes a
 differing injection to transformed delivery; only exact-text entry counts. This is evidence of conversation entry, not
-proof of model consumption.
+proof of model consumption. A steer in flight across `/reload` remains tracked
+and is resolved and reported by the reloaded activation after adoption.
 
 After 10 seconds without an RPC reply, the result is **no reply yet, delivery
 unknown**, not a refusal. While the run is still active, do not resend; the written
@@ -328,7 +331,8 @@ headline (the run's name, agent, and status) followed by that output text,
 and normally asks pi to trigger the next turn (`{ triggerTurn: true }`).
 Session-shutdown cancellations instead queue with `{ triggerTurn: false,
 deliverAs: "nextTurn" }`, so they cannot start a new turn. Own-session kills
-suppress redundant completion notifications unless an undelivered steer needs reporting. It also raises a short human-facing notification, using severity
+suppress redundant completion notifications unless a steer is accepted but not
+confirmed or has no reply yet, delivery unknown. It also raises a short human-facing notification, using severity
 `error` for a failed run and `info` otherwise. The child reporter or parent
 finalizer populates the run result from genuine recorded completion, not from
 an RPC command acknowledgement. Cancelled notifications use the cancellation

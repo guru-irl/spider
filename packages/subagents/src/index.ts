@@ -15,14 +15,22 @@ export * from "./spawn-default";
 export * from "./kill";
 export * from "./kill-process";
 export * from "./reaper";
+export * from "./child-registry";
+export * from "./shutdown-reason";
 
 import { attachChildReporter, isSubagentChild } from "./child-reporter";
-import { makeRunHandler } from "./actions/run";
+import { makeRunHandler, adoptReloadedChildren } from "./actions/run";
 import { makeMessageHandler } from "./actions/message";
 import { makeKillHandler } from "./actions/kill";
-import { teardownAll, teardownAllAsync } from "./coordinators";
+import { listChildSessions, teardownSessionAsync, detachForReload } from "./coordinators";
 
-export { makeRunHandler, makeMessageHandler, makeKillHandler };
+/** The session a pi event context belongs to ("" when the context does not say). */
+export function sessionIdFromCtx(ctx: unknown): string {
+  const id = (ctx as { sessionManager?: { getSessionId?: () => unknown } } | undefined)?.sessionManager?.getSessionId?.();
+  return typeof id === "string" ? id : "";
+}
+
+export { makeRunHandler, makeMessageHandler, makeKillHandler, adoptReloadedChildren };
 
 /**
  * Register the `run`/`message`/`kill` actions on a structural host (`host.registerAction`).
@@ -39,5 +47,16 @@ export function registerSubagentActions(host: { registerAction: (name: string, h
   host.registerAction("run", makeRunHandler());
   host.registerAction("message", makeMessageHandler());
   host.registerAction("kill", makeKillHandler());
-  try { pi?.on?.("session_shutdown", async () => await teardownAllAsync()); } catch { /* best-effort */ }
+  // The ending session is named by ctx (pi passes the session's own context to session_shutdown).
+  // reload keeps THAT session's async children running for the reloaded activation to adopt; every
+  // other reason (quit, new, resume, fork, or an unknown/absent one) kills them, as before. Other
+  // sessions in this process are never touched. With no usable ctx the sessions this activation
+  // itself coordinates are used, never the whole process.
+  try {
+    pi?.on?.("session_shutdown", async (event?: { reason?: string }, ctx?: unknown) => {
+      const id = sessionIdFromCtx(ctx);
+      const sessions = id ? [id] : listChildSessions();
+      await Promise.all(sessions.map(s => event?.reason === "reload" ? detachForReload(s) : teardownSessionAsync(s)));
+    });
+  } catch { /* best-effort */ }
 }

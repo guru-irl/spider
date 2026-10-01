@@ -65,8 +65,9 @@ informational and does not fail the health check. An unreadable file or missing
 marker is reported without claiming it is current.
 
 Updating the file does not update code already loaded in a running session.
-With a current linked shim, reload when running subagents have finished, or
-restart pi. Direct package loads require a restart. Each built bundle contains
+With a current linked shim, `/reload` is safe while background subagents run:
+they keep running and are re-adopted by the reloaded bundle. Direct package
+loads require a restart. Each built bundle contains
 a greppable `SPIDER_BUILD_ID=<sha>[-dirty]@<ISO timestamp> v<version>` header.
 Every watch rebuild captures a fresh time. Dirty means tracked changes only;
 untracked local state does not affect it. Builds without git, or without their
@@ -86,14 +87,15 @@ dispatches through its own action closures, using the global registry only for
 externally registered actions that it does not own. On `session_shutdown`, spider
 releases that activation's action closures and error marks, agents UI target,
 organism/routing runtime references and DB handles without clearing another live
-activation's host state. Child teardown is unchanged: any session shutdown stops
-all registered subagent coordinators in that module, including those used by
-other live activations, with their tailers/listeners. Organism shutdown work is
-awaited.
-This is not cancellation of every in-flight operation: foreground chains and
-pending intercom calls are not tied to shutdown, and some action/UI DB handles
-lack an explicit close path. The shared model is intentionally retained until
-process exit; Fastembed has no public model disposer. Finish running work before reloading; restart pi after many rebuilt reloads or when
+activation's host state. Organism shutdown work is awaited. Subagents are the
+one exception to "release everything": a `/reload` keeps background subagents
+running and the reloaded activation re-adopts them (see
+[Subagents and killing them](#subagents-and-killing-them)); quit, `/new`,
+`/resume` and `/fork` still stop all of them.
+This is not cancellation of every in-flight operation: some action/UI DB handles
+lack an explicit close path. Chain steps and pending intercom calls ARE stopped
+on both reload and quit. The shared model is intentionally retained until
+process exit; Fastembed has no public model disposer. Restart pi after many rebuilt reloads or when
 complete process-level cleanup is needed.
 
 Pin a ref if you want a fixed version, and update by re-installing at a new one
@@ -298,8 +300,20 @@ and sends exactly one task prompt. Set `subagents.childMode` to `"print"` using
 new launches. Runs retain their launch mode; changing the setting does not
 upgrade existing children.
 
-Exiting or reloading any session tears down all subagents registered in that
-module, not just that activation's children. RPC children receive
+### What happens to running subagents on shutdown
+
+`session_shutdown` carries a reason (`quit`, `reload`, `new`, `resume`, `fork`).
+
+| Reason | Background subagents |
+| --- | --- |
+| `reload` | **Kept running** and re-adopted by the reloaded activation (single, parallel and pipeline-stage children, RPC or print mode). Chain steps are stopped: a chain is background work from the user's view, but its continuation lives in the old activation. |
+| `quit`, `new`, `resume`, `fork` | Stopped. A replaced or ended session has nowhere to deliver a completion notice. |
+
+Every one of these acts on the ENDING session only, named by the context pi passes
+to `session_shutdown`. In a process that hosts several sessions (an SDK host), reloading or
+quitting session A never detaches, kills or re-times session B's children. On `quit`, `new`,
+`resume` and `fork`, shutdown stops that session's subagents, including children an earlier reload
+detached and nobody adopted (their runs are marked `cancelled` with the shutdown reason). RPC children receive
 `clear_queue`, then `abort`, then stdin EOF; process-group `SIGTERM` and
 `SIGKILL` remain the fallback after a short grace period. Runs orphaned by a hard kill (where the host died without
 running shutdown) are reaped at the next `session_start` — but only after
@@ -307,6 +321,46 @@ checking that the pid's current start time matches the recorded spawn identity
 (legacy rows without a start time use the old command check), so pid reuse
 cannot make the reaper signal an unrelated process, and only when the owning
 host is actually dead, so one session never kills another's agents.
+
+**How reload survival works.** The live child handles (process, pipes, run id,
+session id, DB path, intercom name, pid and start time) are parked in a
+process-wide registry at `globalThis[Symbol.for("spider.childRegistry.v1")]`,
+a small versioned structure that a different build can read. On `reload` the
+old activation detaches: its listeners are removed so nothing calls into the
+dead pi instance, the processes and pipes stay open, and RPC events that arrive
+are buffered, bounded by count and by bytes. Streaming partial updates are not buffered (a full message follows), and the events that end up in the run history are kept separately, so partials can never push them out. If the buffer still overflows, the run says so: a warning event records "events lost during reload" and the run's final result carries the same note. On the
+next `session_start`, the reloaded activation adopts only this session's
+entries: it rebinds event handling, the completion notifier, kill and steering
+(`spider message`, `spider kill`, `/agents` all work again), and resumes the
+event feed from where the old one stopped, so escalations raised during the gap
+still arrive. A child that finished during the gap is finalized and reported
+once, by the reloaded activation; there is no duplicate and no lost notice.
+
+Limits and failure modes:
+
+- A foreground chain step cannot survive, because the chain's continuation lives
+  in the old activation. Reload stops it, as before.
+- A pipeline's in-flight stage survives and reports, but the pipeline coordinator
+  does not: later stages do not start. The stage's run gets a warning event, and the
+  stage's completion notice to the parent says that the remaining stages were not
+  started and must be re-dispatched. (Resuming the pipeline is not implemented.)
+- If nothing adopts a detached child within 60 seconds (the reload failed to
+  load, the session changed, or the new build speaks a different registry
+  version), it is killed and its run is marked `cancelled`; a run that already finished
+  in the gap gets its real status instead. If adopting a child fails (for example its
+  run row is not in the DB the new activation resolved), the user is notified, the run
+  gets a warning event, and the 60 second timer restarts. If pi exits while children are
+  still detached (the new bundle never loaded, or no `session_start` followed, as in an
+  SDK host without UI bindings), an exit hook stops them and finalizes their rows.
+  That hook is best-effort: it cannot run after a hard kill of pi.
+- A reload into a build with a different registry version cannot adopt the old
+  entries. They are cleaned up by that 60 second timer, and by `quit`, which asks
+  every registry version found in the process to dispose of its children.
+- A hard kill of pi still leaves rows for the existing orphan reaper.
+- `node scripts/probe-child-survival.mjs` runs the real-pi check: a
+  fixture host loads the built bundle, dispatches a child that waits on a
+  fake-provider tool, reloads a different build, releases the child and checks
+  for exactly one completion notice, and that `quit` after a reload kills it.
 
 ## Background learning
 
@@ -341,7 +395,8 @@ is preferred among all queue additions in its serialized acceptance window;
 a differing text counts as **delivered, transformed** only after a successful
 reply and when it was the sole addition. Several additions without an exact match remain unconfirmed. Pi has
 no request IDs on these events, so swallowed input plus one unrelated injection
-can still look like a transform.
+can still look like a transform. A steer in flight across `/reload` remains
+tracked and is resolved and reported by the reloaded activation after adoption.
 
 After 10 seconds without a reply, the result is **no reply yet, delivery unknown**.
 Tracking continues until the run settles, exits or stops: a late success becomes
@@ -375,9 +430,10 @@ starts. This deferred-delivery policy is for peer sessions, not one-shot run
 names: run steers are not durably retried. Cross-session broker acceptance is
 accepted but not confirmed and renders as a warning, not proof of conversation
 entry. Background
-children are independent of later parent-turn Escape. Shutdown still cancels
-all session-owned children and reports the cause without starting a model turn,
-including on reload. A kill from this session reports through its tool result,
+children are independent of later parent-turn Escape. Quit, `/new`, `/resume` and `/fork` cancel
+all session-owned children and report the cause without starting a model turn;
+`/reload` keeps background children running while foreground chain steps stop.
+A kill from this session reports through its tool result,
 not an extra completion notification unless a steer is accepted but not confirmed
 or has no reply yet, delivery unknown.
 A cancelled pipeline ends.

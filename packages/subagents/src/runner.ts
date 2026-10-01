@@ -5,7 +5,9 @@ import { emitStatus } from "./run-events";
 import { buildChildSpawnSpec, type ChildSpawnSpec } from "./pi-args";
 import { registerChild, unregisterChild } from "./coordinators";
 import { resolveModelThinking } from "./model-resolve";
-import { genuineCompletion, NO_DELIVERABLE_RESULT } from "./completion-output";
+import { registerShared, releaseShared, setSink, type CompletionSink, type SharedChildEntry, type SharedHandle } from "./child-registry";
+import { decideOutcome, NO_DELIVERABLE_RESULT, summarizeCompletionEvents } from "./completion-output";
+import { PERSISTED_EVENT_TYPES } from "./rpc-child";
 
 export { NO_DELIVERABLE_RESULT };
 
@@ -17,47 +19,14 @@ export interface ChildHandle {
   kill(reason?: string): void;
   killAsync?(graceMs?: number, reason?: string): Promise<void>;
   steer?(message: string): Promise<import("./rpc-child").SteerAck>;
+  /** Route RPC events to a new sink (flushing the reload buffer). Absent on print-mode children. */
+  bindEvents?(sink: (event: Record<string, any>) => void): void;
+  /** Buffer RPC events instead of calling the previous activation's sink (reload). */
+  unbindEvents?(): void;
   detach(): void;
 }
 
 export type Spawner = (spec: ChildSpawnSpec) => ChildHandle;
-
-/** A missing/blank result: no deliverable, not even an empty-but-intentional string. */
-function isBlankResult(result: string | null | undefined): boolean {
-  return result == null || result.trim().length === 0;
-}
-
-/**
- * Decide a child's terminal status + result from its raw exit outcome.
- *
- * The production spawner (`spawn-default.ts`) NEVER resolves `wait()` with a `result` —
- * only test/fake spawners do. So the real deliverable must come from `run_events`
- * (`genuineCompletion`, sourced from the child's own `message`/`escalation` events), not
- * from `waitResult`. A clean exit code is necessary but NOT sufficient for success: a
- * child that escalates/blocks and then exits 0 without ever producing a deliverable must
- * not be recorded "done" — that hides the escalation from anything keying on status alone.
- *
- * `waitResult`, when a spawner does supply one (tests, or a future spawner), is honored
- * as-is — it is an explicit, non-blank claim of a result and takes precedence.
- *
- * A single function so BOTH call sites (the sync runForeground path and the async
- * runAsync parent-finalizes path) apply the same rule via `Runner.finalize` — fixing
- * only one is a half-fix.
- */
-function decideOutcome(db: Db, runId: string, exitCode: number, waitResult: string | null | undefined): { status: RunStatus; result?: string } {
-  if (!isBlankResult(waitResult)) {
-    return { status: exitCode === 0 ? "done" : "failed", result: waitResult ?? undefined };
-  }
-  const completion = genuineCompletion(db, runId);
-  if (exitCode !== 0) {
-    const detail = completion.done ? completion.result : completion.reason;
-    return { status: "failed", result: `Child process exited with code ${exitCode}.${detail ? `\n\n${detail}` : ""}` };
-  }
-  return completion.done
-    ? { status: "done", result: completion.result }
-    : { status: "failed", result: completion.reason ?? NO_DELIVERABLE_RESULT };
-}
-
 
 export interface RunOpts {
   agent: string;
@@ -104,7 +73,7 @@ export class Runner {
     return this.deps.store.get(id)!;
   }
 
-  private spawnFor(run: RunRow, opts: RunOpts): ChildHandle {
+  private spawnFor(run: RunRow, opts: RunOpts): { handle: ChildHandle; mode: "rpc" | "print"; intercomSession?: string } {
     const spec = buildChildSpawnSpec({
       runId: run.id,
       sessionId: this.sessionId,
@@ -127,29 +96,44 @@ export class Runner {
       intercomSessionName: opts.intercomSessionName ?? run.name ?? undefined,
       cwd: this.cwd,
     });
-    this.deps.store.setLaunch(run.id, {
-      childMode: spec.childMode ?? "print",
-      intercomSession: spec.childMode === "rpc" && this.deps.intercomExtensions?.length
-        ? spec.env.PI_SUBAGENT_INTERCOM_SESSION_NAME : undefined,
-    });
+    const intercomSession = spec.childMode === "rpc" && this.deps.intercomExtensions?.length
+      ? spec.env.PI_SUBAGENT_INTERCOM_SESSION_NAME : undefined;
+    this.deps.store.setLaunch(run.id, { childMode: spec.childMode ?? "print", intercomSession });
     this.deps.globalDb?.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
       .run(run.id, this.sessionId, this.deps.dbPath);
-    spec.onRpcEvent = event => {
-      if (["warning", "extension_error", "queue_update", "steer_delivery"].includes(event.type)) {
+    spec.onRpcEvent = this.rpcSink(run);
+    if (spec.launchWarning) spec.onRpcEvent({ type: "warning", message: spec.launchWarning, launchWarning: true, printFallback: spec.childMode === "print" });
+    return { handle: this.deps.spawn(spec), mode: spec.childMode === "rpc" ? "rpc" : "print", intercomSession };
+  }
+
+  /** Persist the RPC events worth keeping. Rebuilt per activation so a reload rebinds it to the new DB. */
+  private rpcSink(run: RunRow): (event: Record<string, any>) => void {
+    return event => {
+      if (PERSISTED_EVENT_TYPES.includes(event.type)) {
         appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: event.type,
           summary: event.message ?? event.error ?? "Child pending queue changed.", payload: event });
       }
     };
-    if (spec.launchWarning) spec.onRpcEvent({ type: "warning", message: spec.launchWarning, launchWarning: true, printFallback: spec.childMode === "print" });
-    return this.deps.spawn(spec);
   }
 
-  private ownHandle(run: RunRow, handle: ChildHandle): ChildHandle {
+  /** `shared` registers the child in the process-wide registry (new launches). Adoption omits it:
+   *  the entry already exists and `handle` is a fresh object over the entry's raw handle. */
+  private ownHandle(run: RunRow, handle: ChildHandle, shared?: { mode: "rpc" | "print"; intercomSession?: string; survivable: boolean }): ChildHandle {
     const kill = handle.kill.bind(handle);
     const killAsync = handle.killAsync?.bind(handle);
     let exited = false;
     const exit = handle.wait().then(value => { exited = true; return value; }, error => { exited = true; throw error; });
     handle.wait = () => exit;
+    // Snapshot BEFORE the cancel bookkeeping below is bound to this activation's DB: a reloaded
+    // activation re-wraps the raw handle with its own store instead of calling into ours.
+    const raw: SharedHandle = {
+      pid: handle.pid, startTime: handle.startTime, wait: () => exit,
+      kill: () => kill(), ...(killAsync ? { killAsync: (graceMs?: number) => killAsync(graceMs) } : {}),
+      ...(handle.steer ? { steer: handle.steer.bind(handle) } : {}),
+      ...(handle.bindEvents ? { bindEvents: handle.bindEvents.bind(handle) } : {}),
+      ...(handle.unbindEvents ? { unbindEvents: handle.unbindEvents.bind(handle) } : {}),
+    };
+    if (shared) registerShared({ runId: run.id, sessionId: this.sessionId, dbPath: this.deps.dbPath, handle: raw, ...shared });
     const restore = (reason: string, before: RunRow | undefined, previousReason: string | undefined) => {
       // An exit report is final even if group termination later fails during grace.
       if (exited) { this.removeRoute(run.id); return; }
@@ -204,7 +188,7 @@ export class Runner {
     try { this.deps.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(runId); } catch { /* cleanup cannot mask the run outcome */ }
   }
 
-  private launch(run: RunRow, opts: RunOpts): ChildHandle | undefined {
+  private launch(run: RunRow, opts: RunOpts, survivable: boolean): ChildHandle | undefined {
     let handle: ChildHandle | undefined;
     try {
       this.db.transaction(() => {
@@ -212,9 +196,10 @@ export class Runner {
         emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
       })();
       this.deps.tailer.track(run.id);
-      handle = this.spawnFor(run, opts);
+      const spawned = this.spawnFor(run, opts);
+      handle = spawned.handle;
       if (handle.pid !== undefined) this.deps.store.setPid(run.id, handle.pid, process.pid, handle.startTime);
-      return this.ownHandle(run, handle);
+      return this.ownHandle(run, handle, { mode: spawned.mode, intercomSession: spawned.intercomSession, survivable });
     } catch (error) {
       const result = `Child launch failed: ${String((error as Error)?.message ?? error)}`;
       try {
@@ -223,7 +208,7 @@ export class Runner {
           emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "failed", summary: result });
         })();
       } finally {
-        try { handle?.kill(); } finally { unregisterChild(this.sessionId, run.id); this.removeRoute(run.id); }
+        try { handle?.kill(); } finally { unregisterChild(this.sessionId, run.id); releaseShared(run.id); this.removeRoute(run.id); }
       }
       this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, "failed", result);
       return undefined;
@@ -264,35 +249,18 @@ export class Runner {
   }
 
   private withSteerSummary(runId: string, outcome: { status: RunStatus; result?: string }): { status: RunStatus; result?: string } {
-    const events = this.db.prepare("SELECT id,type,payload FROM run_events WHERE run_id=? AND type IN ('steer_delivery','steer') ORDER BY id").all(runId) as Array<{ id: number; type: string; payload: string }>;
-    const deliveries = new Map<string, string>();
-    for (const event of events) {
-      try {
-        const payload = JSON.parse(event.payload);
-        const delivery = payload.delivery === "broker-accepted" || (payload.transport === "intercom" && payload.delivered === true) ? "accepted but not confirmed"
-          : payload.delivered === true ? "delivered"
-          : payload.delivery === "no reply yet, delivery unknown" ? payload.delivery
-          : payload.delivery === "refused" || (payload.accepted === false && !payload.childAccepted) ? "refused"
-          : payload.delivered === false || payload.accepted || payload.childAccepted ? "accepted but not confirmed" : undefined;
-        if (delivery) {
-          const key = payload.requestId ?? `${event.type}-${event.id}`;
-          // The tool can finish after a delivery event. Acceptance cannot erase proof.
-          if (deliveries.get(key) !== "delivered") deliveries.set(key, delivery);
-        }
-      } catch { /* malformed diagnostics do not change the outcome */ }
-    }
-    if (!deliveries.size) return outcome;
-    const summary = ["delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"].map(delivery => {
-      const count = [...deliveries.values()].filter(value => value === delivery).length;
-      return count ? `${count} steer(s) ${delivery}.` : "";
-    }).filter(Boolean).join("\n");
-    const result = outcome.result?.includes(summary) ? outcome.result : [outcome.result, summary].filter(Boolean).join("\n\n");
+    const { steerSummary, eventsLost } = summarizeCompletionEvents(this.db, runId);
+    if (!steerSummary && !eventsLost) return outcome;
+    const notes = [steerSummary];
+    if (eventsLost) notes.push(`${eventsLost} child event(s) were lost during reload; this run's recorded history is incomplete.`);
+    let result = outcome.result;
+    for (const note of notes) if (note && !result?.includes(note)) result = [result, note].filter(Boolean).join("\n\n");
     return { ...outcome, result };
   }
 
   async runForeground(opts: RunOpts): Promise<RunRow> {
     const run = this.makeRun(opts);
-    const handle = this.launch(run, opts);
+    const handle = this.launch(run, opts, false);
     if (!handle) return this.deps.store.get(run.id)!;
     try {
       const { exitCode, result } = await handle.wait();
@@ -306,37 +274,73 @@ export class Runner {
       return this.deps.store.get(run.id)!;
     } finally {
       unregisterChild(this.sessionId, run.id);
+      releaseShared(run.id);
     }
+  }
+
+  /**
+   * The completion path for an async child: finalize the row, notify once, release. It is installed
+   * as the registry entry's sink, so a reload can drop it (the old activation is dead) and the
+   * reloaded activation installs its own. The registry hands over the exit exactly once.
+   * Fired EXACTLY ONCE per child exit, whether the parent or the child finalized the row.
+   * Cancellation carries the persisted cause as well.
+   */
+  private completionSink(run: RunRow, handle: ChildHandle): CompletionSink {
+    return (_entry, { exitCode, result }) => {
+      try {
+        const outcome = this.finalize(run, exitCode, result, handle.cancellationReason);
+        this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
+      } catch (error) {
+        try {
+          const outcome = this.finalize(run, 1, `Child wait failed: ${String(error)}`, handle.cancellationReason);
+          this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
+        } catch (finalizeError) {
+          // Both atomic finalization attempts failed. Keep the row/event unchanged
+          // and leave reconciliation to the reaper after the recorded host exits.
+          try {
+            appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: "warning",
+              summary: `Finalization failed; reconciliation requires host exit: ${String(finalizeError)}` });
+          } catch { /* a broken DB may also reject the diagnostic */ }
+        }
+      } finally {
+        unregisterChild(this.sessionId, run.id);
+        releaseShared(run.id);
+      }
+    };
   }
 
   runAsync(opts: RunOpts): RunRow {
     const run = this.makeRun(opts);
-    const handle = this.launch(run, opts);
+    const handle = this.launch(run, opts, true);
     if (!handle) return this.deps.store.get(run.id)!;
     // Finalize the row on child EXIT even if the child-reporter missed session_shutdown
     // (headless/killed children) — otherwise the run is stuck "running" in the UI.
-    void handle.wait().then(({ exitCode, result }) => {
-      const outcome = this.finalize(run, exitCode, result, handle.cancellationReason);
-      // Async completion notification: let the parent agent (and human) know a background
-      // subagent finished. Fired EXACTLY ONCE per child exit, whether the parent or the child
-      // finalized the row. Cancellation carries the persisted cause as well.
-      this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
-    }).catch(error => {
-      const outcome = this.finalize(run, 1, `Child wait failed: ${String(error)}`, handle.cancellationReason);
-      this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
-    }).catch(error => {
-      // Both atomic finalization attempts failed. Keep row/event atomicity rather
-      // than inventing an unlogged terminal outcome. host_pid was saved at create;
-      // a later session's reaper reconciles the row after this host exits.
-      // Do not notify completion or leave an unhandled rejection.
-      try {
-        appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: "warning",
-          summary: `Finalization failed; reconciliation requires host exit: ${String(error)}` });
-      } catch { /* a broken DB may also reject the diagnostic */ }
-    }).finally(() => {
-      unregisterChild(this.sessionId, run.id);
-    });
+    setSink(run.id, this.completionSink(run, handle));
     handle.detach();
     return this.deps.store.get(run.id)!;
+  }
+
+  /**
+   * Take over a child that survived a /reload (see child-registry.ts). Builds a fresh handle over
+   * the entry's raw handle so cancel bookkeeping targets THIS activation's DB, rebinds the RPC
+   * event sink (flushing what was buffered in the gap), and installs this activation's sink. If
+   * the child already exited, the registry delivers that exit to the sink right after this returns.
+   */
+  adopt(entry: SharedChildEntry): void {
+    const run = this.deps.store.get(entry.runId);
+    if (!run) throw new Error(`run ${entry.runId} has no row in this session's DB`);
+    const raw = entry.handle;
+    const handle: ChildHandle = {
+      pid: raw.pid, startTime: raw.startTime,
+      wait: () => raw.wait(),
+      kill: reason => raw.kill(reason),
+      ...(raw.killAsync ? { killAsync: (graceMs?: number, reason?: string) => raw.killAsync!(graceMs, reason) } : {}),
+      ...(raw.steer ? { steer: (message: string) => raw.steer!(message) } : {}),
+      detach: () => {},
+    };
+    this.ownHandle(run, handle);
+    this.deps.tailer.track(run.id);
+    raw.bindEvents?.(this.rpcSink(run));
+    entry.sink = this.completionSink(run, handle);
   }
 }

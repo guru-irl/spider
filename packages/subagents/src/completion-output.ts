@@ -1,4 +1,5 @@
 import type { Db } from "@spider/db-core";
+import type { RunStatus } from "./run-store";
 
 export interface CompletionSignal {
   done: boolean;
@@ -39,6 +40,43 @@ export function genuineCompletion(db: Db, runId: string): CompletionSignal {
   return unfinished ? { done: false, result: "", reason: NO_DELIVERABLE_RESULT } : { done: false, result: "" };
 }
 
+/** Count persisted and gap-buffered steer outcomes together; observed delivery cannot be downgraded. */
+export function summarizeCompletionEvents(db: Db, runId: string, buffered: ReadonlyArray<Record<string, any>> = []): { steerSummary: string; eventsLost: number } {
+  const events = db.prepare("SELECT id,type,payload FROM run_events WHERE run_id=? AND type IN ('steer_delivery','steer','warning') ORDER BY id").all(runId) as Array<{ id: number; type: string; payload: string }>;
+  let eventsLost = 0;
+  const deliveries = new Map<string, string>();
+  const record = (type: string, payload: Record<string, any>, fallbackKey: string) => {
+    if (type === "warning") {
+      if (typeof payload.eventsLost === "number") eventsLost += payload.eventsLost;
+      return;
+    }
+    if (type !== "steer_delivery" && type !== "steer") return;
+    const delivery = payload.delivery === "broker-accepted" || (payload.transport === "intercom" && payload.delivered === true) ? "accepted but not confirmed"
+      : payload.delivered === true ? "delivered"
+      : payload.delivery === "no reply yet, delivery unknown" ? payload.delivery
+      : payload.delivery === "refused" || (payload.accepted === false && !payload.childAccepted) ? "refused"
+      : payload.delivered === false || payload.accepted || payload.childAccepted ? "accepted but not confirmed" : undefined;
+    if (delivery) {
+      const key = payload.requestId ?? fallbackKey;
+      // The tool can finish after a delivery event. Acceptance cannot erase proof.
+      if (deliveries.get(key) !== "delivered") deliveries.set(key, delivery);
+    }
+  };
+  for (const event of events) {
+    try { record(event.type, JSON.parse(event.payload), `${event.type}-${event.id}`); }
+    catch { /* malformed diagnostics do not change the outcome */ }
+  }
+  for (const [index, event] of buffered.entries()) {
+    try { record(event.type, event, `${event.type}-buffered-${index}`); }
+    catch { /* malformed diagnostics do not change the outcome */ }
+  }
+  const steerSummary = ["delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"].map(delivery => {
+    const count = [...deliveries.values()].filter(value => value === delivery).length;
+    return count ? `${count} steer(s) ${delivery}.` : "";
+  }).filter(Boolean).join("\n");
+  return { steerSummary, eventsLost };
+}
+
 /** Canonical finalized result wins over progress events, including for failed runs. */
 export function latestRunOutput(db: Db, runId: string, fallback?: string): string {
   const row = db.prepare("SELECT result FROM runs WHERE id=?").get(runId) as { result: string | null } | undefined;
@@ -47,4 +85,40 @@ export function latestRunOutput(db: Db, runId: string, fallback?: string): strin
   const completion = genuineCompletion(db, runId);
   if (completion.done) return completion.result;
   return (fallback ?? completion.reason ?? "").trim();
+}
+
+/** A missing/blank result: no deliverable, not even an empty-but-intentional string. */
+function isBlankResult(result: string | null | undefined): boolean {
+  return result == null || result.trim().length === 0;
+}
+
+/**
+ * Decide a child's terminal status + result from its raw exit outcome.
+ *
+ * The production spawner (`spawn-default.ts`) NEVER resolves `wait()` with a `result` —
+ * only test/fake spawners do. So the real deliverable must come from `run_events`
+ * (`genuineCompletion`, sourced from the child's own `message`/`escalation` events), not
+ * from `waitResult`. A clean exit code is necessary but NOT sufficient for success: a
+ * child that escalates/blocks and then exits 0 without ever producing a deliverable must
+ * not be recorded "done" — that hides the escalation from anything keying on status alone.
+ *
+ * `waitResult`, when a spawner does supply one (tests, or a future spawner), is honored
+ * as-is — it is an explicit, non-blank claim of a result and takes precedence.
+ *
+ * A single function so BOTH call sites (the sync runForeground path and the async
+ * runAsync parent-finalizes path) apply the same rule via `Runner.finalize` — fixing
+ * only one is a half-fix.
+ */
+export function decideOutcome(db: Db, runId: string, exitCode: number, waitResult: string | null | undefined): { status: RunStatus; result?: string } {
+  if (!isBlankResult(waitResult)) {
+    return { status: exitCode === 0 ? "done" : "failed", result: waitResult ?? undefined };
+  }
+  const completion = genuineCompletion(db, runId);
+  if (exitCode !== 0) {
+    const detail = completion.done ? completion.result : completion.reason;
+    return { status: "failed", result: `Child process exited with code ${exitCode}.${detail ? `\n\n${detail}` : ""}` };
+  }
+  return completion.done
+    ? { status: "done", result: completion.result }
+    : { status: "failed", result: completion.reason ?? NO_DELIVERABLE_RESULT };
 }

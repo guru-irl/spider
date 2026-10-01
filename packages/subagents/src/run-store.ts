@@ -108,8 +108,8 @@ export class RunStore {
       });
   }
 
-  finish(id: string, patch: { status: RunStatus; result?: string }, opts: { removeRoute?: boolean } = {}): void {
-    this.db
+  finish(id: string, patch: { status: RunStatus; result?: string }, opts: { removeRoute?: boolean } = {}): boolean {
+    const changed = this.db
       .prepare(
         `UPDATE runs SET
            status = @status,
@@ -117,8 +117,9 @@ export class RunStore {
            result = COALESCE(@result, result)
          WHERE id = @id AND status IN ('queued', 'running', 'paused')`
       )
-      .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null });
+      .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null }).changes;
     if (opts.removeRoute !== false && ["done", "failed", "cancelled"].includes(patch.status)) this.db.afterCommit(() => this.removeRoute(id));
+    return changed === 1;
   }
 
   setLaunch(id: string, launch: { childMode: "rpc" | "print"; intercomSession?: string }): void {

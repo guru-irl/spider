@@ -15,13 +15,37 @@ interface HostPi {
   registerShortcut?(key: string, opts: { description?: string; handler: (ctx: unknown) => void }): void;
   registerCommand?(name: string, def: { description?: string; handler: (ctx?: unknown) => void }): void;
 }
-interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean }
+interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean; registration?: AgentsUIRegistration }
 
 const WIDGET = "spider-agents";
 
-// Register the alt+shift+up shortcut and /agents command only ONCE per process.
-let registered = false;
-let current: { openOverlay: () => void | Promise<void> } | undefined;
+export interface AgentsUIRegistration {
+  activate(openOverlay: () => void | Promise<void>): () => void;
+}
+
+/** Call once per extension factory, not per module or session_start. */
+export function registerAgentsUI(pi: HostPi): AgentsUIRegistration {
+  let current: (() => void | Promise<void>) | undefined;
+  const open = () => { void current?.(); };
+  // Command first: a shortcut failure must not cost the user /agents.
+  pi.registerCommand?.("agents", {
+    description: "Open the spider agents selector",
+    handler: open,
+  });
+  try {
+    // Unclaimed by pi's built-in keymap (unlike ctrl+g or ctrl+up).
+    pi.registerShortcut?.("alt+shift+up", {
+      description: "Open the spider agents selector",
+      handler: open,
+    });
+  } catch { /* shortcut is a convenience; /agents already works */ }
+  return {
+    activate(openOverlay) {
+      current = openOverlay;
+      return () => { if (current === openOverlay) current = undefined; };
+    },
+  };
+}
 
 /** Wall-clock ticker that repaints via the given `tui` while any agent runs. Returns a
  *  disposer. This is the ONLY reliable animation driver: ctx.ui has no requestRender;
@@ -171,39 +195,14 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     );
   };
 
-  current = { openOverlay };
-
-  // Shortcut choice is constrained by pi's built-ins: ctrl+g is the external-editor binding,
-  // and BOTH ctrl+up and ctrl+shift+up belong to tui.altScreen.previousPrompt (registering
-  // over them makes pi report an extension shortcut conflict and silently steal the key).
-  // alt+shift+up is unclaimed across pi's whole keymap and is option+shift+up on macOS.
-  // Note alt+up alone is taken by app.message.dequeue, so the shift is load-bearing.
-  // Plus a rebind-safe /agents slash command fallback. Register both ONCE per process.
-  //
-  // Order matters: the COMMAND goes first. The caller wraps this mount in a
-  // best-effort try/catch, so anything that throws here is swallowed silently and
-  // costs the user every registration after it. The shortcut is the more fragile of
-  // the two (host may not implement it), so it must never be able to take /agents
-  // down with it — that combination is exactly how /agents went missing.
-  if (!registered) {
-    registered = true;
-    pi.registerCommand?.("agents", {
-      description: "Open the spider agents selector",
-      handler: () => { void current?.openOverlay(); },
-    });
-    try {
-      pi.registerShortcut?.("alt+shift+up", {
-        description: "Open the spider agents selector",
-        handler: () => { void current?.openOverlay(); },
-      });
-    } catch { /* shortcut is a convenience; /agents already works */ }
-  }
+  const registration = deps.registration ?? registerAgentsUI(pi);
+  const deactivate = registration.activate(openOverlay);
 
   const dispose = function dispose() {
     offChange();
     store.stop();
     if (mounted) { ctx.ui.setWidget(WIDGET, undefined); mounted = false; }
-    if (current?.openOverlay === openOverlay) current = undefined;
+    deactivate();
   };
   // Testability hook: expose openOverlay on the disposer (non-breaking — callers still call dispose()).
   (dispose as unknown as { openOverlay: () => void | Promise<void> }).openOverlay = openOverlay;

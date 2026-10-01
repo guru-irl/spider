@@ -589,9 +589,10 @@ describe("F2 \u2014 doctor's receipt fallback and pending counts survive a resol
     const a = await freshHost(root, cwd, "F2 probe seed message");
     await a.runner.emit({ type: "session_shutdown", reason: "quit" });
 
-    // A doctor invocation with NO active session id: HostOrganismRuntime.resolve()
-    // throws ("Organism needs an active pi session") \u2014 the P12/F2 scenario.
-    const ctx = buildActionCtx(a.piApi as never, { action: "control", command: "doctor" } as never, "", cwd);
+    // Shutdown clears action closures. Use a fresh activation for this doctor
+    // invocation, but still supply NO active session id: the P12/F2 scenario.
+    const b = await freshHost(root, cwd, "F2 post-shutdown probe");
+    const ctx = buildActionCtx(b.piApi as never, { action: "control", command: "doctor" } as never, "", cwd);
     handles.push(ctx.db, ctx.repoDb, ctx.globalDb);
     const res = await dispatch({ action: "control", command: "doctor" } as never, ctx) as { ok: boolean; lines: string[] };
     const text = res.lines.join("\n");

@@ -216,8 +216,37 @@ action and show its result.
 | `/memory` | Browse active memory. |
 | `/insights` | The learning graph of skills and memories. |
 | `/learn <note>` | Distill a skill from the current conversation. |
-| `/doctor` | A health check of the install. |
+| `/doctor` | A health check and the loaded bundle identity. |
 | `/stats` | Token savings and row counts. |
+
+### Doctor: loaded versus installed bundle
+
+`/doctor` and `spider control command:"doctor"` show the commit (including
+`-dirty` when applicable), ISO build time, and version embedded in the code
+this session loaded. Doctor reads only the header of that same bundle file
+on disk, without importing or executing it again.
+
+- `bundle: current`: the loaded and installed build identities match.
+- `bundle: RELOAD NEEDED, /reload to load it`: the file has changed and the
+  loaded URL has the regenerated shim's `?build=` query. The verdict comes first.
+- `bundle: RESTART NEEDED, restart pi to load it`: an old shim, direct package,
+  or fallback load has no query, so `/reload` cannot load the new bundle.
+- In a child, the remedy is that the next dispatched subagent loads the new bundle.
+- Without the query, doctor hints that linked checkouts need `npm run link`,
+  then a one-time pi restart.
+- `bundle: unreadable` or `build marker unavailable`: doctor cannot
+  verify the installed build and does not claim it matches.
+
+These notes do not change doctor's health status. Updating or rebuilding does
+not reload existing sessions. With a current generated stable or dev shim,
+wait for running work to finish before `/reload`, or restart pi. Directly loaded
+packages need a restart because their module URL remains cached. Regenerate
+older shims with the appropriate link command, then restart pi once. Node retains old module
+instances until the process exits; see the README for shutdown cleanup limits.
+Each watch rebuild has a new build time. Dirty counts tracked changes only.
+Builds without their own git checkout use commit `unknown`; unbundled source
+development reports unknown metadata. The package version alone does not
+identify a build.
 
 ## Recommended global setup
 
@@ -235,7 +264,8 @@ Set spider up once for a stable global install.
 
   After linking, run `/reload` in an interactive pi or relaunch. Use
   `npm run unlink` to remove the shim. (For working on spider itself against a
-  live tree, use `npm run dev:link` instead, which hot-reloads on rebuild.)
+  live tree, use `npm run dev:link` instead, then `/reload` after a completed
+  watch rebuild. Both shims use native import with an mtime-and-size cache key.)
 
 - **Let spider manage its `AGENTS.md` block.** Spider writes and updates a block
   in `~/.pi/agent/AGENTS.md` between `<!-- spider:start -->` and

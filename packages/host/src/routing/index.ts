@@ -14,6 +14,7 @@ export interface RoutingConfig {
 }
 
 export interface RoutingDeps {
+  toolErrorOwner?: object;
   db: Db;
   getSessionId: () => string;
   getCwd: () => string;
@@ -58,7 +59,7 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
     // (consumeToolCallError deletes on read): does not fire again for the same call,
     // and never fires at all for the ordinary (unmarked) case, which keeps falling
     // through to the unchanged isExempt branch immediately below.
-    if (consumeToolCallError(event?.toolCallId)) {
+    if (consumeToolCallError(event?.toolCallId, deps.toolErrorOwner)) {
       return { isError: true, content: event.content, details: event.details };
     }
     if (!tool || isExempt(tool)) return;

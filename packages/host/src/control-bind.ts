@@ -1,7 +1,6 @@
 // packages/host/src/control-bind.ts
 import type { Db } from "@spider/db-core";
 import { bindSession, unbindSession } from "@spider/db-core";
-import { registerAction } from "./dispatch";
 
 export interface BindResult {
   ok: boolean;

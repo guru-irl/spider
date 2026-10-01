@@ -46,7 +46,55 @@ first release ships, install straight from git — pi clones the repo, runs
 pi install git:github.com/guru-irl/spider
 ```
 
-Then run `/reload` in an interactive pi, or relaunch it. Verify with `/doctor`.
+Relaunch pi after installing or updating a directly loaded package. Its bundle
+can remain in Node's module cache after `/reload`. The linked shims described
+below support in-process bundle reloads. Verify with `/doctor`.
+
+### Check the loaded bundle
+
+Run `/doctor` or `spider control command:"doctor"`. The `bundle` line shows
+this session's loaded commit, dirty flag, build time, and package version.
+`current` means the bundle at the loaded file's location still has the same
+build identity. After an update or rebuild, doctor puts the remedy first:
+`RELOAD NEEDED, /reload to load it` only when its loaded URL has the regenerated
+shim's `?build=` query. Old shims, direct packages, and fallback loads say
+`RESTART NEEDED, restart pi to load it`. In a child, it says the next dispatched
+subagent will load the new bundle instead. Outside child mode, without the query,
+doctor also hints that a linked checkout needs `npm run link`, then a one-time pi restart. This is
+informational and does not fail the health check. An unreadable file or missing
+marker is reported without claiming it is current.
+
+Updating the file does not update code already loaded in a running session.
+With a current linked shim, reload when running subagents have finished, or
+restart pi. Direct package loads require a restart. Each built bundle contains
+a greppable `SPIDER_BUILD_ID=<sha>[-dirty]@<ISO timestamp> v<version>` header.
+Every watch rebuild captures a fresh time. Dirty means tracked changes only;
+untracked local state does not affect it. Builds without git, or without their
+own checkout root, use `unknown` for the commit. Unbundled source development
+reports unknown build metadata.
+
+Each `/reload` of a rebuilt bundle keeps the previous module instance in memory
+until pi exits. A fixture measurement recorded about **1.5 MiB heap and 3 MiB RSS
+per rebuilt reload** for the 0.56 MiB bundle with no embedder loaded, plus anything
+an old instance's module-scope caches still hold. The embedder is process-wide
+and loaded once on first use. Session switches (`/new`, `/resume`, `/fork`) and
+rebuilt reloads reuse the same model, keyed by a versioned global symbol. An
+unavailable result (both providers fail) is cached process-wide for **10 minutes**;
+the first call after that cooldown retries initialization. Rejected initialization
+promises are cleared immediately, so the next call can retry. Each activation
+dispatches through its own action closures, using the global registry only for
+externally registered actions that it does not own. On `session_shutdown`, spider
+releases that activation's action closures and error marks, agents UI target,
+organism/routing runtime references and DB handles without clearing another live
+activation's host state. Child teardown is unchanged: any session shutdown stops
+all registered subagent coordinators in that module, including those used by
+other live activations, with their tailers/listeners. Organism shutdown work is
+awaited.
+This is not cancellation of every in-flight operation: foreground chains and
+pending intercom calls are not tied to shutdown, and some action/UI DB handles
+lack an explicit close path. The shared model is intentionally retained until
+process exit; Fastembed has no public model disposer. Finish running work before reloading; restart pi after many rebuilt reloads or when
+complete process-level cleanup is needed.
 
 Pin a ref if you want a fixed version, and update by re-installing at a new one
 (substitute a real release tag for `<tag>` once one exists — none does yet; the
@@ -81,17 +129,51 @@ npm run dev:link  # hot-reload shim -> spider-dev.ts, alongside `npm run dev`
 
 Pick one; the two scripts remove each other to avoid a double load.
 
-- `npm run link` writes a cached-import shim pointing at this repo's built
+- `npm run link` writes the stable shim pointing at this repo's built
   `dist/extension.js`. Remove it with `npm run unlink`.
-- `npm run dev:link` writes a cache-busting shim so `/reload` always runs the
-  latest `npm run dev` (vite watch) output. Remove it with `npm run dev:unlink`.
+- `npm run dev:link` writes the dev shim for `npm run dev` (vite watch).
+  Remove it with `npm run dev:unlink`.
 
-After linking, run `/reload` in an interactive pi or relaunch.
+Both shims use Node's native import in the main context via `runInThisContext` with
+`USE_MAIN_CONTEXT_DEFAULT_LOADER`, bypassing jiti's dynamic-import rewrite.
+The URL cache key uses the bundle's mtime and size: `/reload` loads a changed
+bundle after its build finishes, but an unchanged file reuses its module.
+This Node API is experimental; the shim suppresses only its specific loader
+ExperimentalWarning during synchronous compilation and native-import calls.
+If the VM loader constant is unavailable, compilation throws, or native import
+fails with an allowlisted loader/resolution error code, the shim falls back to
+plain `import(bundle)`; rebuilt bundles then require a pi restart, not `/reload`.
+Errors without an allowlisted loader code are rethrown without retry.
+The code allowlist does not identify the load phase: the bundle must link
+natively, with no top-level await of optional modules. Keep its top level free
+of resource initialization; `npm run build` verifies a native import without
+activating the extension. If fallback also fails, the visible message names
+both failures and an `AggregateError` retains both original errors. A plain
+dynamic import, even with a query string, does not reliably reload through pi's
+jiti loader.
+Regenerate older shims by running the link command again, then restart pi once. Do not load the package directly alongside a shim.
+
+The fixture probes `node scripts/probe-reload.mjs` and
+`node scripts/probe-build-watch.mjs` exercise pi's real loaders and
+two Vite watch builds. They use only scratch bundles and a fixture agent
+directory under `.spider/scratch/build-id/`, never the real pi extension directory.
+Both probes also run in the test suite. The reload probe covers both the SDK
+entry's `alias` configuration and `dist/bundle/index.js`'s CLI configuration
+(`virtualModules`, `tryNative:false`), using the same worktree-local pi package.
 
 The stable shim points at a **fixed path**, so if you move the clone, re-run
 `npm run link`. A source-linked checkout updates by pulling and rebuilding in
 that directory — `pi update` manages installed packages, not a linked working
 tree.
+
+### Contributor notes
+
+The process-wide embedder slot also retains the adapter object from whichever
+bundle initialized it first. A rebuilt reload does not replace that adapter, so
+changes to `packages/memory/src/embeddings/embedder.ts` need a pi restart to take
+effect once the model is loaded, even with `dev:link`. Bump the versioned global
+symbol key when changing the adapter or slot contract incompatibly. A key bump
+can retain both models until process exit; restart pi for complete cleanup.
 
 ## Quickstart
 
@@ -178,8 +260,8 @@ Use `/agents` or `alt+shift+up` to select a run from the footer. With `ui.footer
 
 `control models set <role> <model>` writes a global role default to the spider global `config.json` (`~/.pi/agent/spider/config.json` unless `SPIDER_GLOBAL_ROOT` is set). The current worktree's `.spider/config.json` can override each role independently. Resolution is explicit model, local role override, global role default, then parent model, including pipeline stages. A global set reports the worktree-local value and file if that role is shadowed. `control models clear <role>` removes only that role's local override in the current worktree; it does not change the global value or other local roles.
 
-Exiting a session tears down its subagents: `SIGTERM`, then `SIGKILL` after a
-short grace period. Runs orphaned by a hard kill (where the host died without
+Exiting any session tears down all subagents registered in that module, not just
+that activation's children: `SIGTERM`, then `SIGKILL` after a short grace period. Runs orphaned by a hard kill (where the host died without
 running shutdown) are reaped at the next `session_start` — but only after
 checking that the recorded pid still looks like a pi subagent, so pid reuse
 cannot make the reaper signal an unrelated process, and only when the owning

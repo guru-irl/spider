@@ -52,7 +52,8 @@ This package does not own:
 | `parallel.ts` | `runParallel()`: expands a task list (repeating a task `count` times) and runs the expansion either as a concurrency-limited foreground pool or as fully backgrounded spawns. |
 | `pipeline.ts` | `PipelineCoordinator`: a multi-stage pipeline that advances itself when a stage's run reaches a terminal status on the event bus. |
 | `runner.ts` | `Runner`: creates a run row, spawns the child through an injected `Spawner`, and finalizes the row on exit, for both foreground and background runs. |
-| `coordinators.ts` | A per-session registry of the event tailer and any active pipelines, with teardown on session shutdown. |
+| `coordinators.ts` | A per-session registry of the event tailer and any active pipelines, with teardown on session shutdown and `detachForReload` for `/reload`. |
+| `child-registry.ts` | The process-wide, versioned (`Symbol.for("spider.childRegistry.v1")`) registry of live child handles that lets background subagents outlive a `/reload`: detach, adopt (same session only, once), exactly-once completion claim, unadopted-child TTL, and disposal of one session's children in every registry version at quit. Every operation is scoped to a session (`disposeSession(sessionId, reason)` is the version-1 contract). |
 | `run-store.ts` | `RunStore`: reads and writes the `runs` table (create, start, progress, finish, get, list, link to a parent run). Re-exports `deriveRunName`. |
 | `run-events.ts` | `emitIntent`, `emitToolResult`, `emitStatus`, `emitHandoff`, `emitMessage`, `emitLog`: typed helpers that append rows to `run_events`. |
 | `event-tailer.ts` | `RunEventTailer`: polls `run_events` for the run ids it is tracking and republishes them on the in-process event bus, for the live UI feed. |
@@ -147,12 +148,12 @@ closed with a truthful lost/orphan reason when it cannot confirm the process.
 
 A returned background dispatch is never tied to the parent turn's abort signal,
 in either mode. All tool dispatches are asynchronous; there is no foreground
-abort-signal subscription. Shutdown cancels every registered child, including chain steps
-and pipeline stages, and pending intercom calls. Cancellation reports retain the
+abort-signal subscription. Quit, `/new`, `/resume` and `/fork` cancel every child of the ending session, including chain steps
+and pipeline stages, and its pending intercom calls; `/reload` keeps background children running and stops chain steps. Cancellation reports retain the
 actual cause. Own-session kill completion is already reported by the kill result
 and sends no extra notification unless a steer is accepted but not confirmed or
 has no reply yet, delivery unknown. Cancellation is persisted before termination so the child's shutdown reporter cannot replace it. A failed owned kill restores the previous row and its route only while the child has not reported exit and the row still holds that kill's cancellation. A late group-termination failure never resurrects a dead run. Shutdown notifications use `nextTurn` without
-triggering a model turn, including during reload. A cancelled chain or pipeline
+triggering a model turn, including during reload. The reason text and the notifier's check both come from `shutdown-reason.ts`, so they cannot drift apart. A cancelled chain or pipeline
 does not launch another stage.
 
 Running children can be steered by run ID in their owner session. RPC success

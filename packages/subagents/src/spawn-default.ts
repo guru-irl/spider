@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import type { Spawner, ChildHandle } from "./runner";
 import { killProcessGroup, isProcessAlive, isProcessGroupAlive } from "./kill-process";
-import { ownRpcChild } from "./rpc-child";
+import { ownRpcChild, createEventGate } from "./rpc-child";
 import { processStartTime, checkProcessIdentity } from "./process-identity";
 
 const isWin = process.platform === "win32";
@@ -18,9 +18,14 @@ export const defaultSpawner: Spawner = (spec) => {
     // the rest. Mirrors packages/context/src/executor.ts.
     detached: !isWin,
   });
+  // Warnings go through a rebindable gate, never straight to spec.onRpcEvent: after a /reload that
+  // callback belongs to the previous activation (its Runner, db and pi).
+  let rpc: ReturnType<typeof ownRpcChild> | undefined;
+  const printGate = createEventGate(spec.onRpcEvent);
+  const warn = (event: Record<string, any>) => { try { (rpc ? rpc.report : printGate.report)(event); } catch { /* diagnostics must not leak a spawned child */ } };
   const startTime = child.pid === undefined ? null : processStartTime(child.pid);
   if (child.pid !== undefined && startTime === null) {
-    try { spec.onRpcEvent?.({ type: "warning", message: "Process start identity unavailable: spawn-time capture returned no start time (unsupported platform or OS probe failure). Owned handle kill and shutdown remain available; pid-only signalling requires identity confirmation." }); } catch { /* diagnostics must not leak a spawned child */ }
+    warn({ type: "warning", message: "Process start identity unavailable: spawn-time capture returned no start time (unsupported platform or OS probe failure). Owned handle kill and shutdown remain available; pid-only signalling requires identity confirmation." });
   }
   // Attach 'exit'/'error' listeners EAGERLY (not lazily in wait()): runner.runAsync
   // detaches without ever calling wait(), so a lazy 'error' listener would leave an
@@ -33,7 +38,7 @@ export const defaultSpawner: Spawner = (spec) => {
     settle({ exitCode: failure ? code || 1 : code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1), ...(failure ? { result: failure } : {}) });
   });
   child.on("error", (error) => settle({ exitCode: 1, ...(spec.childMode === "rpc" ? { result: `Child launch failed: ${error.message}` } : {}) }));
-  const rpc = spec.childMode === "rpc" ? ownRpcChild(child, spec.prompt ?? "", spec.onRpcEvent) : undefined;
+  rpc = spec.childMode === "rpc" ? ownRpcChild(child, spec.prompt ?? "", spec.onRpcEvent) : undefined;
   const killAsync = async (graceMs?: number) => {
     if (child.pid === undefined) return;
     if (rpc) {
@@ -53,6 +58,9 @@ export const defaultSpawner: Spawner = (spec) => {
   };
   return {
     ...(rpc ? { steer: rpc.steer } : {}),
+    // Both modes rebind: print children only emit spawner warnings, but those must not reach a dead sink either.
+    bindEvents: rpc ? rpc.bindEvents : printGate.bind,
+    unbindEvents: rpc ? rpc.unbindEvents : printGate.unbind,
     pid: child.pid,
     startTime,
     wait() { return exit; },
@@ -60,7 +68,7 @@ export const defaultSpawner: Spawner = (spec) => {
       if (child.pid === undefined) return;
       // Fire-and-forget: kill() is sync by contract (session_shutdown calls it), but
       // the SIGTERM→SIGKILL escalation is inherently async.
-      void killAsync().catch(error => { try { spec.onRpcEvent?.({ type: "warning", message: `Child termination unconfirmed: ${String(error)}` }); } catch {} });
+      void killAsync().catch(error => warn({ type: "warning", message: `Child termination unconfirmed: ${String(error)}` }));
     },
     killAsync(graceMs?: number) {
       if (child.pid === undefined) return Promise.resolve();

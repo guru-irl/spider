@@ -123,11 +123,11 @@ export function openDbReadOnly(dbPath: string): Db | undefined {
   };
 }
 
-export function openDb(dbPath: string): Db {
+export function openDb(dbPath: string, opts: { fileMustExist?: boolean } = {}): Db {
   assertTestDbPath(dbPath);
-  mkdirSync(dirname(dbPath), { recursive: true });
+  if (!opts.fileMustExist) mkdirSync(dirname(dbPath), { recursive: true });
   const Database = loadDatabase();
-  const raw = new Database(dbPath, { timeout: BUSY_TIMEOUT_MS });
+  const raw = new Database(dbPath, { timeout: BUSY_TIMEOUT_MS, fileMustExist: opts.fileMustExist ?? false });
   raw.pragma("journal_mode = WAL");
   raw.pragma("synchronous = NORMAL");
   raw.pragma("foreign_keys = ON");

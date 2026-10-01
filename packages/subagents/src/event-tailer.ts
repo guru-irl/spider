@@ -6,10 +6,14 @@ export class RunEventTailer {
   private lastId = 0;
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(private db: Db, private opts: { intervalMs?: number } = {}) {
+  /** `sinceId` resumes a stopped tailer's position (reload), so events written in the gap replay. */
+  constructor(private db: Db, private opts: { intervalMs?: number; sinceId?: number } = {}) {
     const row = db.prepare(`SELECT COALESCE(MAX(id),0) AS m FROM run_events`).get() as any;
-    this.lastId = row.m ?? 0;
+    this.lastId = opts.sinceId !== undefined ? Math.min(opts.sinceId, row.m ?? 0) : row.m ?? 0;
   }
+
+  /** Id of the last event this tailer has read. */
+  get cursor(): number { return this.lastId; }
 
   track(runId: string): void {
     this.tracked.add(runId);

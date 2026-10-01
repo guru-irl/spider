@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { bus } from "@spider/db-core";
+import { appendRunEvent, bus } from "@spider/db-core";
 import type { Db, RunEvent } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
 import { emitHandoff } from "./run-events";
@@ -18,6 +18,9 @@ import type { PipelineStage, RunPipelineArgs } from "./schemas";
  * `wakeOn:"accepted"` (acceptance ledger, Phase 8) are deferred — the single-worker
  * path is implemented; `wakeOn:"accepted"` is treated as `"done"`.
  */
+/** Shown to the parent in the stage's completion notice (see makeAsyncNotifier). */
+export const PIPELINE_RELOAD_NOTE = "Pipeline stopped after this stage because the extension reloaded; the remaining stages were not started. Re-dispatch them to continue.";
+
 export class PipelineCoordinator {
   private off: (() => void) | null = null;
   private stageIndex = 0;
@@ -72,4 +75,17 @@ export class PipelineCoordinator {
   }
 
   dispose(): void { this.off?.(); this.off = null; }
+
+  /** Reload ends coordination (the coordinator is activation-local). The in-flight stage child
+   *  keeps running and notifies, but later stages will not start: say so on its run. */
+  abandonForReload(): void {
+    const stage = this.lastRun;
+    if (this.off && stage && this.stageIndex + 1 < this.stages.length) {
+      try {
+        appendRunEvent(this.deps.db, { runId: stage.id, sessionId: this.deps.sessionId, ts: Date.now(), type: "warning",
+          summary: PIPELINE_RELOAD_NOTE, payload: { reload: true, message: PIPELINE_RELOAD_NOTE } });
+      } catch { /* best-effort diagnostic */ }
+    }
+    this.dispose();
+  }
 }

@@ -35,6 +35,68 @@ export function attachRpcReader(stream: NodeJS.ReadableStream, onEvent: (event: 
   stream.on("end", () => { buffer += decoder.end(); if (buffer) line(buffer); });
 }
 
+/** Event types a sink persists (see Runner.rpcSink). Losing one is a loss of run history. */
+export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery"];
+/** Streaming partials: each carries the whole message so far and a full message event follows. Never buffered. */
+const PARTIAL_EVENT_TYPES: readonly string[] = ["message_update", "tool_execution_update"];
+
+/** Bounds on what is held while the sink is unbound (a reload gap is seconds long). Non-persisted and
+ *  persisted events have separate budgets, so the former can never push out the latter. */
+export const MAX_BUFFERED_EVENTS: number = 500;
+export const MAX_BUFFERED_BYTES: number = 1024 * 1024;
+export const MAX_BUFFERED_PERSISTED: number = 1000;
+export const MAX_BUFFERED_PERSISTED_BYTES: number = 4 * 1024 * 1024;
+
+interface Buffered { seq: number; event: Record<string, any>; bytes: number }
+
+/**
+ * Routes events to a sink that can be unbound across a /reload. While unbound, events queue (bounded,
+ * partials skipped) and replay in order to the next sink. If anything the sink would have persisted
+ * had to be dropped, the replay starts with a warning carrying `eventsLost`, which the runner turns
+ * into a note on the run's final result, so the loss is never silent.
+ */
+export interface EventGate {
+  report(event: Record<string, any>): void;
+  unbind(): void;
+  bind(next: (event: Record<string, any>) => void): void;
+}
+
+export function createEventGate(initial?: (event: Record<string, any>) => void): EventGate {
+  let sink = initial, buffering = false, seq = 0;
+  const persisted: Buffered[] = [], other: Buffered[] = [];
+  let persistedBytes = 0, otherBytes = 0, lostPersisted = 0, droppedOther = 0;
+  const deliver = (event: Record<string, any>) => { try { sink?.(event); } catch { /* reporting cannot block pipe drainage */ } };
+  const sizeOf = (event: Record<string, any>) => { try { return JSON.stringify(event).length; } catch { return 0; } };
+  const report = (event: Record<string, any>) => {
+    if (!buffering) return deliver(event);
+    if (PARTIAL_EVENT_TYPES.includes(event.type)) return;
+    const isPersisted = PERSISTED_EVENT_TYPES.includes(event.type);
+    const queue = isPersisted ? persisted : other;
+    const item: Buffered = { seq: seq++, event, bytes: sizeOf(event) };
+    queue.push(item);
+    if (isPersisted) persistedBytes += item.bytes; else otherBytes += item.bytes;
+    const maxCount = isPersisted ? MAX_BUFFERED_PERSISTED : MAX_BUFFERED_EVENTS;
+    const maxBytes = isPersisted ? MAX_BUFFERED_PERSISTED_BYTES : MAX_BUFFERED_BYTES;
+    while (queue.length > maxCount || ((isPersisted ? persistedBytes : otherBytes) > maxBytes && queue.length > 0)) {
+      const evicted = queue.shift()!;
+      if (isPersisted) { persistedBytes -= evicted.bytes; lostPersisted++; } else { otherBytes -= evicted.bytes; droppedOther++; }
+    }
+  };
+  return {
+    report: report,
+    unbind(): void { buffering = true; sink = undefined; },
+    bind(next: (event: Record<string, any>) => void): void {
+      sink = next; buffering = false;
+      const replay = [...persisted, ...other].sort((a, b) => a.seq - b.seq);
+      persisted.length = 0; other.length = 0; persistedBytes = 0; otherBytes = 0;
+      if (lostPersisted) deliver({ type: "warning", eventsLost: lostPersisted, message: `Events lost during reload: ${lostPersisted} child event(s) did not fit the reload buffer and were dropped.` });
+      else if (droppedOther) deliver({ type: "warning", message: `Reload gap: ${droppedOther} non-persisted child event(s) were dropped from the reload buffer.` });
+      lostPersisted = 0; droppedOther = 0;
+      for (const { event } of replay) deliver(event);
+    },
+  };
+}
+
 export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (event: Record<string, any>) => void) {
   let closed = false, settled = false, stopping = false, discardAfterSettle = false;
   let steering: string[] = [], followUp: string[] = [];
@@ -44,7 +106,10 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   let activeSteer: string | undefined;
   let steerBusy = false;
   const waitingSteers: Array<{ message: string; finish: (ack: SteerAck) => void; timer: ReturnType<typeof setTimeout> }> = [];
-  const report = (event: Record<string, any>) => { try { onEvent?.(event); } catch { /* reporting cannot block pipe drainage */ } };
+  // The sink can be unbound across a /reload: events then queue (bounded) and replay in order
+  // to the next sink, while protocol handling below keeps running on the live pipes.
+  const gate = createEventGate(onEvent);
+  const report = gate.report;
   const deliveryAck = (p: Pending): SteerAck => ({ accepted: p.childAccepted === true || p.observed === true, delivered: p.observed === true,
     queued: !p.observed && p.queuedText !== undefined && steering.includes(p.queuedText),
     delivery: p.observed ? "delivered" : p.childAccepted ? "accepted but not confirmed" : "no reply yet, delivery unknown",
@@ -233,6 +298,10 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   };
   return {
     failureReason: (): string | undefined => failureReason,
+    /** Routes an event through the same gate as the child's own events (for the spawner's warnings). */
+    report: (event: Record<string, any>): void => gate.report(event),
+    unbindEvents: (): void => gate.unbind(),
+    bindEvents: (next: (event: Record<string, any>) => void): void => gate.bind(next),
     steer(message: string): Promise<SteerAck> {
       if (message.trimStart().startsWith("/")) return Promise.resolve(refused(message, "Steer text starting with '/' can be expanded by the child as a skill or prompt template, or rejected as an extension command; RPC steer has no literal-text option. Rephrase so it does not start with '/'."));
       if (steerBusy) return new Promise(finish => {

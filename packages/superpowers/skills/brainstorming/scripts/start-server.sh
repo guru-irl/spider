@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the brainstorm server and output connection info
-# Usage: start-server.sh [--project-dir <path>] [--port <port>] [--host <bind-host>] [--url-host <display-host>] [--foreground] [--background]
+# Usage: start-server.sh [--project-dir <path>] [--port <port>] [--host <host>] [--url-host <host>] [--idle-timeout-minutes <n>] [--open] [--foreground|--background]
 #
 # Starts server on a random high port, outputs JSON with URL.
 # Each session gets its own directory to avoid conflicts.
@@ -20,6 +20,10 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+usage() {
+  echo 'Usage: start-server.sh [--project-dir <path>] [--port <port>] [--host <host>] [--url-host <host>] [--idle-timeout-minutes <n>] [--open] [--foreground|--background]' >&2
+}
+
 # Parse arguments
 PROJECT_DIR=""
 FOREGROUND="false"
@@ -33,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --project-dir|--port|--host|--url-host|--idle-timeout-minutes)
       if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
         printf '{"error": "%s requires a value"}\n' "$1"
+        usage
         exit 1
       fi
       ;;
@@ -72,6 +77,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "{\"error\": \"Unknown argument: $1\"}"
+      usage
       exit 1
       ;;
   esac

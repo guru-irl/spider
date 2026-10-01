@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createServer } from "node:net";
@@ -22,6 +22,30 @@ function freshRoot(label: string): string {
   return root;
 }
 
+function stopSession(session: string, stopScript = path.join(brainstormScripts, "stop-server.sh")): string | undefined {
+  const state = path.join(session, "state");
+  const rawPid = fs.readFileSync(path.join(state, "server.pid"), "utf8").trim();
+  // Capture identity before stop-server.sh can remove its metadata.
+  const idFile = path.join(state, "server-instance-id");
+  const id = fs.existsSync(idFile) ? fs.readFileSync(idFile, "utf8").trim() : "";
+  const result = spawnSync("bash", [stopScript, session], { encoding: "utf8", timeout: 15000 });
+  if (!result.error && result.status === 0) return;
+
+  const pid = Number(rawPid);
+  const pgid = Number(spawnSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).stdout?.trim());
+  if (/^\d+$/.test(rawPid) && Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid && pid !== pgid
+    && Number.isSafeInteger(pgid) && pgid > 0 && /^[A-Za-z0-9_-]{32,64}$/.test(id)) {
+    const command = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    if (command.status === 0 && command.stdout.trim().split(/\s+/).includes(`--brainstorm-server-id=${id}`)) {
+      try {
+        process.kill(pid, 0);
+        process.kill(pid, "SIGKILL");
+      } catch { /* already stopped */ }
+    }
+  }
+  return `Failed to stop brainstorm server: ${result.error ?? ""} ${result.stdout} ${result.stderr}`;
+}
+
 afterEach(() => {
   const stopErrors: string[] = [];
   for (const root of roots.splice(0)) {
@@ -30,8 +54,8 @@ afterEach(() => {
         for (const name of fs.readdirSync(parent)) {
           const session = path.join(parent, name);
           if (fs.existsSync(path.join(session, "state/server.pid"))) {
-            const result = spawnSync("bash", [path.join(brainstormScripts, "stop-server.sh"), session], { encoding: "utf8" });
-            if (result.status !== 0) stopErrors.push(`Failed to stop brainstorm server: ${result.stdout} ${result.stderr}`);
+            const error = stopSession(session);
+            if (error) stopErrors.push(error);
           }
         }
       }
@@ -87,6 +111,79 @@ function renderFixture(): string {
 }
 
 describe("brainstorming companion scripts", () => {
+  it.each(["", "garbage", "0", "-1", String(process.pid),
+    spawnSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).stdout.trim(),
+    "999999999999999999999999999999"])("never signals unsafe PID file %j when stop fails", (contents) => {
+    const project = freshRoot("unsafe-pid");
+    const session = path.join(project, "session");
+    fs.mkdirSync(path.join(session, "state"), { recursive: true });
+    fs.writeFileSync(path.join(session, "state/server.pid"), contents);
+    const failingStop = path.join(project, "failed-stop.sh");
+    fs.writeFileSync(failingStop, "exit 1\n");
+    // Invalid signals are hazardous, so intercept only the signal boundary.
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    try {
+      expect(stopSession(session, failingStop)).toContain("Failed to stop");
+      expect(kill).not.toHaveBeenCalled();
+    } finally { kill.mockRestore(); }
+  });
+
+  it("does not signal a PID after a successful stop", () => {
+    const project = freshRoot("successful-stop");
+    const session = path.join(project, "session");
+    fs.mkdirSync(path.join(session, "state"), { recursive: true });
+    fs.writeFileSync(path.join(session, "state/server.pid"), "999999");
+    const successfulStop = path.join(project, "successful-stop.sh");
+    fs.writeFileSync(successfulStop, "exit 0\n");
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    try {
+      expect(stopSession(session, successfulStop)).toBeUndefined();
+      expect(kill).not.toHaveBeenCalled();
+    } finally { kill.mockRestore(); }
+  });
+
+  it.each([true, false])("only force-kills an identified live fixture after stop fails (identified=%s)", async (identified) => {
+    const project = freshRoot("failed-live-stop");
+    const session = path.join(project, "session");
+    const state = path.join(session, "state");
+    fs.mkdirSync(state, { recursive: true });
+    const id = "fixture_server_instance_1234567890";
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", `--brainstorm-server-id=${identified ? id : "other_instance"}`], { stdio: "ignore" });
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    fs.writeFileSync(path.join(state, "server.pid"), String(child.pid));
+    fs.writeFileSync(path.join(state, "server-instance-id"), id);
+    const failingStop = path.join(project, "failed-stop.sh");
+    fs.writeFileSync(failingStop, "exit 1\n");
+    const kill = vi.spyOn(process, "kill");
+    try {
+      expect(stopSession(session, failingStop)).toContain("Failed to stop");
+      if (identified) {
+        await exited;
+        expect(child.signalCode).toBe("SIGKILL");
+      } else {
+        expect(kill).not.toHaveBeenCalled();
+        expect(() => process.kill(child.pid!, 0)).not.toThrow();
+      }
+    } finally {
+      kill.mockRestore();
+      child.kill("SIGKILL");
+      await exited;
+    }
+  });
+
+  it("prints usage to stderr and exits 1 for an unknown argument", () => {
+    const project = freshRoot("unknown-arg");
+    const result = spawnSync("bash", [path.join(brainstormScripts, "start-server.sh"), "--unknown"], {
+      cwd: project, encoding: "utf8", timeout: 1200,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout).error).toContain("Unknown argument");
+    expect(result.stdout).not.toContain("Usage:");
+    expect(result.stderr).toContain("Usage: start-server.sh");
+  });
+
   it("rejects every value flag without its value instead of looping", () => {
     const project = freshRoot("args");
     for (const flag of ["--port", "--host", "--project-dir", "--url-host", "--idle-timeout-minutes"]) {
@@ -97,6 +194,7 @@ describe("brainstorming companion scripts", () => {
         expect(result.error, flag).toBeUndefined();
         expect(result.status, flag).toBe(1);
         expect(JSON.parse(result.stdout).error, flag).toContain(`${flag} requires a value`);
+        expect(result.stderr, flag).toContain("Usage: start-server.sh");
       }
     }
   });
@@ -205,7 +303,7 @@ describe("brainstorming companion scripts", () => {
     const project = freshRoot("brainstorm");
     const args = [path.join(brainstormScripts, "start-server.sh"), "--port", "0"];
     if (durable) args.push("--project-dir", project);
-    const result = spawnSync("bash", args, {
+    const result = spawnSync("bash", ["-c", 'umask 022; exec bash "$@"', "fixture", ...args], {
       cwd: project,
       encoding: "utf8",
       timeout: 15000,
@@ -222,6 +320,7 @@ describe("brainstorming companion scripts", () => {
     expect(info.screen_dir).toBe(path.join(session, "content"));
     expect(JSON.parse(fs.readFileSync(path.join(state, "server-info"), "utf8"))).toEqual(info);
     expect(fs.readFileSync(path.join(state, "server.log"), "utf8")).toContain('"type":"server-started"');
+    expect(fs.statSync(path.join(state, "server.log")).mode & 0o777).toBe(0o600);
     const response = await fetch(info.url);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("Brainstorm Companion");

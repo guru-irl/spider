@@ -161,7 +161,7 @@ Read from `packages/ui/src/index.ts`.
 
 This package has one workspace dependency, `@spider/models` (only for the `ModelEntry` and
 `Tier` types used to group the model catalog in `screens/models-model.ts`), and one peer
-dependency, `@earendil-works/pi-tui` (`>=0.80.0`), for width-safe string helpers
+dependency, `@earendil-works/pi-tui` (`>=0.87.0`), for width-safe string helpers
 (`truncateToWidth`, `visibleWidth`) and key matching (`Key`, `matchesKey`). `pi-tui` is a
 display-utility library, not the pi extension host: this package has no reference to pi's tool
 registration, hooks, or slash-command APIs.

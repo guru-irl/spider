@@ -38,6 +38,9 @@ jobs:
           node-version: '26.x'
           cache: npm
 
+      - name: Check lockfile registry
+        run: node scripts/check-lockfile-registry.mjs
+
       # `npm ci` runs the `prepare` script, which already builds. We still run an
       # explicit build step below so a build failure is reported as its own step
       # rather than being buried inside install output.

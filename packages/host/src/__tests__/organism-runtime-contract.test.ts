@@ -97,12 +97,11 @@ describe("organism's actual pi runtime contract", () => {
     addMemory(f.repoDb, "repo", { category: "convention", content: "Use docs/architecture.md for module boundaries." });
     addMemory(f.repoDb, "repo", { category: "insight", content: "Unreviewed candidate must not be injected.", status: "staged" });
     registerHooks(f.pi);
-    const result = await f.runner.emitBeforeAgentStart("continue", undefined, "Base system prompt", { cwd: f.cwd });
-    expect(result).toEqual(expect.objectContaining({
-      systemPrompt: expect.stringContaining("Base system prompt"),
-    }));
-    expect(result?.systemPrompt).toContain("Use docs/architecture.md for module boundaries.");
-    expect(result?.systemPrompt).not.toContain("Unreviewed candidate");
+    const result = await f.runner.emitBeforeAgentStart("continue", undefined, { customPrompt: "Base system prompt", cwd: f.cwd });
+    const prompt = result.systemPromptOptions.forceSystemPrompt;
+    expect(prompt).toContain("Base system prompt");
+    expect(prompt).toContain("Use docs/architecture.md for module boundaries.");
+    expect(prompt).not.toContain("Unreviewed candidate");
   });
 
   it("shutdown learns from real in-memory branch messages and persists pending proposals", async () => {

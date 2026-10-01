@@ -42,6 +42,7 @@
     "link": "node scripts/link.mjs",
     "unlink": "node scripts/link.mjs --unlink",
     "typecheck": "tsgo -p tsconfig.json",
+    "check:lockfile": "node scripts/check-lockfile-registry.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "node scripts/postinstall.mjs",
@@ -68,12 +69,13 @@
     "turndown": "^7.2.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.0",
-    "@earendil-works/pi-tui": ">=0.80.0"
+    "@earendil-works/pi-coding-agent": ">=0.87.0",
+    "@earendil-works/pi-tui": ">=0.87.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.85.1",
-    "@earendil-works/pi-tui": "^0.80.2",
+    "@earendil-works/pi-ai": "^0.87.0",
+    "@earendil-works/pi-coding-agent": "^0.87.0",
+    "@earendil-works/pi-tui": "^0.87.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.11",
     "@typescript/native-preview": "^7.0.0-dev.20260702.3",

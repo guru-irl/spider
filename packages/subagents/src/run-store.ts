@@ -17,6 +17,7 @@ export interface NewRun {
   model?: string;
   task?: string;
   thinking?: string;
+  hostPid?: number;
 }
 
 export interface RunRow {
@@ -56,6 +57,7 @@ function toRow(r: NewRun & { id: string; name: string; status: RunStatus }) {
     model: r.model ?? null,
     task: r.task ?? null,
     thinking: r.thinking ?? null,
+    host_pid: r.hostPid ?? null,
   };
 }
 
@@ -72,8 +74,8 @@ export class RunStore {
     const row = toRow({ ...r, id, name, status: "queued" });
     this.db
       .prepare(
-        `INSERT INTO runs (id, session_id, parent_run_id, agent, role, name, status, phase, model, task, thinking, step_count, token_count)
-         VALUES (@id, @session_id, @parent_run_id, @agent, @role, @name, @status, @phase, @model, @task, @thinking, 0, 0)`
+        `INSERT INTO runs (id, session_id, parent_run_id, agent, role, name, status, phase, model, task, thinking, host_pid, step_count, token_count)
+         VALUES (@id, @session_id, @parent_run_id, @agent, @role, @name, @status, @phase, @model, @task, @thinking, @host_pid, 0, 0)`
       )
       .run(row);
     return { id, name };
@@ -106,7 +108,7 @@ export class RunStore {
       });
   }
 
-  finish(id: string, patch: { status: RunStatus; result?: string }): void {
+  finish(id: string, patch: { status: RunStatus; result?: string }, opts: { removeRoute?: boolean } = {}): void {
     this.db
       .prepare(
         `UPDATE runs SET
@@ -116,7 +118,7 @@ export class RunStore {
          WHERE id = @id AND status IN ('queued', 'running', 'paused')`
       )
       .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null });
-    if (["done", "failed", "cancelled"].includes(patch.status)) this.removeRoute(id);
+    if (opts.removeRoute !== false && ["done", "failed", "cancelled"].includes(patch.status)) this.db.afterCommit(() => this.removeRoute(id));
   }
 
   setLaunch(id: string, launch: { childMode: "rpc" | "print"; intercomSession?: string }): void {
@@ -134,23 +136,26 @@ export class RunStore {
    *  kill racing a natural exit never rewrites the real outcome or fabricates a
    *  cancellation event. Returns whether this call changed the row. */
   cancel(id: string, reason?: string): boolean {
-    const result = this.db
-      .prepare(
-        `UPDATE runs SET status = 'cancelled', ended_at = @now, result = COALESCE(@reason, result)
-         WHERE id = @id AND status IN ('queued', 'running', 'paused')`
-      )
-      .run({ id, now: Date.now(), reason: reason ?? null });
-    if (result.changes === 0) return false;
-    this.removeRoute(id);
+    const changed = this.db.transaction(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE runs SET status = 'cancelled', ended_at = @now, result = COALESCE(@reason, result)
+           WHERE id = @id AND status IN ('queued', 'running', 'paused')`
+        )
+        .run({ id, now: Date.now(), reason: reason ?? null });
+      if (result.changes === 0) return false;
 
-    const row = this.get(id)!;
-    emitStatus(this.db, {
-      runId: id,
-      sessionId: row.session_id,
-      status: "cancelled",
-      summary: row.name ?? undefined,
-    });
-    return true;
+      const row = this.get(id)!;
+      emitStatus(this.db, {
+        runId: id,
+        sessionId: row.session_id,
+        status: "cancelled",
+        summary: row.name ?? undefined,
+      });
+      return true;
+    })();
+    if (changed) this.db.afterCommit(() => this.removeRoute(id));
+    return changed;
   }
 
   get(id: string): RunRow | undefined {

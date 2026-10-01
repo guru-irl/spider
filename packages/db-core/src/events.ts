@@ -40,7 +40,7 @@ export function appendRunEvent(db: Db, e: RunEvent): void {
       payload: e.payload === undefined ? null : JSON.stringify(e.payload),
     });
   });
-  bus.emit(e);
+  db.afterCommit(() => bus.emit(e));
 }
 
 // Routing/tracking event log (Phase 3 producer + tracking consumer)
@@ -102,14 +102,14 @@ export function appendEvent(db: Db, e: EventRow): void {
         payload: e.payload === undefined ? null : JSON.stringify(e.payload),
       })
   );
-  bus.emit({
+  db.afterCommit(() => bus.emit({
     sessionId: e.sessionId,
     ts: e.ts,
     type: e.phase === "before" ? "tool_intent" : "tool_result",
     tool: e.tool,
     summary: e.description ?? undefined,
     payload: e.payload,
-  });
+  }));
 }
 
 export function listEvents(

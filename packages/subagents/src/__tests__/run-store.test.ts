@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { bus, type Db } from "@spider/db-core";
+import { bus, openDbAt, type Db } from "@spider/db-core";
 import { AgentStore, type RunEvent, type RunRow as UiRunRow, type RunSource } from "@spider/ui";
 import { RunStore, deriveRunName } from "../run-store";
 import { freshDb } from "./helpers/testutil";
@@ -116,7 +116,8 @@ describe("RunStore", () => {
     const runs = new RunStore(db);
     const { id } = runs.create({ sessionId: "s1", agent: "worker", task: "t" });
     runs.start(id);
-    const agents = new AgentStore(runSource(db, "s1"));
+    const reader = openDbAt(db.raw.name, "project");
+    const agents = new AgentStore(runSource(reader, "s1"));
     agents.start();
 
     try {
@@ -133,6 +134,8 @@ describe("RunStore", () => {
       expect(agents.snapshot()[0].endedAt).toEqual(expect.any(Number));
     } finally {
       agents.stop();
+      reader.close();
+      db.close();
     }
   });
 

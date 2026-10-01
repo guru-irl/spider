@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildSync } from "esbuild";
-import { openDbAt, type Db } from "@spider/db-core";
+import { appendRunEvent, openDbAt, type Db } from "@spider/db-core";
 import { RunStore } from "../run-store";
 import { adoptReloadedChildren } from "../actions/run";
 import { detachShared, disposeSessionRegistries, getShared, registerShared, resetSharedRegistryForTests, sweepDetachedOnExit } from "../child-registry";
@@ -128,6 +128,49 @@ it.each(["ttl", "quit", "exit", "finished"])("m2: %s finalization notes counts o
   expect(row.result).toMatch(/2 buffered child event\(s\).*not recorded/);
   expect(row.result).not.toContain("private");
   expect(r.db.prepare("SELECT * FROM run_events WHERE type IN ('steer_delivery','warning')").all()).toEqual([]);
+});
+
+it.each(["ttl", "quit", "exit", "finished"])("never-adopted %s finalization counts steers settled before reload", async mode => {
+  const r = database("own"); const c = child(r);
+  appendRunEvent(r.db, { runId: c.id, sessionId: "s", ts: Date.now(), type: "steer_delivery",
+    payload: { requestId: "delivered", delivered: true, delivery: "delivered" } });
+  appendRunEvent(r.db, { runId: c.id, sessionId: "s", ts: Date.now(), type: "steer_delivery",
+    payload: { requestId: "refused", delivered: false, accepted: false, delivery: "refused" } });
+  if (mode === "ttl") vi.useFakeTimers();
+  await detachShared("s", { ttlMs: 100 });
+  if (mode === "finished") { c.exit({ exitCode: 0, result: "real result" }); await tick(); }
+  if (mode === "ttl") await vi.advanceTimersByTimeAsync(200);
+  else if (mode === "quit") await disposeSessionRegistries("s", "Session shutdown cancelled this run.");
+  else sweepDetachedOnExit();
+  const row = r.store.get(c.id)!;
+  expect(row.status).toBe(mode === "finished" ? "done" : "cancelled");
+  expect(row.result).toContain("1 steer(s) delivered.\n1 steer(s) refused.");
+  expect(row.result).not.toContain("buffered child event");
+});
+
+it("never-adopted finalization merges persisted and buffered steer outcomes by request with delivery sticky", async () => {
+  const r = database("own"); const c = child(r);
+  const other = r.store.create({ sessionId: "s", agent: "worker", task: "unrelated" });
+  appendRunEvent(r.db, { runId: other.id, sessionId: "s", ts: Date.now(), type: "steer_delivery",
+    payload: { requestId: "other", delivered: true } });
+  appendRunEvent(r.db, { runId: c.id, sessionId: "s", ts: Date.now(), type: "steer_delivery",
+    payload: { requestId: "delivered", delivered: true } });
+  appendRunEvent(r.db, { runId: c.id, sessionId: "s", ts: Date.now(), type: "steer",
+    payload: { requestId: "broker", transport: "intercom", delivered: true, delivery: "broker-accepted" } });
+  appendRunEvent(r.db, { runId: c.id, sessionId: "s", ts: Date.now(), type: "steer_delivery",
+    payload: { requestId: "late", delivery: "no reply yet, delivery unknown" } });
+  await detachShared("s");
+  c.gate.report({ type: "steer_delivery", requestId: "delivered", delivered: true });
+  c.gate.report({ type: "steer_delivery", requestId: "delivered", accepted: true, delivered: false });
+  c.gate.report({ type: "steer_delivery", requestId: "late", delivered: true });
+  c.gate.report({ type: "steer_delivery", requestId: "refused", accepted: false });
+  await disposeSessionRegistries("s", "Session shutdown cancelled this run.");
+  const row = r.store.get(c.id)!;
+  expect(row.status).toBe("cancelled");
+  expect(row.result).toContain("2 steer(s) delivered.\n1 steer(s) accepted but not confirmed.\n1 steer(s) refused.");
+  expect(row.result).not.toContain("steer(s) no reply yet");
+  expect(row.result).toContain("4 buffered child event(s) were not recorded");
+  expect(r.db.prepare("SELECT type FROM run_events WHERE run_id=? AND type IN ('steer','steer_delivery')").all(c.id)).toHaveLength(3);
 });
 
 it.skipIf(process.platform === "win32")("m6: parking installs the production exit hook, which SIGTERMs a real child and cancels its row on natural node exit", async () => {

@@ -395,7 +395,8 @@ is preferred among all queue additions in its serialized acceptance window;
 a differing text counts as **delivered, transformed** only after a successful
 reply and when it was the sole addition. Several additions without an exact match remain unconfirmed. Pi has
 no request IDs on these events, so swallowed input plus one unrelated injection
-can still look like a transform.
+can still look like a transform. A steer in flight across `/reload` remains
+tracked and is resolved and reported by the reloaded activation after adoption.
 
 After 10 seconds without a reply, the result is **no reply yet, delivery unknown**.
 Tracking continues until the run settles, exits or stops: a late success becomes
@@ -431,7 +432,8 @@ accepted but not confirmed and renders as a warning, not proof of conversation
 entry. Background
 children are independent of later parent-turn Escape. Quit, `/new`, `/resume` and `/fork` cancel
 all session-owned children and report the cause without starting a model turn;
-`/reload` keeps them running instead. A kill from this session reports through its tool result,
+`/reload` keeps background children running while foreground chain steps stop.
+A kill from this session reports through its tool result,
 not an extra completion notification unless a steer is accepted but not confirmed
 or has no reply yet, delivery unknown.
 A cancelled pipeline ends.

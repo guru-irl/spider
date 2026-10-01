@@ -136,8 +136,9 @@ stdin closes; no extra prompt is sent to drain it. Outcomes still use
 `genuineCompletion` and `run_events`. A clean exit without a deliverable is not
 success.
 
-The parent owns the pipes. Shutdown and reload still kill children. RPC abort
-clears queued continuations, sends `abort`, closes stdin, and retains the
+The parent owns the pipes. Quit, `/new`, `/resume` and `/fork` kill children;
+`/reload` keeps background children running and stops foreground chain steps.
+RPC abort clears queued continuations, sends `abort`, closes stdin, and retains the
 process-group kill fallback. Abrupt parent death produces stdin EOF. The reaper
 still collects children whose owning host died. Spawn identity is recorded as pid
 plus start time, which survives Pi's process-title change. Pid-only kill and
@@ -170,7 +171,8 @@ can still look like a transform; another source injecting identical text is also
 indistinguishable. Unrelated injections followed by an unchanged steer prefer
 that exact steer text. Exit, stop or settlement before a reply never promotes a
 differing injection to transformed delivery; only exact-text entry counts. This is evidence of conversation entry, not
-proof of model consumption.
+proof of model consumption. A steer in flight across `/reload` remains tracked
+and is resolved and reported by the reloaded activation after adoption.
 
 After 10 seconds without an RPC reply, the result is **no reply yet, delivery
 unknown**, not a refusal. While the run is still active, do not resend; the written
@@ -329,7 +331,8 @@ headline (the run's name, agent, and status) followed by that output text,
 and normally asks pi to trigger the next turn (`{ triggerTurn: true }`).
 Session-shutdown cancellations instead queue with `{ triggerTurn: false,
 deliverAs: "nextTurn" }`, so they cannot start a new turn. Own-session kills
-suppress redundant completion notifications unless an undelivered steer needs reporting. It also raises a short human-facing notification, using severity
+suppress redundant completion notifications unless a steer is accepted but not
+confirmed or has no reply yet, delivery unknown. It also raises a short human-facing notification, using severity
 `error` for a failed run and `info` otherwise. The child reporter or parent
 finalizer populates the run result from genuine recorded completion, not from
 an RPC command acknowledgement. Cancelled notifications use the cancellation

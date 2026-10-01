@@ -386,4 +386,3 @@ describe("exit sweep (a host that exits while children are still detached)", () 
     expect(r.store.get(r.id)!.status).toBe("running");
   });
 });
-

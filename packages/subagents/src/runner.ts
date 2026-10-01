@@ -6,7 +6,7 @@ import { buildChildSpawnSpec, type ChildSpawnSpec } from "./pi-args";
 import { registerChild, unregisterChild } from "./coordinators";
 import { resolveModelThinking } from "./model-resolve";
 import { registerShared, releaseShared, setSink, type CompletionSink, type SharedChildEntry, type SharedHandle } from "./child-registry";
-import { decideOutcome, NO_DELIVERABLE_RESULT } from "./completion-output";
+import { decideOutcome, NO_DELIVERABLE_RESULT, summarizeCompletionEvents } from "./completion-output";
 import { PERSISTED_EVENT_TYPES } from "./rpc-child";
 
 export { NO_DELIVERABLE_RESULT };
@@ -249,35 +249,10 @@ export class Runner {
   }
 
   private withSteerSummary(runId: string, outcome: { status: RunStatus; result?: string }): { status: RunStatus; result?: string } {
-    const events = this.db.prepare("SELECT id,type,payload FROM run_events WHERE run_id=? AND type IN ('steer_delivery','steer','warning') ORDER BY id").all(runId) as Array<{ id: number; type: string; payload: string }>;
-    let lost = 0;
-    const deliveries = new Map<string, string>();
-    for (const event of events) {
-      try {
-        const payload = JSON.parse(event.payload);
-        if (event.type === "warning") {
-          if (typeof payload.eventsLost === "number") lost += payload.eventsLost;
-          continue;
-        }
-        const delivery = payload.delivery === "broker-accepted" || (payload.transport === "intercom" && payload.delivered === true) ? "accepted but not confirmed"
-          : payload.delivered === true ? "delivered"
-          : payload.delivery === "no reply yet, delivery unknown" ? payload.delivery
-          : payload.delivery === "refused" || (payload.accepted === false && !payload.childAccepted) ? "refused"
-          : payload.delivered === false || payload.accepted || payload.childAccepted ? "accepted but not confirmed" : undefined;
-        if (delivery) {
-          const key = payload.requestId ?? `${event.type}-${event.id}`;
-          // The tool can finish after a delivery event. Acceptance cannot erase proof.
-          if (deliveries.get(key) !== "delivered") deliveries.set(key, delivery);
-        }
-      } catch { /* malformed diagnostics do not change the outcome */ }
-    }
-    if (!deliveries.size && !lost) return outcome;
-    const summary = ["delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"].map(delivery => {
-      const count = [...deliveries.values()].filter(value => value === delivery).length;
-      return count ? `${count} steer(s) ${delivery}.` : "";
-    }).filter(Boolean).join("\n");
-    const notes = [summary];
-    if (lost) notes.push(`${lost} child event(s) were lost during reload; this run's recorded history is incomplete.`);
+    const { steerSummary, eventsLost } = summarizeCompletionEvents(this.db, runId);
+    if (!steerSummary && !eventsLost) return outcome;
+    const notes = [steerSummary];
+    if (eventsLost) notes.push(`${eventsLost} child event(s) were lost during reload; this run's recorded history is incomplete.`);
     let result = outcome.result;
     for (const note of notes) if (note && !result?.includes(note)) result = [result, note].filter(Boolean).join("\n\n");
     return { ...outcome, result };

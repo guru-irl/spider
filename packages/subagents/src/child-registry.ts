@@ -18,12 +18,12 @@
 // touches session B's children. The closures an older build left on an entry (`deliver`, the
 // expiry timer) keep running after a newer build adopts it, so their behaviour is part of the
 // contract too, not only the shape of the data.
-import { commandEnv, openDb } from "@spider/db-core";
+import { commandEnv, openDb, type Db } from "@spider/db-core";
 import { execFileSync } from "node:child_process";
-import { PERSISTED_EVENT_TYPES, type SteerAck, type SteerDelivery } from "./rpc-child";
+import { PERSISTED_EVENT_TYPES, type SteerAck } from "./rpc-child";
 import { RunStore } from "./run-store";
 import { emitStatus } from "./run-events";
-import { decideOutcome } from "./completion-output";
+import { decideOutcome, summarizeCompletionEvents } from "./completion-output";
 import { shutdownReason } from "./shutdown-reason";
 import { checkProcessIdentity } from "./process-identity";
 
@@ -199,7 +199,7 @@ function finalizeRowByPath(entry: SharedChildEntry, cancelReason: string, finish
     const store = new RunStore(db);
     const row = store.get(entry.runId);
     if (!row || !ACTIVE.includes(row.status)) return;
-    const notes = bufferedLossNotes(entry);
+    const notes = bufferedLossNotes(db, entry);
     if (finished && entry.exit) {
       const outcome = decideOutcome(db, entry.runId, entry.exit.exitCode, entry.exit.result);
       if (notes.length) outcome.result = [outcome.result, ...notes].filter(Boolean).join("\n\n");
@@ -221,31 +221,21 @@ function finalizeRowByPath(entry: SharedChildEntry, cancelReason: string, finish
 
 /** Never-adopted entries lose their gate on disposal. Drain to counts, not to a dead sink or
  *  event payloads, so the final row records that loss without copying steer or event bodies. */
-function bufferedLossNotes(entry: SharedChildEntry): string[] {
-  let buffered = 0, lost = 0;
-  const deliveries = new Map<unknown, SteerDelivery>();
+function bufferedLossNotes(db: Db, entry: SharedChildEntry): string[] {
+  let buffered = 0;
+  const events: Record<string, any>[] = [];
   try {
     entry.handle.bindEvents?.(event => {
       if (!PERSISTED_EVENT_TYPES.includes(event.type)) return;
-      if (typeof event.eventsLost === "number") lost += event.eventsLost;
-      else buffered++;
-      if (event.type === "steer_delivery") {
-        const delivery: SteerDelivery = event.delivered === true ? "delivered"
-          : event.delivery === "no reply yet, delivery unknown" ? event.delivery
-          : event.delivery === "refused" ? "refused" : "accepted but not confirmed";
-        const key = event.requestId ?? `buffered-${buffered}`;
-        if (deliveries.get(key) !== "delivered") deliveries.set(key, delivery);
-      }
+      events.push(event);
+      if (typeof event.eventsLost !== "number") buffered++;
     });
   } catch { /* diagnostics cannot prevent finalization */ }
+  const { steerSummary, eventsLost } = summarizeCompletionEvents(db, entry.runId, events);
   const notes: string[] = [];
-  const summary = (["delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"] as const).map(delivery => {
-    const count = [...deliveries.values()].filter(value => value === delivery).length;
-    return count ? `${count} steer(s) ${delivery}.` : "";
-  }).filter(Boolean).join("\n");
-  if (summary) notes.push(summary);
+  if (steerSummary) notes.push(steerSummary);
   if (buffered) notes.push(`${buffered} buffered child event(s) were not recorded because this run was never re-adopted.`);
-  if (lost) notes.push(`${lost} child event(s) were lost during reload; this run's recorded history is incomplete.`);
+  if (eventsLost) notes.push(`${eventsLost} child event(s) were lost during reload; this run's recorded history is incomplete.`);
   return notes;
 }
 

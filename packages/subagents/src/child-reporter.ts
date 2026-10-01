@@ -167,11 +167,17 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
         }
       }
       if (runStatus === "failed" && !finalResult?.trim()) finalResult = "Child ended with an error and no terminal report.";
-      store.finish(ctx.runId, { status: runStatus, result: finalResult });
-      const recorded = store.get(ctx.runId);
-      if (recorded && recorded.status !== before.status) {
+      db.transaction(() => {
+        // Write first: a read snapshot would make lock upgrades fail immediately
+        // under contention instead of waiting for busy_timeout. Guard ownership
+        // and terminal status in the UPDATE, not a preceding transaction read.
+        const changed = db.prepare(`UPDATE runs SET status=@status, ended_at=@now, result=COALESCE(@result, result)
+          WHERE id=@id AND pid=@pid AND status IN ('queued','running','paused')`)
+          .run({ id: ctx.runId, pid: process.pid, status: runStatus, now: Date.now(), result: finalResult ?? null }).changes;
+        if (changed !== 1) return;
+        const recorded = store.get(ctx.runId)!;
         emitStatus(db, { ...ctx, status: recorded.status, summary: recorded.result ?? undefined });
-      }
+      })();
     },
   };
 }

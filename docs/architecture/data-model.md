@@ -312,7 +312,7 @@ their FTS5 companions.
 | `sessions` | One row per pi session in this worktree: `id` (primary key), `parent_session_id`, `name`, `reason`, `started_at`, `ended_at`, `summary`, `imported_from`. |
 | `content` | Indexed and fetched content chunks: `source`, `path`, `hash`, `heading`, `chunk` text, an `is_code` flag, and `created_at`. |
 | `todos` | Durable todos: `session_id`, `seq`, `text`, a `done` flag, and timestamps. |
-| `runs` | Subagent runs: `id` (primary key), `session_id`, `parent_run_id`, `agent`, `role`, `name`, `status`, `phase`, `model`, `task`, `thinking`, timing, `step_count`, `token_count`, `result`, and `pid`/`host_pid` (the subagent's process id and the host pid that spawned it, used to let an orphaned background run survive and later be reaped safely). |
+| `runs` | Subagent runs: `id` (primary key), `session_id`, `parent_run_id`, `agent`, `role`, `name`, `status`, `phase`, `model`, `task`, `thinking`, timing, `step_count`, `token_count`, `result`, and `pid`/`host_pid` (the subagent's process id and the owning host pid, recorded at run creation before spawn, used to let an orphaned background run survive and later be reaped safely). |
 | `run_events` | The append-only run event stream: `run_id`, `session_id`, `ts`, `type`, `tool`, `summary`, and a JSON `payload`. |
 | `events` | The routing and tracking event log: `session_id`, `ts`, `phase` (`before` or `after`), `tool`, `description`, `added`, `removed`, `flagged`, `payload`. |
 | `vector_map` | Embedding storage for this worktree database — a separate table instance from the repo database's `vector_map` (see [Vector storage](#vector-storage)). |
@@ -401,15 +401,34 @@ After the steps for a version run, `migrate` sets `user_version` to
 `packages/db-core/src/events.ts` provides two append helpers and an in-process
 publish/subscribe bus. Both `run_events` and `events` are worktree-tier tables.
 
-- `appendRunEvent(db, e)` inserts one row into `run_events` and emits the same
-  event on `bus`. A `RunEvent` carries `runId`, `sessionId`, `ts`, `type`,
-  `tool`, `summary`, and an arbitrary `payload` that is JSON-serialized on write.
+- `appendRunEvent(db, e)` inserts one row into `run_events` and schedules the same
+  event on `bus` through `db.afterCommit`. A `RunEvent` carries `runId`,
+  `sessionId`, `ts`, `type`, `tool`, `summary`, and an arbitrary `payload` that is
+  JSON-serialized on write.
 - `appendEvent(db, e)` inserts one row into `events` (the routing and tracking
-  log) and emits a derived event on `bus`. The emitted `type` is `tool_intent`
-  when `phase` is `before` and `tool_result` when `phase` is `after`.
+  log) and schedules a derived event on `bus` through `db.afterCommit`. The emitted
+  `type` is `tool_intent` when `phase` is `before` and `tool_result` when `phase` is
+  `after`.
 - `bus.on(listener)` subscribes and returns an unsubscribe function.
   `bus.emit(event)` calls every listener. A listener that throws is caught so
   one bad listener does not stop the others.
+
+Both append helpers publish only after the outermost `Db.transaction` commits.
+Successful nested savepoints merge their callbacks into the parent queue;
+rollback (including a failed COMMIT) discards the affected callbacks. In
+autocommit, publication is immediate. The queue belongs to one `Db` connection,
+and listeners run outside the committed transaction. A listener's re-entrant
+wrapper transaction commits and publishes before the remaining original
+callbacks.
+Queued callback failures are written to stderr without throwing from the
+successfully committed transaction or skipping later callbacks. Print-mode
+children discard stderr, so these errors are not visible there.
+
+`db.raw` transactions bypass this queue, including raw savepoints. Do not emit
+bus events or register `afterCommit` callbacks inside raw transactions, or nest
+raw and wrapper transactions together. Those combinations can publish before
+commit or retain callbacks for rolled-back writes. Use `Db.transaction` for
+transactional event publication; the guarantee does not cover `db.raw`.
 
 Read helpers cover the tracking log: `listEvents(db, opts?)` returns rows
 filtered by `tool` and/or `phase` with an optional `limit`, and

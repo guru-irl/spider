@@ -39,10 +39,21 @@ export function withRetry<T>(fn: () => T, delays: number[] = [100, 500, 2000]): 
 export interface Db {
   prepare(sql: string): BetterSqlite3.Statement;
   exec(sql: string): void;
+  /** Queue effects until the outermost Db.transaction commits. Queued callback
+   * failures are written to stderr, not thrown: a committed transaction remains
+   * successful. Print-mode children discard stderr, so these errors are not visible. */
   transaction<T>(fn: () => T): () => T;
+  /** Run after the outermost Db.transaction commits, or immediately when no
+   * wrapper transaction is open. Rolled-back wrapper/savepoint effects are dropped.
+   * Queued callback errors are written to stderr (not visible in print-mode children).
+   * db.raw transactions bypass this queue. Do not emit events or register effects
+   * inside them, or mix raw and wrapper transactions: publication may precede
+   * commit, and raw rollback cannot discard callbacks. */
+  afterCommit(fn: () => void): void;
   pragma(source: string): unknown;
   loadVec(): void;
   withRetry<T>(fn: () => T): T;
+  /** Low-level escape hatch. Its transactions are not tracked by afterCommit. */
   readonly raw: BetterSqlite3.Database;
   close(): void;
 }
@@ -103,6 +114,7 @@ export function openDbReadOnly(dbPath: string): Db | undefined {
     prepare: sql => raw.prepare(sql),
     exec: readonly,
     transaction: readonly,
+    afterCommit: fn => fn(),
     pragma: source => raw.pragma(source, { simple: true }),
     loadVec: readonly,
     withRetry: fn => withRetry(fn),
@@ -122,10 +134,42 @@ export function openDb(dbPath: string): Db {
   raw.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
 
   let vecLoaded = false;
+  const effects: Array<Array<() => void>> = [];
   return {
     prepare: (sql) => raw.prepare(sql),
     exec: (sql) => { raw.exec(sql); },
-    transaction: <T>(fn: () => T) => raw.transaction(fn),
+    transaction: <T>(fn: () => T) => {
+      const transact = raw.transaction(fn);
+      return () => {
+        const pending: Array<() => void> = [];
+        effects.push(pending);
+        let result: T;
+        try {
+          result = transact(); // Includes COMMIT / RELEASE SAVEPOINT, which can throw.
+        } catch (error) {
+          effects.pop();
+          throw error;
+        }
+        effects.pop();
+        const parent = effects.at(-1);
+        if (parent) parent.push(...pending);
+        else {
+          // The commit succeeded. Never make callers mistake an effect failure
+          // for rollback, and still run every remaining callback.
+          for (const effect of pending) {
+            try { effect(); } catch (error) {
+              try { console.error("Post-commit effect failed", error); } catch { /* diagnostic is best effort */ }
+            }
+          }
+        }
+        return result;
+      };
+    },
+    afterCommit: fn => {
+      const pending = effects.at(-1);
+      if (pending) pending.push(fn);
+      else fn();
+    },
     pragma: (source) => raw.pragma(source, { simple: true }),
     withRetry,
     get raw() { return raw; },

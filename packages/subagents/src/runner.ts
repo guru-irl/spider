@@ -94,6 +94,9 @@ export class Runner {
       model: opts.model,
       task: opts.task,
       thinking: opts.thinking,
+      // Even if both launch status transactions fail, the reaper can find this
+      // queued row once its owning host exits. No child has been spawned yet.
+      hostPid: process.pid,
     });
     return this.deps.store.get(id)!;
   }
@@ -155,7 +158,8 @@ export class Runner {
       handle.cancellationReason = reason;
       try { this.deps.store.cancel(run.id, reason); } catch { /* the kill must still run; finalize records the reason */ }
       try { kill(); } catch (error) {
-        restore(reason, before, previousReason);
+        try { restore(reason, before, previousReason); }
+        catch (restoreError) { throw new AggregateError([error, restoreError], `Kill failed: ${String(error)}; restore failed: ${String(restoreError)}`); }
         throw error;
       }
       this.removeRoute(run.id);
@@ -166,7 +170,8 @@ export class Runner {
       handle.cancellationReason = reason;
       try { this.deps.store.cancel(run.id, reason); } catch { /* the kill must still run; finalize records the reason */ }
       try { await killAsync(graceMs); } catch (error) {
-        restore(reason, before, previousReason);
+        try { restore(reason, before, previousReason); }
+        catch (restoreError) { throw new AggregateError([error, restoreError], `Kill failed: ${String(error)}; restore failed: ${String(restoreError)}`); }
         throw error;
       }
       this.removeRoute(run.id);
@@ -178,12 +183,17 @@ export class Runner {
   /** Undo only our optimistic cancellation, never a different terminal outcome. */
   private uncancel(runId: string, reason: string, before: RunRow | undefined): void {
     if (!before || !["queued", "running", "paused"].includes(before.status)) return;
-    const changed = this.db.prepare("UPDATE runs SET status=?, ended_at=?, result=? WHERE id=? AND status='cancelled' AND result IS ?")
-      .run(before.status, before.ended_at, before.result, runId, reason).changes;
+    const changed = this.db.transaction(() => {
+      const changed = this.db.prepare("UPDATE runs SET status=?, ended_at=?, result=? WHERE id=? AND status='cancelled' AND result IS ?")
+        .run(before.status, before.ended_at, before.result, runId, reason).changes;
+      if (changed) emitStatus(this.db, { runId, sessionId: this.sessionId, status: before.status, summary: before.name ?? undefined });
+      return changed;
+    })();
     if (!changed) return;
-    this.deps.globalDb?.prepare("INSERT OR REPLACE INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
-      .run(runId, this.sessionId, this.deps.dbPath);
-    emitStatus(this.db, { runId, sessionId: this.sessionId, status: before.status, summary: before.name ?? undefined });
+    this.db.afterCommit(() => {
+      this.deps.globalDb?.prepare("INSERT OR REPLACE INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
+        .run(runId, this.sessionId, this.deps.dbPath);
+    });
   }
 
   private removeRoute(runId: string): void {
@@ -193,17 +203,21 @@ export class Runner {
   private launch(run: RunRow, opts: RunOpts): ChildHandle | undefined {
     let handle: ChildHandle | undefined;
     try {
-      this.deps.store.start(run.id);
+      this.db.transaction(() => {
+        this.deps.store.start(run.id);
+        emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
+      })();
       this.deps.tailer.track(run.id);
-      emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "running", summary: run.name ?? undefined });
       handle = this.spawnFor(run, opts);
       if (handle.pid !== undefined) this.deps.store.setPid(run.id, handle.pid, process.pid, handle.startTime);
       return this.ownHandle(run, handle);
     } catch (error) {
       const result = `Child launch failed: ${String((error as Error)?.message ?? error)}`;
       try {
-        this.deps.store.finish(run.id, { status: "failed", result });
-        emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "failed", summary: result });
+        this.db.transaction(() => {
+          this.deps.store.finish(run.id, { status: "failed", result }, { removeRoute: false });
+          emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: "failed", summary: result });
+        })();
       } finally {
         try { handle?.kill(); } finally { unregisterChild(this.sessionId, run.id); this.removeRoute(run.id); }
       }
@@ -229,16 +243,19 @@ export class Runner {
    * than the production spawner's always-absent `waitResult`).
    */
   private finalize(run: RunRow, exitCode: number, waitResult: string | undefined, cancellationReason?: string): { status: RunStatus; result?: string } {
-    this.removeRoute(run.id);
     const cur = this.deps.store.get(run.id);
     if (cur && (cur.status === "queued" || cur.status === "running" || cur.status === "paused")) {
       const outcome = this.withSteerSummary(run.id, cancellationReason ? { status: "cancelled" as const, result: cancellationReason } : decideOutcome(this.db, run.id, exitCode, waitResult));
-      this.deps.store.finish(run.id, outcome);
-      emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: outcome.status, summary: run.name ?? undefined });
+      this.db.transaction(() => {
+        this.deps.store.finish(run.id, outcome, { removeRoute: false });
+        emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: outcome.status, summary: run.name ?? undefined });
+      })();
+      this.db.afterCommit(() => this.removeRoute(run.id));
       return outcome;
     }
     const outcome = this.withSteerSummary(run.id, { status: (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed"), result: cur?.result ?? undefined });
     if (outcome.result !== cur?.result) this.db.prepare("UPDATE runs SET result=? WHERE id=?").run(outcome.result ?? null, run.id);
+    this.db.afterCommit(() => this.removeRoute(run.id));
     return outcome;
   }
 
@@ -288,6 +305,15 @@ export class Runner {
     }).catch(error => {
       const outcome = this.finalize(run, 1, `Child wait failed: ${String(error)}`, handle.cancellationReason);
       this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
+    }).catch(error => {
+      // Both atomic finalization attempts failed. Keep row/event atomicity rather
+      // than inventing an unlogged terminal outcome. host_pid was saved at create;
+      // a later session's reaper reconciles the row after this host exits.
+      // Do not notify completion or leave an unhandled rejection.
+      try {
+        appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: "warning",
+          summary: `Finalization failed; reconciliation requires host exit: ${String(error)}` });
+      } catch { /* a broken DB may also reject the diagnostic */ }
     }).finally(() => {
       unregisterChild(this.sessionId, run.id);
     });

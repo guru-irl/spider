@@ -197,7 +197,7 @@ describe("session-owned run records with an explicit child cwd", () => {
       ui: { setWidget, custom: vi.fn(), notify: vi.fn() } };
     // The last session_start handler mounts the production agents view, which reads
     // existing runs immediately and creates a widget only when it sees one.
-    f.hooks.session_start.at(-1)!({}, ctx);
+    for (const fn of f.hooks.session_start) await fn({}, ctx);
     expect(setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });
     for (const fn of f.hooks.session_shutdown ?? []) await fn();
   });
@@ -302,7 +302,7 @@ describe("session-owned run records with an explicit child cwd", () => {
       await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" }, sessionCwd);
       expect(f.specs[0].env.PI_SPIDER_DB_PATH).toBe(dbPath);
       expect(f.rows(owner)).toHaveLength(1);
-      f.hooks.session_start.at(-1)!({}, ctx);
+      for (const fn of f.hooks.session_start) await fn({}, ctx);
       expect(ctx.ui.setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });
 
       // A dead host's row can only be reconciled if the reaper opened the same file.

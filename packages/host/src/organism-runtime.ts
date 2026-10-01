@@ -1,3 +1,4 @@
+import { skillReviewOptions } from "./skill-reviewer";
 import { join } from "node:path";
 import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { openGlobal, openProject, openRepo, openDbAt, paths, type ProjectInfo } from "@spider/db-core";
@@ -7,7 +8,7 @@ import { complete, pick } from "@spider/models";
 import { emitLog } from "@spider/subagents";
 import {
   OrganismWorker, readCuratorConfig, readOrganismConfig, safeError,
-  type OrganismActionDeps, type WorkerDeps, type DrainReport,
+  type OrganismActionDeps, type WorkerDeps, type DrainReport, type ExistingSkill,
 } from "@spider/organism";
 import { controlConfig } from "./control";
 import { listCatalog } from "./control/models-cmd";
@@ -69,6 +70,7 @@ export class HostOrganismRuntime {
   constructor(
     private readonly getEmbedder: () => Promise<Embedder | null>,
     private readonly onDrainReport?: (report: DrainReport) => void,
+    private readonly getLoadedSkills?: () => ExistingSkill[],
   ) {}
 
   /** False once this instance's own lifecycle-hook registration has failed. */
@@ -174,11 +176,13 @@ export class HostOrganismRuntime {
     const config = () => controlConfig("get", project.realPath);
     const entry = {} as RuntimeEntry;
     entry.context = { ...context, project };
+    const thisRuntimeLoadedSkills = () => this.getLoadedSkills?.() ?? [];
     const deps: WorkerDeps = {
       db, worktreeDb, globalDb, project, getEmbedder: this.getEmbedder,
       onDrainReport: this.onDrainReport,
       get org() { return readOrganismConfig(config()); },
       get curator() { return readCuratorConfig(config()); },
+      get skillReview() { return skillReviewOptions(project.realPath, entry.context.modelRegistry, undefined, thisRuntimeLoadedSkills()); },
       makeModel: (signal) => {
         const current = entry.context;
         const registry = completionRegistry(current.modelRegistry);
@@ -219,6 +223,11 @@ export class HostOrganismRuntime {
     entry.actions = { db, globalDb, project, worker: new OrganismWorker(deps) };
     this.#entries.set(key, entry);
     return entry.actions;
+  }
+
+  /** Abort reviews in all bindings, not just the currently selected repo. */
+  async stopSkillReviews(): Promise<void> {
+    await Promise.all([...this.#entries.values()].map(entry => entry.actions.worker.stopSkillReviews()));
   }
 
   /** Called after organism shutdown hooks have awaited their serialized work. */

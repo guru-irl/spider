@@ -256,7 +256,7 @@ function parseAbsorbed(raw: string): { from: string; consolidations: string[] } 
 export async function consolidateSkills(
   skills: SkillStore,
   model: DigestModel,
-  cfg: CuratorConfig
+  cfg: CuratorConfig,
 ): Promise<{ consolidations: string[] }> {
   if (!cfg.consolidate) return { consolidations: [] };
 

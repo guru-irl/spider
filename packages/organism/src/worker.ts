@@ -3,6 +3,8 @@ import { listActive, type Embedder } from "@spider/memory";
 import { emitLog } from "@spider/subagents";
 import { drainSession, type DrainOpts } from "./drain.js";
 import { applyDigest } from "./apply.js";
+import { loadSkillReviewContext, type SkillReviewOptions } from "./skill-review.js";
+import { runSkillReviewQueue } from "./skill-review-queue.js";
 import { SkillStore } from "./skill-usage.js";
 import {
   runCuratorDecay, curatorShouldRun, consolidateSkills,
@@ -18,6 +20,8 @@ import { emptyResult } from "./types.js";
 import type { AppliedSummary, DigestModel, DigestResult, DrainReason, DrainReport, PassName } from "./types.js";
 import type { OrganismConfig } from "./config.js";
 
+export interface CurateResult extends DecayResult { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }
+
 export const ORGANISM_DRAIN_TIMEOUT_MS = 30_000;
 
 /** Each worker owns one serialized session/project pipeline. The host owns DB lifetime. */
@@ -29,6 +33,7 @@ export interface WorkerDeps {
   getEmbedder: () => Promise<Embedder | null>;
   makeModel: (signal?: AbortSignal) => DigestModel | null;
   org: OrganismConfig;
+  skillReview?: SkillReviewOptions;
   curator: CuratorConfig;
   /** Total drain deadline, not a fresh budget for each pass. */
   drainTimeoutMs?: number;
@@ -64,6 +69,24 @@ export class OrganismWorker {
   readonly #deps: WorkerDeps;
   #inflight: Promise<unknown> = Promise.resolve();
   #lastDrain: DrainReport | undefined;
+  #reviewTask: Promise<void> | undefined;
+  #reviewController: AbortController | undefined;
+  #shuttingDown = false;
+
+  /** Fire-and-forget only from live-session lifecycle hooks, never a drain. */
+  startSkillReviews(): void {
+    if (process.env.PI_SUBAGENT_CHILD === "1" || this.#shuttingDown || this.#reviewTask || !this.#deps.org.enabled) return;
+    this.#reviewController = new AbortController();
+    this.#reviewTask = runSkillReviewQueue(this.#deps.db, { ...this.#deps.skillReview, signal: this.#reviewController.signal })
+      .catch(error => {
+        try { this.#deps.skillReview?.onReviewError?.(safeError(error), undefined); } catch { /* Diagnostics are secondary. */ }
+      }).finally(() => { this.#reviewTask = undefined; this.#reviewController = undefined; });
+  }
+  async stopSkillReviews(): Promise<void> {
+    this.#shuttingDown = true;
+    this.#reviewController?.abort();
+    await this.#reviewTask; // Abort is bounded by the shared gate even for an uncooperative provider.
+  }
 
   constructor(deps: WorkerDeps) { this.#deps = deps; }
 
@@ -81,7 +104,7 @@ export class OrganismWorker {
   runDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
     return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
   }
-  runCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }> {
+  runCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<CurateResult> {
     return this.#serialize(() => this.#doRunCurate(now, opts));
   }
 
@@ -141,10 +164,17 @@ export class OrganismWorker {
       let consolidated: DigestResult | undefined;
       if (org.passes.runMemoryTodo) results.push(await runPass("runMemoryTodo", () => runMemoryTodoPass(bundle, model, org.maxMemoryProposals)));
       if (org.passes.todoMemory) results.push(await runPass("todoMemory", () => todoMemoryPass(bundle, model, org.maxMemoryProposals)));
-      if (org.passes.learning && bundle.transcript.length > 0) results.push(await runPass("learning", () => learningPass(bundle, model, org.maxMemoryProposals, [
-        ...listActive(globalDb, "global", { limit: 60 }).map(({ content }) => ({ scope: "global" as const, content })),
-        ...listActive(db, "repo", { limit: 60 }).map(({ content }) => ({ scope: "repo" as const, content })),
-      ])));
+      if (org.passes.learning && bundle.transcript.length > 0) {
+        let context = null;
+        if (this.#deps.skillReview?.reviewer) {
+          try { context = (this.#deps.skillReview.loadContext ?? loadSkillReviewContext)(new SkillStore(db)); }
+          catch (error) { try { this.#deps.skillReview.onReviewError?.(safeError(error), undefined); } catch { /* Diagnostics only. */ } }
+        }
+        results.push(await runPass("learning", () => learningPass(bundle, model, org.maxMemoryProposals, [
+          ...listActive(globalDb, "global", { limit: 60 }).map(({ content }) => ({ scope: "global" as const, content })),
+          ...listActive(db, "repo", { limit: 60 }).map(({ content }) => ({ scope: "repo" as const, content })),
+        ], context)));
+      }
       if (org.passes.consolidation) {
         consolidated = await runPass("consolidation", () => consolidationPass(bundle, model));
       }
@@ -185,8 +215,11 @@ export class OrganismWorker {
       merged.selfName = consolidated?.selfName;
       const capDropped = Object.values(report.capDroppedByPass ?? {}).reduce((sum, n) => sum + n, 0);
       try {
-        Object.assign(summary, applyDigest(
-          { db, globalDb, worktreeDb, scope: "repo", sessionId, skills: new SkillStore(db), project },
+        Object.assign(summary, await applyDigest(
+          { db, globalDb, worktreeDb, scope: "repo", sessionId, skills: new SkillStore(db), project,
+            maxSkillProposals: org.maxSkillProposals,
+            skillReview: { ...this.#deps.skillReview, signal: controller.signal },
+          },
           merged, { max: org.autoWriteBudget, used: 0 },
         ));
         summary.dropped += capDropped;
@@ -204,14 +237,14 @@ export class OrganismWorker {
       clearTimeout(timer);
       Object.assign(report, summary, { finishedAt: Date.now() });
       if (report.errors.length) {
-        report.status = successfulPasses > 0 || summary.memoryStaged + summary.skillsStaged + summary.todosAdded > 0
+        report.status = successfulPasses > 0 || summary.memoryStaged + summary.skillsStaged + (summary.skillsQueued ?? 0) + summary.todosAdded > 0
           ? "partial" : "failed";
       }
       try {
         emitLog(worktreeDb, {
           sessionId,
           summary: `organism drain (${reason}): ${report.status}${report.skipReason ? ` (${report.skipReason})` : ""}; ` +
-            `mem=${summary.memoryStaged} todos=${summary.todosAdded} skills=${summary.skillsStaged} ` +
+            `mem=${summary.memoryStaged} todos=${summary.todosAdded} skillsQueued=${summary.skillsQueued ?? 0} ` +
             `dropped=${summary.dropped} rejected=${summary.rejected} errors=${report.errors.length}`,
           payload: report,
         });
@@ -256,7 +289,7 @@ export class OrganismWorker {
     }
   }
 
-  async #doRunCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<DecayResult & { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }> {
+  async #doRunCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<CurateResult> {
     if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     const { db, curator, org } = this.#deps;
     const ts = now ?? Date.now();

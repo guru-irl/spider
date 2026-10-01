@@ -4,7 +4,7 @@ import { CONFIG_SCHEMA, getField, coerce } from "../config-schema.js";
 describe("config schema", () => {
 	it("declares only groups with working settings", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["auxiliary", "curator", "exec", "memory", "models", "organism", "routing", "ui"]);
+		expect(ids).toEqual(["auxiliary", "curator", "exec", "memory", "models", "organism", "routing", "skills", "ui"]);
 	});
 	it("curator consolidation defaults to the runtime's disabled value", () => {
 		expect(getField("curator.consolidate")?.default).toBe(false);
@@ -37,4 +37,16 @@ describe("config schema", () => {
 		expect(coerce(enumF, "___not_in_enum___").ok).toBe(false);
 		expect(coerce(enumF, enumF.enum![0])).toEqual({ ok: true, value: enumF.enum![0] });
 	});
+});
+
+it("reviewers expose independent thinking and timeout settings", () => {
+  for (const [kind, thinking, timeout, max] of [["memory", "medium", 45000, 120000], ["skills", "xhigh", 180000, 600000]] as const) {
+    const field = getField(`${kind}.reviewer.thinking`)!;
+    expect(field?.default).toBe(thinking);
+    expect(field.enum).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+    expect(coerce(field, "off").ok).toBe(false);
+    const time = getField(`${kind}.reviewer.timeoutMs`)!;
+    expect(time.default).toBe(timeout); expect(time.max).toBe(max);
+  }
+  expect(getField("skills.reviewer.enabled")?.description).toContain("learner skill proposals are off");
 });

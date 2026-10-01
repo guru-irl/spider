@@ -1,7 +1,7 @@
 import type { Db } from "./db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -54,6 +54,21 @@ const REPO_MIGRATIONS: Record<number, readonly string[]> = {
   ],
   // v11: conditional ALTERs run in ensureMemoryProvenance (SQLite lacks ADD COLUMN IF NOT EXISTS).
   11: [],
+  // v12: queue tables plus a conditional skills review_reason ALTER.
+  12: [`CREATE TABLE IF NOT EXISTS skill_review_queue (
+  name TEXT PRIMARY KEY,
+  category TEXT, body TEXT NOT NULL, origin TEXT NOT NULL,
+  related TEXT, created_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_review_results (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, verdict TEXT NOT NULL,
+  reason TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_review_lock (
+  id INTEGER PRIMARY KEY CHECK (id=1), token TEXT NOT NULL, lease_until INTEGER NOT NULL
+);
+`],
 };
 
 const WORKTREE_MIGRATIONS: Record<number, readonly string[]> = {
@@ -79,6 +94,13 @@ function ensureMemoryProvenance(db: Db, scope: "global" | "repo"): void {
     if (!columns.some(column => column.name === field)) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${field} TEXT`);
     }
+  }
+}
+
+function ensureSkillReviewReason(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(skills)").all() as Array<{ name: string }>;
+  if (columns.length && !columns.some(column => column.name === "review_reason")) {
+    db.exec("ALTER TABLE skills ADD COLUMN review_reason TEXT");
   }
 }
 
@@ -138,6 +160,7 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
         } else if (actualScope === "repo") {
           db.exec(REPO_SCHEMA);
           ensureMemoryProvenance(db, "repo");
+          ensureSkillReviewReason(db);
         } else {
           db.exec(WORKTREE_SCHEMA);
         }
@@ -160,6 +183,8 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
             ensureMemoryProvenance(db, actualScope);
           }
           
+          if (v === 12 && actualScope === "repo") ensureSkillReviewReason(db);
+
           // IMPORTANT 5: After creating memory_fts (v8), populate it from memory
           if (actualScope === "repo" && v === 8) {
             // Populate FTS (idempotent - DELETE first if somehow already populated)

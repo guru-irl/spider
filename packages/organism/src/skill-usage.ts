@@ -26,6 +26,7 @@ export interface SkillRow {
   lastViewedAt?: number;
   lastPatchedAt?: number;
   candidateBody?: string;
+  reviewReason?: string;
   related?: string[];
   createdAt: number;
   updatedAt?: number;
@@ -50,6 +51,7 @@ interface RawSkillRow {
   last_viewed_at: number | null;
   last_patched_at: number | null;
   candidate_body: string | null;
+  review_reason?: string | null;
   related: string | null;
   created_at: number;
   updated_at: number | null;
@@ -101,13 +103,15 @@ export function deriveSkillDescription(body: string, name: string): string {
 }
 
 /**
- * Compose a discoverable SKILL.md: always synthesizes our own frontmatter
- * (`name`, `description`) rather than trusting any frontmatter-shaped text
- * inside an auto-generated `body` — the aux-model prompt asks only for a
- * "SKILL.md body", never for frontmatter, so this is the only place that
- * produces it. `body` becomes the instructions section verbatim.
+ * Compose a discoverable SKILL.md: preserve reviewed final-format frontmatter,
+ * or synthesize metadata for legacy rows
+ * (`name`, `description`) when no frontmatter exists. Legacy `body` becomes the instructions
+ * section verbatim.
  */
 export function buildSkillMarkdown(name: string, body: string, category?: string): string {
+  // Reviewed candidates already carry the final discovery contract. Legacy staged
+  // rows still receive synthesized metadata so explicit approval stays compatible.
+  if (/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(body)) return `${body.trimEnd()}\n`;
   const description = deriveSkillDescription(body, name);
   const lines = ["---", `name: ${name}`, `description: ${JSON.stringify(description)}`];
   if (category !== undefined && category.length > 0) {
@@ -170,6 +174,7 @@ function mapRow(r: RawSkillRow): SkillRow {
   if (lastPatchedAt !== undefined) row.lastPatchedAt = lastPatchedAt;
   const candidateBody = opt(r.candidate_body);
   if (candidateBody !== undefined) row.candidateBody = candidateBody;
+  if (r.review_reason != null) row.reviewReason = r.review_reason;
   const related = parseRelated(r.related);
   if (related !== undefined) row.related = related;
   const updatedAt = opt(r.updated_at);
@@ -178,9 +183,7 @@ function mapRow(r: RawSkillRow): SkillRow {
 }
 
 const SELECT_ALL =
-  "SELECT id, name, tier, category, path, state, status, source, pinned, protected, " +
-  "use_count, view_count, patch_count, last_used_at, last_viewed_at, last_patched_at, " +
-  "candidate_body, related, created_at, updated_at FROM skills";
+  "SELECT * FROM skills";
 
 /**
  * Skill lifecycle usage + staged candidates over the `skills` table.
@@ -293,7 +296,7 @@ export class SkillStore {
    * A byte-identical re-proposal of an already-staged candidate is also
    * `skipped` (`reason: "duplicate"`) so retries cannot inflate counters.
    */
-  stageCandidate(c: { name: string; category?: string; body: string; related?: string[] }): StageCandidateResult {
+  stageCandidate(c: { name: string; category?: string; body: string; related?: string[]; reviewReason?: string }): StageCandidateResult {
     const existing = this.get(c.name);
     if (existing !== undefined) {
       if (existing.protected) return { outcome: "skipped", reason: "protected", row: existing };
@@ -320,6 +323,12 @@ export class SkillStore {
             "candidate_body = ?, related = ?, updated_at = ? WHERE name = ?"
         )
         .run(c.category ?? existing.category ?? null, c.body, related, now, c.name);
+    }
+    if (c.reviewReason !== undefined) {
+      const columns = this.db.prepare("PRAGMA table_info(skills)").all() as { name: string }[];
+      if (columns.some(column => column.name === "review_reason")) {
+        this.db.prepare("UPDATE skills SET review_reason = ? WHERE name = ?").run(c.reviewReason, c.name);
+      }
     }
     return { outcome: "staged", row: this.get(c.name)! };
   }

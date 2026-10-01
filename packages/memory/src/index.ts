@@ -13,3 +13,5 @@ export * from "./embeddings/vectors";
 export * from "./embeddings/queue";
 export * from "./recall";
 export * from "./renderers";
+
+export * from "./review-diagnostics";

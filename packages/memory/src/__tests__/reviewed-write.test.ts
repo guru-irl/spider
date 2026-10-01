@@ -298,27 +298,27 @@ describe("reviewed remember", () => {
     expect(result.status).toBe("rejected");
     expect(reviewer).not.toHaveBeenCalled();
   });
-  it.each([120001, 3e9, 1.5, 1500.5])("invalid timeout %s uses 20000 ms instead of waiting", async timeoutMs => {
+  it.each([120001, 3e9, 1.5, 1500.5])("invalid timeout %s uses 45000 ms instead of waiting", async timeoutMs => {
     const dbs = setup();
     vi.useFakeTimers();
     try {
       const pending = reviewedWrite(dbs, "repo", fact, justification, { timeoutMs, reviewer: () => new Promise(() => {}) });
-      await vi.advanceTimersByTimeAsync(20000);
-      expect(await pending).toMatchObject({ reviewSkipped: "timeout after 20000 ms", timeoutNote: "invalid reviewer timeout; using 20000 ms" });
+      await vi.advanceTimersByTimeAsync(45000);
+      expect(await pending).toMatchObject({ reviewSkipped: "timeout after 45000 ms", timeoutNote: "invalid reviewer timeout; using 45000 ms" });
     } finally { vi.useRealTimers(); }
   });
   it("invalid timeout note is present on rejected verdicts and supersedes", async () => {
     const dbs = setup();
     const old = stageWrite(dbs.repo, "repo", { ...fact, content: "old reproducible build flags" });
     const opts = { timeoutMs: 120001, reviewer: async () => ({ verdict: "already_present", existing_uuid: old.uuid, reason: "same" }) };
-    expect(await reviewedWrite(dbs, "repo", fact, justification, opts)).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 20000 ms" });
-    expect(await reviewedWrite(dbs, "repo", fact, justification, { ...opts, reviewer: async () => ({ verdict: "not_durable", reason: "weak justification" }) })).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 20000 ms" });
-    expect(await reviewedWrite(dbs, "repo", fact, justification, { ...opts, reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "newer" }) })).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 20000 ms", archived: [old.uuid] });
+    expect(await reviewedWrite(dbs, "repo", fact, justification, opts)).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 45000 ms" });
+    expect(await reviewedWrite(dbs, "repo", fact, justification, { ...opts, reviewer: async () => ({ verdict: "not_durable", reason: "weak justification" }) })).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 45000 ms" });
+    expect(await reviewedWrite(dbs, "repo", fact, justification, { ...opts, reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "newer" }) })).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 45000 ms", archived: [old.uuid] });
   });
   it("invalid timeout uses default and explains the invalid config value", async () => {
     const dbs = setup();
     const result = await reviewedWrite(dbs, "repo", fact, justification, { timeoutMs: -5, reviewer: async () => ({ verdict: "new", reason: "yes" }) });
-    expect(result.timeoutNote).toMatch(/invalid.*timeout.*20000/);
+    expect(result.timeoutNote).toMatch(/invalid.*timeout.*45000/);
   });
   it.each([
     ['```json\n{"verdict":"new","reason":"ok"}\n```', "new"],
@@ -327,8 +327,40 @@ describe("reviewed remember", () => {
   ])("accepts one complete fence or unused null fields: %s", (raw, want) => {
     expect(parseVerdict(raw, [], "repo").verdict).toBe(want);
   });
+  it("accepts the exact recorded repo reviewer reply and discards its redundant scope", () => {
+    const raw = '{"verdict":"new","scope":"repo","reason":"This durable project-specific API contract can guide future agents using `spider exec`."}';
+    expect(parseVerdict(raw, [], "repo")).toEqual({
+      verdict: "new", reason: "This durable project-specific API contract can guide future agents using `spider exec`.",
+    });
+  });
+  it("rejects the exact recorded repo reviewer reply for a global request", () => {
+    const raw = '{"verdict":"new","scope":"repo","reason":"This durable project-specific API contract can guide future agents using `spider exec`."}';
+    expect(() => parseVerdict(raw, [], "global")).toThrow();
+  });
   it.each([
-    '{"verdict":"new","reason":"ok","scope":"repo"}',
+    { verdict: "already_present", existing_uuid: "known", reason: "same" },
+    { verdict: "supersedes", supersedes: ["known"], reason: "newer" },
+    { verdict: "not_durable", reason: "one-off" },
+  ])("discards matching scope for $verdict", verdict => {
+    const context = [{ uuid: "known", scope: "repo" as const, category: fact.category, content: "existing fact" }];
+    expect(parseVerdict({ ...verdict, scope: "repo" }, context, "repo")).toEqual(verdict);
+  });
+  it("accepts and discards a redundant global scope", () => {
+    expect(parseVerdict({ verdict: "new", reason: "durable", scope: "global" }, [], "global"))
+      .toEqual({ verdict: "new", reason: "durable" });
+  });
+  it.each([1, true, [], {}])("rejects non-string redundant scope: %j", scope => {
+    expect(() => parseVerdict({ verdict: "new", reason: "durable", scope }, [], "repo")).toThrow();
+  });
+  it.each(["repo", "global"] as const)("rejects mismatched scope for a %s request", requestedScope => {
+    const scope = requestedScope === "repo" ? "global" : "repo";
+    expect(() => parseVerdict({ verdict: "not_durable", reason: "one-off", scope }, [], requestedScope)).toThrow();
+  });
+  it.each([null, "extra"])("rejects an unknown extra key even with matching scope: %j", unknown => {
+    expect(() => parseVerdict({ verdict: "new", reason: "durable", scope: "repo", unknown }, [], "repo")).toThrow();
+  });
+  it.each([
+    '{"verdict":"new","reason":"ok","scope":"global"}',
     'prose before ```json\n{"verdict":"new","reason":"ok"}\n```',
     '```js\n{"verdict":"new","reason":"ok"}\n```',
     '{"verdict":"new","reason":"ok","unknown":null}',
@@ -396,7 +428,7 @@ describe("reviewed remember", () => {
     expect(reviewer).not.toHaveBeenCalled();
     expect(dbs.repo.prepare("SELECT count(*) n FROM memory").get()).toMatchObject({ n: 0 });
     expect(await reviewedWrite(dbs, "repo", { ...fact, category: "invalid" as any }, justification,
-      { reviewer, timeoutMs: 120001 })).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 20000 ms" });
+      { reviewer, timeoutMs: 120001 })).toMatchObject({ timeoutNote: "invalid reviewer timeout; using 45000 ms" });
   });
   it("a supersedes transaction waits for a concurrent writer then archives and stores", async () => {
     const dbs = setup();
@@ -425,4 +457,16 @@ describe("reviewed remember", () => {
     expect(entries.filter(e => e.scope === "repo")).toHaveLength(12);
     expect(entries.filter(e => e.scope === "global")).toHaveLength(12);
   });
+});
+
+// Unused null scope is tolerated just like null existing_uuid/supersedes.
+it.each([
+  { verdict: "new", reason: "durable" },
+  { verdict: "not_durable", reason: "one task" },
+  { verdict: "already_present", existing_uuid: "known", reason: "same fact" },
+  { verdict: "supersedes", supersedes: ["known"], reason: "newer fact" },
+])("accepts unused null scope for $verdict without weakening wrong_scope", verdict => {
+  const context = [{ uuid: "known", scope: "repo" as const, category: fact.category, content: "existing fact" }];
+  expect(parseVerdict({ ...verdict, scope: null }, context, "repo")).toEqual(verdict);
+  expect(() => parseVerdict({ verdict: "wrong_scope", reason: "redirect", scope: null }, context, "repo")).toThrow(/scope/);
 });

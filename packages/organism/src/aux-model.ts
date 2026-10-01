@@ -96,7 +96,8 @@ function extractJsonCandidate(text: string): Record<string, unknown> | undefined
 /**
  * Tolerant parse of an aux-model reply into typed candidates. Accepts a fenced
  * ```json (or bare ```) block, bare JSON, or JSON wrapped in prose.
- * Unknown/invalid entries are dropped (never throw). An exact, trimmed,
+ * Unknown/non-string entries are dropped (never throw). Skill strings keep
+ * their exact formatting for the shared validation/review gate. An exact, trimmed,
  * case-insensitive "Nothing to save." is a valid empty response.
  *
  * `opts.strict` (default `false`, preserving prior tolerant public behavior):
@@ -157,9 +158,11 @@ export function parseCandidates(raw: string, opts?: { strict?: boolean }): Diges
   const rawSkills = readField(parsed, "skills");
   if (Array.isArray(rawSkills)) {
     for (const entry of rawSkills) {
-      const name = nonEmptyStr(readField(entry, "name"));
-      const body = nonEmptyStr(readField(entry, "body"));
-      if (name === undefined || body === undefined) continue;
+      // Preserve raw strings for the shared deterministic gate. Trimming names
+      // or bodies here would silently repair invalid proposals and hide rejects.
+      const name = readField(entry, "name");
+      const body = readField(entry, "body");
+      if (typeof name !== "string" || typeof body !== "string") continue;
       const cand: SkillCandidate = { name, body };
       const category = nonEmptyStr(readField(entry, "category"));
       if (category !== undefined) cand.category = category;

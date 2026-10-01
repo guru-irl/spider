@@ -12,79 +12,25 @@
  * agent does the work with its existing toolset, so this works identically on
  * local, Docker, and remote backends.
  *
- * Ported from `hermes-agent/agent/learn_prompt.py`. The only changes are
- * retargeting Hermes tool names to spider verbs (`read`/`grep`/`find`,
- * `spider exec`, `spider fetch`, `spider skill`) and setting the skill author
- * to the literal `spider`.
+ * The authoring contract matches the shared deterministic skill gate.
  */
+export const AUTHORING_STANDARDS: string = `Author ONE reusable technique, not a task report or a renamed synonym of an existing skill.
+Final-format SKILL.md starts with YAML frontmatter containing exactly name and description:
+---
+name: tracing-writers
+description: Use when asynchronous writes need completion evidence
+---
+# Tracing writers
+Trace ownership and verify the last writer closes its output.
 
-// The house-style rules, distilled from AGENTS.md "Skill authoring standards
-// (HARDLINE)". Embedded in the prompt so the agent authors skills the way a
-// maintainer would by hand.
-export const AUTHORING_STANDARDS: string = `Follow the skill-authoring standards exactly. These are the same
-HARDLINE rules a maintainer enforces in review:
-
-Frontmatter:
-- name: lowercase-hyphenated, <=64 chars, no spaces.
-- description: ONE sentence, **<=60 characters**, ends with a period. State the
-  capability, not the implementation. No marketing words (powerful,
-  comprehensive, seamless, advanced, robust). Do NOT repeat the skill name. If
-  the description contains a colon, wrap the whole value in double quotes.
-  This is the most-violated rule and it is NOT cosmetic: the system-prompt
-  skill index truncates the description to 60 chars and loads it every
-  session, so anything past char 60 is silently cut and never routes. After
-  you write the description, COUNT the characters; if it is over 60, cut it
-  down before saving — do not ship a sentence and hope.
-    Good (<=60): \`Search arXiv papers by keyword, author, or ID.\`
-    Bad (123):   \`A comprehensive skill that lets the agent search arXiv for
-                  academic papers using keywords, authors, and categories.\`
-- version: 0.1.0
-- author: always the literal value \`spider\`. NEVER fill it from the host
-  environment — the OS/login username (e.g. the \`user=\` line in your
-  environment hints), git config, or any identity you can probe must not be
-  written. Skills get shared and published, so an environment-derived name is
-  a privacy leak the user never opted into; the skill names itself as spider.
-- platforms: declare \`[macos]\`, \`[linux]\`, and/or \`[windows]\` IF the skill
-  uses OS-bound primitives (osascript/apt/systemctl => the matching OS; /proc,
-  os.setsid, signal.SIGKILL => linux; fcntl/termios => POSIX). Prefer fixing it
-  cross-platform first (tempfile.gettempdir(), pathlib.Path, psutil); gate only
-  when the dependency is genuinely platform-bound. Omit the field for portable
-  skills.
-- metadata.tags: a few Capitalized, Relevant, Tags.
-
-Body section order (omit a section only if it genuinely has no content):
-1. "# <Human Title>" then a 2-3 sentence intro: what it does, what it does NOT
-   do, and the key dependency stance (e.g. "stdlib only").
-2. "## When to Use" — bullet list of concrete trigger phrases.
-3. "## Prerequisites" — exact env vars, install steps, credentials.
-4. "## How to Run" — the canonical invocation, framed through spider tools.
-5. "## Quick Reference" — a flat command/endpoint list, no narration.
-6. "## Procedure" — numbered steps with copy-paste-exact commands.
-7. "## Pitfalls" — known limits, rate limits, things that look broken but aren't.
-8. "## Verification" — a single command/check that proves the skill worked.
-
-Spider-tool framing (this is what makes it a skill, not shell docs):
-- Frame running scripts as "invoke through \`spider exec\`".
-- Reference spider tools by name in backticks: \`read\`, \`grep\`, \`find\`,
-  \`spider exec\`, \`spider fetch\`, \`spider skill\`.
-- Do NOT name shell utilities as raw one-offs when a spider verb wraps them:
-  say \`read\` not cat/head/tail, \`grep\`/\`find\` for search over grep/rg/ls,
-  \`spider fetch\` not curl-to-scrape, \`spider exec\` to run scripts.
-- Third-party CLIs (ffmpeg, gh, an SDK) are fine inside a script file, but the
-  prose still frames them as "invoke through \`spider exec\`". If the skill
-  needs an MCP server, name it and document its setup in Prerequisites.
-
-Quality bar:
-- Prefer exact commands, endpoint URLs, function signatures, and config keys
-  that appear VERBATIM in the source. NEVER invent flags, paths, or APIs — if
-  you didn't see it in the source, don't write it.
-- Keep it tight and scannable: ~100 lines for a simple skill, ~200 for a
-  complex one. Don't re-paste the source docs.
-- Don't write a router/index/hub skill that only points at other skills.
-- Keep any necessary script content inline in the body as a fenced code block
-  the agent runs via \`spider exec\` — there is no separate scripts/ upload path
-  today; do not promise one. References go in \`references/\`, templates in
-  \`templates/\` only when those directories already exist for this skill.`;
+- Name matches ^[a-z0-9]+(?:-[a-z0-9]+)*$, at most 64 characters, no paths or .md. It equals the action name.
+- Description starts with "Use when", names concrete discovery triggers, and is at most 500 characters. Quote YAML values that contain a colon.
+- Frontmatter is at most 1024 characters. Do not add any other fields.
+- Agent-origin instructions are at most 1500 words and the full body at most 16 KB (16384 UTF-8 bytes). Prefer much less; the reviewer judges concision.
+- Use a short title, a concise procedure, necessary pitfalls and a verification check. Include one useful example if needed, not a source-document copy.
+- Verify commands, flags and APIs against the named sources. Never invent facts or make temporary permissions or concurrency limits into standing policy.
+- Frame script execution through spider exec and source lookup through read, scoped search or spider fetch. Put needed code inline; staging does not upload companion files.
+- Stage for review only. Staging is not deployment or approval.`;
 
 /**
  * Build the agent prompt for an open-ended `/learn` request.
@@ -131,7 +77,7 @@ export function buildLearnPrompt(userRequest: string): string {
     "emphasizes, not just which sources you read.\n" +
     "2. Stage ONE SKILL.md candidate via the `skill` action with op:\"add\", " +
     'passing `name` (lowercase-hyphenated) and `text` set to the FULL markdown ' +
-    "body (frontmatter is derived automatically — do not include your own). " +
+    "body INCLUDING your own YAML frontmatter with exactly name and description. " +
     "Pick a sensible category if one applies. This only STAGES a candidate for " +
     "review; it does not activate anything, and you must never call op:\"approve\" " +
     "yourself. Tell the user to run `spider skill op=approve name=<name>` when " +

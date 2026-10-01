@@ -46,7 +46,13 @@ export function capMemory(result: DigestResult, max: number): DigestResult {
 export interface DigestModel { complete(system: string, messages: DigestMsg[]): Promise<string>; }
 
 export interface WriteBudget { max: number; used: number; }
-export interface AppliedSummary { memoryStaged: number; todosAdded: number; skillsStaged: number; dropped: number; rejected: number; }
+export interface SkillReviewSummary {
+  skillsQueued?: number;
+  skillsRejected?: Record<string, number>;
+  skillReviewReasons?: string[];
+  skillCapDropped?: number;
+}
+export interface AppliedSummary extends SkillReviewSummary { memoryStaged: number; todosAdded: number; skillsStaged: number; dropped: number; rejected: number; }
 
 export interface DrainError { phase: string; message: string; }
 /** Counts describe new staged proposals, not approvals or completed user work. */

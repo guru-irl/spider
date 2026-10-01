@@ -1,3 +1,5 @@
+import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
+import { persistReviewError } from "@spider/memory";
 // packages/host/src/extension.ts
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
@@ -33,7 +35,7 @@ import {
   registerOrganism,
   readOrganismConfig,
   readLastDrainReport,
-  readLastDrainReportForWorktree,
+  readLastDrainReportForWorktree, skillReviewQueueStatus,
   SkillStore,
   skillAction,
   curateAction,
@@ -147,7 +149,7 @@ export const SPIDER_PARAMETERS = {
     mark: { type: "string", description: "control upstream-watch: mark a reviewed baseline as '<package> <ref>' (run the watch first to fetch the mirror)." },
     force: { type: "boolean", description: "control skill sub=curate: run even when the organism is disabled, the curator is paused, or the minimum interval has not elapsed (decay can mark skills stale/archived). fetch: skip the cache TTL and refetch. todo op=clear: remove all todos in the current session, including open items (default removes only done items; session selectors are rejected)." },
     consolidate: { type: "boolean", description: "control skill sub=curate: request aux-model consolidation of eligible agent-created skills when a model and candidates are available; absorbed skills are archived." },
-    op: { type: "string", enum: ["get", "set", "unset", "add", "list", "toggle", "remove", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set/unset. todo: add/list/toggle/remove/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
+    op: { type: "string", enum: ["get", "set", "unset", "add", "list", "toggle", "remove", "clear", "sessions", "view", "distill", "approve", "reject"], description: "Sub-op. control config: get/set/unset. todo: add/list/toggle/remove/clear/sessions/view. skill: list/view/distill/add/approve/reject; op=add requires final-format SKILL.md with exactly name and a Use when description; STAGES a candidate for review (name+text; never activates); approval/rejection are explicit; an unrecognized op is a host-visible error, never a silent listing." },
     key: { type: "string", description: "control config key." },
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command (pending|approve|reject|status|forget; consolidate is deprecated -> status + forget)." },
@@ -224,7 +226,7 @@ export const SPIDER_PARAMETERS = {
     message: { type: "string", description: "Message body for action 'message'." },
     kind: { type: "string", description: "message: optional intercom message kind; defaults to 'message'." },
     // todo
-    text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate BODY (markdown) for action='skill' op=add; free-form request for action='skill' op=distill." },
+    text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate final-format SKILL.md (YAML frontmatter with exactly name and a Use when description, then concise body; agent limit 1500 words/16 KB) for action='skill' op=add; free-form request for action='skill' op=distill." },
     session: { type: "string", description: "todo op=view/toggle/remove: session id/prefix/name in the same project DB; toggle/remove default to current session; 'all' is rejected for toggle/remove and accepted for view. import: single transcript file path, taking precedence over sessions and select." },
     // exec
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
@@ -266,7 +268,7 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
   const api = ctx.pi as object;
   let runtime = organismRuntimes.get(api);
   if (!runtime) {
-    runtime = new HostOrganismRuntime(getEmbedder);
+    runtime = new HostOrganismRuntime(getEmbedder, undefined, () => piLoadedSkills(ctx.pi));
     organismRuntimes.set(api, runtime);
   }
   return runtime.resolve(ctx);
@@ -384,6 +386,9 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
           }
           const pendingMemory = ctx.repoDb && version === SCHEMA_VERSION ? listPending(ctx.repoDb, "repo").length : 0;
           const pendingSkills = ctx.repoDb && version === SCHEMA_VERSION ? new SkillStore(ctx.repoDb).list({ status: "staged" }).length : 0;
+          const queue = ctx.repoDb && version === SCHEMA_VERSION ? skillReviewQueueStatus(ctx.repoDb) : { pending: 0, recent: [] };
+          report.lines.push(`- skill review queue: ${queue.pending}`);
+          for (const item of queue.recent) report.lines.push(`- skill review ${item.name}: ${safeError(`${item.verdict}: ${item.reason}`)}`);
           report.lines.push(`- organism: ${state}`);
           if (version === undefined || version === SCHEMA_VERSION) {
             report.lines.push(`- organism proposals awaiting review: ${pendingMemory} memories, ${pendingSkills} skills`);
@@ -391,6 +396,8 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
             report.lines.push("- organism proposal counts unavailable until migrated");
           }
           if (enabled && last && (last.status === "failed" || last.status === "partial" || last.skipReason === "no-model")) report.ok = false;
+          for (const reason of last?.skillReviewReasons ?? []) report.lines.push(`- organism skill review: ${safeError(reason)}`);
+          if (last?.skillCapDropped) report.lines.push(`- organism skill proposal cap dropped: ${last.skillCapDropped}`);
           for (const error of last?.errors ?? []) report.lines.push(`- organism ${error.phase}: ${error.message}`);
           if (pendingMemory + pendingSkills > 0) report.lines.push("- review proposals: spider control memory sub=pending; spider skill op=list");
         } catch (e) {
@@ -740,9 +747,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
   });
   const organism = new HostOrganismRuntime(getEmbedder, report => {
     const meaningful = report.status === "failed" || report.status === "partial" ||
-      report.memoryStaged + report.skillsStaged + report.todosAdded > 0;
+      report.memoryStaged + report.skillsStaged + (report.skillsQueued ?? 0) + report.todosAdded > 0;
     if (meaningful) pi.appendEntry?.("spider.organism", report);
-  });
+  }, () => piLoadedSkills(pi));
   organismRuntimes.set(pi, organism);
   let currentContext: unknown;
   let currentSessionId = "";
@@ -782,11 +789,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
       link: (args.link as string | null) ?? null,
       source: args.auto ? "auto" : "user",
     }, args.justification, {
-      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry) : undefined,
+      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry, controlConfig("get", ctx.cwd, "memory.reviewer.thinking") as import("@earendil-works/pi-ai").ThinkingLevel) : undefined,
       skipReason: "reviewer disabled",
       timeoutMs: timeoutMs as number,
       signal: ctx.signal,
       repoAvailable: Boolean(ctx.project.repoKey),
+      onReviewError: (error, raw) => persistReviewError(ctx.cwd, "memory", error, raw),
     });
     // Carry the saved content/category/scope on BOTH the rendered panel and the serialized
     // details payload, so a programmatic caller gets back what was actually remembered.
@@ -809,14 +817,15 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // action needs no closure deps; the /todos command resolves db+session per call.
   registerAction("todo", makeTodo());
 
-  // Children load and stage skills directly from repo storage. Distillation
-  // and user review decisions stay parent-only, as does runtime resolution.
+  // Explicit staging is foreground review, including in children. It never
+  // constructs a background organism, learner or drain.
   registerAction("skill", (args, ctx) => {
-    if (process.env.PI_SUBAGENT_CHILD === "1") {
-      if (["distill", "approve", "reject"].includes(String(args.op))) {
-        return { error: "organism is disabled in subagent sessions" };
-      }
-      return skillAction({ db: ctx.repoDb, project: ctx.project }, args as SkillActionArgs);
+    if (process.env.PI_SUBAGENT_CHILD === "1" && ["distill", "approve", "reject"].includes(String(args.op))) {
+      return { error: "organism is disabled in subagent sessions" };
+    }
+    if (process.env.PI_SUBAGENT_CHILD === "1" || args.op === "add") {
+      return skillAction({ db: ctx.repoDb, project: ctx.project,
+        skillReview: skillReviewOptions(ctx.cwd, ctx.modelRegistry, ctx.signal, piLoadedSkills(ctx.pi)) }, args as SkillActionArgs);
     }
     return skillAction(buildOrganismDeps(ctx), args as SkillActionArgs);
   });
@@ -1089,11 +1098,14 @@ export default function spiderExtension(pi: PiToolAPI): void {
     routingSetupErrors.set(pi as object, safeError(e));
   }
 
+  // Cancel reviewers in every prior binding before any shutdown drain starts.
+  pi.on("session_shutdown", async () => { await organism.stopSkillReviews(); });
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
   }
   // Registered LAST: shutdown awaits the worker before closing its resources.
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
+    await organism.stopSkillReviews();
     organism.dispose();
     organismRuntimes.delete(pi);
     for (const db of routingDbs.values()) db.close();

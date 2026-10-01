@@ -31,7 +31,7 @@ describe("learner memory filters", () => {
     for (const term of ["task progress", "test counts", "run or branch", "one-off paths", "review checklists", "one job", "only this agent", "active memory", "justification", "evidence", "scope"]) {
       expect(COMBINED_REVIEW_PROMPT).toContain(term);
     }
-    expect(COMBINED_REVIEW_PROMPT).toMatch(/skill.*pressure.*not.*memory/i);
+    expect(COMBINED_REVIEW_PROMPT).toContain("Memory and skills both default to zero");
     expect(COMBINED_REVIEW_PROMPT).not.toContain("not just a memory signal");
     expect(COMBINED_REVIEW_PROMPT).not.toContain("state of your operations");
     expect(COMBINED_REVIEW_PROMPT).not.toContain("whichever of the two dimensions");
@@ -48,7 +48,7 @@ describe("learner memory filters", () => {
     ];
     const r = await learningPass(bundle, model(proposed));
     expect(r.memory).toHaveLength(1); // the pass filters malformed fields before applyDigest
-    const summary = applyDigest({
+    const summary = await applyDigest({
       db: ctx.repoDb, globalDb: ctx.repoDb, worktreeDb: ctx.db, scope: "repo", sessionId: "s1",
       skills: new SkillStore(ctx.repoDb), project: { projectKey: "k" } as never,
     }, r, { max: 10, used: 0 });
@@ -62,7 +62,7 @@ describe("learner memory filters", () => {
     bad[1].evidence = "some file";
     bad[2].evidence = "the model thinks this is true";
     const r = await learningPass(bundle, model(bad));
-    const summary = applyDigest({
+    const summary = await applyDigest({
       db: ctx.repoDb, globalDb: ctx.repoDb, worktreeDb: ctx.db, scope: "repo", sessionId: "s1",
       skills: new SkillStore(ctx.repoDb), project: { projectKey: "k" } as never,
     }, r, { max: 10, used: 0 });
@@ -81,7 +81,7 @@ describe("learner memory filters", () => {
     const globalDb = openDbAt(join(dir, "global.db"), "global");
     try {
     const r = await learningPass({ ...bundle, transcript: [{ role: "user", content: "I prefer direct instructions in every repo." }] }, model([global]));
-    const summary = applyDigest({
+    const summary = await applyDigest({
       db: ctx.repoDb, globalDb, worktreeDb: ctx.db, scope: "repo", sessionId: "s1",
       skills: new SkillStore(ctx.repoDb), project: { projectKey: "k" } as never,
     }, r, { max: 10, used: 0 });
@@ -104,7 +104,8 @@ describe("learner memory filters", () => {
     expect(input).toContain("Answer directly on every project");
     expect(input).toContain("Use local scratch for this project");
     expect(input).not.toContain("other rule 99");
-    expect(input.length).toBeLessThan(COMBINED_REVIEW_PROMPT.length + 11_000);
+    const memoryBlock = input.split("BEGIN ACTIVE MEMORY DATA")[1].split("END ACTIVE MEMORY DATA")[0];
+    expect(Buffer.byteLength(memoryBlock, "utf8")).toBeLessThan(8_200);
   });
 
   it("bounds multibyte active memory to eight KiB of DATA lines", async () => {
@@ -189,7 +190,7 @@ describe("learner memory filters", () => {
     const r = await learningPass({ ...bundle, transcript: [{ role: "user", content: text }] }, model([{
       ...candidate(text), category: "preference", evidence: `User: "${text}"`,
     }]));
-    const summary = applyDigest({ db: ctx.repoDb, globalDb: ctx.repoDb, worktreeDb: ctx.db, scope: "repo",
+    const summary = await applyDigest({ db: ctx.repoDb, globalDb: ctx.repoDb, worktreeDb: ctx.db, scope: "repo",
       sessionId: "s1", skills: new SkillStore(ctx.repoDb), project: { projectKey: "k" } as never }, r, { max: 5, used: 0 });
     expect(summary.memoryStaged).toBe(1);
     expect(listPending(ctx.repoDb, "repo")).toMatchObject([{ content: text, evidence: `User: "${text}"` }]);

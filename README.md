@@ -245,8 +245,65 @@ leave task-only information in the conversation (`not_durable`). The result
 states the verdict and reason. A reviewer error, unavailable model, timeout,
 abort, or disabled reviewer never loses the write: it stores as requested and
 states `review skipped: <reason>`. Configure `memory.reviewer.enabled` (default
-`true`), `memory.reviewer.model` (default `github-copilot/gpt-6-luna`), and
-`memory.reviewer.timeoutMs` (default `20000`) with `spider control config set`.
+`true`), `memory.reviewer.model` (default `github-copilot/gpt-6-luna`),
+`memory.reviewer.thinking` (default `medium`) and `memory.reviewer.timeoutMs`
+(default `45000`, integer from `1000` to `120000`) with `spider control config set`.
+
+Skill proposals from the learner and `spider skill op=add` share deterministic
+validation: a lowercase hyphenated name (up to 64 characters), matching YAML
+frontmatter with exactly `name` and `description`, a trigger-only description
+starting with `Use when` (up to 500 characters), frontmatter up to 1024 characters,
+nonempty instructions, and the strict memory threat scan. Learner and curator
+origin validation allows 500 instruction words and 8000 UTF-8 bytes. Agent
+`op=add`, including `/learn` and distill output, allows 1500 instruction words
+and 16 KB (16384 bytes); the reviewer judges concision. Deterministic failures
+reject without a model call, even with review disabled. The curator only
+archives existing skills; it does not stage candidates.
+
+The reviewer loads the complete bundled `writing-skills` rubric at runtime.
+It judges durability, candidate-text quality and existing coverage. Staging is
+not deployment, so pressure-test evidence and the deployment checklist are not
+required. The catalog has at most 150 entries, prioritizing bundled, active,
+pi-loaded, then most recently updated staged skills. Descriptions are truncated
+to 300 characters. The total learner system prompt is capped at 180000 UTF-8
+bytes, including rubric, catalog and active memory. Unavailable or oversized
+skill guidance is omitted without disabling memory learning.
+
+Learner candidates pass deterministic checks and `organism.maxSkillProposals`
+(default `1`, a nonnegative integer) before entering the durable repo review
+queue. Drains report `skillsQueued`, not reviewed stages. A live top-level
+session reviews queued candidates asynchronously at session start and after a
+before-compact drain. No queue review starts during shutdown or in children.
+A repo DB lease serializes reviews across handles and processes. Only `new`
+stages and stores the review reason. `duplicate`, `not_durable` and `low_quality`
+are removed with recent verdicts visible in doctor. Errors, timeout, abort and
+invalid replies remain queued with attempts and last_error; after three attempts
+they are dropped with a recorded reason. Doctor shows the queue length.
+
+Agent `op=add` waits for inline review, including in children, without creating
+a learner or organism runtime. It returns verdict/reason plus an existing name
+or failed rules when applicable. Review failures stage as requested with
+`review skipped: <reason>`. Staging never activates a skill. Child distill,
+approve and reject remain unavailable.
+
+Configure `skills.reviewer.enabled` (default `true`), `skills.reviewer.model`
+(default `github-copilot/gpt-6-luna`), `skills.reviewer.thinking` (default `xhigh`)
+and `skills.reviewer.timeoutMs` (default `180000`, integer from `1000` to `600000`).
+Both thinking settings accept `minimal`, `low`, `medium`, `high` or `xhigh`,
+independently of the learner/session model. Disabling the skill reviewer omits
+the learner skill section and leaves its queued reviews pending; agent adds
+still validate and stage as review-skipped. The learner defaults to no skill,
+proposes new techniques only and cannot patch existing skills.
+
+Both reviewers persist parse and transport failures in
+`.spider/logs/reviewer-errors.jsonl`: redacted error text and at most 2 KiB of
+raw reply. At 1 MiB the log rotates to one previous file. Logs stay local and
+raw replies never enter model-visible tool output. The v12 migration adds a
+review reason and durable queue/results/lease tables; v11 skills remain readable.
+Memory review permits information-preserving condensation through `supersedes`.
+For user preferences and standing instructions, only pure condensation that
+drops no information is allowed without a newer user statement. Corrections
+still require a newer statement from the user.
 
 A session normally resolves its project from the working directory. `/bind`
 pins a session to a specific worktree when that is wrong (for example, a session

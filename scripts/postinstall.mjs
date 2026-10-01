@@ -3,7 +3,7 @@
 // Best-effort: never block a contributor/CI install; print diagnostics to stderr.
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
@@ -43,20 +43,35 @@ try {
 }
 
 // ── 3. Best-effort global DB file bootstrap (no schema) ──
-try {
-  const root = join(homedir(), ".pi", "agent", "spider");
-  mkdirSync(root, { recursive: true });
-  if (Database) {
-    const db = new Database(join(root, "spider.db"), { timeout: 30000 });
-    db.pragma("journal_mode = WAL");
-    // DDL must never live in postinstall. db-core.migrate() is the single schema
-    // owner; even an idempotent-looking CREATE TABLE can preserve a partial table
-    // and then cause db-core to stamp that malformed schema as current.
-    db.close();
-    warn("global DB file ready (schema deferred to db-core)");
-  } else {
-    warn("global DB directory ready (database unavailable)");
+const configuredGlobalRoot = process.env.SPIDER_GLOBAL_ROOT;
+if (process.env.CI === "true" || process.env.VITEST) {
+  warn(`global DB bootstrap skipped (${process.env.CI === "true" ? "CI=true" : "Vitest"})`);
+} else if (configuredGlobalRoot && (
+  !isAbsolute(configuredGlobalRoot)
+  || (process.platform === "win32" && /^[\\/](?![\\/])/.test(configuredGlobalRoot))
+)) {
+  // npm's lifecycle cwd is the package directory, not db-core's runtime cwd.
+  warn("SPIDER_GLOBAL_ROOT is not absolute; skipped global DB bootstrap");
+} else {
+  try {
+    // Keep this pre-build resolver in sync with db-core/src/paths.ts: no trimming.
+    // postinstall-global-root.test.ts checks both by running this script as a real process.
+    const root = configuredGlobalRoot
+      ? resolve(configuredGlobalRoot)
+      : join(homedir(), ".pi", "agent", "spider");
+    mkdirSync(root, { recursive: true });
+    if (Database) {
+      const db = new Database(join(root, "spider.db"), { timeout: 30000 });
+      db.pragma("journal_mode = WAL");
+      // DDL must never live in postinstall. db-core.migrate() is the single schema
+      // owner; even an idempotent-looking CREATE TABLE can preserve a partial table
+      // and then cause db-core to stamp that malformed schema as current.
+      db.close();
+      warn("global DB file ready (schema deferred to db-core)");
+    } else {
+      warn("global DB directory ready (database unavailable)");
+    }
+  } catch (e) {
+    warn(`global DB file bootstrap skipped: ${e.message}`);
   }
-} catch (e) {
-  warn(`global DB file bootstrap skipped: ${e.message}`);
 }

@@ -1,617 +1,219 @@
 # spider
 
-Spider is one pi coding-agent extension. It puts memory, unified search, todos,
-subagents, sandboxed execution, web fetch, and a skills library on a single
-shared SQLite database. It replaces three older pi extensions: `pi-subagents`,
-`context-mode`, and a standalone todo tool.
+Spider is a [pi coding-agent](https://github.com/earendil-works/pi) extension for memory, search, todos, subagents, execution, web fetch, and skills.
+It exposes one `spider` tool backed by local SQLite databases.
+It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 
-## The single-tool model
+## Features
 
-The agent has one tool, named `spider`. Every operation is an `action` on that
-tool (`search`, `remember`, `recall`, `exec`, `exec_file`, `batch`, `index`,
-`fetch`, `run`, `kill`, `todo`, `skill`, `import`, `message`, `control`). Admin
-surfaces sit behind `spider control <command>` (`doctor`, `config`, `memory`,
-`stats`, `models`, `insights`, `migrate`, `bind`, `unbind`, `curate`,
-`upstream-watch`). Slash commands are a thin front for the same actions and
-render through the same code path, so a slash result and the matching tool
-result look identical.
+- Memory: reviewed notes with global or repository scope.
+- Search: full-text and vector search over memory, content, sessions, and todos.
+- Todos: persistent session lists with a live overlay.
+- Subagents: background children, parallel tasks, chains, and pipelines.
+- Execution: run scripts and filter output before it enters model context.
+- Reference material: fetch, index, and import content for later searches.
+- Skills: bundled procedures, staged proposals, and explicit approval.
+- Background learning: propose memory and skills from session activity.
 
 ## Requirements
 
-- **Node 26.** The extension loads two native modules, `better-sqlite3` (SQL)
-  and `sqlite-vec` (vector search). These are compiled against a specific Node
-  ABI **at install time** — `node-gyp` builds `better-sqlite3` from source, and
-  nothing native is checked into the repo (`dist/` and `node_modules/` are both
-  gitignored) — so the install-time Node must match the Node that pi runs.
-  Spider pins Node 26.4.0 (the `volta` field in `package.json`), and that is the
-  only version any CI workflow builds or tests against (`ci.yml`, `release.yml`,
-  and `publish.yml` all pin `node-version: '26.x'`). `engines` allows
-  `>=22.19.0`, but that lower bound is a declared minimum only — nothing in the
-  repo builds or tests on anything below 26.x, so it is unverified. On a
-  different major version the native modules fail to load and vector search
-  degrades to full-text search only.
-- pi coding-agent 0.87 or later (peer dependency). Subagent children default to RPC mode, which needs `--exclude-tools`, `--name`, `agent_settled` and `clear_queue` (verified in 0.85.1 and 0.87). A child pi binary older than 0.85.1 automatically uses print mode and records the reason in run details and completion output. Version checks read metadata from the launched binary on PATH or `PI_SUBAGENT_PI_BINARY`; unknown versions keep RPC mode with a recorded warning.
+- Use Node 26 for installation and running pi so native modules use the same ABI. Development pins `26.4.0`; all CI workflows use `26.x`. The package declares `>=22.19.0`, but lower versions are not tested by those workflows.
+- `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` `>=0.87.0`.
+- Native dependencies: `better-sqlite3` (Node addon) and `sqlite-vec` (platform library). Build the addon for the Node ABI used by pi.
+- If a native prebuild is unavailable, building `better-sqlite3` requires Python and a C/C++ toolchain for `node-gyp`.
+- CI runs on Linux. Other operating systems are not covered by the workflows.
+- Default reviewers and background learning use `github-copilot/gpt-6-luna`; authenticate GitHub Copilot through pi's `/login`, or [configure another authenticated provider](docs/guide/configuration.md#reviewer-and-learner-models).
 
-## Install
-
-Spider is not yet on npm — no version has been tagged or released (`git tag`
-lists none as of this writing). A release pipeline
-(`.github/workflows/release.yml` and `.github/workflows/publish.yml`) publishes
-`@guru-irl/spider` to the npm registry once a maintainer cuts a tagged release;
-see [docs/release-process.md](docs/release-process.md) for that flow. Until the
-first release ships, install straight from git — pi clones the repo, runs
-`npm install`, and the `prepare` script builds the bundle:
-
-```bash
-pi install git:github.com/guru-irl/spider
-```
-
-Relaunch pi after installing or updating a directly loaded package. Its bundle
-can remain in Node's module cache after `/reload`. The linked shims described
-below support in-process bundle reloads. Verify with `/doctor`.
-
-### Check the loaded bundle
-
-Run `/doctor` or `spider control command:"doctor"`. The `bundle` line shows
-this session's loaded commit, dirty flag, build time, and package version.
-`current` means the bundle at the loaded file's location still has the same
-build identity. After an update or rebuild, doctor puts the remedy first:
-`RELOAD NEEDED, /reload to load it` only when its loaded URL has the regenerated
-shim's `?build=` query. Old shims, direct packages, and fallback loads say
-`RESTART NEEDED, restart pi to load it`. In a child, it says the next dispatched
-subagent will load the new bundle instead. Outside child mode, without the query,
-doctor also hints that a linked checkout needs `npm run link`, then a one-time pi restart. This is
-informational and does not fail the health check. An unreadable file or missing
-marker is reported without claiming it is current.
-
-Updating the file does not update code already loaded in a running session.
-With a current linked shim, `/reload` is safe while background subagents run:
-they keep running and are re-adopted by the reloaded bundle. Direct package
-loads require a restart. Each built bundle contains
-a greppable `SPIDER_BUILD_ID=<sha>[-dirty]@<ISO timestamp> v<version>` header.
-Every watch rebuild captures a fresh time. Dirty means tracked changes only;
-untracked local state does not affect it. Builds without git, or without their
-own checkout root, use `unknown` for the commit. Unbundled source development
-reports unknown build metadata.
-
-Each `/reload` of a rebuilt bundle keeps the previous module instance in memory
-until pi exits. A fixture measurement recorded about **1.5 MiB heap and 3 MiB RSS
-per rebuilt reload** for the 0.56 MiB bundle with no embedder loaded, plus anything
-an old instance's module-scope caches still hold. The embedder is process-wide
-and loaded once on first use. Session switches (`/new`, `/resume`, `/fork`) and
-rebuilt reloads reuse the same model, keyed by a versioned global symbol. An
-unavailable result (both providers fail) is cached process-wide for **10 minutes**;
-the first call after that cooldown retries initialization. Rejected initialization
-promises are cleared immediately, so the next call can retry. Each activation
-dispatches through its own action closures, using the global registry only for
-externally registered actions that it does not own. On `session_shutdown`, spider
-releases that activation's action closures and error marks, agents UI target,
-organism/routing runtime references and DB handles without clearing another live
-activation's host state. Organism shutdown work is awaited. Subagents are the
-one exception to "release everything": a `/reload` keeps background subagents
-running and the reloaded activation re-adopts them (see
-[Subagents and killing them](#subagents-and-killing-them)); quit, `/new`,
-`/resume` and `/fork` still stop all of them.
-This is not cancellation of every in-flight operation: some action/UI DB handles
-lack an explicit close path. Chain steps and pending intercom calls ARE stopped
-on both reload and quit. The shared model is intentionally retained until
-process exit; Fastembed has no public model disposer. Restart pi after many rebuilt reloads or when
-complete process-level cleanup is needed.
-
-Pin a ref if you want a fixed version, and update by re-installing at a new one
-(substitute a real release tag for `<tag>` once one exists — none does yet; the
-current unreleased version is `0.1.0`):
-
-```bash
-pi install git:github.com/guru-irl/spider@<tag>
-pi update            # updates installed packages
-pi list              # shows what is installed
-pi remove git:github.com/guru-irl/spider
-```
-
-`npm install` also runs `scripts/postinstall.mjs`, which loads `better-sqlite3`,
-opens a `vec0` table through `sqlite-vec`, and bootstraps the global database
-file (schema is deferred to db-core). If `SPIDER_GLOBAL_ROOT` is an absolute
-path (drive-qualified or UNC on Windows), the bootstrap uses it. Only an unset
-or empty value uses the default `~/.pi/agent/spider`. Other values, including
-Windows root-relative paths, skip the bootstrap with a warning because npm's
-working directory differs from the runtime working directory. The bootstrap is
-also skipped when `CI=true` or `VITEST` is set; native self-checks still run.
-It prints diagnostics to stderr and never blocks the install. If a native
-module fails, run `npm rebuild better-sqlite3` in the package directory.
-
-## Develop against a working tree
-
-For hacking on spider itself, clone it and link a shim into pi's global
-auto-discovery directory (`~/.pi/agent/extensions/`), which pi loads without a
-project-trust prompt:
+## Install, update, and remove
 
 ```bash
 git clone https://github.com/guru-irl/spider.git
 cd spider
-npm install       # prepare builds dist/ automatically
-npm run link      # stable shim  -> ~/.pi/agent/extensions/spider.ts
-# or
-npm run dev:link  # hot-reload shim -> spider-dev.ts, alongside `npm run dev`
+npm ci
+npm run build
+npm run link
 ```
 
-Pick one; the two scripts remove each other to avoid a double load.
+- `npm ci` installs build dependencies and runs native checks and the `prepare` build. The explicit build verifies the bundle too.
+- `npm run link` writes `~/.pi/agent/extensions/spider.ts`, a loader shim pointing at this clone's `dist/extension.js`. It removes the development shim if present.
+- In pi, run `/reload` or start a new process, then `/doctor` to check native modules, databases, config, and bundle identity.
+- `pi install git:` is not supported yet: pi installs without dev dependencies, and spider's build needs them.
+- Keep the clone at its linked path. See [Linked shims](docs/architecture/runtime-lifecycle.md#linked-shims) for loading precautions and fallback behavior.
 
-- `npm run link` writes the stable shim pointing at this repo's built
-  `dist/extension.js`. Remove it with `npm run unlink`.
-- `npm run dev:link` writes the dev shim for `npm run dev` (vite watch).
-  Remove it with `npm run dev:unlink`.
+To update, run in the clone:
 
-Both shims use Node's native import in the main context via `runInThisContext` with
-`USE_MAIN_CONTEXT_DEFAULT_LOADER`, bypassing jiti's dynamic-import rewrite.
-The URL cache key uses the bundle's mtime and size: `/reload` loads a changed
-bundle after its build finishes, but an unchanged file reuses its module.
-This Node API is experimental; the shim suppresses only its specific loader
-ExperimentalWarning during synchronous compilation and native-import calls.
-If the VM loader constant is unavailable, compilation throws, or native import
-fails with an allowlisted loader/resolution error code, the shim falls back to
-plain `import(bundle)`; rebuilt bundles then require a pi restart, not `/reload`.
-Errors without an allowlisted loader code are rethrown without retry.
-The code allowlist does not identify the load phase: the bundle must link
-natively, with no top-level await of optional modules. Keep its top level free
-of resource initialization; `npm run build` verifies a native import without
-activating the extension. If fallback also fails, the visible message names
-both failures and an `AggregateError` retains both original errors. A plain
-dynamic import, even with a query string, does not reliably reload through pi's
-jiti loader.
-Regenerate older shims by running the link command again, then restart pi once. Do not load the package directly alongside a shim.
+```bash
+git pull
+# If package-lock.json changed, quit pi before running:
+npm ci
+npm run build
+```
 
-The fixture probes `node scripts/probe-reload.mjs` and
-`node scripts/probe-build-watch.mjs` exercise pi's real loaders and
-two Vite watch builds. They use only scratch bundles and a fixture agent
-directory under `.spider/scratch/build-id/`, never the real pi extension directory.
-Both probes also run in the test suite. The reload probe covers both the SDK
-entry's `alias` configuration and `dist/bundle/index.js`'s CLI configuration
-(`virtualModules`, `tryNative:false`), using the same worktree-local pi package.
-
-The stable shim points at a **fixed path**, so if you move the clone, re-run
-`npm run link`. A source-linked checkout updates by pulling and rebuilding in
-that directory — `pi update` manages installed packages, not a linked working
-tree.
-
-### Contributor notes
-
-Installs behind a private mirror must run `npm run check:lockfile -- --fix` before committing.
-It maps mirror URLs that use the `/npm/registry/` path layout to public npm tarballs
-and upgrades SHA-1 integrity to SHA-512 after downloading through the configured
-registry and verifying the existing SHA-1. Other mirror layouts need a manual URL
-fix. CHECK is offline and rejects non-public tarball sources, integrity without
-SHA-512, and tracked `.npmrc` settings outside the harmless allowlist.
-
-The process-wide embedder slot also retains the adapter object from whichever
-bundle initialized it first. A rebuilt reload does not replace that adapter, so
-changes to `packages/memory/src/embeddings/embedder.ts` need a pi restart to take
-effect once the model is loaded, even with `dev:link`. Bump the versioned global
-symbol key when changing the adapter or slot contract incompatibly. A key bump
-can retain both models until process exit; restart pi for complete cleanup.
+- If the update ran `npm ci`, start pi again after the build. `/reload` only refreshes the bundle, not dependencies or native modules.
+- For pulls that did not change the lockfile, use `/reload` after the build. If `/doctor` says `RESTART NEEDED`, restart pi instead.
+- To uninstall, run `npm run unlink` in the clone. If you used `npm run dev:link`, also run `npm run dev:unlink`. Quit pi and delete the clone.
+- Remove the managed block described under [Data and privacy](#data-and-privacy) from `~/.pi/agent/AGENTS.md`, then restart pi if needed. Unlinking does not remove that block or local databases.
+- For full removal, also delete `~/.pi/agent/spider/`, `<git-common-dir>/spider/` and `<worktree>/.spider/` in each repo you used; see the [tier table](#data-and-privacy).
 
 ## Quickstart
 
-Actions on the `spider` tool:
+- Run `/doctor` and fix any reported failures.
+- Ask the agent to index reference material, then search it:
 
-```
-spider search   query:"where is the retry backoff set"   # FTS + vector search
-spider exec      language:shell code:"git log --oneline -20"  # sandboxed; only printed output enters context
-spider index     path:"docs/"                             # index files for later search
-spider remember  content:"prefer tabs" category:"preference" justification:"A standing preference, useful to future agents in any repo; global scope applies." scope:"global"
-spider run       agent:"reviewer" task:"review the diff on the auth module"  # background subagent
-spider kill      id:"a1b2c3"                              # kill a subagent (id, prefix, name, or "all")
-spider todo      op:"add" text:"wire up the migration"    # durable per-session todo
-spider control   command:"doctor"                         # health check
+```text
+spider index path:"docs/"
+spider search query:"deployment steps"
 ```
 
-Slash commands (thin front for the same actions):
+- Add work to the session list, then open `/todos`:
 
-```
-/todos      live todo overlay          /search    unified search
-/agents     live subagent overlay      /memory    recall memory
-/doctor     health check               /insights  learning insights
-/stats      usage stats                /learn     distill skills from sessions
-/bind       bind session to worktree   /exec-enforce  toggle bash enforcement
+```text
+spider todo op:"add" text:"Add a regression test for retries"
+spider todo op:"list"
 ```
 
-Todo ops: `add`, `list`, `toggle`, `remove`, `clear`, `sessions`, `view`.
-Use `remove id:<seq>` for obsolete items. `clear` removes only done items and
-reports removed and kept-open counts; `force:true` removes all items in the
-current session. `clear` rejects session selectors. `toggle` and `remove`
-accept a session id, unique prefix, or unique name via `session` within this
-project DB, defaulting to the current session. They reject `session:"all"`,
-unresolved or ambiguous selectors, and missing or unknown ids with an error.
+- Save a durable project fact with a reason and a source:
 
-## Config layers
-
-Config precedence is built-in defaults, then global config, then worktree-local
-config. Use `scope:"global"` with `control config` `op:"set"` or `op:"unset"`
-to edit `~/.pi/agent/spider/config.json` (or the config under `SPIDER_GLOBAL_ROOT`).
-Omit scope or use `scope:"repo"` to edit the current worktree's `.spider/config.json`.
-Here `repo` selects the local config, not the shared repository database.
-Other config write scopes, including `worktree` and `project`, are rejected.
-
-```
-spider control command:"config" op:"set" key:"memory.reviewer.model" value:"provider/model" scope:"global"
-spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"repo"
-spider control command:"config" op:"get" key:"memory.reviewer.model"
+```text
+spider remember scope:"repo" category:"convention" content:"Use the test gate in package.json" link:"package.json" justification:"The gate remains useful after this task; other agents need it; it is specific to this repository."
 ```
 
-Write results report `scope` (`global` or `local`), the destination `file`, and
-`shadowedBy:"local"` when a global edit is overridden by a local key. A keyed
-`get` reports the effective `value` and its `source` (`default`, `global`, or
-`local`). If neither a built-in default nor a layer supplies the key, `value` is
-undefined and `source` is `unset`. An unkeyed `get` reports `config` and `sources`.
-For `models.defaults`, provenance is a per-role source map, matching `control models`.
+- Use `/memory` to read notes and `/agents` to inspect child runs.
+- Load an applicable skill before non-trivial work: `spider skill op:"list"`.
+- These examples describe tool calls for the agent, not terminal commands.
 
-Unset normally removes the key from the chosen layer, allowing lower layers to
-supply the value. Only `memory.snapshotCharCap` accepts `"unlimited"`: if a
-global cap exists, unset writes that sentinel in the chosen layer so the cap
-does not reappear. Setting this key to `"unlimited"` or an empty string uses the
-same scoped unset path. Other numeric keys and model ids never receive that
-sentinel. `exec.enforce` remains protected from both model-facing set and unset.
+## Usage reference
 
-## Subagents and killing them
+### `spider` actions
 
-`spider run` dispatches subagents in the background (single, chain, parallel,
-and pipeline modes) and reports back via a `spider.subagent_done` message.
-Run records and child events stay in the dispatching session's worktree database
-(or its `/bind` target), which is also the database read by `/agents`. A `cwd`
-on `run` changes the child's working directory and supplies that target's model
-defaults, but does not move run records. Child scratch files and transcripts
-stay in the target project's `.spider/scratch`. Other actions with an explicit
-`cwd`, such as `todo`, continue to use that directory's project database.
-
-`spider kill` stops them. It accepts a run id, an id prefix, a run name, or
-`"all"`. Kill signals the whole **process group**, so a subagent's own children
-die with it rather than being reparented and left running. A killed run is
-recorded as `cancelled`, and both `cancel()` and `finish()` refuse to overwrite
-that status — so a child that dies mid-write cannot rewrite its own death as
-`done`.
-
-Use `/agents` or `alt+shift+up` to select a run from the footer. With `ui.footer=false`, both notify without opening a selector; changes to this setting take effect in the next session. Press `Enter` on a run to open its detail view, then
-`k` twice to kill it (the second press within a few seconds confirms).
-
-`control models set <role> <model>` writes a global role default to the spider global `config.json` (`~/.pi/agent/spider/config.json` unless `SPIDER_GLOBAL_ROOT` is set). The current worktree's `.spider/config.json` can override each role independently. Resolution is explicit model, local role override, global role default, then parent model, including pipeline stages. A global set reports the worktree-local value and file if that role is shadowed. `control models clear <role>` removes only that role's local override in the current worktree; it does not change the global value or other local roles.
-
-Thinking choices come from one shared definition in `@spider/db-core`: `off`,
-`minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Use `thinking:"max"` for a
-single run, or put it on each task, chain step or pipeline stage. A model suffix
-such as `provider/model:max` also works, including in `control models set` role
-defaults; an explicit thinking field overrides the suffix. Children receive the
-resolved choice as `--thinking <level>`.
-
-The models card lists each model's supported thinking levels. Spider follows
-pi 0.87's `reasoning` and `thinkingLevelMap`: omitted `xhigh`/`max` and explicit
-`null` levels are unsupported. Pi fills a hole with the next supported higher
-level first, then falls back lower. Run details and completion notices report
-`thinking capped` for a lower level or `thinking adjusted` for a higher one.
-A level requested on a non-reasoning model reports thinking off. Honored levels
-and non-reasoning models with no request create no warning. Unknown models leave the effective
-level unverified rather than claiming the requested level was used. Cap and
-adjustment diagnostics also name an explicit provider mapping when its value
-differs from the pi level. Honored aliases stay in structured memory receipt
-metadata without creating a warning.
-
-Children default to `pi --mode rpc`. The dispatching session owns their pipes
-and sends exactly one task prompt. Set `subagents.childMode` to `"print"` using
-`spider control command:config op:set` to retain legacy `--mode json -p` for
-new launches. Runs retain their launch mode; changing the setting does not
-upgrade existing children.
-
-### What happens to running subagents on shutdown
-
-`session_shutdown` carries a reason (`quit`, `reload`, `new`, `resume`, `fork`).
-
-| Reason | Background subagents |
+| Action | Use |
 | --- | --- |
-| `reload` | **Kept running** and re-adopted by the reloaded activation (single, parallel and pipeline-stage children, RPC or print mode). Chain steps are stopped: a chain is background work from the user's view, but its continuation lives in the old activation. |
-| `quit`, `new`, `resume`, `fork` | Stopped. A replaced or ended session has nowhere to deliver a completion notice. |
+| `search` | Search memory, content, sessions, and todos; filter with `kinds`. |
+| `remember` | Propose durable memory with `content`, `category`, and `justification`. |
+| `recall` | Read active memory; filter by `query`, `category`, or `scope`. |
+| `exec` | Execute a script with `language` and `code`. |
+| `exec_file` | Load a file into a script for analysis. |
+| `batch` | Execute a sequence of commands. |
+| `index` | Index a file, directory, or supplied content. |
+| `fetch` | Fetch and index URLs; use `force:true` to bypass cache. |
+| `run` | Start a child task, `tasks`, `chain`, or `pipeline`. |
+| `kill` | Stop a run by ID, prefix, name, or `id:"all"`. |
+| `todo` | `add`, `list`, `toggle`, `remove`, `clear`, `sessions`, or `view`. |
+| `skill` | `list`, `view`, `distill`, `add`, `approve`, or `reject`. |
+| `import` | Import local pi session transcripts. |
+| `message` | Send text to a peer session or steer an owned RPC child. |
+| `control` | Run the administrative commands below. |
 
-Every one of these acts on the ENDING session only, named by the context pi passes
-to `session_shutdown`. In a process that hosts several sessions (an SDK host), reloading or
-quitting session A never detaches, kills or re-times session B's children. On `quit`, `new`,
-`resume` and `fork`, shutdown stops that session's subagents, including children an earlier reload
-detached and nobody adopted (their runs are marked `cancelled` with the shutdown reason). RPC children receive
-`clear_queue`, then `abort`, then stdin EOF; process-group `SIGTERM` and
-`SIGKILL` remain the fallback after a short grace period. Runs orphaned by a hard kill (where the host died without
-running shutdown) are reaped at the next `session_start` — but only after
-checking that the pid's current start time matches the recorded spawn identity
-(legacy rows without a start time use the old command check), so pid reuse
-cannot make the reaper signal an unrelated process, and only when the owning
-host is actually dead, so one session never kills another's agents.
+### `spider control` commands
 
-**How reload survival works.** The live child handles (process, pipes, run id,
-session id, DB path, intercom name, pid and start time) are parked in a
-process-wide registry at `globalThis[Symbol.for("spider.childRegistry.v1")]`,
-a small versioned structure that a different build can read. On `reload` the
-old activation detaches: its listeners are removed so nothing calls into the
-dead pi instance, the processes and pipes stay open, and RPC events that arrive
-are buffered, bounded by count and by bytes. Streaming partial updates are not buffered (a full message follows), and the events that end up in the run history are kept separately, so partials can never push them out. If the buffer still overflows, the run says so: a warning event records "events lost during reload" and the run's final result carries the same note. On the
-next `session_start`, the reloaded activation adopts only this session's
-entries: it rebinds event handling, the completion notifier, kill and steering
-(`spider message`, `spider kill`, `/agents` all work again), and resumes the
-event feed from where the old one stopped, so escalations raised during the gap
-still arrive. A child that finished during the gap is finalized and reported
-once, by the reloaded activation; there is no duplicate and no lost notice.
+- `doctor`: health checks and loaded-versus-installed bundle status.
+- `config`: read, set, or unset configuration keys.
+- `memory`: `pending`, `approve`, `reject`, `status`, or `forget`.
+- `models`: list the catalog; `op:"set"` sets a global role default; `control models clear` (`op:"clear"`) removes only the local role override.
+- `stats`: token savings and row counts.
+- `insights`: inspect the learning graph.
+- `skill sub:"curate"`: run skill curation; optional `force` and `consolidate`.
+- `migrate`: preview legacy data migration; `apply:true` applies it after backups.
+- `bind` / `unbind`: set or remove a session's worktree binding.
+- `upstream-watch`: inspect vendored upstream changes or mark a reviewed baseline.
 
-Limits and failure modes:
+### Slash commands and overlays
 
-- A foreground chain step cannot survive, because the chain's continuation lives
-  in the old activation. Reload stops it, as before.
-- A pipeline's in-flight stage survives and reports, but the pipeline coordinator
-  does not: later stages do not start. The stage's run gets a warning event, and the
-  stage's completion notice to the parent says that the remaining stages were not
-  started and must be re-dispatched. (Resuming the pipeline is not implemented.)
-- If nothing adopts a detached child within 60 seconds (the reload failed to
-  load, the session changed, or the new build speaks a different registry
-  version), it is killed and its run is marked `cancelled`; a run that already finished
-  in the gap gets its real status instead. If adopting a child fails (for example its
-  run row is not in the DB the new activation resolved), the user is notified, the run
-  gets a warning event, and the 60 second timer restarts. If pi exits while children are
-  still detached (the new bundle never loaded, or no `session_start` followed, as in an
-  SDK host without UI bindings), an exit hook stops them and finalizes their rows.
-  That hook is best-effort: it cannot run after a hard kill of pi.
-- A reload into a build with a different registry version cannot adopt the old
-  entries. They are cleaned up by that 60 second timer, and by `quit`, which asks
-  every registry version found in the process to dispose of its children.
-- A hard kill of pi still leaves rows for the existing orphan reaper.
-- `node scripts/probe-child-survival.mjs` runs the real-pi check: a
-  fixture host loads the built bundle, dispatches a child that waits on a
-  fake-provider tool, reloads a different build, releases the child and checks
-  for exactly one completion notice, and that `quit` after a reload kills it.
+- `/spider`, `/stats`: statistics dashboard.
+- `/search <query>`: unified search; `/memory`: active memory.
+- `/doctor`: health check; `/insights`: learning graph.
+- `/learn <note>`: queue a skill-distillation prompt; it does not approve a skill.
+- `/bind <path>`: bind this session to a worktree.
+- `/exec-enforce on|off`: user-controlled bash enforcement in worktree-local config, not other repos; no argument reports the current state.
+- `/todos`: live todo overlay.
+- `/agents` or `alt+shift+up`: run selector; `Enter` opens details, `k` twice confirms killing a run.
+- `ui.footer=false` disables the footer and run selector from the next session.
+
+## Configuration
+
+- Keys are flat JSON properties with dots, for example `"organism.enabled": false`.
+- Precedence: built-in defaults, then `~/.pi/agent/spider/config.json`, then `<worktree>/.spider/config.json`.
+- `SPIDER_GLOBAL_ROOT` overrides the global root.
+- For writes, `scope:"global"` selects global config; omitted scope or `scope:"repo"` selects worktree-local config. Other write scopes are rejected.
+- `get` reports effective values and their sources; global writes report local shadowing.
+- Set/unset accept only known keys; values must follow the [validation rules](docs/guide/configuration.md#validation).
+
+```text
+spider control command:"config" op:"get"
+spider control command:"config" op:"set" key:"organism.enabled" value:false scope:"repo"
+spider control command:"config" op:"unset" key:"organism.enabled" scope:"repo"
+# To use an authenticated alternative to the default reviewer and learner:
+spider control command:"config" op:"set" key:"memory.reviewer.model" value:"provider/model" scope:"global"
+spider control command:"config" op:"set" key:"skills.reviewer.model" value:"provider/model" scope:"global"
+spider control command:"config" op:"set" key:"auxiliary.background_review.model" value:"provider/model" scope:"global"
+```
+
+- Common keys: `organism.enabled` (default `true`), `subagents.childMode` (`"rpc"`), `ui.footer` (`true`).
+- Reviewers: `memory.reviewer.enabled` and `skills.reviewer.enabled` default to `true`.
+- `models.defaults` maps roles to model references; local values override global values per role.
+- `memory.snapshotCharCap` defaults to unlimited injection of active memory; it does not change the storage cap.
+- `exec.enforce` defaults to `true` and cannot be changed through the model-facing config action.
+- See [Configuration](docs/guide/configuration.md) for defaults, provenance, validation, and when changes take effect.
+
+## Data and privacy
+
+| Tier | Location | Data |
+| --- | --- | --- |
+| Global | `~/.pi/agent/spider/spider.db` | Global memory, project registry, bindings, messages, insights, model stats, run routes, upstream baselines. |
+| Repository | `<git-common-dir>/spider/repo.db` | Memory, skills, embeddings, curator state, skill review queue. |
+| Worktree | `<worktree>/.spider/project.db` | Sessions, runs, todos, content, events, embeddings. |
+
+- Sibling worktrees share repository memory and skills, not runs or todos.
+- Scratch and logs live under `<worktree>/.spider/`; global work uses `~/.pi/agent/spider/`.
+- On activation, spider writes a managed block between `<!-- spider:start -->` and `<!-- spider:end -->` in `~/.pi/agent/AGENTS.md`. Keep personal notes outside those markers; managed edits are overwritten.
+- Databases, local config, logs, and scratch are machine-local state. Never commit them; this repository ignores the worktree artifacts.
+- Local storage does not mean offline operation: model calls send prompts to configured providers, fetch downloads URLs, and embedding initialization can download a model.
+- Memory and skill reviewers and background learning can send candidate text, active memory, skill guidance, or conversation excerpts to a model provider.
+- Treat databases, transcripts, fetched content, and logs as potentially sensitive. Secret scanning is not a guarantee of removal.
+- See [Data model](docs/architecture/data-model.md) for path resolution, binding, and legacy migration.
+
+## Subagents
+
+- Runs report asynchronously through `spider.subagent_done`; there is no blocking wait.
+- Set an explicit provider-qualified `model` and a suitable `thinking` level.
+- For `tasks`, `chain`, and `pipeline`, put `model` and `thinking` on each item, not at the top level.
+- Runs stay in the dispatching session's database even when a child has a different `cwd`.
+- `/reload` preserves eligible children, but stops chains and does not resume later pipeline stages. Quit and session replacement stop owned children.
+- See [Subagents](docs/guide/subagents.md) for dispatch, shutdown, escalation, and delivery guarantees.
 
 ## Background learning
 
-The organism runs only in parent sessions. With `PI_SUBAGENT_CHILD=1`, the
-host does not register its compaction or shutdown hooks, and manual organism
-actions refuse with `organism is disabled in subagent sessions`. Children can
-use `skill list`, `view`, and `add` directly against the repo DB, without an
-organism worker or model. `skill distill`, `approve`, and `reject`, plus
-`control skill curate` (including consolidation) and `control insights`, refuse.
-
-Background learning and skill consolidation default to
-`github-copilot/gpt-6-luna` with `low` thinking, never the session model.
-Explicit `auxiliary.background_review.model` and `.provider` settings override
-the default. A provider-only override selects `<provider>/gpt-6-luna`. A bare
-model id must match exactly one available catalog entry, under the configured
-provider if supplied; it never borrows the session provider. An unavailable
-model produces a recorded drain error without falling back to another model.
-
-## Escalation and messaging
-
-Subagents escalate to their parent by emitting a structured marker
-(`ESCALATION[blocked|question|warning]: ...`). The parent surfaces it as a
-themed card **while the run is still going**, not at the end — so a blocked
-child is visible immediately.
-
-`spider message` to a running RPC run in its dispatching session sends a `steer`
-over the owned pipe. RPC success means **accepted but not confirmed**, not
-promised delivery: Pi input handlers can swallow or transform it. **Delivered**
-requires a correlated user `message_start` entering the conversation. This is
-conversation-entry evidence, not proof of model consumption. Exact steer text
-is preferred among all queue additions in its serialized acceptance window;
-a differing text counts as **delivered, transformed** only after a successful
-reply and when it was the sole addition. Several additions without an exact match remain unconfirmed. Pi has
-no request IDs on these events, so swallowed input plus one unrelated injection
-can still look like a transform. A steer in flight across `/reload` remains
-tracked and is resolved and reported by the reloaded activation after adoption.
-
-After 10 seconds without a reply, the result is **no reply yet, delivery unknown**.
-Tracking continues until the run settles, exits or stops: a late success becomes
-**accepted but not confirmed**, and observed conversation entry becomes
-**delivered**. While the run is still active, do not resend an unknown steer; it
-may still be delivered. Each later steer waits at most 10 seconds for an earlier reply, then is **refused** as
-not sent; if written, it has its own 10-second reply deadline. A late reply before
-settlement releases the next waiter without permanently disabling steering.
-Settlement finalizes unanswered writes as unknown, refuses unwritten waiters and
-closes stdin so the run can complete. On settlement, exit or stop before a reply,
-only an exact-text conversation entry counts as delivered; a differing injection
-remains unknown. Observed delivery is never downgraded. Completion results and
-notifications count delivered, accepted but not confirmed, no reply yet, delivery
-unknown, and refused steers. **Refused** means an actual rejection or no write.
-Completed, queued, paused and print-mode runs refuse steering. Slash-prefixed
-steers are refused: Pi can expand skills/templates or reject extension commands,
-and RPC steer has no literal-text option.
-
-If an installed, enabled pi-intercom package is available at launch, RPC children
-load it and appear as named live peers (`<run name>-<short run id>`). Another
-session can message a run by ID through its persisted intercom target. Without
-that capability, steering must come from the dispatching session. The child
-still cannot call spider `run`, `message` or `kill`, or the outbound `intercom`
-and `contact_supervisor` tools. Optional intercom resolution failure does not
-prevent the child from running; dispatch details report steering unavailable.
-
-Peer-session messages are stored durably before attempting broker delivery.
-Broker acceptance does not prove recipient acknowledgement or model consumption.
-An unconfirmed message remains queued and is retried when its target session
-starts. This deferred-delivery policy is for peer sessions, not one-shot run
-names: run steers are not durably retried. Cross-session broker acceptance is
-accepted but not confirmed and renders as a warning, not proof of conversation
-entry. Background
-children are independent of later parent-turn Escape. Quit, `/new`, `/resume` and `/fork` cancel
-all session-owned children and report the cause without starting a model turn;
-`/reload` keeps background children running while foreground chain steps stop.
-A kill from this session reports through its tool result,
-not an extra completion notification unless a steer is accepted but not confirmed
-or has no reply yet, delivery unknown.
-A cancelled pipeline ends.
-Owned handles remain killable even if spawn start-time capture failed; only
-pid-only kill and reaper paths require the identity check.
-Dialogs requested by child extensions are cancelled with a run-event
-warning. RPC and print children use Pi's same non-interactive project-trust
-policy; RPC does not grant additional project trust.
-
-## Databases: three tiers
-
-Spider stores state in three SQLite databases, chosen by what the data outlives:
-
-| Tier | Location | Holds |
-| --- | --- | --- |
-| global | `~/.pi/agent/spider/spider.db` | project registry, session bindings, message queue, insights, model stats |
-| repo | `<git-common-dir>/spider/repo.db` | `memory`, skills, curator state — shared by every worktree of one repo |
-| worktree | `<worktree-root>/.spider/project.db` | sessions, runs, todos, content, events — private to one worktree |
-
-This split is what makes worktrees behave. A project is keyed by its **worktree
-root**, not by the git common directory, so two worktrees of the same repo get
-two separate databases instead of overwriting each other's path. Memory written
-in one worktree is visible from its siblings; sessions and runs are not.
-
-Which scope to use, when writing memory:
-
-> *"Is this true in every repo?"* → **global**. Otherwise → **repo**.
-> Worktree memory was removed; use repo for repository-specific facts.
-
-Active memory has a fixed 8,000-character cap per scope. Free space with
-`spider control memory sub=forget uuid=<uuid> scope=<global|repo>` (then remember
-a shorter version to condense), and keep repo-specific facts in repo scope.
-`memory.snapshotCharCap` limits prompt injection only; it does not change this
-storage cap.
-
-Every `spider remember` call needs a nonblank `justification`: why the fact
-will stay true and useful after this task, how other agents can use it, and why
-its scope is correct. The foreground reviewer checks durability first, then
-active entries in both scopes for overlap and replacements. It may store as
-requested (`new`), return an existing UUID (`already_present`), archive older
-entries (`supersedes`), move the write to the correct scope (`wrong_scope`), or
-leave task-only information in the conversation (`not_durable`). The result
-states the verdict and reason. A reviewer error, unavailable model, timeout,
-abort, or disabled reviewer never loses the write: it stores as requested and
-states `review skipped: <reason>`. Configure `memory.reviewer.enabled` (default
-`true`), `memory.reviewer.model` (default `github-copilot/gpt-6-luna`),
-`memory.reviewer.thinking` (default `medium`) and `memory.reviewer.timeoutMs`
-(default `45000`, integer from `1000` to `120000`) with `spider control config set`.
-
-Skill proposals from the learner and `spider skill op=add` share deterministic
-validation: a lowercase hyphenated name (up to 64 characters), matching YAML
-frontmatter with exactly `name` and `description`, a trigger-only description
-starting with `Use when` (up to 500 characters), frontmatter up to 1024 characters,
-nonempty instructions, and the strict memory threat scan. Learner and curator
-origin validation allows 500 instruction words and 8000 UTF-8 bytes. Agent
-`op=add`, including `/learn` and distill output, allows 1500 instruction words
-and 16 KB (16384 bytes); the reviewer judges concision. Deterministic failures
-reject without a model call, even with review disabled. The curator only
-archives existing skills; it does not stage candidates.
-
-The reviewer loads the complete bundled `writing-skills` rubric at runtime.
-It judges durability, candidate-text quality and existing coverage. Staging is
-not deployment, so pressure-test evidence and the deployment checklist are not
-required. The catalog has at most 150 entries, prioritizing bundled, active,
-pi-loaded, then most recently updated staged skills. Descriptions are truncated
-to 300 characters. The total learner system prompt is capped at 180000 UTF-8
-bytes, including rubric, catalog and active memory. Unavailable or oversized
-skill guidance is omitted without disabling memory learning.
-
-Learner candidates pass deterministic checks and `organism.maxSkillProposals`
-(default `1`, a nonnegative integer) before entering the durable repo review
-queue. Drains report `skillsQueued`, not reviewed stages. A live top-level
-session reviews queued candidates asynchronously at session start and after a
-before-compact drain. No queue review starts during shutdown or in children.
-A repo DB lease serializes reviews across handles and processes. Only `new`
-stages and stores the review reason. `duplicate`, `not_durable` and `low_quality`
-are removed with recent verdicts visible in doctor. Errors, timeout, abort and
-invalid replies remain queued with attempts and last_error; after three attempts
-they are dropped with a recorded reason. Doctor shows the queue length.
-
-Agent `op=add` waits for inline review, including in children, without creating
-a learner or organism runtime. It returns verdict/reason plus an existing name
-or failed rules when applicable. Review failures stage as requested with
-`review skipped: <reason>`. Staging never activates a skill. Child distill,
-approve and reject remain unavailable.
-
-Configure `skills.reviewer.enabled` (default `true`), `skills.reviewer.model`
-(default `github-copilot/gpt-6-luna`), `skills.reviewer.thinking` (default `xhigh`)
-and `skills.reviewer.timeoutMs` (default `180000`, integer from `1000` to `600000`).
-Both thinking settings accept `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`,
-independently of the learner/session model. Disabling the skill reviewer omits
-the learner skill section and leaves its queued reviews pending; agent adds
-still validate and stage as review-skipped. The learner defaults to no skill,
-proposes new techniques only and cannot patch existing skills.
-
-In-process completions use pi's authenticated `streamSimple(...).result()` with
-provider-neutral `reasoning`, so thinking reaches both OpenAI-family and
-Anthropic adapters. `ModelRegistry.complete()` takes provider-specific options;
-passing the old OpenAI-only `reasoningEffort` did not enable non-OpenAI reviewer
-thinking. Abort signals, provider errors and empty-response checks are preserved.
-When thinking changes or cannot be verified, both reviewers record the
-requested/effective levels and notices in
-`.spider/logs/reviewer-thinking.jsonl`, rotating at 1 MiB to one previous file.
-Memory review receipts also show caps, adjustments, off and unknown-model notes.
-
-Both reviewers persist parse and transport failures in
-`.spider/logs/reviewer-errors.jsonl`: redacted error text and at most 2 KiB of
-raw reply. At 1 MiB the log rotates to one previous file. Logs stay local and
-raw replies never enter model-visible tool output. The v12 migration adds a
-review reason and durable queue/results/lease tables; v11 skills remain readable.
-Memory review permits information-preserving condensation through `supersedes`.
-For user preferences and standing instructions, only pure condensation that
-drops no information is allowed without a newer user statement. Corrections
-still require a newer statement from the user.
-
-A session normally resolves its project from the working directory. `/bind`
-pins a session to a specific worktree when that is wrong (for example, a session
-started outside any repo). Binding **promotes, never switches**: it only applies
-automatically where there is no git context to contradict it.
-
-Upgrading from a pre-tiering install:
-
-```bash
-spider control migrate            # dry run: reports what would move, changes nothing
-spider control migrate --apply    # moves it, after backing up to ~/.pi/agent/spider/backups/
-```
-
-Rows that collide across worktrees (the same skill name, say) are reported as
-`ambiguous` and **left in place** rather than dropped.
+- The organism (background learner) runs in parent sessions only at compaction and shutdown; a drain processes accumulated session activity.
+- Background memory writes are staged; approve or reject them through `control memory`.
+- Skill proposals are reviewed and staged, never automatically activated.
+- Disable automatic work with `organism.enabled:false`; configure foreground reviewers separately.
+- See [Memory and learning](docs/guide/memory-and-learning.md) for model defaults, limits, and failure behavior.
 
 ## Sandboxed execution
 
-`spider exec` is the shell. The `bash` tool is mechanically blocked by a hook,
-not merely discouraged by wording, so the agent cannot fall back to it. Only
-what the command prints enters the context window, which is the point: a
-thousand-line build log costs you the twenty lines you chose to echo.
+- Use `spider exec`, `exec_file`, or `batch` to print only the output you need.
+- Bash enforcement redirects the agent to spider execution; it is not an OS security boundary.
+- See [Using spider](docs/guide/using-spider.md#execution) for examples, background receipts, exit status, and cleanup cautions.
 
-The enforcement is user-controlled. The model cannot disable it — the
-`exec.enforce` key is rejected through the model-facing config action, and the
-block message deliberately does not mention how to turn it off. You can toggle
-it:
+## Troubleshooting
 
-```
-/exec-enforce off
-/exec-enforce on
-```
+- Native module or Node ABI mismatch: follow [Requirements](#requirements), run `npm rebuild better-sqlite3` in your linked clone (the `spider/` directory created above), restart pi, and run `/doctor`. If an update reruns `npm ci`, it replaces that manual rebuild; keep the Node version consistent.
+- `sqlite-vec` failure: check `/doctor` and [native install diagnostics](docs/architecture/runtime-lifecycle.md#install-time-native-checks) for the effect on search.
+- Stale bundle: follow `/doctor`'s remedy. Direct loads require a restart; current linked shims support `/reload` after a completed rebuild.
+- Old shim or moved checkout: rerun `npm run link` or `npm run dev:link`, then restart pi once.
+- Duplicate tool registration: follow the [linked-shim loading precautions](docs/architecture/runtime-lifecycle.md#linked-shims).
+- Invalid config: repair the JSON file named by `/doctor`; reads skip malformed layers, and writes refuse to overwrite them.
+- Reviewer or learner model unavailable: follow [model configuration and failure behavior](docs/guide/configuration.md#reviewer-and-learner-models); inspect `/doctor` and local reviewer logs.
+- See [Runtime lifecycle](docs/architecture/runtime-lifecycle.md) for cache behavior and reload limits.
 
-This stops reflexive fallback to `bash`; it is not a security boundary against
-a determined model, which can still run a shell through `spider exec` itself.
+## Contributing and documentation
 
-## Package map
+- [Contributing](CONTRIBUTING.md): setup, test isolation, package boundaries, lockfile checks, and PR requirements.
+- [Documentation index](docs/README.md): guides, architecture, package references, and UI development.
+- [Architecture](docs/architecture/README.md): package interactions and call flow.
+- [Feedback and learning loops](docs/architecture/feedback-and-learning-loops.md): routing and learning diagrams.
+- [Release process](docs/release-process.md): tagged builds and publishing.
 
-Ten packages sit in dependency order, leaves first. Each imports only from
-packages below it.
+## License
 
-| Package | Role | README |
-| --- | --- | --- |
-| `@spider/db-core` | Opens and migrates the three database tiers, defines the schema, resolves a project, runs the `run_events` bus | [packages/db-core/README.md](packages/db-core/README.md) |
-| `@spider/models` | Model catalog, tiers, selection, and one-shot completion | [packages/models/README.md](packages/models/README.md) |
-| `@spider/ui` | Pure themed renderers and TUI components; no database, no pi API | [packages/ui/README.md](packages/ui/README.md) |
-| `@spider/memory` | Structured memory: staging, approval, active snapshot, embeddings | [packages/memory/README.md](packages/memory/README.md) |
-| `@spider/todo` | Durable per-project and per-session todos, FTS sync, `/todos` surface | [packages/todo/README.md](packages/todo/README.md) |
-| `@spider/context` | Unified search, sandboxed exec, content store, fetch, session import | [packages/context/README.md](packages/context/README.md) |
-| `@spider/subagents` | Subagent dispatch (single, chain, parallel, pipeline) and intercom | [packages/subagents/README.md](packages/subagents/README.md) |
-| `@spider/organism` | Drain, passes, curator, learning graph, and insights | [packages/organism/README.md](packages/organism/README.md) |
-| `@spider/superpowers` | Vendored skills library, managed `AGENTS.md` block, upstream-watch | [packages/superpowers/README.md](packages/superpowers/README.md) |
-| `@spider/host` | The pi extension entry point: the `spider` tool, dispatch, rendering, slash commands, hooks | [packages/host/README.md](packages/host/README.md) |
-
-## Documentation
-
-- [docs/architecture/README.md](docs/architecture/README.md): the one-tool
-  model, the layered packages, the shared database, and how one call flows.
-- [docs/architecture/data-model.md](docs/architecture/data-model.md): the three
-  database tiers, the tables, migrations, and the `run_events` bus.
-- [docs/architecture/feedback-and-learning-loops.md](docs/architecture/feedback-and-learning-loops.md):
-  the routing, memory, organism, and subagent loops.
-- [docs/guide/using-spider.md](docs/guide/using-spider.md): how to use spider
-  day to day.
-- [docs/release-process.md](docs/release-process.md): how a tagged commit
-  becomes a GitHub Release and an npm publish, and the manual repo setup that
-  gates it.
+- [MIT](LICENSE).

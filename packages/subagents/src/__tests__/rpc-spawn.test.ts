@@ -78,6 +78,7 @@ process.stdin.on('data', chunk => {
       out({ type: 'queue_update', steering: [c.message], followUp: [] });
       out({ type: 'response', id: c.id, command: 'steer', success: true });
       out({ type: 'queue_update', steering: [], followUp: [] });
+      out({ type: 'message_start', message: { role: 'user', content: c.message } });
     } else if (c.type === 'abort') out({ type: 'response', id: c.id, command: 'abort', success: true });
   }
 });
@@ -158,7 +159,7 @@ describe("parent-owned RPC child", () => {
     expect(typeof f.h.steer).toBe("function");
     expect(await bounded(f.agentEnded)).not.toBe("timeout");
     const ack = await bounded(f.h.steer("correct direction"));
-    expect(ack).toMatchObject({ accepted: true });
+    expect(ack).toMatchObject({ accepted: true, delivered: true, delivery: "delivered" });
     expect(f.commands().filter(c => c.type === "steer").map(c => c.message)).toEqual(["correct direction"]);
     await (f.h as any).killAsync(100);
     expect(f.commands().some(c => c.type === "abort")).toBe(true);

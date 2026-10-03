@@ -88,13 +88,13 @@ spider kill id:"<run-id>"
 - `spider message to:"<run-id>" message:"<text>"` steers a running RPC child through its owning session's pipe.
 - Completed, queued, paused, and print-mode runs refuse steering. A message cannot resume a completed run; redispatch with a corrected brief.
 - Slash-prefixed steers are refused because pi can expand skills/templates or reject extension commands; RPC steer has no literal-text option.
-- A successful RPC response means **accepted but not confirmed**. Pi input handlers can swallow or transform text.
-- **Delivered** requires a correlated user `message_start` entering the conversation, not proof the model consumed it.
+- After a successful RPC reply, the tool waits for a correlated user `message_start` until `10` seconds from the send. It returns **delivered** as soon as entry is observed. This confirms entry, not model consumption.
+- At the deadline, accepted input without observed entry returns **accepted but not confirmed**. If still queued in the child, the result says pi delivers it at the child's next turn boundary unless the run ends first, and "do not resend". The final state appears in run events and the completion summary.
 - Exact text is preferred among additions in the serialized acceptance window. Different text counts as transformed delivery only after a successful reply and a sole addition.
-- Several additions without an exact match remain unconfirmed. Pi supplies no request IDs on these events, so a swallowed steer and one unrelated injection can resemble a transformation.
+- Several additions without an exact match remain unconfirmed. Pi input handlers can swallow or transform text, and these events have no request IDs. A swallowed steer and one unrelated injection can resemble a transformation, including in the immediate tool result.
 - An in-flight steer survives reload tracking and is resolved by the adopting activation.
 - After `10` seconds without a reply, the result is **no reply yet, delivery unknown**. Tracking continues until settlement, exit, or stop. Do not resend while delivery remains possible.
-- A later steer waits up to `10` seconds for an earlier reply, then is refused as not sent. A written steer gets its own reply deadline; a late reply can release the next waiter.
+- A later steer waits up to `10` seconds for an earlier reply, then is refused as not sent. A written steer gets its own send deadline for acceptance and observed entry; a late reply can release the next waiter.
 - Settlement finalizes unanswered writes as unknown, refuses unwritten waiters, and closes stdin. Without a reply before settlement/exit/stop, only exact-text conversation entry counts as delivered.
 - Observed delivery is never downgraded. Completion reports delivered, accepted-unconfirmed, unknown, and refused counts. Refused means rejection or no write.
 

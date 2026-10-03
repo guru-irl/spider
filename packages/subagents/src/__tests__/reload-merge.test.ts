@@ -64,8 +64,8 @@ it.each(["deadline", "late reply", "message_start", "settle", "waiter deadline",
     await vi.advanceTimersByTimeAsync(10_000); await ack;
     if (boundary === "late reply") f.reply(command);
   } else if (boundary === "message_start") {
-    f.out(queue(["original"])); f.reply(command); await ack;
-    f.out(queue([])); f.out(user("original"));
+    f.out(queue(["original"])); f.reply(command);
+    f.out(queue([])); f.out(user("original")); await ack;
   } else if (boundary === "settle") {
     const waiter = f.rpc.steer("waiter"); f.out({ type: "agent_settled" });
     expect(await waiter).toMatchObject({ delivery: "refused" }); await ack;
@@ -95,7 +95,7 @@ it.each(["deadline", "late reply", "message_start", "settle", "waiter deadline",
 });
 
 // Break: resetting pending steers at detach, losing the raw handle, or dropping diagnostics on adoption.
-it("an unanswered pre-reload steer resolves after adoption and the new message tool steers the same child", async () => {
+it.each([false, true])("a pre-reload steer resolves with the old DB closed and the new tool steers the same child (acknowledged=%s)", async acknowledged => {
   const r = database(), oldPi = { sendMessage: vi.fn() }, newPi = { sendMessage: vi.fn() };
   let finish!: (exit: { exitCode: number; result?: string }) => void;
   const exit = new Promise<{ exitCode: number; result?: string }>(resolve => { finish = resolve; });
@@ -109,6 +109,9 @@ it("an unanswered pre-reload steer resolves after adoption and the new message t
   const row = runner.runAsync({ agent: "worker", task: "fixture", model: "acme/model", thinking: "max", context: "fresh" });
   const first = makeMessageHandler()({ to: row.id, message: "before reload" }, { db: r.db, sessionId: "merge" });
   const command = f.commands.at(-1);
+  if (acknowledged) { f.out(queue(["before reload"])); f.reply(command); }
+  let resolved = false; void first.then(() => { resolved = true; });
+  await tick(); expect(resolved).toBe(false);
   await detachForReload("merge");
   r.db.close();
   // Exact conversation entry during the gap is proof even before the RPC reply.
@@ -117,12 +120,14 @@ it("an unanswered pre-reload steer resolves after adoption and the new message t
   const nextDb = openDbAt(r.path, "project"); dbs.push(nextDb);
   const ctx = { db: nextDb, runDbPath: r.path, sessionId: "merge", cwd: process.cwd(), pi: newPi };
   expect(adoptReloadedChildren(ctx).adopted).toEqual([row.id]);
-  f.reply(command);
-  expect((await first).details.delivery).toBe("delivered");
+  if (!acknowledged) f.reply(command);
+  const firstResult = await first;
+  expect(firstResult.details.delivery).toBe("delivered");
+  expect(firstResult.details.warning).toMatch(/event.*record|record.*event/i);
   const second = makeMessageHandler()({ to: row.id, message: "after reload" }, ctx);
   f.out(queue(["after reload"])); f.reply(f.commands.at(-1));
-  expect((await second).details.delivery).toBe("accepted but not confirmed");
   f.out(queue([])); f.out(user("after reload")); f.out({ type: "agent_settled" });
+  expect((await second).details.delivery).toBe("delivered");
   finish({ exitCode: 0, result: "report" }); await tick();
   expect(newPi.sendMessage).toHaveBeenCalledTimes(1);
   const notice = newPi.sendMessage.mock.calls[0][0];
@@ -196,8 +201,9 @@ it("a pipeline stage finished in the gap notifies once with steer, thinking and 
   ] }, ctx);
   const first = f.rpc.steer("swallowed");
   await detachForReload("pipeline-gap");
-  f.reply(f.commands.at(-1)); expect((await first).delivery).toBe("accepted but not confirmed");
-  f.out({ type: "agent_settled" }); finish({ exitCode: 0, result: "stage report" }); await tick();
+  f.reply(f.commands.at(-1)); f.out({ type: "agent_settled" });
+  expect((await first).delivery).toBe("accepted but not confirmed");
+  finish({ exitCode: 0, result: "stage report" }); await tick();
   expect(oldPi.sendMessage).not.toHaveBeenCalled();
   const next = { ...ctx, pi };
   adoptReloadedChildren(next); await tick(); adoptReloadedChildren(next); await tick();

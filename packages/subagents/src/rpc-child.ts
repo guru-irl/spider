@@ -181,9 +181,9 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       if (!p) return;
       p.timer = undefined;
       if (command.type === "steer") {
-        // The bytes were written. No reply is uncertainty, not rejection.
-        // Retain the request and its serialized window for late replies/events.
-        deliveryEvent(id, p);
+        // The send deadline covers acceptance and observed delivery together.
+        // Retain correlation for late replies/events, including an unanswered window.
+        if (deliveryAck(p).delivery !== p.reportedDelivery) deliveryEvent(id, p);
         resolve({ ...deliveryAck(p), requestId: id });
       } else {
         pending.delete(id);
@@ -225,13 +225,16 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       const p = pending.get(event.id);
       if (p) {
         if (p.command === "prompt" && event.success === true) promptAccepted = true;
-        clearTimeout(p.timer); p.timer = undefined;
         if (p.command === "steer" && event.success === true) {
           p.childAccepted = true; correlate(p);
-          p.finish({ ...deliveryAck(p), requestId: event.id });
           deliveryEvent(event.id, p);
-          if (p.observed) pending.delete(event.id);
+          if (p.observed) {
+            clearTimeout(p.timer); p.timer = undefined;
+            p.finish({ ...deliveryAck(p), requestId: event.id });
+            pending.delete(event.id);
+          }
         } else {
+          clearTimeout(p.timer); p.timer = undefined;
           pending.delete(event.id);
           const error = event.error ?? "Child rejected the command.";
           p.finish(p.command === "steer" ? p.observed ? { ...deliveryAck(p), requestId: event.id } : refused(p.message!, error, event.id) : { accepted: event.success === true, ...(event.success === true ? {} : { error }) });
@@ -269,7 +272,14 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       // One conversation event confirms at most one steer, even for duplicate text.
       for (const [id, p] of pending) if (p.command === "steer" && !p.observed && p.queuedText !== undefined && p.queuedText === text) {
         (p.entries ??= []).push(text); correlate(p);
-        if (p.observed) { deliveryEvent(id, p); if (p.childAccepted) pending.delete(id); }
+        if (p.observed) {
+          deliveryEvent(id, p);
+          if (p.childAccepted) {
+            clearTimeout(p.timer); p.timer = undefined;
+            p.finish({ ...deliveryAck(p), requestId: id });
+            pending.delete(id);
+          }
+        }
         break;
       }
     }

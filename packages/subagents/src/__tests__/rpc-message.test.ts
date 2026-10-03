@@ -50,6 +50,36 @@ describe("steerable child message routing", () => {
     expect(result.content).toMatch(/not sent/i);
     expect(result.content).not.toMatch(/did not confirm steering acceptance/i);
   });
+  it("explains a deadline-expired steer still queued in the child without inviting a resend", async () => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }),
+      steer: async () => ({ accepted: true, childAccepted: true, delivered: false, queued: true, delivery: "accepted but not confirmed" }) });
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "owner" });
+    expect(result.isError).toBe(false);
+    expect(result.details).toMatchObject({ accepted: true, delivered: false, queued: true, delivery: "accepted but not confirmed" });
+    expect(result.content).toMatch(/queued in the child/i);
+    expect(result.content).toMatch(/pi delivers it at the child's next turn boundary unless the run ends first/i);
+    expect(result.content).toMatch(/final state.*run's events and completion summary/i);
+    expect(result.content).toMatch(/do not resend/i);
+  });
+  it("omits queued-child guidance for accepted input that is not queued", async () => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }),
+      steer: async () => ({ accepted: true, childAccepted: true, delivered: false, queued: false, delivery: "accepted but not confirmed" }) });
+    const result = await makeMessageHandler()({ to: f.id, message: "swallowed" }, { ...f, sessionId: "owner" });
+    expect(result.isError).toBe(false);
+    expect(result.details).toMatchObject({ accepted: true, delivered: false, queued: false, delivery: "accepted but not confirmed" });
+    expect(result.content).not.toMatch(/it is queued in the child|next turn boundary/i);
+  });
+  it.each(["Child process has exited.", "Child was stopped.", "Run settled; accepted, delivery not confirmed."])("does not offer future queued delivery after an accepted wait ends: %s", async error => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }),
+      steer: async () => ({ accepted: true, delivered: false, queued: true, delivery: "accepted but not confirmed", error }) });
+    const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "owner" });
+    expect(result.content).not.toMatch(/next turn boundary|do not resend/i);
+    expect(result.content).toContain(error);
+    expect(result.details.queued).toBe(false);
+  });
   it("reports observed delivery with a transformed-text note", async () => {
     const f = fixture();
     registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async () => ({ accepted: true, delivered: true, delivery: "delivered", transformed: true, observedText: "rewritten" }) });

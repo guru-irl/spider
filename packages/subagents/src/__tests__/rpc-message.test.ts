@@ -25,6 +25,19 @@ function fixture(mode: "rpc" | "print" = "rpc", intercom = false) {
   return { db, globalDb, store, id, routed, pi, root, dbPath: join(root, "project.db") };
 }
 describe("steerable child message routing", () => {
+  // Mapping any accepted reply to unconfirmed would hide explicit extension consumption.
+  it("reports consumed input as not delivered rather than accepted-unconfirmed", async () => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }),
+      steer: async () => ({ accepted: true, childAccepted: true, delivered: false, queued: false, delivery: "consumed by an extension, not delivered" }) } as any);
+    const result = await makeMessageHandler()({ to: f.id, message: "consumed" }, { ...f, sessionId: "owner" });
+    expect(result.isError).toBe(false);
+    expect(result.details).toMatchObject({ accepted: true, childAccepted: true, delivered: false, queued: false, delivery: "consumed by an extension, not delivered" });
+    expect(result.content).toMatch(/consumed by an extension.*not delivered.*model/i);
+    expect(result.content).not.toMatch(/accepted but not confirmed|next turn boundary|do not resend|may still be delivered/i);
+    const event = f.db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='steer'").get(f.id) as { payload: string };
+    expect(JSON.parse(event.payload)).toMatchObject({ delivered: false, delivery: "consumed by an extension, not delivered" });
+  });
   it("reports no pi reply as unknown instead of refusal", async () => {
     const f = fixture();
     registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async () => ({ accepted: false, delivered: false, delivery: "no reply yet, delivery unknown" }) } as any);

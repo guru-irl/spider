@@ -36,6 +36,7 @@ spider kill id:"<run-id>"
 ## Child modes and trust
 
 - Default: `pi --mode rpc`, owned by the dispatching session, with one initial task prompt.
+- If a child extension consumes the initial task (`handled`), the run fails with that reason and the child is closed.
 - Set `subagents.childMode` to `"print"` for legacy `--mode json -p` launches.
 - Only the user can configure [`subagents.extensions`](configuration.md#child-extensions), by editing the global config file. The fully absolute paths load in RPC and print children for single, parallel, chain and pipeline runs. Local values are ignored; missing files are skipped with one warning run event per path.
 - Compatibility checks read metadata for the binary launched on PATH or through `PI_SUBAGENT_PI_BINARY`.
@@ -92,7 +93,8 @@ spider kill id:"<run-id>"
 - `spider message to:"<run-id>" message:"<text>"` steers a running RPC child through its owning session's pipe.
 - Completed, queued, paused, and print-mode runs refuse steering. A message cannot resume a completed run; redispatch with a corrected brief.
 - Slash-prefixed steers are refused because pi can expand skills/templates or reject extension commands; RPC steer has no literal-text option.
-- After a successful RPC reply, the tool waits for a correlated user `message_start` until `10` seconds from the send. It returns **delivered** as soon as entry is observed. This confirms entry, not model consumption.
+- If a successful RPC reply has `data.disposition: "handled"`, the tool returns **consumed by an extension, not delivered** immediately. The child extension consumed the input, and it was not delivered to the model. There is no observed-delivery wait for that input.
+- For queued input or a legacy reply without a disposition, the tool waits for a correlated user `message_start` until `10` seconds from the send. It returns **delivered** as soon as entry is observed. This confirms entry, not model consumption.
 - At the deadline, accepted input without observed entry returns **accepted but not confirmed**. If still queued in the child, the result says pi delivers it at the child's next turn boundary unless the run ends first, and "do not resend". The final state appears in run events and the completion summary.
 - Exact text is preferred among additions in the serialized acceptance window. Different text counts as transformed delivery only after a successful reply and a sole addition.
 - Several additions without an exact match remain unconfirmed. Pi input handlers can swallow or transform text, and these events have no request IDs. A swallowed steer and one unrelated injection can resemble a transformation, including in the immediate tool result.
@@ -100,7 +102,7 @@ spider kill id:"<run-id>"
 - After `10` seconds without a reply, the result is **no reply yet, delivery unknown**. Tracking continues until settlement, exit, or stop. Do not resend while delivery remains possible.
 - A later steer waits up to `10` seconds for an earlier reply, then is refused as not sent. A written steer gets its own send deadline for acceptance and observed entry; a late reply can release the next waiter.
 - Settlement finalizes unanswered writes as unknown, refuses unwritten waiters, and closes stdin. Without a reply before settlement/exit/stop, only exact-text conversation entry counts as delivered.
-- Observed delivery is never downgraded. Completion reports delivered, accepted-unconfirmed, unknown, and refused counts. Refused means rejection or no write.
+- Observed delivery is never downgraded. Completion reports delivered, accepted-unconfirmed, extension-consumed, unknown, and refused counts. Refused means rejection or no write.
 
 ## Peer sessions and optional intercom
 

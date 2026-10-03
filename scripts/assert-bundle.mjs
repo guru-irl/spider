@@ -53,7 +53,7 @@ if (!/export\s*\{[^}]*\bas default\b|export default/.test(src) && !src.includes(
 }
 // The bundle's top level only defines schemas, constants and lazy factories:
 // no DB opens, model initialization, timers or activation. Keep it natively
-// linkable, with no top-level await of optional modules (see README).
+// linkable, with no top-level await of optional modules (see docs/architecture/runtime-lifecycle.md).
 try {
   const mod = await import(pathToFileURL(resolve(OUT)).href);
   if (typeof mod.default !== "function") throw new Error("default export is not a function");

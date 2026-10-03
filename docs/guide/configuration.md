@@ -1,0 +1,94 @@
+# Configuration
+
+## Files and precedence
+
+- Store keys as literal dotted JSON properties, not nested objects.
+- Built-in defaults are overridden by global config, then worktree-local config.
+- Global file: `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
+- Local file: `<worktree>/.spider/config.json`.
+- For config writes, `scope:"repo"` means the local file, not the shared repository database. Omitted scope is local; `scope:"global"` selects global.
+- `worktree` and `project` are not accepted config write scopes.
+- Malformed read layers are skipped with diagnostics. Writes refuse to replace malformed JSON.
+
+```text
+spider control command:"config" op:"get" key:"memory.reviewer.model"
+spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"repo"
+```
+
+## Results and unset behavior
+
+- A keyed `get` reports `value` and `source`: `default`, `global`, `local`, or `unset`.
+- An unkeyed `get` reports merged `config` and `sources`. Some consumer defaults are applied by their readers rather than appearing in this map.
+- Writes report `scope` (`global` or `local`) and the destination `file`.
+- A global write reports `shadowedBy:"local"` if that key remains locally overridden.
+- Unset normally deletes the selected layer's key so the lower layer supplies its value.
+- Only `memory.snapshotCharCap` supports the `"unlimited"` sentinel. Unsetting the snapshot cap writes `"unlimited"` in the chosen layer when the global file has a cap; this applies to global and local unset.
+- Setting the snapshot cap to `"unlimited"` or an empty string follows that unset path.
+- Other numeric keys and model references do not receive the sentinel.
+- The model-facing action rejects `exec.enforce` for both set and unset. See the [user-only slash command](../../README.md#slash-commands-and-overlays).
+
+## Validation
+
+- Set and unset reject unknown keys outside the editable schema. Booleans must be `true` or `false`; enum values must be listed options. Numbers must be finite and within their field's range: snapshot cap `500-40000`, organism budgets `0-1000`, curator interval `1-336` hours, and [reviewer timeout ranges](memory-and-learning.md#reviewer-settings). Reviewer timeouts must also be integers. Setting `models.defaults` requires a JSON string containing an object of role-to-model strings, not an object-valued tool argument.
+
+```text
+spider control command:"config" op:"set" key:"models.defaults" value:"{\"reviewer\":\"provider/model:high\"}" scope:"global"
+```
+
+## Reviewer and learner models
+
+- Authenticate the [default provider](../../README.md#requirements) through pi's `/login`, or use models available through another authenticated provider.
+- To replace both reviewers and the learner, [set all three model keys](../../README.md#configuration). These are separate from `models.defaults` and the active session model.
+- In the README example, replace `provider/model` with a catalog entry shown by `control models` that pi can authenticate. If an auxiliary provider override exists, unset it or make it agree with the qualified model's provider.
+- Without credentials for the selected models, foreground memory saves report [review skipped](memory-and-learning.md#memory-scope-and-review); learner skill reviews [retry and drop after three attempts](memory-and-learning.md#learner-review-queue). Background drains with input fail model resolution without a fallback, and `/doctor` reports the enabled organism unhealthy after such a failure.
+- Reviewer defaults, inline skill-review failures, and learner selection details are in [Memory and learning](memory-and-learning.md).
+
+## Common defaults
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `ui.footer` | `true` | Footer and run selector; next session. |
+| `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
+| `exec.enforce` | `true` | Block the built-in bash tool. |
+| `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory; not a storage cap. |
+| `models.defaults` | `{}` | Agent role to model-reference map. |
+| `organism.enabled` | `true` | Parent-session background work. |
+| `organism.selfNaming` | `true` | Allow project naming by consolidation. |
+| `organism.autoWriteBudget` | `20` | Staged writes per drain. |
+| `organism.maxMemoryProposals` | `3` | Memory candidates per memory-producing pass. |
+| `organism.maxSkillProposals` | `1` | Valid skill candidates per drain. |
+| `curator.staleAfterDays` | `30` | Age for stale skills. |
+| `curator.archiveAfterDays` | `90` | Age for archived skills. |
+| `curator.minIntervalHours` | `24` | Minimum curator interval. |
+| `curator.consolidate` | `false` | Optional model consolidation. |
+| `routing.tracking` | `true` | Tool intent/result tracking. |
+| `routing.secret_scrub` | `true` | Secret scanning and scrubbing. |
+| `routing.injection_scan` | `true` | Prompt-injection scanning. |
+| `routing.auto_index_threshold` | `10000` | Large-output indexing threshold in bytes. |
+
+- `organism.passes.runMemoryTodo`, `.todoMemory`, `.learning`, `.consolidation`, `.reflection`, and `.insights` default to `true`.
+- Reviewer defaults and limits are in [Memory and learning](memory-and-learning.md#reviewer-settings).
+- `auxiliary.background_review.provider` and `.model` default to empty overrides; the resolved learner default is documented in [Background learning](memory-and-learning.md#background-learning).
+- Known editable fields live in `packages/ui/src/screens/config-schema.ts`; consumer defaults also live in `packages/host/src/control.ts` and `packages/organism/src/config.ts`.
+
+## When changes take effect
+
+- Configuration readers use merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads that same flat map.
+- The organism refreshes configuration when resolving its runtime for a request or drain.
+- `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
+- `subagents.childMode` applies to new launches; existing runs keep their launch mode.
+- Reviewer settings apply to new reviews; they do not restart a review already in flight.
+- Rebuilding a linked bundle and reloading it is separate from editing config; see [Runtime lifecycle](../architecture/runtime-lifecycle.md).
+
+## Model role defaults
+
+```text
+spider control command:"models" op:"set" key:"reviewer" value:"provider/model:high"
+spider control command:"models" op:"clear" key:"reviewer"
+```
+
+- `set` writes a global role default. `clear` removes only that role's current local override, not the global value or other roles.
+- Resolution: explicit model, local role override, global role default, then parent model. Pipeline stages use the same policy.
+- `models.defaults` merges per role, not as one replacement object. Provenance is a per-role source map in config and models results.
+- A global set reports the local value and file when shadowed.
+- Thinking suffixes and per-item overrides are covered in [Subagents](subagents.md#models-and-thinking).

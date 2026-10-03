@@ -27,6 +27,18 @@ describe("config schema", () => {
 	it("every field key is dotted-prefixed by its group id", () => {
 		for (const g of CONFIG_SCHEMA) for (const f of g.fields) expect(f.key.startsWith(g.id + ".")).toBe(true);
 	});
+	it("offers an empty child extension list and coerces JSON absolute paths", () => {
+		const field = getField("subagents.extensions");
+		expect(field).toBeDefined();
+		expect(field!.default).toEqual([]);
+		expect(coerce(field!, '["/path/to/compaction.ts", "/path/to/other.js"]')).toEqual({ ok: true, value: ["/path/to/compaction.ts", "/path/to/other.js"] });
+		expect(coerce(field!, "[]")).toEqual({ ok: true, value: [] });
+	});
+	it.each(['["relative.ts"]', '["/path/to/valid.ts", "../relative.ts"]', '[false]', '{}', 'null', 'bad json'])("rejects invalid child extension list %s", raw => {
+		const field = getField("subagents.extensions");
+		expect(field).toBeDefined();
+		expect(coerce(field!, raw)).toMatchObject({ ok: false, error: expect.stringMatching(/absolute.*paths/i) });
+	});
 	it("coerce validates booleans, enums and numeric ranges", () => {
 		const boolF = getField("ui.footer")!;
 		expect(coerce(boolF, "true")).toEqual({ ok: true, value: true });

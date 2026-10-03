@@ -79,7 +79,7 @@ describe("applyConfigEdit round-trip", () => {
     expect(applyConfigEdit(dir, key, raw)).toMatchObject({ ok: true, scope: "local", file: join(dir, ".spider", "config.json") });
     expect(controlConfig("get", dir, key)).toEqual((key.startsWith("auxiliary.") || key.endsWith(".thinking")) ? raw : JSON.parse(raw));
   });
-  it("every reachable production reader has a schema field accepted by config set except the user-only enforcement switch", () => {
+  it("every reachable production reader has a schema field accepted by config set except user-only security settings", () => {
     const dir = fixture();
     const previous = paths.globalRoot;
     paths.globalRoot = join(dir, "global");
@@ -88,8 +88,8 @@ describe("applyConfigEdit round-trip", () => {
       for (const key of productionReaders(resolve("packages"))) {
         expect(declared.has(key), key).toBe(true);
         const field = getField(key, UI_CONFIG_SCHEMA)!;
-        const raw = field.type === "model-map" ? "{}" : field.type === "number" ? String(field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
-        if (key === "exec.enforce") {
+        const raw = field.type === "model-map" ? "{}" : field.type === "absolute-path-list" ? "[]" : field.type === "number" ? String(field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
+        if (["exec.enforce", "subagents.extensions"].includes(key)) {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
         } else {
           expect(applyConfigEdit(dir, key, raw), key).toMatchObject({ ok: true, scope: "local", file: join(dir, ".spider", "config.json") });

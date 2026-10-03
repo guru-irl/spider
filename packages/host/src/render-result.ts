@@ -255,7 +255,7 @@ function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
       ? th.fg("error", "✗") + " " + th.fg("text", String(details.error))
-      : th.fg("accent", "●") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
+      : th.fg("accent", "●") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
     const destination = details.ok && details.file ? `Config file: ${String(details.file)}` : "";
     const shadow = details.ok && details.shadowedBy ? `Shadowed by ${String(details.shadowedBy)} config` : "";
     return { render: (w: number) => ["", ...fitResultLines([line, ...(destination ? [destination] : []), ...(shadow ? [shadow] : [])], w, expanded)], invalidate() {} };
@@ -263,7 +263,7 @@ function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   if (details?.key !== undefined) {
     const source = details.source === undefined || (details.value === undefined && details.source === "unset")
       ? "" : ` (${typeof details.source === "string" ? details.source : JSON.stringify(details.source)})`;
-    return { render: (w: number) => ["", `${String(details.key)}: ${details.value === undefined ? "(unset)" : String(details.value)}${source}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+    return { render: (w: number) => ["", `${String(details.key)}: ${details.value === undefined ? "(unset)" : typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value)}${source}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
   }
   return textComponent({ details }, expanded);
 }

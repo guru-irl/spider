@@ -15,6 +15,20 @@ describe("renderConfig", () => {
 	});
 });
 
+it.each([
+  { value: [], json: "[]" },
+  { value: ["/a,one.ts", "/b.ts"], json: '["/a,one.ts","/b.ts"]' },
+  { value: { worker: "provider/model" }, json: '{"worker":"provider/model"}' },
+])("renders structured config values as JSON: $json", ({ value, json }) => {
+  const lines = renderConfig({ "subagents.extensions": value }, id, 160, true);
+  expect(lines.find(line => line.includes("Child extensions"))).toContain(json);
+});
+
+it("renders model defaults as a JSON object", () => {
+  const lines = renderConfig({ "models.defaults": { worker: "provider/model" } }, id, 160, true);
+  expect(lines.find(line => line.includes("Role defaults"))).toContain('{"worker":"provider/model"}');
+});
+
 describe("ConfigView", () => {
 	it("caches by width", () => {
 		const v = new ConfigView({ "ui.footer": false }, id);

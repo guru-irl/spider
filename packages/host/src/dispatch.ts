@@ -40,6 +40,7 @@ export interface ActionCtx {
    *  `model:` on a call -> modelDefaults[<agent role>] -> inherit the parent's model. */
   modelDefaults?: Record<string, string>;
   childMode?: "rpc" | "print";
+  subagentOnlyExtensions?: string[];
   /** AbortSignal for the in-flight tool call. pi's real `ToolDefinition.execute(toolCallId,
    *  params, signal, onUpdate, ctx)` supplies this as its 3rd positional arg (Escape mid-run
    *  fires it); the host threads it through here so exec's runExec -> Executor.execute ->

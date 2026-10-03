@@ -5,9 +5,12 @@ import { controlConfig, type ConfigWriteResult } from "../control.js";
 type ConfigEditResult = (ConfigWriteResult & { error?: undefined }) | { ok: false; error: string };
 
 function keyError(key: string): string | undefined {
-	// Protected key: exec.enforce can only be changed by user via slash command.
+	// Security settings can only be changed by the user.
 	if (key === "exec.enforce") {
 		return "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command";
+	}
+	if (key === "subagents.extensions") {
+		return "subagents.extensions is protected and can only be changed by the user in ~/.pi/agent/spider/config.json, or config.json under SPIDER_GLOBAL_ROOT";
 	}
 	if (!getField(key, UI_CONFIG_SCHEMA)) return `unknown key ${key}`;
 	return undefined;

@@ -5,12 +5,15 @@ import { join } from "node:path";
 import { bundleDoctorLine, type LoadedBundle } from "./build-id";
 import { openGlobal, resolveProject, paths, assertTestConfigPath, isThinkingLevel, THINKING_LEVELS } from "@spider/db-core";
 
+import { isAbsolutePathList } from "@spider/ui";
+
 export { controlMigrate } from "./control/migrate-cmd";
 
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
   "subagents.childMode": "rpc",
+  "subagents.extensions": Object.freeze([]),
   "memory.reviewer.enabled": true,
   "memory.reviewer.model": "github-copilot/gpt-6-luna",
   "memory.reviewer.timeoutMs": 45000,
@@ -61,11 +64,24 @@ function configLayers(cwd: string) {
     if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) {
       errors.push(`invalid models.defaults in ${file}: expected an object`);
     }
+    if (Object.hasOwn(layer.config, "subagents.extensions")) {
+      const extensions = layer.config["subagents.extensions"];
+      if (!isAbsolutePathList(extensions)) {
+        errors.push(`invalid subagents.extensions in ${file}: expected a JSON array of absolute file paths`);
+      }
+      if (layer === local) errors.push(`subagents.extensions in ${file} is ignored: global scope only`);
+    }
     if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
     }
   }
   return { global, local, globalFile, localFile, errors };
+}
+
+/** Read a user-controlled global value without honoring repository overrides. */
+export function globalConfigValue(cwd: string, key: string): { value: unknown; file: string } {
+  const { global, globalFile } = configLayers(cwd);
+  return { value: Object.hasOwn(global.config, key) ? global.config[key] : DEFAULTS[key], file: globalFile };
 }
 
 /** One read of each layer supplies the effective enforcement value, parse errors, and diagnostics. */
@@ -116,7 +132,7 @@ type ConfigSource = "default" | "global" | "local" | Record<string, "global" | "
 
 /** Effective config and its provenance come from the same read of both layers. */
 export function configValues(cwd: string): {
-  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[];
+  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[]; globalFile: string;
 } {
   const layers = configLayers(cwd);
   const g = layers.global.config;
@@ -124,6 +140,8 @@ export function configValues(cwd: string): {
   const all = { ...DEFAULTS, ...g, ...p };
   const sources: Record<string, ConfigSource> = Object.fromEntries(Object.keys(all).map(key =>
     [key, Object.hasOwn(p, key) ? "local" : Object.hasOwn(g, key) ? "global" : "default"]));
+  all["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? g["subagents.extensions"] : DEFAULTS["subagents.extensions"];
+  sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
   if ("models.defaults" in g || "models.defaults" in p) {
     const global = roleMap(g["models.defaults"]);
     const local = roleMap(p["models.defaults"]);
@@ -131,7 +149,7 @@ export function configValues(cwd: string): {
     sources["models.defaults"] = Object.fromEntries(Object.keys({ ...global, ...local }).map(role =>
       [role, Object.hasOwn(local, role) ? "local" : "global"]));
   }
-  return { config: all, sources, errors: layers.errors };
+  return { config: all, sources, errors: layers.errors, globalFile: layers.globalFile };
 }
 
 export interface ConfigWriteResult {
@@ -148,6 +166,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   }
   if (scope !== "local" && scope !== "global") throw new Error("control config: scope must be global or local");
   if (key === undefined) throw new Error(`control config ${op}: key required`);
+  if (op === "set" && key === "subagents.extensions" && scope !== "global") {
+    throw new Error('subagents.extensions is global-only; use scope:"global"');
+  }
   // Ordinary edits stay local unless the caller explicitly chooses global.
   const root = scope === "global" ? paths.globalRoot : paths.projectRoot(cwd);
   const file = configFile(root);
@@ -163,6 +184,10 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     !isThinkingLevel(value)) {
     throw new Error(`${key} thinking must be one of ${THINKING_LEVELS.join(", ")}`);
   }
+  if (op === "set" && key === "subagents.extensions" &&
+    !isAbsolutePathList(value)) {
+    throw new Error("subagents.extensions must be a JSON array of absolute file paths");
+  }
   if (op === "set" && key === "subagents.childMode" && value !== "rpc" && value !== "print") {
     throw new Error("subagents.childMode must be rpc or print");
   }
@@ -173,7 +198,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     if (Object.hasOwn(global, key)) cur[key] = "unlimited";
     else delete cur[key];
   } else cur[key] = value;
-  const shadowed = scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
+  const shadowed = key !== "subagents.extensions" && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   assertTestConfigPath(temp);
   try {

@@ -99,6 +99,17 @@ function mkdtempInScratch(scratchRoot: string | undefined): string {
 	return fs.mkdtempSync(path.join(scratchRoot, "subagent-tasks-"));
 }
 
+function uniqueExtensions(extensions: string[]): string[] {
+	const seen = new Set<string>();
+	return extensions.filter(extension => {
+		let key = path.resolve(extension);
+		try { key = fs.realpathSync(key); } catch { /* missing paths use their normalized spelling */ }
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const args = [...input.baseArgs];
 
@@ -154,11 +165,11 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	const runtimeExtensions: string[] = [];
 	if (input.extensions !== undefined) {
 		args.push("--no-extensions");
-		for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths, ...input.extensions, ...(input.subagentOnlyExtensions ?? [])])]) {
+		for (const extPath of uniqueExtensions([...runtimeExtensions, ...toolExtensionPaths, ...input.extensions, ...(input.subagentOnlyExtensions ?? [])])) {
 			args.push("--extension", extPath);
 		}
 	} else {
-		for (const extPath of [...new Set([...runtimeExtensions, ...toolExtensionPaths, ...(input.subagentOnlyExtensions ?? [])])]) {
+		for (const extPath of uniqueExtensions([...runtimeExtensions, ...toolExtensionPaths, ...(input.subagentOnlyExtensions ?? [])])) {
 			args.push("--extension", extPath);
 		}
 	}
@@ -235,6 +246,8 @@ export interface ChildSpawnSpec {
 	onRpcEvent?: (event: Record<string, any>) => void;
 	/** Compatibility fallback reason, persisted by the runner in run details. */
 	launchWarning?: string;
+	/** Configured extension files skipped before launch. Persisted as warning events. */
+	extensionWarnings?: string[];
 }
 
 /**
@@ -265,6 +278,7 @@ export interface BuildChildSpawnSpecInput {
 	name?: string;
 	childMode?: "rpc" | "print";
 	intercomExtensions?: string[];
+	subagentOnlyExtensions?: string[];
 	task: string;
 	model?: string;
 	thinking?: string;
@@ -312,6 +326,14 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	const compatibility = input.childMode === "print" ? undefined : piRpcCompatibility(spawnCommand, cwd);
 	const launchWarning = compatibility?.warning;
 	const childMode = compatibility?.fallback ? "print" : input.childMode ?? "rpc";
+	const extensionWarnings: string[] = [];
+	const subagentOnlyExtensions = uniqueExtensions(input.subagentOnlyExtensions ?? []).filter(extPath => {
+		try {
+			if (fs.statSync(extPath).isFile()) return true;
+		} catch { /* missing or inaccessible file */ }
+		extensionWarnings.push(`Skipping subagents.extensions path ${extPath}: missing or not a file.`);
+		return false;
+	});
 	const sessionName = `${input.name ?? input.agent}-${input.runId.slice(0, 8)}`;
 	const { args, env: builtEnv } = buildPiArgs({
 		baseArgs: childMode === "print"
@@ -331,6 +353,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		scratchRoot: input.scratchRoot,
 		dbPath: input.dbPath,
 		extensions: [spiderExtension, ...(childMode === "rpc" ? input.intercomExtensions ?? [] : [])],
+		subagentOnlyExtensions,
 		intercomSessionName: input.intercomSessionName,
 		orchestratorIntercomTarget: childMode === "rpc" ? input.orchestratorTarget : undefined,
 		systemPrompt: composeChildSystemPrompt(),
@@ -363,5 +386,5 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
 	}
-	return { argv, env, cwd, sessionFile, childMode, ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${input.task}` } : {}) };
+	return { argv, env, cwd, sessionFile, childMode, ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${input.task}` } : {}) };
 }

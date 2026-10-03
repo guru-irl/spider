@@ -96,6 +96,12 @@ describe("configuration schema truthfulness", () => {
     expect(Object.entries(fallback).filter(([key, value]) => !fields.some(field => field.key === key && field.default === value))).toEqual([]);
   });
 
+  it("compares list defaults by contents and still catches mismatched entries", () => {
+    const listField = { key: "subagents.extensions", label: "Extensions", type: "absolute-path-list" as const, default: [], description: "Child extensions" };
+    expect(mismatchedDefaults({ "subagents.extensions": [] }, [listField])).toEqual([]);
+    expect(mismatchedDefaults({ "subagents.extensions": ["/path/to/unexpected.ts"] }, [listField])).toEqual(["subagents.extensions"]);
+  });
+
   it("requires nonempty host defaults to match schema keys and values", () => {
     expect(Object.keys(DEFAULTS).length).toBeGreaterThan(0);
     expect(fields.map(field => field.key).filter((key, i, keys) => keys.indexOf(key) !== i)).toEqual([]);

@@ -157,11 +157,11 @@ has no reply yet, delivery unknown. Cancellation is persisted before termination
 triggering a model turn, including during reload. The reason text and the notifier's check both come from `shutdown-reason.ts`, so they cannot drift apart. A cancelled chain or pipeline
 does not launch another stage.
 
-Running children can be steered by run ID in their owner session. RPC success
-means **accepted but not confirmed**, since Pi input handlers can swallow or
-transform steers. A `steer_delivery` run event reports **delivered** only after a
-correlated user `message_start` enters the conversation. Queue removal alone is
-not delivery. Steer acceptance windows are serialized. Exact steer text is
+Running children can be steered by run ID in their owner session. A successful
+RPC reply confirms acceptance, not conversation entry. Pi input handlers can
+swallow or transform steers. A `steer_delivery` run event reports **delivered**
+only after a correlated user `message_start` enters the conversation. Queue
+removal alone is not delivery. Steer acceptance windows are serialized. Exact steer text is
 preferred among all additions across that window's queue updates; differing text
 counts as **delivered, transformed** only after a successful reply and when it
 was the sole addition. Several additions without an exact match remain
@@ -174,6 +174,11 @@ differing injection to transformed delivery; only exact-text entry counts. This 
 proof of model consumption. A steer in flight across `/reload` remains tracked
 and is resolved and reported by the reloaded activation after adoption.
 
+The tool waits up to 10 seconds from the send for observed conversation entry.
+At the deadline it returns the current queued state and says "do not resend" if
+still queued. The transform residual described above can also appear in the
+immediate tool result.
+
 After 10 seconds without an RPC reply, the result is **no reply yet, delivery
 unknown**, not a refusal. While the run is still active, do not resend; the written
 steer may still be delivered.
@@ -181,11 +186,11 @@ The request and its acceptance window remain tracked until settlement, exit or
 stop; late RPC success before settlement upgrades it to **accepted but not
 confirmed**, and observed entry to **delivered**. Each later steer waits at most
 10 seconds for an earlier reply, then is **refused** as not sent. If written, it
-has its own 10-second reply deadline. A late reply releases the next waiter in
-order. Settlement finalizes unanswered writes as unknown, refuses unwritten
-waiters and closes stdin, allowing the run to complete without a reply. Exit or
-stop before acceptance likewise leaves written input unknown unless an exact-text
-entry was observed. Already observed delivery stays delivered, including exit,
+has its own 10-second send deadline for acceptance and observed entry. A late reply
+releases the next waiter in order. Settlement finalizes unanswered writes as
+unknown, refuses unwritten waiters and closes stdin, allowing the run to complete
+without a reply. Exit or stop before acceptance likewise leaves written input
+unknown unless an exact-text entry was observed. Already observed delivery stays delivered, including exit,
 abort, settlement or timeout before the reply. Accepted but unobserved steers at settlement,
 exit or abort remain **accepted but not confirmed**. Every completion with steers
 includes counts for delivered, accepted but not confirmed, no reply yet, delivery

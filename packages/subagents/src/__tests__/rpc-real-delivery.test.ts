@@ -19,8 +19,8 @@ it("real pi: runner reports swallowed steers as accepted but not confirmed and n
   const piRoot = dirname(dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"))));
   const db = openDbAt(join(root, "project.db"), "worktree"), store = new RunStore(db);
   const notifications: any[] = [], events: any[] = [], tools: any[] = [];
-  let ready!: () => void, completed!: () => void;
-  const streaming = new Promise<void>(r => { ready = r; }), completion = new Promise<void>(r => { completed = r; });
+  let ready!: () => void, queued!: () => void, completed!: () => void;
+  const streaming = new Promise<void>(r => { ready = r; }), allQueued = new Promise<void>(r => { queued = r; }), completion = new Promise<void>(r => { completed = r; });
   let handle: ChildHandle | undefined;
   const notify = makeAsyncNotifier({ db, pi: { sendMessage(m: any) { notifications.push(m); } } });
   const runner = new Runner(db, "offline-owner", root, { store, tailer: new RunEventTailer(db), scratchRoot: join(root, "runs"), dbPath: join(root, "project.db"), childMode: "rpc",
@@ -29,7 +29,7 @@ it("real pi: runner reports swallowed steers as accepted but not confirmed and n
       const env = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir, SPIDER_GLOBAL_ROOT: join(root, "global"), STEER_RELEASE_FILE: release, PI_TELEMETRY: "0" };
       for (const key of ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_DB_PATH", "PI_SPIDER_SESSION_ID"]) delete env[key as keyof typeof env];
       handle = defaultSpawner({ ...spec, env: env as Record<string, string>, cwd: root, argv: [process.execPath, join(piRoot, "dist/cli.js"), "--offline", "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-builtin-tools", "--provider", "spider-offline", "--model", "fixture", "-e", fileURLToPath(new URL("./helpers/offline-steer-extension.ts", import.meta.url))],
-        onRpcEvent: e => { events.push(e); spec.onRpcEvent?.(e); if (e.type === "message_start" && e.message?.role === "assistant") ready(); } });
+        onRpcEvent: e => { events.push(e); spec.onRpcEvent?.(e); if (e.type === "message_start" && e.message?.role === "assistant") ready(); if (e.type === "queue_update" && e.steering?.includes("INJECT_THEN_PASS marker")) queued(); } });
       const child = handle;
       return { ...child, wait: async () => {
         const outcome = await child.wait();
@@ -46,14 +46,19 @@ it("real pi: runner reports swallowed steers as accepted but not confirmed and n
   };
   try {
     await bounded(streaming);
-    for (const text of ["SWALLOW_STEER marker", "normal instruction", "TRANSFORM_STEER marker", "INJECT_THEN_PASS marker"]) {
-      const result = await makeMessageHandler()({ to: row.id, message: text }, { db, sessionId: "offline-owner" }); tools.push(result);
-      expect(result.isError).toBe(false); expect(result.content).toContain("accepted but not confirmed"); expect(result.details.delivered).toBe(false);
-      expect(result.details.queued).toBe(!text.includes("SWALLOW_STEER"));
-    }
+    const texts = ["SWALLOW_STEER marker", "normal instruction", "TRANSFORM_STEER marker", "INJECT_THEN_PASS marker"];
+    const pendingTools = texts.map(message => makeMessageHandler()({ to: row.id, message }, { db, sessionId: "offline-owner" }));
+    await bounded(allQueued);
     const slash = await makeMessageHandler()({ to: row.id, message: "/skill:test" }, { db, sessionId: "offline-owner" });
     expect(slash.isError).toBe(true); expect(slash.content).toContain("expanded by the child as a skill or prompt template");
     writeFileSync(release, "release"); await bounded(completion);
+    tools.push(...await Promise.all(pendingTools));
+    for (const [index, result] of tools.entries()) {
+      expect(result.isError).toBe(false);
+      expect(result.details.delivery).toBe(index === 0 ? "accepted but not confirmed" : "delivered");
+      expect(result.details.delivered).toBe(index !== 0);
+      expect(result.details.queued).toBe(false);
+    }
     expect(await handle!.wait()).toEqual({ exitCode: 0 });
     const evidence = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='steer_delivery' ORDER BY id").all(row.id) as Array<{ payload: string }>;
     const latest = new Map<string, any>(); for (const e of evidence) { const p = JSON.parse(e.payload); latest.set(p.steer, p); }

@@ -70,8 +70,11 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
               ? `Steer to Subagent ${run.id} was not sent: ${ack.error.slice("Not sent:".length).trim()}`
               : `Subagent ${run.id} did not confirm steering acceptance: ${ack.error ?? "unconfirmed"}`, run.id);
           }
-          return { content: `Message to child ${run.id}: ${delivery}.${delivery === "no reply yet, delivery unknown" ? ack.error ? " The steer was not delivered and the run has ended. Start a fresh run if the instruction still matters." : " The steer was written and may still be delivered; do not resend." : ""}${ack.transformed ? " Child input transformed the text." : ""}${ack.error ? ` ${ack.error}` : ""}`, isError: false,
-            details: { ...ack, runId: run.id, accepted: delivery !== "no reply yet, delivery unknown", delivered: ack.delivered === true, queued: ack.queued === true && !ack.childAccepted, delivery, recipientAcknowledged: false, ...(warning ? { warning } : {}) } };
+          const queuedGuidance = delivery === "accepted but not confirmed" && ack.queued && !ack.error
+            ? " It is queued in the child. pi delivers it at the child's next turn boundary unless the run ends first. The final state appears in the run's events and completion summary; do not resend."
+            : "";
+          return { content: `Message to child ${run.id}: ${delivery}.${queuedGuidance}${delivery === "no reply yet, delivery unknown" ? ack.error ? " The steer was not delivered and the run has ended. Start a fresh run if the instruction still matters." : " The steer was written and may still be delivered; do not resend." : ""}${ack.transformed ? " Child input transformed the text." : ""}${ack.error ? ` ${ack.error}` : ""}`, isError: false,
+            details: { ...ack, runId: run.id, accepted: delivery !== "no reply yet, delivery unknown", delivered: ack.delivered === true, queued: ack.queued === true && !ack.error, delivery, recipientAcknowledged: false, ...(warning ? { warning } : {}) } };
         }
         if (!run.intercom_session) return refuse(`This run is owned by session ${run.session_id}; steer it from there, or install pi-intercom before launching a new run.`, run.id);
         destination = run.intercom_session;

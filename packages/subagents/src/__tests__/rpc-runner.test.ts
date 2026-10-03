@@ -33,6 +33,7 @@ it("persists later non-delivery without rewriting the successful steer tool resu
   const message = makeMessageHandler()({to:row.id,message:"correction"},{db,sessionId:"owner"});
   const steer=commands.find(c=>c.type==="steer");
   out({type:"queue_update",steering:["correction"],followUp:[]}); out({type:"response",id:steer.id,success:true});
+  await vi.advanceTimersByTimeAsync(10_000);
   const result=await message; expect(result.isError).toBe(false); expect(result.details.accepted).toBe(true);
   expect(result.content).toMatch(/accepted but not confirmed/);
   await vi.advanceTimersByTimeAsync(120_000); out({type:"agent_settled"});

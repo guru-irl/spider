@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
@@ -20,9 +20,11 @@ const queue = (text: string[]) => ({ type: "queue_update", steering: text, follo
 const user = (text: string, type = "message_start") => ({ type, message: { role: "user", content: [{ type: "text", text }], timestamp: 123 } });
 
 describe("truthful RPC steering", () => {
+  beforeEach(() => vi.useFakeTimers());
   // Treating RPC success as delivery must fail: swallowed input never enters the conversation.
-  it("reports swallowed input as accepted but not confirmed at acceptance and settlement", async () => {
+  it("reports swallowed input as accepted but not confirmed at the deadline and settlement", async () => {
     const f = fixture(), ack = f.rpc.steer("SWALLOW marker"); f.reply(f.commands.at(-1));
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(await ack).toMatchObject({ accepted: true, delivered: false, queued: false, delivery: "accepted but not confirmed" });
     f.out({ type: "agent_settled" });
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ steer: "SWALLOW marker", accepted: true, delivered: false, delivery: "accepted but not confirmed", message: expect.stringContaining("accepted but not confirmed") });
@@ -30,43 +32,53 @@ describe("truthful RPC steering", () => {
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1).message).not.toMatch(/discarded/i);
   });
   it("does not call queue removal delivery without a user message", async () => {
-    const f = fixture(), ack = f.rpc.steer("removed"); f.out(queue(["removed"])); f.reply(f.commands.at(-1)); await ack;
+    const f = fixture(), ack = f.rpc.steer("removed"); f.out(queue(["removed"])); f.reply(f.commands.at(-1));
     f.out(queue([])); f.out({ type: "agent_settled" });
+    expect(await ack).toMatchObject({ delivery: "accepted but not confirmed", queued: false });
     expect(f.events.filter(e => e.type === "steer_delivery").some(e => e.delivered)).toBe(false);
   });
   it.each([false, true])("confirms conversation entry before or after RPC acceptance (early=%s)", async early => {
     const f = fixture(), ack = f.rpc.steer("normal"); const command = f.commands.at(-1);
     f.out(queue(["normal"]));
-    if (!early) { f.reply(command); expect(await ack).toMatchObject({ delivery: "accepted but not confirmed", queued: true }); }
+    if (!early) f.reply(command);
     f.out(queue([])); f.out(user("normal")); f.out(user("normal", "message_end"));
-    if (early) { f.reply(command); expect(await ack).toMatchObject({ accepted: true, delivered: true, delivery: "delivered" }); }
+    if (early) f.reply(command);
+    expect(await ack).toMatchObject({ accepted: true, delivered: true, delivery: "delivered" });
     f.out({ type: "agent_settled" });
+    expect(f.commands.some(c => c.type === "clear_queue")).toBe(false);
+    expect(f.child.stdin.writableEnded).toBe(true);
     expect(f.events.filter(e => e.type === "steer_delivery" && e.delivered)).toHaveLength(1);
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "delivered" });
   });
   it("correlates transformed queue text and notes the transformation only after conversation entry", async () => {
-    const f = fixture(), ack = f.rpc.steer("rewrite this"); f.out(queue(["rewritten instruction"])); f.reply(f.commands.at(-1)); await ack;
+    const f = fixture(), ack = f.rpc.steer("rewrite this"); f.out(queue(["rewritten instruction"])); f.reply(f.commands.at(-1));
     f.out(queue([])); f.out(user("rewritten instruction")); f.out({ type: "agent_settled" });
+    expect(await ack).toMatchObject({ delivery: "delivered", transformed: true });
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "delivered", steer: "rewrite this", observedText: "rewritten instruction", transformed: true, message: expect.stringMatching(/delivered.*transform/i) });
   });
   it("does not attribute an unrelated user message to swallowed input", async () => {
-    const f = fixture(), ack = f.rpc.steer("swallowed"); f.reply(f.commands.at(-1)); await ack;
+    const f = fixture(), ack = f.rpc.steer("swallowed"); f.reply(f.commands.at(-1));
     f.out(user("unrelated extension message")); f.out({ type: "agent_settled" });
+    expect(await ack).toMatchObject({ delivery: "accepted but not confirmed" });
     expect(f.events.some(e => e.type === "steer_delivery" && e.delivered)).toBe(false);
   });
   it("serializes concurrent steers so a transformed second message is not credited to a swallowed first", async () => {
     const f = fixture(), first = f.rpc.steer("swallowed"), second = f.rpc.steer("rewrite");
     expect(f.commands.filter(c => c.type === "steer")).toHaveLength(1);
-    f.reply(f.commands.at(-1)); await first; await Promise.resolve();
+    f.reply(f.commands.at(-1)); await Promise.resolve();
     const command = f.commands.at(-1); expect(command.message).toBe("rewrite");
-    f.out(queue(["transformed"])); f.reply(command); await second; f.out(queue([])); f.out(user("transformed")); f.out({ type: "agent_settled" });
+    f.out(queue(["transformed"])); f.reply(command); f.out(queue([])); f.out(user("transformed")); f.out({ type: "agent_settled" });
+    expect(await first).toMatchObject({ delivery: "accepted but not confirmed" });
+    expect(await second).toMatchObject({ delivery: "delivered", transformed: true });
     const delivered = f.events.filter(e => e.type === "steer_delivery" && e.delivered);
     expect(delivered).toHaveLength(1); expect(delivered[0].steer).toBe("rewrite");
   });
   it("one user event confirms only one of two identical queued steers", async () => {
-    const f = fixture(), a = f.rpc.steer("same"); f.out(queue(["same"])); f.reply(f.commands.at(-1)); await a;
-    const b = f.rpc.steer("same"); f.out(queue(["same", "same"])); f.reply(f.commands.at(-1)); await b;
+    const f = fixture(), a = f.rpc.steer("same"); f.out(queue(["same"])); f.reply(f.commands.at(-1));
+    const b = f.rpc.steer("same"); f.out(queue(["same", "same"])); f.reply(f.commands.at(-1));
     f.out(queue(["same"])); f.out(user("same")); f.out({ type: "agent_settled" });
+    expect(await a).toMatchObject({ delivery: "delivered" });
+    expect(await b).toMatchObject({ delivery: "accepted but not confirmed" });
     expect(f.events.filter(e => e.type === "steer_delivery" && e.delivered)).toHaveLength(1);
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "accepted but not confirmed" });
   });
@@ -75,10 +87,12 @@ describe("truthful RPC steering", () => {
     const f = fixture(), ack = f.rpc.steer("exact");
     if (!oneUpdate) f.out(queue(["unrelated"]));
     f.out(queue(["unrelated", "exact"])); f.reply(f.commands.at(-1));
-    expect(await ack).toMatchObject({ delivery: "accepted but not confirmed", queued: true });
+    let resolved = false; void ack.then(() => { resolved = true; });
+    await vi.advanceTimersByTimeAsync(0); expect(resolved).toBe(false);
     f.out(queue(["exact"])); f.out(user("unrelated"));
     expect(f.events.some(e => e.type === "steer_delivery" && e.delivered)).toBe(false);
     f.out(queue([])); f.out(user("exact"));
+    expect(await ack).toMatchObject({ delivery: "delivered", transformed: false });
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "delivered", transformed: false, observedText: "exact" });
   });
   it.each([false, true])("requires a sole addition for transformed delivery (earlyEntry=%s)", async earlyEntry => {
@@ -87,8 +101,8 @@ describe("truthful RPC steering", () => {
     if (earlyEntry) { f.out(queue([])); f.out(user("first unrelated")); }
     f.out(queue(earlyEntry ? ["second unrelated"] : ["first unrelated", "second unrelated"]));
     f.reply(f.commands.at(-1));
-    expect(await ack).toMatchObject({ delivery: "accepted but not confirmed", queued: false });
     f.out(queue([])); f.out(user("first unrelated")); f.out(user("second unrelated")); f.out({ type: "agent_settled" });
+    expect(await ack).toMatchObject({ delivery: "accepted but not confirmed", queued: false });
     expect(f.events.some(e => e.type === "steer_delivery" && e.delivered)).toBe(false);
   });
   // Review P3: a timeout is uncertainty, and must retain the original correlation window.
@@ -104,10 +118,11 @@ describe("truthful RPC steering", () => {
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "accepted but not confirmed" });
     await Promise.resolve();
     expect(f.commands.at(-1).message).toBe("second");
-    f.reply(f.commands.at(-1)); expect(await second).toMatchObject({ accepted: true, delivery: "accepted but not confirmed" });
+    f.reply(f.commands.at(-1)); await vi.advanceTimersByTimeAsync(10_000);
+    expect(await second).toMatchObject({ accepted: true, delivery: "accepted but not confirmed" });
     f.out(queue([])); f.out(user("slow handler"));
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "delivered", steer: "slow handler" });
-    const third = f.rpc.steer("third"); f.reply(f.commands.at(-1)); expect(await third).toMatchObject({ accepted: true });
+    const third = f.rpc.steer("third"); f.reply(f.commands.at(-1)); await vi.advanceTimersByTimeAsync(10_000); expect(await third).toMatchObject({ accepted: true });
   });
   it("can observe delivery after timeout before a late reply", async () => {
     vi.useFakeTimers(); const f = fixture(), ack = f.rpc.steer("slow"); const command = f.commands.at(-1);
@@ -130,8 +145,9 @@ describe("truthful RPC steering", () => {
   });
   // Review P5 / mutant M10: entries read after stopping are not evidence.
   it("ignores conversation-entry events after abort begins", async () => {
-    const f = fixture(), ack = f.rpc.steer("x"); f.out(queue(["x"])); f.reply(f.commands.at(-1)); await ack;
+    const f = fixture(), ack = f.rpc.steer("x"); f.out(queue(["x"])); f.reply(f.commands.at(-1));
     const stop = f.rpc.abort(); f.out(queue([])); f.out(user("x")); f.reply(f.commands.at(-1)); await stop;
+    expect(await ack).toMatchObject({ delivery: "accepted but not confirmed", error: "Child was stopped." });
     expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivery: "accepted but not confirmed" });
     expect(f.events.some(e => e.type === "steer_delivery" && e.delivered)).toBe(false);
   });
@@ -179,6 +195,7 @@ describe("truthful RPC steering", () => {
     for (const ack of await Promise.all([second, third])) expect(ack).toMatchObject({ delivery: "refused", error: expect.stringMatching(/not sent/i) });
     expect(f.commands.filter(c => c.type === "steer")).toHaveLength(1);
     f.reply(command); const recovered = f.rpc.steer("after reply"); f.reply(f.commands.at(-1));
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(await recovered).toMatchObject({ accepted: true });
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -201,15 +218,18 @@ describe("truthful RPC steering", () => {
   });
   // Round-2 A8/A9 controls: multiset additions and entry matching across pending steers.
   it("confirms both identical steers when both enter the conversation", async () => {
-    const f = fixture(), a = f.rpc.steer("same"); f.out(queue(["same"])); f.reply(f.commands.at(-1)); await a;
-    const b = f.rpc.steer("same"); f.out(queue(["same", "same"])); f.reply(f.commands.at(-1)); await b;
+    const f = fixture(), a = f.rpc.steer("same"); f.out(queue(["same"])); f.reply(f.commands.at(-1));
+    const b = f.rpc.steer("same"); f.out(queue(["same", "same"])); f.reply(f.commands.at(-1));
     f.out(queue(["same"])); f.out(user("same")); f.out(queue([])); f.out(user("same"));
+    for (const ack of await Promise.all([a, b])) expect(ack).toMatchObject({ delivery: "delivered" });
     expect(f.events.filter(e => e.type === "steer_delivery" && e.delivered)).toHaveLength(2);
   });
   it("matches a later entry only to its own pending steer", async () => {
-    const f = fixture(), a = f.rpc.steer("first"); f.out(queue(["first"])); f.reply(f.commands.at(-1)); await a;
-    const b = f.rpc.steer("second"); f.out(queue(["first", "second"])); f.reply(f.commands.at(-1)); await b;
+    const f = fixture(), a = f.rpc.steer("first"); f.out(queue(["first"])); f.reply(f.commands.at(-1));
+    const b = f.rpc.steer("second"); f.out(queue(["first", "second"])); f.reply(f.commands.at(-1));
     f.out(queue(["first"])); f.out(user("second"));
+    expect(await b).toMatchObject({ delivery: "delivered" });
+    f.out({ type: "agent_settled" }); expect(await a).toMatchObject({ delivery: "accepted but not confirmed" });
     expect(f.events.filter(e => e.type === "steer_delivery" && e.delivered).map(e => e.steer)).toEqual(["second"]);
   });
 
@@ -219,6 +239,7 @@ describe("truthful RPC steering", () => {
     await vi.advanceTimersByTimeAsync(9_999);
     expect(resolved).toBe(false);
     f.reply(f.commands.at(-1));
+    await vi.advanceTimersByTimeAsync(1);
     expect(await ack).toMatchObject({ accepted: true, delivery: "accepted but not confirmed" });
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -228,9 +249,10 @@ describe("truthful RPC steering", () => {
     await vi.advanceTimersByTimeAsync(9_999);
     expect(resolved).toBe(false);
     expect(f.commands.filter(c => c.type === "steer")).toHaveLength(1);
-    f.reply(command); await first; await Promise.resolve();
+    f.reply(command); await Promise.resolve();
     expect(f.commands.at(-1).message).toBe("waiter");
     f.reply(f.commands.at(-1));
+    await vi.advanceTimersByTimeAsync(10_000); expect(await first).toMatchObject({ accepted: true });
     expect(await second).toMatchObject({ accepted: true, delivery: "accepted but not confirmed" });
     expect(vi.getTimerCount()).toBe(0);
   });

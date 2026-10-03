@@ -7,10 +7,11 @@ export function resolveSessionRunProject(sessionCwd: string, sessionId: string):
 }
 
 /** Open the session-owned runs DB, honoring session bindings rather than a child's explicit cwd. */
-export function openSessionRunDb(sessionCwd: string, sessionId: string): { db: Db; dbPath: string } {
+export function openSessionRunDb(sessionCwd: string, sessionId: string, resolvedProject?: ProjectInfo | (() => ProjectInfo)): { db: Db; dbPath: string } {
   let dbPath = path.join(path.resolve(sessionCwd), ".spider", "project.db");
   try {
-    const project = resolveSessionRunProject(sessionCwd, sessionId);
+    const project = typeof resolvedProject === "function" ? resolvedProject()
+      : resolvedProject ?? resolveSessionRunProject(sessionCwd, sessionId);
     dbPath = project.dbPath;
     return { db: openProject(project.projectKey), dbPath };
   } catch (cause) {

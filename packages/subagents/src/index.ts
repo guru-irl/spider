@@ -1,5 +1,6 @@
 export * from "./run-store";
 export * from "./run-events";
+export * from "./usage";
 export * from "./pi-args";
 export * from "./pi-spawn";
 export * from "./child-reporter";

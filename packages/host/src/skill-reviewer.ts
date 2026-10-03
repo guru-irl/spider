@@ -1,12 +1,12 @@
 import type { ThinkingLevel, ThinkingResolution } from "@spider/db-core";
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { complete, type ModelEntry } from "@spider/models";
+import { complete, type ModelEntry, type UsageSinkFactory } from "@spider/models";
 import { persistReviewError } from "@spider/memory";
 import { skillReviewerSystem, loadSkillReviewContext, type ExistingSkill, type SkillReviewOptions, type SkillReviewer } from "@spider/organism";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { controlConfig } from "./control";
 
-export function modelSkillReviewer(modelRef: string, registry: unknown, thinking: ThinkingLevel = "xhigh", onThinking?: (info: ThinkingResolution) => void): SkillReviewer {
+export function modelSkillReviewer(modelRef: string, registry: unknown, thinking: ThinkingLevel = "xhigh", onThinking?: (info: ThinkingResolution) => void, usage?: UsageSinkFactory): SkillReviewer {
   return (candidate, skills, signal, rubric) => {
     const slash = modelRef.indexOf("/");
     if (slash <= 0 || slash === modelRef.length - 1) throw Error(`invalid skill reviewer model: ${modelRef}`);
@@ -15,18 +15,18 @@ export function modelSkillReviewer(modelRef: string, registry: unknown, thinking
     return complete(entry, JSON.stringify(data), {
       system: skillReviewerSystem(rubric),
       registry: registry as Pick<ModelRegistry, "find" | "streamSimple"> | undefined,
-      thinkingLevel: thinking, signal, onThinking,
+      thinkingLevel: thinking, signal, onThinking, onUsage: usage?.("skill-review"),
     });
   };
 }
 
-export function skillReviewOptions(cwd: string, registry: unknown, signal?: AbortSignal, loadedSkills: ExistingSkill[] = []): SkillReviewOptions {
+export function skillReviewOptions(cwd: string, registry: unknown, signal?: AbortSignal, loadedSkills: ExistingSkill[] = [], usage?: UsageSinkFactory): SkillReviewOptions {
   const enabled = controlConfig("get", cwd, "skills.reviewer.enabled") !== false;
   const model = controlConfig("get", cwd, "skills.reviewer.model");
   const thinking = controlConfig("get", cwd, "skills.reviewer.thinking") as ThinkingLevel;
   const timeoutMs = controlConfig("get", cwd, "skills.reviewer.timeoutMs");
   return {
-    reviewer: enabled ? modelSkillReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", registry, thinking, reviewerThinkingDiagnostic(cwd, "skill", typeof model === "string" ? model : "github-copilot/gpt-6-luna")) : undefined,
+    reviewer: enabled ? modelSkillReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", registry, thinking, reviewerThinkingDiagnostic(cwd, "skill", typeof model === "string" ? model : "github-copilot/gpt-6-luna"), usage) : undefined,
     skipReason: "reviewer disabled", timeoutMs: timeoutMs as number, signal,
     loadContext: store => loadSkillReviewContext(store, loadedSkills),
     onReviewError: (error, raw) => persistReviewError(cwd, "skill", error, raw),

@@ -242,6 +242,8 @@ export interface ChildSpawnSpec {
 	cwd: string;
 	sessionFile: string;
 	childMode?: "rpc" | "print";
+	/** Model attribution before the child emits its first assistant message. */
+	model?: string;
 	prompt?: string;
 	onRpcEvent?: (event: Record<string, any>) => void;
 	/** Compatibility fallback reason, persisted by the runner in run details. */
@@ -386,5 +388,5 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
 	}
-	return { argv, env, cwd, sessionFile, childMode, ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${input.task}` } : {}) };
+	return { argv, env, cwd, sessionFile, childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${input.task}` } : {}) };
 }

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import type { Spawner, ChildHandle } from "./runner";
 import { killProcessGroup, isProcessAlive, isProcessGroupAlive } from "./kill-process";
-import { ownRpcChild, createEventGate } from "./rpc-child";
+import { ownRpcChild, createEventGate, attachRpcReader } from "./rpc-child";
 import { processStartTime, checkProcessIdentity } from "./process-identity";
 
 const isWin = process.platform === "win32";
@@ -12,7 +12,7 @@ export const defaultSpawner: Spawner = (spec) => {
   const child = spawn(spec.argv[0], spec.argv.slice(1), {
     cwd: spec.cwd,
     env: { ...process.env, ...spec.env },
-    stdio: spec.childMode === "rpc" ? ["pipe", "pipe", "pipe"] : "ignore",
+    stdio: spec.childMode === "rpc" ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
     // On Unix give the child its OWN process group, so killing it also kills every
     // tool subprocess IT spawned. Without this, kill() signals only `pi` and orphans
     // the rest. Mirrors packages/context/src/executor.ts.
@@ -21,7 +21,7 @@ export const defaultSpawner: Spawner = (spec) => {
   // Warnings go through a rebindable gate, never straight to spec.onRpcEvent: after a /reload that
   // callback belongs to the previous activation (its Runner, db and pi).
   let rpc: ReturnType<typeof ownRpcChild> | undefined;
-  const printGate = createEventGate(spec.onRpcEvent);
+  const printGate = createEventGate(spec.onRpcEvent, spec.model);
   const warn = (event: Record<string, any>) => { try { (rpc ? rpc.report : printGate.report)(event); } catch { /* diagnostics must not leak a spawned child */ } };
   const startTime = child.pid === undefined ? null : processStartTime(child.pid);
   if (child.pid !== undefined && startTime === null) {
@@ -38,7 +38,11 @@ export const defaultSpawner: Spawner = (spec) => {
     settle({ exitCode: failure ? code || 1 : code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1), ...(failure ? { result: failure } : {}) });
   });
   child.on("error", (error) => settle({ exitCode: 1, ...(spec.childMode === "rpc" ? { result: `Child launch failed: ${error.message}` } : {}) }));
-  rpc = spec.childMode === "rpc" ? ownRpcChild(child, spec.prompt ?? "", spec.onRpcEvent) : undefined;
+  rpc = spec.childMode === "rpc" ? ownRpcChild(child, spec.prompt ?? "", spec.onRpcEvent, spec.model) : undefined;
+  if (!rpc) {
+    if (child.stdout) attachRpcReader(child.stdout, printGate.report, error => warn({ type: "warning", message: `Invalid child JSONL record: ${error.message}` }));
+    child.stderr?.resume(); // Drain diagnostics without retaining arbitrary child output.
+  }
   const killAsync = async (graceMs?: number) => {
     if (child.pid === undefined) return;
     if (rpc) {

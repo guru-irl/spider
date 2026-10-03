@@ -13,6 +13,7 @@ import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { HostOrganismRuntime } from "./organism-runtime";
+import { UsageAccounting } from "./usage-accounting";
 import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
@@ -27,7 +28,7 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db } from "@spider/db-core";
+import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
 import {
   stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
   activeCharTotal, listActive, resolveEmbedder,
@@ -51,7 +52,7 @@ import {
 } from "@spider/organism";
 import { runUpstreamWatch, markReviewed, registerSuperpowers } from "@spider/superpowers";
 import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
 import { openSessionRunDb } from "./session-run-db";
 export { openSessionRunDb } from "./session-run-db";
@@ -70,6 +71,7 @@ const getEmbedder = resolveEmbedder;
 
 // Each loaded extension owns its runtime; manual actions reuse its serialized workers.
 const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
+const usageRuntimes = new WeakMap<object, UsageAccounting>();
 
 // A-M3 (branch-review A-architecture.md): per-pi-instance record of a `registerRouting`
 // setup failure, read by doctor so it is surfaced instead of fully swallowed. Mirrors
@@ -274,7 +276,7 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
   const api = ctx.pi as object;
   let runtime = organismRuntimes.get(api);
   if (!runtime) {
-    runtime = new HostOrganismRuntime(getEmbedder, undefined, () => piLoadedSkills(ctx.pi));
+    runtime = new HostOrganismRuntime(getEmbedder, undefined, () => piLoadedSkills(ctx.pi), () => ctx.usage ?? (() => undefined));
     organismRuntimes.set(api, runtime);
   }
   return runtime.resolve(ctx);
@@ -700,7 +702,8 @@ export function buildActionCtx(
   // Run records are owned by the dispatching session, not by the child's cwd.
   // Keep `project`, `cwd`, repoDb and modelDefaults tied to the target as before.
   const runRecordAction = args.action === "run" || args.action === "kill" || args.action === "message";
-  const sessionRun = runRecordAction ? openSessionRunDb(ctxCwd ?? process.cwd(), sessionId) : undefined;
+  // With no explicit override, this resolution also identifies the session-owned DB.
+  const sessionRun = runRecordAction ? openSessionRunDb(ctxCwd ?? process.cwd(), sessionId, !explicitCwd ? project : undefined) : undefined;
   const worktreeDb = sessionRun?.db ?? openProject(project.projectKey);
   // For git repos: open the repo DB
   // For non-git dirs: create a repo-schema DB at worktree root (memory tables live in repo tier)
@@ -720,12 +723,13 @@ export function buildActionCtx(
   const configuredChildMode = settings.config["subagents.childMode"];
   if (args.action === "run" && configuredChildMode !== "rpc" && configuredChildMode !== "print") throw new Error("subagents.childMode must be rpc or print");
   const childMode = configuredChildMode === "print" ? "print" : "rpc";
-  return { db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, subagentOnlyExtensions };
+  const accounting = usageRuntimes.get(pi);
+  return { usage: accounting?.factory(sessionId), reportUsage: accounting ? (db, run) => accounting.reportRun(db, run) : undefined, db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, subagentOnlyExtensions };
 }
 
 async function dispatchWithDoctorSnapshot(
   pi: PiToolAPI, params: SpiderArgs, ctx: unknown, ownedActions: ReadonlyMap<string, ActionHandler>,
-  onPartial?: (text: string) => void, signal?: AbortSignal,
+  onPartial?: (text: string) => void, signal?: AbortSignal, onSessionProject?: (project: ProjectInfo) => void,
 ): Promise<unknown> {
   const sessionId = sessionIdOf(ctx);
   const injectionSnapshot = params.action === "control" && params.command === "doctor"
@@ -734,6 +738,7 @@ async function dispatchWithDoctorSnapshot(
     if (injectionSnapshot) {
       const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
         (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx), true);
+      if (!params.cwd) onSessionProject?.(actionCtx.project);
       actionCtx.injectionSnapshot = injectionSnapshot;
       // An older schema can still be inspected, but a corrupt file must retain
       // the existing action-context fallback rather than hiding the open error.
@@ -744,10 +749,12 @@ async function dispatchWithDoctorSnapshot(
       // A dry-run must not migrate the repo as a side effect of context creation.
       const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
         (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx), true);
+      if (!params.cwd) onSessionProject?.(actionCtx.project);
       return await handleControl(params, actionCtx);
     }
     const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
       (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx));
+    if (!params.cwd) onSessionProject?.(actionCtx.project);
     return await dispatch(params, actionCtx, ownedActions);
   } catch (e) {
     if (!injectionSnapshot) throw e;
@@ -759,6 +766,8 @@ async function dispatchWithDoctorSnapshot(
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
+  const accounting = new UsageAccounting();
+  usageRuntimes.set(pi, accounting);
   const ownedActions = new Map<string, ActionHandler>();
   const registerAction = (name: string, handler: ActionHandler) => {
     // Context packages reuse module-level functions. Wrap even those handlers so
@@ -779,7 +788,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     const meaningful = report.status === "failed" || report.status === "partial" ||
       report.memoryStaged + report.skillsStaged + (report.skillsQueued ?? 0) + report.todosAdded > 0;
     if (meaningful) pi.appendEntry?.("spider.organism", report);
-  }, () => piLoadedSkills(pi));
+  }, () => piLoadedSkills(pi), sessionId => accounting.factory(sessionId));
   organismRuntimes.set(pi, organism);
   let currentContext: unknown;
   let currentSessionId = "";
@@ -821,7 +830,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       link: (args.link as string | null) ?? null,
       source: args.auto ? "auto" : "user",
     }, args.justification, {
-      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry, controlConfig("get", ctx.cwd, "memory.reviewer.thinking") as import("@spider/db-core").ThinkingLevel, info => { thinkingDiagnostics.push(info); recordThinking(info); }) : undefined,
+      reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry, controlConfig("get", ctx.cwd, "memory.reviewer.thinking") as import("@spider/db-core").ThinkingLevel, info => { thinkingDiagnostics.push(info); recordThinking(info); }, ctx.usage) : undefined,
       skipReason: "reviewer disabled",
       timeoutMs: timeoutMs as number,
       signal: ctx.signal,
@@ -858,7 +867,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     }
     if (process.env.PI_SUBAGENT_CHILD === "1" || args.op === "add") {
       return skillAction({ db: ctx.repoDb, project: ctx.project,
-        skillReview: skillReviewOptions(ctx.cwd, ctx.modelRegistry, ctx.signal, piLoadedSkills(ctx.pi)) }, args as SkillActionArgs);
+        skillReview: skillReviewOptions(ctx.cwd, ctx.modelRegistry, ctx.signal, piLoadedSkills(ctx.pi), ctx.usage) }, args as SkillActionArgs);
     }
     return skillAction(buildOrganismDeps(ctx), args as SkillActionArgs);
   });
@@ -1001,7 +1010,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // empty update fired before any output exists: it materialises the result section
       // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
       // of nothing until exit. Subsequent calls carry cumulative, capped snapshots.
-      if (ctx) currentContext = ctx;
+      if (ctx) { currentContext = ctx; accounting.activate(ctx); }
       const emit = typeof onUpdate === "function" ? (onUpdate as (u: unknown) => void) : undefined;
       const action = String((args as { action?: unknown })?.action ?? "");
       const streams = action === "exec" || action === "exec_file" || action === "batch";
@@ -1023,8 +1032,10 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // text blocks, details = structured payload). TUI Component rendering is separate
       // (renderResult, wired in the UI phase).
       let r: unknown;
+      // Reuse only this call's non-explicit resolution, never a prior binding or cwd.
+      let sessionProject: ProjectInfo | undefined;
       try {
-        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, ownedActions, onPartial, abortSignal);
+        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, ownedActions, onPartial, abortSignal, project => { sessionProject = project; });
       } catch (error) {
         rethrowWithMessage(error, `spider ${action || "call"}`);
       }
@@ -1035,6 +1046,17 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // tool_result hook (routing/index.ts) to pick up and flip isError on, without
       // altering content/details returned to pi below.
       if (result.isError) markToolCallError(toolCallId, errorOwner);
+      const sessionId = sessionIdOf(ctx);
+      if (sessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
+        try {
+          const { db } = openSessionRunDb(cwdOf(ctx) ?? process.cwd(), sessionId,
+            sessionProject && existsSync(sessionProject.projectKey) ? sessionProject : undefined);
+          try {
+            const usage = accounting.takeFallback(db, sessionId);
+            if (usage) return { ...result, usage };
+          } finally { db.close(); }
+        } catch { /* accounting must not replace the action's result, including doctor on a broken DB */ }
+      }
       return result;
     },
   });
@@ -1082,8 +1104,15 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // sessionId, so routing reads it via getSessionId() over this ref. pi.on
   // chains, so hooks.ts's own session_start handler still runs too.
   pi.on("session_start", (_event: any, ctx?: unknown) => {
+    accounting.activate(ctx);
     currentContext = ctx;
     currentSessionId = sessionIdOf(ctx);
+    if (currentSessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
+      try {
+        const { db } = openSessionRunDb(cwdOf(ctx) ?? process.cwd(), currentSessionId);
+        try { accounting.restore(db, currentSessionId); } finally { db.close(); }
+      } catch { /* usage restoration is best effort, even when the project DB is broken */ }
+    }
     return undefined;
   });
 
@@ -1165,12 +1194,16 @@ export default function spiderExtension(pi: PiToolAPI): void {
       organism.dispose();
       for (const db of routingDbs.values()) db.close();
     } finally {
+      // The organism's earlier handler has completed drain and curate. Invalidate only
+      // now so shutdown calls count, but responses still in flight cannot append later.
+      accounting.shutdown();
       // Node retains the module record after a rebuilt reload. Release its heavy
       // references only after the earlier organism shutdown handler has drained.
       clearActions(ownedActions);
       ownedActions.clear();
       clearToolCallErrors(errorOwner);
       if (organismRuntimes.get(pi) === organism) organismRuntimes.delete(pi);
+      if (usageRuntimes.get(pi) === accounting) usageRuntimes.delete(pi);
       if (routingSetupErrors.get(pi) === routingSetupError) routingSetupErrors.delete(pi);
       routingDbs.clear();
       currentContext = undefined;

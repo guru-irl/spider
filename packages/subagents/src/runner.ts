@@ -8,6 +8,7 @@ import { resolveModelThinking } from "./model-resolve";
 import { registerShared, releaseShared, setSink, type CompletionSink, type SharedChildEntry, type SharedHandle } from "./child-registry";
 import { decideOutcome, NO_DELIVERABLE_RESULT, summarizeCompletionEvents } from "./completion-output";
 import { PERSISTED_EVENT_TYPES } from "./rpc-child";
+import { recordRunUsage, safelyReportUsage, warnUsage } from "./usage";
 
 export { NO_DELIVERABLE_RESULT };
 
@@ -50,7 +51,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -111,7 +112,10 @@ export class Runner {
   /** Persist the RPC events worth keeping. Rebuilt per activation so a reload rebinds it to the new DB. */
   private rpcSink(run: RunRow): (event: Record<string, any>) => void {
     return event => {
-      if (PERSISTED_EVENT_TYPES.includes(event.type)) {
+      if (event.type === "spider_usage") {
+        try { recordRunUsage(this.db, run.id, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose); }
+        catch (error) { warnUsage(this.db, run, error); }
+      } else if (PERSISTED_EVENT_TYPES.includes(event.type)) {
         appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: event.type,
           summary: event.message ?? event.error ?? "Child pending queue changed.", payload: event });
       }
@@ -212,6 +216,7 @@ export class Runner {
       } finally {
         try { handle?.kill(); } finally { unregisterChild(this.sessionId, run.id); releaseShared(run.id); this.removeRoute(run.id); }
       }
+      safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
       this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, "failed", result);
       return undefined;
     }
@@ -242,11 +247,13 @@ export class Runner {
         emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: outcome.status, summary: run.name ?? undefined });
       })();
       this.db.afterCommit(() => this.removeRoute(run.id));
+      safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
       return outcome;
     }
     const outcome = this.withSteerSummary(run.id, { status: (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed"), result: cur?.result ?? undefined });
     if (outcome.result !== cur?.result) this.db.prepare("UPDATE runs SET result=? WHERE id=?").run(outcome.result ?? null, run.id);
     this.db.afterCommit(() => this.removeRoute(run.id));
+    safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
     return outcome;
   }
 

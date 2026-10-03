@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
+import { sumUsage } from "./usage";
 
 export type SteerDelivery = "delivered" | "accepted but not confirmed" | "no reply yet, delivery unknown" | "refused";
 export interface SteerAck {
@@ -36,7 +37,7 @@ export function attachRpcReader(stream: NodeJS.ReadableStream, onEvent: (event: 
 }
 
 /** Event types a sink persists (see Runner.rpcSink). Losing one is a loss of run history. */
-export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery"];
+export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery", "spider_usage"];
 /** Streaming partials: each carries the whole message so far and a full message event follows. Never buffered. */
 const PARTIAL_EVENT_TYPES: readonly string[] = ["message_update", "tool_execution_update"];
 
@@ -61,14 +62,45 @@ export interface EventGate {
   bind(next: (event: Record<string, any>) => void): void;
 }
 
-export function createEventGate(initial?: (event: Record<string, any>) => void): EventGate {
+export function createEventGate(initial?: (event: Record<string, any>) => void, requestedModel?: string): EventGate {
   let sink = initial, buffering = false, seq = 0;
+  const slash = requestedModel?.indexOf("/") ?? -1;
+  let latest = slash > 0 ? { provider: requestedModel!.slice(0, slash), model: requestedModel!.slice(slash + 1) }
+    : requestedModel ? { provider: "unknown", model: requestedModel } : undefined;
   const persisted: Buffered[] = [], other: Buffered[] = [];
+  // Usage has O(provider/model/purpose) storage, separate from both evictable lanes.
+  const bufferedUsage = new Map<string, Buffered>();
   let persistedBytes = 0, otherBytes = 0, lostPersisted = 0, droppedOther = 0;
   const deliver = (event: Record<string, any>) => { try { sink?.(event); } catch { /* reporting cannot block pipe drainage */ } };
   const sizeOf = (event: Record<string, any>) => { try { return JSON.stringify(event).length; } catch { return 0; } };
   const report = (event: Record<string, any>) => {
+    if (["message_start", "message_update", "message_end"].includes(event.type) && event.message?.role === "assistant") {
+      const message = event.message;
+      if (message.provider && (message.responseModel ?? message.model)) latest = { provider: message.provider, model: message.responseModel ?? message.model };
+      if (event.type === "message_end" && message.usage && latest) report({ type: "spider_usage", ...latest, usage: message.usage });
+    } else if (event.type === "compaction_end" && event.aborted === false && event.result?.usage) {
+      // pi 0.87 built-in compactions emit only compaction_end. Boundary drafts emit
+      // only entry_appended, so these two paths cannot count the same compaction twice.
+      if (latest) report({ type: "spider_usage", ...latest, usage: event.result.usage, purpose: "compaction" });
+      else report({ type: "warning", message: "Usage accounting skipped compaction: model unknown." });
+    } else if (event.type === "entry_appended" && event.entry?.usage) {
+      const entry = event.entry;
+      if (entry.type === "usage") {
+        report({ type: "spider_usage", provider: entry.provider, model: entry.model, usage: entry.usage, purpose: entry.kind });
+      } else if (["compaction", "branch_summary"].includes(entry.type)) {
+        // Defensive branch_summary support: pi does not emit it to children today.
+        if (latest) report({ type: "spider_usage", ...latest, usage: entry.usage, purpose: entry.type });
+        else report({ type: "warning", message: `Usage accounting skipped ${entry.type}: model unknown.` });
+      }
+    }
     if (!buffering) return deliver(event);
+    if (event.type === "spider_usage") {
+      const key = JSON.stringify([event.provider, event.model, event.purpose]);
+      const prior = bufferedUsage.get(key);
+      if (prior) prior.event.usage = sumUsage([prior.event.usage, event.usage]);
+      else bufferedUsage.set(key, { seq: seq++, event: { ...event }, bytes: 0 });
+      return;
+    }
     if (PARTIAL_EVENT_TYPES.includes(event.type)) return;
     const isPersisted = PERSISTED_EVENT_TYPES.includes(event.type);
     const queue = isPersisted ? persisted : other;
@@ -87,7 +119,8 @@ export function createEventGate(initial?: (event: Record<string, any>) => void):
     unbind(): void { buffering = true; sink = undefined; },
     bind(next: (event: Record<string, any>) => void): void {
       sink = next; buffering = false;
-      const replay = [...persisted, ...other].sort((a, b) => a.seq - b.seq);
+      const replay = [...persisted, ...other, ...bufferedUsage.values()].sort((a, b) => a.seq - b.seq);
+      bufferedUsage.clear();
       persisted.length = 0; other.length = 0; persistedBytes = 0; otherBytes = 0;
       if (lostPersisted) deliver({ type: "warning", eventsLost: lostPersisted, message: `Events lost during reload: ${lostPersisted} child event(s) did not fit the reload buffer and were dropped.` });
       else if (droppedOther) deliver({ type: "warning", message: `Reload gap: ${droppedOther} non-persisted child event(s) were dropped from the reload buffer.` });
@@ -97,7 +130,7 @@ export function createEventGate(initial?: (event: Record<string, any>) => void):
   };
 }
 
-export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (event: Record<string, any>) => void) {
+export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (event: Record<string, any>) => void, requestedModel?: string) {
   let closed = false, settled = false, stopping = false, discardAfterSettle = false;
   let steering: string[] = [], followUp: string[] = [];
   let promptAccepted = false, failureReason: string | undefined, stderrTail = "";
@@ -108,7 +141,7 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   const waitingSteers: Array<{ message: string; finish: (ack: SteerAck) => void; timer: ReturnType<typeof setTimeout> }> = [];
   // The sink can be unbound across a /reload: events then queue (bounded) and replay in order
   // to the next sink, while protocol handling below keeps running on the live pipes.
-  const gate = createEventGate(onEvent);
+  const gate = createEventGate(onEvent, requestedModel);
   const report = gate.report;
   const deliveryAck = (p: Pending): SteerAck => ({ accepted: p.childAccepted === true || p.observed === true, delivered: p.observed === true,
     queued: !p.observed && p.queuedText !== undefined && steering.includes(p.queuedText),

@@ -2,6 +2,7 @@ import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/
 import type { Component } from "../component";
 import { formatDuration, shortModel } from "./footer";
 import { wrapText } from "./grid-cell";
+import { formatRunUsage } from "./usage";
 import { STATUS_GLYPH, statusToken } from "./types";
 import type { ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
@@ -82,7 +83,7 @@ export class AgentDetail implements Component {
     const convoTail = convo.length ? convo.slice(-120) : ["  " + t.fg("dim", "(waiting for the agent…)")];
 
     const body = [
-      head, meta, idLine, ...thinkingNotes, "",
+      head, meta, fit("  " + t.fg("dim", formatRunUsage(a.tokenCount, a.cost ?? 0))), idLine, ...thinkingNotes, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
       t.fg("dim", `${t.glyph} conversation`), ...convoTail,
       "", fit(this.isArmed()

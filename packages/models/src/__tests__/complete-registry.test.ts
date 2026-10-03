@@ -181,6 +181,24 @@ it("uses authenticated streamSimple so provider-neutral reasoning is actually ma
 });
 
 
+it("does not invent accounting when a structural registry response has no usage", async () => {
+  const reports: any[] = [];
+  const registry = makeRegistry({ find: () => ({ reasoning: true }), complete: async () => assistantMessage({ usage: undefined as any }) });
+  const model = { provider: "acme", id: "model-x", tier: "standard" as const, thinking: true, vision: false, ctx: 1, speed: 1, costHint: 1, available: true };
+  expect(await complete(model, "fixture", { registry, onUsage: record => reports.push(record) })).toBe("hello world");
+  expect(reports).toEqual([]);
+});
+
+it.each(["stop", "error", "aborted"] as const)("reports full priced usage on %s using the response model before validating the text", async stopReason => {
+  const reports: any[] = [];
+  const registry = makeRegistry({ find: () => ({ reasoning: true }), complete: async () => assistantMessage({ stopReason, responseModel: "actual" }) });
+  const model = { provider: "acme", id: "model-x", tier: "standard" as const, thinking: true, vision: false, ctx: 1, speed: 1, costHint: 1, available: true };
+  const result = complete(model, "fixture", { registry, onUsage: (record: any) => reports.push(record) } as any);
+  if (stopReason === "stop") expect(await result).toBe("hello world");
+  else await expect(result).rejects.toThrow(/error|aborted/);
+  expect(reports).toEqual([{ provider: "acme", model: "actual", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }]);
+});
+
 it("rejects a whitespace-only completion instead of reporting empty success", async () => {
   const registry = makeRegistry({ find: () => ({ reasoning: true }), complete: async () => assistantMessage({ content: [{ type: "text", text: " \n " }] }) });
   const model = { provider: "acme", id: "model-x", tier: "standard" as const, thinking: true, vision: false, ctx: 1, speed: 1, costHint: 1, available: true };

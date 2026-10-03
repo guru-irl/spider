@@ -34,6 +34,7 @@ spider kill id:"<run-id>"
 
 - Default: `pi --mode rpc`, owned by the dispatching session, with one initial task prompt.
 - Set `subagents.childMode` to `"print"` for legacy `--mode json -p` launches.
+- Only the user can configure [`subagents.extensions`](configuration.md#child-extensions), by editing the global config file. The fully absolute paths load in RPC and print children for single, parallel, chain and pipeline runs. Local values are ignored; missing files are skipped with one warning run event per path.
 - Compatibility checks read metadata for the binary launched on PATH or through `PI_SUBAGENT_PI_BINARY`.
 - RPC children require a pi binary supporting `--exclude-tools`, `--name`, the `agent_settled` event, and the `clear_queue` RPC command.
 - A pi binary older than the verified RPC minimum `0.85.1` falls back to print mode and records why. An unknown version keeps RPC with a warning.

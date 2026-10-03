@@ -123,6 +123,7 @@ export type { InsightGraphView } from "./screens/insights-view";
 export { catalogRows, resolveDefault, MODEL_ROLES } from "./screens/models-model";
 export type { CatalogRow, TierGroup, ModelThinkingDisplay } from "./screens/models-model";
 export { renderModels, ModelsView } from "./screens/models-view";
+export { isAbsolutePathList } from "./screens/absolute-paths";
 export { CONFIG_SCHEMA, createConfigSchema, getField, coerce } from "./screens/config-schema";
 export type { ConfigField, ConfigGroup, ConfigFieldType } from "./screens/config-schema";
 export { buildConfigModel, readPath } from "./screens/config-model";

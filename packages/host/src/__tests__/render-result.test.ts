@@ -103,6 +103,24 @@ describe("renderSpiderResult dispatcher", () => {
     expect(models.render(150).join("\n")).toContain("/fixture/global/config.json");
   });
 
+  it.each([
+    { value: [], json: "[]" },
+    { value: ["/a,one.ts", "/b.ts"], json: '["/a,one.ts","/b.ts"]' },
+    { value: { worker: "provider/model" }, json: '{"worker":"provider/model"}' },
+  ])("renders config get values as JSON: $json", ({ value, json }) => {
+    const c = renderSpiderResult(mkResult({ key: "subagents.extensions", value, source: "global" }), opts, theme, mkCtx({ action: "control", command: "config" }));
+    expect(c.render(160).join("\n")).toContain(json);
+  });
+
+  it.each([
+    { value: [], json: "[]" },
+    { value: ["/a,one.ts", "/b.ts"], json: '["/a,one.ts","/b.ts"]' },
+    { value: { worker: "provider/model" }, json: '{"worker":"provider/model"}' },
+  ])("renders config set confirmations as JSON: $json", ({ value, json }) => {
+    const c = renderSpiderResult(mkResult({ ok: true, op: "set", key: "subagents.extensions", value, scope: "global" }), opts, theme, mkCtx({ action: "control", command: "config" }));
+    expect(c.render(160).join("\n")).toContain(json);
+  });
+
   it("control config set warns that footer changes from next session", () => {
     const c = renderSpiderResult(mkResult({ ok: true, key: "ui.footer", value: "false" }), opts, theme, mkCtx({ action: "control", command: "config" }));
     expect(c.render(140).join("\n")).toMatch(/next session/i);
@@ -206,7 +224,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).toMatch(/UI/);
     expect(out).toContain("false");
     expect(out).not.toContain("🕸");
-    expect(out).not.toMatch(/\{|"config"/); // NOT raw JSON
+    expect(out).not.toContain('"config":'); // Rows may contain JSON values, not a raw result envelope.
   });
 
   it("control insights → learning-graph card with nodes/edges/stats (no raw JSON)", () => {

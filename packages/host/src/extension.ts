@@ -2,6 +2,7 @@ import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError } from "@spider/memory";
 import { commandEnv, THINKING_LEVELS } from "@spider/db-core";
+import { isAbsolutePathList } from "@spider/ui";
 // packages/host/src/extension.ts
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
@@ -690,6 +691,12 @@ export function buildActionCtx(
   const cwd = explicitCwd || isPathInside(project.projectKey, safeRealpath(rawCwd))
     ? rawCwd
     : project.realPath;
+  const settings = configValues(cwd);
+  const configuredExtensions = settings.config["subagents.extensions"];
+  const extensionsFile = settings.globalFile;
+  const validExtensions = isAbsolutePathList(configuredExtensions);
+  if (args.action === "run" && !validExtensions) throw new Error(`invalid subagents.extensions in ${extensionsFile}: expected a JSON array of absolute file paths`);
+  const subagentOnlyExtensions = validExtensions ? configuredExtensions as string[] : [];
   // Run records are owned by the dispatching session, not by the child's cwd.
   // Keep `project`, `cwd`, repoDb and modelDefaults tied to the target as before.
   const runRecordAction = args.action === "run" || args.action === "kill" || args.action === "message";
@@ -709,11 +716,11 @@ export function buildActionCtx(
   // Resolved once per dispatch so packages/subagents/src/actions/run.ts (which cannot
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
-  const modelDefaults = (controlConfig("get", cwd, "models.defaults") as Record<string, string> | undefined) ?? {};
-  const configuredChildMode = controlConfig("get", cwd, "subagents.childMode");
+  const modelDefaults = (settings.config["models.defaults"] as Record<string, string> | undefined) ?? {};
+  const configuredChildMode = settings.config["subagents.childMode"];
   if (args.action === "run" && configuredChildMode !== "rpc" && configuredChildMode !== "print") throw new Error("subagents.childMode must be rpc or print");
   const childMode = configuredChildMode === "print" ? "print" : "rpc";
-  return { db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode };
+  return { db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, subagentOnlyExtensions };
 }
 
 async function dispatchWithDoctorSnapshot(

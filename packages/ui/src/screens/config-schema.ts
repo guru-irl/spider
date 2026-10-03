@@ -1,4 +1,6 @@
-export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map";
+import { isAbsolutePathList } from "./absolute-paths.js";
+
+export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
 	enum?: readonly string[]; min?: number; max?: number; description: string; restart?: boolean;
@@ -47,6 +49,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "models.defaults", label: "Role defaults", type: "model-map", default: {}, description: "JSON object mapping agent roles to model refs. Per-role local overrides global." },
 	]},
 	{ id: "subagents", label: "Subagents", fields: [
+		{ key: "subagents.extensions", label: "Child extensions", type: "absolute-path-list", default: [], description: "Global-only JSON array of fully absolute extension file paths. Only the user can edit it in the global config file. Missing files are skipped with a run warning." },
 		{ key: "subagents.childMode", label: "Child mode", type: "enum", enum: ["rpc", "print"], default: "rpc", description: "RPC permits steering. Print retains legacy one-shot behavior. Applies to new runs." },
 	]},
 	{ id: "exec", label: "Exec enforcement", fields: [
@@ -84,6 +87,13 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 			if (field.min !== undefined && n < field.min) return { ok: false, error: `min ${field.min}` };
 			if (field.max !== undefined && n > field.max) return { ok: false, error: `max ${field.max}` };
 			return { ok: true, value: n };
+		}
+		case "absolute-path-list": {
+			try {
+				const value: unknown = JSON.parse(raw);
+				if (isAbsolutePathList(value)) return { ok: true, value };
+			} catch { /* invalid JSON */ }
+			return { ok: false, error: "expected a JSON array of absolute file paths" };
 		}
 		case "model-map": {
 			try {

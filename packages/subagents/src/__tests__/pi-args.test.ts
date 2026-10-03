@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
 import {
   buildChildSpawnSpec,
   SPIDER_DB_PATH_ENV,
@@ -16,9 +14,7 @@ import {
 let scratchRoot: string;
 
 beforeAll(() => {
-  // Use package-relative .spider/scratch (never /tmp)
-  const pkgRoot = path.join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-  scratchRoot = path.join(pkgRoot, ".spider", "scratch", `pi-args-${process.pid}`);
+  scratchRoot = path.join(process.env.SPIDER_TEST_FIXTURE_CHECKOUT!, ".spider", "scratch", "child-extensions", `pi-args-${process.pid}`);
   fs.mkdirSync(scratchRoot, { recursive: true });
 });
 
@@ -100,6 +96,43 @@ describe("buildChildSpawnSpec", () => {
 });
 
 import { buildPiArgs, thinkingFromModel, stripThinkingSuffix } from "../pi-args";
+it.each([undefined, ["/path/to/spider.js", "/path/to/intercom.ts"]])("appends child-only extensions after explicit extensions %j", extensions => {
+  const { args } = buildPiArgs({ baseArgs: [], task: "work", sessionEnabled: false, inheritProjectContext: true, inheritSkills: true,
+    extensions, subagentOnlyExtensions: ["/path/to/first.ts", "/path/to/first.ts", "/path/to/second.ts"] });
+  expect(args.flatMap((arg, i) => arg === "--extension" ? [args[i + 1]] : [])).toEqual([
+    ...(extensions ?? []), "/path/to/first.ts", "/path/to/second.ts",
+  ]);
+  expect(args.includes("--no-extensions")).toBe(extensions !== undefined);
+});
+function extensionAliases() {
+  const spider = path.join(scratchRoot, "spider.js"), intercom = path.join(scratchRoot, "intercom.js");
+  fs.writeFileSync(spider, "export default () => {};\n");
+  fs.writeFileSync(intercom, "export default () => {};\n");
+  const alias = path.join(scratchRoot, "spider-alias.js"), intercomAlias = path.join(scratchRoot, "intercom-alias.js");
+  if (!fs.existsSync(alias)) fs.symlinkSync(spider, alias);
+  if (!fs.existsSync(intercomAlias)) fs.symlinkSync(intercom, intercomAlias);
+  const first = path.join(scratchRoot, "first.js");
+  fs.writeFileSync(first, "export default () => {};\n");
+  return { spider, intercom, first, aliases: [`${scratchRoot}/./spider.js`, `${scratchRoot}//spider.js`, alias, intercomAlias] };
+}
+
+it.each([false, true])("canonicalizes aliases in buildPiArgs with explicit extensions=%s while keeping the first spelling", explicit => {
+  const { spider, intercom, first, aliases } = extensionAliases();
+  const firstSpelling = `${scratchRoot}/./first.js`;
+  const { args } = buildPiArgs({ baseArgs: [], task: "work", sessionEnabled: false, inheritProjectContext: true, inheritSkills: true,
+    extensions: explicit ? [spider, intercom] : undefined,
+    subagentOnlyExtensions: [...(explicit ? [] : [spider, intercom]), ...aliases, firstSpelling, first] });
+  expect(args.flatMap((arg, i) => arg === "--extension" ? [args[i + 1]] : [])).toEqual([spider, intercom, firstSpelling]);
+});
+
+it.each(["rpc", "print"] as const)("does not load spider path aliases twice in %s spawn specs", childMode => {
+  const { spider, intercom, first, aliases } = extensionAliases();
+  const spec = buildChildSpawnSpec({ ...base, scratchRoot, childMode, childExtensionPath: spider, intercomExtensions: [intercom],
+    subagentOnlyExtensions: [...aliases.slice(0, 3), ...(childMode === "rpc" ? [aliases[3]] : []), first, `${scratchRoot}/./first.js`] });
+  expect(spec.argv.flatMap((arg, i) => arg === "--extension" ? [spec.argv[i + 1]] : []))
+    .toEqual([spider, ...(childMode === "rpc" ? [intercom] : []), first]);
+});
+
 describe("thinking suffix parsing", () => {
   it("thinkingFromModel extracts a whitelisted level, else undefined", () => {
     expect(thinkingFromModel("github-copilot/claude-opus-4.8:high")).toBe("high");

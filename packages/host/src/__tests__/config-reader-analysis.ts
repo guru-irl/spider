@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import ts from "typescript";
+import { isDeepStrictEqual } from "node:util";
 import type { ConfigField } from "@spider/ui";
 import { ORGANISM_CONFIG_KEYS, CURATOR_CONFIG_KEYS } from "@spider/organism";
 import { AUXILIARY_CONFIG_KEYS } from "../organism-runtime";
@@ -42,5 +43,5 @@ export function productionReaders(root: string, overrides: Record<string, string
 
 export function mismatchedDefaults(defaults: Readonly<Record<string, unknown>>, fields: ConfigField[]): string[] {
   return Object.entries(defaults).filter(([key, value]) =>
-    !fields.some(field => field.key === key && field.default === value)).map(([key]) => key);
+    !fields.some(field => field.key === key && isDeepStrictEqual(field.default, value))).map(([key]) => key);
 }

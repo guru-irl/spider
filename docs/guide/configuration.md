@@ -3,7 +3,7 @@
 ## Files and precedence
 
 - Store keys as literal dotted JSON properties, not nested objects.
-- Built-in defaults are overridden by global config, then worktree-local config.
+- Built-in defaults are overridden by global config, then worktree-local config, except `subagents.extensions`, which is read from global config only.
 - Global file: `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
 - Local file: `<worktree>/.spider/config.json`.
 - For config writes, `scope:"repo"` means the local file, not the shared repository database. Omitted scope is local; `scope:"global"` selects global.
@@ -25,7 +25,7 @@ spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"re
 - Only `memory.snapshotCharCap` supports the `"unlimited"` sentinel. Unsetting the snapshot cap writes `"unlimited"` in the chosen layer when the global file has a cap; this applies to global and local unset.
 - Setting the snapshot cap to `"unlimited"` or an empty string follows that unset path.
 - Other numeric keys and model references do not receive the sentinel.
-- The model-facing action rejects `exec.enforce` for both set and unset. See the [user-only slash command](../../README.md#slash-commands-and-overlays).
+- The model-facing action rejects `exec.enforce` and `subagents.extensions` for both set and unset at every scope. Use the [user-only slash command](../../README.md#slash-commands-and-overlays) for `exec.enforce`, or the global file edit described below for child extensions.
 
 ## Validation
 
@@ -34,6 +34,28 @@ spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"re
 ```text
 spider control command:"config" op:"set" key:"models.defaults" value:"{\"reviewer\":\"provider/model:high\"}" scope:"global"
 ```
+
+### Child extensions
+
+`subagents.extensions` is a global-only array of extension file paths, defaulting to `[]`. Only the user can change it. Edit `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`, and preserve the other properties:
+
+```json
+{
+  "subagents.extensions": ["/path/to/compaction.ts"]
+}
+```
+
+Every path must be fully absolute. On Windows, use a drive letter followed by a separator or a UNC server and share; current-drive-rooted paths such as `\extra.ts` or `/extra.ts` are rejected. To clear the list, remove the global property or set it to `[]`.
+
+Tool set and unset calls are refused, including this explicit global-scope example:
+
+```text
+spider control command:"config" op:"set" key:"subagents.extensions" value:"[\"/path/to/compaction.ts\"]" scope:"global"
+```
+
+Local values are ignored and reported with their file in `config get` and `doctor`. Non-global sets are rejected. To clean up, remove the local property by hand. Invalid values in either layer are diagnosed with their file. An invalid global list blocks new run dispatches until repaired.
+
+Every new RPC or print child loads these files after spider's own extensions. Paths are normalized and deduplicated by realpath when available, keeping the first spelling. Missing paths and paths that are not files are skipped with one warning run event per path; the run still starts.
 
 ## Reviewer and learner models
 
@@ -49,6 +71,7 @@ spider control command:"config" op:"set" key:"models.defaults" value:"{\"reviewe
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector; next session. |
 | `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
+| `subagents.extensions` | `[]` | Global-only, user-managed array of absolute extension file paths for every child. |
 | `exec.enforce` | `true` | Block the built-in bash tool. |
 | `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory; not a storage cap. |
 | `models.defaults` | `{}` | Agent role to model-reference map. |
@@ -76,7 +99,7 @@ spider control command:"config" op:"set" key:"models.defaults" value:"{\"reviewe
 - Configuration readers use merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads that same flat map.
 - The organism refreshes configuration when resolving its runtime for a request or drain.
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
-- `subagents.childMode` applies to new launches; existing runs keep their launch mode.
+- `subagents.childMode` and `subagents.extensions` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.
 - Rebuilding a linked bundle and reloading it is separate from editing config; see [Runtime lifecycle](../architecture/runtime-lifecycle.md).
 

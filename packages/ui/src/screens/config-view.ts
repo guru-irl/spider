@@ -15,7 +15,7 @@ export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, e
 		for (const r of group.rows) {
 			const glyph = statusIcon(theme, r.isDefault ? "off" : "on");
 			const restart = r.field.restart ? theme.fg("warning", " ⚠restart") : "";
-			const line = `${glyph} ${theme.fg("text", r.field.label)} ${theme.fg("muted", String(r.value))}${restart}`;
+			const line = `${glyph} ${theme.fg("text", r.field.label)} ${theme.fg("muted", typeof r.value === "object" && r.value !== null ? JSON.stringify(r.value) : String(r.value))}${restart}`;
 			body.push(trim(line, width, ""));
 		}
 	}

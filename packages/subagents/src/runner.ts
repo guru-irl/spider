@@ -50,7 +50,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; intercomExtensions?: string[]; orchestratorTarget?: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -81,6 +81,7 @@ export class Runner {
       role: opts.role,
       name: run.name ?? undefined,
       childMode: this.deps.childMode,
+      subagentOnlyExtensions: this.deps.subagentOnlyExtensions,
       intercomExtensions: this.deps.intercomExtensions,
       task: opts.task,
       model: opts.model,
@@ -102,6 +103,7 @@ export class Runner {
     this.deps.globalDb?.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
       .run(run.id, this.sessionId, this.deps.dbPath);
     spec.onRpcEvent = this.rpcSink(run);
+    for (const message of spec.extensionWarnings ?? []) spec.onRpcEvent({ type: "warning", message });
     if (spec.launchWarning) spec.onRpcEvent({ type: "warning", message: spec.launchWarning, launchWarning: true, printFallback: spec.childMode === "print" });
     return { handle: this.deps.spawn(spec), mode: spec.childMode === "rpc" ? "rpc" : "print", intercomSession };
   }

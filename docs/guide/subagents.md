@@ -4,6 +4,9 @@
 
 - `spider run` supports single, parallel (`tasks`), sequential (`chain`), and pipeline dispatch.
 - Every run needs a concrete task. Children run in the background and report through `spider.subagent_done`.
+- Child model calls, compactions, cache warming, and spider reviewer calls inside children count toward the dispatching session's pi footer, `/session`, and RPC totals after the run finishes, including failed or killed runs.
+- `/agents` run details and completion messages show tokens and cost. Reload preserves accounting. A run finishing while another session is active is counted when its owner is next active or makes its next spider call, never in the other session.
+- On hosts without model-attributed usage entries, run usage attaches to the owner's next spider tool result under tools and summaries. This fallback can lose usage if the host crashes before persisting the result.
 - Parallel dispatch defaults to concurrency `4`. Give tasks short names for the UI.
 - Chains pass `{previous}` to the next step. Pipeline templates also accept `{task}`, `{handoff}`, and `{outputs.<as>}`.
 - Pipeline stages start fresh children after a done or failed stage. Cancellation ends the pipeline.
@@ -67,7 +70,7 @@ spider kill id:"<run-id>"
 - Live handles are parked in `globalThis[Symbol.for("spider.childRegistry.v1")]`, a versioned process-wide registry.
 - Entries retain process, pipes, run and session IDs, database path, intercom name, PID, and start time.
 - Reload detaches old listeners, keeping processes and pipes open. RPC events buffer within count and byte limits.
-- Streaming partials are not buffered; persisted history events have a separate buffer. Overflow adds an events-lost warning to history and the final result.
+- Streaming partials are not buffered; persisted history events have a separate buffer. Overflow adds an events-lost warning to history and the final result. Usage aggregates separately by provider, model, and purpose and cannot be evicted.
 - Session start adopts only that session's entries, restoring event handling, completion reporting, kill, and steering. Escalations from the gap are replayed.
 - A child that finishes during the gap is finalized and reported once after adoption.
 - A chain cannot survive because its continuation belongs to the old activation.

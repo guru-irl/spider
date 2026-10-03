@@ -1,5 +1,6 @@
 import { appendRunEvent, openDb, paths, type Db } from "@spider/db-core";
 import { RunStore } from "../run-store";
+import { runUsage, sumUsage, safelyReportUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
 import { Runner, type Spawner } from "../runner";
 import { PipelineCoordinator } from "../pipeline";
@@ -51,13 +52,19 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
       // Carry the COMPLETE curated output in the transcript; the registered renderer collapses
       // it and ctrl+o expands the whole thing. triggerTurn wakes an idle main agent so the
       // conversation continues automatically instead of waiting for the user to send a message.
-      const content = output ? `${headline}\n\n${output}` : `${headline}\n\n(no output)`;
+      const completed = steps ?? [run];
+      const tokenCount = completed.reduce((n, row) => n + (row.token_count ?? 0), 0);
+      let cost: number | undefined;
+      try { cost = sumUsage(completed.flatMap(row => runUsage(ctx.db, row.id).map(r => r.usage))).cost.total; }
+      catch { /* optional usage cannot suppress a completion or cancellation cause */ }
+      const usageLine = `${tokenCount.toLocaleString("en-US")} tokens${cost === undefined ? "" : ` · $${cost.toFixed(2)}`}`;
+      const content = `${headline}\n${usageLine}\n\n${output || "(no output)"}`;
       ctx.pi?.sendMessage?.(
         {
           customType: "spider.subagent_done",
           content,
           display: true,
-          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output },
+          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost },
         },
         shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
       );
@@ -103,7 +110,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const runnerDeps = { modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
-    }, scratchRoot, dbPath, onComplete, childMode, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };
+    }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };
     const runner = overrides.makeRunner
       ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
       : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);
@@ -212,7 +219,7 @@ export function adoptReloadedChildren(ctx: any, overrides: RunDeps = {}): AdoptR
       // Adoption never launches; a spawn here is a bug, not a silent child.
       spawn: () => { throw new Error("adopted runner cannot spawn"); },
       scratchRoot: paths.scratch("project", ctx.cwd), dbPath: entry.dbPath,
-      onComplete: makeAsyncNotifier({ ...ctx, db: resource.db }), childMode: entry.mode,
+      onComplete: makeAsyncNotifier({ ...ctx, db: resource.db }), reportUsage: run => safelyReportUsage(resource!.db, run, row => ctx.reportUsage?.(resource!.db, row)), childMode: entry.mode,
     });
     runner.adopt(entry);
   });

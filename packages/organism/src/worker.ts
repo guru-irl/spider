@@ -31,7 +31,7 @@ export interface WorkerDeps {
   globalDb: Db;
   project: ProjectInfo;
   getEmbedder: () => Promise<Embedder | null>;
-  makeModel: (signal?: AbortSignal) => DigestModel | null;
+  makeModel: (signal?: AbortSignal, purpose?: "learner" | "skill-curate") => DigestModel | null;
   org: OrganismConfig;
   skillReview?: SkillReviewOptions;
   curator: CuratorConfig;
@@ -307,7 +307,7 @@ export class OrganismWorker {
     if (shouldConsolidate) {
       const signal = AbortSignal.timeout(this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS);
       try {
-        const model = this.#deps.makeModel(signal);
+        const model = this.#deps.makeModel(signal, "skill-curate");
         if (model) {
           const observedModel: DigestModel = {
             complete: async (system, messages) => {

@@ -1,6 +1,6 @@
 import type { ThinkingLevel, ThinkingResolution } from "@spider/db-core";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { complete, type ModelEntry } from "@spider/models";
+import { complete, type ModelEntry, type UsageSinkFactory } from "@spider/models";
 import type { ReviewCandidate, ReviewEntry } from "@spider/memory";
 
 export const REVIEWER_INSTRUCTIONS = `You review a proposed durable spider memory. Reply with one JSON object and nothing else: no Markdown code fence, no text before or after it.
@@ -32,7 +32,7 @@ export function reviewerPrompt(candidate: ReviewCandidate, context: ReviewEntry[
 }
 
 /** The injected reviewer returns raw JSON; the memory package validates it against shown UUIDs. */
-export function modelReviewer(modelRef: string, registry: unknown, thinking: ThinkingLevel = "medium", onThinking?: (info: ThinkingResolution) => void): (candidate: ReviewCandidate, context: ReviewEntry[], signal: AbortSignal) => Promise<string> {
+export function modelReviewer(modelRef: string, registry: unknown, thinking: ThinkingLevel = "medium", onThinking?: (info: ThinkingResolution) => void, usage?: UsageSinkFactory): (candidate: ReviewCandidate, context: ReviewEntry[], signal: AbortSignal) => Promise<string> {
   return (candidate, context, signal) => {
     const slash = modelRef.indexOf("/");
     if (slash <= 0 || slash === modelRef.length - 1) throw Error(`invalid reviewer model: ${modelRef}`);
@@ -40,7 +40,7 @@ export function modelReviewer(modelRef: string, registry: unknown, thinking: Thi
     return complete(entry, reviewerPrompt(candidate, context), {
       system: REVIEWER_INSTRUCTIONS,
       registry: registry as Pick<ModelRegistry, "find" | "streamSimple"> | undefined,
-      thinkingLevel: thinking, signal, onThinking,
+      thinkingLevel: thinking, signal, onThinking, onUsage: usage?.("memory-review"),
     });
   };
 }

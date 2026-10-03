@@ -21,6 +21,7 @@
 import { commandEnv, openDb, type Db } from "@spider/db-core";
 import { execFileSync } from "node:child_process";
 import { PERSISTED_EVENT_TYPES, type SteerAck } from "./rpc-child";
+import { recordRunUsage, warnUsage } from "./usage";
 import { RunStore } from "./run-store";
 import { emitStatus } from "./run-events";
 import { decideOutcome, summarizeCompletionEvents } from "./completion-output";
@@ -198,8 +199,9 @@ function finalizeRowByPath(entry: SharedChildEntry, cancelReason: string, finish
     db = openDb(entry.dbPath, { fileMustExist: true });
     const store = new RunStore(db);
     const row = store.get(entry.runId);
-    if (!row || !ACTIVE.includes(row.status)) return;
+    if (!row) return;
     const notes = bufferedLossNotes(db, entry);
+    if (!ACTIVE.includes(row.status)) return;
     if (finished && entry.exit) {
       const outcome = decideOutcome(db, entry.runId, entry.exit.exitCode, entry.exit.result);
       if (notes.length) outcome.result = [outcome.result, ...notes].filter(Boolean).join("\n\n");
@@ -227,10 +229,16 @@ function bufferedLossNotes(db: Db, entry: SharedChildEntry): string[] {
   try {
     entry.handle.bindEvents?.(event => {
       if (!PERSISTED_EVENT_TYPES.includes(event.type)) return;
+      if (event.type === "spider_usage") {
+        try { recordRunUsage(db, entry.runId, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose); }
+        catch (error) { warnUsage(db, { id: entry.runId, session_id: entry.sessionId }, error); }
+        return;
+      }
       events.push(event);
       if (typeof event.eventsLost !== "number") buffered++;
     });
   } catch { /* diagnostics cannot prevent finalization */ }
+  finally { try { entry.handle.unbindEvents?.(); } catch { /* do not retain the replay DB in a live sink */ } }
   const { steerSummary, eventsLost } = summarizeCompletionEvents(db, entry.runId, events);
   const notes: string[] = [];
   if (steerSummary) notes.push(steerSummary);

@@ -9,6 +9,7 @@
 // @earendil-works/pi-coding-agent .../core/extensions/types.d.ts. We register the
 // REAL event names so Phase 0 handlers actually fire; Phase 3 fills their bodies.
 //   - before_agent_start     -> frozen per-session memory snapshot (Phase 1)
+//   - context_with_system    -> same snapshot on notification-triggered requests
 //   - session_start          -> session upsert + self-name (Phase 1/6)
 //   - session_before_compact -> organism drain (Phase 6)
 //   - session_compact        -> bookkeeping (Phase 6)
@@ -20,7 +21,8 @@
 // intentionally NOT registered here to avoid double-registration.
 import { openGlobal, openGlobalReadOnly, getBinding, appendEvent, type Db } from "@spider/db-core";
 import { openSessionRunDb } from "./session-run-db";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ContextWithSystemEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getCurrentSystemMessage, getSystemMessageText } from "@earendil-works/pi-ai";
 import { cwdOf, sessionIdOf } from "./session-context";
 import { readInjectionSnapshot } from "./injection-snapshot";
 import { contributeSkillPaths } from "@spider/superpowers";
@@ -33,6 +35,7 @@ export interface PiLikeAPI {
 
 export const HOOK_NAMES = [
   "before_agent_start",
+  "context_with_system",
   "session_start",
   "session_before_compact",
   "session_compact",
@@ -60,38 +63,64 @@ export function registerHooks(pi: PiLikeAPI): void {
   // Instance-local: reloads and subagent processes get independent snapshots.
   // Empty snapshots are frozen too, so the first write cannot change the prefix.
   let frozenMemory: { key: string; target: string; text: string } | undefined;
-  // One handler per hook (the contract's "every hook has a handler" invariant).
-  // before_agent_start + session_start carry Phase 1 memory logic; every other
-  // hook stays a no-op pass-through until its phase fills the body. DBs are
-  // opened LAZILY inside the handler (never at module load), and each body is
-  // fully defensive so a memory failure never breaks agent start / session start.
+  const memoryTextOf = (ctx?: unknown): string => {
+    const cwd = cwdOf(ctx) ?? process.cwd();
+    const sessionId = sessionIdOf(ctx);
+    const sessionFile = (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.();
+    const key = JSON.stringify([sessionId, sessionFile ?? null, cwd]);
+    const resolvedTarget = memoryTargetOf(cwd, sessionId);
+    const target = resolvedTarget ?? (frozenMemory?.key === key ? frozenMemory.target : cwd);
+    let text = frozenMemory?.text ?? "";
+    if (frozenMemory?.key !== key || frozenMemory.target !== target) {
+      // Binding was resolved above; read the chosen target without re-resolving it.
+      const snapshot = readInjectionSnapshot(target);
+      text = snapshot.text;
+      // Inject available tiers now, but retry incomplete builds next request.
+      if (resolvedTarget !== undefined && Object.keys(snapshot.errors).length === 0) {
+        frozenMemory = { key, target, text };
+      }
+    }
+    return text;
+  };
+  // One handler per hook. DBs are opened lazily, and injection is defensive so
+  // a memory failure never blocks agent start or a provider request.
   for (const name of HOOK_NAMES) {
     if (name === "before_agent_start") {
       pi.on(name, (event: any, ctx?: unknown) => {
         // pi consumes the RETURNED prompt patch, not mutation of event.systemPrompt.
         if (typeof event?.systemPrompt !== "string") return undefined;
         try {
-          const cwd = cwdOf(ctx) ?? process.cwd();
-          const sessionId = sessionIdOf(ctx);
-          const sessionFile = (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.();
-          const key = JSON.stringify([sessionId, sessionFile ?? null, cwd]);
-          const resolvedTarget = memoryTargetOf(cwd, sessionId);
-          const target = resolvedTarget ?? (frozenMemory?.key === key ? frozenMemory.target : cwd);
-          let text = frozenMemory?.text ?? "";
-          if (frozenMemory?.key !== key || frozenMemory.target !== target) {
-            // Binding was resolved above; read the chosen target without re-resolving it.
-            const snapshot = readInjectionSnapshot(target);
-            text = snapshot.text;
-            // Inject available tiers now, but retry incomplete builds next turn.
-            if (resolvedTarget !== undefined && Object.keys(snapshot.errors).length === 0) {
-              frozenMemory = { key, target, text };
-            }
-          }
+          const text = memoryTextOf(ctx);
           if (text) return { systemPrompt: event.systemPrompt + "\n\n" + text };
         } catch {
           // Snapshot injection is best-effort; never block agent start.
         }
         return undefined;
+      });
+    } else if (name === "context_with_system") {
+      pi.on(name, (event: any, ctx?: unknown) => {
+        try {
+          const messages = (event as ContextWithSystemEvent | undefined)?.messages;
+          if (!messages) return undefined;
+          const head = getCurrentSystemMessage(messages);
+          if (!head) return undefined;
+          const text = memoryTextOf(ctx);
+          if (!text) return undefined;
+          const prompt = getSystemMessageText(head);
+          if (prompt.includes(text)) return undefined;
+          // Idle triggerTurn skips before_agent_start in pi 0.87.x. Use its
+          // public transcript hook, not provider-specific payload rewriting.
+          // Match the forced-prompt path: one head with the replayed prompt and
+          // tool loadout, followed by the conversation. Never edit stored entries.
+          return { messages: [
+            { role: "system" as const, content: prompt + "\n\n" + text,
+              ...(head.toolsAdded ? { toolsAdded: head.toolsAdded } : {}), timestamp: head.timestamp },
+            ...messages.filter(message => message.role !== "system"),
+          ] };
+        } catch {
+          // Snapshot injection is best-effort; never block a provider request.
+          return undefined;
+        }
       });
     } else if (name === "session_start") {
       pi.on(name, (event: any, ctx?: unknown) => {

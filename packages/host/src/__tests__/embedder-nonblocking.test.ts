@@ -10,9 +10,11 @@ import { getAction, clearActions } from "../dispatch";
 // Only the external provider is replaced. Actions, recall/search, vector lookup,
 // and the process-wide initialization cache are real and use fixture roots.
 const provider = vi.hoisted(() => ({ inits: 0, pending: Promise.resolve() as Promise<void>, onInit: undefined as (() => void) | undefined }));
-vi.mock("node:worker_threads", async () => {
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
   const { providerWorker } = await import("../../../memory/src/__tests__/helpers/provider-worker");
-  return { Worker: providerWorker(() => import("fastembed")) };
+  const Base = providerWorker(() => import("fastembed"));
+  return { ...actual, spawn: () => new Base() };
 });
 vi.mock("fastembed", () => ({
   EmbeddingModel: { BGESmallENV15: "fixture" },
@@ -26,7 +28,7 @@ vi.mock("fastembed", () => ({
   } },
 }));
 vi.mock("@huggingface/transformers", () => ({ pipeline: async () => { throw new Error("fixture unavailable"); } }));
-const key = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
+const key = Symbol.for("spider.embedder.v3:BGE-small-en-v1.5");
 const cache = globalThis as typeof globalThis & Record<symbol, unknown>;
 const dbs: Db[] = [];
 let repo: Db;

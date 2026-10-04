@@ -6,7 +6,10 @@ import { randomUUID, createHash } from "node:crypto";
 import { openRepo, openProject, resolveProject, setGlobalDbPathForTests, openDbReadOnlyAt, commandEnv } from "@spider/db-core";
 import { upsertVector, drainEmbedQueue, enqueueEmbed, getVectorState, addMemory, recordEmbedDrainError, markEmbedDrained, resolveEmbedder, startEmbedderSession, stopEmbedder } from "@spider/memory";
 import { controlDoctor, controlConfig } from "../control";
-vi.mock("node:worker_threads", () => ({ Worker: class { constructor() { throw new Error("fixture worker unavailable"); } } }));
+vi.mock("node:child_process", async importOriginal => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  spawn() { throw new Error("fixture worker unavailable"); },
+}));
 
 it.each([true, false])("reads native vector diagnostics without changing snapshot bytes (table exists: %s)", native => {
   root = resolve(".spider/scratch", `doctor-readonly-${randomUUID()}`);
@@ -36,7 +39,7 @@ it.each([true, false])("reads native vector diagnostics without changing snapsho
 let root: string | undefined;
 afterEach(async () => {
   await stopEmbedder();
-  delete (globalThis as typeof globalThis & Record<symbol, unknown>)[Symbol.for("spider.embedder.v2:BGE-small-en-v1.5")];
+  delete (globalThis as typeof globalThis & Record<symbol, unknown>)[Symbol.for("spider.embedder.v3:BGE-small-en-v1.5")];
   vi.restoreAllMocks();
   setGlobalDbPathForTests(null);
   if (root) rmSync(root, { recursive: true, force: true });

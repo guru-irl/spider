@@ -20,9 +20,9 @@ interface EmbedderConfig {
   modelsDir?: string;
 }
 
-// v2 owns the worker lifecycle; it cannot reuse old main-thread adapters. Incompatible future versions
+// v3 owns a subprocess lifecycle; it cannot reuse old thread adapters. Incompatible future versions
 // must use a new key. The fixed model is shared even across rebuilt bundle URLs.
-const embedderKey = Symbol.for("spider.embedder.v2:" + EMBED_MODEL);
+const embedderKey = Symbol.for("spider.embedder.v3:" + EMBED_MODEL);
 interface EmbedderSlot { promise: Promise<Embedder | null>; embedder?: WorkerEmbedder; retryAt?: number; lastError?: string; }
 const UNAVAILABLE_COOLDOWN_MS = 10 * 60 * 1000;
 const EMBEDDER_WAIT_MS = 5000;
@@ -165,5 +165,5 @@ async function initializeEmbedder(cfg: EmbedderConfig | undefined, onFailure: (e
   return createWorkerEmbedder(modelsDir, failure => {
     if (failure.modelDir && isModelLoadError(failure.error, failure.modelDir, failure.existed ?? false)) quarantineBrokenModel(failure.modelDir);
     onFailure(failure.error);
-  });
+  }, undefined, embeddingDiagnostic);
 }

@@ -11,9 +11,11 @@ const provider = vi.hoisted(() => ({
   pending: undefined as Promise<void> | undefined,
   onInit: undefined as ((options: { cacheDir: string; showDownloadProgress?: boolean }) => void) | undefined,
 }));
-vi.mock("node:worker_threads", async () => {
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
   const { providerWorker } = await import("./helpers/provider-worker");
-  return { Worker: providerWorker(() => import("fastembed")) };
+  const Base = providerWorker(() => import("fastembed"));
+  return { ...actual, spawn: () => new Base() };
 });
 vi.mock("fastembed", () => ({
   EmbeddingModel: { BGESmallENV15: "fast-bge-small-en-v1.5" },
@@ -28,7 +30,7 @@ vi.mock("fastembed", () => ({
 }));
 vi.mock("@huggingface/transformers", () => ({ pipeline: async () => { throw new Error("fixture fallback unavailable"); } }));
 const globalCache = globalThis as typeof globalThis & Record<symbol, unknown>;
-const key = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
+const key = Symbol.for("spider.embedder.v3:BGE-small-en-v1.5");
 const quarantineKey = Symbol.for("spider.embedder.quarantine.v1:BGE-small-en-v1.5");
 beforeEach(() => {
   startEmbedderSession();

@@ -17,7 +17,10 @@ vi.mock("@spider/memory", async importOriginal => {
 vi.mock("fastembed", () => ({ FlagEmbedding: { init() { throw new Error("real provider init forbidden"); } } }));
 
 const guard = vi.hoisted(() => ({ workers: 0 }));
-vi.mock("node:worker_threads", () => ({ Worker: class { constructor() { guard.workers++; throw new Error("real worker forbidden in search fixture"); } } }));
+vi.mock("node:child_process", async importOriginal => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  spawn() { guard.workers++; throw new Error("real worker forbidden in search fixture"); },
+}));
 
 let ctx: ReturnType<typeof makeContentDb>;
 afterEach(() => { ctx?.cleanup(); expect(guard.workers).toBe(0); });

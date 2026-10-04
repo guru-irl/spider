@@ -20,9 +20,11 @@ vi.mock("fastembed", () => ({
   } },
 }));
 
-vi.mock("node:worker_threads", async () => {
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
   const { providerWorker } = await import("../../../memory/src/__tests__/helpers/provider-worker");
-  return { Worker: providerWorker(() => import("fastembed")) };
+  const Base = providerWorker(() => import("fastembed"));
+  return { ...actual, spawn: () => new Base() };
 });
 
 function fakePi() {
@@ -46,7 +48,7 @@ let scratch: string;
 const dbs: Db[] = [];
 const hosts: ReturnType<typeof fakePi>[] = [];
 const globalCache = globalThis as typeof globalThis & Record<symbol, unknown>;
-const embedderKey = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
+const embedderKey = Symbol.for("spider.embedder.v3:BGE-small-en-v1.5");
 beforeEach(() => {
   startEmbedderSession();
   delete globalCache[embedderKey];

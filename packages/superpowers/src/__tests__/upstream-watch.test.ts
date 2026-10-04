@@ -226,7 +226,64 @@ describe("real upstream resolution", () => {
   });
 });
 
+function repositoryKey(repository: string | { url: string }): string {
+  const url = typeof repository === "string" ? repository : repository.url;
+  let key = url.replace(/^git\+/i, "").replace(/^[a-z][a-z\d+.-]*:\/\//i, "").replace(/^[^/@]+@/, "");
+  key = key.replace(/^([^/:]+):\d+(?=\/)/, "$1");
+  key = key.replace(/^github:/i, "github.com/").replace(/^gitlab:/i, "gitlab.com/").replace(/^bitbucket:/i, "bitbucket.org/").replace(/^([^/:]+):/, "$1/");
+  key = key.replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase();
+  return key.split("/").length === 2 ? `github.com/${key}` : key;
+}
+
+function ownRepository(): string {
+  const manifest = JSON.parse(fs.readFileSync(new URL("../../../../package.json", import.meta.url), "utf8"));
+  return repositoryKey(manifest.repository);
+}
+
+const repositoryForms = [
+  "https://github.com/example/project",
+  "http://github.com/example/project",
+  "git+https://github.com/example/project.git",
+  "ssh://git@github.com/example/project.git",
+  "git@github.com:example/project.git",
+  "git://github.com/example/project.git",
+  "https://github.com/example/project.git/",
+  "https://GitHub.com/Example/Project",
+  "github:example/project",
+  "example/project",
+];
+
+describe("own repository URL normalization", () => {
+  it.each([
+    ["ssh://git@github.com:22/example/project.git", "github.com/example/project"],
+    ["gitlab:example/project", "gitlab.com/example/project"],
+    ["bitbucket:example/project", "bitbucket.org/example/project"],
+  ])("canonicalizes %s with ports or provider shorthands", (url, expected) => {
+    expect(repositoryKey(url)).toBe(expected);
+    expect(repositoryKey({ url })).toBe(expected);
+  });
+
+  it.each(repositoryForms)("canonicalizes %s independently", (url) => {
+    expect(repositoryKey(url)).toBe("github.com/example/project");
+    expect(repositoryKey({ url })).toBe("github.com/example/project");
+  });
+});
+
 describe("seedUpstreamRefs", () => {
+  it("does not seed the consumer's own repository as a watched upstream", () => {
+    const db = openDbAt(testScratchPath(`uw-own-repo-${process.pid}-${Math.random().toString(36).slice(2)}.db`), "global");
+    try {
+      migrate(db, "global");
+      seedUpstreamRefs(db);
+      const rows = db.prepare("SELECT upstream_repo FROM upstream_refs").all() as Array<{ upstream_repo: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.map((row) => repositoryKey(row.upstream_repo))).not.toContain(ownRepository());
+      expect(DEFAULT_UPSTREAM_REFS.map((ref) => repositoryKey(ref.upstreamRepo))).not.toContain(ownRepository());
+    } finally {
+      db.close();
+    }
+  });
+
   it("repairs only todo's legacy main ref, preserves changed refs and remains idempotent", () => {
     const dbPath = testScratchPath(`uw-seed-${process.pid}-${Math.random().toString(36).slice(2)}.db`);
     const db = openDbAt(dbPath, "global");
@@ -251,7 +308,59 @@ describe("seedUpstreamRefs", () => {
   });
 });
 
+describe("markReviewed first-party exclusion", () => {
+  it("rejects db-core even with a retained row and an existing mirror without changing its baseline", async () => {
+    const upstream = tempRepo();
+    upstream.commit("old first-party mirror");
+    const root = mirrorRoot("mark-first-party");
+    const gdb = openDbAt(testScratchPath(`uw-mark-self-${process.pid}-${Math.random().toString(36).slice(2)}.db`), "global");
+    fs.mkdirSync(root, { recursive: true });
+    execFileSync("git", ["clone", "--bare", "--quiet", upstream.dir, path.join(root, "db-core")]);
+    try {
+      migrate(gdb, "global");
+      gdb.prepare(`INSERT INTO upstream_refs (package, upstream_repo, upstream_ref, last_reviewed_commit, last_checked_at)
+        VALUES ('db-core', ?, 'main', 'saved-review', 123)`).run(ownRepository());
+      await expect(markReviewed(gdb, "db-core", "main", { git: realGit, mirrorRoot: root }))
+        .rejects.toThrow(/'db-core' is first-party and not watched/);
+      expect(gdb.prepare("SELECT last_reviewed_commit FROM upstream_refs WHERE package='db-core'").get())
+        .toEqual({ last_reviewed_commit: "saved-review" });
+    } finally {
+      gdb.close();
+    }
+  });
+});
+
 describe("runUpstreamWatch", () => {
+  it("ignores an existing first-party db-core row without deleting its saved state", async () => {
+    const gdb = openDbAt(testScratchPath(`uw-legacy-self-${process.pid}-${Math.random().toString(36).slice(2)}.db`), "global");
+    const { projectDb, sessionId } = watchProject();
+    const root = mirrorRoot("legacy-self");
+    try {
+      migrate(gdb, "global");
+      gdb.prepare(`INSERT INTO upstream_refs (package, upstream_repo, upstream_ref, last_reviewed_commit, last_checked_at)
+        VALUES ('db-core', ?, 'main', 'saved-review', 123)`).run(ownRepository());
+      const report = await runUpstreamWatch(gdb, projectDb, sessionId, {
+        git: async () => { throw new Error("The consumer repository must never be fetched"); },
+        mirrorRoot: root,
+        packages: ["db-core"],
+      });
+      expect(report.packages).toEqual([]);
+      expect(report.todosAdded).toBe(0);
+      const unfilteredReport = await runUpstreamWatch(gdb, projectDb, sessionId, {
+        git: async () => { throw new Error("Fixture upstreams are offline"); },
+        mirrorRoot: root,
+      });
+      expect(unfilteredReport.packages.length).toBeGreaterThan(0);
+      expect(unfilteredReport.packages.map((result) => result.package)).not.toContain("db-core");
+      expect(fs.existsSync(path.join(root, "db-core"))).toBe(false);
+      expect(gdb.prepare("SELECT last_reviewed_commit, last_checked_at FROM upstream_refs WHERE package='db-core'").get())
+        .toEqual({ last_reviewed_commit: "saved-review", last_checked_at: 123 });
+    } finally {
+      projectDb.close();
+      gdb.close();
+    }
+  });
+
   it("seeds refs, records candidates as todos, updates last_checked_at, and de-dupes on re-run", async () => {
     const r = tempRepo();
     const base = r.commit("base");
@@ -290,7 +399,10 @@ describe("runUpstreamWatch concurrency", () => {
   it("overlaps four blocked fetches, continues after failure, and publishes in input order", async () => {
     const gdb = configureUpstream("fixture", "baseline");
     gdb.prepare("UPDATE upstream_refs SET last_reviewed_commit='baseline'").run();
-    const input = DEFAULT_UPSTREAM_REFS.map((ref) => ref.package);
+    // Six fixture targets exercise replacement workers independently of how many defaults ship.
+    gdb.prepare(`INSERT INTO upstream_refs (package, upstream_repo, upstream_ref, last_reviewed_commit, last_checked_at)
+      VALUES ('fixture-extra', 'fixture', 'main', 'baseline', 0)`).run();
+    const input = [...DEFAULT_UPSTREAM_REFS.map((ref) => ref.package), "fixture-extra"];
     // Exercise a different SQLite scan plan instead of mirroring the production query.
     gdb.pragma("reverse_unordered_selects = ON");
     const { projectDb, sessionId } = watchProject();
@@ -345,6 +457,7 @@ describe("runUpstreamWatch concurrency", () => {
       for (const gate of gates.values()) gate.resolve();
       await pending;
       gdb.pragma("reverse_unordered_selects = OFF");
+      gdb.prepare("DELETE FROM upstream_refs WHERE package='fixture-extra'").run();
     }
   });
 });

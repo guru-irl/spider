@@ -61,8 +61,8 @@
 - Follow [Requirements](../../README.md#requirements) and the [native module ABI reference](data-model.md#native-module-abi) for source-build prerequisites and rebuilds.
 - A SQLite load failure prevents database use; vector-extension failure is separate and can leave full-text search available.
 - The script bootstraps the global database file but leaves schema creation/migration to db-core.
-- An unset or empty `SPIDER_GLOBAL_ROOT` uses `~/.pi/agent/spider`. An absolute override is used as supplied, including drive-qualified or UNC paths on Windows.
-- Relative overrides, including Windows root-relative paths, skip bootstrap with a warning because npm and runtime working directories differ.
+- An unset or empty `SPIDER_GLOBAL_ROOT` uses `~/.pi/agent/spider`. The override must be absolute, including drive-qualified or UNC paths on Windows, and is used as supplied.
+- Relative overrides, including Windows root-relative paths, skip bootstrap with a warning at install time. At runtime, they stop spider from loading with `paths: SPIDER_GLOBAL_ROOT must be absolute; received "<value>"`.
 - `CI=true` or a set `VITEST` skips bootstrap; native checks still run.
 - Never point contributor fixtures at real user data. See [Contributing](../../CONTRIBUTING.md#validation).
 

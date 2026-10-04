@@ -11,6 +11,16 @@ export type Scope = "global" | "repo" | "worktree" | "project";
 // future openGlobal() call sites — stays inside process-scoped project scratch.
 // Outside that explicit override, production retains the normal ~/.pi location.
 const configuredGlobalRoot = process.env.SPIDER_GLOBAL_ROOT;
+// Keep this predicate in sync with scripts/postinstall.mjs. That pre-build
+// script cannot import this TypeScript module. Empty strings remain unset.
+if (configuredGlobalRoot && (
+  !isAbsolute(configuredGlobalRoot)
+  || (process.platform === "win32" && /^[\\/](?![\\/])/.test(configuredGlobalRoot))
+)) {
+  throw new Error(
+    `paths: SPIDER_GLOBAL_ROOT must be absolute; received ${JSON.stringify(configuredGlobalRoot)}`,
+  );
+}
 if (process.env.VITEST && !configuredGlobalRoot) {
   throw new Error(
     "paths: refusing to resolve the real global root under Vitest; " +

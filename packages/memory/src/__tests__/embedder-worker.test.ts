@@ -1,33 +1,46 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { EventEmitter } from "node:events";
 import { resolveEmbedder, getReadyEmbedder, isEmbedderLoaded, stopEmbedder, getEmbedderState, startEmbedderSession } from "../embeddings/embedder";
 
 const fixture = vi.hoisted(() => ({ worker: undefined as any, failStart: false, inits: 0, silent: false, live: new Set<any>() }));
 vi.mock("fastembed", () => ({ FlagEmbedding: { init() { fixture.inits++; throw new Error("main-thread provider init is forbidden"); } }, EmbeddingModel: { BGESmallENV15: "fixture" } }));
 vi.mock("@huggingface/transformers", () => ({ pipeline() { throw new Error("main-thread fallback is forbidden"); } }));
-vi.mock("node:worker_threads", () => ({ Worker: class extends EventEmitter {
-  constructor(public source: string, public options: unknown) {
-    super(); if (fixture.failStart) throw new Error("worker start fixture"); fixture.worker = this; fixture.live.add(this); queueMicrotask(() => this.emit("message", { type: "ready" }));
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const { EventEmitter } = await import("node:events");
+  class Process extends EventEmitter {
+    pid = 1;
+    connected = true;
+    unreferenced = false;
+    channelUnreferenced = false;
+    channel = { ref: () => { this.channelUnreferenced = false; }, unref: () => { this.channelUnreferenced = true; } };
+    constructor() {
+      super(); if (fixture.failStart) throw new Error("worker start fixture");
+      fixture.worker = this; fixture.live.add(this);
+      this.on("exit", () => fixture.live.delete(this));
+    }
+    ref() { return this; }
+    unref() { this.unreferenced = true; return this; }
+    send(msg: { modelsDir?: string; id?: number; texts?: string[] }, callback?: (error: Error | null) => void) {
+      callback?.(null);
+      if (msg.modelsDir) queueMicrotask(() => this.emit("message", { type: "ready" }));
+      else if (!fixture.silent) queueMicrotask(() => this.emit("message", { type: "result", id: msg.id, vectors: msg.texts!.map(() => new Float32Array(384)) }));
+      return true;
+    }
+    kill() { this.emit("exit", null, "SIGKILL"); return true; }
   }
-  unreferenced = false;
-  unref() { this.unreferenced = true; return this; }
-  postMessage(msg: { id: number; texts: string[] }) {
-    if (fixture.silent) return;
-    queueMicrotask(() => this.emit("message", { type: "result", id: msg.id, vectors: msg.texts.map(() => new Float32Array(384)) }));
-  }
-  async terminate() { fixture.live.delete(this); this.emit("exit", 0); return 0; }
-} }));
+  return { ...actual, spawn: () => new Process() };
+});
 const cache = globalThis as typeof globalThis & Record<symbol, unknown>;
-const key = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
+const key = Symbol.for("spider.embedder.v3:BGE-small-en-v1.5");
 beforeEach(() => startEmbedderSession());
 afterEach(async () => { await stopEmbedder(); delete cache[key]; fixture.worker = undefined; fixture.failStart = false; fixture.inits = 0; fixture.silent = false; fixture.live.clear(); vi.useRealTimers(); });
 
-it("loads and embeds only through an inline worker and returns typed vectors", async () => {
+it("loads and embeds only through a subprocess and returns typed vectors", async () => {
   const embedder = await resolveEmbedder();
   expect(fixture.inits).toBe(0);
-  expect(fixture.worker.options).toMatchObject({ eval: true, workerData: { base: expect.any(String) } });
   expect(embedder).not.toBeNull();
   expect(fixture.worker.unreferenced).toBe(true);
+  expect(fixture.worker.channelUnreferenced).toBe(true);
   const vectors = await embedder!.embed(["query", "content"]);
   expect(vectors).toHaveLength(2); expect(vectors[0]).toBeInstanceOf(Float32Array);
 });
@@ -92,7 +105,7 @@ it("physically terminates the worker on stopEmbedder", async () => {
   await stopEmbedder(); expect(fixture.live.size).toBe(0);
 });
 
-it("falls back to FTS availability when a worker cannot be constructed", async () => {
+it("falls back to FTS availability when a subprocess cannot be spawned", async () => {
   fixture.failStart = true;
   expect(await resolveEmbedder()).toBeNull();
   expect(getEmbedderState()).toMatchObject({ state: "unavailable", lastError: "worker start fixture" });

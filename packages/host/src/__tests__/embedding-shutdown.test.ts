@@ -12,13 +12,15 @@ vi.mock("fastembed", () => ({ EmbeddingModel: { BGESmallENV15: "fixture" }, Flag
   fixture.inits++;
   return { async *embed(texts: string[]) { yield texts.map(() => new Float32Array(384)); } };
 } } }));
-vi.mock("node:worker_threads", async () => {
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
   const { providerWorker } = await import("../../../memory/src/__tests__/helpers/provider-worker");
   const Base = providerWorker(() => import("fastembed"));
-  return { Worker: class extends Base {
-    constructor(...args: ConstructorParameters<typeof Base>) { super(...args); fixture.alive++; }
-    async terminate() { fixture.alive--; return super.terminate(); }
-  } };
+  class Process extends Base {
+    constructor() { super(); fixture.alive++; }
+    kill() { fixture.alive--; return super.kill(); }
+  }
+  return { ...actual, spawn: () => new Process() };
 });
 vi.mock("@spider/models", async importOriginal => {
   const actual = await importOriginal<typeof import("@spider/models")>();

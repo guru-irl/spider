@@ -31,11 +31,11 @@ vi.mock("@spider/memory", async importOriginal => {
 
 vi.mock("fastembed", () => ({ FlagEmbedding: { init() { throw new Error("real provider init forbidden"); } }, EmbeddingModel: { BGESmallENV15: "fixture" } }));
 
-vi.mock("node:worker_threads", () => ({ Worker: class { constructor() { provider.workers++; throw new Error("real worker forbidden in runtime fixtures"); } } }));
-
 vi.mock("node:child_process", async importOriginal => {
   const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync),
+    spawn() { provider.workers++; throw new Error("real worker forbidden in runtime fixtures"); },
+  };
 });
 
 function host() {

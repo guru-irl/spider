@@ -17,19 +17,19 @@ describe("pick (A8: tier + thinking levers)", () => {
     const r = pick(entries, { role: "reviewer" }, { defaults: { reviewer: "github-copilot/claude-sonnet-5" } });
     expect(r.entry.id).toBe("claude-sonnet-5");
   });
-  it("standard tier prefers sonnet-5 first, at medium thinking", () => {
+  it("standard tier prefers the newest allowed Sonnet fallback at high thinking", () => {
     const r = pick(entries, { tier: "standard" });
     expect(r.entry.id).toBe("claude-sonnet-5");
-    expect(r.thinkingLevel).toBe("medium");
+    expect(r.thinkingLevel).toBe("high");
   });
-  it("preference order: falls to next available when sonnet-5 absent", () => {
+  it("falls to Sonnet 4.6 when Sonnet 5 is absent", () => {
     const noS5 = entries.filter((e) => e.id !== "claude-sonnet-5");
     expect(pick(noS5, { tier: "standard" }).entry.id).toBe("claude-sonnet-4.6");
   });
-  it("heavy tier -> opus at LOW thinking by default", () => {
+  it("heavy tier -> opus at medium thinking by default", () => {
     const r = pick(entries, { tier: "heavy" });
     expect(r.entry.id).toBe("claude-opus-4.8");
-    expect(r.thinkingLevel).toBe("low");
+    expect(r.thinkingLevel).toBe("medium");
   });
   it("light tier -> mai-code first (cheap budget)", () => {
     expect(pick(entries, { budget: "cheap" }).entry.id).toBe("mai-code-1-flash-picker");

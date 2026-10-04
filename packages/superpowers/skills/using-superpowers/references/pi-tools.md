@@ -43,7 +43,7 @@ Load the matching `SKILL.md` with `read` when `spider skill` is unavailable.
 `spider.subagent_done` message. There is no blocking wait and no poll. Pass
 an explicit provider-qualified `model:` on **every** run, obtained for its
 role from `spider control models` (explicit model, worktree-local override,
-global default, then parent model). For multi-phase work use
+global default, shipped role default, then parent model). For multi-phase work use
 `spider run { pipeline:[stageA, stageB], handoff:"intercom" }`: each stage is
 a **fresh** child with the prior stage's output, not a resumed process. Each
 stage specifies its own model, context and `thinking`. Set `thinking` on

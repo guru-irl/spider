@@ -37,6 +37,14 @@ describe("renderModels", () => {
     expect(lines.join("\n")).toContain("worker: copilot/claude-sonnet-5 (local; shadows global copilot/flash)");
   });
 
+  it("shows a shipped default origin and marks its base catalog row", () => {
+    const lines = renderModels(entries, { worker: "copilot/claude-sonnet-5:high" }, id, 100,
+      { sources: { worker: "default" }, global: {} }, false,
+      { levelsByRef: {}, baseDefaults: { worker: "copilot/claude-sonnet-5" } });
+    expect(lines.join("\n")).toContain("worker: copilot/claude-sonnet-5:high (default)");
+    expect(lines.join("\n")).toMatch(/claude-sonnet-5.*⟵.*worker/);
+  });
+
   it("never throws on empty input (empty body — tool shell still shows the header)", () => {
     const lines = renderModels([], {}, id, 40);
     expect(lines).toEqual([]);

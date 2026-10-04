@@ -7,11 +7,12 @@ export interface ModelEntry {
   thinking: boolean; thinkingLevelMap?: ThinkingModel["thinkingLevelMap"]; vision: boolean; ctx: number; speed: number; costHint: number; available: boolean;
 }
 export type EnumeratedModel = { provider: string; id: string; available: boolean; thinking?: boolean; reasoning?: boolean; thinkingLevelMap?: ThinkingModel["thinkingLevelMap"]; vision?: boolean; ctx?: number };
-// Ordered copilot ids per tier; pick() returns the FIRST AVAILABLE (A8). Host may override via cfg.tierPreference.
+// Ordered refs or ids per tier; pick() returns the first available (A8).
+// Qualified policy refs precede bare ids so Copilot wins when several providers list them.
 export const TIER_PREFERENCE: Record<Tier, string[]> = {
-  light:    ["mai-code-1-flash-picker", "claude-haiku-4.5", "gpt-5.4-nano", "gpt-5-mini", "gemini-3.5-flash"],
-  standard: ["claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "gpt-5.4"],
-  heavy:    ["claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "gpt-5.5"],
+  light:    ["github-copilot/gpt-6-luna", "gpt-6-luna", "mai-code-1-flash-picker", "gemini-3.5-flash"],
+  standard: ["github-copilot/gpt-6.1-sol", "gpt-6.1-sol", "github-copilot/gpt-6-sol", "gpt-6-sol", "gemini-3.1-pro-preview"],
+  heavy:    ["github-copilot/claude-opus-5.5", "claude-opus-5.5"],
 };
 const SPEED: Record<Tier, number> = { light: 3, standard: 2, heavy: 1 };
 const COST: Record<Tier, number> = { light: 0.1, standard: 0.5, heavy: 1 };

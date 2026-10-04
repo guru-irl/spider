@@ -22,7 +22,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - Native dependencies: `better-sqlite3` (Node addon) and `sqlite-vec` (platform library). Build the addon for the Node ABI used by pi.
 - If a native prebuild is unavailable, building `better-sqlite3` requires Python and a C/C++ toolchain for `node-gyp`.
 - CI runs on Linux. Other operating systems are not covered by the workflows.
-- Default reviewers and background learning use `github-copilot/gpt-6-luna`; authenticate GitHub Copilot through pi's `/login`, or [configure another authenticated provider](docs/guide/configuration.md#reviewer-and-learner-models).
+- Memory review and background learning use `github-copilot/gpt-6-luna`; skill review uses `github-copilot/gpt-6-luna` at xhigh thinking; authenticate GitHub Copilot through pi's `/login`, or [configure another authenticated provider](docs/guide/configuration.md#reviewer-and-learner-models).
 
 ## Install, update, and remove
 
@@ -151,7 +151,7 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 
 - Common keys: `organism.enabled` (default `true`), `subagents.childMode` (`"rpc"`), `ui.footer` (`true`).
 - Reviewers: `memory.reviewer.enabled` and `skills.reviewer.enabled` default to `true`.
-- `models.defaults` maps roles to model references; local values override global values per role.
+- `models.defaults` maps roles to model references. Resolution is explicit model, local override, global default, shipped role default, then parent model for unknown roles or an empty eligible catalog.
 - `memory.snapshotCharCap` defaults to unlimited injection of active memory; it does not change the storage cap.
 - `exec.enforce` defaults to `true` and cannot be changed through the model-facing config action.
 - See [Configuration](docs/guide/configuration.md) for defaults, provenance, validation, and when changes take effect.

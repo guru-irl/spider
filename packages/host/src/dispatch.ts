@@ -39,7 +39,7 @@ export interface ActionCtx {
   /** The persisted `models.defaults` role->ref map (control models set), resolved once per
    *  dispatch by buildActionCtx. Subagents cannot import @spider/host to read config
    *  directly, so this is how packages/subagents/src/actions/run.ts sees it: explicit
-   *  `model:` on a call -> modelDefaults[<agent role>] -> inherit the parent's model. */
+   *  `model:` on a call -> configured or shipped modelDefaults[<agent role>] -> inherit the parent's model. */
   modelDefaults?: Record<string, string>;
   childMode?: "rpc" | "print";
   subagentOnlyExtensions?: string[];

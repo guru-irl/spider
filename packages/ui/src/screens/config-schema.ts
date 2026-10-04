@@ -46,7 +46,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "routing.auto_index_threshold", label: "Auto-index threshold (bytes)", type: "number", default: 10000, min: 0, max: 1000000, description: "Large-output auto-index cutoff." },
 	]},
 	{ id: "models", label: "Model routing", fields: [
-		{ key: "models.defaults", label: "Role defaults", type: "model-map", default: {}, description: "JSON object mapping agent roles to model refs. Per-role local overrides global." },
+		{ key: "models.defaults", label: "Role defaults", type: "model-map", default: {}, description: "Explicit agent-role overrides; shipped defaults resolve from the catalog." },
 	]},
 	{ id: "subagents", label: "Subagents", fields: [
 		{ key: "subagents.extensions", label: "Child extensions", type: "absolute-path-list", default: [], description: "Global-only JSON array of fully absolute extension file paths. Only the user can edit it in the global config file. Missing files are skipped with a run warning." },

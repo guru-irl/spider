@@ -131,7 +131,7 @@ non-descendant ranges. Run a **fresh** review-only `spider run` with
 `agent:"reviewer"`, `context:"fresh"`, a concrete task and explicit
 **provider-qualified** `model:` resolved from reviewer role defaults via
 `spider control models`. Routing precedence is explicit model, worktree-local
-override, global default, then parent model. Check defaults before the run;
+override, global default, shipped role default, then parent model. Check defaults before the run;
 never rely on omission of `model:`. Supply the absolute review-package,
 plan, spec and ledger paths, Review Focus and Global Constraints, and
 [code-reviewer.md](../requesting-code-review/code-reviewer.md). Reviewers

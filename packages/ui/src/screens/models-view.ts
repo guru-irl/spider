@@ -5,10 +5,10 @@ import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.j
 
 /** Pure: the copilot model catalog grouped by tier, framed as a 🕸 models card. Each tier is
  *  an accent `── <tier> ──` rule; each model is an availability glyph (● available / ○ not),
- *  its `provider/id` ref, dim R/V capability badges (thinking / vision), and — when it is a
- *  configured role default — a success ` ⟵ role1,role2` marker. Every line is width-guarded. */
+ *  its `provider/id` ref, dim R/V capability badges (thinking / vision), and a success
+ *  ` ⟵ role1,role2` marker for configured or shipped role defaults. Every line is width-guarded. */
 export interface ModelDefaultOrigins {
-  sources: Record<string, "local" | "global">;
+  sources: Record<string, "default" | "local" | "global">;
   global: Record<string, string>;
 }
 

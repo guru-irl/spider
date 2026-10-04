@@ -78,6 +78,7 @@ spider todo op:"list"
 spider remember scope:"repo" category:"convention" content:"Use the test gate in package.json" link:"package.json" justification:"The gate remains useful after this task; other agents need it; it is specific to this repository."
 ```
 
+- To replace an active note, include `supersedes:["<uuid-or-unique-prefix>"]` in a foreground `remember` call. Targets must be active in the same scope; unknown, ambiguous, inactive or cross-scope targets reject without a write. The cap check credits their current sizes, and archives and insertion happen atomically. The reviewer still checks durability, usefulness and scope; explicit replacement also works when review is unavailable. Staged/auto writes do not support explicit `supersedes`, and staged approval never archives related entries. See [Memory and learning](docs/guide/memory-and-learning.md).
 - Use `/memory` to read notes and `/agents` to inspect child runs.
 - Load an applicable skill before non-trivial work: `spider skill op:"list"`.
 - These examples describe tool calls for the agent, not terminal commands.
@@ -89,7 +90,7 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 | Action | Use |
 | --- | --- |
 | `search` | Search memory, content, sessions, and todos; filter with `kinds`. |
-| `remember` | Propose durable memory with `content`, `category`, and `justification`. |
+| `remember` | Propose durable memory with `content`, `category`, and `justification`; optional `supersedes` replaces active same-scope UUIDs or unique prefixes. |
 | `recall` | Read active memory; filter by `query`, `category`, or `scope`. |
 | `exec` | Execute a script with `language` and `code`. |
 | `exec_file` | Load a file into a script for analysis. |

@@ -15,6 +15,7 @@ If the fact would not change what another agent does in a future session, return
 Judge the supplied justification: does the fact remain true and useful after the current task ends, how will it help other agents working in this project (repo scope) or in any repo (global scope), and is its scope reasoning correct?
 Scope rule: global means true in every repo; otherwise repo. Check only ACTIVE entries provided below, across BOTH scopes.
 Order: not_durable, then already_present, then wrong_scope, then supersedes, then new.
+Entries in candidate.supersedes are being replaced by the caller; judge duplication against the remaining entries, while still checking durability, usefulness and scope.
 already_present: an active entry already states the same fact, including a paraphrase, and the candidate adds nothing; cite existing_uuid.
 supersedes: the candidate corrects or replaces active entries that would otherwise be wrong or redundant; list only those uuids.
 If a candidate restates an existing same-scope entry more concisely or accurately, without dropping information, return supersedes, not already_present, for that entry. A pure paraphrase with no improvement is still already_present. This information-preserving condensation exception takes precedence over already_present, but does not override durability or scope.

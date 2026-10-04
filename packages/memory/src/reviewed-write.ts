@@ -4,11 +4,16 @@ import { firstThreatMessage } from "./scanner";
 import { shouldCapture } from "./guardrails";
 import { isDuplicate, getMemory, searchMemoryFts } from "./store";
 import { forgetMemory, stageWrite, type StageResult } from "./staging";
-import { MemoryOverflowError } from "./overflow";
+import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP, memoryCharLength, MemoryOverflowError } from "./overflow";
+import { tableFor } from "./internal";
 
 export type ReviewerDbs = { repo: Db; global: Db };
 export interface ReviewEntry { uuid: string; scope: MemoryScope; category: MemoryCategory; content: string }
-export interface ReviewCandidate { content: string; category: MemoryCategory; scope: MemoryScope; justification: string }
+export interface ReviewCandidate {
+  content: string; category: MemoryCategory; scope: MemoryScope; justification: string;
+  /** Resolved active same-scope UUIDs the caller intends to replace. */
+  supersedes?: string[];
+}
 export type Verdict =
   | { verdict: "new"; reason: string }
   | { verdict: "already_present"; existing_uuid: string; reason: string }
@@ -26,6 +31,8 @@ export interface ReviewedResult extends StageResult {
   message: string;
 }
 export interface ReviewOptions {
+  /** Active same-scope UUIDs or unique prefixes to replace on a foreground write. */
+  supersedes?: string[];
   reviewer?: (candidate: ReviewCandidate, context: ReviewEntry[], signal: AbortSignal) => Promise<unknown>;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -101,6 +108,32 @@ class RejectedSupersession extends Error {
   constructor(readonly saved: StageResult) { super(saved.reason ?? "insert rejected"); }
 }
 
+/** Resolve literal prefixes within the write scope, including inactive rows for clear errors. */
+function explicitTargets(dbs: ReviewerDbs, scope: MemoryScope, refs: unknown): string[] {
+  if (refs === undefined) return [];
+  if (!Array.isArray(refs) || !refs.every(ref => typeof ref === "string" && ref.trim())) {
+    throw Error("supersedes must be a list of nonblank memory UUIDs or unique UUID prefixes");
+  }
+  const otherScope = scope === "repo" ? "global" : "repo";
+  const matches = (s: MemoryScope, ref: string) => dbs[s].prepare(
+    `SELECT uuid, status FROM ${tableFor(s)} WHERE substr(uuid, 1, length(?)) = ?`,
+  ).all(ref, ref) as { uuid: string; status: string }[];
+  return [...new Set(refs.map(rawRef => {
+    const ref = rawRef.toLowerCase();
+    const entries = matches(scope, ref);
+    // A full UUID takes precedence over longer prefix matches.
+    const exact = entries.find(e => e.uuid === ref);
+    const found = exact ? [exact] : entries;
+    if (found.length > 1) throw Error(`supersedes: ambiguous UUID prefix '${ref}' in ${scope} scope: ${found.map(e => `${e.uuid} (${e.status})`).join(", ")}`);
+    if (!found.length) {
+      if (matches(otherScope, ref).length) throw Error(`supersedes: entry '${ref}' is in ${otherScope} scope, not ${scope} scope`);
+      throw Error(`supersedes: unknown memory UUID or prefix '${ref}' in ${scope} scope`);
+    }
+    if (found[0].status !== "active") throw Error(`supersedes: entry '${found[0].uuid}' is not active in ${scope} scope`);
+    return found[0].uuid;
+  }))];
+}
+
 /** Precheck before any model call; leave stageWrite's synchronous organism API unchanged. */
 export async function reviewedWrite(
   dbs: ReviewerDbs, requestedScope: MemoryScope, input: AddMemoryInput, justification: string,
@@ -121,24 +154,70 @@ export async function reviewedWrite(
     const guard = shouldCapture(input.category, input.content);
     if (!guard.capture) return rejected(guard.reason ?? "guardrail rejected");
   }
+  if (opts.supersedes !== undefined && (!Array.isArray(opts.supersedes) || opts.supersedes.length > 0) && (input.source === "auto" || input.source === "import")) {
+    return rejected("explicit supersedes is not supported for staged writes; use a foreground remember with supersedes or forget explicitly");
+  }
+  let explicit: string[];
+  try { explicit = explicitTargets(dbs, requestedScope, opts.supersedes); }
+  catch (error) { return rejected(error instanceof Error ? error.message : String(error)); }
   if (isDuplicate(dbs[requestedScope], requestedScope, input.category, input.content, input.source)) return rejected("duplicate");
 
   const label = (saved: StageResult) => saved.status === "staged" ? `staged for approval as ${saved.uuid}` : `stored as ${saved.uuid}`;
-  const store = (scope: MemoryScope, message: (saved: StageResult) => string, more: Partial<ReviewedResult> = {}): ReviewedResult => {
+  const store = (
+    scope: MemoryScope, message: (saved: StageResult) => string, more: Partial<ReviewedResult> = {},
+    reviewerTargets: string[] = [], related: string[] = [],
+  ): ReviewedResult => {
+    if (explicit.length && scope !== requestedScope) {
+      return rejected(`supersedes targets are in ${requestedScope} scope; reviewer redirected to ${scope} scope, nothing written`);
+    }
+    const targets = [...new Set([...explicit, ...reviewerTargets])];
+    const staged = input.source === "auto" || input.source === "import";
+    const replacement = targets.length > 0 || more.verdict === "supersedes";
     let saved: StageResult;
+    const archived: string[] = [];
     try {
-      saved = stageWrite(dbs[scope], scope, { ...input, justification });
+      if (replacement) {
+        // Lock before reading current target status/size, then archive and insert together.
+        saved = dbs[scope].raw.transaction(() => {
+          if (!staged) {
+            for (const uuid of targets) {
+              if (getMemory(dbs[scope], scope, uuid)?.status !== "active") throw Error(`supersedes: entry '${uuid}' is not active in ${scope} scope`);
+            }
+            assertWithinCap(dbs[scope], scope, memoryCharLength(input.content), DEFAULT_MEMORY_CHAR_CAP, undefined, targets);
+            for (const uuid of targets) {
+              if (forgetMemory(dbs[scope], scope, uuid)?.status !== "archived") throw Error(`archive failed: ${uuid}`);
+              archived.push(uuid);
+            }
+          }
+          const result = stageWrite(dbs[scope], scope, { ...input, justification });
+          if (result.status === "rejected") throw new RejectedSupersession(result);
+          if (result.status !== "active" && archived.length) throw Error("staged supersession cannot archive active entries");
+          return result;
+        }).immediate();
+      } else {
+        saved = stageWrite(dbs[scope], scope, { ...input, justification });
+      }
     } catch (error) {
+      if (replacement) {
+        if (error instanceof RejectedSupersession) return rejected(error.saved.reason ?? "insert rejected");
+        const reason = (error instanceof Error ? error.message : String(error)).replace(/^not stored:\s*/i, "");
+        return { ...rejected(`supersession failed, nothing written: ${reason}`), archived: [] };
+      }
       if (scope !== requestedScope && error instanceof MemoryOverflowError) {
         error.message = error.message.replace(/^Not stored: /, `Not stored: redirected from ${requestedScope} to ${scope}; `);
       }
       throw error;
     }
-    return { ...saved, scope, requestedScope, timeoutNote,
+    const pendingSupersedes = saved.status === "staged" && targets.length ? targets : undefined;
+    const action = pendingSupersedes
+      ? `; related entries, not archived: ${pendingSupersedes.join(", ")}; approval does not archive them; use foreground remember with supersedes or forget explicitly`
+      : archived.length ? `; archived ${archived.join(", ")} (superseded)` : "";
+    return { ...saved, scope, requestedScope, timeoutNote, ...more,
+      ...(replacement ? { archived, pendingSupersedes } : {}),
       message: saved.status === "rejected"
         ? (scope !== requestedScope && saved.reason === "duplicate"
           ? `not stored: redirected to ${scope}, which already has it (duplicate)` : `not stored: ${saved.reason}`)
-        : message(saved), ...more,
+        : `${message(saved)}${action}${related.length ? `; ${related.join("; ")}` : ""}`,
       reason: saved.status === "rejected" ? saved.reason : more.reason,
     };
   };
@@ -148,7 +227,9 @@ export async function reviewedWrite(
   if (!opts.reviewer) return skip(opts.skipReason ?? "reviewer disabled");
   // Return before creating any rejectable promise, including for the already-aborted case.
   if (opts.signal?.aborted) return skip("aborted");
-  const candidate: ReviewCandidate = { content: input.content, category: input.category, scope: requestedScope, justification };
+  const candidate: ReviewCandidate = { content: input.content, category: input.category, scope: requestedScope, justification,
+    ...(explicit.length ? { supersedes: [...explicit] } : {}),
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   const controller = new AbortController();
@@ -197,35 +278,8 @@ export async function reviewedWrite(
       const same = verdict.supersedes.filter(uuid => context.find(e => e.uuid === uuid)!.scope === requestedScope);
       const related = verdict.supersedes.filter(uuid => !same.includes(uuid))
         .map(uuid => { const scope = context.find(e => e.uuid === uuid)!.scope; return `related entry in ${scope} scope, not archived: ${uuid}`; });
-      try {
-        // Archive and insert in one transaction. Roll back both on a rejected or failed insert.
-        const { saved, archived } = dbs[requestedScope].raw.transaction(() => {
-          const archived: string[] = [];
-          if (input.source !== "auto" && input.source !== "import") {
-            for (const uuid of same) {
-              if (getMemory(dbs[requestedScope], requestedScope, uuid)?.status !== "active") throw Error(`cited entry no longer active: ${uuid}`);
-              const removed = forgetMemory(dbs[requestedScope], requestedScope, uuid);
-              if (removed?.status !== "archived") throw Error(`archive failed: ${uuid}`);
-              archived.push(uuid);
-            }
-          }
-          const saved = stageWrite(dbs[requestedScope], requestedScope, { ...input, justification });
-          if (saved.status === "rejected") throw new RejectedSupersession(saved);
-          // The saved row's actual status, not its source, is the authority for D4.
-          if (saved.status !== "active" && archived.length) throw Error("staged supersession cannot archive active entries");
-          return { saved, archived };
-        }).immediate();
-        const pendingSupersedes = saved.status === "staged" ? same : undefined;
-        const action = pendingSupersedes?.length ? `; pending supersession: ${pendingSupersedes.join(", ")}` :
-          archived.length ? `; archived ${archived.join(", ")} (superseded)` : "";
-        return { ...saved, scope: requestedScope, requestedScope, verdict: "supersedes", reason: verdict.reason,
-          archived, pendingSupersedes, timeoutNote,
-          message: `${label(saved)}${action}${related.length ? `; ${related.join("; ")}` : ""} (${verdict.reason})` };
-      } catch (error) {
-        if (error instanceof RejectedSupersession) return rejected(error.saved.reason ?? "insert rejected");
-        const reason = (error instanceof Error ? error.message : String(error)).replace(/^not stored:\s*/i, "");
-        return { ...rejected(`supersession failed, nothing written: ${reason}`), archived: [] };
-      }
+      return store(requestedScope, saved => `${label(saved)} (${verdict.reason})`,
+        { verdict: "supersedes", reason: verdict.reason }, same, related);
     }
     case "new": return store(requestedScope, saved => `${label(saved)} (reviewer: new; ${verdict.reason})`, { verdict: "new", reason: verdict.reason });
   }

@@ -8,6 +8,12 @@ import { enqueueEmbed } from "./embeddings/queue";
 export { activeCharTotal, listActive } from "./internal";
 
 export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number = DEFAULT_MEMORY_CHAR_CAP): MemoryRecord {
+  // Serialize admission with supersessions; a waiting writer must check the latest total.
+  // insertMemory must not register afterCommit effects inside this raw transaction.
+  return db.raw.transaction(() => insertMemory(db, scope, input, cap)).immediate();
+}
+
+function insertMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number): MemoryRecord {
   tableFor(scope);
   const uuid = randomUUID();
   const createdAt = Date.now();

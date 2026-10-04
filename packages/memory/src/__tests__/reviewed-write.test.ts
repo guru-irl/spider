@@ -62,13 +62,157 @@ describe("reviewed remember", () => {
     });
     expect(result.status).toBe("rejected");
     expect(result.message!.match(/not stored:/gi)).toHaveLength(1);
-    expect(result.message).toContain("repo memory is full (7,900 of 8,000 chars used)");
+    expect(result.message).toContain("repo memory is full (7,922 of 8,000 chars used)");
+    expect(result.message).toContain(`${old.uuid} · 22 chars`);
+    expect(result.message).toContain("[would be replaced]");
+    expect(result.message).toContain("Active entries (2, largest first");
     expect(result.message).toContain("nothing written");
     expect(result.archived).toEqual([]);
     expect(getMemory(dbs.repo, "repo", old.uuid!)?.status).toBe("active");
     expect(getMemory(dbs.repo, "repo", filler.uuid!)?.status).toBe("active");
     expect(dbs.repo.prepare("SELECT count(*) n FROM memory").get()).toMatchObject({ n: 2 });
   });
+
+  it.each(["repo", "global"] as const)("credits a 470-char %s replacement at 7,465/8,000", async scope => {
+    const dbs = setup();
+    const old = stageWrite(dbs[scope], scope, { ...fact, content: "reproducible " + "a".repeat(457) });
+    stageWrite(dbs[scope], scope, { ...fact, content: "x".repeat(6995) });
+    expect(activeCharTotal(dbs[scope], scope)).toBe(7465);
+    const result = await reviewedWrite(dbs, scope, { ...fact, content: "reproducible " + "b".repeat(524) }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "updated instruction" }),
+    });
+    expect(result).toMatchObject({ status: "active", archived: [old.uuid] });
+    expect(activeCharTotal(dbs[scope], scope)).toBe(7532);
+    expect(getMemory(dbs[scope], scope, old.uuid!)?.status).toBe("archived");
+  });
+  it.each(["repo", "global"] as const)("lists all 19 active %s entries and credits the target on rejected supersession", async scope => {
+    const dbs = setup();
+    const old = stageWrite(dbs[scope], scope, { ...fact, content: "reproducible " + "a".repeat(457) });
+    const fillers = Array.from({ length: 18 }, (_, i) => stageWrite(dbs[scope], scope, {
+      ...fact, content: `${i}:`.padEnd(i === 17 ? 399 : 388, "x"),
+    }));
+    const result = await reviewedWrite(dbs, scope, { ...fact, content: "reproducible " + "b".repeat(993) }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "expanded instruction" }),
+    });
+    expect(result.status).toBe("rejected");
+    expect(result.message).toContain(`${scope} memory is full (7,465 of 8,000 chars used)`);
+    expect(result.message).toContain("free at least 1.");
+    expect(result.message).toContain("Replacement credit: 470 chars; projected usage: 8,001 of 8,000 chars.");
+    const rows = result.message.split("\n").filter(line => line.startsWith("- "));
+    expect(rows).toHaveLength(19);
+    expect(result.message).toContain("Active entries (19, largest first");
+    expect(rows.find(line => line.includes(old.uuid!))).toContain("[would be replaced]");
+    for (const entry of fillers) expect(result.message).toContain(entry.uuid!);
+    expect(activeCharTotal(dbs[scope], scope)).toBe(7465);
+    expect(listActive(dbs[scope], scope)).toHaveLength(19);
+    expect(getMemory(dbs[scope], scope, old.uuid!)?.status).toBe("active");
+  });
+  it("credits every final same-scope reviewer target, but not related cross-scope targets", async () => {
+    const dbs = setup();
+    const first = stageWrite(dbs.repo, "repo", { ...fact, content: "reproducible " + "a".repeat(457) });
+    const second = stageWrite(dbs.repo, "repo", { ...fact, content: "reproducible " + "c".repeat(87) });
+    const cross = stageWrite(dbs.global, "global", { ...fact, content: "reproducible " + "g".repeat(687) });
+    stageWrite(dbs.repo, "repo", { ...fact, content: "x".repeat(6895) });
+    const result = await reviewedWrite(dbs, "repo", { ...fact, content: "reproducible " + "b".repeat(1093) }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [first.uuid, second.uuid, cross.uuid], reason: "final targets" }),
+    });
+    expect(result.status).toBe("rejected");
+    expect(result.message).toContain("Replacement credit: 570 chars; projected usage: 8,001 of 8,000 chars.");
+    expect(result.message).toContain("free at least 1.");
+    expect(result.message).not.toContain(cross.uuid!);
+    expect(listActive(dbs.repo, "repo")).toHaveLength(3);
+    expect(getMemory(dbs.global, "global", cross.uuid!)?.status).toBe("active");
+  });
+  it.each(["repo", "global"] as const)("does not credit a cross-scope replacement against %s usage", async scope => {
+    const dbs = setup();
+    const other = scope === "repo" ? "global" : "repo";
+    const cross = stageWrite(dbs[other], other, { ...fact, content: "reproducible " + "a".repeat(457) });
+    stageWrite(dbs[scope], scope, { ...fact, content: "x".repeat(7465) });
+    const result = await reviewedWrite(dbs, scope, { ...fact, content: "reproducible " + "b".repeat(524) }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [cross.uuid], reason: "related elsewhere" }),
+    });
+    expect(result.status).toBe("rejected");
+    expect(result.message).toContain("free at least 2.");
+    expect(result.message).not.toContain("Replacement credit");
+    expect(activeCharTotal(dbs[scope], scope)).toBe(7465);
+    expect(getMemory(dbs[other], other, cross.uuid!)?.status).toBe("active");
+  });
+  it("uses the final reviewer scope without crediting source-scope entries", async () => {
+    const dbs = setup();
+    const source = stageWrite(dbs.repo, "repo", { ...fact, content: "reproducible " + "a".repeat(457) });
+    stageWrite(dbs.global, "global", { ...fact, content: "x".repeat(7465) });
+    const pending = reviewedWrite(dbs, "repo", { ...fact, content: "reproducible " + "b".repeat(524) }, justification, {
+      reviewer: async () => ({ verdict: "wrong_scope", scope: "global", reason: "global instruction" }),
+    });
+    await expect(pending).rejects.toThrow("redirected from repo to global; global memory is full (7,465 of 8,000 chars used)");
+    await expect(pending).rejects.toThrow("free at least 2.");
+    expect(getMemory(dbs.repo, "repo", source.uuid!)?.status).toBe("active");
+  });
+  it("does not credit pending automatic supersessions against active usage", async () => {
+    const dbs = setup();
+    const old = stageWrite(dbs.repo, "repo", { ...fact, content: "reproducible " + "a".repeat(457) });
+    stageWrite(dbs.repo, "repo", { ...fact, content: "x".repeat(7530) });
+    const result = await reviewedWrite(dbs, "repo", { ...fact, source: "auto" }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "pending update" }),
+    });
+    expect(result).toMatchObject({ status: "staged", archived: [], pendingSupersedes: [old.uuid] });
+    expect(activeCharTotal(dbs.repo, "repo")).toBe(8000);
+  });
+
+  it("uses current target sizes rather than the reviewer's cached content", async () => {
+    const dbs = setup();
+    const old = stageWrite(dbs.global, "global", { ...fact, content: "reproducible " + "a".repeat(457) });
+    stageWrite(dbs.global, "global", { ...fact, content: "x".repeat(6995) });
+    const result = await reviewedWrite(dbs, "global", { ...fact, content: "reproducible " + "b".repeat(993) }, justification, {
+      reviewer: async () => {
+        dbs.global.prepare("UPDATE global_memory SET content = ? WHERE uuid = ?").run("a".repeat(50), old.uuid);
+        return { verdict: "supersedes", supersedes: [old.uuid], reason: "updated target" };
+      },
+    });
+    expect(result.status).toBe("rejected");
+    expect(result.message).toContain("global memory is full (7,045 of 8,000 chars used)");
+    expect(result.message).toContain("Replacement credit: 50 chars; projected usage: 8,001 of 8,000 chars.");
+    expect(activeCharTotal(dbs.global, "global")).toBe(7045);
+    expect(getMemory(dbs.global, "global", old.uuid!)?.status).toBe("active");
+  });
+  it("accepts a replacement that reaches the cap exactly after credit", async () => {
+    const dbs = setup();
+    const old = stageWrite(dbs.global, "global", { ...fact, content: "reproducible " + "a".repeat(457) });
+    stageWrite(dbs.global, "global", { ...fact, content: "x".repeat(6995) });
+    const result = await reviewedWrite(dbs, "global", { ...fact, content: "reproducible " + "b".repeat(992) }, justification, {
+      reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "expanded instruction" }),
+    });
+    expect(result).toMatchObject({ status: "active", archived: [old.uuid] });
+    expect(activeCharTotal(dbs.global, "global")).toBe(8000);
+  });
+  it.each(["repo", "global"] as const)("checks %s replacement credit against a concurrent writer's committed usage", async scope => {
+    const dbs = setup();
+    const old = stageWrite(dbs[scope], scope, { ...fact, content: "reproducible " + "a".repeat(457) });
+    const filler = stageWrite(dbs[scope], scope, { ...fact, content: "x".repeat(6995) });
+    const table = scope === "repo" ? "memory" : "global_memory";
+    const worker = new Worker(`const { parentPort, workerData } = require('node:worker_threads');
+      const Sqlite = require('better-sqlite3'); const db = new Sqlite(workerData.path);
+      db.exec('BEGIN IMMEDIATE');
+      db.prepare("UPDATE " + workerData.table + " SET content = ? WHERE uuid = ?").run('x'.repeat(7464), workerData.uuid);
+      parentPort.postMessage('locked');
+      setTimeout(() => { db.exec('COMMIT'); db.close(); }, 150);`,
+      { eval: true, workerData: { path: dbs[scope].raw.name, table, uuid: filler.uuid } });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", () => resolve()); worker.once("error", reject);
+      });
+      const result = await reviewedWrite(dbs, scope, { ...fact, content: "reproducible " + "b".repeat(524) }, justification, {
+        reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "updated instruction" }),
+      });
+      expect(result.status).toBe("rejected");
+      expect(result.archived).toEqual([]);
+      expect(result.message).toContain(`${scope} memory is full (7,934 of 8,000 chars used)`);
+      expect(result.message).toContain("Replacement credit: 470 chars; projected usage: 8,001 of 8,000 chars.");
+      expect(activeCharTotal(dbs[scope], scope)).toBe(7934);
+      expect(getMemory(dbs[scope], scope, old.uuid!)?.status).toBe("active");
+      expect(listActive(dbs[scope], scope)).toHaveLength(2);
+    } finally { await worker.terminate(); }
+  }, 10000);
 
   it("does not archive superseded entries if insertion loses a duplicate race", async () => {
     const dbs = setup();
@@ -278,13 +422,14 @@ describe("reviewed remember", () => {
     expect(result.message).toContain(result.uuid!);
     expect(getMemory(dbs.global, "global", cross.uuid!)?.status).toBe("active");
   });
-  it("staged supersedes only records intended archives; active memory stays unchanged", async () => {
+  it("staged supersedes reports related entries without promising archives; active memory stays unchanged", async () => {
     const dbs = setup();
     const old = stageWrite(dbs.repo, "repo", { ...fact, content: "old reproducible build flags" });
     const result = await reviewedWrite(dbs, "repo", { ...fact, source: "auto" }, justification, { reviewer: async () => ({ verdict: "supersedes", supersedes: [old.uuid], reason: "newer" }) });
     expect(result.status).toBe("staged");
     expect(result.message).toContain(`staged for approval as ${result.uuid}`);
-    expect(result.message).toContain(`pending supersession: ${old.uuid}`);
+    expect(result.message).toContain(`related entries, not archived: ${old.uuid}`);
+    expect(result.message).toContain("approval does not archive");
     expect(result.archived).toEqual([]);
     expect(result.pendingSupersedes).toEqual([old.uuid]);
     expect(getMemory(dbs.repo, "repo", old.uuid!)?.status).toBe("active");

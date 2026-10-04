@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { Worker } from "node:worker_threads";
 import { makeGlobalMemDb, makeMemDb } from "./helpers/tmpdb";
 import { activeCharTotal, listActive } from "../internal";
 import { addMemory } from "../store";
@@ -29,14 +30,17 @@ describe("overflow hard-reject", () => {
 
   it.each(["global", "repo"] as const)("rejects an oversized %s entry without suggesting eviction", scope => {
     ctx = scope === "global" ? makeGlobalMemDb() : makeMemDb();
+    const existing = addMemory(ctx.db, scope, { category: "preference", content: "existing memory" });
     expect(() => addMemory(ctx.db, scope, { category: "preference", content: "x".repeat(9000) }))
       .toThrow(`Not stored: this entry is 9,000 chars, over the 8,000-char ${scope} memory cap. Shorten it; forgetting entries cannot make room.`);
     try { addMemory(ctx.db, scope, { category: "preference", content: "x".repeat(9000) }); }
     catch (error) {
       expect((error as Error).message).not.toContain("memory is full");
       expect((error as Error).message).not.toContain("sub=forget");
+      expect((error as Error).message).not.toContain("Active entries");
+      expect((error as Error).message).not.toContain(existing.uuid);
     }
-    expect(listActive(ctx.db, scope)).toHaveLength(0);
+    expect(listActive(ctx.db, scope)).toHaveLength(1);
   });
 
   it.each(["global", "repo"] as const)("names the staged %s UUID and retry action when approval overflows", scope => {
@@ -118,7 +122,7 @@ describe("overflow hard-reject", () => {
     expect(activeCharTotal(ctx.db, scope)).toBe(8000);
   });
 
-  it("lists only the 20 largest entries, with UUIDs, sizes, and bounded single-line previews", () => {
+  it("lists all active entries, with UUIDs, sizes, and bounded single-line previews", () => {
     ctx = makeMemDb();
     const entries = Array.from({ length: 22 }, (_, i) => addMemory(ctx.db, "repo", {
       category: "preference", content: `row${i}\n` + "x".repeat(i * 100),
@@ -129,16 +133,37 @@ describe("overflow hard-reject", () => {
     catch (e) { error = e as MemoryOverflowError; }
     expect(error).toBeInstanceOf(MemoryOverflowError);
     const rows = error!.message.split("\n").filter(line => line.startsWith("- "));
-    expect(rows).toHaveLength(20);
+    expect(rows).toHaveLength(22);
     expect(rows[0]).toContain(entries[21].uuid);
     expect(rows[0]).toContain("2,106 chars");
-    expect(rows[19]).toContain(entries[2].uuid);
-    expect(error!.message).not.toContain(entries[0].uuid);
-    expect(error!.message).not.toContain(entries[1].uuid);
-    expect(error!.message).toContain("2 more");
+    expect(rows[21]).toContain(entries[0].uuid);
+    for (const entry of entries) expect(error!.message).toContain(entry.uuid);
+    expect(error!.message).toContain("Active entries (22, largest first");
     expect(rows.every(row => row.length < 160)).toBe(true);
     expect(listActive(ctx.db, "repo")).toHaveLength(22);
   });
+
+  it.each(["repo", "global"] as const)("rechecks %s cap after a concurrent writer commits, before inserting", async scope => {
+    ctx = scope === "repo" ? makeMemDb() : makeGlobalMemDb();
+    addMemory(ctx.db, scope, { category: "convention", content: "x".repeat(7800) });
+    const table = scope === "repo" ? "memory" : "global_memory";
+    const worker = new Worker(`const { parentPort, workerData } = require('node:worker_threads');
+      const Sqlite = require('better-sqlite3'); const db = new Sqlite(workerData.path);
+      db.exec('BEGIN IMMEDIATE');
+      db.prepare("INSERT INTO " + workerData.table + " (uuid, category, content, status, source, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run('competing', 'convention', 'y'.repeat(100), 'active', 'user', Date.now());
+      parentPort.postMessage('locked');
+      setTimeout(() => { db.exec('COMMIT'); db.close(); }, 150);`,
+      { eval: true, workerData: { path: ctx.db.raw.name, table } });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker.once("message", () => resolve()); worker.once("error", reject);
+      });
+      expect(() => addMemory(ctx.db, scope, { category: "convention", content: "z".repeat(200) })).toThrow(MemoryOverflowError);
+      expect(activeCharTotal(ctx.db, scope)).toBe(7900);
+      expect(listActive(ctx.db, scope)).toHaveLength(2);
+    } finally { await worker.terminate(); }
+  }, 10000);
 
   it("throws MemoryOverflowError listing current entries when active cap exceeded", () => {
     ctx = makeMemDb();

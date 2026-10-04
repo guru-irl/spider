@@ -36,7 +36,7 @@ spider control command:"memory" sub:"forget" uuid:"<uuid>" scope:"repo"
 - Replacement admission uses current usage minus the sizes of all active same-scope targets plus the new content size. Cap check, archives and insert run in one immediate transaction. Approval also checks and activates under an immediate transaction.
 - Recoverable overflow cards list all active entries, marking replacement targets and showing their credit and projected usage. A new entry larger than the cap by itself must be shortened; its card does not list entries to evict.
 - `memory.snapshotCharCap` controls prompt injection only, not storage. By default all active memory is injected.
-- The first `before_agent_start` reads and freezes a memory snapshot for the session, including an empty snapshot. Later turns append the byte-identical memory block to the incoming system prompt.
+- The first `before_agent_start` or provider request reads and freezes a memory snapshot for the session, including an empty snapshot. `before_agent_start` and `context_with_system` apply the byte-identical memory block on every request, including idle notification turns that skip agent-start preflight.
 - New writes, approvals and supersessions persist immediately but do not change that session's block. They enter the prompt next session; `recall` reads the current active rows.
 - A different session ID or file (new, resume or fork), an extension reload, or a changed memory binding target takes a fresh snapshot. Subagent sessions freeze independently.
 - An explicit injection cap can omit entries and is frozen with the snapshot. `/doctor` reads current memory and config, so its counts can differ from an existing session's frozen block.

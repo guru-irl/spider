@@ -223,10 +223,12 @@ sequenceDiagram
 ```
 
 Two paths sit outside this per-call flow. Host registers pi lifecycle hooks
-(memory snapshot frozen per session on the first `before_agent_start`, session
-upsert on `session_start`, skill-path contribution on `resources_discover`, and the
-organism drain on compact and shutdown), and a routing layer over every
-non-spider tool call that scrubs secrets, scans for injection, and auto-indexes
+(memory snapshot frozen per session on the first `before_agent_start` or provider
+request and applied on every request through `before_agent_start` and
+`context_with_system`, session upsert on `session_start`, skill-path contribution
+on `resources_discover`, and the organism drain on compact and shutdown), and a
+routing layer over every non-spider tool call that scrubs secrets, scans for
+injection, and auto-indexes
 large output. Those, together with the subagent and learning loops, are
 described in [`feedback-and-learning-loops.md`](./feedback-and-learning-loops.md).
 

@@ -15,8 +15,9 @@ The four loops are:
 2. **The memory lifecycle.** Foreground `remember` writes require justification and
    a durability, overlap, and scope review before activation. A failed review stores
    as requested. Auto-sourced and background writes stage fail-closed for approval.
-   The active-memory snapshot is frozen at the first `before_agent_start` and the
-   same block is appended on every later turn. New sessions take a fresh snapshot.
+   The active-memory snapshot is frozen at the first `before_agent_start` or
+   provider request. `before_agent_start` and `context_with_system` apply the same
+   block on every request. New sessions take a fresh snapshot.
 3. **The organism feedback and learning loop.** On before-compact and on
    shutdown the organism drains the finished session, runs passes that propose
    memory and skill candidates, stages them, records a summary and a self-name,
@@ -31,7 +32,8 @@ The four loops are:
 | Trigger | Kind | What it drives |
 | --- | --- | --- |
 | `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). |
-| `before_agent_start` | pi hook | Freeze the memory snapshot on first use, then append the same block on later turns. |
+| `before_agent_start` | pi hook | Freeze the session's memory snapshot on first use and append it to the run's system prompt. |
+| `context_with_system` | pi hook | Apply the same frozen block on every provider request, including idle notification runs that skip `before_agent_start`; freeze on first use if needed. |
 | `tool_call` / `tool_result` | pi hook | Record intent, scrub secrets, scan for injection, auto-index large non-spider output. |
 | `session_before_compact` | pi hook | Fire-and-forget organism drain with `reason: "before_compact"`. |
 | `session_shutdown` | pi hook | Await organism drain with `reason: "shutdown"`, then run curator decay. |
@@ -156,7 +158,8 @@ re-checks the cap at approval time, so an approval can still fail with
 Rejection sets `status: "rejected"`. Nothing is hard-deleted; rejected and
 archived rows stay in the table and are removed only from the FTS mirror.
 
-**The active snapshot is injected at `before_agent_start`.** The host hook and
+The active snapshot is frozen per session and applied on every provider request
+through `before_agent_start` and `context_with_system`. The host hooks and
 `control doctor` use one `readInjectionSnapshot` function. It resolves session
 bindings from the read-only global DB, then reads active memory from the global and repo
 tiers independently using read-only DB opens. It does not register projects,
@@ -167,13 +170,16 @@ and category within each priority band. There is no default snapshot cap: all
 active entries are injected. An optional explicit `memory.snapshotCharCap`
 limit skips entries that do not fit and continues packing smaller entries. It
 appends `Memory snapshot: N entries omitted.` when a configured cap omits rows;
-doctor reports this as a warning without failing its check. The hook returns a
-system-prompt patch only when the snapshot is non-empty and the system prompt
-is a string.
+doctor reports this as a warning without failing its check. `before_agent_start`
+returns a system-prompt patch only when the snapshot is non-empty and the system
+prompt is a string. `context_with_system` replays the transcript's system prompt
+and tool declarations into one leading system message and appends the frozen
+block if it is not already present. It leaves the stored transcript unchanged.
 
-- The first `before_agent_start` freezes the memory text, including an empty result.
-  Later turns append byte-identical text to the incoming prompt, not a cached copy
-  of another extension's prefix.
+- The first `before_agent_start` or provider request freezes the memory text,
+  including an empty result. Both hooks apply byte-identical text on every request,
+  not a cached copy of another extension's prefix. Idle notification turns use
+  `context_with_system` because they skip `before_agent_start`.
 - New writes, approvals, supersessions and cap changes persist immediately but
   enter the prompt next session. Recall and doctor still read current rows;
   doctor's current counts need not match an existing session's frozen block.
@@ -210,8 +216,8 @@ flowchart TD
   ACT2 --> AM
 
   AM --> SNAP["readInjectionSnapshot, global and repo read-only; no default cap"]
-  SNAP --> FREEZE["first before_agent_start freezes the block"]
-  FREEZE --> INJ["later turns append the same block to the incoming prompt"]
+  SNAP --> FREEZE["first before_agent_start or provider request freezes the block"]
+  FREEZE --> INJ["before_agent_start and context_with_system apply the same block on every request"]
   AM --> NEXT["new session, reload or changed binding takes a fresh snapshot"]
   NEXT --> SNAP
 ```
@@ -342,7 +348,7 @@ without persisting it.
 active until a human approves it. Once approved, it flows forward:
 
 - Approved staged memory becomes active immediately and enters the frozen
-  snapshot at the next session's first `before_agent_start` (loop 2).
+  snapshot at the next session's first `before_agent_start` or provider request (loop 2).
 - Approved staged skills become active in the skill library.
 - The session summary and self-name are indexed into `sessions_fts`, so past
   sessions are searchable and the ongoing task keeps a stable name.
@@ -463,7 +469,7 @@ becomes input to another:
   that the organism drain reads on before-compact and shutdown.
 - The organism stages memory candidates through the same `stageWrite` pipeline
   the memory lifecycle uses; approving them feeds the snapshot frozen at the
-  next session's first `before_agent_start`.
+  next session's first `before_agent_start` or provider request.
 - The content the routing loop indexes and the summaries the organism writes are
   both retrievable through `spider search`, so a later session can find what an
   earlier one produced.

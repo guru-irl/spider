@@ -46,7 +46,12 @@
 
 ## Process-wide embedder
 
-- The embedder initializes lazily and occupies a versioned global-symbol slot keyed by model.
+- The embedder initializes lazily and occupies a versioned global-symbol slot keyed by model. Concurrent callers share one initialization.
+- Recall, search and organism reflection use the embedder only if it is already ready. They never wait for first-time setup or a model download. Recall and search use full-text results while setup runs. Global and queryless recall do not start setup.
+- The `startEmbedWorker` helper and the legacy `loadEmbedder` entry point wait at most `5` seconds for setup, then treat the embedder as unavailable for that call. A timeout does not cancel the background download. No production drain worker is wired yet; another PR (`fix/vector-recall`) is wiring it.
+- A broken fastembed model directory under spider's models root is renamed to `<dir>.broken-<timestamp>`, not deleted. Its sibling `<dir>.tar.gz` archive, if present, is also renamed with the same suffix so retries can download afresh. Recovery is limited to one rename attempt per process and skipped if any `<dir>.broken-*` entry already exists, until the user clears it. Symlinks and paths outside that root are left alone.
+- Existing model directories skip fastembed retrieval. Failures during their loading, or recognized load errors after extraction, can trigger recovery. Errors with a string `code`, network and extraction errors do not. Unrecognized errors after a fresh download are left alone rather than guessing the failure stage. Recovery also skips a directory or entry modified within the last two minutes because another process may be extracting it.
+- Background fastembed setup disables download progress output.
 - `/new`, `/resume`, `/fork`, and rebuilt reloads reuse the same model.
 - If both providers are unavailable, the unavailable result is cached for `10` minutes; the next call after the cooldown retries.
 - Rejected initialization promises clear immediately so the next call can retry.

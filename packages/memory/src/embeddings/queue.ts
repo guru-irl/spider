@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
 import { upsertVector, type OwnerKind } from "./vectors";
-import type { Embedder } from "./embedder";
+import { waitForEmbedder, type Embedder } from "./embedder";
 
 export function enqueueEmbed(db: Db, ownerKind: OwnerKind, ownerId: string, text: string): void {
   db.prepare(
@@ -61,7 +61,7 @@ export function startEmbedWorker(
     if (inFlight) return;
     inFlight = true;
     try {
-      const embedder = await getEmbedder();
+      const embedder = await waitForEmbedder(getEmbedder);
       await drainEmbedQueue(db, embedder);
     } catch {
       // swallow — background worker must never crash the process

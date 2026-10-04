@@ -1,5 +1,5 @@
 // packages/host/src/embeddings.ts
-import { resolveEmbedder, type Embedder } from "@spider/memory";
+import { waitForEmbedder, type Embedder } from "@spider/memory";
 export { isEmbedderLoaded } from "@spider/memory";
 
 export interface EmbeddingConfig { provider: string; model: string; dim: number; }
@@ -10,4 +10,4 @@ export function embeddingConfig(): EmbeddingConfig {
 }
 
 /** Legacy entry point; all consumers share the process-wide model and adapter. */
-export const loadEmbedder: () => Promise<Embedder | null> = resolveEmbedder;
+export const loadEmbedder: () => Promise<Embedder | null> = waitForEmbedder;

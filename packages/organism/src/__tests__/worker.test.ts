@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { DigestModel } from "../types.js";
 
 let ctx: ReturnType<typeof makeOrgDb>;
-afterEach(() => { ctx?.cleanup(); vi.unstubAllEnvs(); });
+afterEach(() => { ctx?.cleanup(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 const model: DigestModel = {
   complete: async (system) =>
@@ -29,6 +29,30 @@ function seed(db: any): void {
 }
 
 describe("OrganismWorker.runDrain", () => {
+  it("finishes reflection with unavailable vectors when initialization stalls", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+    ctx = makeOrgDb();
+    seed(ctx.db);
+    const worker = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.db,
+      project: {} as never, getEmbedder: () => new Promise(() => {}), makeModel: () => model,
+      drainTimeoutMs: 120_000,
+      org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: false,
+        consolidation: false, reflection: true, insights: false } }, curator: CURATOR_DEFAULTS });
+    let finished = false;
+    const drain = worker.runDrain("s1", "shutdown").then(() => { finished = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(finished).toBe(true);
+      await drain;
+      expect(worker.getLastDrain()).toMatchObject({ status: "completed", modelCalls: 0 });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.advanceTimersByTimeAsync(120_000);
+      await drain;
+    }
+  });
+
   it("refuses child drains and forced consolidation before making a model or writing receipts", async () => {
     ctx = makeOrgDb();
     seed(ctx.db);

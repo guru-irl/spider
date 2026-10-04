@@ -25,7 +25,7 @@ import spiderExtension from "../extension";
 import { renderSpiderResult } from "../render-result";
 
 vi.mock("@spider/memory", async original => ({
-  ...await original<typeof import("@spider/memory")>(), resolveEmbedder: async () => null,
+  ...await original<typeof import("@spider/memory")>(), getReadyEmbedder: () => null,
 }));
 function rendered(res: unknown, sub: string): string {
   return renderSpiderResult(res, { expanded: true }, {}, { args: { action: "control", command: "memory", sub } }).render(160).join("\n");

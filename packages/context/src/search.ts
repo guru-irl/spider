@@ -8,7 +8,7 @@ import { ContentStore } from "./content-store";
 import { refreshStaleContent } from "./freshness";
 import { rrfFuse, proximityRerank } from "./fusion";
 import { sanitizeQuery } from "./fts-query";
-import { resolveEmbedder, knn } from "@spider/memory";
+import { getReadyEmbedder, knn } from "@spider/memory";
 
 export type SearchKind = "memory" | "content" | "session" | "todo";
 
@@ -150,7 +150,7 @@ export async function unifiedSearch(
   const hasRepoVec = ctx.repoDb.prepare("SELECT 1 FROM vector_map LIMIT 1").get();
   const hasWtVec = ctx.worktreeDb.prepare("SELECT 1 FROM vector_map LIMIT 1").get();
   if (hasRepoVec || hasWtVec) {
-    const embedder = await resolveEmbedder();
+    const embedder = getReadyEmbedder();
     if (embedder) {
       const [qv] = await embedder.embed([opts.query]);
       const vecKinds = (["memory", "content", "session"] as const).filter((k) => kinds.includes(k));

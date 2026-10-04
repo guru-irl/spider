@@ -17,10 +17,13 @@ vi.mock("fastembed", () => ({
 
 vi.mock("@huggingface/transformers", () => ({ pipeline: loadPipeline }));
 
-vi.mock("@spider/memory", async original => ({
-  ...await original<typeof import("@spider/memory")>(),
-  resolveEmbedder: async () => (await import("./memory-test-embedder")).memoryTestEmbedder,
-}));
+vi.mock("@spider/memory", async original => {
+  const { memoryTestEmbedder } = await import("./memory-test-embedder");
+  return {
+    ...await original<typeof import("@spider/memory")>(),
+    getReadyEmbedder: () => memoryTestEmbedder,
+  };
+});
 
 afterAll(() => {
   // Cover provider calls from every test in the file, not just the guard test.

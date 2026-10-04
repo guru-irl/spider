@@ -13,12 +13,13 @@ import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { HostOrganismRuntime } from "./organism-runtime";
+import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
 import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
 import { toToolResult, markToolCallError, clearToolCallErrors, rethrowWithMessage, repairBlankToolResults } from "./result";
-import { controlDoctor, controlConfig, controlMigrate, modelDefaultLayers, configValues, execEnforcement } from "./control";
+import { controlDoctor, controlConfig, embeddingDrainEnabled, controlMigrate, modelDefaultLayers, configValues, execEnforcement } from "./control";
 import { LOADED_BUILD, type LoadedBundle } from "./build-id";
 import { collectStats } from "./control/stats-cmd";
 import { setModelDefault, clearLocalModelDefault, listCatalog } from "./control/models-cmd";
@@ -31,7 +32,7 @@ import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
 import {
   stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
-  activeCharTotal, listActive, getReadyEmbedder,
+  activeCharTotal, listActive, getReadyEmbedder, resolveEmbedder, startEmbedderSession, stopEmbedder,
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
@@ -797,6 +798,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
   organismRuntimes.set(pi, organism);
   let currentContext: unknown;
   let currentSessionId = "";
+  const embeddings = new HostEmbeddingRuntime(() => currentContext, resolveEmbedder, { enabled: project => embeddingDrainEnabled(path.dirname(project.dbPath)) });
+  // Fence embedding writes before later shutdown hooks await other background work.
+  pi.on("session_shutdown", async () => { await embeddings.stop(); });
   const routingDbs = new Map<string, Db>();
   const routingProject = () => resolveProject(cwdOf(currentContext) ?? process.cwd(), {
     sessionId: sessionIdOf(currentContext) || undefined, explicitCwd: false,
@@ -999,9 +1003,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     },
   });
 
-  // NOTE: the background embed worker is intentionally NOT started here (no eager
-  // DB opens / lingering timers at registration). recall degrades to FTS when no
-  // vectors exist; the embed worker is wired in a later integration task.
+  // Embedding maintenance starts lazily on parent session_start, not registration.
+  // It is independent of optional organism learning and never runs in children.
 
   pi.registerTool({
     name: "spider",
@@ -1113,6 +1116,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
     accounting.activate(ctx);
     currentContext = ctx;
     currentSessionId = sessionIdOf(ctx);
+    startEmbedderSession();
+    embeddings.start();
     if (currentSessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
       try {
         const { db } = openSessionRunDb(cwdOf(ctx) ?? process.cwd(), currentSessionId);
@@ -1188,7 +1193,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     routingSetupErrors.set(pi as object, routingSetupError);
   }
 
-  // Cancel reviewers in every prior binding before any shutdown drain starts.
+  // Cancel storage maintenance and reviewers before any shutdown learning drain starts.
   pi.on("session_shutdown", async () => { await organism.stopSkillReviews(); });
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
@@ -1200,6 +1205,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
       organism.dispose();
       for (const db of routingDbs.values()) db.close();
     } finally {
+      // Reflection can use the ready worker until its shutdown drain completes.
+      await stopEmbedder();
       // The organism's earlier handler has completed drain and curate. Invalidate only
       // now so shutdown calls count, but responses still in flight cannot append later.
       accounting.shutdown();

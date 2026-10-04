@@ -22,13 +22,12 @@ describe("recall", () => {
   });
   it("returns vector hits without lexical matches, excluding staged and wrong-category memories", async () => {
     ctx = makeMemDb();
-    // Match the integration smoke test's small-vector pattern: exercise real
-    // brute-force KNN rather than the native vec0 table fixed at 384 dimensions.
+    // Use the shipped native vec0 dimension; inference remains a local fixture.
     const embedder: Embedder = {
-      model: "fixture", dim: 8,
+      model: "fixture", dim: 384,
       async embed(texts) {
         return texts.map(() => {
-          const vector = new Float32Array(8);
+          const vector = new Float32Array(384);
           vector[0] = 1;
           return vector;
         });

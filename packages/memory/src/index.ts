@@ -11,6 +11,8 @@ export * from "./snapshot";
 export * from "./embeddings/embedder";
 export * from "./embeddings/vectors";
 export * from "./embeddings/queue";
+export { getEmbedLeaseState } from "./embeddings/lease";
+export * from "./embeddings/drain-state";
 export * from "./recall";
 export * from "./renderers";
 

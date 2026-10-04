@@ -1,6 +1,6 @@
 // packages/db-core/src/index.ts
 export type { Db } from "./db";
-export { openDb, withRetry, assertTestConfigPath } from "./db";
+export { openDb, openDbReadOnly, withRetry, assertTestConfigPath } from "./db";
 export { paths, projectRoot, repoRoot } from "./paths";
 export type { Scope } from "./paths";
 export { migrate, SCHEMA_VERSION } from "./migrate";

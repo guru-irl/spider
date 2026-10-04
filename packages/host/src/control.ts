@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync 
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { bundleDoctorLine, type LoadedBundle } from "./build-id";
-import { openGlobal, resolveProject, paths, assertTestConfigPath, isThinkingLevel, THINKING_LEVELS } from "@spider/db-core";
+import { openGlobal, openDbReadOnlyAt, resolveProject, paths, assertTestConfigPath, isThinkingLevel, THINKING_LEVELS, type Db } from "@spider/db-core";
+import { getVectorState, getVectorErrors, getEmbedDrainState, getEmbedderState, getEmbedLeaseState, safeReviewError } from "@spider/memory";
+import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtime";
 
 import { isAbsolutePathList } from "@spider/ui";
 
@@ -12,6 +14,7 @@ export { controlMigrate } from "./control/migrate-cmd";
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
+  "embeddings.drain": true,
   "subagents.childMode": "rpc",
   "subagents.extensions": Object.freeze([]),
   "memory.reviewer.enabled": true,
@@ -51,6 +54,13 @@ function readLayer(file: string): { config: Record<string, unknown>; error?: str
     if (!(error instanceof ConfigParseError)) throw error;
     return { config: {}, error: error.message };
   }
+}
+
+/** The runtime already resolved its DB path; do not spawn git on each config read. */
+export function embeddingDrainEnabled(projectRoot: string): boolean {
+  const global = readLayer(configFile(paths.globalRoot));
+  const local = readLayer(configFile(projectRoot));
+  return { ...DEFAULTS, ...global.config, ...local.config }["embeddings.drain"] !== false;
 }
 
 function configLayers(cwd: string) {
@@ -215,16 +225,44 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   const lines: string[] = ["## spider doctor 🕸", ""];
   if (bundle) lines.push(bundleDoctorLine(bundle));
   let ok = true;
+  let drainEnabled: boolean | undefined;
+  try {
+    for (const error of configReadErrors(cwd)) { ok = false; lines.push(`- config: FAILED (${error})`); }
+    drainEnabled = controlConfig("get", cwd, "embeddings.drain") !== false;
+  } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }
+  if (drainEnabled === false) lines.push("- embeddings: drain disabled; queue age is informational");
+
+  const checkVectors = (db: Db, scope: string): void => {
+    try {
+      const state = getVectorState(db);
+      const drain = getEmbedDrainState(db);
+      const at = (ts?: number) => ts === undefined ? "never" : new Date(ts).toISOString();
+      lines.push(`- vector recall (${scope}): mapped=${state.mapped} indexed=${state.indexed} missing=${state.missing} pending=${state.pending} retried=${state.retried} dead=${state.dead} oldest_queued=${at(drain.oldestQueuedAt)} ${process.env.PI_SUBAGENT_CHILD === "1" ? "runtime history unavailable in child sessions" : `last_attempt=${at(drain.lastAttemptAt)} last_drain=${at(drain.lastDrainAt)}`} last_error=${drain.lastError ?? "none"} drain_errors=${drain.errors} (drain history: this runtime)`);
+      if (state.dead > 0) lines.push(`- vector recall (${scope}): warning: ${state.dead} dead rows are skipped after five failures; re-index or replace the owner to retry`);
+      const lease = getEmbedLeaseState(db.raw.name);
+      if (lease) lines.push(`- embedding lease (${scope}): pid=${lease.pid ?? "unknown"} age_ms=${Math.round(lease.ageMs)} stale=${lease.stale}`);
+      if (state.missing > 0 || state.retried > 0
+        || ((state.pending + state.retried > 0 || state.dead === 0) && (drain.lastErrorAt ?? 0) > (drain.lastDrainAt ?? 0))
+        || (drainEnabled !== false && drain.oldestQueuedAt !== undefined && Date.now() - drain.oldestQueuedAt > 10 * 60 * 1000)) ok = false;
+    } catch (error) {
+      ok = false;
+      lines.push(`- vector recall (${scope}): FAILED (${safeReviewError(error)})`);
+    }
+  };
 
   // 1. native deps load
   let vecOk = false;
   try {
     const g = openGlobal();
-    lines.push(`- better-sqlite3: loaded (journal_mode=${String(g.pragma("journal_mode"))})`);
-    lines.push(`- global DB migrations/schema: user_version=${String(g.pragma("user_version"))}`);
-    try { g.loadVec(); vecOk = true; } catch (e) { ok = false; lines.push(`- sqlite-vec: FAILED (${(e as Error).message})`); }
-    if (vecOk) lines.push("- sqlite-vec: loaded (vec0 vectors table ready)");
-    g.close();
+    try {
+      lines.push(`- better-sqlite3: loaded (journal_mode=${String(g.pragma("journal_mode"))})`);
+      lines.push(`- global DB migrations/schema: user_version=${String(g.pragma("user_version"))}`);
+      try { g.loadVec(); vecOk = true; } catch (e) { ok = false; lines.push(`- sqlite-vec: FAILED (${(e as Error).message})`); }
+      if (vecOk) {
+        lines.push("- sqlite-vec: loaded (vec0 vectors table ready)");
+        lines.push("- vector recall (global): lexical only; no background inference");
+      }
+    } finally { g.close(); }
   } catch (e) {
     ok = false;
     lines.push(`- better-sqlite3: FAILED (${(e as Error).message})`);
@@ -234,18 +272,30 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   try {
     const info = resolveProject(cwd, { sessionId, explicitCwd: false });
     lines.push(`- registry: project_key=${info.projectKey.slice(0, 24)}… db=${info.dbPath}`);
+    const inspect = (db: Db | undefined, scope: string): void => {
+      if (!db) { lines.push(`- vector recall (${scope}): DB absent (no queue/index yet)`); return; }
+      try { checkVectors(db, scope); } finally { db.close(); }
+    };
+    inspect(openDbReadOnlyAt(info.dbPath), "worktree");
+    inspect(openDbReadOnlyAt(embeddingRepoPath(info)), "repo");
   } catch (e) {
     ok = false;
     lines.push(`- registry: FAILED (${(e as Error).message})`);
   }
 
-  // Read diagnostics are separate from writes, which must never overwrite malformed JSON.
-  try {
-    for (const error of configReadErrors(cwd)) { ok = false; lines.push(`- config: FAILED (${error})`); }
-  } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }
+  const errors = getVectorErrors();
+  lines.push(`- vector errors (this process): insert=${errors.insert} knn=${errors.knn} repair=${errors.repair}${errors.lastError ? ` last=${errors.lastError}` : ""}`);
+  // Historical counters are informational; persisted gaps and current drain health drive ok.
+  const workerErrors = getEmbeddingRuntimeErrors();
+  if (workerErrors.errors > 0) {
+    if ((workerErrors.lastErrorAt ?? 0) > (workerErrors.lastDrainAt ?? 0)) ok = false;
+    lines.push(`- embedding worker: errors=${workerErrors.errors} last_error=${workerErrors.lastError}`);
+  }
 
   // 3. embedding provider reachability — lazy, not exercised in Phase 0
-  lines.push("- embeddings: fastembed (lazy; model download deferred to Phase 1)");
+  const provider = getEmbedderState();
+  lines.push(`- embeddings: fastembed worker state=${provider.state} drain=${drainEnabled === undefined ? "unavailable" : drainEnabled ? "enabled" : "disabled"}${provider.lastError ? ` last_error=${provider.lastError}` : ""}`);
+  if (provider.state === "unavailable") ok = false;
 
   return { ok, lines };
 }

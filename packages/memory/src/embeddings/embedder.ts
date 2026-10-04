@@ -1,6 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { paths } from "@spider/db-core";
+import { createWorkerEmbedder, stopEmbeddingWorkers, type WorkerEmbedder } from "./worker";
+import { embeddingDiagnostic } from "./drain-state";
+import { safeReviewError } from "../review-diagnostics";
 
 export const EMBED_MODEL = "BGE-small-en-v1.5";
 export const EMBED_DIM = 384;
@@ -17,10 +20,10 @@ interface EmbedderConfig {
   modelsDir?: string;
 }
 
-// v1 describes this slot's shape and Embedder API. Incompatible future versions
+// v2 owns the worker lifecycle; it cannot reuse old main-thread adapters. Incompatible future versions
 // must use a new key. The fixed model is shared even across rebuilt bundle URLs.
-const embedderKey = Symbol.for("spider.embedder.v1:" + EMBED_MODEL);
-interface EmbedderSlot { promise: Promise<Embedder | null>; embedder?: Embedder; retryAt?: number; }
+const embedderKey = Symbol.for("spider.embedder.v2:" + EMBED_MODEL);
+interface EmbedderSlot { promise: Promise<Embedder | null>; embedder?: WorkerEmbedder; retryAt?: number; lastError?: string; }
 const UNAVAILABLE_COOLDOWN_MS = 10 * 60 * 1000;
 const EMBEDDER_WAIT_MS = 5000;
 const EXTRACTION_GRACE_MS = 2 * 60 * 1000;
@@ -29,12 +32,19 @@ const quarantineKey = Symbol.for("spider.embedder.quarantine.v1:" + EMBED_MODEL)
 const recoveryCache = globalThis as typeof globalThis & { [key: symbol]: boolean | undefined };
 const processCache = globalThis as typeof globalThis & { [key: symbol]: EmbedderSlot | undefined };
 
+const lifecycleKey = Symbol.for("spider.embedder.lifecycle.v1");
+const lifecycleCache = globalThis as typeof globalThis & { [lifecycleKey]?: { stopping: boolean } };
+const lifecycle = lifecycleCache[lifecycleKey] ??= { stopping: false };
+/** Reopen lazy initialization only from session_start, never from a getter. */
+export function startEmbedderSession(): void { lifecycle.stopping = false; }
+
 export function isEmbedderLoaded(): boolean {
-  return processCache[embedderKey]?.embedder !== undefined;
+  return !lifecycle.stopping && processCache[embedderKey]?.embedder !== undefined;
 }
 
 /** Hot paths never wait for setup. The shared initialization continues in the background. */
 export function getReadyEmbedder(cfg?: EmbedderConfig): Embedder | null {
+  if (lifecycle.stopping) return null;
   const ready = processCache[embedderKey]?.embedder;
   if (ready) return ready;
   void resolveEmbedder(cfg).catch(() => { /* Retryable initialization failure; use FTS for this call. */ });
@@ -62,9 +72,17 @@ export async function waitForEmbedder(
 }
 
 export function resolveEmbedder(cfg?: EmbedderConfig, now: () => number = Date.now): Promise<Embedder | null> {
+  if (lifecycle.stopping) return Promise.resolve(null);
   const existing = processCache[embedderKey];
   if (existing && (existing.retryAt === undefined || now() < existing.retryAt)) return existing.promise;
-  const slot: EmbedderSlot = { promise: Promise.resolve().then(() => initializeEmbedder(cfg)).then(embedder => {
+  const slot: EmbedderSlot = { promise: Promise.resolve().then(() => lifecycle.stopping || processCache[embedderKey] !== slot ? null : initializeEmbedder(cfg, failure => {
+    slot.lastError = safeReviewError(failure);
+    embeddingDiagnostic(`embedding worker: ${slot.lastError}`);
+    if (slot.embedder) slot.promise = Promise.resolve(null);
+    slot.embedder = undefined;
+    slot.retryAt = now() + UNAVAILABLE_COOLDOWN_MS;
+  })).then(async embedder => {
+    if (lifecycle.stopping || processCache[embedderKey] !== slot) { await embedder?.stop(); return null; }
     if (embedder) slot.embedder = embedder;
     else slot.retryAt = now() + UNAVAILABLE_COOLDOWN_MS;
     return embedder;
@@ -129,67 +147,23 @@ function isModelLoadError(error: unknown, modelDir: string, existed: boolean): b
     || (error.message.includes(`Load model from ${modelDir + sep}`) && error.message.includes("failed"));
 }
 
-async function initializeEmbedder(cfg?: EmbedderConfig): Promise<Embedder | null> {
+export function getEmbedderState(): { state: "uninitialized" | "initializing" | "ready" | "unavailable"; lastError?: string; retryAt?: number; memory?: ReturnType<WorkerEmbedder["memory"]> } {
+  const slot = processCache[embedderKey];
+  return { state: !slot ? "uninitialized" : slot.embedder ? "ready" : slot.retryAt !== undefined ? "unavailable" : "initializing",
+    lastError: slot?.lastError, retryAt: slot?.retryAt, memory: slot?.embedder?.memory() };
+}
+
+export async function stopEmbedder(): Promise<void> {
+  lifecycle.stopping = true;
+  const slot = processCache[embedderKey];
+  if (slot && (slot.embedder || slot.retryAt === undefined)) delete processCache[embedderKey];
+  await stopEmbeddingWorkers();
+}
+
+async function initializeEmbedder(cfg: EmbedderConfig | undefined, onFailure: (error: Error) => void): Promise<WorkerEmbedder | null> {
   const modelsDir = cfg?.modelsDir ?? paths.models;
-
-  // PROVIDER 1: fastembed (onnxruntime, native — preferred).
-  try {
-    mkdirSync(modelsDir, { recursive: true });
-    const { FlagEmbedding, EmbeddingModel } = await import("fastembed");
-    const modelDir = join(modelsDir, EmbeddingModel.BGESmallENV15);
-    const existed = existsSync(modelDir);
-    let fe: Awaited<ReturnType<typeof FlagEmbedding.init>>;
-    try {
-      fe = await FlagEmbedding.init({
-        model: EmbeddingModel.BGESmallENV15,
-        cacheDir: modelsDir,
-        showDownloadProgress: false,
-      });
-    } catch (error) {
-      if (isModelLoadError(error, modelDir, existed)) quarantineBrokenModel(modelDir);
-      throw error;
-    }
-    return {
-      model: EMBED_MODEL,
-      dim: EMBED_DIM,
-      async embed(texts: string[]): Promise<Float32Array[]> {
-        const out: Float32Array[] = [];
-        for await (const batch of fe.embed(texts)) {
-          for (const vec of batch) {
-            out.push(Float32Array.from(vec as ArrayLike<number>));
-          }
-        }
-        return out;
-      },
-    };
-  } catch {
-    // fall through to next provider
-  }
-
-  // PROVIDER 2: transformers.js (WASM).
-  // @huggingface/transformers is an OPTIONAL runtime fallback (optionalDependencies);
-  // absent → degrade to next provider / FTS-only. This was @xenova/transformers, which is
-  // deprecated and pinned onnxruntime-web@1.14 → onnx-proto → protobufjs@6 (critical RCE)
-  // plus sharp@0.32 (libvips CVEs). The successor package keeps the same pipeline() API.
-  try {
-    const spec = "@huggingface/transformers";
-    const t: any = await import(spec); // variable specifier → tsc will NOT error if the pkg is absent
-    const pipe = await t.pipeline("feature-extraction", "Xenova/bge-small-en-v1.5");
-    return {
-      model: EMBED_MODEL,
-      dim: EMBED_DIM,
-      async embed(texts: string[]): Promise<Float32Array[]> {
-        const out: Float32Array[] = [];
-        for (const text of texts) {
-          const r = await pipe(text, { pooling: "mean", normalize: true });
-          out.push(Float32Array.from(r.data as Iterable<number>));
-        }
-        return out;
-      },
-    };
-  } catch {
-    // fall through to FTS-only degrade
-  }
-
-  return null;
+  return createWorkerEmbedder(modelsDir, failure => {
+    if (failure.modelDir && isModelLoadError(failure.error, failure.modelDir, failure.existed ?? false)) quarantineBrokenModel(failure.modelDir);
+    onFailure(failure.error);
+  });
 }

@@ -104,34 +104,40 @@ function assertTestFixturePath(dbPath: string, label: string): void {
 export function assertTestDbPath(dbPath: string): void { assertTestFixturePath(dbPath, "openDb"); }
 export function assertTestConfigPath(configPath: string): void { assertTestFixturePath(configPath, "config"); }
 
-export function openDbReadOnly(dbPath: string): Db | undefined {
+export function openDbReadOnly(dbPath: string, opts: { busyTimeoutMs?: number } = {}): Db | undefined {
   assertTestDbPath(dbPath);
   if (!existsSync(dbPath)) return undefined;
   const Database = loadDatabase();
-  const raw = new Database(dbPath, { readonly: true, fileMustExist: true });
+  const raw = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS });
   const readonly = () => { throw new Error("read-only snapshot DB"); };
+  let vecLoaded = false;
   return {
     prepare: sql => raw.prepare(sql),
     exec: readonly,
     transaction: readonly,
     afterCommit: fn => fn(),
     pragma: source => raw.pragma(source, { simple: true }),
-    loadVec: readonly,
+    loadVec() {
+      if (vecLoaded) return;
+      // Loading an extension is connection-local. Snapshot reads must never CREATE vectors.
+      raw.loadExtension(sqliteVec().getLoadablePath());
+      vecLoaded = true;
+    },
     withRetry: fn => withRetry(fn),
     get raw() { return raw; },
     close: () => raw.close(),
   };
 }
 
-export function openDb(dbPath: string, opts: { fileMustExist?: boolean } = {}): Db {
+export function openDb(dbPath: string, opts: { fileMustExist?: boolean; busyTimeoutMs?: number; checkpointOnClose?: boolean } = {}): Db {
   assertTestDbPath(dbPath);
   if (!opts.fileMustExist) mkdirSync(dirname(dbPath), { recursive: true });
   const Database = loadDatabase();
-  const raw = new Database(dbPath, { timeout: BUSY_TIMEOUT_MS, fileMustExist: opts.fileMustExist ?? false });
+  const raw = new Database(dbPath, { timeout: opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, fileMustExist: opts.fileMustExist ?? false });
   raw.pragma("journal_mode = WAL");
   raw.pragma("synchronous = NORMAL");
   raw.pragma("foreign_keys = ON");
-  raw.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  raw.pragma(`busy_timeout = ${opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS}`);
 
   let vecLoaded = false;
   const effects: Array<Array<() => void>> = [];
@@ -179,6 +185,6 @@ export function openDb(dbPath: string, opts: { fileMustExist?: boolean } = {}): 
       raw.exec("CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(embedding float[384])");
       vecLoaded = true;
     },
-    close() { try { raw.pragma("wal_checkpoint(TRUNCATE)"); } catch { /* WAL may be inactive */ } raw.close(); },
+    close() { if (opts.checkpointOnClose !== false) { try { raw.pragma("wal_checkpoint(TRUNCATE)"); } catch { /* WAL may be inactive */ } } raw.close(); },
   };
 }

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { paths, openDbAt, type Db } from "@spider/db-core";
-import { addMemory, resolveEmbedder, upsertVector } from "@spider/memory";
+import { addMemory, resolveEmbedder, upsertVector, startEmbedderSession } from "@spider/memory";
 import { unifiedSearch } from "@spider/context";
 import spiderExtension from "../extension";
 import { getAction, clearActions } from "../dispatch";
@@ -10,6 +10,10 @@ import { getAction, clearActions } from "../dispatch";
 // Only the external provider is replaced. Actions, recall/search, vector lookup,
 // and the process-wide initialization cache are real and use fixture roots.
 const provider = vi.hoisted(() => ({ inits: 0, pending: Promise.resolve() as Promise<void>, onInit: undefined as (() => void) | undefined }));
+vi.mock("node:worker_threads", async () => {
+  const { providerWorker } = await import("../../../memory/src/__tests__/helpers/provider-worker");
+  return { Worker: providerWorker(() => import("fastembed")) };
+});
 vi.mock("fastembed", () => ({
   EmbeddingModel: { BGESmallENV15: "fixture" },
   FlagEmbedding: { init: async () => {
@@ -22,16 +26,18 @@ vi.mock("fastembed", () => ({
   } },
 }));
 vi.mock("@huggingface/transformers", () => ({ pipeline: async () => { throw new Error("fixture unavailable"); } }));
-const key = Symbol.for("spider.embedder.v1:BGE-small-en-v1.5");
+const key = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
 const cache = globalThis as typeof globalThis & Record<symbol, unknown>;
 const dbs: Db[] = [];
 let repo: Db;
 let global: Db;
 let worktree: Db;
-let shutdown: (() => Promise<unknown>) | undefined;
+let shutdown: Array<() => Promise<unknown>> = [];
 
 beforeEach(() => {
+  startEmbedderSession();
   delete cache[key];
+  shutdown = [];
   provider.inits = 0;
   provider.onInit = undefined;
   provider.pending = new Promise(() => {});
@@ -41,11 +47,11 @@ beforeEach(() => {
   dbs.push(repo, global, worktree);
   vi.stubEnv("PI_SUBAGENT_CHILD", "1"); // No background organism or model calls.
   spiderExtension({ registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
-    on(name: string, fn: () => Promise<unknown>) { if (name === "session_shutdown") shutdown = fn; },
+    on(name: string, fn: () => Promise<unknown>) { if (name === "session_shutdown") shutdown.push(fn); },
   } as never);
 });
 afterEach(async () => {
-  await shutdown?.();
+  for (const hook of shutdown) await hook();
   clearActions();
   for (const db of dbs.splice(0)) db.close();
   delete cache[key];
@@ -90,7 +96,7 @@ it("uses vectors on a later recall after the same initialization finishes", asyn
   expect((await promptly(recallAction())).details.map(r => r.uuid)).toEqual([lexical.uuid]);
   ready();
   await resolveEmbedder();
-  expect((await promptly(recallAction())).details.map(r => r.uuid)).toEqual([semantic.uuid]);
+  expect((await promptly(recallAction())).details.map(r => r.uuid)).toEqual([semantic.uuid, lexical.uuid]);
   expect(provider.inits).toBe(1);
 });
 

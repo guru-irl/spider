@@ -7,6 +7,7 @@ import { getAction, registerAction, clearActions } from "../dispatch";
 import * as context from "@spider/context";
 import { loadEmbedder, isEmbedderLoaded } from "../embeddings";
 import { consumeToolCallError } from "../result";
+import { startEmbedderSession } from "@spider/memory";
 
 // Replace only model initialization. Real factories, registrations, recall, DBs,
 // and shutdown handlers run unchanged. No downloads, inference, or model calls.
@@ -19,14 +20,9 @@ vi.mock("fastembed", () => ({
   } },
 }));
 
-vi.mock("node:module", async importOriginal => {
-  const actual = await importOriginal<typeof import("node:module")>();
-  return { ...actual, createRequire: (url: string | URL) => {
-    const require = actual.createRequire(url);
-    return new Proxy(require, { apply: (target, receiver, args: [string]) => args[0] === "fastembed"
-      ? { FlagEmbedding: { init: async () => ({ fixture: ++models.inits }) }, EmbeddingModel: { BGESmallENV15: "fixture" } }
-      : Reflect.apply(target, receiver, args) });
-  } };
+vi.mock("node:worker_threads", async () => {
+  const { providerWorker } = await import("../../../memory/src/__tests__/helpers/provider-worker");
+  return { Worker: providerWorker(() => import("fastembed")) };
 });
 
 function fakePi() {
@@ -50,8 +46,9 @@ let scratch: string;
 const dbs: Db[] = [];
 const hosts: ReturnType<typeof fakePi>[] = [];
 const globalCache = globalThis as typeof globalThis & Record<symbol, unknown>;
-const embedderKey = Symbol.for("spider.embedder.v1:BGE-small-en-v1.5");
+const embedderKey = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
 beforeEach(() => {
+  startEmbedderSession();
   delete globalCache[embedderKey];
   models.inits = 0;
   const base = resolve(".spider/scratch/build-id");
@@ -86,7 +83,7 @@ it("registers every command, shortcut, tool, renderer and handler on both factor
   expect([...second.hooks].map(([name, fns]) => [name, fns.length])).toEqual([...first.hooks].map(([name, fns]) => [name, fns.length]));
 });
 
-it("a shutdown then new activation reuses the process-wide recall embedder", async () => {
+it("a shutdown stops the worker and a new activation reloads from the model cache", async () => {
   const pi = host();
   const db = openDbAt(join(scratch, "repo.db"), "repo"); dbs.push(db);
   const ctx = { repoDb: db, globalDb: db } as never;
@@ -95,21 +92,26 @@ it("a shutdown then new activation reuses the process-wide recall embedder", asy
   await loadEmbedder();
   expect(models.inits).toBe(1);
   await pi.emit("session_shutdown");
-  host();
+  const next = host();
+  await next.emit("session_start", toolCtx("next"));
   await getAction("recall")!({ action: "recall", query: "fixture" }, ctx);
-  expect(models.inits).toBe(1);
+  await loadEmbedder();
+  expect(models.inits).toBe(2);
 });
 
-it("the legacy embedding entry point shares recall's model across shutdown", async () => {
+it("the legacy embedding entry point shares recall's worker until shutdown", async () => {
   const pi = host();
   const first = await loadEmbedder();
   expect(isEmbedderLoaded()).toBe(true);
   const db = openDbAt(join(scratch, "repo.db"), "repo"); dbs.push(db);
   await getAction("recall")!({ action: "recall", query: "fixture" }, { repoDb: db, globalDb: db } as never);
   await pi.emit("session_shutdown");
-  expect(isEmbedderLoaded()).toBe(true);
-  expect(await loadEmbedder()).toBe(first);
+  expect(isEmbedderLoaded()).toBe(false);
+  expect(await loadEmbedder()).toBeNull();
   expect(models.inits).toBe(1);
+  const next = host(); await next.emit("session_start", toolCtx("next"));
+  expect(await loadEmbedder()).not.toBe(first);
+  expect(models.inits).toBe(2);
 });
 
 it("clears cached action closures owned by the shutting-down activation", async () => {

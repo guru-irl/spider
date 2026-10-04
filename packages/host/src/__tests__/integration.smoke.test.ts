@@ -24,13 +24,13 @@ import {
 import { addTodo, listTodos } from "@spider/todo";
 
 // A deterministic fake embedder matching the real Embedder interface:
-// char-code hashing into 8 buckets, L2-normalized.
+// char-code hashing into 8 nonzero buckets of a 384-dimensional vector, L2-normalized.
 const fakeEmbedder: Embedder = {
   model: "fake",
-  dim: 8,
+  dim: 384,
   async embed(texts: string[]): Promise<Float32Array[]> {
     return texts.map((text) => {
-      const buckets = new Float32Array(8);
+      const buckets = new Float32Array(384);
       for (let i = 0; i < text.length; i++) {
         buckets[text.charCodeAt(i) % 8] += 1;
       }

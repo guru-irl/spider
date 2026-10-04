@@ -35,7 +35,10 @@ A reviewed foreground user write activates only when the verdict permits it. `no
 
 The host calls `readInjectionSnapshot` for both the hook and doctor. It resolves the session binding without writing a registry row and reads active records per tier from existing DBs, without migrating or creating them. `assembleSnapshotFromRecords` orders preferences, then corrections, then observations; within each priority band it groups by tier and category, prefers user-authored records and uses recency within each group. It reports per-tier active and injected counts. By default **there is no snapshot character cap**. If `memory.snapshotCharCap` is set, the host reads it from the resolved session target and passes it as an optional cap on the snapshot body; entries that do not fit are skipped while smaller later entries can still fit. An omission notice is appended, and doctor reports a warning. Clearing the UI field can set a project `unlimited` override when a global cap exists. `buildMemoryContextBlock` wraps included content in `<memory-context>`; the hook only appends it when the prompt is a string and the snapshot is non-empty.
 
-The snapshot is recomputed for each `before_agent_start`; an approval appears at the next turn. `sanitizeContext` and `StreamingContextScrubber` remove the injected fence from output. The host's tool-output routing also calls the scanner and secret scrubber, independently of memory writes.
+- The first `before_agent_start` freezes the snapshot, including an empty result. Later turns append the same memory text to the incoming prompt; writes, approvals, supersessions and cap changes appear next session.
+- A different session ID or file, a fresh extension instance after reload, or a changed memory binding target rebuilds the block. Each subagent session freezes independently.
+- Recall and doctor still read current active rows. Doctor uses current config, not the existing session's frozen snapshot.
+- `sanitizeContext` and `StreamingContextScrubber` remove the injected fence from output. The host's tool-output routing also calls the scanner and secret scrubber, independently of memory writes.
 
 ## See also
 

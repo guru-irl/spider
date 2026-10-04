@@ -33,8 +33,10 @@ spider control command:"memory" sub:"forget" uuid:"<uuid>" scope:"repo"
 - Active memory content has an `8000`-character storage cap per scope, independently for global and repo. Over-cap writes and approvals are refused, not truncated.
 - Use `control memory sub:"status"` to inspect the budget and `sub:"forget"` to free active space. Remember a shorter version if condensing manually.
 - `memory.snapshotCharCap` controls prompt injection only, not storage. By default all active memory is injected.
-- The host reads a snapshot before each agent start. Newly approved memory affects the next turn, not a turn already in progress.
-- An explicit injection cap can omit entries; `/doctor` reports the omitted count.
+- The first `before_agent_start` reads and freezes a memory snapshot for the session, including an empty snapshot. Later turns append the byte-identical memory block to the incoming system prompt.
+- New writes, approvals and supersessions persist immediately but do not change that session's block. They enter the prompt next session; `recall` reads the current active rows.
+- A different session ID or file (new, resume or fork), an extension reload, or a changed memory binding target takes a fresh snapshot. Subagent sessions freeze independently.
+- An explicit injection cap can omit entries and is frozen with the snapshot. `/doctor` reads current memory and config, so its counts can differ from an existing session's frozen block.
 - Repo recall ranks all-word matches before any-word matches, strips FTS operators, and removes common words unless all words are common. Global recall uses the whole query as a substring.
 
 ## Reviewer settings

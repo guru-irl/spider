@@ -10,7 +10,7 @@ import {
   SessionManager, SettingsManager, type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { openGlobal, openProject, openRepo, resolveProject, setGlobalDbPathForTests, type Db } from "@spider/db-core";
-import { listPending } from "@spider/memory";
+import { addMemory, listActive, listPending } from "@spider/memory";
 import spiderExtension, { SPIDER_PARAMETERS, buildActionCtx } from "../extension";
 import { dispatch } from "../dispatch";
 import { controlConfig } from "../control";
@@ -40,7 +40,7 @@ afterEach(async () => {
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?: boolean; scratchRoot?: string }) {
+async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?: boolean; scratchRoot?: string; persisted?: boolean }) {
   const scratchRoot = opts?.scratchRoot ?? scratch;
   mkdirSync(scratchRoot, { recursive: true });
   const root = mkdtempSync(join(scratchRoot, "fixture-"));
@@ -57,7 +57,7 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
   controlConfig("set", cwd, "organism.passes.reflection", false);
   controlConfig("set", cwd, "organism.passes.insights", false);
   controlConfig("set", cwd, "skills.reviewer.model", "fixture-provider/fixture-model");
-  const session = SessionManager.inMemory(cwd);
+  const session = opts?.persisted ? SessionManager.create(cwd, join(root, "sessions")) : SessionManager.inMemory(cwd);
   session.appendMessage({ role: "user", content: "Use deterministic tests and record the failing assertion before a fix.", timestamp: 1 });
   const project = resolveProject(cwd, { sessionId: session.getSessionId(), explicitCwd: false });
   const db = openProject(project.projectKey);
@@ -225,7 +225,8 @@ describe("the installed pi contract through the full spider extension", () => {
     const pending = listPending(f.repoDb, "repo")[0];
     await tool.execute("approve-memory", { action: "control", command: "memory", sub: "approve", uuid: pending.uuid }, undefined, undefined, ctx);
     const after = await f.runner.emitBeforeAgentStart("next", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
-    expect(after.systemPromptOptions.forceSystemPrompt).toContain("Record the failing assertion");
+    expect(listActive(f.repoDb, "repo").map(row => row.content)).toContain("Record the failing assertion before implementing a fix.");
+    expect(after.systemPromptOptions).toEqual(before.systemPromptOptions);
 
     const approveArgs = { action: "skill", op: "approve", name: "deterministic-tests" };
     const approved = await tool.execute("approve-skill", approveArgs, undefined, undefined, ctx);
@@ -236,6 +237,36 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(readFileSync(details.row.path, "utf8")).toContain("Verify the regression with an isolated fixture.");
     const card = renderSpiderResult(approved, { expanded: true }, {}, { args: approveArgs }).render(140).join("\n");
     expect(card).not.toMatch(/\{|"candidateBody"/);
+
+    f.session.newSession();
+    const nextSession = await f.runner.emitBeforeAgentStart("next session", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
+    expect(nextSession.systemPromptOptions.forceSystemPrompt).toContain("Record the failing assertion");
+  });
+
+  // Catch resetting the frozen block in either compaction lifecycle hook.
+  it("keeps the byte-identical memory block after compaction of the same session id and file", async () => {
+    const f = await setup({ persisted: true });
+    controlConfig("set", f.cwd, "organism.enabled", false);
+    addMemory(f.repoDb, "repo", { category: "preference", content: "Before compaction fact", source: "user", status: "active" });
+    const sessionId = f.session.getSessionId();
+    const sessionFile = f.session.getSessionFile();
+    expect(sessionFile).toBeTypeOf("string");
+    const options = { customPrompt: "Base prompt", cwd: f.cwd };
+    const before = await f.runner.emitBeforeAgentStart("before compact", undefined, options);
+    expect(before.systemPromptOptions.forceSystemPrompt).toContain("Before compaction fact");
+    addMemory(f.repoDb, "repo", { category: "convention", content: "After compaction fact", source: "user", status: "active" });
+    const event = compactEvent(f.session);
+    await f.runner.emit(event);
+    const id = f.session.appendCompaction("Fixture summary", event.preparation.firstKeptEntryId, event.preparation.tokensBefore);
+    const entry = f.session.getEntry(id)!;
+    if (entry.type !== "compaction") throw new Error("Expected compaction entry");
+    await f.runner.emit({ type: "session_compact", compactionEntry: entry, fromExtension: false, reason: "manual", willRetry: false });
+    expect(f.session.getSessionId()).toBe(sessionId);
+    expect(f.session.getSessionFile()).toBe(sessionFile);
+    const after = await f.runner.emitBeforeAgentStart("after compact", undefined, options);
+    expect(after.systemPromptOptions).toEqual(before.systemPromptOptions);
+    expect(after.systemPromptOptions.forceSystemPrompt).not.toContain("After compaction fact");
+    expect(f.errors).toEqual([]);
   });
 
   it("honors the real dotted disable switch without a model call or automatic proposal", async () => {

@@ -256,8 +256,8 @@ persisting, for `control insights`.
 Nothing the organism produces is active until a human approves it, but once
 approved it flows back into the next session:
 
-- Approved staged memory becomes active and is injected as part of the frozen
-  memory snapshot at session start.
+- Approved staged memory becomes active and is injected as part of the memory
+  snapshot frozen per session on the first `before_agent_start`.
 - Approved staged skills become active in the skill library.
 - The session summary and self-name are stored and indexed into `sessions_fts`,
   so past sessions are searchable and the ongoing task keeps a stable name.

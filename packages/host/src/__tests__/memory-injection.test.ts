@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdirSync, rmSync, existsSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -6,10 +6,12 @@ import { openDbAt, openDbReadOnlyAt, openGlobal, bindSession, setGlobalDbPathFor
 import { registerHooks } from "../hooks";
 import spiderExtension from "../extension";
 import { controlConfig } from "../control";
-import { getMemory, listActive, listPending, searchMemoryFts } from "@spider/memory";
+import { addMemory, approvePending, getMemory, listActive, listPending, searchMemoryFts, setStatus } from "@spider/memory";
+import { controlBind, controlUnbind } from "../control-bind";
 
 const root = join(process.cwd(), ".spider", "scratch", `memory-hook-${process.pid}`);
 afterEach(() => {
+  vi.unstubAllEnvs();
   setGlobalDbPathForTests(null);
   rmSync(root, { recursive: true, force: true });
 });
@@ -22,11 +24,208 @@ function fixture(name: string) {
   setGlobalDbPathForTests(globalPath);
   const handlers: Record<string, (...args: any[]) => any> = {};
   registerHooks({ on(name, fn) { handlers[name] = fn; } });
-  const inject = (sessionId?: string) => handlers.before_agent_start({ systemPrompt: "base" }, { cwd, sessionManager: { getSessionId: () => sessionId } });
+  const inject = (sessionId?: string, sessionFile?: string, systemPrompt = "base") => handlers.before_agent_start(
+    { systemPrompt }, { cwd, sessionManager: { getSessionId: () => sessionId, getSessionFile: () => sessionFile } },
+  );
   return { cwd, repoPath, globalPath, inject };
 }
 
 describe("production memory injection", () => {
+  // Catch per-turn rebuilds after active-memory changes in either injected tier.
+  for (const scope of ["repo", "global"] as const) {
+    for (const change of ["added", "approved", "superseded"] as const) {
+      it(`freezes ${scope} memory when an entry is ${change} between turns`, () => {
+        const f = fixture(`freeze-${scope}-${change}`);
+        const db = openDbAt(scope === "repo" ? f.repoPath : f.globalPath, scope);
+        try {
+          const old = addMemory(db, scope, { category: "preference", content: "Original memory fact", source: "user", status: "active" });
+          const staged = change === "approved"
+            ? addMemory(db, scope, { category: "convention", content: "Later memory fact", source: "user", status: "staged" })
+            : undefined;
+          const first = f.inject("original-session");
+          expect(first.systemPrompt).toContain("Original memory fact");
+          expect(first.systemPrompt).not.toContain("Later memory fact");
+          if (staged) {
+            expect(approvePending(db, scope, staged.uuid)?.status).toBe("active");
+          } else {
+            if (change === "superseded") setStatus(db, scope, old.uuid, "archived");
+            addMemory(db, scope, { category: "convention", content: "Later memory fact", source: "user", status: "active" });
+          }
+          expect(f.inject("original-session")).toEqual(first);
+          expect(f.inject("original-session")).toEqual(first);
+          const next = f.inject("next-session");
+          expect(next.systemPrompt).toContain("Later memory fact");
+          if (change === "superseded") expect(next.systemPrompt).not.toContain("Original memory fact");
+        } finally { db.close(); }
+      });
+    }
+  }
+
+  // Catch freezing a partial build instead of retrying the failed tier next turn.
+  for (const failedScope of ["repo", "global"] as const) {
+    it(`retries a transient ${failedScope} memory read failure before freezing`, () => {
+      const f = fixture(`freeze-retry-${failedScope}`);
+      for (const scope of ["repo", "global"] as const) {
+        const db = openDbAt(scope === "repo" ? f.repoPath : f.globalPath, scope);
+        try { addMemory(db, scope, { category: "preference", content: `${scope} recovery fact`, source: "user", status: "active" }); }
+        finally { db.close(); }
+      }
+      const failedPath = failedScope === "repo" ? f.repoPath : f.globalPath;
+      chmodSync(failedPath, 0o000);
+      try {
+        const degraded = f.inject("recovery-session");
+        expect(degraded.systemPrompt).toContain(`${failedScope === "repo" ? "global" : "repo"} recovery fact`);
+        expect(degraded.systemPrompt).not.toContain(`${failedScope} recovery fact`);
+        expect(f.inject("recovery-session")).toEqual(degraded);
+      } finally { chmodSync(failedPath, 0o600); }
+      const recovered = f.inject("recovery-session");
+      expect(recovered.systemPrompt).toContain("repo recovery fact");
+      expect(recovered.systemPrompt).toContain("global recovery fact");
+      const db = openDbAt(f.repoPath, "repo");
+      try { addMemory(db, "repo", { category: "convention", content: "After recovery fact", source: "user", status: "active" }); }
+      finally { db.close(); }
+      expect(f.inject("recovery-session")).toEqual(recovered);
+    });
+  }
+
+  // Catch replacing a bound snapshot with cwd memory on a failed binding read.
+  it("keeps the bound frozen block through a transient binding lookup failure", () => {
+    const a = fixture("freeze-binding-error-a");
+    const b = fixture("freeze-binding-error-b");
+    for (const [path, content] of [[a.repoPath, "Wrong cwd fact"], [b.repoPath, "Bound recovery fact"]]) {
+      const db = openDbAt(path, "repo");
+      try { addMemory(db, "repo", { category: "preference", content, source: "user", status: "active" }); }
+      finally { db.close(); }
+    }
+    const global = openGlobal();
+    try { bindSession(global, "bound-recovery-session", b.cwd); }
+    finally { global.close(); }
+    const file = join(root, "bound-recovery.jsonl");
+    const first = a.inject("bound-recovery-session", file);
+    expect(first.systemPrompt).toContain("Bound recovery fact");
+    expect(first.systemPrompt).not.toContain("Wrong cwd fact");
+    const boundDb = openDbAt(b.repoPath, "repo");
+    try { addMemory(boundDb, "repo", { category: "convention", content: "Later bound recovery fact", source: "user", status: "active" }); }
+    finally { boundDb.close(); }
+    chmodSync(b.globalPath, 0o000);
+    try {
+      expect(a.inject("bound-recovery-session", file)).toEqual(first);
+      expect(a.inject("bound-recovery-session", file)).toEqual(first);
+      // A different native session must not inherit the previous bound block.
+      const other = a.inject("other-recovery-session", join(root, "other.jsonl"));
+      expect(other.systemPrompt).toContain("Wrong cwd fact");
+      expect(other.systemPrompt).not.toContain("Bound recovery fact");
+    } finally { chmodSync(b.globalPath, 0o600); }
+    expect(a.inject("bound-recovery-session", file)).toEqual(first);
+  });
+
+  it("freezes an empty snapshot until the session changes", () => {
+    const f = fixture("freeze-empty");
+    expect(f.inject("empty-session")).toBeUndefined();
+    const db = openDbAt(f.repoPath, "repo");
+    try {
+      addMemory(db, "repo", { category: "preference", content: "First memory fact", source: "user", status: "active" });
+    } finally { db.close(); }
+    expect(f.inject("empty-session")).toBeUndefined();
+    expect(f.inject("new-session").systemPrompt).toContain("First memory fact");
+  });
+
+  it("rebuilds when the session file changes even if the id stays the same", () => {
+    const f = fixture("freeze-file");
+    const db = openDbAt(f.repoPath, "repo");
+    try {
+      addMemory(db, "repo", { category: "preference", content: "Original file fact", source: "user", status: "active" });
+      const first = f.inject("same-id", join(root, "first.jsonl"));
+      addMemory(db, "repo", { category: "convention", content: "New file fact", source: "user", status: "active" });
+      expect(f.inject("same-id", join(root, "first.jsonl"))).toEqual(first);
+      expect(f.inject("same-id", join(root, "second.jsonl")).systemPrompt).toContain("New file fact");
+    } finally { db.close(); }
+  });
+
+  it("rebuilds after bind and unbind change the memory source", () => {
+    const a = fixture("freeze-binding-a");
+    const b = fixture("freeze-binding-b");
+    for (const [path, content] of [[a.repoPath, "CWD frozen fact"], [b.repoPath, "Bound frozen fact"]]) {
+      const db = openDbAt(path, "repo");
+      try { addMemory(db, "repo", { category: "preference", content, source: "user", status: "active" }); }
+      finally { db.close(); }
+    }
+    const first = a.inject("binding-session");
+    expect(first.systemPrompt).toContain("CWD frozen fact");
+    const global = openGlobal();
+    try {
+      expect(controlBind(global, "binding-session", b.cwd).ok).toBe(true);
+      const bound = a.inject("binding-session");
+      expect(bound.systemPrompt).toContain("Bound frozen fact");
+      expect(bound.systemPrompt).not.toContain("CWD frozen fact");
+      const db = openDbAt(b.repoPath, "repo");
+      try { addMemory(db, "repo", { category: "convention", content: "Later bound fact", source: "user", status: "active" }); }
+      finally { db.close(); }
+      expect(a.inject("binding-session")).toEqual(bound);
+      // Rebinding the same source must not pick up new memory in this session.
+      expect(controlBind(global, "binding-session", b.cwd).ok).toBe(true);
+      expect(a.inject("binding-session")).toEqual(bound);
+      const cwdDb = openDbAt(a.repoPath, "repo");
+      try { addMemory(cwdDb, "repo", { category: "convention", content: "Later cwd fact", source: "user", status: "active" }); }
+      finally { cwdDb.close(); }
+      expect(controlUnbind(global, "binding-session").ok).toBe(true);
+      const unbound = a.inject("binding-session");
+      expect(unbound.systemPrompt).toContain("CWD frozen fact");
+      expect(unbound.systemPrompt).toContain("Later cwd fact");
+      expect(unbound.systemPrompt).not.toContain("Bound frozen fact");
+      expect(unbound.systemPrompt).not.toContain("Later bound fact");
+      expect(a.inject("binding-session")).toEqual(unbound);
+    } finally { global.close(); }
+  });
+
+  it("takes a fresh snapshot in a reloaded extension instance", () => {
+    const f = fixture("freeze-reload");
+    const db = openDbAt(f.repoPath, "repo");
+    try {
+      addMemory(db, "repo", { category: "preference", content: "Before reload fact", source: "user", status: "active" });
+      const first = f.inject("reload-session");
+      addMemory(db, "repo", { category: "convention", content: "After reload fact", source: "user", status: "active" });
+      const handlers: Record<string, (...args: any[]) => any> = {};
+      registerHooks({ on(name, fn) { handlers[name] = fn; } });
+      const reloaded = handlers.before_agent_start({ systemPrompt: "base" },
+        { cwd: f.cwd, sessionManager: { getSessionId: () => "reload-session" } });
+      expect(reloaded.systemPrompt).toContain("After reload fact");
+      expect(f.inject("reload-session")).toEqual(first);
+    } finally { db.close(); }
+  });
+
+  it("gives subagent sessions independent frozen snapshots", () => {
+    const f = fixture("freeze-child");
+    const db = openDbAt(f.repoPath, "repo");
+    try {
+      addMemory(db, "repo", { category: "preference", content: "Parent memory fact", source: "user", status: "active" });
+      const parent = f.inject("parent-session");
+      addMemory(db, "repo", { category: "convention", content: "Before child fact", source: "user", status: "active" });
+      vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+      vi.stubEnv("PI_SPIDER_DB_PATH", join(root, "child-runs.db"));
+      const handlers: Record<string, (...args: any[]) => any> = {};
+      registerHooks({ on(name, fn) { handlers[name] = fn; } });
+      const injectChild = () => handlers.before_agent_start({ systemPrompt: "base" },
+        { cwd: f.cwd, sessionManager: { getSessionId: () => "child-session" } });
+      const child = injectChild();
+      expect(child.systemPrompt).toContain("Before child fact");
+      addMemory(db, "repo", { category: "insight", content: "After child fact", source: "user", status: "active" });
+      expect(injectChild()).toEqual(child);
+      expect(f.inject("parent-session")).toEqual(parent);
+    } finally { db.close(); }
+  });
+
+  it("appends the frozen block to the incoming prompt instead of freezing another extension's prefix", () => {
+    const f = fixture("freeze-prefix");
+    const db = openDbAt(f.repoPath, "repo");
+    try {
+      addMemory(db, "repo", { category: "preference", content: "Prefix memory fact", source: "user", status: "active" });
+      const first = f.inject("prefix-session").systemPrompt;
+      addMemory(db, "repo", { category: "convention", content: "Later prefix fact", source: "user", status: "active" });
+      expect(f.inject("prefix-session", undefined, "changed prefix").systemPrompt).toBe("changed prefix" + first.slice("base".length));
+    } finally { db.close(); }
+  });
+
   it("injects bound repo memory instead of cwd repo memory without registry writes", () => {
     const a = fixture("binding-a");
     const b = fixture("binding-b");

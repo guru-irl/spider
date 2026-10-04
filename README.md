@@ -6,7 +6,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 
 ## Features
 
-- Memory: reviewed notes with global or repository scope.
+- Memory: reviewed notes with global or repository scope, injected as a frozen per-session snapshot.
 - Search: full-text and vector search over memory, content, sessions, and todos.
 - Todos: persistent session lists with a live overlay.
 - Subagents: background children, parallel tasks, chains, and pipelines.
@@ -185,6 +185,8 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 
 - The organism (background learner) runs in parent sessions only at compaction and shutdown; a drain processes accumulated session activity.
 - Background memory writes are staged; approve or reject them through `control memory`.
+- The first `before_agent_start` freezes the memory block for that session. New writes and approvals persist immediately but enter the prompt next session; use `recall` to read them sooner.
+- A different session ID or file, an extension reload, or a changed memory binding target takes a fresh snapshot. Each subagent session freezes its own block.
 - Skill proposals are reviewed and staged, never automatically activated.
 - Disable automatic work with `organism.enabled:false`; configure foreground reviewers separately.
 - See [Memory and learning](docs/guide/memory-and-learning.md) for model defaults, limits, and failure behavior.

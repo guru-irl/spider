@@ -91,14 +91,15 @@ export function listPending(db: Db, scope: MemoryScope): MemoryRecord[] {
 }
 
 export function approvePending(db: Db, scope: MemoryScope, uuid: string): MemoryRecord | null {
-  const rec = getMemory(db, scope, uuid);
-  if (!rec || rec.status !== "staged") {
-    return null;
-  }
-  // Re-run cap check; MemoryOverflowError propagates ("curate then retry").
-  assertWithinCap(db, scope, memoryCharLength(rec.content), DEFAULT_MEMORY_CHAR_CAP, uuid);
-  setStatus(db, scope, uuid, "active");
-  return getMemory(db, scope, uuid);
+  // Hold the write lock across the status read, cap check and activation.
+  return db.raw.transaction(() => {
+    const rec = getMemory(db, scope, uuid);
+    if (!rec || rec.status !== "staged") return null;
+    // Re-run cap check; MemoryOverflowError propagates ("curate then retry").
+    assertWithinCap(db, scope, memoryCharLength(rec.content), DEFAULT_MEMORY_CHAR_CAP, uuid);
+    setStatus(db, scope, uuid, "active");
+    return getMemory(db, scope, uuid);
+  }).immediate();
 }
 
 export function rejectPending(db: Db, scope: MemoryScope, uuid: string): void {

@@ -175,6 +175,7 @@ export const SPIDER_PARAMETERS = {
     justification: { type: "string", description: "Required for remember: state why the fact is durable (still true and useful after the current task ends), how it helps other agents in this project (repo) or in any repo (global), and why the chosen scope is right (global only if true in every repo; otherwise repo)." },
     link: { type: "string", description: "Optional link/url to attach to a remembered item." },
     auto: { type: "boolean", description: "Mark a remembered item as auto-captured." },
+    supersedes: { type: "array", items: { type: "string" }, description: "Remember: active memory UUIDs or unique UUID prefixes in the write scope to replace. Credit their size against the cap and archive atomically with the new entry, including when review is unavailable. Unknown, ambiguous, inactive or cross-scope targets reject without a write. Explicit supersedes is not supported for staged/auto writes." },
     // run / subagents
     agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
     name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task); also the skill name for action='skill' (op add/view/approve/reject)." },
@@ -830,6 +831,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       link: (args.link as string | null) ?? null,
       source: args.auto ? "auto" : "user",
     }, args.justification, {
+      supersedes: args.supersedes as string[] | undefined,
       reviewer: enabled ? modelReviewer(typeof model === "string" ? model : "github-copilot/gpt-6-luna", ctx.modelRegistry, controlConfig("get", ctx.cwd, "memory.reviewer.thinking") as import("@spider/db-core").ThinkingLevel, info => { thinkingDiagnostics.push(info); recordThinking(info); }, ctx.usage) : undefined,
       skipReason: "reviewer disabled",
       timeoutMs: timeoutMs as number,
@@ -1001,7 +1003,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸 — unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification (durability, usefulness to other agents, correct scope; reviewer checks overlap and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string — never call run without one.",
+      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: renderSpiderResult,

@@ -41,7 +41,7 @@ function fixture(git = true) {
 function tool(getCommands?: () => any[]) {
   const tools: Record<string, any> = {};
   spiderExtension({ registerTool: (t: any) => { tools[t.name] = t; }, on() {}, registerCommand() {}, getCommands } as never);
-  return tools.spider as { execute: (...args: any[]) => Promise<any> };
+  return tools.spider as { description: string; execute: (...args: any[]) => Promise<any> };
 }
 // Fake only the network boundary; preserve the authenticated simple-stream contract.
 function simpleRegistry<T extends { complete: (...args: any[]) => any }>(registry: T) {
@@ -58,6 +58,13 @@ describe("remember reviewer host", () => {
     expect(result.details).toEqual(expect.arrayContaining([expect.objectContaining({ content: args.content, category: "convention", status: "active" })]));
   });
 
+  it("advertises explicit supersedes and the reviewer's write decisions", () => {
+    expect(tool().description).toContain("supersedes");
+    expect(tool().description).toContain("may skip storage, change scope or archive replaced entries");
+  });
+  it("tells the reviewer to evaluate caller replacements against the remaining entries", () => {
+    expect(REVIEWER_INSTRUCTIONS).toContain("Entries in candidate.supersedes are being replaced by the caller; judge duplication against the remaining entries, while still checking durability, usefulness and scope.");
+  });
   it("pins the exact durability rule, user preference exception, examples, scope rule and supplied justification", () => {
     const text = reviewerPrompt({ content: "candidate", category: "preference", scope: "repo", justification: "VERBATIM justification!!" }, []);
     expect(text).toContain("VERBATIM justification!!");
@@ -185,6 +192,18 @@ describe("remember reviewer host", () => {
       expect((await timed).details.reviewSkipped).toBe("timeout after 1000 ms");
       expect(seen[1]?.aborted).toBe(true);
     } finally { vi.useRealTimers(); }
+  });
+  it("explicit supersedes reaches memory storage even with reviewer disabled", async () => {
+    const dir = fixture(); const t = tool();
+    controlConfig("set", dir, "memory.reviewer.enabled", false);
+    const prior = await t.execute("prior", { ...args, cwd: dir }, undefined, undefined, { cwd: dir });
+    const result = await t.execute("replace", { ...args, content: "Verify generated metadata before publication", supersedes: [prior.details.uuid.slice(0, 8)], cwd: dir }, undefined, undefined, { cwd: dir });
+    expect(result.details).toMatchObject({ status: "active", archived: [prior.details.uuid] });
+    const db = openDbReadOnlyAt(join(dir, ".git", "spider", "repo.db"))!;
+    try {
+      expect(db.prepare("SELECT status FROM memory WHERE uuid=?").get(prior.details.uuid)).toEqual({ status: "archived" });
+      expect(db.prepare("SELECT status FROM memory WHERE uuid=?").get(result.details.uuid)).toEqual({ status: "active" });
+    } finally { db.close(); }
   });
   it("reports staged uuid to the agent for an auto write", async () => {
     const dir = fixture(); controlConfig("set", dir, "memory.reviewer.enabled", false);

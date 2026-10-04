@@ -18,7 +18,8 @@
 
 - Review errors, unavailable models, timeouts, aborts, or disabled review store as requested and report `review skipped: <reason>`.
 - Condensation through `supersedes` must preserve information. User preferences and standing instructions cannot lose information without a newer user statement; corrections require a newer user statement.
-- Background and auto-captured writes are staged and fail closed. They become active only after explicit approval.
+- Foreground `remember` accepts `supersedes:["<uuid-or-unique-prefix>"]` to replace active entries in the same scope. Unknown, ambiguous, inactive or cross-scope targets reject without a write. The reviewer still checks durability, usefulness and scope and may add same-scope targets. A rejected write archives nothing; a scope redirect with explicit targets rejects rather than archiving across scopes. If review is skipped but the write proceeds, explicit targets still apply.
+- Background and auto-captured writes are staged and fail closed. They become active only after explicit approval. Explicit `supersedes` is not supported for staged writes and rejects without a write. Reviewer-suggested targets are related entries only: approving a staged entry does not archive anything. Use foreground `remember` with `supersedes` or `forget` explicitly.
 - Rejecting keeps a note outside the active set; it does not delete the row.
 
 ```text
@@ -31,7 +32,9 @@ spider control command:"memory" sub:"forget" uuid:"<uuid>" scope:"repo"
 ## Storage and injection limits
 
 - Active memory content has an `8000`-character storage cap per scope, independently for global and repo. Over-cap writes and approvals are refused, not truncated.
-- Use `control memory sub:"status"` to inspect the budget and `sub:"forget"` to free active space. Remember a shorter version if condensing manually.
+- Use `control memory sub:"status"` to inspect the budget and `sub:"forget"` to free active space. Use `remember` with `supersedes` to replace or condense an active entry atomically.
+- Replacement admission uses current usage minus the sizes of all active same-scope targets plus the new content size. Cap check, archives and insert run in one immediate transaction. Approval also checks and activates under an immediate transaction.
+- Recoverable overflow cards list all active entries, marking replacement targets and showing their credit and projected usage. A new entry larger than the cap by itself must be shortened; its card does not list entries to evict.
 - `memory.snapshotCharCap` controls prompt injection only, not storage. By default all active memory is injected.
 - The first `before_agent_start` reads and freezes a memory snapshot for the session, including an empty snapshot. Later turns append the byte-identical memory block to the incoming system prompt.
 - New writes, approvals and supersessions persist immediately but do not change that session's block. They enter the prompt next session; `recall` reads the current active rows.

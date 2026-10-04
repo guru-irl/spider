@@ -93,6 +93,8 @@ export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
   ],
 }];
 
+// Public aliases must retain their canonical identity across versions (tested).
+// For a historical call, priceCall resolves aliases within its effective version.
 export function canonicalModelId(id: string): string {
   for (const version of COPILOT_RATE_VERSIONS) {
     const match = version.models.find(model => model.id === id || model.aliases.includes(id));

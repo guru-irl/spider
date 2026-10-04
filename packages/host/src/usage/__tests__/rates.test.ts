@@ -68,6 +68,43 @@ describe("public Copilot rates", () => {
     expect(rows).toEqual(PUBLIC_ROWS);
   });
 
+  it("preserves structural invariants for every version and model", () => {
+    const canonicalAliases = new Map<string, string>();
+    for (const version of COPILOT_RATE_VERSIONS) {
+      expect(Number.isFinite(Date.parse(version.effectiveFrom))).toBe(true);
+      const ids = version.models.map(model => model.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      const aliases = version.models.flatMap(model => model.aliases);
+      expect(new Set(aliases).size).toBe(aliases.length);
+      for (const model of version.models) {
+        if (model.validUntil !== undefined) {
+          expect(Number.isFinite(Date.parse(model.validUntil))).toBe(true);
+          expect(Date.parse(model.validUntil)).toBeGreaterThan(Date.parse(version.effectiveFrom));
+        }
+        for (const alias of model.aliases) {
+          expect(ids).not.toContain(alias);
+          // canonicalModelId has no timestamp: public aliases must keep their identity.
+          const prior = canonicalAliases.get(alias);
+          if (prior !== undefined) expect(model.id).toBe(prior);
+          canonicalAliases.set(alias, model.id);
+        }
+        const defaults = model.tiers.filter(tier => tier.abovePromptTokens === 0);
+        expect(defaults).toHaveLength(1);
+        let previousThreshold = -1;
+        for (const tier of model.tiers) {
+          expect(Number.isInteger(tier.abovePromptTokens)).toBe(true);
+          expect(tier.abovePromptTokens).toBeGreaterThan(previousThreshold);
+          previousThreshold = tier.abovePromptTokens;
+          for (const bucket of ["input", "cacheRead", "cacheWrite", "output"] as const) {
+            expect(Number.isFinite(tier.usdPerMillion[bucket])).toBe(true);
+            expect(tier.usdPerMillion[bucket]).toBeGreaterThanOrEqual(defaults[0].usdPerMillion[bucket]);
+            expect(tier.usdPerMillion[bucket]).toBeGreaterThanOrEqual(0);
+          }
+        }
+      }
+    }
+  });
+
   it("retains the dated estimated source and explicit limitations", () => {
     expect(COPILOT_RATE_VERSIONS[0]).toMatchObject({
       id: "copilot-public-2026-10-04",

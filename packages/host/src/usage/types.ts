@@ -3,7 +3,7 @@ export type UsageTokens = {
   output: number;
   cacheRead: number;
   cacheWrite: number;
-  /** Subset of cacheWrite, not an additional billable bucket. */
+  /** Subset of cacheWrite, billed at the single public write rate, not a separate 1h rate. */
   cacheWrite1h?: number;
   /** Included in output, not an additional billable bucket. */
   reasoning?: number;
@@ -16,6 +16,7 @@ export type Actor = "parent" | "subagent" | "aux" | "compaction" | "warmer";
 
 export type PriceResult = {
   status: "priced";
+  /** Unrounded double: round only for display; compare summed estimates with tolerance. */
   aic: number;
   components: { input: number; cacheRead: number; cacheWrite: number; output: number };
   rateVersion: string;

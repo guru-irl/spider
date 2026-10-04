@@ -73,7 +73,7 @@ describe("priceCall", () => {
     });
   });
 
-  it.each(["claude-opus-5-5-unknown", "CLAUDE-OPUS-5.5", "claude-opus-5.50", "gemini-3.7-flash1", "gpt-6.1-sol-latest", "gpt-6.1-sol "])(
+  it.each(["claude-opus-5-5-unknown", "CLAUDE-OPUS-5.5", "claude-opus-5.50", "gemini-3.7-flash1", "gpt-6.1-sol-latest", "gpt-6.1-sol ", "github-copilot/gpt-6.1-sol", "gpt-6.1-sol\n"])(
     "does not fuzzy match %s", id => {
       expect(canonicalModelId(id)).toBe(id);
       expect(priceCall({ provider: "github-copilot", id }, ZERO, AT)).toEqual({ status: "unpriced", reason: "unknown-model" });
@@ -103,6 +103,18 @@ describe("priceCall", () => {
     });
   }
 
+  it.each(TOKEN_FIELDS)("rejects fractional token counts in %s", field => {
+    expect(priceCall(MODEL, { ...ZERO, cacheWrite: 2, [field]: 1.5 }, AT)).toEqual({ status: "unpriced", reason: "invalid-usage" });
+  });
+
+  it("keeps fractional AIC and bills 1h writes at the single public write rate", () => {
+    const result = priceCall(MODEL, { ...ZERO, cacheWrite: 1, cacheWrite1h: 1 }, AT);
+    expect(result.status).toBe("priced");
+    if (result.status !== "priced") throw new Error("expected priced write");
+    expect(result.aic).toBeCloseTo(0.00025, 12);
+    expect(result.components.cacheWrite).toBeCloseTo(0.00025, 12);
+  });
+
   it("rejects cacheWrite1h exceeding cacheWrite", () => {
     expect(priceCall(MODEL, { ...ZERO, cacheWrite: 100, cacheWrite1h: 101 }, AT)).toEqual({ status: "unpriced", reason: "invalid-usage" });
   });
@@ -122,6 +134,12 @@ describe("priceCall", () => {
 
   it.each([NaN, Infinity, -Infinity])("does not choose rates for an invalid timestamp %s", at => {
     expect(priceCall(MODEL, ZERO, at)).toEqual({ status: "unpriced", reason: "no-rate-at-time" });
+  });
+
+  it("rejects prompt overflow even when low-rate components remain finite", () => {
+    expect(priceCall({ provider: "github-copilot", id: "gpt-6-luna" }, {
+      ...ZERO, input: Number.MAX_VALUE, cacheRead: Number.MAX_VALUE,
+    }, AT)).toEqual({ status: "unpriced", reason: "invalid-usage" });
   });
 
   it("rejects overflow rather than returning infinite credits", () => {

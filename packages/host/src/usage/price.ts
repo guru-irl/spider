@@ -4,8 +4,8 @@ import type { ModelRef, PriceResult, RateVersion, UsageTokens } from "./types.js
 function validUsage(usage: UsageTokens): boolean {
   const required = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
   const optional = [usage.cacheWrite1h, usage.reasoning, usage.totalTokens];
-  return required.every(value => Number.isFinite(value) && value >= 0)
-    && optional.every(value => value === undefined || (Number.isFinite(value) && value >= 0))
+  return required.every(value => Number.isInteger(value) && value >= 0)
+    && optional.every(value => value === undefined || (Number.isInteger(value) && value >= 0))
     && (usage.cacheWrite1h === undefined || usage.cacheWrite1h <= usage.cacheWrite);
 }
 
@@ -32,6 +32,7 @@ export function priceCall(model: ModelRef, usage: UsageTokens, at: number, optio
   if (rate.validUntil && at >= Date.parse(rate.validUntil)) return { status: "unpriced", reason: "no-rate-at-time" };
 
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+  // Low rates can leave components finite even when the token sum overflows.
   if (!Number.isFinite(prompt)) return { status: "unpriced", reason: "invalid-usage" };
   let selected = rate.tiers.find(tier => tier.abovePromptTokens === 0);
   if (!selected) return { status: "unpriced", reason: "no-rate-at-time" };
@@ -43,6 +44,8 @@ export function priceCall(model: ModelRef, usage: UsageTokens, at: number, optio
 
   // 1M tokens / 100 credits per USD = divisor 10000.
   // reasoning is already included in output; cacheWrite1h is included in cacheWrite.
+  // The public table has one write rate, not the upstream vendor's 5m/1h split.
+  // Preserve doubles here: consumers round only for display and compare sums with tolerance.
   const usd = selected.usdPerMillion;
   const components = {
     input: usage.input * usd.input / 10000,

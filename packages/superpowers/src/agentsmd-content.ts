@@ -78,9 +78,12 @@ overlap, and scope before storing; task-only facts belong in the conversation.
 If review fails, the write is stored as requested and marked \`review skipped\`.
 Categories: preference, convention, tool-quirk, failure, correction, insight.
 Background/\`[auto]\` writes are **staged and fail-closed**; approve or reject via
-\`spider control memory\`. A frozen memory snapshot is injected each session —
-new writes persist immediately and re-inject next session. Use \`spider recall\`
-to fetch by category/scope.
+\`spider control memory\`.
+- The first agent start freezes the session's memory block; later turns reuse it.
+- New writes persist immediately and re-inject next session. A changed session ID
+  or file, extension reload, or changed memory binding target refreshes the block.
+- Subagent sessions freeze independently. Use \`spider recall\` to fetch current
+  active memory by category/scope.
 
 **Scope rule:** "Is this true in every repo?" → **global**; otherwise → **repo**.
 Worktree memory was removed; use repo for facts specific to a repository.

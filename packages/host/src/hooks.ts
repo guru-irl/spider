@@ -8,7 +8,7 @@
 // (result {content?,details?,isError?}) — verified against
 // @earendil-works/pi-coding-agent .../core/extensions/types.d.ts. We register the
 // REAL event names so Phase 0 handlers actually fire; Phase 3 fills their bodies.
-//   - before_agent_start     -> memory snapshot (Phase 1), active-agents (Phase 5)
+//   - before_agent_start     -> frozen per-session memory snapshot (Phase 1)
 //   - session_start          -> session upsert + self-name (Phase 1/6)
 //   - session_before_compact -> organism drain (Phase 6)
 //   - session_compact        -> bookkeeping (Phase 6)
@@ -18,7 +18,7 @@
 // Task 7b: the `tool_call` / `tool_result` events are now OWNED by routing
 // (packages/host/src/routing/index.ts, wired in extension.ts). They are
 // intentionally NOT registered here to avoid double-registration.
-import { openGlobal, appendEvent, type Db } from "@spider/db-core";
+import { openGlobal, openGlobalReadOnly, getBinding, appendEvent, type Db } from "@spider/db-core";
 import { openSessionRunDb } from "./session-run-db";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cwdOf, sessionIdOf } from "./session-context";
@@ -41,7 +41,25 @@ export const HOOK_NAMES = [
   "tool_call",
 ] as const;
 
+/** Check only the binding on later turns, never active-memory rows or config. */
+function memoryTargetOf(cwd: string, sessionId: string): string | undefined {
+  if (!sessionId) return cwd;
+  let db: Db | undefined;
+  try {
+    db = openGlobalReadOnly();
+    return db ? getBinding(db, sessionId) ?? cwd : cwd;
+  } catch {
+    // A failed lookup is not an unbind. Keep the current session's frozen source.
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}
+
 export function registerHooks(pi: PiLikeAPI): void {
+  // Instance-local: reloads and subagent processes get independent snapshots.
+  // Empty snapshots are frozen too, so the first write cannot change the prefix.
+  let frozenMemory: { key: string; target: string; text: string } | undefined;
   // One handler per hook (the contract's "every hook has a handler" invariant).
   // before_agent_start + session_start carry Phase 1 memory logic; every other
   // hook stays a no-op pass-through until its phase fills the body. DBs are
@@ -53,8 +71,23 @@ export function registerHooks(pi: PiLikeAPI): void {
         // pi consumes the RETURNED prompt patch, not mutation of event.systemPrompt.
         if (typeof event?.systemPrompt !== "string") return undefined;
         try {
-          const snap = readInjectionSnapshot(cwdOf(ctx) ?? process.cwd(), sessionIdOf(ctx));
-          if (snap.text) return { systemPrompt: event.systemPrompt + "\n\n" + snap.text };
+          const cwd = cwdOf(ctx) ?? process.cwd();
+          const sessionId = sessionIdOf(ctx);
+          const sessionFile = (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.();
+          const key = JSON.stringify([sessionId, sessionFile ?? null, cwd]);
+          const resolvedTarget = memoryTargetOf(cwd, sessionId);
+          const target = resolvedTarget ?? (frozenMemory?.key === key ? frozenMemory.target : cwd);
+          let text = frozenMemory?.text ?? "";
+          if (frozenMemory?.key !== key || frozenMemory.target !== target) {
+            // Binding was resolved above; read the chosen target without re-resolving it.
+            const snapshot = readInjectionSnapshot(target);
+            text = snapshot.text;
+            // Inject available tiers now, but retry incomplete builds next turn.
+            if (resolvedTarget !== undefined && Object.keys(snapshot.errors).length === 0) {
+              frozenMemory = { key, target, text };
+            }
+          }
+          if (text) return { systemPrompt: event.systemPrompt + "\n\n" + text };
         } catch {
           // Snapshot injection is best-effort; never block agent start.
         }

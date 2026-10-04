@@ -101,6 +101,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
 - `subagents.childMode` and `subagents.extensions` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.
+- `memory.snapshotCharCap` is captured with the frozen memory block at the first agent start. Changes apply next session, after an extension reload, or when the memory binding target changes. Doctor uses the current value.
 - Rebuilding a linked bundle and reloading it is separate from editing config; see [Runtime lifecycle](../architecture/runtime-lifecycle.md).
 
 ## Model role defaults

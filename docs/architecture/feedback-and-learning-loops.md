@@ -15,8 +15,8 @@ The four loops are:
 2. **The memory lifecycle.** Foreground `remember` writes require justification and
    a durability, overlap, and scope review before activation. A failed review stores
    as requested. Auto-sourced and background writes stage fail-closed for approval.
-   The active-memory snapshot is injected at `before_agent_start` and re-injected
-   on every later turn and every new session.
+   The active-memory snapshot is frozen at the first `before_agent_start` and the
+   same block is appended on every later turn. New sessions take a fresh snapshot.
 3. **The organism feedback and learning loop.** On before-compact and on
    shutdown the organism drains the finished session, runs passes that propose
    memory and skill candidates, stages them, records a summary and a self-name,
@@ -31,7 +31,7 @@ The four loops are:
 | Trigger | Kind | What it drives |
 | --- | --- | --- |
 | `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). |
-| `before_agent_start` | pi hook | Assemble the active-memory snapshot and append it to the system prompt. |
+| `before_agent_start` | pi hook | Freeze the memory snapshot on first use, then append the same block on later turns. |
 | `tool_call` / `tool_result` | pi hook | Record intent, scrub secrets, scan for injection, auto-index large non-spider output. |
 | `session_before_compact` | pi hook | Fire-and-forget organism drain with `reason: "before_compact"`. |
 | `session_shutdown` | pi hook | Await organism drain with `reason: "shutdown"`, then run curator decay. |
@@ -169,10 +169,19 @@ limit skips entries that do not fit and continues packing smaller entries. It
 appends `Memory snapshot: N entries omitted.` when a configured cap omits rows;
 doctor reports this as a warning without failing its check. The hook returns a
 system-prompt patch only when the snapshot is non-empty and the system prompt
-is a string. The snapshot is computed fresh on each call. A memory approved
-mid-session takes effect at the next `before_agent_start` call, usually the next
-turn or session. The host `session_start` hook inserts the session row that the
-organism later drains.
+is a string.
+
+- The first `before_agent_start` freezes the memory text, including an empty result.
+  Later turns append byte-identical text to the incoming prompt, not a cached copy
+  of another extension's prefix.
+- New writes, approvals, supersessions and cap changes persist immediately but
+  enter the prompt next session. Recall and doctor still read current rows;
+  doctor's current counts need not match an existing session's frozen block.
+- A different session ID or file (new, resume or fork), an extension reload, or a
+  changed memory binding target rebuilds the block. The hook checks the read-only
+  binding on each call without rereading active memory or config on stable turns.
+- Each subagent session freezes independently. The host `session_start` hook
+  inserts the session row that the organism later drains.
 
 ```mermaid
 flowchart TD
@@ -201,8 +210,10 @@ flowchart TD
   ACT2 --> AM
 
   AM --> SNAP["readInjectionSnapshot, global and repo read-only; no default cap"]
-  SNAP --> INJ["before_agent_start appends to system prompt"]
-  INJ --> NEXT["next turn and next session start informed"]
+  SNAP --> FREEZE["first before_agent_start freezes the block"]
+  FREEZE --> INJ["later turns append the same block to the incoming prompt"]
+  AM --> NEXT["new session, reload or changed binding takes a fresh snapshot"]
+  NEXT --> SNAP
 ```
 
 ---
@@ -330,8 +341,8 @@ without persisting it.
 **Feeding the next session and AGENTS.md.** Nothing the organism produces is
 active until a human approves it. Once approved, it flows forward:
 
-- Approved staged memory becomes active and is injected as part of the frozen
-  snapshot at the next `before_agent_start` (loop 2).
+- Approved staged memory becomes active immediately and enters the frozen
+  snapshot at the next session's first `before_agent_start` (loop 2).
 - Approved staged skills become active in the skill library.
 - The session summary and self-name are indexed into `sessions_fts`, so past
   sessions are searchable and the ongoing task keeps a stable name.
@@ -451,8 +462,8 @@ becomes input to another:
 - The routing loop and the subagent loop both write `run_events` and `events`
   that the organism drain reads on before-compact and shutdown.
 - The organism stages memory candidates through the same `stageWrite` pipeline
-  the memory lifecycle uses; approving them feeds the snapshot injected at
-  `before_agent_start`.
+  the memory lifecycle uses; approving them feeds the snapshot frozen at the
+  next session's first `before_agent_start`.
 - The content the routing loop indexes and the summaries the organism writes are
   both retrievable through `spider search`, so a later session can find what an
   earlier one produced.

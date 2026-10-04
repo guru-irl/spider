@@ -1,5 +1,5 @@
 import type { Db } from "@spider/db-core";
-import { USAGE_SCHEMA, USAGE_SCHEMA_VERSION } from "./schema.js";
+import { USAGE_SCHEMA, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOUT } from "./schema.js";
 
 // Append future versions here. Phase 3 can add (project, ts) and (role, ts)
 // indexes in v2 without restructuring or changing the Phase 1 schema.
@@ -9,6 +9,13 @@ export function assertUsageSchemaVersion(db: Db): void {
   const version = db.pragma("user_version") as number;
   if (version > USAGE_SCHEMA_VERSION) {
     throw new Error(`Unsupported future usage schema ${version}; supported version is ${USAGE_SCHEMA_VERSION}`);
+  }
+  if (version === USAGE_SCHEMA_VERSION) {
+    const metadata = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ledger_metadata'").get();
+    const layout = metadata ? db.prepare("SELECT value FROM ledger_metadata WHERE key='schema-layout'").get() as { value: string } | undefined : undefined;
+    if (layout?.value !== USAGE_SCHEMA_LAYOUT) {
+      throw new Error("Obsolete unreleased usage schema 1 layout; rebuild the dev ledger before ingesting");
+    }
   }
 }
 

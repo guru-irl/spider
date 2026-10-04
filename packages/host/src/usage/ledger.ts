@@ -18,7 +18,8 @@ import { assertUsageSchemaVersion, migrateUsageLedger } from "./migrate.js";
  * Coverage is supplied explicitly by ingest: ONLY transcript/runs-db evidence
  * excludes ALL rows of an included run, across models and model-less summaries,
  * transitively through proven edges. A counted report's own per-model rows supply
- * its breakdown; ingestion must supply every report group atomically. Parent ancestry
+ * its breakdown; complete groups import atomically, while terminal/aged partial
+ * groups carry a reversible incomplete flag until completion. Parent ancestry
  * is metadata, never coverage. Unknown/missing proof keeps both representations
  * and marks possible overlap when a native metadata/source hint relates them.
  * Copies MUST set copied; they never prove a fork's own detail or create hints.
@@ -64,6 +65,8 @@ export type RunMeta = {
   model: string | null; thinking: string | null; phase: string | null;
   startedAt: number | null; endedAt: number | null;
 };
+export type SourceContext = { header: Record<string, unknown> | null; entries: { byteOffset: number; json: unknown }[]; tailHash: string };
+export type PendingReport = { path: string; runId: string; generation: number; firstSeen: number; calls: CallRow[]; partial?: boolean };
 export type ImportState = {
   path: string; inode: string; size: number; mtimeMs: number; offset: number; parseErrors: number;
   generation: number; prefixHash: string;
@@ -85,7 +88,12 @@ export type ImportBatch = {
   /** Compatibility only. Selection depends on raw facts, not these old signals. */
   detailedRunIds: readonly string[]; restoreAggregateRunIds: readonly string[];
   resetSources: readonly { path: string; generation: number }[];
-  sourceErrors: readonly { path: string; code: string }[]; at: number;
+  sourceErrors: readonly { path: string; code: string; checkedPaths?: readonly string[] }[]; at: number;
+  sourceContexts?: readonly { path: string; context: SourceContext }[];
+  pendingReports?: readonly PendingReport[];
+  removePendingReports?: readonly { path: string; runId: string }[];
+  incompleteReports?: readonly { path: string; runId: string }[];
+  completeReports?: readonly { path: string; runId: string }[];
   /** Included usage, not execution ancestry. Upserts by (reportRunId, includedRunId). */
   coverageEdges?: readonly CoverageEdge[];
   /** Withdraw stale proof atomically. Removals precede upserts in the same batch. */
@@ -103,6 +111,14 @@ export interface UsageLedger {
   apply(batch: ImportBatch): void;
   getImportState(path: string): ImportState | undefined;
   getRuns(): readonly RunMeta[];
+  /** With roots, load only their persisted ancestry plus the last linear node.
+   * An empty roots array reads header/checkpoints only. Omitted roots is a diagnostic full read. */
+  getSourceContext(path: string, roots?: readonly string[]): SourceContext | undefined;
+  getSourceHeaders(): readonly { path: string; header: Record<string, unknown> | null }[];
+  getPendingReports(): readonly PendingReport[];
+  getIncompleteReports(): readonly { path: string; runId: string }[];
+  getReportModels(path: string, runId: string): readonly { provider: string | null; requestedModel: string | null }[];
+  getProof(): { reports: { runId: string; owner: string | null; path: string; ts: number }[]; edges: CoverageEdge[] };
   insertCounter(snapshot: CounterSnapshot): void;
   latestCounter(): CounterSnapshot | undefined;
   summarize(start: number, end: number): UsageSummary;
@@ -172,15 +188,19 @@ function refreshModelAliases(db: Db): void {
     const first = db.prepare(`${columns} ORDER BY id LIMIT 1000`);
     const next = db.prepare(`${columns} WHERE id > ? ORDER BY id LIMIT 1000`);
     let cursor: string | undefined;
-    for (;;) {
+    for (; ;) {
       const page = cursor === undefined ? first.all() : next.all(cursor);
       if (page.length === 0) break;
       for (const raw of page) {
         const row = raw as Omit<FingerprintCall, "aggregate" | "usage"> & { id: string; aggregate: number } & UsageTokens;
-        const canonical = { ...row, aggregate: Boolean(row.aggregate),
+        const canonical = {
+          ...row, aggregate: Boolean(row.aggregate),
           model: row.model === null ? null : canonicalModelId(row.model),
-          usage: { input: row.input, output: row.output, cacheRead: row.cacheRead, cacheWrite: row.cacheWrite,
-            cacheWrite1h: row.cacheWrite1h, reasoning: row.reasoning, totalTokens: row.totalTokens } };
+          usage: {
+            input: row.input, output: row.output, cacheRead: row.cacheRead, cacheWrite: row.cacheWrite,
+            cacheWrite1h: row.cacheWrite1h, reasoning: row.reasoning, totalTokens: row.totalTokens
+          }
+        };
         update.run({ id: row.id, model: canonical.model, fingerprint: fingerprint(canonical) });
         cursor = row.id;
       }
@@ -234,6 +254,36 @@ export function openUsageLedger(file: string): UsageLedger {
 }
 
 function createLedger(db: Db): UsageLedger {
+  const context = db.prepare("SELECT header, tail_hash AS tailHash FROM source_context WHERE path=?");
+  const headers = db.prepare("SELECT path, header FROM source_context");
+  const putContext = db.prepare(`INSERT INTO source_context(path,header,tail_hash) VALUES (?,?,?)
+    ON CONFLICT(path) DO UPDATE SET header=excluded.header, tail_hash=excluded.tail_hash`);
+  const allEntries = db.prepare("SELECT byte_offset AS byteOffset,json FROM source_entries WHERE path=? AND generation=? ORDER BY byte_offset");
+  const lastEntry = db.prepare("SELECT linear_id AS id FROM source_entries WHERE path=? AND generation=? ORDER BY byte_offset DESC LIMIT 1");
+  const entryState = db.prepare("SELECT state_id AS stateId FROM source_entries WHERE path=? AND generation=? AND entry_id=? ORDER BY byte_offset LIMIT 1");
+  const putEntry = db.prepare(`INSERT INTO source_entries(path,generation,byte_offset,entry_id,parent_id,state_id,state_parent_id,linear_id,json)
+    VALUES (@path,@generation,@byteOffset,@entryId,@parentId,@stateId,@stateParentId,@linearId,@json) ON CONFLICT(path,generation,byte_offset) DO NOTHING`);
+  const resetEntries = db.prepare("DELETE FROM source_entries WHERE path=?");
+  const ancestry = db.prepare(`WITH RECURSIVE wanted(id) AS (
+    SELECT value FROM json_each(@roots)
+    UNION SELECT e.state_parent_id FROM wanted w CROSS JOIN source_entries e INDEXED BY source_entries_identity
+      ON e.path=@path AND e.generation=@generation AND e.entry_id=w.id WHERE e.state_parent_id IS NOT NULL
+  ) SELECT e.byte_offset AS byteOffset,e.json,e.state_parent_id AS parentId
+    FROM wanted w CROSS JOIN source_entries e INDEXED BY source_entries_identity
+      ON e.path=@path AND e.generation=@generation AND e.entry_id=w.id ORDER BY e.byte_offset`);
+  const pending = db.prepare("SELECT path,run_id AS runId,generation,first_seen AS firstSeen,calls FROM pending_reports");
+  const putPending = db.prepare(`INSERT INTO pending_reports(path,run_id,generation,first_seen,calls) VALUES (@path,@runId,@generation,@firstSeen,@calls)
+    ON CONFLICT(path,run_id) DO UPDATE SET generation=excluded.generation,first_seen=excluded.first_seen,calls=excluded.calls`);
+  const removePending = db.prepare("DELETE FROM pending_reports WHERE path=? AND run_id=?");
+  const incomplete = db.prepare("SELECT path,run_id AS runId FROM incomplete_reports");
+  const reportModels = db.prepare("SELECT raw_provider AS provider,requested_model AS requestedModel FROM calls WHERE source_file=? AND run_id=? AND is_report=1");
+  const removeIncomplete = db.prepare("DELETE FROM incomplete_reports WHERE path=? AND run_id=?");
+  const resetPending = db.prepare("DELETE FROM pending_reports WHERE path=?");
+  const resetIncomplete = db.prepare("DELETE FROM incomplete_reports WHERE path=?");
+  const putIncomplete = db.prepare("INSERT OR IGNORE INTO incomplete_reports(path,run_id) VALUES (?,?)");
+  const getReports = db.prepare(`SELECT run_id AS runId,parent_run_id AS owner,source_file AS path,ts
+    FROM calls INDEXED BY calls_reports WHERE is_report=1 AND copied=0`);
+  const getEdges = db.prepare("SELECT report_run_id AS reportRunId,included_run_id AS includedRunId,evidence FROM coverage_edges");
   const getState = db.prepare(`SELECT path, inode, size, mtime_ms AS mtimeMs, offset,
     parse_errors AS parseErrors, generation, prefix_hash AS prefixHash FROM import_state WHERE path = ? AND inode IS NOT NULL`);
   const getFence = db.prepare("SELECT generation, offset FROM import_state WHERE path = ?");
@@ -246,10 +296,11 @@ function createLedger(db: Db): UsageLedger {
     VALUES (@path, @inode, @size, @mtimeMs, @offset, @parseErrors, @generation, @prefixHash, @at)
     ON CONFLICT(path) DO UPDATE SET inode=excluded.inode, size=excluded.size, mtime_ms=excluded.mtime_ms,
     offset=excluded.offset, parse_errors=excluded.parse_errors, generation=excluded.generation,
-    prefix_hash=excluded.prefix_hash, source_error_code=NULL,
+    prefix_hash=excluded.prefix_hash, source_error_code=NULL, source_error_paths=NULL,
     last_ingest_at=MAX(import_state.last_ingest_at, excluded.last_ingest_at)`);
-  const putError = db.prepare(`INSERT INTO import_state (path, source_error_code, last_ingest_at)
-    VALUES (@path, @code, @at) ON CONFLICT(path) DO UPDATE SET source_error_code=excluded.source_error_code,
+  const putError = db.prepare(`INSERT INTO import_state (path, source_error_code, source_error_paths, last_ingest_at)
+    VALUES (@path, @code, @checkedPaths, @at) ON CONFLICT(path) DO UPDATE SET source_error_code=excluded.source_error_code,
+    source_error_paths=excluded.source_error_paths,
     last_ingest_at=MAX(import_state.last_ingest_at, excluded.last_ingest_at)`);
   const putRun = db.prepare(`INSERT INTO runs_meta
     (id, db_path, project, repo, session_id, parent_run_id, agent, role, name, model, thinking, phase, started_at, ended_at)
@@ -272,7 +323,8 @@ function createLedger(db: Db): UsageLedger {
     COALESCE(SUM(price_status = 'priced'), 0) AS pricedCalls,
     COALESCE(SUM(price_status = 'unpriced'), 0) AS unpricedCalls,
     (COALESCE(MAX(possible_undercount), 0)
-      OR EXISTS (SELECT 1 FROM import_state WHERE offset < size)) AS possibleUndercount,
+      OR EXISTS (SELECT 1 FROM import_state WHERE offset < size)
+      OR EXISTS (SELECT 1 FROM pending_reports)) AS possibleUndercount,
     COALESCE(MAX(possible_overlap), 0) AS possibleOverlap
     FROM (${countedUsageSql("c.ts >= ? AND c.ts < ?", "c.aic, c.price_status, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_period_read")})`);
   // Do not evaluate counted_calls over historical detail. Only the indexed
@@ -332,15 +384,72 @@ function createLedger(db: Db): UsageLedger {
             throw new Error(`Stale call generation for ${call.sourceFile}`);
           }
         }
-        for (const source of batch.resetSources) reset.run(source.path, source.generation);
+        for (const source of batch.resetSources) {
+          reset.run(source.path, source.generation);
+          resetPending.run(source.path);
+          resetIncomplete.run(source.path);
+          resetEntries.run(source.path);
+        }
         for (const run of batch.runs) putRun.run(run);
         for (const call of batch.calls) insertCall.run(callValues(call));
         for (const edge of batch.removeCoverageEdges ?? []) removeCoverageEdge.run(edge.reportRunId, edge.includedRunId);
         for (const edge of batch.coverageEdges ?? []) putCoverageEdge.run(edge);
         for (const state of batch.states) putState.run({ ...state, at: batch.at });
-        for (const error of batch.sourceErrors) putError.run({ ...error, at: batch.at });
+        for (const item of batch.sourceContexts ?? []) {
+          putContext.run(item.path, JSON.stringify(item.context.header), item.context.tailHash);
+          const generation = states.get(item.path)?.generation ?? fence(item.path)?.generation ?? 0;
+          let previousId = (lastEntry.get(item.path, generation) as { id: string } | undefined)?.id ?? null;
+          for (const entry of item.context.entries) {
+            const record = entry.json as Record<string, unknown>;
+            const entryId = typeof record.id === "string" && record.id.trim() ? record.id : `offset:${entry.byteOffset}`;
+            const parentId = record.parentId === undefined ? previousId : typeof record.parentId === "string" && record.parentId.trim() ? record.parentId : null;
+            const duplicate = entryState.get(item.path, generation, entryId) as { stateId: string | null } | undefined;
+            const parent = parentId === null ? undefined : entryState.get(item.path, generation, parentId) as { stateId: string | null } | undefined;
+            // Compress non-state ancestry, not branch links: a branch inherits
+            // its explicit parent's nearest model/thinking change. Missing/forward
+            // references remain literal so later nodes and cycles can resolve.
+            const stateParentId = parent ? parent.stateId : parentId;
+            const changesState = record.type === "model_change" || record.type === "thinking_level_change";
+            const stateId = duplicate ? duplicate.stateId : changesState ? entryId : stateParentId;
+            if (record.type !== "session" && !duplicate) previousId = entryId;
+            putEntry.run({
+              path: item.path, generation, byteOffset: entry.byteOffset, entryId, parentId,
+              stateId, stateParentId, linearId: previousId, json: JSON.stringify(record)
+            });
+          }
+        }
+        for (const item of batch.removePendingReports ?? []) removePending.run(item.path, item.runId);
+        for (const item of batch.pendingReports ?? []) putPending.run({ ...item, calls: JSON.stringify({ calls: item.calls, partial: item.partial }) });
+        for (const item of batch.completeReports ?? []) removeIncomplete.run(item.path, item.runId);
+        for (const item of batch.incompleteReports ?? []) putIncomplete.run(item.path, item.runId);
+        for (const error of batch.sourceErrors) putError.run({ ...error, checkedPaths: error.checkedPaths ? JSON.stringify(error.checkedPaths) : null, at: batch.at });
       }).immediate();
     },
+    getSourceContext(path, roots) {
+      const row = context.get(path) as { header: string; tailHash: string } | undefined;
+      if (!row) return undefined;
+      const generation = (getState.get(path) as ImportState | undefined)?.generation ?? 0;
+      let entries: { byteOffset: number; json: unknown }[] = [];
+      if (roots === undefined) {
+        entries = (allEntries.all(path, generation) as { byteOffset: number; json: string }[])
+          .map(e => ({ ...e, json: JSON.parse(e.json) }));
+      } else if (roots.length) {
+        const last = (lastEntry.get(path, generation) as { id: string } | undefined)?.id;
+        entries = (ancestry.all({ path, generation, roots: JSON.stringify([...roots, ...(last ? [last] : [])]) }) as
+          { byteOffset: number; json: string; parentId: string | null }[])
+          .map(e => ({ byteOffset: e.byteOffset, json: { ...JSON.parse(e.json), parentId: e.parentId } }));
+      }
+      return { header: JSON.parse(row.header), entries, tailHash: row.tailHash };
+    },
+    getSourceHeaders() {
+      return (headers.all() as { path: string; header: string }[]).map(row => ({ ...row, header: JSON.parse(row.header) }));
+    },
+    getPendingReports() {
+      return (pending.all() as (Omit<PendingReport, "calls"> & { calls: string })[]).map(row => ({ ...row, ...JSON.parse(row.calls) }));
+    },
+    getIncompleteReports() { return incomplete.all() as ReturnType<UsageLedger["getIncompleteReports"]>; },
+    getReportModels(path, runId) { return reportModels.all(path, runId) as ReturnType<UsageLedger["getReportModels"]>; },
+    getProof() { return { reports: getReports.all() as ReturnType<UsageLedger["getProof"]>["reports"], edges: getEdges.all() as CoverageEdge[] }; },
     getImportState(path) { return getState.get(path) as ImportState | undefined; },
     getRuns() {
       return getRuns.all() as RunMeta[];
@@ -354,8 +463,10 @@ function createLedger(db: Db): UsageLedger {
     },
     latestCounter() {
       const row = latestCounter.get() as
-        { ts: number; accountLogin: string | null; creditsUsed: number; entitlement: number | null;
-          remaining: number | null; resetDate: string | null; raw: string } | undefined;
+        {
+          ts: number; accountLogin: string | null; creditsUsed: number; entitlement: number | null;
+          remaining: number | null; resetDate: string | null; raw: string
+        } | undefined;
       if (!row) return undefined;
       return {
         ts: row.ts, creditsUsed: row.creditsUsed, raw: JSON.parse(row.raw) as Record<string, unknown>,
@@ -368,8 +479,10 @@ function createLedger(db: Db): UsageLedger {
     summarize(start, end) {
       const { possibleOverlap, possibleUndercount, ...row } = summarize.get(start, end) as
         Omit<UsageSummary, "estimated" | "possibleOverlap" | "possibleUndercount"> & { possibleUndercount: number; possibleOverlap: number };
-      return { ...row, possibleUndercount: Boolean(possibleUndercount), estimated: Boolean(possibleUndercount || possibleOverlap),
-        ...(possibleOverlap ? { possibleOverlap: true } : {}) };
+      return {
+        ...row, possibleUndercount: Boolean(possibleUndercount), estimated: Boolean(possibleUndercount || possibleOverlap),
+        ...(possibleOverlap ? { possibleOverlap: true } : {})
+      };
     },
     health() {
       const calls = healthCalls.get() as
@@ -378,8 +491,10 @@ function createLedger(db: Db): UsageLedger {
         { sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null };
       const models = unpricedModels.all() as { model: string }[];
       const { possibleOverlaps } = healthOverlaps.get() as { possibleOverlaps: number };
-      return { schemaVersion: db.pragma("user_version") as number, ...calls, ...sources, unpricedModels: models.map(row => row.model),
-        ...(possibleOverlaps ? { possibleOverlaps } : {}) };
+      return {
+        schemaVersion: db.pragma("user_version") as number, ...calls, ...sources, unpricedModels: models.map(row => row.model),
+        ...(possibleOverlaps ? { possibleOverlaps } : {})
+      };
     },
     close() { db.close(); },
   };

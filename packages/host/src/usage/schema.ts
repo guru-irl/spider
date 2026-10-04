@@ -1,5 +1,6 @@
 // The ledger is unreleased: schema refinements remain version 1 until it ships.
 export const USAGE_SCHEMA_VERSION = 1;
+export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
 
 export const selectionCtes = `
 report_runs(id) AS MATERIALIZED (
@@ -53,6 +54,7 @@ pairs AS MATERIALIZED (SELECT root, id FROM hinted h WHERE root != id
 overlap_runs(id) AS MATERIALIZED (SELECT root FROM pairs UNION SELECT id FROM pairs)
 SELECT w.*, CASE WHEN w.run_id IN (SELECT id FROM overlap_runs) THEN 1 ELSE 0 END AS possible_overlap,
   CASE WHEN EXISTS (SELECT 1 FROM import_state s WHERE s.path = w.source_file AND s.offset < s.size)
+    OR EXISTS (SELECT 1 FROM incomplete_reports i WHERE i.path=w.source_file AND i.run_id=w.run_id)
     OR (w.is_report = 0 AND EXISTS (SELECT 1 FROM runs_meta r
       WHERE r.id = w.run_id AND r.ended_at IS NULL))
     THEN 1 ELSE 0 END AS possible_undercount
@@ -174,6 +176,25 @@ CREATE TRIGGER calls_delete_total AFTER DELETE ON calls BEGIN
     AND parent = OLD.parent_run_id AND child = OLD.run_id;
 END;
 CREATE TABLE ledger_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO ledger_metadata VALUES ('schema-layout', '${USAGE_SCHEMA_LAYOUT}');
+
+-- Incremental parser state and report fences share the source-cursor transaction.
+CREATE TABLE source_context (
+  path TEXT PRIMARY KEY NOT NULL, header TEXT NOT NULL, tail_hash TEXT NOT NULL
+);
+CREATE TABLE source_entries (
+  path TEXT NOT NULL, generation INTEGER NOT NULL, byte_offset INTEGER NOT NULL,
+  entry_id TEXT NOT NULL, parent_id TEXT, state_id TEXT, state_parent_id TEXT, linear_id TEXT, json TEXT NOT NULL,
+  PRIMARY KEY(path,generation,byte_offset)
+);
+CREATE INDEX source_entries_identity ON source_entries(path,generation,entry_id,byte_offset);
+CREATE TABLE pending_reports (
+  path TEXT NOT NULL, run_id TEXT NOT NULL, generation INTEGER NOT NULL,
+  first_seen INTEGER NOT NULL, calls TEXT NOT NULL, PRIMARY KEY(path,run_id)
+);
+CREATE TABLE incomplete_reports (
+  path TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(path,run_id)
+);
 
 CREATE TABLE counter_snapshots (
   ts INTEGER NOT NULL, account_login TEXT, credits_used REAL NOT NULL,
@@ -188,6 +209,7 @@ CREATE TABLE import_state (
   generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
   prefix_hash TEXT,
   source_error_code TEXT,
+  source_error_paths TEXT,
   last_ingest_at INTEGER NOT NULL,
   CHECK (offset IS NULL OR (offset >= 0 AND offset <= size))
 );

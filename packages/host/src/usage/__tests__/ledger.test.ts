@@ -19,24 +19,32 @@ function call(overrides: Partial<CallRow> = {}): CallRow {
     runName: null, phase: null, parentRunId: null, auxPurpose: null, provider: "github-copilot", model: "fixture-model",
     requestedModel: null, thinking: null, api: null,
     usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 5, reasoning: 7, totalTokens: 100 },
-    price: { status: "priced", aic: 10, components: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
-      rateVersion: "fixture-rates", tier: "default", confidence: "estimated" },
+    price: {
+      status: "priced", aic: 10, components: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
+      rateVersion: "fixture-rates", tier: "default", confidence: "estimated"
+    },
     piCost: 0.12, latencyMs: 25, aggregate: false, counted: true, originKey: null,
     sourceKind: overrides.actor === "subagent" && overrides.aggregate && overrides.runId != null ? "report" : "transcript", ...overrides,
   };
 }
 function state(overrides: Partial<ImportState> = {}): ImportState {
-  return { path: "synthetic-session.jsonl", inode: "fixture-inode", size: 200, mtimeMs: 1000,
-    offset: 100, parseErrors: 1, generation: 0, prefixHash: "fixture-hash", ...overrides };
+  return {
+    path: "synthetic-session.jsonl", inode: "fixture-inode", size: 200, mtimeMs: 1000,
+    offset: 100, parseErrors: 1, generation: 0, prefixHash: "fixture-hash", ...overrides
+  };
 }
 function batch(overrides: Partial<ImportBatch> = {}): ImportBatch {
-  return { calls: [], runs: [], states: [], detailedRunIds: [], restoreAggregateRunIds: [],
-    resetSources: [], sourceErrors: [], at: 1000, ...overrides };
+  return {
+    calls: [], runs: [], states: [], detailedRunIds: [], restoreAggregateRunIds: [],
+    resetSources: [], sourceErrors: [], at: 1000, ...overrides
+  };
 }
 function run(overrides: Partial<RunMeta> = {}): RunMeta {
-  return { id: "fixture-run", dbPath: "fixture-repo.db", project: null, repo: null, sessionId: null,
+  return {
+    id: "fixture-run", dbPath: "fixture-repo.db", project: null, repo: null, sessionId: null,
     parentRunId: null, agent: null, role: null, name: null, model: null, thinking: null, phase: null,
-    startedAt: null, endedAt: null, ...overrides };
+    startedAt: null, endedAt: null, ...overrides
+  };
 }
 
 beforeEach(async () => {
@@ -67,8 +75,10 @@ describe("usage ledger", () => {
   it("rejects duplicate state paths before any writes", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ states: [state({ offset: 0 })] }));
-    expect(() => ledger.apply(batch({ calls: [call()], runs: [run()],
-      states: [state({ size: 400, offset: 300 }), state({ size: 400, offset: 100 })] }))).toThrow(/duplicate.*state|duplicate.*path/i);
+    expect(() => ledger.apply(batch({
+      calls: [call()], runs: [run()],
+      states: [state({ size: 400, offset: 300 }), state({ size: 400, offset: 100 })]
+    }))).toThrow(/duplicate.*state|duplicate.*path/i);
     expect(ledger.health().calls).toBe(0);
     expect(ledger.getRuns()).toEqual([]);
     expect(ledger.getImportState(state().path)?.offset).toBe(0);
@@ -106,7 +116,7 @@ describe("usage ledger", () => {
     const prepare = Database.prototype.prepare;
     let competingWriteSucceeded = false;
     let observedFence = false;
-    vi.spyOn(Database.prototype, "prepare").mockImplementation(function(this: Database.Database, sql: string) {
+    vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string) {
       const statement = prepare.call(this, sql) as Database.Statement<unknown[]>;
       if (sql.startsWith("SELECT generation, offset")) {
         const get = statement.get;
@@ -166,7 +176,7 @@ describe("usage ledger", () => {
     db.exec("CREATE TABLE counter_snapshots (fixture TEXT)");
     const exec = Database.prototype.exec;
     let failedHandle: Database.Database | undefined;
-    vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
       if (sql.includes("CREATE TABLE calls")) { failedHandle = this; track(this); }
       return exec.call(this, sql);
     });
@@ -186,8 +196,10 @@ describe("usage ledger", () => {
   // Pricing and aggregation are not evidence of incomplete imported data.
   it("keeps complete verified aggregate data unflagged", () => {
     const ledger = track(openUsageLedger(file));
-    const price: CallRow["price"] = { status: "priced", aic: 10, components: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
-      rateVersion: "fixture", tier: "default", confidence: "verified" };
+    const price: CallRow["price"] = {
+      status: "priced", aic: 10, components: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
+      rateVersion: "fixture", tier: "default", confidence: "verified"
+    };
     ledger.apply(batch({ calls: [call({ actor: "subagent", aggregate: true, price })] }));
     expect(ledger.summarize(0, 200)).toEqual({ aic: 10, pricedCalls: 1, unpricedCalls: 0, estimated: false, possibleUndercount: false });
   });
@@ -232,8 +244,10 @@ describe("usage ledger", () => {
   it("gives readable detail priority over a simultaneous fallback request", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ calls: [call({ aggregate: true, actor: "subagent", runId: "run-1" })] }));
-    ledger.apply(batch({ calls: [call({ id: "detail", entryId: "detail", sourceFile: "child.jsonl", runId: "run-1" })],
-      detailedRunIds: ["run-1"], restoreAggregateRunIds: ["run-1"] }));
+    ledger.apply(batch({
+      calls: [call({ id: "detail", entryId: "detail", sourceFile: "child.jsonl", runId: "run-1" })],
+      detailedRunIds: ["run-1"], restoreAggregateRunIds: ["run-1"]
+    }));
     expect(ledger.summarize(0, 200).aic).toBe(10);
     expect(ledger.health().aggregateCalls).toBe(0);
   });
@@ -282,12 +296,14 @@ describe("usage ledger", () => {
     const before = spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
     const ledger = track(openUsageLedger(file));
     expect(reader().prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([
-      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "import_state" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "runs_meta" },
+      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "runs_meta" }, { name: "source_context" }, { name: "source_entries" },
     ]);
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
-    expect(ledger.health()).toEqual({ schemaVersion: 1, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
-      unpricedModels: [], aggregateCalls: 0, lastIngestAt: null });
+    expect(ledger.health()).toEqual({
+      schemaVersion: 1, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
+      unpricedModels: [], aggregateCalls: 0, lastIngestAt: null
+    });
     expect(reader().pragma("journal_mode")).toBe("wal");
     if (process.platform !== "win32") {
       expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -326,10 +342,14 @@ describe("usage ledger", () => {
   // Catches dropped or fabricated attribution, merged token buckets and price components.
   it("round trips all nullable attribution and token fields", () => {
     const ledger = track(openUsageLedger(file));
-    ledger.apply(batch({ calls: [call({ actor: "warmer", aggregate: true, provider: null, model: null })],
-      runs: [run(), run({ dbPath: "second-repo.db", project: "fixture-project", repo: "fixture-repo", sessionId: "session",
+    ledger.apply(batch({
+      calls: [call({ actor: "warmer", aggregate: true, provider: null, model: null })],
+      runs: [run(), run({
+        dbPath: "second-repo.db", project: "fixture-project", repo: "fixture-repo", sessionId: "session",
         parentRunId: "parent", agent: "worker", role: "research", name: "fixture", model: "fixture-model", thinking: "high",
-        phase: "implement", startedAt: 10, endedAt: 20 })], states: [state()] }));
+        phase: "implement", startedAt: 10, endedAt: 20
+      })], states: [state()]
+    }));
     expect(reader().prepare("SELECT * FROM calls").get()).toMatchObject({
       id: "call-1", ts: 100, source_file: "synthetic-session.jsonl", entry_id: "entry-1", source_generation: 0,
       project: null, repo: null, session_id: null, run_id: null, actor: "warmer", role: null, agent: null,
@@ -341,22 +361,30 @@ describe("usage ledger", () => {
     });
     expect(ledger.getImportState("synthetic-session.jsonl")).toEqual(state());
     expect(ledger.getImportState("absent")).toBeUndefined();
-    expect(ledger.getRuns()).toEqual([run(), run({ dbPath: "second-repo.db", project: "fixture-project", repo: "fixture-repo", sessionId: "session",
+    expect(ledger.getRuns()).toEqual([run(), run({
+      dbPath: "second-repo.db", project: "fixture-project", repo: "fixture-repo", sessionId: "session",
       parentRunId: "parent", agent: "worker", role: "research", name: "fixture", model: "fixture-model", thinking: "high",
-      phase: "implement", startedAt: 10, endedAt: 20 })]);
+      phase: "implement", startedAt: 10, endedAt: 20
+    })]);
   });
 
   // Catches swapped attribution columns and dropped requested model/origin provenance.
   it("preserves populated call attribution and original pricing on replay", () => {
     const ledger = track(openUsageLedger(file));
-    ledger.apply(batch({ calls: [call({ project: "project", repo: "repo", sessionId: "session", runId: "run",
-      actor: "aux", role: "worker", agent: "agent", runName: "run-name", phase: "review", parentRunId: "parent",
-      auxPurpose: "reflection", requestedModel: "requested-model", thinking: "high", api: "fixture-api", originKey: "origin" })] }));
+    ledger.apply(batch({
+      calls: [call({
+        project: "project", repo: "repo", sessionId: "session", runId: "run",
+        actor: "aux", role: "worker", agent: "agent", runName: "run-name", phase: "review", parentRunId: "parent",
+        auxPurpose: "reflection", requestedModel: "requested-model", thinking: "high", api: "fixture-api", originKey: "origin"
+      })]
+    }));
     ledger.apply(batch({ calls: [call({ id: "copy-id", ts: 900, counted: false })] }));
-    expect(reader().prepare("SELECT * FROM calls").get()).toMatchObject({ id: "call-1", ts: 100,
+    expect(reader().prepare("SELECT * FROM calls").get()).toMatchObject({
+      id: "call-1", ts: 100,
       project: "project", repo: "repo", session_id: "session", run_id: "run", actor: "aux", role: "worker", agent: "agent",
       run_name: "run-name", phase: "review", parent_run_id: "parent", aux_purpose: "reflection",
-      requested_model: "requested-model", thinking: "high", api: "fixture-api", origin_key: "origin", counted: 1, aic: 10 });
+      requested_model: "requested-model", thinking: "high", api: "fixture-api", origin_key: "origin", counted: 1, aic: 10
+    });
     expect(ledger.summarize(0, 200).pricedCalls).toBe(1);
   });
 
@@ -365,8 +393,10 @@ describe("usage ledger", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ states: [state({ offset: 0, parseErrors: 0 })] }));
     const before = ledger.health();
-    expect(() => ledger.apply(batch({ calls: [call(), call({ id: "call-2", entryId: "entry-2", actor: "invalid" as CallRow["actor"] })],
-      runs: [run()], states: [state({ offset: 200 })], at: 2000 }))).toThrow();
+    expect(() => ledger.apply(batch({
+      calls: [call(), call({ id: "call-2", entryId: "entry-2", actor: "invalid" as CallRow["actor"] })],
+      runs: [run()], states: [state({ offset: 200 })], at: 2000
+    }))).toThrow();
     expect(ledger.health()).toEqual(before);
     expect(ledger.getImportState(state().path)?.offset).toBe(0);
     expect(ledger.getRuns()).toEqual([]);
@@ -382,8 +412,10 @@ describe("usage ledger", () => {
     ledger.apply(batch({ calls: [call({ id: "different-id" })], states: [state()] }));
     expect(ledger.health()).toEqual(first);
     expect(ledger.getImportState(state().path)?.offset).toBe(100);
-    expect(() => ledger.apply(batch({ calls: [call({ id: "stale", entryId: "stale" })],
-      states: [state({ offset: 50 })] }))).toThrow(/stale|offset/i);
+    expect(() => ledger.apply(batch({
+      calls: [call({ id: "stale", entryId: "stale" })],
+      states: [state({ offset: 50 })]
+    }))).toThrow(/stale|offset/i);
     expect(ledger.health()).toEqual(first);
     expect(ledger.summarize(0, 1).unpricedCalls).toBe(0);
   });
@@ -392,8 +424,10 @@ describe("usage ledger", () => {
   it("resets a source generation atomically and rejects old calls", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ calls: [call()], states: [state()] }));
-    const replacement = batch({ resetSources: [{ path: state().path, generation: 1 }],
-      calls: [call({ id: "replacement", sourceGeneration: 1 })], states: [state({ generation: 1, offset: 30 })], at: 2000 });
+    const replacement = batch({
+      resetSources: [{ path: state().path, generation: 1 }],
+      calls: [call({ id: "replacement", sourceGeneration: 1 })], states: [state({ generation: 1, offset: 30 })], at: 2000
+    });
     ledger.apply(replacement);
     ledger.apply(replacement);
     expect(ledger.health().calls).toBe(1);
@@ -402,8 +436,10 @@ describe("usage ledger", () => {
     expect(() => ledger.apply(batch({ calls: [call()], states: [state()], resetSources: [{ path: state().path, generation: 0 }] }))).toThrow(/stale|generation/i);
     expect(() => ledger.apply(batch({ calls: [call({ entryId: "stale-without-state" })] }))).toThrow(/stale|generation/i);
     expect(ledger.health()).toEqual(before);
-    expect(() => ledger.apply(batch({ resetSources: [{ path: state().path, generation: 2 }],
-      states: [state({ generation: 2, offset: 0 })], calls: [call({ sourceGeneration: 2, actor: "invalid" as CallRow["actor"] })] }))).toThrow();
+    expect(() => ledger.apply(batch({
+      resetSources: [{ path: state().path, generation: 2 }],
+      states: [state({ generation: 2, offset: 0 })], calls: [call({ sourceGeneration: 2, actor: "invalid" as CallRow["actor"] })]
+    }))).toThrow();
     expect(ledger.health()).toEqual(before);
     expect(ledger.getImportState(state().path)?.generation).toBe(1);
   });
@@ -412,8 +448,10 @@ describe("usage ledger", () => {
   it("retains current-generation calls on an empty repeated reset", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ calls: [call()], states: [state()] }));
-    ledger.apply(batch({ resetSources: [{ path: state().path, generation: 1 }],
-      states: [state({ generation: 1 })], calls: [call({ sourceGeneration: 1 })] }));
+    ledger.apply(batch({
+      resetSources: [{ path: state().path, generation: 1 }],
+      states: [state({ generation: 1 })], calls: [call({ sourceGeneration: 1 })]
+    }));
     ledger.apply(batch({ resetSources: [{ path: state().path, generation: 1 }], states: [state({ generation: 1 })] }));
     expect(ledger.health().calls).toBe(1);
     expect(ledger.summarize(0, 200).aic).toBe(10);
@@ -424,8 +462,10 @@ describe("usage ledger", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ calls: [call({ aggregate: true, actor: "subagent", runId: "run-1" })] }));
     const detail = call({ id: "detail", sourceFile: "child.jsonl", entryId: "detail", runId: "run-1", actor: "subagent" });
-    expect(() => ledger.apply(batch({ calls: [detail, call({ id: "bad", entryId: "bad", actor: "invalid" as CallRow["actor"] })],
-      detailedRunIds: ["run-1"] }))).toThrow();
+    expect(() => ledger.apply(batch({
+      calls: [detail, call({ id: "bad", entryId: "bad", actor: "invalid" as CallRow["actor"] })],
+      detailedRunIds: ["run-1"]
+    }))).toThrow();
     expect(ledger.summarize(0, 200).aic).toBe(10);
     expect(ledger.health().aggregateCalls).toBe(1);
     ledger.apply(batch({ calls: [detail], detailedRunIds: ["run-1"] }));
@@ -450,8 +490,12 @@ describe("usage ledger", () => {
   // Catches assigning zero AIC to unknown models or counting suppressed uncertainty.
   it("preserves uncertainty", () => {
     const ledger = track(openUsageLedger(file));
-    ledger.apply(batch({ calls: [call({ price: { status: "unpriced", reason: "no-rate-at-time" }, piCost: null, latencyMs: null,
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })] }));
+    ledger.apply(batch({
+      calls: [call({
+        price: { status: "unpriced", reason: "no-rate-at-time" }, piCost: null, latencyMs: null,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+      })]
+    }));
     expect(reader().prepare("SELECT aic, aic_input, price_status, unpriced_reason, confidence, reasoning, cache_write_1h FROM calls").get()).toEqual({
       aic: null, aic_input: null, price_status: "unpriced", unpriced_reason: "no-rate-at-time", confidence: null,
       reasoning: null, cache_write_1h: null,
@@ -463,12 +507,16 @@ describe("usage ledger", () => {
   // Catches closed intervals, hidden aggregates and estimated flag based on excluded rows.
   it("summarizes a bounded period without hidden aggregates", () => {
     const ledger = track(openUsageLedger(file));
-    const verified: CallRow["price"] = { status: "priced", aic: 2, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 2 },
-      rateVersion: "verified-fixture", tier: "default", confidence: "verified" };
-    ledger.apply(batch({ calls: [call({ ts: 10, price: verified }),
+    const verified: CallRow["price"] = {
+      status: "priced", aic: 2, components: { input: 0, cacheRead: 0, cacheWrite: 0, output: 2 },
+      rateVersion: "verified-fixture", tier: "default", confidence: "verified"
+    };
+    ledger.apply(batch({
+      calls: [call({ ts: 10, price: verified }),
       call({ id: "unpriced", entryId: "unpriced", ts: 15, price: { status: "unpriced", reason: "unknown-model" } }),
       call({ id: "hidden", entryId: "hidden", ts: 12, actor: "subagent", runId: "hidden-run", aggregate: true, counted: false }),
-      call({ id: "end", entryId: "end", ts: 20 }), call({ id: "before", entryId: "before", ts: 9, runId: "hidden-run" })] }));
+      call({ id: "end", entryId: "end", ts: 20 }), call({ id: "before", entryId: "before", ts: 9, runId: "hidden-run" })]
+    }));
     expect(ledger.summarize(10, 20)).toEqual({ aic: 2, pricedCalls: 1, unpricedCalls: 1, estimated: false, possibleUndercount: false });
     expect(ledger.summarize(10, 11)).toEqual({ aic: 2, pricedCalls: 1, unpricedCalls: 0, estimated: false, possibleUndercount: false });
     expect(ledger.summarize(30, 40)).toEqual({ aic: 0, pricedCalls: 0, unpricedCalls: 0, estimated: false, possibleUndercount: false });
@@ -493,12 +541,48 @@ describe("usage ledger", () => {
     expect(ledger.latestCounter()).toBeUndefined();
     const snapshot = { ts: 200, creditsUsed: 12, raw: { optional: { value: true }, extra: "fixture" } };
     ledger.insertCounter(snapshot);
-    ledger.insertCounter({ ts: 100, accountLogin: "synthetic-account", creditsUsed: 2, entitlement: 10,
-      remaining: 8, resetDate: "2026-11-01", raw: {} });
+    ledger.insertCounter({
+      ts: 100, accountLogin: "synthetic-account", creditsUsed: 2, entitlement: 10,
+      remaining: 8, resetDate: "2026-11-01", raw: {}
+    });
     expect(ledger.latestCounter()).toEqual(snapshot);
-    ledger.insertCounter({ ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
-      remaining: 7, resetDate: "2026-11-01", raw: {} });
-    expect(ledger.latestCounter()).toEqual({ ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
-      remaining: 7, resetDate: "2026-11-01", raw: {} });
+    ledger.insertCounter({
+      ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
+      remaining: 7, resetDate: "2026-11-01", raw: {}
+    });
+    expect(ledger.latestCounter()).toEqual({
+      ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
+      remaining: 7, resetDate: "2026-11-01", raw: {}
+    });
   });
+});
+
+// Pre-release v1 refinements must never leave the old counting view in service.
+it("fails loudly when opening an obsolete unreleased v1 ledger", () => {
+  const ledger = openUsageLedger(file); ledger.close();
+  const legacy = new Database(file);
+  legacy.exec("DELETE FROM ledger_metadata WHERE key='schema-layout'; DROP VIEW counted_calls; CREATE VIEW counted_calls AS SELECT * FROM calls");
+  legacy.close();
+  expect(() => openUsageLedger(file)).toThrow(/obsolete.*dev ledger/i);
+});
+it("appends attribution entries without updating historical rows", () => {
+  const ledger = track(openUsageLedger(file));
+  ledger.apply(batch({
+    states: [state({ offset: 200 })], sourceContexts: [{
+      path: state().path, context: {
+        header: null, tailHash: "a", entries: [{ byteOffset: 0, json: { type: "metadata", id: "old", parentId: null } }]
+      }
+    }]
+  }));
+  const db = track(openDb(file));
+  db.exec("CREATE TRIGGER reject_old_entry_update BEFORE UPDATE ON source_entries BEGIN SELECT RAISE(ABORT,'historical entry rewritten'); END");
+  ledger.apply(batch({
+    states: [state({ offset: 300, size: 300 })], sourceContexts: [{
+      path: state().path, context: {
+        header: null, tailHash: "b", entries: [{ byteOffset: 200, json: { type: "metadata", id: "new", parentId: "old" } }]
+      }
+    }]
+  }));
+  expect(ledger.getSourceContext(state().path)?.entries.map(e => (e.json as any).id)).toEqual(["old", "new"]);
+  expect(db.prepare("SELECT COUNT(*) n FROM source_entries").get()).toEqual({ n: 2 });
 });

@@ -20,6 +20,7 @@ export function projectRow(row: RunRow): AgentSnapshot {
     endedAt: row.ended_at ?? undefined,
     stepCount: row.step_count ?? 0,
     tokenCount: row.token_count ?? 0,
+    cost: row.cost ?? 0,
     recentActivity: [],
   };
 }

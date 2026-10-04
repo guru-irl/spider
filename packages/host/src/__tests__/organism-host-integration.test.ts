@@ -40,9 +40,10 @@ afterEach(async () => {
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?: boolean }) {
-  mkdirSync(scratch, { recursive: true });
-  const root = mkdtempSync(join(scratch, "fixture-"));
+async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?: boolean; scratchRoot?: string }) {
+  const scratchRoot = opts?.scratchRoot ?? scratch;
+  mkdirSync(scratchRoot, { recursive: true });
+  const root = mkdtempSync(join(scratchRoot, "fixture-"));
   roots.push(root);
   if (opts?.child) vi.stubEnv("PI_SUBAGENT_CHILD", "1");
   const cwd = join(root, "selected");
@@ -150,6 +151,60 @@ function compactEvent(session: SessionManager): SessionBeforeCompactEvent {
 }
 
 describe("the installed pi contract through the full spider extension", () => {
+  // Break: invalidating the accounting sink before the shutdown drain loses the ending session's calls.
+  it("counts the shutdown learner drain and curator before invalidating the ending session", async () => {
+    const f = await setup();
+    controlConfig("set", f.cwd, "curator.consolidate", true);
+    for (const name of ["shutdown-one", "shutdown-two"]) new SkillStore(f.repoDb).upsert({ name, source: "agent", path: "fixture.md" });
+    const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
+    f.complete.mockResolvedValue({ ...f.answer, usage, content: [{ type: "text", text: "{}" }] });
+    await f.runner.emit({ type: "session_shutdown", reason: "quit" });
+    expect(f.session.getEntries().filter(e => e.type === "usage").map(e => ({ kind: e.kind, note: e.note, usage: e.usage }))).toEqual([
+      { kind: "spider-aux", note: "learner", usage },
+      { kind: "spider-aux", note: "learner", usage },
+      { kind: "spider-aux", note: "skill-curate", usage },
+    ]);
+  });
+
+  it("counts learner completions as spider-aux and keeps the captured session on a late response", async () => {
+    const f = await setup({ scratchRoot: scratch });
+    const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
+    f.complete.mockResolvedValueOnce({ ...f.answer, usage, responseModel: "learner-actual", content: [{ type: "text", text: "{}" }] });
+    await f.runner.emit(compactEvent(f.session));
+    await vi.waitFor(() => expect(f.session.getEntries().filter(e => e.type === "usage")).toContainEqual(expect.objectContaining({ kind: "spider-aux", note: "learner", model: "learner-actual", usage })));
+    let finish!: (answer: AssistantMessage) => void;
+    f.complete.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = f.runner.emit(compactEvent(f.session));
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    f.session.newSession();
+    finish({ ...f.answer, usage, content: [{ type: "text", text: "{}" }] });
+    await pending;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.session.getEntries().filter(e => e.type === "usage")).toEqual([]);
+  });
+
+  it("counts asynchronous skill review queue completions as skill-review", async () => {
+    const f = await setup({ scratchRoot: scratch });
+    const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
+    f.complete.mockImplementation(async (_model, context) => context.systemPrompt?.startsWith("Review a skill candidate.")
+      ? { ...f.answer, usage, content: [{ type: "text", text: '{"verdict":"new","reason":"reusable"}' }] }
+      : { ...f.answer, usage });
+    await f.runner.emit(compactEvent(f.session));
+    await vi.waitFor(() => expect(new SkillStore(f.repoDb).list({ status: "staged" })).toHaveLength(1));
+    expect(f.session.getEntries().filter(e => e.type === "usage")).toContainEqual(expect.objectContaining({ kind: "spider-aux", note: "skill-review", usage }));
+  });
+
+  it("labels the curator's model completion as skill-curate rather than learner", async () => {
+    const f = await setup({ scratchRoot: scratch }), skills = new SkillStore(f.repoDb);
+    for (const name of ["fixture-one", "fixture-two"]) {
+      skills.upsert({ name, source: "agent", path: "fixture.md" });
+    }
+    const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
+    f.complete.mockResolvedValueOnce({ ...f.answer, usage, content: [{ type: "text", text: "[]" }] });
+    const tool = f.runner.getToolDefinition("spider")!;
+    await tool.execute("curate", { action: "control", command: "skill", sub: "curate", force: true, consolidate: true }, undefined, undefined, f.runner.createContext());
+    expect(f.session.getEntries().filter(e => e.type === "usage")).toContainEqual(expect.objectContaining({ kind: "spider-aux", note: "skill-curate", usage }));
+  });
   it("makes proposals visible and activates real artifacts only after explicit approval", async () => {
     const f = await setup();
     await f.runner.emit(compactEvent(f.session));

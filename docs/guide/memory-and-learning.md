@@ -50,6 +50,8 @@ spider control command:"memory" sub:"forget" uuid:"<uuid>" scope:"repo"
 
 - Thinking accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, independently of the session or learner model.
 - Reviewers use pi's authenticated `streamSimple(...).result()` with provider-neutral `reasoning`. Provider errors, aborts, and empty replies remain failures.
+- Learner, memory review, skill review, and skill curation model usage appears in the pi footer, `/session`, and RPC session totals, including shutdown drain and curation. Calls still running after the session ends or switches are skipped rather than charged to another session.
+- On hosts without model-attributed usage entries, pending usage is attached to the next spider tool result in its owning session and appears under tools and summaries.
 - Configure the dotted keys through [Configuration](configuration.md).
 
 ## Background learning

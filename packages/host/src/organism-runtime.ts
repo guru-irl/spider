@@ -4,7 +4,7 @@ import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-
 import { openGlobal, openProject, openRepo, openDbAt, paths, type ProjectInfo } from "@spider/db-core";
 import { openSessionRunDb, resolveSessionRunProject } from "./session-run-db";
 import { digestHistory, type Embedder } from "@spider/memory";
-import { complete, pick } from "@spider/models";
+import { complete, pick, type UsageSinkFactory } from "@spider/models";
 import { emitLog } from "@spider/subagents";
 import {
   OrganismWorker, readCuratorConfig, readOrganismConfig, safeError,
@@ -71,6 +71,7 @@ export class HostOrganismRuntime {
     private readonly getEmbedder: () => Promise<Embedder | null>,
     private readonly onDrainReport?: (report: DrainReport) => void,
     private readonly getLoadedSkills?: () => ExistingSkill[],
+    private readonly usage?: (sessionId: string) => UsageSinkFactory,
   ) {}
 
   /** False once this instance's own lifecycle-hook registration has failed. */
@@ -177,13 +178,14 @@ export class HostOrganismRuntime {
     const entry = {} as RuntimeEntry;
     entry.context = { ...context, project };
     const thisRuntimeLoadedSkills = () => this.getLoadedSkills?.() ?? [];
+    const thisRuntimeUsage = this.usage;
     const deps: WorkerDeps = {
       db, worktreeDb, globalDb, project, getEmbedder: this.getEmbedder,
       onDrainReport: this.onDrainReport,
       get org() { return readOrganismConfig(config()); },
       get curator() { return readCuratorConfig(config()); },
-      get skillReview() { return skillReviewOptions(project.realPath, entry.context.modelRegistry, undefined, thisRuntimeLoadedSkills()); },
-      makeModel: (signal) => {
+      get skillReview() { return skillReviewOptions(project.realPath, entry.context.modelRegistry, undefined, thisRuntimeLoadedSkills(), thisRuntimeUsage?.(entry.context.sessionId)); },
+      makeModel: (signal, purpose = "learner") => {
         const current = entry.context;
         const registry = completionRegistry(current.modelRegistry);
         const available = listCatalog(registry);
@@ -214,7 +216,7 @@ export class HostOrganismRuntime {
         const requestSignal = signal ?? AbortSignal.timeout(30_000);
         return {
           complete: async (system, messages) => complete(selected, boundedPrompt(digestHistory(messages)),
-            { registry, system, thinkingLevel: "low", maxTokens: 4096, signal: requestSignal },
+            { registry, system, thinkingLevel: "low", maxTokens: 4096, signal: requestSignal, onUsage: this.usage?.(current.sessionId)(purpose) },
           ),
         };
       },

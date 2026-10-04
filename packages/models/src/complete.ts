@@ -2,9 +2,16 @@ import type { ModelEntry } from "./catalog";
 import type { PickResult } from "./pick";
 import { resolveThinking, type Db, type ThinkingLevel, type ThinkingResolution } from "@spider/db-core";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
+
+export interface ModelUsage { provider: string; model: string; usage: Usage }
+export type UsageSink = (record: ModelUsage) => void;
+export type UsageSinkFactory = (purpose: string) => UsageSink | undefined;
 
 export interface CompleteOpts {
   system?: string;
+  /** Host-owned accounting; reported even on a partial error or aborted response. */
+  onUsage?: UsageSink;
   thinkingLevel?: ThinkingLevel;
   /** Effective level and any cap/adjustment, emitted before the request. */
   onThinking?: (info: ThinkingResolution) => void;
@@ -75,6 +82,9 @@ async function completeViaRegistry(entry: ModelEntry, prompt: string, opts: Comp
     maxTokens: opts.maxTokens,
     signal: opts.signal,
   }).result();
+
+  try { if (message.usage) opts.onUsage?.({ provider: message.provider, model: message.responseModel ?? message.model, usage: message.usage }); }
+  catch { /* accounting must not discard a model response */ }
 
   if (message.stopReason === "aborted") {
     throw new Error(`@spider/models: completion aborted for ${entry.provider}/${entry.id}${message.errorMessage ? `: ${message.errorMessage}` : ""}`);

@@ -23,6 +23,8 @@ export interface ActionCtx {
   injectionCwd?: string;       // host cwd before action-context binding resolution; doctor mirrors the hook
   injectionSnapshot?: InjectionSnapshot; // captured before action context can migrate a broken DB
   pi: unknown;               // pi ExtensionAPI (events, sendMessage, on, registerTool)
+  usage?: import("@spider/models").UsageSinkFactory;
+  reportUsage?: (db: Db, run: import("@spider/subagents").RunRow) => void;
   auxModel?: string;         // cheap aux-model id hint from config (digest routing)
   models: typeof import("@spider/models");  // model router: catalog()/pick()/complete()
   /** Streams a cumulative, capped output snapshot to the UI while a command is still

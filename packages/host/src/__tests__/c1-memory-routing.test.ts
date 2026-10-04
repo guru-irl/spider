@@ -2,17 +2,34 @@
 // C1 critical defect: memory routing must go to repo tier, not worktree tier.
 // These tests verify the fix by driving through the REAL action path to catch
 // routing bugs that direct store calls would miss.
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { setGlobalDbPathForTests, openDbAt, openRepo, openProject, resolveProject } from "@spider/db-core";
+import { describe, it, expect, afterAll, afterEach, beforeEach, vi } from "vitest";
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { join, relative, isAbsolute } from "node:path";
+import { paths, setGlobalDbPathForTests, openDbAt, openRepo, openProject, resolveProject } from "@spider/db-core";
 import spiderExtension, { buildActionCtx, SPIDER_PARAMETERS } from "../extension";
 import { execSync } from "node:child_process";
 
-const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spider", "scratch", `c1-${process.pid}`);
+// A regression must fail here before a native provider can load or download a model.
+const initializeModel = vi.hoisted(() => vi.fn(() => { throw new Error("model downloads are forbidden in memory routing tests"); }));
+const loadPipeline = vi.hoisted(() => vi.fn(async () => { throw new Error("model downloads are forbidden in memory routing tests"); }));
+vi.mock("fastembed", () => ({
+  EmbeddingModel: { BGESmallENV15: "fixture" },
+  FlagEmbedding: { init: initializeModel },
+}));
+
+vi.mock("@huggingface/transformers", () => ({ pipeline: loadPipeline }));
+
+vi.mock("@spider/memory", async original => ({
+  ...await original<typeof import("@spider/memory")>(),
+  resolveEmbedder: async () => (await import("./memory-test-embedder")).memoryTestEmbedder,
+}));
+
+const scratch = join(paths.globalRoot, "c1-memory-routing");
 
 beforeEach(() => {
+  const fixtureRelativePath = relative(paths.globalRoot, scratch);
+  expect(fixtureRelativePath.startsWith("..")).toBe(false);
+  expect(isAbsolute(fixtureRelativePath)).toBe(false);
   mkdirSync(scratch, { recursive: true });
   setGlobalDbPathForTests(join(scratch, `g-${Date.now()}.db`));
 });
@@ -20,6 +37,13 @@ beforeEach(() => {
 afterEach(() => {
   setGlobalDbPathForTests(null);
   rmSync(scratch, { recursive: true, force: true });
+  expect(existsSync(scratch)).toBe(false);
+});
+
+afterAll(() => {
+  // Cover provider calls from every test in the file, not just the guard test.
+  expect(loadPipeline).not.toHaveBeenCalled();
+  expect(initializeModel).not.toHaveBeenCalled();
 });
 
 function fakePi() {
@@ -36,6 +60,18 @@ function fakePi() {
 }
 
 describe("C1: memory routing to repo tier", () => {
+  it("default remember and recall never initialize a downloading model provider", async () => {
+    const repoDir = join(scratch, "no-download");
+    mkdirSync(repoDir, { recursive: true });
+    execSync("git init", { cwd: repoDir, stdio: "ignore" });
+    const pi = fakePi();
+    spiderExtension(pi as never);
+    const tool = pi._tools.spider as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
+    await tool.execute("guard-write", { action: "remember", content: "no network routing fact", category: "convention", justification: "A durable repo rule for future agents.", cwd: repoDir }, {});
+    const result = await tool.execute("guard-read", { action: "recall", query: "network routing", cwd: repoDir }, {});
+    expect(result.details).toEqual(expect.arrayContaining([expect.objectContaining({ content: "no network routing fact", category: "convention", status: "active" })]));
+  });
+
   it("remember with NO explicit scope persists to the repo DB and is readable by recall", async () => {
     // MUTATION: route memory to worktree DB → must fail
     // This test drives through the REAL action path (tool execute) to catch routing bugs

@@ -4,6 +4,7 @@ import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemory
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP, memoryCharLength } from "./overflow";
 import { mapRow, tableFor } from "./internal";
 import { enqueueEmbed } from "./embeddings/queue";
+import { deleteOwnerVectors } from "./embeddings/vectors";
 
 export { activeCharTotal, listActive } from "./internal";
 
@@ -189,6 +190,10 @@ export function setStatus(db: Db, scope: MemoryScope, uuid: string, status: Memo
 
       const wasActive = current.status === "active";
       const isActive = status === "active";
+      if (status !== "active" && status !== "staged") {
+        deleteOwnerVectors(db, "memory", uuid);
+        db.prepare("DELETE FROM embed_queue WHERE owner_kind = 'memory' AND owner_id = ?").run(uuid);
+      }
 
       // Update status
       db.prepare(`
@@ -241,8 +246,10 @@ export function removeMemory(db: Db, scope: MemoryScope, uuid: string): void {
         WHERE uuid = ?
       `).run(updatedAt, uuid);
 
-      // Remove from FTS
+      // Remove from FTS and both vector stores in the same lifecycle transaction.
       db.prepare(`DELETE FROM memory_fts WHERE uuid = ?`).run(uuid);
+      deleteOwnerVectors(db, "memory", uuid);
+      db.prepare("DELETE FROM embed_queue WHERE owner_kind = 'memory' AND owner_id = ?").run(uuid);
     })();
   } else {
     db.prepare(`

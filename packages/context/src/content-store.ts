@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { openSync, fstatSync, readFileSync, closeSync } from "node:fs";
 import type { Db } from "@spider/db-core";
+import { deleteOwnerVectors } from "@spider/memory";
 import { chunkMarkdown, detectContentType } from "./chunker";
 import { sanitizeQuery } from "./fts-query";
 
@@ -162,12 +163,15 @@ export class ContentStore {
   }
 
   deleteBySource(source: string): number {
-    const rows = this.#db.prepare("SELECT id FROM content WHERE source = ?").all(source) as { id: number }[];
-    for (const r of rows) {
-      this.#db.prepare("DELETE FROM content_fts WHERE rowid = ?").run(r.id);
-    }
-    const info = this.#db.prepare("DELETE FROM content WHERE source = ?").run(source);
-    return Number(info.changes);
+    return this.#db.transaction(() => {
+      const rows = this.#db.prepare("SELECT id FROM content WHERE source = ?").all(source) as { id: number }[];
+      for (const r of rows) {
+        this.#db.prepare("DELETE FROM content_fts WHERE rowid = ?").run(r.id);
+        deleteOwnerVectors(this.#db, "content", String(r.id));
+        this.#db.prepare("DELETE FROM embed_queue WHERE owner_kind = 'content' AND owner_id = ?").run(String(r.id));
+      }
+      return Number(this.#db.prepare("DELETE FROM content WHERE source = ?").run(source).changes);
+    })();
   }
 
   listStaleSources(): Array<{ source: string; path: string; hash: string }> {

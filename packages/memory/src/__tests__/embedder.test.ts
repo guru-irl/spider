@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { resolveEmbedder, isEmbedderLoaded, EMBED_DIM, getReadyEmbedder, waitForEmbedder } from "../embeddings/embedder";
+import { resolveEmbedder, isEmbedderLoaded, EMBED_DIM, getReadyEmbedder, waitForEmbedder, stopEmbedder, getEmbedderState, startEmbedderSession } from "../embeddings/embedder";
 import { paths } from "@spider/db-core";
 import { existsSync, lutimesSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +11,10 @@ const provider = vi.hoisted(() => ({
   pending: undefined as Promise<void> | undefined,
   onInit: undefined as ((options: { cacheDir: string; showDownloadProgress?: boolean }) => void) | undefined,
 }));
+vi.mock("node:worker_threads", async () => {
+  const { providerWorker } = await import("./helpers/provider-worker");
+  return { Worker: providerWorker(() => import("fastembed")) };
+});
 vi.mock("fastembed", () => ({
   EmbeddingModel: { BGESmallENV15: "fast-bge-small-en-v1.5" },
   FlagEmbedding: { init: async (options: { cacheDir: string; showDownloadProgress?: boolean }) => {
@@ -24,13 +28,15 @@ vi.mock("fastembed", () => ({
 }));
 vi.mock("@huggingface/transformers", () => ({ pipeline: async () => { throw new Error("fixture fallback unavailable"); } }));
 const globalCache = globalThis as typeof globalThis & Record<symbol, unknown>;
-const key = Symbol.for("spider.embedder.v1:BGE-small-en-v1.5");
+const key = Symbol.for("spider.embedder.v2:BGE-small-en-v1.5");
 const quarantineKey = Symbol.for("spider.embedder.quarantine.v1:BGE-small-en-v1.5");
 beforeEach(() => {
+  startEmbedderSession();
   delete globalCache[key]; delete globalCache[quarantineKey];
   provider.inits = 0; provider.fail = false; provider.error = undefined; provider.pending = undefined; provider.onInit = undefined;
 });
-afterEach(() => {
+afterEach(async () => {
+  await stopEmbedder();
   delete globalCache[key]; delete globalCache[quarantineKey]; vi.resetModules(); vi.restoreAllMocks(); vi.useRealTimers();
   rmSync(paths.models, { recursive: true, force: true });
   rmSync(join(paths.globalRoot, "outside-models"), { recursive: true, force: true });
@@ -58,6 +64,7 @@ describe("embedder", () => {
     expect(getReadyEmbedder()).toBeNull();
     expect(getReadyEmbedder()).toBeNull();
     const pending = resolveEmbedder();
+    expect(getEmbedderState().state).toBe("initializing");
     ready();
     const embedder = await pending;
     expect(embedder).not.toBeNull();
@@ -327,4 +334,16 @@ describe("embedder", () => {
     expect(isEmbedderLoaded()).toBe(true);
     expect(provider.inits).toBe(2);
   });
+  it("retains unavailable cooldown across session shutdown instead of reinitializing on reload", async () => {
+    provider.fail = true;
+    const first = resolveEmbedder(); expect(await first).toBeNull();
+    await stopEmbedder();
+    provider.fail = false;
+    expect(getReadyEmbedder()).toBeNull();
+    expect(await resolveEmbedder()).toBeNull();
+    startEmbedderSession();
+    expect(resolveEmbedder()).toBe(first);
+    expect(await resolveEmbedder()).toBeNull(); expect(provider.inits).toBe(1);
+  });
+
 });

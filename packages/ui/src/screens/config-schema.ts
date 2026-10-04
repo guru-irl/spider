@@ -33,6 +33,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "memory.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "medium", enum: [], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
 		{ key: "memory.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 45000, min: 1000, max: 120000, description: "Maximum wait before the proposed memory is stored as requested." },
 	]},
+	{ id: "embeddings", label: "Embeddings", fields: [
+		{ key: "embeddings.drain", label: "Background drain", type: "boolean", default: true, description: "Drain repo and content embeddings in parent sessions using an off-thread model worker." },
+	] },
 	{ id: "skills", label: "Skill reviewer", fields: [
 		{ key: "skills.reviewer.enabled", label: "Review skill proposals", type: "boolean", default: true, description: "Gate skill proposals. When disabled, learner skill proposals are off; agent requests stage with review skipped." },
 		{ key: "skills.reviewer.model", label: "Reviewer model", type: "string", default: "github-copilot/gpt-6-luna", description: "Authenticated provider/model for skill review." },

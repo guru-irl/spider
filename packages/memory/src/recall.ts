@@ -21,20 +21,25 @@ export async function recall(
 
   if (typeof query === "string" && query.length > 0) {
     if (embedder !== null && scope === "repo") {
-      const [qv] = await embedder.embed([query]);
-      const hits = knn(db, qv, limit, "memory");
-      const records: MemoryRecord[] = [];
-      for (const hit of hits) {
-        const rec = getMemory(db, scope, hit.ownerId);
-        if (!rec) continue;
-        if (rec.status !== "active") continue;
-        if (opts?.category && rec.category !== opts.category) continue;
-        records.push(rec);
-      }
-      if (records.length > 0) {
-        return records.slice(0, limit);
-      }
-      // Fall back to FTS when no vectors are embedded yet.
+      try {
+        const [qv] = await embedder.embed([query]);
+        const hits = knn(db, qv, limit * 5, "memory");
+        const records: MemoryRecord[] = [];
+        for (const hit of hits) {
+          const rec = getMemory(db, scope, hit.ownerId);
+          if (!rec) continue;
+          if (rec.status !== "active") continue;
+          if (opts?.category && rec.category !== opts.category) continue;
+          records.push(rec);
+        }
+        if (records.length < limit) {
+          const seen = new Set(records.map(record => record.uuid));
+          for (const record of searchMemoryFts(db, scope, query, opts)) {
+            if (!seen.has(record.uuid)) { records.push(record); seen.add(record.uuid); }
+          }
+        }
+        if (records.length) return records.slice(0, limit);
+      } catch { /* Crashed/unavailable workers degrade to lexical recall. */ }
     }
     return searchMemoryFts(db, scope, query, opts);
   }

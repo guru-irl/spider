@@ -6,6 +6,7 @@ import { canonicalModelId, COPILOT_RATE_VERSIONS } from "./rates.js";
 import type { Actor, PriceResult, UsageTokens } from "./types.js";
 import { countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
 import { assertUsageSchemaVersion, migrateUsageLedger } from "./migrate.js";
+import { createUsageLeaseStore, type UsageLeaseStore } from "./lease.js";
 
 /**
  * Run reports have actor='subagent' AND aggregate=true; child summaries use their
@@ -108,6 +109,7 @@ export type UsageSummary = {
   possibleOverlap?: boolean;
 };
 export interface UsageLedger {
+  readonly leases: UsageLeaseStore;
   apply(batch: ImportBatch): void;
   getImportState(path: string): ImportState | undefined;
   getRuns(): readonly RunMeta[];
@@ -318,7 +320,7 @@ function createLedger(db: Db): UsageLedger {
   const insertCounter = db.prepare(`INSERT INTO counter_snapshots (ts, account_login, credits_used, entitlement, remaining, reset_date, raw)
     VALUES (@ts, @accountLogin, @creditsUsed, @entitlement, @remaining, @resetDate, @raw)`);
   const latestCounter = db.prepare(`SELECT ts, account_login AS accountLogin, credits_used AS creditsUsed,
-    entitlement, remaining, reset_date AS resetDate, raw FROM counter_snapshots ORDER BY ts DESC, rowid DESC LIMIT 1`);
+    entitlement, remaining, reset_date AS resetDate, raw FROM counter_snapshots ORDER BY rowid DESC LIMIT 1`);
   const summarize = db.prepare(`SELECT COALESCE(SUM(aic), 0) AS aic,
     COALESCE(SUM(price_status = 'priced'), 0) AS pricedCalls,
     COALESCE(SUM(price_status = 'unpriced'), 0) AS unpricedCalls,
@@ -340,7 +342,8 @@ function createLedger(db: Db): UsageLedger {
     SELECT DISTINCT c.model FROM calls c INDEXED BY calls_health_unpriced
     WHERE c.price_status = 'unpriced' AND c.model IS NOT NULL AND ${selectedPredicate()} ORDER BY c.model`);
 
-  return {
+  const ledger: UsageLedger = {
+    leases: createUsageLeaseStore(db, snapshot => ledger.insertCounter(snapshot)),
     apply(batch) {
       db.raw.transaction(() => {
         // Validate every source before mutating anything, including calls without a cursor.
@@ -498,4 +501,5 @@ function createLedger(db: Db): UsageLedger {
     },
     close() { db.close(); },
   };
+  return ledger;
 }

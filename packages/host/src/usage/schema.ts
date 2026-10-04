@@ -2,6 +2,16 @@
 export const USAGE_SCHEMA_VERSION = 1;
 export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
 
+// Ephemeral coordination state: migration checks names, types, keys and normalized DDL
+// (including CHECK constraints), and recreates incompatible tables while
+// v1 is unreleased. Durable snapshots and calls are never dropped.
+export const USAGE_LEASE_COLUMNS = ["name", "owner", "token", "acquired_at", "expires_at", "next_due_at", "last_error_code", "notice_code", "notice_at"] as const;
+export const USAGE_LEASE_SCHEMA = `CREATE TABLE IF NOT EXISTS leases (
+  name TEXT PRIMARY KEY NOT NULL,
+  owner TEXT, token TEXT, acquired_at INTEGER, expires_at INTEGER,
+  next_due_at INTEGER, last_error_code TEXT, notice_code TEXT, notice_at INTEGER
+);`;
+
 export const selectionCtes = `
 report_runs(id) AS MATERIALIZED (
   SELECT DISTINCT r.run_id FROM calls r INDEXED BY calls_reports WHERE r.is_report = 1

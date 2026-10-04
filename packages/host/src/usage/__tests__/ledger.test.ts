@@ -296,7 +296,7 @@ describe("usage ledger", () => {
     const before = spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
     const ledger = track(openUsageLedger(file));
     expect(reader().prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([
-      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "runs_meta" }, { name: "source_context" }, { name: "source_entries" },
+      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "leases" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "runs_meta" }, { name: "source_context" }, { name: "source_entries" },
     ]);
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
@@ -535,25 +535,21 @@ describe("usage ledger", () => {
     expect(ledger.health()).toMatchObject({ parseErrors: 1, sourceErrors: 0, lastIngestAt: 3000 });
   });
 
-  // Catches optional counter fields being fabricated and latest depending on insertion order.
-  it("stores optional counter fields and selects the latest timestamp", () => {
+  // Catches fabricated optional fields and timestamp ordering hiding a newer save.
+  it("stores optional counter fields and selects the latest insertion", () => {
     const ledger = track(openUsageLedger(file));
     expect(ledger.latestCounter()).toBeUndefined();
     const snapshot = { ts: 200, creditsUsed: 12, raw: { optional: { value: true }, extra: "fixture" } };
     ledger.insertCounter(snapshot);
-    ledger.insertCounter({
-      ts: 100, accountLogin: "synthetic-account", creditsUsed: 2, entitlement: 10,
-      remaining: 8, resetDate: "2026-11-01", raw: {}
-    });
     expect(ledger.latestCounter()).toEqual(snapshot);
-    ledger.insertCounter({
-      ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
-      remaining: 7, resetDate: "2026-11-01", raw: {}
-    });
-    expect(ledger.latestCounter()).toEqual({
-      ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
-      remaining: 7, resetDate: "2026-11-01", raw: {}
-    });
+    ledger.insertCounter({ ts: 100, accountLogin: "synthetic-account", creditsUsed: 2, entitlement: 10,
+      remaining: 8, resetDate: "2026-11-01", raw: {} });
+    expect(ledger.latestCounter()).toEqual({ ts: 100, accountLogin: "synthetic-account", creditsUsed: 2, entitlement: 10,
+      remaining: 8, resetDate: "2026-11-01", raw: {} });
+    ledger.insertCounter({ ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
+      remaining: 7, resetDate: "2026-11-01", raw: {} });
+    expect(ledger.latestCounter()).toEqual({ ts: 300, accountLogin: "synthetic-account", creditsUsed: 3, entitlement: 10,
+      remaining: 7, resetDate: "2026-11-01", raw: {} });
   });
 });
 

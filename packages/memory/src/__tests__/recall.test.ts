@@ -3,6 +3,8 @@ import { sanitizeQuery } from "@spider/db-core";
 import { makeMemDb, makeGlobalMemDb } from "./helpers/tmpdb";
 import { addMemory, setStatus } from "../store";
 import { recall } from "../recall";
+import { drainEmbedQueue } from "../embeddings/queue";
+import type { Embedder } from "../embeddings/embedder";
 
 let ctx: ReturnType<typeof makeMemDb>;
 afterEach(() => ctx?.cleanup());
@@ -17,6 +19,29 @@ describe("recall", () => {
     ctx = makeMemDb();
     addMemory(ctx.db, "repo", { category: "tool-quirk", content: "vitest needs --run" });
     expect((await recall(ctx.db, "repo", "vitest", null)).map(r => r.content)).toContain("vitest needs --run");
+  });
+  it("returns vector hits without lexical matches, excluding staged and wrong-category memories", async () => {
+    ctx = makeMemDb();
+    // Match the integration smoke test's small-vector pattern: exercise real
+    // brute-force KNN rather than the native vec0 table fixed at 384 dimensions.
+    const embedder: Embedder = {
+      model: "fixture", dim: 8,
+      async embed(texts) {
+        return texts.map(() => {
+          const vector = new Float32Array(8);
+          vector[0] = 1;
+          return vector;
+        });
+      },
+    };
+    const target = addMemory(ctx.db, "repo", { category: "convention", content: "Keep generated metadata current" });
+    addMemory(ctx.db, "repo", { category: "convention", content: "Unapproved draft", status: "staged" });
+    addMemory(ctx.db, "repo", { category: "preference", content: "Prefer compact output" });
+    expect(await drainEmbedQueue(ctx.db, embedder)).toBe(3);
+    const query = "nonlexicalquery";
+    expect(await recall(ctx.db, "repo", query, null)).toEqual([]);
+    const rows = await recall(ctx.db, "repo", query, embedder, { category: "convention" });
+    expect(rows.map(row => row.uuid)).toEqual([target.uuid]);
   });
   it("treats punctuation, FTS operators and NUL as safe query text", async () => {
     ctx = makeMemDb();

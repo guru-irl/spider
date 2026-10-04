@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -6,6 +6,27 @@ import { paths, setGlobalDbPathForTests, openDbReadOnlyAt } from "@spider/db-cor
 import spiderExtension, { SPIDER_PARAMETERS } from "../extension";
 import { controlConfig } from "../control";
 import { reviewerPrompt, REVIEWER_INSTRUCTIONS } from "../memory-reviewer";
+
+// A regression must fail here before a native provider can load or download a model.
+const initializeModel = vi.hoisted(() => vi.fn(() => { throw new Error("model downloads are forbidden in memory reviewer tests"); }));
+const loadPipeline = vi.hoisted(() => vi.fn(async () => { throw new Error("model downloads are forbidden in memory reviewer tests"); }));
+vi.mock("fastembed", () => ({
+  EmbeddingModel: { BGESmallENV15: "fixture" },
+  FlagEmbedding: { init: initializeModel },
+}));
+
+vi.mock("@huggingface/transformers", () => ({ pipeline: loadPipeline }));
+
+vi.mock("@spider/memory", async original => ({
+  ...await original<typeof import("@spider/memory")>(),
+  resolveEmbedder: async () => (await import("./memory-test-embedder")).memoryTestEmbedder,
+}));
+
+afterAll(() => {
+  // Cover provider calls from every test in the file, not just the guard test.
+  expect(loadPipeline).not.toHaveBeenCalled();
+  expect(initializeModel).not.toHaveBeenCalled();
+});
 
 const root = join(process.cwd(), ".spider", "scratch", "thinking-policy-tests", `reviewer-host-${process.pid}`);
 const oldGlobalRoot = paths.globalRoot;
@@ -30,6 +51,13 @@ const justification = "It will still matter in future sessions; other agents bui
 const args = { action: "remember", category: "convention", content: "Always verify generated metadata", justification };
 
 describe("remember reviewer host", () => {
+  it("default remember and recall never initialize a downloading model provider", async () => {
+    const dir = fixture(); const t = tool();
+    await t.execute("guard-write", { ...args, cwd: dir }, undefined, undefined, { cwd: dir });
+    const result = await t.execute("guard-read", { action: "recall", query: "generated metadata", cwd: dir }, undefined, undefined, { cwd: dir });
+    expect(result.details).toEqual(expect.arrayContaining([expect.objectContaining({ content: args.content, category: "convention", status: "active" })]));
+  });
+
   it("pins the exact durability rule, user preference exception, examples, scope rule and supplied justification", () => {
     const text = reviewerPrompt({ content: "candidate", category: "preference", scope: "repo", justification: "VERBATIM justification!!" }, []);
     expect(text).toContain("VERBATIM justification!!");

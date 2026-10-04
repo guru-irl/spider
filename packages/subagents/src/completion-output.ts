@@ -53,6 +53,7 @@ export function summarizeCompletionEvents(db: Db, runId: string, buffered: Reado
     if (type !== "steer_delivery" && type !== "steer") return;
     const delivery = payload.delivery === "broker-accepted" || (payload.transport === "intercom" && payload.delivered === true) ? "accepted but not confirmed"
       : payload.delivered === true ? "delivered"
+      : payload.delivery === "consumed by an extension, not delivered" ? payload.delivery
       : payload.delivery === "no reply yet, delivery unknown" ? payload.delivery
       : payload.delivery === "refused" || (payload.accepted === false && !payload.childAccepted) ? "refused"
       : payload.delivered === false || payload.accepted || payload.childAccepted ? "accepted but not confirmed" : undefined;
@@ -70,7 +71,7 @@ export function summarizeCompletionEvents(db: Db, runId: string, buffered: Reado
     try { record(event.type, event, `${event.type}-buffered-${index}`); }
     catch { /* malformed diagnostics do not change the outcome */ }
   }
-  const steerSummary = ["delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"].map(delivery => {
+  const steerSummary = ["delivered", "accepted but not confirmed", "consumed by an extension, not delivered", "no reply yet, delivery unknown", "refused"].map(delivery => {
     const count = [...deliveries.values()].filter(value => value === delivery).length;
     return count ? `${count} steer(s) ${delivery}.` : "";
   }).filter(Boolean).join("\n");

@@ -14,6 +14,96 @@ import { getChild, teardownAll } from "../coordinators";
 import { freshDb, testScratchPath } from "./helpers/testutil";
 import { appendRunEvent, openDbAt, type Db } from "@spider/db-core";
 const dbs: Db[] = [];
+it("completion counts consumed input separately from accepted-unconfirmed", async () => {
+  const db = freshDb(); dbs.push(db); const store = new RunStore(db);
+  const runner = new Runner(db, "consumed-summary", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db),
+    scratchRoot: testScratchPath("consumed-summary"), dbPath: "fixture.db",
+    spawn: spec => {
+      for (const type of ["steer_delivery", "steer"]) appendRunEvent(db, { runId: spec.env.PI_SUBAGENT_RUN_ID,
+        sessionId: "consumed-summary", ts: Date.now(), type, summary: "Consumed input.",
+        payload: { requestId: "consumed-request", accepted: true, delivered: false, delivery: "consumed by an extension, not delivered" } });
+      return { wait: async () => ({ exitCode: 0, result: "report" }), kill() {}, detach() {} };
+    },
+  });
+  const row = await runner.runForeground({ agent: "worker", task: "work", context: "fresh" });
+  expect(row.result).toBe("report\n\n1 steer(s) consumed by an extension, not delivered.");
+});
+it("persists one unknown-disposition warning and keeps legacy prompt and steer flow", async () => {
+  const db = freshDb(); dbs.push(db); const store = new RunStore(db);
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  const commands: any[] = []; child.stdin.on("data", c => commands.push(JSON.parse(String(c))));
+  const out = (e: any) => child.stdout.write(JSON.stringify(e) + "\n");
+  let finish!: (v: any) => void;
+  const exit = new Promise<{ exitCode: number; result: string }>(r => { finish = r; });
+  const runner = new Runner(db, "unknown-disposition", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db),
+    scratchRoot: testScratchPath("unknown-disposition"), dbPath: "fixture.db", childMode: "rpc",
+    spawn: spec => {
+      const rpc = ownRpcChild(child as unknown as ChildProcess, spec.prompt!, spec.onRpcEvent);
+      return { wait: () => exit, steer: rpc.steer, detach() {}, kill() { finish({ exitCode: 143 }); } };
+    },
+  });
+  const row = runner.runAsync({ agent: "worker", task: "work", context: "fresh" });
+  try {
+    out({ type: "response", command: "prompt", id: commands[0].id, success: true, data: { disposition: "future" } });
+    expect(child.stdin.writableEnded).toBe(false);
+    const message = makeMessageHandler()({ to: row.id, message: "fallback" }, { db, sessionId: "unknown-disposition" });
+    const steer = commands.at(-1);
+    out({ type: "queue_update", steering: ["fallback"], followUp: [] });
+    out({ type: "response", command: "steer", id: steer.id, success: true, data: { disposition: "future" } });
+    out({ type: "queue_update", steering: [], followUp: [] });
+    out({ type: "message_start", message: { role: "user", content: "fallback" } });
+    expect((await message).details).toMatchObject({ delivered: true, delivery: "delivered" });
+    const warnings = db.prepare("SELECT summary FROM run_events WHERE run_id=? AND type='warning'").all(row.id);
+    expect(warnings).toEqual([{ summary: expect.stringMatching(/unknown.*disposition.*legacy/i) }]);
+    out({ type: "agent_settled" });
+    expect(child.stdin.writableEnded).toBe(true);
+  } finally {
+    finish({ exitCode: 0, result: "report" }); await exit; await Promise.resolve();
+    child.emit("exit", 0); child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+  }
+  expect(store.get(row.id)).toMatchObject({ status: "done", result: "report\n\n1 steer(s) delivered." });
+});
+// Losing the handled state in either consumer would incorrectly count this as unconfirmed.
+it("keeps a consumed steer distinct in the tool result, terminal report and parent notice", async () => {
+  vi.useFakeTimers(); const db = freshDb(); dbs.push(db); const store = new RunStore(db);
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  const commands: any[] = []; child.stdin.on("data", c => commands.push(JSON.parse(String(c))));
+  const out = (e: any) => child.stdout.write(JSON.stringify(e) + "\n");
+  let finish!: (v: any) => void;
+  const exit = new Promise<{ exitCode: number; result: string }>(r => { finish = r; });
+  const notices: any[] = [];
+  const runner = new Runner(db, "consumed-owner", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db),
+    scratchRoot: testScratchPath("consumed-steer"), dbPath: testScratchPath("fixture.db"), childMode: "rpc",
+    onComplete: makeAsyncNotifier({ db, pi: { sendMessage(m: any) { notices.push(m); } } }),
+    spawn: spec => {
+      const rpc = ownRpcChild(child as unknown as ChildProcess, spec.prompt!, spec.onRpcEvent);
+      return { wait: () => exit, steer: rpc.steer, detach() {}, kill() { finish({ exitCode: 143 }); } };
+    },
+  });
+  const row = runner.runAsync({ agent: "worker", task: "work", context: "fresh" });
+  try {
+    out({ type: "response", command: "prompt", id: commands[0].id, success: true, data: { disposition: "started" } });
+    out({ type: "agent_start" });
+    let result: any;
+    const message = makeMessageHandler()({ to: row.id, message: "consumed" }, { db, sessionId: "consumed-owner" });
+    void message.then(value => { result = value; });
+    const steer = commands.at(-1);
+    out({ type: "response", command: "steer", id: steer.id, success: true, data: { disposition: "handled" } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result?.details).toMatchObject({ delivered: false, queued: false, delivery: "consumed by an extension, not delivered" });
+    expect(result.content).toMatch(/not delivered.*model/i);
+    out({ type: "agent_settled" });
+    expect(child.stdin.writableEnded).toBe(true);
+  } finally {
+    finish({ exitCode: 0, result: "terminal report" }); await exit; await Promise.resolve();
+    child.emit("exit", 0); child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+  }
+  expect(store.get(row.id)).toMatchObject({ status: "done", result: "terminal report\n\n1 steer(s) consumed by an extension, not delivered." });
+  expect(notices).toHaveLength(1);
+  expect(notices[0].details.output).toBe("terminal report\n\n1 steer(s) consumed by an extension, not delivered.");
+  const statusEvents = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='status'").all(row.id) as Array<{ payload: string }>;
+  expect(statusEvents.map(e => JSON.parse(e.payload).status).filter(s => ["done", "failed", "cancelled"].includes(s))).toEqual(["done"]);
+});
 afterEach(() => { vi.useRealTimers(); teardownAll(); for (const db of dbs.splice(0)) db.close(); });
 it("persists later non-delivery without rewriting the successful steer tool result", async () => {
   vi.useFakeTimers(); const db = freshDb(); dbs.push(db); const store = new RunStore(db);

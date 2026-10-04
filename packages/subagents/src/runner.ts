@@ -7,7 +7,7 @@ import { registerChild, unregisterChild } from "./coordinators";
 import { resolveModelThinking } from "./model-resolve";
 import { registerShared, releaseShared, setSink, type CompletionSink, type SharedChildEntry, type SharedHandle } from "./child-registry";
 import { decideOutcome, NO_DELIVERABLE_RESULT, summarizeCompletionEvents } from "./completion-output";
-import { PERSISTED_EVENT_TYPES } from "./rpc-child";
+import { isHandledPrompt, PERSISTED_EVENT_TYPES } from "./rpc-child";
 import { recordRunUsage, safelyReportUsage, warnUsage } from "./usage";
 
 export { NO_DELIVERABLE_RESULT };
@@ -118,6 +118,12 @@ export class Runner {
       } else if (PERSISTED_EVENT_TYPES.includes(event.type)) {
         appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: event.type,
           summary: event.message ?? event.error ?? "Child pending queue changed.", payload: event });
+        if (event.type === "warning" && isHandledPrompt(event)) {
+          // This sink runs before stdin EOF. Reuse the normal finalizer so the
+          // child's shutdown reporter sees a terminal row, with its guards intact.
+          // Usage and the completion notice still belong to the child-exit path.
+          this.finalize(run, 1, event.message, undefined, { handledPrompt: true, deferUsage: true });
+        }
       }
     };
   }
@@ -232,28 +238,48 @@ export class Runner {
    * recomputed or re-emitted. Recomputing here was the C2 regression — every
    * successful chain step got a bogus "failed" status event appended even though the
    * DB row stayed "done" (the row write is guarded; the status-event emit was not).
+   * A handled initial prompt may refine a failed child's generic shutdown result,
+   * without another terminal transition. Cancellation still takes precedence.
    *
    * Only when the row is still non-terminal (queued/running/paused — the child never
    * finalized: headless/killed) does the parent compute + persist + emit the outcome,
    * via `decideOutcome` (which itself defers to `genuineCompletion`/run_events rather
    * than the production spawner's always-absent `waitResult`).
    */
-  private finalize(run: RunRow, exitCode: number, waitResult: string | undefined, cancellationReason?: string): { status: RunStatus; result?: string } {
-    const cur = this.deps.store.get(run.id);
+  private finalize(run: RunRow, exitCode: number, waitResult: string | undefined, cancellationReason?: string, options: { handledPrompt?: boolean; deferUsage?: boolean } = {}): { status: RunStatus; result?: string } {
+    let cur = this.deps.store.get(run.id);
     if (cur && (cur.status === "queued" || cur.status === "running" || cur.status === "paused")) {
       const outcome = this.withSteerSummary(run.id, cancellationReason ? { status: "cancelled" as const, result: cancellationReason } : decideOutcome(this.db, run.id, exitCode, waitResult));
-      this.db.transaction(() => {
-        this.deps.store.finish(run.id, outcome, { removeRoute: false });
-        emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: outcome.status, summary: run.name ?? undefined });
+      const changed = this.db.transaction(() => {
+        const changed = this.deps.store.finish(run.id, outcome, { removeRoute: false });
+        if (changed) emitStatus(this.db, { runId: run.id, sessionId: this.sessionId, status: outcome.status, summary: run.name ?? undefined });
+        return changed;
       })();
-      this.db.afterCommit(() => this.removeRoute(run.id));
-      safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
-      return outcome;
+      if (changed) {
+        this.db.afterCommit(() => this.removeRoute(run.id));
+        if (!options.deferUsage) safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
+        return outcome;
+      }
+      // A live child's reporter can commit between our read and guarded finish.
+      cur = this.deps.store.get(run.id);
     }
-    const outcome = this.withSteerSummary(run.id, { status: (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed"), result: cur?.result ?? undefined });
-    if (outcome.result !== cur?.result) this.db.prepare("UPDATE runs SET result=? WHERE id=?").run(outcome.result ?? null, run.id);
+    const genericResult = this.withSteerSummary(run.id, { status: "failed", result: NO_DELIVERABLE_RESULT }).result;
+    const refine = options.handledPrompt && cur?.status === "failed" && !cancellationReason
+      && (cur.result === NO_DELIVERABLE_RESULT || cur.result === genericResult);
+    const result = refine ? waitResult : cur?.result ?? undefined;
+    let outcome = this.withSteerSummary(run.id, { status: (cur?.status as RunStatus) ?? (exitCode === 0 ? "done" : "failed"), result });
+    if (outcome.result !== cur?.result) {
+      if (refine) {
+        const changed = this.db.prepare("UPDATE runs SET result=? WHERE id=? AND status='failed' AND result=?")
+          .run(outcome.result ?? null, run.id, cur!.result).changes;
+        if (!changed) {
+          const latest = this.deps.store.get(run.id);
+          outcome = { status: latest?.status ?? outcome.status, result: latest?.result ?? undefined };
+        }
+      } else this.db.prepare("UPDATE runs SET result=? WHERE id=?").run(outcome.result ?? null, run.id);
+    }
     this.db.afterCommit(() => this.removeRoute(run.id));
-    safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
+    if (!options.deferUsage) safelyReportUsage(this.db, this.deps.store.get(run.id) ?? run, this.deps.reportUsage);
     return outcome;
   }
 

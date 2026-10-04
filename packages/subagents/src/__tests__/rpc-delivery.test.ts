@@ -2,25 +2,150 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { ownRpcChild } from "../rpc-child";
+import { isHandledPrompt, ownRpcChild } from "../rpc-child";
 
 const fixtures: Array<{ child: EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough } }> = [];
 afterEach(() => { vi.useRealTimers(); for (const f of fixtures.splice(0)) { f.child.emit("exit", 0); f.child.stdin.destroy(); f.child.stdout.destroy(); f.child.stderr.destroy(); } });
-function fixture() {
+function fixture(promptDisposition?: unknown, start = true) {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
   const commands: any[] = [], events: any[] = [];
   child.stdin.on("data", c => commands.push(JSON.parse(String(c))));
   const rpc = ownRpcChild(child as unknown as ChildProcess, "initial task", e => events.push(e));
   const out = (e: any) => child.stdout.write(JSON.stringify(e) + "\n");
-  out({ type: "response", id: commands[0].id, success: true }); out({ type: "agent_start" });
-  const reply = (command: any, success = true) => out({ type: "response", command: command.type, id: command.id, success, error: success ? undefined : "fixture rejection" });
+  out({ type: "response", command: "prompt", id: commands[0].id, success: true, ...(promptDisposition === undefined ? {} : { data: { disposition: promptDisposition } }) });
+  if (start) out({ type: "agent_start" });
+  const reply = (command: any, success = true, disposition?: unknown) => out({ type: "response", command: command.type, id: command.id, success, error: success ? undefined : "fixture rejection", ...(disposition === undefined ? {} : { data: { disposition } }) });
   const f = { child, commands, events, rpc, out, reply }; fixtures.push(f); return f;
 }
 const queue = (text: string[]) => ({ type: "queue_update", steering: text, followUp: [] });
 const user = (text: string, type = "message_start") => ({ type, message: { role: "user", content: [{ type: "text", text }], timestamp: 123 } });
 
+describe("handled prompt marker", () => {
+  // Replacing Symbol.for with a module-local Symbol would lose markers across reloads.
+  it("recognizes the shared symbol key but rejects a JSON promptHandled field", () => {
+    expect(isHandledPrompt({ [Symbol.for("spider.handledPrompt.v1")]: true })).toBe(true);
+    expect(isHandledPrompt(JSON.parse('{"promptHandled":true}'))).toBe(false);
+  });
+});
+
 describe("truthful RPC steering", () => {
   beforeEach(() => vi.useFakeTimers());
+  // Ignoring handled would leave stdin open forever because no agent_settled follows.
+  it("closes an initial handled prompt without waiting for settlement", async () => {
+    const f = fixture("handled", false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.child.stdin.writableEnded).toBe(true);
+    expect(f.rpc.failureReason()).toMatch(/consumed by an extension.*handled.*no model run started for the task/i);
+    expect(f.events.some(e => e.type === "agent_settled")).toBe(false);
+    expect(f.events.some(e => e.type === "spider_usage")).toBe(false);
+    expect(f.commands.map(c => c.type)).toEqual(["prompt"]);
+    expect(await f.rpc.steer("too late")).toMatchObject({ delivery: "refused", accepted: false });
+  });
+  it.each(["started", "queued", undefined])("waits for settlement after initial disposition %s", async disposition => {
+    const f = fixture(disposition, false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.child.stdin.writableEnded).toBe(false);
+    expect(f.rpc.failureReason()).toBeUndefined();
+    f.out({ type: "agent_start" }); f.out({ type: "agent_end" });
+    expect(f.child.stdin.writableEnded).toBe(false);
+    f.out({ type: "agent_settled" });
+    expect(f.child.stdin.writableEnded).toBe(true);
+    expect(f.events.some(e => e.type === "warning")).toBe(false);
+  });
+  // A handled response must end tracking immediately, not leave a delivery deadline running.
+  it("resolves a handled steer immediately without observed-delivery tracking", async () => {
+    const f = fixture(), pending = f.rpc.steer("consumed");
+    let ack: any; void pending.then(value => { ack = value; });
+    const command = f.commands.at(-1);
+    f.reply(command, true, "handled");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ack).toMatchObject({ accepted: true, childAccepted: true, delivered: false, queued: false, delivery: "consumed by an extension, not delivered" });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(f.child.stdin.writableEnded).toBe(false);
+    // Duplicated replies and unrelated later entries cannot promote consumed input to delivery.
+    f.reply(command, true, "handled"); f.out(queue(["consumed"])); f.out(user("consumed"));
+    f.out({ type: "agent_settled" });
+    expect(f.events.filter(e => e.type === "steer_delivery")).toHaveLength(1);
+    expect(f.events.find(e => e.type === "steer_delivery")).toMatchObject({ delivered: false, delivery: ack.delivery });
+  });
+  // Downgrading a prior exact-text observation on handled must fail this case.
+  it("keeps observed delivery when the handled steer reply arrives", async () => {
+    const f = fixture(), pending = f.rpc.steer("already observed"), command = f.commands.at(-1);
+    f.out(queue(["already observed"])); f.out(queue([])); f.out(user("already observed"));
+    f.reply(command, true, "handled");
+    expect(await pending).toMatchObject({ accepted: true, delivered: true, queued: false, delivery: "delivered", observedText: "already observed" });
+    expect(f.events.filter(e => e.type === "steer_delivery").map(e => e.delivery)).toEqual(["delivered"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  // Removing the validator's success gate would warn on this rejected reply.
+  it("does not warn about an unknown disposition on a failed reply", async () => {
+    const f = fixture(), pending = f.rpc.steer("rejected unknown");
+    f.reply(f.commands.at(-1), false, "future");
+    expect(await pending).toMatchObject({ accepted: false, delivery: "refused", error: "fixture rejection" });
+    expect(f.events.filter(e => e.type === "warning")).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("ends late-reply uncertainty as consumed without creating a new delivery wait", async () => {
+    const f = fixture(), pending = f.rpc.steer("slow consumed"), command = f.commands.at(-1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await pending).toMatchObject({ delivery: "no reply yet, delivery unknown" });
+    f.reply(command, true, "handled");
+    expect(f.events.filter(e => e.type === "steer_delivery").at(-1)).toMatchObject({ delivered: false, queued: false, delivery: "consumed by an extension, not delivered" });
+    expect(vi.getTimerCount()).toBe(0);
+    f.out({ type: "agent_settled" });
+    expect(f.events.filter(e => e.type === "steer_delivery")).toHaveLength(2);
+  });
+  it("releases the next steer after a handled reply without tracking the consumed one", async () => {
+    const f = fixture(), first = f.rpc.steer("consumed"), second = f.rpc.steer("next");
+    f.reply(f.commands.at(-1), true, "handled");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await first).toMatchObject({ delivery: "consumed by an extension, not delivered" });
+    expect(f.commands.at(-1).message).toBe("next");
+    f.out(queue(["next"])); f.reply(f.commands.at(-1), true, "queued"); f.out(queue([])); f.out(user("next"));
+    expect(await second).toMatchObject({ delivered: true, delivery: "delivered" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["queued", undefined])("requires observed entry for steer disposition %s", async disposition => {
+    const f = fixture(), pending = f.rpc.steer("observe me");
+    let resolved = false; void pending.then(() => { resolved = true; });
+    f.out(queue(["observe me"])); f.reply(f.commands.at(-1), true, disposition);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolved).toBe(false);
+    f.out(queue([])); f.out(user("observe me"));
+    expect(await pending).toMatchObject({ accepted: true, delivered: true, delivery: "delivered" });
+    expect(f.events.some(e => e.type === "warning")).toBe(false);
+  });
+  it("does not interpret handled on a rejected steer as consumption", async () => {
+    const f = fixture(), pending = f.rpc.steer("rejected"); f.reply(f.commands.at(-1), false, "handled");
+    expect(await pending).toMatchObject({ accepted: false, delivered: false, delivery: "refused", error: "fixture rejection" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["future", null, 7])("treats unknown prompt disposition %s as legacy with one warning", async disposition => {
+    const f = fixture(disposition, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.child.stdin.writableEnded).toBe(false);
+    expect(f.rpc.failureReason()).toBeUndefined();
+    expect(f.events.filter(e => e.type === "warning")).toHaveLength(1);
+    expect(f.events.find(e => e.type === "warning").message).toMatch(/unknown.*disposition.*legacy/i);
+    f.out({ type: "agent_start" });
+    const pending = f.rpc.steer("legacy fallback");
+    f.out(queue(["legacy fallback"])); f.reply(f.commands.at(-1), true, "another future");
+    f.out(queue([])); f.out(user("legacy fallback"));
+    expect(await pending).toMatchObject({ delivered: true, delivery: "delivered" });
+    expect(f.events.filter(e => e.type === "warning")).toHaveLength(1);
+    f.out({ type: "agent_settled" });
+    expect(f.child.stdin.writableEnded).toBe(true);
+  });
+  it.each(["future", "started", null, { value: "handled" }])("treats unknown steer disposition %s as legacy", async disposition => {
+    const f = fixture(), pending = f.rpc.steer("fallback");
+    f.out(queue(["fallback"])); f.reply(f.commands.at(-1), true, disposition);
+    let resolved = false; void pending.then(() => { resolved = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolved).toBe(false);
+    expect(f.events.filter(e => e.type === "warning")).toHaveLength(1);
+    f.out(queue([])); f.out(user("fallback"));
+    expect(await pending).toMatchObject({ accepted: true, delivered: true, delivery: "delivered" });
+  });
   // Treating RPC success as delivery must fail: swallowed input never enters the conversation.
   it("reports swallowed input as accepted but not confirmed at the deadline and settlement", async () => {
     const f = fixture(), ack = f.rpc.steer("SWALLOW marker"); f.reply(f.commands.at(-1));

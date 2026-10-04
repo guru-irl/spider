@@ -3,7 +3,16 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import { sumUsage } from "./usage";
 
-export type SteerDelivery = "delivered" | "accepted but not confirmed" | "no reply yet, delivery unknown" | "refused";
+/** pi 0.87 has no disposition field. Keep this wire shape local until the peer upgrade. */
+interface RpcInputResponse {
+  type: "response";
+  id?: string;
+  command?: "prompt" | "steer" | "follow_up";
+  success: boolean;
+  data?: { disposition?: unknown };
+}
+
+export type SteerDelivery = "delivered" | "accepted but not confirmed" | "consumed by an extension, not delivered" | "no reply yet, delivery unknown" | "refused";
 export interface SteerAck {
   /** RPC success is acceptance, not evidence of conversation entry. */
   accepted: boolean;
@@ -38,6 +47,10 @@ export function attachRpcReader(stream: NodeJS.ReadableStream, onEvent: (event: 
 
 /** Event types a sink persists (see Runner.rpcSink). Losing one is a loss of run history. */
 export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery", "spider_usage"];
+// JSON child records cannot carry a symbol key. Symbol.for keeps the key stable across a /reload,
+// where a new module instance reads events from the old gate.
+const HANDLED_PROMPT = Symbol.for("spider.handledPrompt.v1");
+export function isHandledPrompt(event: Record<string, any>): boolean { return (event as Record<PropertyKey, unknown>)[HANDLED_PROMPT] === true; }
 /** Streaming partials: each carries the whole message so far and a full message event follows. Never buffered. */
 const PARTIAL_EVENT_TYPES: readonly string[] = ["message_update", "tool_execution_update"];
 
@@ -133,7 +146,7 @@ export function createEventGate(initial?: (event: Record<string, any>) => void, 
 export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (event: Record<string, any>) => void, requestedModel?: string) {
   let closed = false, settled = false, stopping = false, discardAfterSettle = false;
   let steering: string[] = [], followUp: string[] = [];
-  let promptAccepted = false, failureReason: string | undefined, stderrTail = "";
+  let promptAccepted = false, failureReason: string | undefined, stderrTail = "", warnedDisposition = false;
   type Pending = { command: string; message?: string; childAccepted?: boolean; additions?: string[]; entries?: string[]; queuedText?: string; observed?: boolean; reportedDelivery?: SteerDelivery; finish: (ack: SteerAck) => void; timer?: ReturnType<typeof setTimeout> };
   const pending = new Map<string, Pending>();
   let activeSteer: string | undefined;
@@ -143,6 +156,18 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   // to the next sink, while protocol handling below keeps running on the live pipes.
   const gate = createEventGate(onEvent, requestedModel);
   const report = gate.report;
+  const inputDisposition = (response: RpcInputResponse, command: string): "started" | "queued" | "handled" | undefined => {
+    if (response.success !== true || !["prompt", "steer", "follow_up"].includes(command)) return undefined;
+    const value = response.data?.disposition;
+    if (value === undefined) return undefined;
+    if (value === "handled" || value === "queued" || (command === "prompt" && value === "started")) return value;
+    if (!warnedDisposition) {
+      warnedDisposition = true;
+      report({ type: "warning", requestId: response.id,
+        message: `Unknown RPC input disposition ${JSON.stringify(value)} for ${command}; using legacy response handling.` });
+    }
+    return undefined;
+  };
   const deliveryAck = (p: Pending): SteerAck => ({ accepted: p.childAccepted === true || p.observed === true, delivered: p.observed === true,
     queued: !p.observed && p.queuedText !== undefined && steering.includes(p.queuedText),
     delivery: p.observed ? "delivered" : p.childAccepted ? "accepted but not confirmed" : "no reply yet, delivery unknown",
@@ -257,14 +282,37 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
     } else if (event.type === "response") {
       const p = pending.get(event.id);
       if (p) {
-        if (p.command === "prompt" && event.success === true) promptAccepted = true;
+        const disposition = inputDisposition(event as RpcInputResponse, p.command);
+        if (p.command === "prompt" && event.success === true) {
+          promptAccepted = true;
+          if (disposition === "handled") {
+            failureReason = "The task was consumed by an extension in the child (RPC disposition: handled). No model run started for the task.";
+            report({ type: "warning", message: failureReason, [HANDLED_PROMPT]: true });
+            close();
+          }
+        }
         if (p.command === "steer" && event.success === true) {
-          p.childAccepted = true; correlate(p);
-          deliveryEvent(event.id, p);
-          if (p.observed) {
+          p.childAccepted = true;
+          if (disposition === "handled") {
             clearTimeout(p.timer); p.timer = undefined;
-            p.finish({ ...deliveryAck(p), requestId: event.id });
             pending.delete(event.id);
+            if (p.observed) {
+              p.finish({ ...deliveryAck(p), requestId: event.id });
+            } else {
+              const ack: SteerAck = { accepted: true, childAccepted: true, requestId: event.id,
+                delivered: false, queued: false, delivery: "consumed by an extension, not delivered" };
+              report({ type: "steer_delivery", requestId: event.id, steer: p.message, ...ack,
+                message: "Steer consumed by an extension in the child, not delivered to the model." });
+              p.finish(ack);
+            }
+          } else {
+            correlate(p);
+            deliveryEvent(event.id, p);
+            if (p.observed) {
+              clearTimeout(p.timer); p.timer = undefined;
+              p.finish({ ...deliveryAck(p), requestId: event.id });
+              pending.delete(event.id);
+            }
           }
         } else {
           clearTimeout(p.timer); p.timer = undefined;

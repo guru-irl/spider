@@ -479,8 +479,11 @@ The bus is per process and in memory. It is not persisted; the persistence is th
 
 `packages/db-core/src/paths.ts` computes the on-disk locations.
 
-- The global root is `~/.pi/agent/spider`, overridden by `SPIDER_GLOBAL_ROOT`. The registry database is
-  `spider.db` inside it, and cached models live under `models`.
+- The global root is `~/.pi/agent/spider`, overridden by `SPIDER_GLOBAL_ROOT`. The override must be
+  absolute (drive-qualified or UNC on Windows). A relative value, including a Windows root-relative
+  path, stops spider from loading with `paths: SPIDER_GLOBAL_ROOT must be absolute; received "<value>"`.
+  An empty value is treated as unset. The registry database is `spider.db` inside the global root,
+  and cached models live under `models`.
 - `worktreeRoot(cwd)` resolves `git rev-parse --show-toplevel` from `cwd`,
   falling back to `cwd`'s own real path when `cwd` is not inside a git repo (or
   git is unavailable). A worktree root's data directory is

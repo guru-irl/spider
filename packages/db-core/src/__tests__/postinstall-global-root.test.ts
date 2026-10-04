@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, parse, resolve } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -96,10 +96,12 @@ describe("postinstall global DB bootstrap", () => {
     expect(readdirSync(f.home)).toEqual([]);
   });
 
-  it.each(["relative-root", "~/override", " ", "\t \n"])("skips non-absolute override %j without writes", async (override) => {
+  it.each(["relative-root", "./x", "C:x", "\\x", "~/override", " ", "\t \n"])("skips non-absolute override %j without writes", async (override) => {
     const f = fixture();
-    // db-core deliberately does not trim or expand tilde, and resolves at runtime cwd.
-    expect(await dbCoreRoot(f.home, override)).toBe(resolve(process.cwd(), override));
+    // Runtime fails closed rather than falling back to the real global DB.
+    await expect(dbCoreRoot(f.home, override)).rejects.toThrow(
+      `SPIDER_GLOBAL_ROOT must be absolute; received ${JSON.stringify(override)}`,
+    );
     const result = runPostinstall(f, override);
     expect(result.stderr).toContain("SPIDER_GLOBAL_ROOT is not absolute; skipped global DB bootstrap");
     expect(result.stderr).not.toContain("global DB file ready");

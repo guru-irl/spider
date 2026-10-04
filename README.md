@@ -133,7 +133,7 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 
 - Keys are flat JSON properties with dots, for example `"organism.enabled": false`.
 - Precedence: built-in defaults, then `~/.pi/agent/spider/config.json`, then `<worktree>/.spider/config.json`, except `subagents.extensions`, which is read from global config only.
-- `SPIDER_GLOBAL_ROOT` overrides the global root.
+- `SPIDER_GLOBAL_ROOT` overrides the global root and must be absolute (drive-qualified or UNC on Windows). A relative value, including a Windows root-relative path, stops spider from loading with `paths: SPIDER_GLOBAL_ROOT must be absolute; received "<value>"`. An empty value is treated as unset.
 - For writes, `scope:"global"` selects global config; omitted scope or `scope:"repo"` selects worktree-local config. Other write scopes are rejected.
 - `get` reports effective values and their sources; global writes report local shadowing.
 - Set/unset accept only known keys; values must follow the [validation rules](docs/guide/configuration.md#validation).

@@ -50,7 +50,7 @@ if (process.env.CI === "true" || process.env.VITEST) {
   !isAbsolute(configuredGlobalRoot)
   || (process.platform === "win32" && /^[\\/](?![\\/])/.test(configuredGlobalRoot))
 )) {
-  // npm's lifecycle cwd is the package directory, not db-core's runtime cwd.
+  // Same predicate as db-core/src/paths.ts, which throws on these values at runtime; keep them in sync.
   warn("SPIDER_GLOBAL_ROOT is not absolute; skipped global DB bootstrap");
 } else {
   try {

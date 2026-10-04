@@ -155,7 +155,10 @@ export async function diffUpstream(check: UpstreamCheck, repoPath: string, git: 
   };
 }
 
-// Seed rows for the six vendored subsystems. These are review targets, not local
+// Spider's own packages; never watched or marked.
+export const FIRST_PARTY_PACKAGES: ReadonlySet<string> = new Set(["db-core"]);
+
+// Seed rows for the five vendored subsystems. These are review targets, not local
 // package paths. Reachability is reported by each run; one bad URL never aborts it.
 export const DEFAULT_UPSTREAM_REFS: UpstreamCheck[] = [
   { package: "superpowers", upstreamRepo: "https://github.com/obra/superpowers", upstreamRef: "main" },
@@ -163,7 +166,6 @@ export const DEFAULT_UPSTREAM_REFS: UpstreamCheck[] = [
   { package: "context",     upstreamRepo: "https://github.com/guru-irl/context-mode", upstreamRef: "main" },
   { package: "todo",        upstreamRepo: "https://github.com/guru-irl/pi-todo-sqlite", upstreamRef: "master" },
   { package: "subagents",   upstreamRepo: "https://github.com/guru-irl/pi-subagents", upstreamRef: "main" },
-  { package: "db-core",     upstreamRepo: "https://github.com/guru-irl/spider", upstreamRef: "main" },
 ];
 
 export interface UpstreamWatchReport { checkedAt: number; packages: PackageResult[]; todosAdded: number; }
@@ -187,6 +189,9 @@ export async function markReviewed(
   ref: string,
   deps: Pick<UpstreamWatchDeps, "git" | "mirrorRoot">,
 ): Promise<string> {
+  if (FIRST_PARTY_PACKAGES.has(pkg)) {
+    throw new Error(`upstream-watch: '${pkg}' is first-party and not watched`);
+  }
   const row = globalDb
     .prepare(`SELECT package FROM upstream_refs WHERE package=?`)
     .get(pkg) as { package: string } | undefined;
@@ -214,6 +219,7 @@ export async function runUpstreamWatch(
 ): Promise<UpstreamWatchReport> {
   seedUpstreamRefs(globalDb);
   const now = Date.now();
+  // Keep legacy first-party rows intact, but never watch them.
   const rows = globalDb
     .prepare(`SELECT package, upstream_repo, upstream_ref, last_reviewed_commit FROM upstream_refs ORDER BY rowid`)
     .all() as Array<{ package: string; upstream_repo: string; upstream_ref: string | null; last_reviewed_commit: string | null }>;
@@ -231,7 +237,7 @@ export async function runUpstreamWatch(
   const insFts = projectDb.prepare(`INSERT INTO todos_fts(rowid, text) VALUES (?, ?)`);
   const touch = globalDb.prepare(`UPDATE upstream_refs SET last_checked_at=@now, notes=@notes WHERE package=@pkg`);
 
-  const checks = rows.filter((row) => !selected || selected.has(row.package));
+  const checks = rows.filter((row) => !FIRST_PARTY_PACKAGES.has(row.package) && (!selected || selected.has(row.package)));
   async function checkPackage(row: typeof rows[number]): Promise<PackageResult> {
     const check: UpstreamCheck = {
       package: row.package,

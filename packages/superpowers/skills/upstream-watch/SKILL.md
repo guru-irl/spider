@@ -1,13 +1,14 @@
 ---
 name: upstream-watch
-description: Use when checking a vendored subsystem for new upstream commits to review and cherry-pick — never a live merge
+description: Use when checking a vendored subsystem for new upstream commits to review and cherry-pick, never a live merge
 ---
 
 # Upstream Watch
 
-Spider vendors five subsystems (memory, context, todo, subagents, superpowers)
-plus its shared db-core. Upstream repos keep evolving. This skill is the
-**review-and-port** workflow — spider never does live upstream merges.
+Spider vendors five subsystems (memory, context, todo, subagents, superpowers).
+Its shared db-core is first-party code, not a separate watched upstream.
+Upstream repos keep evolving. This skill is the **review-and-port** workflow.
+Spider never does live upstream merges.
 
 ## When to Use
 
@@ -38,10 +39,9 @@ Each package has one truthful state:
 - `up to date`: a baseline exists and the fetched range is empty.
 - `candidates`: the range contains commits to review; each becomes a todo.
 
-One package's failure does not abort or hide the others. The configured
-`db-core` source currently points at `guru-irl/spider` itself; treat the state
-reported for that configured source honestly rather than assuming it is an
-independent upstream.
+One package's failure does not abort or hide the others. Older installations
+may retain a `db-core` row pointing at spider itself. The watch ignores that
+first-party row without deleting its saved state.
 
 ## Workflow
 
@@ -56,8 +56,11 @@ independent upstream.
    for candidate commits.
 
 2. If a package says `NO BASELINE`, inspect its upstream history and choose the
-   commit, tag, or branch that represents the last version already reviewed or
-   vendored. Then establish the baseline exactly as the report instructs:
+   commit or tag that represents the last version already reviewed or vendored.
+   Do not infer a vendoring baseline from today's branch head or from a local
+   spider commit. If no immutable upstream source ref is recorded, report the
+   missing provenance and leave the baseline unset until a review establishes
+   one. Once a baseline is known, establish it exactly as the report instructs:
 
    ```text
    spider control upstream-watch --mark <package> <ref>
@@ -70,8 +73,9 @@ independent upstream.
    ```
 
    `--mark` validates the ref in that package's fetched mirror and stores its
-   resolved full commit SHA. It rejects typos and unknown refs. Run the normal
-   watch first so the mirror exists and is freshly fetched.
+   resolved full commit SHA. It rejects typos, unknown refs, and first-party
+   packages such as db-core, even if an old mirror exists. Run the normal watch
+   first so the mirror exists and is freshly fetched.
 
 3. Run `spider control upstream-watch` again. The report now shows either a
    genuine `up to date` state or the commits after the selected baseline.
@@ -87,6 +91,7 @@ independent upstream.
    ```
 
    Marking means “reviewed through this commit,” not “merged everything.”
+   Baselines live in the global database, not in a tracked repository file.
 
 ## Rules
 

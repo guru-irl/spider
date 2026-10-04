@@ -109,6 +109,7 @@ function synth(m) {
   const s = m.capabilities?.supports || {};
   const lim = m.capabilities?.limits || {};
   const entry = { id: m.id, name: m.name || m.id, api: familyApi(m.vendor), baseUrl: COPILOT_BASE_URL, headers: { ...COPILOT_HEADERS } };
+  if (/^claude(?:-|$)/i.test(m.id) && entry.api === "anthropic-messages") entry.promptCache = { short: 300 };
   if (s.adaptive_thinking) entry.compat = { forceAdaptiveThinking: true };
   entry.reasoning = !!(s.adaptive_thinking || (Array.isArray(s.reasoning_effort) && s.reasoning_effort.length));
   if (Array.isArray(s.reasoning_effort) && s.reasoning_effort.includes("max")) entry.thinkingLevelMap = { minimal: "low", xhigh: "max" };

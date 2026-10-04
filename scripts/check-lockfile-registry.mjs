@@ -9,7 +9,31 @@ const marker = "/npm/registry/";
 const harmlessSettings = new Set(["save-exact", "engine-strict", "fund", "audit", "package-lock", "lockfile-version"]);
 const hasSha512 = integrity => typeof integrity === "string" && /(?:^|\s)sha512-[A-Za-z0-9+/]+={0,2}(?:\s|$)/.test(integrity);
 const isMap = value => value !== null && typeof value === "object" && !Array.isArray(value);
-const isTarball = pathname => /^\/(?:@[^/]+\/)?[^/]+\/-\/[^/]+\.tgz$/.test(pathname);
+const dependencyMaps = new Set(["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]);
+const packagePattern = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i;
+const versionPattern = /^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?(?:\+[a-z0-9.-]+)?$/i;
+const pathName = key => /(?:^|\/)(?:node_modules|dependencies)\/((?:@[^/]+\/)?[^/]+)$/.exec(key)?.[1];
+function isTarball(pathname, entry, key) {
+  // A literal scope separator requires a literal @, preserving HEAD's boundary.
+  // Only the scoped package separator may be encoded, not tarball separators.
+  if (!/^\/(?:@[^/]+\/[^/]+|[^/]+)\/-\/[^/]+\.tgz$/.test(pathname)) return false;
+  let decoded;
+  try { decoded = decodeURIComponent(pathname); }
+  catch { return false; }
+  const match = /^\/((?:@[a-z0-9._-]+\/)?[a-z0-9._-]+)\/-\/([^/]+)\.tgz$/i.exec(decoded);
+  if (!match) return false;
+  // Aliases use entry.name in packages, or npm:<real>@<version> in legacy trees.
+  // Unknown extra records still need an unambiguous tarball package/version.
+  const alias = typeof entry.version === "string" && /^npm:((?:@[^/]+\/)?[^@]+)@(.+)$/.exec(entry.version);
+  const name = Object.hasOwn(entry, "name") ? entry.name : alias ? alias[1] : pathName(key) ?? match[1];
+  if (typeof name !== "string" || !packagePattern.test(name) || name !== match[1]) return false;
+  const prefix = `${name.split("/").at(-1)}-`;
+  if (!match[2].startsWith(prefix)) return false;
+  const version = match[2].slice(prefix.length);
+  const declaredVersion = alias ? alias[2] : entry.version;
+  return versionPattern.test(version) && (!Object.hasOwn(entry, "version")
+    || (typeof declaredVersion === "string" && declaredVersion === version));
+}
 
 // CHECK is offline. Only --fix calls npm, using the caller's configured registry.
 // Never surface npm's stdout/stderr: either can contain private hosts or secrets.
@@ -17,7 +41,7 @@ function upgradeIntegrity(entry, key) {
   const sha1s = typeof entry.integrity === "string"
     ? entry.integrity.split(/\s+/).filter(token => token.startsWith("sha1-")) : [];
   if (!sha1s.length) throw new Error("cannot upgrade to sha512 without existing SHA-1 integrity");
-  const name = entry.name ?? key.split(/(?:node_modules|dependencies)\//).at(-1);
+  const name = entry.name ?? pathName(key);
   if (typeof name !== "string" || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name)
     || typeof entry.version !== "string" || !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?(?:\+[a-z0-9.-]+)?$/i.test(entry.version)) {
     throw new Error("cannot upgrade to sha512 without a registry package name and version");
@@ -65,8 +89,8 @@ try {
   const args = process.argv.slice(2);
   if (args.some(arg => arg !== "--fix")) throw new Error("usage: node scripts/check-lockfile-registry.mjs [--fix]");
   const fix = args.includes("--fix");
-  let lock;
-  try { lock = JSON.parse(readFileSync("package-lock.json", "utf8")); }
+  let lock, lockText;
+  try { lockText = readFileSync("package-lock.json", "utf8"); lock = JSON.parse(lockText); }
   catch { throw new Error("cannot read or parse package-lock.json"); }
   if (!isMap(lock) || !(isMap(lock.packages) || (lock.lockfileVersion === 1 && isMap(lock.dependencies)))) {
     throw new Error("package-lock.json must contain a packages map (or v1 dependencies map)");
@@ -92,7 +116,7 @@ try {
     }
     const start = url.pathname.indexOf(marker);
     const rest = start === -1 ? "" : url.pathname.slice(start + marker.length);
-    if (repair && url.host !== publicHost && start !== -1 && rest && isTarball(`/${rest}`)) {
+    if (repair && url.host !== publicHost && start !== -1 && rest && isTarball(`/${rest}`, entry, key)) {
       entry.resolved = `https://${publicHost}/${rest}`;
       changed++;
       // Re-check the mapped source, including its tarball shape.
@@ -100,13 +124,23 @@ try {
     }
     if (repair) return;
     if (url.host !== publicHost) errors.push(`${key}: host is not registry.npmjs.org; only registry.npmjs.org tarballs are allowed`);
-    else if (url.protocol !== "https:" || !isTarball(url.pathname) || url.search || url.hash) {
+    else if (url.protocol !== "https:" || !isTarball(url.pathname, entry, key) || url.search || url.hash) {
       errors.push(`${key}: only HTTPS registry.npmjs.org tarballs are allowed`);
     }
   }
 
   // Walk the whole document, including v1/v2 dependency trees and any extra maps.
-  function walk(value, key = "(root)", repair = false) {
+  function walk(value, key = "(root)", repair = false, container = false) {
+    if (container) {
+      if (!isMap(value)) { errors.push(`${key}: dependency map must be an object`); return; }
+      for (const [name, entry] of Object.entries(value)) {
+        const childKey = key === "packages" ? name : `${key}/${name}`;
+        if (!isMap(entry) && (container === "entries" || typeof entry !== "string")) {
+          errors.push(`${childKey}: malformed dependency entry`);
+        } else walk(entry, childKey, repair);
+      }
+      return;
+    }
     if (value === null || typeof value !== "object") return;
     if (Object.hasOwn(value, "resolved")) checkResolved(value, key, repair);
     if ((Object.hasOwn(value, "integrity") || (typeof value.resolved === "string" && /^https?:/i.test(value.resolved))) && !hasSha512(value.integrity)) {
@@ -116,12 +150,29 @@ try {
       } else errors.push(`${key}: integrity must include sha512; run with --fix to upgrade verified SHA-1 tarballs`);
     }
     for (const [child, entry] of Object.entries(value)) {
-      walk(entry, key === "(root)" || key === "packages" ? child : `${key}/${child}`, repair);
+      const childKey = key === "(root)" ? child : `${key}/${child}`;
+      // These metadata subtrees contain commands, constraints or funding data,
+      // not installed sources. peerDependenciesMeta instead contains entry maps.
+      if (["bin", "engines", "funding"].includes(child)) continue;
+      const legacyDependencies = child === "dependencies"
+        && (key === "(root)" || key.startsWith("dependencies/"));
+      const entries = (key === "(root)" && child === "packages")
+        || legacyDependencies || child === "peerDependenciesMeta";
+      const specs = dependencyMaps.has(child) || (key !== "(root)" && child === "requires");
+      walk(entry, childKey, repair, entries ? "entries" : specs ? "specs" : false);
     }
   }
   if (fix) {
     walk(lock, "(root)", true);
-    if (changed) writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
+    if (changed) {
+      const withoutCRLF = lockText.replaceAll("\r\n", "");
+      if (withoutCRLF.includes("\r") || (lockText.includes("\r\n") && withoutCRLF.includes("\n"))) {
+        throw new Error("cannot preserve mixed lockfile line endings");
+      }
+      const ending = lockText.includes("\r\n") ? "\r\n" : "\n";
+      const trailing = lockText.match(/\s*$/)[0];
+      writeFileSync("package-lock.json", JSON.stringify(lock, null, 2).replaceAll("\n", ending) + trailing);
+    }
   }
   // Always run the full offline CHECK after repairs, even when some repairs failed.
   walk(lock);

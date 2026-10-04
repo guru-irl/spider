@@ -86,6 +86,342 @@ process.stdout.write(JSON.stringify([{name:${JSON.stringify(name)}, version:'1.0
 // Each group names the guard break it catches: skipped sources, leaked errors,
 // unsafe npmrc keys, weak or unverified integrity, and unwanted serialization.
 describe("lockfile source and integrity regressions", () => {
+  // Final-round regressions catch legacy string acceptance, path mis-splitting,
+  // encoded scope broadening and metadata names mistaken for source fields.
+  it.each([1, 2])("rejects reserved string entries in v%s legacy dependency trees", lockfileVersion => {
+    for (const name of ["resolved", "integrity", "example"]) {
+      for (const nested of [false, true]) {
+        const entries = { [name]: "http://evil.example/x.tgz" };
+        const before = JSON.stringify({ lockfileVersion,
+          ...(lockfileVersion === 2 ? { packages: {} } : {}),
+          dependencies: nested ? { outer: { dependencies: entries } } : entries,
+        });
+        writeFileSync(join(fixture, "package-lock.json"), before);
+        for (const args of [[], ["--fix"]]) {
+          const result = run(...args);
+          expect(result.status, result.stderr).toBe(1);
+          expect(result.stderr).toContain("malformed dependency entry");
+          expect(contents()).toBe(before);
+        }
+      }
+    }
+  });
+
+  it.each(["dependencies", "node_modules"])("accepts nested packages under scoped package %s", reserved => {
+    const before = lock({ [`node_modules/@s/${reserved}/node_modules/x`]: {
+      version: "1.0.0", resolved: "https://registry.npmjs.org/x/-/x-1.0.0.tgz", integrity: sha512,
+    } });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each(["dependencies", "node_modules"])("upgrades nested packages under scoped package %s", reserved => {
+    packDouble("ok", "x");
+    const key = `node_modules/@s/${reserved}/node_modules/x`;
+    lock({ [key]: { version: "1.0.0", resolved: "https://registry.npmjs.org/x/-/x-1.0.0.tgz", integrity: sha1 } });
+    const result = run("--fix");
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(contents()).packages[key].integrity).toBe(sha512);
+    expect(run().status).toBe(0);
+    expect(readdirSync(join(fixture, ".spider/scratch"))).toEqual([]);
+  });
+
+  // HEAD rejected encoded @ with a literal scope separator. Preserve that boundary
+  // rather than adding a decoding exception for an otherwise public tarball.
+  it("rejects encoded @ with a literal scope separator", () => {
+    for (const host of ["https://registry.npmjs.org", "https://feed.example.com/npm/registry"]) {
+      const before = lock({ "node_modules/@scope/name": {
+        version: "1.0.0", resolved: `${host}/%40scope/name/-/name-1.0.0.tgz`, integrity: sha512,
+      } });
+      for (const args of [[], ["--fix"]]) {
+        expect(run(...args).status).toBe(1);
+        expect(contents()).toBe(before);
+      }
+    }
+  });
+
+  it.each([1, 2])("rejects trailing junk in a v%s legacy alias version", lockfileVersion => {
+    const before = JSON.stringify({ lockfileVersion,
+      ...(lockfileVersion === 2 ? { packages: {} } : {}),
+      dependencies: { alias: { version: "npm:real@1.0.0@x", resolved: "https://registry.npmjs.org/real/-/real-1.0.0.tgz", integrity: sha512 } },
+    });
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    for (const args of [[], ["--fix"]]) {
+      expect(run(...args).status).toBe(1);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each(["peerDependenciesMeta", "bin", "engines", "funding"])("does not interpret %s metadata names as entry fields", field => {
+    const metadata = field === "peerDependenciesMeta"
+      ? { resolved: { optional: true }, integrity: { optional: true } }
+      : { resolved: "fixture", integrity: "fixture" };
+    const before = lock({ "node_modules/example": {
+      version: "1.0.0", resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz", integrity: sha512,
+      [field]: metadata,
+    } });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each(["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "requires"])("accepts reserved spec names in a packages entry %s map", field => {
+    const before = lock({ "node_modules/example": {
+      [field]: { resolved: "^1.0.0", integrity: "^2.0.0" },
+    } });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it("does not let a legacy alias override an explicit mismatched name", () => {
+    const before = JSON.stringify({ lockfileVersion: 1, dependencies: {
+      alias: { name: "wrong", version: "npm:real@1.0.0", resolved: "https://registry.npmjs.org/real/-/real-1.0.0.tgz", integrity: sha512 },
+    } });
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    for (const args of [[], ["--fix"]]) {
+      expect(run(...args).status).toBe(1);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it("requires peerDependenciesMeta values to be maps", () => {
+    const before = lock({ "node_modules/example": { peerDependenciesMeta: { resolved: "x" } } as Entry });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("malformed dependency entry");
+      expect(contents()).toBe(before);
+    }
+  });
+
+  // Root requires is a boolean in npm 5-8, unlike per-entry requires maps.
+  it.each([1, 2])("accepts standard root requires in a v%s lockfile without rewriting", lockfileVersion => {
+    const before = JSON.stringify({ name: "fixture", lockfileVersion, requires: true,
+      ...(lockfileVersion === 2 ? { packages: {} } : {}),
+      dependencies: { example: {
+        version: "1.0.0", resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz", integrity: sha512,
+        requires: { inner: "^1.0.0" },
+      } },
+    }, null, 2) + "\n";
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  // npm aliases in the legacy tree have npm:<real>@<version>, but no name.
+  it.each([1, 2])("accepts unscoped, scoped and nested legacy aliases in v%s without rewriting", lockfileVersion => {
+    const before = JSON.stringify({ name: "fixture", lockfileVersion,
+      ...(lockfileVersion === 2 ? { packages: {
+        "node_modules/string-width-cjs": { name: "string-width", version: "4.2.3", resolved: "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz", integrity: sha512 },
+        "node_modules/outer/node_modules/alias": { name: "@scope/name", version: "1.0.0", resolved: "https://registry.npmjs.org/@scope/name/-/name-1.0.0.tgz", integrity: sha512 },
+      } } : {}),
+      dependencies: {
+        "string-width-cjs": { version: "npm:string-width@4.2.3", resolved: "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz", integrity: sha512 },
+        outer: { dependencies: {
+          alias: { version: "npm:@scope/name@1.0.0", resolved: "https://registry.npmjs.org/@scope/name/-/name-1.0.0.tgz", integrity: sha512 },
+        } },
+      },
+    }, null, 2) + "\n";
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it("treats reserved dependency names as names in v2 legacy requires maps", () => {
+    const before = JSON.stringify({ lockfileVersion: 2, packages: {}, dependencies: {
+      outer: { requires: { resolved: "^1.0.0", integrity: "^2.0.0" } },
+    } });
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each(["@my-dependencies/x", "@a-node_modules/x"])("does not split scope suffixes when checking %s", name => {
+    const before = lock({ [`node_modules/outer/node_modules/${name}`]: {
+      version: "1.0.0", resolved: `https://registry.npmjs.org/${name}/-/x-1.0.0.tgz`, integrity: sha512,
+    } });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each(["@my-dependencies/x", "@a-node_modules/x"])("does not split scope suffixes when upgrading integrity for %s", name => {
+    packDouble("ok", name);
+    lock({ [`node_modules/${name}`]: {
+      version: "1.0.0", resolved: `https://registry.npmjs.org/${name}/-/x-1.0.0.tgz`, integrity: sha1,
+    } });
+    const result = run("--fix");
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(contents()).packages[`node_modules/${name}`].integrity).toBe(sha512);
+    expect(run().status).toBe(0);
+    expect(readdirSync(join(fixture, ".spider/scratch"))).toEqual([]);
+  });
+
+  it.each(["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "requires"])("treats resolved and integrity as dependency names in %s", map => {
+    const before = JSON.stringify({ lockfileVersion: 1, dependencies: {
+      outer: { version: "1.0.0", [map]: map === "dependencies"
+        ? { resolved: { version: "1.0.0" }, integrity: { version: "2.0.0" } }
+        : { resolved: "^1.0.0", integrity: "^2.0.0" } },
+      resolved: { version: "1.0.0", resolved: "https://registry.npmjs.org/resolved/-/resolved-1.0.0.tgz", integrity: sha512 },
+      integrity: { version: "2.0.0", resolved: "https://registry.npmjs.org/integrity/-/integrity-2.0.0.tgz", integrity: sha512 },
+    } }, null, 2);
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it("rejects a string entry in the packages container without rewriting", () => {
+    const before = lock({ "node_modules/example": "x" as unknown as Entry });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain("malformed dependency entry");
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it("rejects a non-object dependency map on an entry without rewriting", () => {
+    const before = lock({ "node_modules/example": { dependencies: "x" } as Entry });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain("dependency map must be an object");
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each([
+    { resolved: { url: "https://registry.npmjs.org/example/-/example-1.0.0.tgz" } },
+    { integrity: { digest: sha512 } },
+    { dependencies: { resolved: { resolved: 42 } } },
+    { requires: { integrity: { integrity: 42 } } },
+    { devDependencies: { integrity: [] } },
+  ])("does not exempt malformed entry fields or dependency maps: %j", entry => {
+    const before = lock({ "node_modules/example": entry as Entry });
+    for (const args of [[], ["--fix"]]) {
+      expect(run(...args).status).toBe(1);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each([
+    ["\r\n", "\r\n"], ["\r\n", ""], ["\r\n", "\r\n\r\n"],
+    ["\n", ""], ["\n", "\n\n"],
+  ])("preserves line endings %j and the exact trailing newline %j when fixing", (ending, trailing) => {
+    const before = lock({ "node_modules/example": {
+      version: "1.0.0", resolved: "https://feed.example.com/npm/registry/example/-/example-1.0.0.tgz", integrity: sha512,
+    } }).trimEnd().replaceAll("\n", ending) + trailing;
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    const result = run("--fix");
+    expect(result.status, result.stderr).toBe(0);
+    expect(contents()).toBe(before.replace("https://feed.example.com/npm/registry/", "https://registry.npmjs.org/"));
+    expect(run().status).toBe(0);
+  });
+
+  it.each(["mixed", "bare-CR"])("refuses to rewrite ambiguous %s line endings", kind => {
+    let before = lock({ "node_modules/example": {
+      version: "1.0.0", resolved: "https://feed.example.com/npm/registry/example/-/example-1.0.0.tgz", integrity: sha512,
+    } });
+    before = kind === "mixed" ? before.replace("\n", "\r\n") : before.replaceAll("\n", "\r");
+    writeFileSync(join(fixture, "package-lock.json"), before);
+    const result = run("--fix");
+    expect(result.status).toBe(1);
+    expect(contents()).toBe(before);
+  });
+
+  it.each(["@scope%2fname", "@scope%2Fname", "@scope/name"])("accepts and repairs safely decoded scoped package paths: %s", path => {
+    for (const host of ["https://registry.npmjs.org", "https://feed.example.com/npm/registry"]) {
+      lock({ "node_modules/@scope/name": {
+        version: "1.0.0", resolved: `${host}/${path}/-/name-1.0.0.tgz`, integrity: sha512,
+      } });
+      const result = run(...(host.includes("feed.example.com") ? ["--fix"] : []));
+      expect(result.status, result.stderr).toBe(0);
+      expect(new URL(JSON.parse(contents()).packages["node_modules/@scope/name"].resolved).host).toBe("registry.npmjs.org");
+      expect(run().status).toBe(0);
+    }
+  });
+
+  it.each([
+    "@scope%ZZ/name/-/name-1.0.0.tgz", "@scope%252fname/-/name-1.0.0.tgz",
+    "@scope/other/-/name-1.0.0.tgz", "@scope/name/-/other-1.0.0.tgz",
+    "@scope/name/-/nope-1.0.0.tgz",
+    "@scope/name/-/name-2.0.0.tgz", "@scope%2fname%2fextra/-/name-1.0.0.tgz",
+    "@scope/name%2f-%2fname-1.0.0.tgz",
+  ])("rejects malformed escapes and mismatched scoped tarball identity: %s", path => {
+    for (const host of ["https://registry.npmjs.org", "https://feed.example.com/npm/registry"]) {
+      const before = lock({ "node_modules/@scope/name": {
+        version: "1.0.0", resolved: `${host}/${path}`, integrity: sha512,
+      } });
+      for (const args of [[], ["--fix"]]) {
+        const result = run(...args);
+        expect(result.status, result.stderr).toBe(1);
+        expect(contents()).toBe(before);
+      }
+    }
+  });
+
+  it("uses the real package name for npm aliases, including nested and scoped paths", () => {
+    const before = lock({
+      "node_modules/string-width-cjs": { name: "string-width", version: "4.2.3", resolved: "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz", integrity: sha512 },
+      "node_modules/a/node_modules/alias": { name: "@scope/name", version: "1.0.0", resolved: "https://registry.npmjs.org/@scope%2fname/-/name-1.0.0.tgz", integrity: sha512 },
+      "node_modules/a/node_modules/example": { version: "1.0.0", resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz", integrity: sha512 },
+    });
+    for (const args of [[], ["--fix"]]) {
+      const result = run(...args);
+      expect(result.status, result.stderr).toBe(0);
+      expect(contents()).toBe(before);
+    }
+  });
+
+  it.each([1, 2])("rejects wrong real names and versions for legacy aliases in v%s", lockfileVersion => {
+    for (const path of ["@scope/nope/-/nope-1.0.0.tgz", "@scope/name/-/nope-1.0.0.tgz", "@scope/name/-/name-2.0.0.tgz"]) {
+      for (const host of ["https://registry.npmjs.org", "https://feed.example.com/npm/registry"]) {
+        const before = JSON.stringify({ lockfileVersion,
+          ...(lockfileVersion === 2 ? { packages: {} } : {}),
+          dependencies: { alias: { version: "npm:@scope/name@1.0.0", resolved: `${host}/${path}`, integrity: sha512 } },
+        });
+        writeFileSync(join(fixture, "package-lock.json"), before);
+        for (const args of [[], ["--fix"]]) {
+          expect(run(...args).status).toBe(1);
+          expect(contents()).toBe(before);
+        }
+      }
+    }
+  });
+
+  it.each([
+    { version: "1.0.0", resolved: "https://registry.npmjs.org/other/-/other-1.0.0.tgz" },
+    { version: "2.0.0", resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz" },
+    { name: "real", version: "1.0.0", resolved: "https://registry.npmjs.org/example/-/example-1.0.0.tgz" },
+  ])("rejects a tarball that does not match the entry name/version: %j", entry => {
+    const before = lock({ "node_modules/example": { ...entry, integrity: sha512 } });
+    for (const args of [[], ["--fix"]]) {
+      expect(run(...args).status).toBe(1);
+      expect(contents()).toBe(before);
+    }
+  });
   it("checks the repository lockfile offline before commit", () => {
     const result = spawnSync(process.execPath, [script], { cwd: root, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);

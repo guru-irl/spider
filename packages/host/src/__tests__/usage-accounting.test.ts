@@ -16,7 +16,7 @@ vi.mock("@spider/db-core", async original => {
   const actual = await original<typeof import("@spider/db-core")>();
   return { ...actual, resolveProject: (...args: Parameters<typeof actual.resolveProject>) => { projectResolutions(...args); return actual.resolveProject(...args); } };
 });
-vi.mock("@spider/memory", async original => ({ ...await original<typeof import("@spider/memory")>(), resolveEmbedder: async () => null }));
+vi.mock("@spider/memory", async original => ({ ...await original<typeof import("@spider/memory")>(), getReadyEmbedder: () => null }));
 const fixtureSpawner = vi.hoisted(() => vi.fn((): any => { throw Error("no fixture spawner configured"); }));
 vi.mock("../../../subagents/src/spawn-default", () => ({ defaultSpawner: fixtureSpawner }));
 const scratch = resolve(".spider/scratch/usage-accounting");

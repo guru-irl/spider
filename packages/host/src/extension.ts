@@ -31,7 +31,7 @@ import * as models from "@spider/models";
 import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
 import {
   stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
-  activeCharTotal, listActive, resolveEmbedder,
+  activeCharTotal, listActive, getReadyEmbedder,
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
@@ -63,11 +63,11 @@ import { modelReviewer } from "./memory-reviewer";
 
 export { registerGlobalAction as registerAction };
 
-// resolveEmbedder owns the process-wide, versioned cache; null falls back to FTS.
+// Hot paths use the shared ready adapter, or FTS while initialization runs.
 // The running module owns the comparison location, regardless of session cwd.
 export const loadedBundle: LoadedBundle = { identity: LOADED_BUILD, url: import.meta.url };
 
-const getEmbedder = resolveEmbedder;
+const getEmbedder = async () => getReadyEmbedder();
 
 // Each loaded extension owns its runtime; manual actions reuse its serialized workers.
 const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
@@ -849,7 +849,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   registerAction("recall", async (args, ctx) => {
     if (removedMemoryScope(args)) return { error: REMOVED_MEMORY_SCOPE };
     const scope = scopeOf(args);
-    const embedder = await getEmbedder();
+    const embedder = scope === "repo" && typeof args.query === "string" && args.query ? getReadyEmbedder() : null;
     const recs = await recall(dbFor(scope, ctx), scope, args.query as string, embedder, {
       category: args.category as any,
       limit: args.limit as number | undefined,

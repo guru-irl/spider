@@ -92,6 +92,7 @@ it("a shutdown then new activation reuses the process-wide recall embedder", asy
   const ctx = { repoDb: db, globalDb: db } as never;
   await getAction("recall")!({ action: "recall", query: "fixture" }, ctx);
   await getAction("recall")!({ action: "recall", query: "fixture" }, ctx);
+  await loadEmbedder();
   expect(models.inits).toBe(1);
   await pi.emit("session_shutdown");
   host();

@@ -1,5 +1,5 @@
 import type { Db, ProjectInfo } from "@spider/db-core";
-import { listActive, type Embedder } from "@spider/memory";
+import { listActive, waitForEmbedder, type Embedder } from "@spider/memory";
 import { emitLog } from "@spider/subagents";
 import { drainSession, type DrainOpts } from "./drain.js";
 import { applyDigest } from "./apply.js";
@@ -185,7 +185,7 @@ export class OrganismWorker {
           const beforeCalls = report.modelCalls;
           let reflectionAllFailed = false;
           try {
-            const embedder = await abortable(this.#deps.getEmbedder(), controller.signal);
+            const embedder = await abortable(waitForEmbedder(this.#deps.getEmbedder), controller.signal);
             const result = await reflectionPass(db, embedder, model, {
               maxMemoryProposals: org.maxMemoryProposals,
               onClusterError: (e, info) => {

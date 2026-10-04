@@ -1,11 +1,12 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { makeMemDb } from "./helpers/tmpdb";
-import { enqueueEmbed, drainEmbedQueue } from "../embeddings/queue";
+import { enqueueEmbed, drainEmbedQueue, startEmbedWorker } from "../embeddings/queue";
 import { knn } from "../embeddings/vectors";
 import type { Embedder } from "../embeddings/embedder";
 
 let ctx: ReturnType<typeof makeMemDb>;
-afterEach(() => ctx?.cleanup());
+let stop: (() => void) | undefined;
+afterEach(() => { stop?.(); stop = undefined; vi.useRealTimers(); ctx?.cleanup(); });
 
 const fakeEmbedder: Embedder = {
   model: "BGE-small-en-v1.5", dim: 3,
@@ -13,6 +14,18 @@ const fakeEmbedder: Embedder = {
 };
 
 describe("embed queue", () => {
+  it("keeps queued writes while initialization is pending, then retries and drains", async () => {
+    vi.useFakeTimers();
+    ctx = makeMemDb();
+    enqueueEmbed(ctx.db, "memory", "pending-model", "banana");
+    let attempts = 0;
+    stop = startEmbedWorker(ctx.db, () => ++attempts === 1 ? new Promise(() => {}) : Promise.resolve(fakeEmbedder), { intervalMs: 10 });
+    await vi.advanceTimersByTimeAsync(10);
+    expect((ctx.db.prepare("SELECT COUNT(*) c FROM embed_queue").get() as { c: number }).c).toBe(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect((ctx.db.prepare("SELECT COUNT(*) c FROM embed_queue").get() as { c: number }).c).toBe(0);
+    expect(knn(ctx.db, Float32Array.from([6, 1, 0]), 1, "memory")[0].ownerId).toBe("pending-model");
+  });
   it("drains queued rows into vectors", async () => {
     ctx = makeMemDb();
     enqueueEmbed(ctx.db, "memory", "m1", "banana");

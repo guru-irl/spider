@@ -22,7 +22,7 @@ import { HostOrganismRuntime } from "../organism-runtime";
 // pi's loader and event dispatch all stay REAL in this integration test.
 vi.mock("@spider/memory", async (original) => ({
   ...await original<typeof import("@spider/memory")>(),
-  resolveEmbedder: async () => null,
+  getReadyEmbedder: () => null,
 }));
 const scratch = resolve(".spider/scratch/organism-host-integration");
 const roots: string[] = [];

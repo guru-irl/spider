@@ -38,7 +38,7 @@ built-ins:
   the knowledge base for \`spider search\`.
 - \`spider run\` — dispatch subagents (single / chain / parallel / pipeline,
   always async). Pass an explicit **provider-qualified** \`model:\` (e.g.
-  \`github-copilot/claude-sonnet-5\`) scaled to task complexity (cheap for
+  \`github-copilot/gpt-6.1-sol\`) scaled to task complexity (cheap for
   mechanical, capable for architecture/review), plus \`thinking:\`. Subagents run
   in the background and report back via a \`spider.subagent_done\` message — there
   is no blocking wait. For multi-phase work use

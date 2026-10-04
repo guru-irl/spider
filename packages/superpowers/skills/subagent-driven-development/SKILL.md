@@ -74,7 +74,7 @@ on main without explicit consent.
 Before **each** `spider run`, check `spider control models` for current role
 defaults, resolve a model for the role, and pass an explicit
 **provider-qualified** `model:`. Routing precedence is explicit model, then
-worktree-local override, then global default, then parent model. The role
+worktree-local override, then global default, then shipped role default, then parent model. The role
 lookup does not itself supply the explicit argument: put its resolved value on
 every worker, fixer and reviewer run, including each pipeline stage. Scale
 reasoning to the task. Set `thinking` on EACH parallel, chain or pipeline

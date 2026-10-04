@@ -17,7 +17,7 @@
 - Other actions with `cwd`, including `todo`, use that directory's project database.
 
 ```text
-spider run agent:"reviewer" task:"Review the parser diff; do not edit source" model:"provider/model" thinking:"high" context:"fresh"
+spider run agent:"reviewer" task:"Review the parser diff; do not edit source" model:"github-copilot/claude-opus-5.5" thinking:"high" context:"fresh"
 spider kill id:"<run-id>"
 ```
 

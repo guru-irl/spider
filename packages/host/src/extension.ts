@@ -541,7 +541,10 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         return { details: { ...r, role: args.key } };
       }
       const { defaults, sources, global, local, errors } = modelDefaultLayers(cwd);
-      return { details: { catalog: listCatalog(ctx.modelRegistry), defaults, sources, global, local, errors } };
+      const catalog = listCatalog(ctx.modelRegistry);
+      const effective = models.resolveRoleDefaults(catalog, defaults);
+      const origins = Object.fromEntries(Object.keys(effective).map(role => [role, sources[role] ?? "default"]));
+      return { details: { catalog, defaults: effective, sources: origins, global, local, errors } };
     }
     case "upstream-watch": {
       if (!ctx) return { error: "control upstream-watch requires an action context" };
@@ -720,7 +723,8 @@ export function buildActionCtx(
   // Resolved once per dispatch so packages/subagents/src/actions/run.ts (which cannot
   // import @spider/host to read config itself) can apply the models.defaults[<role>]
   // precedence without ever touching the config file directly.
-  const modelDefaults = (settings.config["models.defaults"] as Record<string, string> | undefined) ?? {};
+  const configuredModels = (settings.config["models.defaults"] as Record<string, string> | undefined) ?? {};
+  const modelDefaults = args.action === "run" ? models.resolveRoleDefaults(listCatalog(modelRegistry), configuredModels) : configuredModels;
   const configuredChildMode = settings.config["subagents.childMode"];
   if (args.action === "run" && configuredChildMode !== "rpc" && configuredChildMode !== "print") throw new Error("subagents.childMode must be rpc or print");
   const childMode = configuredChildMode === "print" ? "print" : "rpc";

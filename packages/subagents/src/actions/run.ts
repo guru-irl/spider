@@ -115,18 +115,18 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
       : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);
 
-    // Stamp the parent's current model + thinking level on runs that don't name one, so the
+    // Resolve configured or shipped role defaults, then the parent for unknown roles, so the
     // (static) run block and footer show them immediately instead of "—". Thinking is often
     // encoded as a model suffix (e.g. "prov/opus:high"); split it out so the model column stays
     // clean and the thinking level renders as its own segment. spawnFor uses the explicit --thinking flag.
     const parentModel: string | undefined = ctx.model?.id;
-    // pi resolves a BARE model id (e.g. "claude-sonnet-5") to its default provider, which may
+    // pi resolves a BARE model id (e.g. "gpt-6.1-sol") to its default provider, which may
     // be unauthenticated in the child (→ silent "No API key" death). Qualify to the provider
-    // pi lists as available (e.g. "github-copilot/claude-sonnet-5"). Already-qualified refs pass through.
+    // pi lists as available (e.g. "github-copilot/gpt-6.1-sol"). Already-qualified refs pass through.
     const piModels = listPiModels((ctx as { modelRegistry?: unknown }).modelRegistry);
     // models.defaults[<role>] (control models set), threaded in via ActionCtx because
     // subagents cannot import @spider/host to read config directly. Precedence: explicit
-    // model: on the call -> the role's configured default -> inherit the parent (last
+    // model: on the call -> configured or shipped role default -> inherit the parent (last
     // resort, so nothing regresses when no default is configured).
     const modelDefaults = (ctx as { modelDefaults?: Record<string, string> }).modelDefaults;
     const resolveMT = (m?: string, th?: string, role?: string, step?: number): { model?: string; thinking?: string } => {

@@ -300,17 +300,21 @@ Before spawning, `actions/run.ts` calls `listPiModels(ctx.modelRegistry)` for pi
 current list of available models, then passes any bare model id (one with no
 `/`) through `qualifyModelProvider`. That function matches the id against the
 list and, if a match is marked available, prefixes the id with that match's
-provider (for example `claude-sonnet-5` becomes
-`github-copilot/claude-sonnet-5` if that is the provider pi lists as
+provider (for example `gpt-6.1-sol` becomes
+`github-copilot/gpt-6.1-sol` if that is the provider pi lists as
 available for that model). An id that already contains `/` passes through
 unchanged. This step exists because a bare id passed straight to a child pi
 process resolves to that family's default provider, which may not be
 authenticated in the child's environment. Startup failure is finalized as failed;
-exit zero alone is never treated as proof of a deliverable. A run with no
-explicit model inherits the parent's current model and thinking level
-(`ctx.model.id`, split into base model and thinking suffix by
-`stripThinkingSuffix`/`thinkingFromModel`), so a dispatched run is never
-missing that information in the UI.
+exit zero alone is never treated as proof of a deliverable. An explicit model wins over configured role defaults. The host resolves shipped
+role defaults from the available catalog: workers, planners, and researchers use
+`github-copilot/gpt-6.1-sol:high` (`gpt-6-sol` when 6.1 is not in the catalog);
+scouts, digest, self naming, and upstream watch
+use `github-copilot/gpt-6-luna:low`; reviewers use
+`github-copilot/claude-opus-5.5:high`; oracle uses Opus at medium thinking.
+Non-Copilot catalogs use the tier fallbacks. Unknown roles or an empty eligible
+catalog retain the parent-model fallback. Thinking suffixes are split with
+`stripThinkingSuffix`/`thinkingFromModel`.
 
 Thinking accepts the shared ordered levels `off`, `minimal`, `low`, `medium`,
 `high`, `xhigh`, and `max`. Explicit per-item thinking overrides the input model

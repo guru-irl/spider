@@ -3,13 +3,13 @@ import { resolveThinking, type ThinkingModel, type ThinkingResolution } from "@s
 /**
  * Resolve a subagent model id to a provider-qualified ref.
  *
- * A bare model id (e.g. "claude-sonnet-5") is passed verbatim to the child pi as
- * `--model claude-sonnet-5`, which pi resolves to its DEFAULT provider for that
- * family (e.g. "anthropic"). If that provider isn't authenticated in the child's
+ * A bare model id (e.g. "gpt-6.1-sol") is passed verbatim to the child pi as
+ * `--model gpt-6.1-sol`, which pi resolves to its DEFAULT provider for that
+ * family (e.g. "openai"). If that provider isn't authenticated in the child's
  * environment the child dies at startup with "No API key found for <provider>" —
  * and because the spawner uses stdio:"ignore" the failure is silent (the run still
  * reports "done" with no output). Qualifying the id with the provider that pi
- * actually lists as AVAILABLE (e.g. "github-copilot/claude-sonnet-5") routes the
+ * actually lists as AVAILABLE (e.g. "github-copilot/gpt-6.1-sol") routes the
  * child to an authenticated provider. Already-qualified refs pass through untouched.
  */
 export interface ListedModel {
@@ -37,7 +37,7 @@ export function qualifyModelProvider(model: string | undefined, list: ListedMode
 /**
  * Resolve the model a spawned subagent should use, in precedence order:
  *   1. an explicit `model:` on the call
- *   2. the configured default for the agent's role (`models.defaults[<role>]`,
+ *   2. the configured or host-resolved shipped default for the agent's role (`models.defaults[<role>]`,
  *      persisted via `control models set` and threaded in through ActionCtx — subagents
  *      cannot import @spider/host to read config directly)
  *   3. inherit the parent session's model (existing behaviour, kept as the last resort so

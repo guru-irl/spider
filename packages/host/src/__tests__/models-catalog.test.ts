@@ -82,8 +82,17 @@ describe("control models is wired through the real tool", () => {
     const r: any = await tool.execute("m2", { action: "control", command: "models" }, undefined, undefined, {
       cwd, sessionId: "s-model-sources", modelRegistry: mkRegistry([model("github-copilot", "claude-sonnet-5")]),
     });
-    expect(r.details.defaults).toEqual({ worker: "github-copilot/claude-opus-5", reviewer: "github-copilot/claude-opus-5" });
-    expect(r.details.sources).toEqual({ worker: "local", reviewer: "global" });
+    expect(r.details.defaults).toEqual({
+      worker: "github-copilot/claude-opus-5", reviewer: "github-copilot/claude-opus-5",
+      planner: "github-copilot/claude-sonnet-5:high", researcher: "github-copilot/claude-sonnet-5:high",
+      oracle: "github-copilot/claude-sonnet-5:medium", scout: "github-copilot/claude-sonnet-5:low",
+      digest: "github-copilot/claude-sonnet-5:low", self_name: "github-copilot/claude-sonnet-5:low",
+      upstream_watch: "github-copilot/claude-sonnet-5:low",
+    });
+    expect(r.details.sources).toEqual({
+      worker: "local", reviewer: "global", planner: "default", researcher: "default", oracle: "default",
+      scout: "default", digest: "default", self_name: "default", upstream_watch: "default",
+    });
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

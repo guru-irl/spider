@@ -32,7 +32,7 @@ spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"re
 - Set and unset reject unknown keys outside the editable schema. Booleans must be `true` or `false`; enum values must be listed options. Numbers must be finite and within their field's range: snapshot cap `500-40000`, organism budgets `0-1000`, curator interval `1-336` hours, and [reviewer timeout ranges](memory-and-learning.md#reviewer-settings). Reviewer timeouts must also be integers. Setting `models.defaults` requires a JSON string containing an object of role-to-model strings, not an object-valued tool argument.
 
 ```text
-spider control command:"config" op:"set" key:"models.defaults" value:"{\"reviewer\":\"provider/model:high\"}" scope:"global"
+spider control command:"config" op:"set" key:"models.defaults" value:"{\"reviewer\":\"github-copilot/claude-opus-5.5:high\"}" scope:"global"
 ```
 
 ### Child extensions
@@ -74,7 +74,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 | `subagents.extensions` | `[]` | Global-only, user-managed array of absolute extension file paths for every child. |
 | `exec.enforce` | `true` | Block the built-in bash tool. |
 | `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory; not a storage cap. |
-| `models.defaults` | `{}` | Agent role to model-reference map. |
+| `models.defaults` | `{}` | Explicit agent-role overrides; shipped defaults resolve from the catalog. |
 | `organism.enabled` | `true` | Parent-session background work. |
 | `organism.selfNaming` | `true` | Allow project naming by consolidation. |
 | `organism.autoWriteBudget` | `20` | Staged writes per drain. |
@@ -107,12 +107,14 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 ## Model role defaults
 
 ```text
-spider control command:"models" op:"set" key:"reviewer" value:"provider/model:high"
+spider control command:"models" op:"set" key:"reviewer" value:"github-copilot/claude-opus-5.5:high"
 spider control command:"models" op:"clear" key:"reviewer"
 ```
 
 - `set` writes a global role default. `clear` removes only that role's current local override, not the global value or other roles.
-- Resolution: explicit model, local role override, global role default, then parent model. Pipeline stages use the same policy.
+- Resolution: explicit model, local role override, global role default, shipped role default from the available catalog, then parent model for unknown roles or an empty eligible catalog. Pipeline stages use the same policy.
+- Shipped roles: worker, planner, and researcher use `github-copilot/gpt-6.1-sol:high` (`gpt-6-sol` when 6.1 is not in the catalog); scout, digest, self naming, and upstream watch use `github-copilot/gpt-6-luna:low`; reviewer uses `github-copilot/claude-opus-5.5:high`; oracle uses Opus at medium thinking. Non-Copilot catalogs use tier fallbacks.
+- `control models` reports resolved shipped defaults with source `default`. Automatic tier selection excludes Sonnet 5.5, GPT-5 models, GPT-6 Terra, and moving aliases (`~`-prefixed or `-latest` ids). Explicit model and configured role pins remain supported.
 - `models.defaults` merges per role, not as one replacement object. Provenance is a per-role source map in config and models results.
 - A global set reports the local value and file when shadowed.
 - Thinking suffixes and per-item overrides are covered in [Subagents](subagents.md#models-and-thinking).

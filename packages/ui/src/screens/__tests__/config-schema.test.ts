@@ -6,6 +6,10 @@ describe("config schema", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
 		expect(ids).toEqual(["auxiliary", "curator", "exec", "memory", "models", "organism", "routing", "skills", "subagents", "ui"]);
 	});
+	it("offers Luna xhigh as the skill-reviewer UI defaults", () => {
+		expect(getField("skills.reviewer.model")?.default).toBe("github-copilot/gpt-6-luna");
+		expect(getField("skills.reviewer.thinking")?.default).toBe("xhigh");
+	});
 	it("curator consolidation defaults to the runtime's disabled value", () => {
 		expect(getField("curator.consolidate")?.default).toBe(false);
 	});

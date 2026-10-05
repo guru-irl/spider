@@ -402,3 +402,23 @@ it("persists newly attributable aux entries even when the event snapshot is unch
   expect(price).toHaveBeenCalledTimes(1);
   expect(ledger.getSourceContext(`${r.dbPath}#spider-aux`)?.entries).toHaveLength(1);
 });
+
+it("invalidates preloaded unpersisted headers after rotation for fork origin attribution", async () => {
+  const original = run("original"), bridge = run("bridge"), leaf = run("leaf");
+  const a = source("original", original), b = source("bridge", bridge), c = source("leaf", leaf);
+  const old = message("inherited", {}, at - 4000);
+  write(a, [header("original"), old]);
+  write(b, [header("bridge-old", { timestamp: new Date(at - 5000).toISOString() })]);
+  write(c, [header("leaf", { parentSession: b.path }), old]);
+  const d = discovery([c, b, a], [original, bridge, leaf]);
+  // Preload all headers without persisting any source context.
+  await ingest(ledger, d, at, new AbortController().signal, { sourcePaths: [] });
+  expect(ledger.getSourceHeaders()).toEqual([]);
+  renameSync(b.path, join(root, "bridge-old.jsonl"));
+  write(b, [header("bridge-new", { parentSession: a.path })]);
+  // Only the leaf is scanned. Its origin depends on the rotated bridge header
+  // from preload, rather than a header overwritten during the full scan.
+  await ingest(ledger, d, at + 1, new AbortController().signal, { sourcePaths: [c.path] });
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0]).toMatchObject({ copied: 1, run_id: "original", entry_id: "inherited" });
+});

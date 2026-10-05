@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -69,7 +70,7 @@ it("a different process cannot steal a live lease without contention (I4)", asyn
 });
 it("one owner wins across processes", async () => {
   const { file } = store();
-  const code = (owner: string) => `const db = openUsageLedger(${JSON.stringify(file)}); console.log(String(!!acquireUsageLease(db, 'counter', '${owner}', 1000, 100))); db.close();`;
+  const code = (owner: string) => `const db = openUsageLedger(${JSON.stringify(file)}); console.log(String(!!acquireUsageLease(db, 'counter', '${owner}', 1000, 100))); setInterval(() => {}, 1000);`;
   const a = child(code("a")), b = child(code("b"));
   expect((await Promise.all([a.line(), b.line()])).filter(x => x === "true")).toHaveLength(1);
 });
@@ -143,7 +144,7 @@ it("doctor inspection distinguishes free, owner, follower and expired without ex
 
 // Reuses review-t5/stranded.test.ts's real-process death modes. The synchronous
 // raw getter pauses AFTER the fence check and BEGIN IMMEDIATE, mid-save.
-it.each(["SIGKILL", "SIGTERM", "SIGHUP", "process.exit", "worker.terminate"])("a fresh process acquires after TTL following %s mid-save (C1)", async mode => {
+it.each(["SIGKILL", "SIGTERM", "SIGHUP", "process.exit", "worker.terminate"])("a fresh process recovers a dead PID, but a terminated thread waits TTL following %s mid-save (C1)", async mode => {
   const { file } = store();
   const pause = mode === "process.exit" ? "process.exit(0)" : "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)";
   const body = `const db = openUsageLedger(${JSON.stringify(file)}); const lease = acquireUsageLease(db, 'counter', 'a', 1000, 100); lease.saveIfCurrent(1000, { ts: 1000, creditsUsed: 7, get raw() { NOTIFY; ${pause}; return {}; } });`;
@@ -160,7 +161,7 @@ it.each(["SIGKILL", "SIGTERM", "SIGHUP", "process.exit", "worker.terminate"])("a
   if (mode !== "worker.terminate") await a.exit;
   else { expect(a.proc.exitCode).toBeNull(); expect(a.proc.signalCode).toBeNull(); }
   const b = child(`const db = openUsageLedger(${JSON.stringify(file)}); console.log(JSON.stringify({ before: !!acquireUsageLease(db, 'counter', 'b', 1099, 100), after: !!acquireUsageLease(db, 'counter', 'b', 1100, 100), snapshot: db.latestCounter() ?? null })); db.close();`);
-  expect(JSON.parse(await b.line())).toEqual({ before: false, after: true, snapshot: null });
+  expect(JSON.parse(await b.line())).toEqual({ before: mode !== "worker.terminate", after: mode === "worker.terminate", snapshot: null });
   if (mode === "worker.terminate") { expect(a.proc.exitCode).toBeNull(); a.proc.kill("SIGKILL"); await a.exit; }
 });
 
@@ -213,4 +214,27 @@ it("I1 samples the clock inside BEGIN IMMEDIATE for every write fence", () => {
     expect(a.recordError(clock, "http-500")).toBe(true); expect(samples).toBe(4);
     expect(a.saveIfCurrent(clock, snapshot)).toBe(true); expect(samples).toBe(5);
   } finally { if (probe.inTransaction) probe.exec("ROLLBACK"); probe.close(); }
+});
+
+it.each(["ingest", "counter"])("same-host killed %s owner is taken over before TTL with a transactional clock", async name => {
+  const { ledger, file } = store();
+  const a = child(`const db = openUsageLedger(${JSON.stringify(file)}); const lease = acquireUsageLease(db, '${name}', 'killed-fixture', 1000, 120000); console.log(String(!!lease)); setInterval(() => {}, 1000);`);
+  expect(await a.line()).toBe("true");
+  expect(leases.acquireUsageLease(ledger, name, "successor", 1001, 120000)).toBeUndefined();
+  a.proc.kill("SIGKILL"); await a.exit;
+  const probe = new Database(file, { timeout: 0 });
+  try {
+    const next = leases.acquireUsageLease(ledger, name, "successor", () => { expect(() => probe.exec("BEGIN IMMEDIATE")).toThrow(); return 1002; }, 120000);
+    expect(next).toBeDefined(); expect(next?.isCurrent(1002)).toBe(true);
+  } finally { if (probe.inTransaction) probe.exec("ROLLBACK"); probe.close(); }
+});
+it("foreign-host and reused live PIDs never permit early takeover", () => {
+  const { ledger, file } = store(); leases.acquireUsageLease(ledger, "ingest", "original", 1000, 120000);
+  const db = new Database(file);
+  try {
+    db.prepare("UPDATE leases SET owner_host='another-host', owner_pid=2147483647").run();
+    expect(leases.acquireUsageLease(ledger, "ingest", "next", 1001, 120000)).toBeUndefined();
+    db.prepare("UPDATE leases SET owner_host=?, owner_pid=?").run(hostname(), process.pid);
+    expect(leases.acquireUsageLease(ledger, "ingest", "next", 1001, 120000)).toBeUndefined();
+  } finally { db.close(); }
 });

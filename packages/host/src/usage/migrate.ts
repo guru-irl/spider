@@ -30,16 +30,24 @@ export function migrateUsageLedger(db: Db): void {
       db.exec(migration.sql);
       db.pragma(`user_version = ${migration.version}`);
     }
-    const columns = db.prepare("PRAGMA table_info(leases)").all() as { name: string; type: string; notnull: number; pk: number; dflt_value: unknown }[];
+    let columns = db.prepare("PRAGMA table_info(leases)").all() as { name: string; type: string; notnull: number; pk: number; dflt_value: unknown }[];
     const indexes = db.prepare("PRAGMA index_list(leases)").all() as { name: string; unique: number; origin: string; partial: number }[];
     const keys = indexes.filter(index => index.unique || index.origin === "pk");
     const keyColumns = keys.length === 1
       ? db.prepare(`PRAGMA index_info("${keys[0].name.replaceAll('"', '""')}")`).all() as { name: string }[] : [];
     const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='leases'").get() as { sql: string } | undefined;
     const normalized = (sql: string) => sql.replace(/\bIF\s+NOT\s+EXISTS\b/gi, "").replace(/\s+/g, "").replace(/;$/, "").toLowerCase();
+    // Upgrade the previous exact layout additively. A live owner's row must not
+    // be deleted just because a newer worker learns PID/host recovery.
+    const legacySql = USAGE_LEASE_SCHEMA.replace(",\n  owner_pid INTEGER, owner_host TEXT", "");
+    if (ddl && normalized(ddl.sql) === normalized(legacySql) && columns.length === USAGE_LEASE_COLUMNS.length - 2) {
+      db.exec("ALTER TABLE leases ADD COLUMN owner_pid INTEGER; ALTER TABLE leases ADD COLUMN owner_host TEXT");
+      ddl.sql = USAGE_LEASE_SCHEMA;
+      columns = db.prepare("PRAGMA table_info(leases)").all() as typeof columns;
+    }
     const compatible = ddl !== undefined && normalized(ddl.sql) === normalized(USAGE_LEASE_SCHEMA) && columns.length === USAGE_LEASE_COLUMNS.length && columns.every((column, index) =>
       column.name === USAGE_LEASE_COLUMNS[index] &&
-      column.type.toUpperCase() === (["acquired_at", "expires_at", "next_due_at", "notice_at"].includes(column.name) ? "INTEGER" : "TEXT") &&
+      column.type.toUpperCase() === (["acquired_at", "expires_at", "next_due_at", "notice_at", "owner_pid"].includes(column.name) ? "INTEGER" : "TEXT") &&
       column.notnull === (index === 0 ? 1 : 0) && column.pk === (index === 0 ? 1 : 0) && column.dflt_value === null) &&
       keys.length === 1 && keys[0].origin === "pk" && keys[0].unique === 1 && keys[0].partial === 0 &&
       keyColumns.length === 1 && keyColumns[0].name === "name";

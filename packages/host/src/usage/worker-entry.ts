@@ -1,0 +1,201 @@
+import { statSync } from "node:fs";
+import type { MessagePort } from "node:worker_threads";
+import { discoverUsageSources } from "./discovery.js";
+import { ingestOnce } from "./ingest.js";
+import { openUsageLedger, openUsageLedgerReadOnly, type UsageLedger, type ImportBatch } from "./ledger.js";
+import { acquireUsageLease, UsageLeaseError, type Lease } from "./lease.js";
+import { CounterPoller, counterSnapshotIsFresh } from "./counter.js";
+import type { BackfillState, ReconciliationView, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
+
+export type UsageWorkerDependencies = {
+  discover?: typeof discoverUsageSources;
+  ingest?: (...args: Parameters<typeof ingestOnce>) => ReturnType<typeof ingestOnce>;
+  now?: () => number;
+  fetch?: typeof globalThis.fetch;
+};
+const TTL_MS = 120000;
+const CYCLE_MS = 60000;
+const BATCH_SOURCES = 8;
+const BATCH_BYTES = 4 * 1024 * 1024;
+const SNAPSHOT_MS = 3000;
+
+/** Boot only from the marked worker seam, never from extension registration. */
+export async function bootUsageWorker(
+  port: MessagePort, command: Extract<UsageWorkerCommand, { type: "start" }>, dependencies: UsageWorkerDependencies = {},
+): Promise<void> {
+  const post = (event: UsageWorkerEvent) => { try { port.postMessage(event); } catch { /* parent gone */ } };
+  if (command.child) { post({ type: "stopped" }); port.close(); return; }
+  const now = dependencies.now ?? Date.now;
+  const discover = dependencies.discover ?? discoverUsageSources;
+  const ingest = dependencies.ingest ?? ingestOnce;
+  let ledger: UsageLedger | undefined, lease: Lease | undefined, poller: CounterPoller | undefined;
+  let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
+  let poll = command.poll;
+  let backfill: BackfillState = "pending";
+  let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
+  let cachedSnapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
+  let version = -1, lastPublish = -Infinity;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let controller = new AbortController();
+  const error = (failure: unknown, fallback = "usage-ingest-failed") => post({ type: "error", code: failure instanceof UsageLeaseError ? failure.code === "lease-busy" ? "usage-ingest-lease-busy" : "usage-ledger-unavailable" : fallback });
+  const guard = () => !stopped && !controller.signal.aborted && !!lease?.isCurrent(now);
+  const stateBatch = (state: BackfillState): ImportBatch => ({ calls: [], runs: [], states: [], resetSources: [], sourceErrors: [], detailedRunIds: [], restoreAggregateRunIds: [], at: now(), commitGuard: guard, backfillState: state });
+  function counter(): void {
+    poller = new CounterPoller({ ledger: ledger!, authPath: command.roots.authPath, enabled: poll, isChild: false, readOnly: !lease, now, fetch: dependencies.fetch ?? globalThis.fetch });
+    poller.start();
+  }
+  function open(): void {
+    // SQLite data_version is connection-local, not a ledger-wide revision.
+    version = -1; cachedSnapshot = undefined;
+    // A live owner means followers never even use the writable opener/migrations.
+    ledger = openUsageLedgerReadOnly(command.roots.ledgerFile);
+    if (ledger && ledger.leases.inspect("ingest", now(), command.owner).role === "follower") { counter(); return; }
+    ledger?.close(); ledger = openUsageLedger(command.roots.ledgerFile);
+    try { lease = acquireUsageLease(ledger, "ingest", command.owner, now, TTL_MS); }
+    catch (failure) { if (!(failure instanceof UsageLeaseError && failure.code === "lease-busy")) throw failure; }
+    if (!lease) { ledger.close(); ledger = openUsageLedgerReadOnly(command.roots.ledgerFile); }
+    if (!ledger) throw new Error("ledger unavailable");
+    counter();
+  }
+  function comparisonCounter(counterState: ReturnType<CounterPoller["state"]>) {
+    const candidate = counterState.availability === "disabled" ? ledger!.latestCounter() : counterState.latest;
+    return (counterState.availability === "available" || counterState.availability === "disabled")
+      && counterSnapshotIsFresh(candidate, now(), counterState.nextPollAt) ? candidate : null;
+  }
+  function reconciliation(): ReconciliationView {
+    const latest = comparisonCounter(poller!.state());
+    const end = latest?.ts ?? now();
+    const date = new Date(end);
+    const start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+    const summary = ledger!.summarize(start, end);
+    const credits = latest?.creditsUsed ?? null;
+    return { windowStart: start, windowEnd: end, computedAIC: summary.aic, counterAIC: credits, gap: credits === null ? null : credits - summary.aic, ratio: credits === null || credits === 0 ? null : summary.aic / credits, unpricedCalls: summary.unpricedCalls, estimated: true };
+  }
+  function publish(full = true): void {
+    if (stopped || !ledger || !poller) return;
+    const counterState = poller.state();
+    // No opaque endpoint body/account identifiers cross to pi or the shared row.
+    if (counterState.latest) {
+      const { raw: _raw, accountLogin: _login, ...fields } = counterState.latest;
+      counterState.latest = { ...fields, raw: {} };
+    }
+    if (!lease) {
+      const currentVersion = ledger.dataVersion();
+      if (version !== currentVersion) { cachedSnapshot = ledger.getPublishedSnapshot(); version = currentVersion; }
+      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0, unpricedModels: [] }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
+      const comparison = { ...snapshot.reconciliation };
+      // Until the owner publishes the matching window, do not compare a new
+      // counter to a summary of a different interval. No follower ledger scan.
+      const latest = comparisonCounter(counterState);
+      if (!latest || latest.ts !== comparison.windowEnd) {
+        comparison.counterAIC = comparison.gap = comparison.ratio = null;
+      }
+      post({ ...snapshot, counter: counterState, reconciliation: comparison });
+      return;
+    }
+    const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
+    const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
+    cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
+  }
+  async function cycle(): Promise<void> {
+    if (stopped) return;
+    if (!ledger) open();
+    if (lease && !lease.renew(now)) {
+      controller.abort(); lease = undefined;
+      await poller?.stop(); ledger!.close(); ledger = undefined;
+      controller = new AbortController(); open();
+    }
+    if (!lease && ledger!.leases.inspect("ingest", now(), command.owner).role !== "follower") {
+      await poller?.stop(); ledger!.close(); ledger = undefined; open();
+    }
+    if (!lease) { backfill = ledger!.getBackfillState(); publish(); return; }
+    const first = ledger!.getBackfillState() !== "complete";
+    if (first) { ledger!.apply(stateBatch("running")); backfill = "running"; publish(); }
+    const discovery = await discover(command.roots);
+    if (!guard()) return;
+    // Stat filtering precedes any transcript open. Discovery stays complete for
+    // fork and report attribution, but unchanged files pay no per-batch work.
+    const changed: string[] = [];
+    const persistedContexts = new Set(ledger!.getSourceHeaders().map(source => source.path));
+    for (const source of discovery.sources) {
+      const state = ledger!.getImportState(source.path);
+      let info;
+      try { info = statSync(source.path); } catch { changed.push(source.path); continue; }
+      if (!(state && persistedContexts.has(source.path) && state.inode === `${info.dev}:${info.ino}` && state.size === info.size
+        && state.mtimeMs === info.mtimeMs && state.offset === info.size)) changed.push(source.path);
+    }
+    progress = { sourcesCompleted: discovery.sources.length - changed.length, sourcesTotal: discovery.sources.length };
+    let firstCall = true;
+    if (!changed.length) { await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: [], skipHealth: true, commitGuard: guard }); firstCall = false; }
+    for (let i = 0; i < changed.length && guard(); i += BATCH_SOURCES) {
+      let remaining = changed.slice(i, i + BATCH_SOURCES);
+      while (remaining.length && guard()) {
+        const offsets = new Map(remaining.map(path => [path, ledger!.getImportState(path)?.offset ?? -1]));
+        await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: remaining, maxBytes: BATCH_BYTES, commitGuard: guard, skipHealth: true, skipShared: !firstCall });
+        firstCall = false;
+        remaining = remaining.filter(path => { const state = ledger!.getImportState(path); return state && state.offset < state.size && state.offset > offsets.get(path)!; });
+        if (guard() && performance.now() - lastPublish >= SNAPSHOT_MS) publish(false);
+        // Stop, heartbeat and counter timers also run between slices of one file.
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      progress.sourcesCompleted += Math.min(BATCH_SOURCES, changed.length - i);
+      if (guard() && (performance.now() - lastPublish >= SNAPSHOT_MS || first && progress.sourcesCompleted % 32 === 0)) publish(false);
+    }
+    if (!guard()) return;
+    ledger!.apply(stateBatch("complete")); backfill = "complete"; publish();
+  }
+  function schedule(): void {
+    if (stopped) return;
+    clearTimeout(timer);
+    // New followers observe the initial owner's completion promptly, read-only.
+    timer = setTimeout(request, !lease ? SNAPSHOT_MS : CYCLE_MS);
+    timer.unref?.();
+  }
+  function request(): void {
+    if (stopped) return;
+    if (task) { pending = true; return; }
+    task = (async () => {
+      do {
+        pending = false;
+        try { await cycle(); }
+        catch (failure) {
+          backfill = "failed";
+          try { if (guard()) ledger!.apply(stateBatch("failed")); } catch { /* next cycle retries */ }
+          error(failure, ledger ? "usage-ingest-failed" : "usage-ledger-unavailable");
+        }
+      } while (pending && !stopped);
+    })().finally(() => { task = undefined; if (pending && !stopped) request(); else schedule(); });
+  }
+  function stop(): Promise<void> {
+    if (stopping) return stopping;
+    stopped = true; pending = false; controller.abort(); clearTimeout(timer); clearInterval(heartbeat);
+    stopping = (async () => {
+      try { await task; await poller?.stop(); }
+      finally {
+        try { lease?.release(); } catch { /* lease expiry still permits recovery */ }
+        try { ledger?.close(); } catch { /* no native handle survives port close */ }
+        port.off("message", onMessage); post({ type: "stopped" }); port.close();
+      }
+    })();
+    return stopping;
+  }
+  function onMessage(message: UsageWorkerCommand): void {
+    if (message?.type === "stop") { void stop(); return; }
+    if (stopped) return;
+    if (message?.type === "refresh") request();
+    else if (message?.type === "configure") { poll = message.poll; poller?.setEnabled(poll); request(); }
+  }
+  port.on("message", onMessage);
+  try {
+    open();
+    heartbeat = setInterval(() => {
+      try { if (lease && !lease.renew(now)) { controller.abort(); post({ type: "error", code: "usage-ingest-lease-lost" }); } }
+      catch (failure) { error(failure); }
+    }, TTL_MS / 3);
+    heartbeat.unref?.();
+    timer = setTimeout(request, 0); timer.unref?.();
+  } catch (failure) { error(failure, "usage-ledger-unavailable"); await stop(); }
+}

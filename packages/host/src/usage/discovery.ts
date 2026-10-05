@@ -21,6 +21,9 @@ export type DiscoveryDependencies = {
   openDb?: (path: string) => Db | undefined;
   readdir?: (path: string) => Promise<Dirent[]>;
 };
+// Only compact attribution heads survive discovery. Stamp checks invalidate
+// replacements, truncation and appends; no transcript content or DB handle stays.
+const attributionHeads = new WeakMap<UsageRoots, Map<string, { stamp: string; cwd: string | null }>>();
 const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value : null;
 const number = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
 const code = (error: unknown): string => text((error as { code?: unknown })?.code) ?? "source-read-error";
@@ -30,6 +33,8 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
   const openSourceDb = dependencies.openDb ?? openDbReadOnly;
   const list = dependencies.readdir ?? (path => readdir(path, { withFileTypes: true }));
   const sources = new Map<string, SourceInfo>();
+  const stamps = new Map<string, string>();
+  const heads = attributionHeads.get(roots) ?? new Map(); attributionHeads.set(roots, heads);
   const runs: RunMeta[] = [], runEvents: RunEvent[] = [], runStates: RunState[] = [];
   const errors: { path: string; code: string; checkedPaths?: readonly string[] }[] = [];
   const runDbs: string[] = [];
@@ -37,7 +42,11 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
   async function canonical(path: string): Promise<string> { try { return await realpath(path); } catch { return resolve(path); } }
   async function add(path: string, project: string | null, repo: string | null, run: RunMeta | null) {
     const key = await canonical(path);
-    try { if (!(await stat(key)).isFile()) throw Object.assign(new Error("not a file"), { code: "not-file" }); }
+    try {
+      const info = await stat(key);
+      if (!info.isFile()) throw Object.assign(new Error("not a file"), { code: "not-file" });
+      stamps.set(key, `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`);
+    }
     catch (error) { errors.push({ path: key, code: code(error) === "ENOENT" ? "missing-source" : code(error) }); return false; }
     // Native run ownership is more specific than an incidental parent listing.
     if (!sources.has(key) || run && !sources.get(key)!.run) sources.set(key, { path: key, project, repo, run });
@@ -81,26 +90,32 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
   // Header cwd only attributes a parent session to an already registered project.
   // It never authorizes a directory walk or an extra launch root.
   for (const source of sources.values()) {
-    let file: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      file = await open(source.path, "r");
-      const buffer = Buffer.alloc(64 * 1024);
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      const end = buffer.subarray(0, bytesRead).indexOf(10);
-      if (end < 0) continue;
-      let header: Record<string, unknown>;
-      try { header = JSON.parse(buffer.subarray(0, end).toString("utf8")); } catch { continue; }
-      if (!header || header.type !== "session") continue;
-      const cwd = text(header.cwd);
-      if (!cwd) continue;
-      const owner = registrations.filter(r => {
-        const path = relative(r.project, resolve(cwd));
-        return !isAbsolute(path) && path.split(sep)[0] !== "..";
-      }).sort((a, b) => b.project.length - a.project.length)[0];
-      if (owner) { source.project = owner.project; source.repo = owner.repo; }
-    } catch (error) { errors.push({ path: source.path, code: code(error) }); }
-    finally { await file?.close(); }
+    const stamp = stamps.get(source.path)!;
+    let head = heads.get(source.path);
+    if (head?.stamp !== stamp) {
+      let file: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        file = await open(source.path, "r");
+        const buffer = Buffer.alloc(64 * 1024);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        const end = buffer.subarray(0, bytesRead).indexOf(10);
+        let cwd: string | null = null;
+        if (end >= 0) {
+          try { const h = JSON.parse(buffer.subarray(0, end).toString("utf8")); if (h?.type === "session") cwd = text(h.cwd); }
+          catch { /* malformed headers are diagnosed by ingest */ }
+        }
+        head = { stamp, cwd }; heads.set(source.path, head);
+      } catch (error) { errors.push({ path: source.path, code: code(error) }); }
+      finally { await file?.close(); }
+    }
+    if (!head?.cwd) continue;
+    const owner = registrations.filter(r => {
+      const path = relative(r.project, resolve(head.cwd!));
+      return !isAbsolute(path) && path.split(sep)[0] !== "..";
+    }).sort((a, b) => b.project.length - a.project.length)[0];
+    if (owner) { source.project = owner.project; source.repo = owner.repo; }
   }
+  for (const path of heads.keys()) if (!sources.has(path)) heads.delete(path);
 
   // Registry lookup only: one non-recursive directory listing per registered root.
   const scratchIndex = new Map<string, Set<string>>();

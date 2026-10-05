@@ -1,3 +1,4 @@
+import type { UsageWorkerEvent } from "./protocol.js";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -86,6 +87,10 @@ export type CoverageEvidence = "transcript" | "runs-db" | "unknown";
 export type CoverageEdge = { reportRunId: string; includedRunId: string; evidence: CoverageEvidence };
 export type ImportBatch = {
   calls: readonly CallRow[]; runs: readonly RunMeta[]; states: readonly ImportState[];
+  /** Worker ingest-lease fence, sampled under the same IMMEDIATE write lock. */
+  commitGuard?: () => boolean;
+  publishedSnapshot?: Extract<UsageWorkerEvent, { type: "snapshot" }>;
+  backfillState?: "pending" | "running" | "complete" | "failed";
   /** Compatibility only. Selection depends on raw facts, not these old signals. */
   detailedRunIds: readonly string[]; restoreAggregateRunIds: readonly string[];
   resetSources: readonly { path: string; generation: number }[];
@@ -110,7 +115,12 @@ export type UsageSummary = {
 };
 export interface UsageLedger {
   readonly leases: UsageLeaseStore;
-  apply(batch: ImportBatch): void;
+  /** False means the lease fence rejected the entire transaction. */
+  apply(batch: ImportBatch): boolean;
+  getSourceErrors(): readonly { path: string; code: string; checkedPaths?: readonly string[] }[];
+  getProgress(): { calls: number; sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null };
+  getPublishedSnapshot(): Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
+  dataVersion(): number;
   getImportState(path: string): ImportState | undefined;
   getRuns(): readonly RunMeta[];
   /** With roots, load only their persisted ancestry plus the last linear node.
@@ -125,6 +135,7 @@ export interface UsageLedger {
   latestCounter(): CounterSnapshot | undefined;
   summarize(start: number, end: number): UsageSummary;
   health(): LedgerHealth;
+  getBackfillState(): "pending" | "running" | "complete" | "failed";
   close(): void;
 }
 
@@ -255,6 +266,20 @@ export function openUsageLedger(file: string): UsageLedger {
   }
 }
 
+/** Never creates, migrates, canonicalizes or changes journal mode for followers. */
+export function openUsageLedgerReadOnly(file: string): UsageLedger | undefined {
+  const db = openDbReadOnly(file, { busyTimeoutMs: BUSY_TIMEOUT_MS });
+  if (!db) return undefined;
+  try {
+    assertUsageSchemaVersion(db);
+    // Another initial opener may have created the file but not committed its
+    // first schema transaction. Let the bounded writable opener serialize it.
+    if (db.pragma("user_version") === 0) { db.close(); return undefined; }
+    return createLedger(db);
+  }
+  catch (error) { db.close(); throw error; }
+}
+
 function createLedger(db: Db): UsageLedger {
   const context = db.prepare("SELECT header, tail_hash AS tailHash FROM source_context WHERE path=?");
   const headers = db.prepare("SELECT path, header FROM source_context");
@@ -303,16 +328,24 @@ function createLedger(db: Db): UsageLedger {
   const putError = db.prepare(`INSERT INTO import_state (path, source_error_code, source_error_paths, last_ingest_at)
     VALUES (@path, @code, @checkedPaths, @at) ON CONFLICT(path) DO UPDATE SET source_error_code=excluded.source_error_code,
     source_error_paths=excluded.source_error_paths,
-    last_ingest_at=MAX(import_state.last_ingest_at, excluded.last_ingest_at)`);
+    last_ingest_at=MAX(import_state.last_ingest_at, excluded.last_ingest_at)
+    WHERE import_state.source_error_code IS NOT excluded.source_error_code
+      OR import_state.source_error_paths IS NOT excluded.source_error_paths`);
   const putRun = db.prepare(`INSERT INTO runs_meta
     (id, db_path, project, repo, session_id, parent_run_id, agent, role, name, model, thinking, phase, started_at, ended_at)
     VALUES (@id, @dbPath, @project, @repo, @sessionId, @parentRunId, @agent, @role, @name, @model, @thinking, @phase, @startedAt, @endedAt)
     ON CONFLICT(db_path,id) DO UPDATE SET project=excluded.project, repo=excluded.repo, session_id=excluded.session_id,
     parent_run_id=excluded.parent_run_id, agent=excluded.agent, role=excluded.role, name=excluded.name, model=excluded.model,
-    thinking=excluded.thinking, phase=excluded.phase, started_at=excluded.started_at, ended_at=excluded.ended_at`);
+    thinking=excluded.thinking, phase=excluded.phase, started_at=excluded.started_at, ended_at=excluded.ended_at
+    WHERE (runs_meta.project, runs_meta.repo, runs_meta.session_id, runs_meta.parent_run_id,
+      runs_meta.agent, runs_meta.role, runs_meta.name, runs_meta.model, runs_meta.thinking,
+      runs_meta.phase, runs_meta.started_at, runs_meta.ended_at) IS NOT
+      (excluded.project, excluded.repo, excluded.session_id, excluded.parent_run_id,
+      excluded.agent, excluded.role, excluded.name, excluded.model, excluded.thinking,
+      excluded.phase, excluded.started_at, excluded.ended_at)`);
   const putCoverageEdge = db.prepare(`INSERT INTO coverage_edges (report_run_id, included_run_id, evidence)
     VALUES (@reportRunId, @includedRunId, @evidence) ON CONFLICT(report_run_id, included_run_id)
-    DO UPDATE SET evidence=excluded.evidence`);
+    DO UPDATE SET evidence=excluded.evidence WHERE coverage_edges.evidence IS NOT excluded.evidence`);
   const removeCoverageEdge = db.prepare("DELETE FROM coverage_edges WHERE report_run_id=? AND included_run_id=?");
   const getRuns = db.prepare(`SELECT id, db_path AS dbPath, project, repo, session_id AS sessionId,
     parent_run_id AS parentRunId, agent, role, name, model, thinking, phase,
@@ -345,7 +378,10 @@ function createLedger(db: Db): UsageLedger {
   const ledger: UsageLedger = {
     leases: createUsageLeaseStore(db, snapshot => ledger.insertCounter(snapshot)),
     apply(batch) {
-      db.raw.transaction(() => {
+      return db.raw.transaction(() => {
+        if (batch.commitGuard && !batch.commitGuard()) return false;
+        if (batch.publishedSnapshot) db.prepare("INSERT INTO ledger_metadata(key,value) VALUES ('worker-snapshot',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE ledger_metadata.value IS NOT excluded.value").run(JSON.stringify(batch.publishedSnapshot));
+        if (batch.backfillState) db.prepare("INSERT INTO ledger_metadata(key,value) VALUES ('backfill-state',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(batch.backfillState);
         // Validate every source before mutating anything, including calls without a cursor.
         // Cache only within this transaction: other connections may advance fences.
         const fences = new Map<string, { generation: number; offset: number | null } | undefined>();
@@ -426,7 +462,21 @@ function createLedger(db: Db): UsageLedger {
         for (const item of batch.completeReports ?? []) removeIncomplete.run(item.path, item.runId);
         for (const item of batch.incompleteReports ?? []) putIncomplete.run(item.path, item.runId);
         for (const error of batch.sourceErrors) putError.run({ ...error, checkedPaths: error.checkedPaths ? JSON.stringify(error.checkedPaths) : null, at: batch.at });
+        return true;
       }).immediate();
+    },
+    dataVersion() { return db.pragma("data_version") as number; },
+    getPublishedSnapshot() {
+      const row = db.prepare("SELECT value FROM ledger_metadata WHERE key='worker-snapshot'").get() as { value: string } | undefined;
+      return row ? JSON.parse(row.value) : undefined;
+    },
+    getProgress() {
+      const totals = db.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get() as { calls: number };
+      return { ...totals, ...healthSources.get() as { sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null } };
+    },
+    getSourceErrors() {
+      return (db.prepare("SELECT path, source_error_code AS code, source_error_paths AS checkedPaths FROM import_state WHERE source_error_code IS NOT NULL").all() as { path: string; code: string; checkedPaths: string | null }[])
+        .map(({ checkedPaths, ...row }) => ({ ...row, ...(checkedPaths === null ? {} : { checkedPaths: JSON.parse(checkedPaths) }) }));
     },
     getSourceContext(path, roots) {
       const row = context.get(path) as { header: string; tailHash: string } | undefined;
@@ -498,6 +548,10 @@ function createLedger(db: Db): UsageLedger {
         schemaVersion: db.pragma("user_version") as number, ...calls, ...sources, unpricedModels: models.map(row => row.model),
         ...(possibleOverlaps ? { possibleOverlaps } : {})
       };
+    },
+    getBackfillState() {
+      const row = db.prepare("SELECT value FROM ledger_metadata WHERE key='backfill-state'").get() as { value: string } | undefined;
+      return row && ["pending", "running", "complete", "failed"].includes(row.value) ? row.value as "pending" | "running" | "complete" | "failed" : "pending";
     },
     close() { db.close(); },
   };

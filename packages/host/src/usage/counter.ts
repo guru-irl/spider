@@ -19,6 +19,8 @@ export type CounterPollerOptions = {
   authPath: string;
   ledger: UsageLedger;
   isChild: boolean;
+  /** Ingest followers refresh shared snapshots without acquiring a counter lease. */
+  readOnly?: boolean;
   enabled: boolean;
   now: () => number;
   fetch: typeof globalThis.fetch;
@@ -31,6 +33,11 @@ const BUSY_RETRY_MS = 3000;
 // Honor shared cadence with grace, but never let failed saves extend freshness forever.
 const STALE_MS = 2 * POLL_MS + 120000;
 const HARD_STALE_MS = 3 * POLL_MS + 120000;
+/** Shared Task 5 freshness rule, including disabled-poll reconciliation. */
+export function counterSnapshotIsFresh(snapshot: CounterSnapshot | null | undefined, at: number, nextDueAt: number | null): boolean {
+  return !!snapshot && at >= snapshot.ts && at - snapshot.ts <= HARD_STALE_MS
+    && at <= Math.max(snapshot.ts + STALE_MS, (nextDueAt ?? 0) + 120000);
+}
 const RELEASE_MS = 2000;
 const DEADLINE_MS = 15000;
 const STOP_MS = 1000;
@@ -135,7 +142,7 @@ export class CounterPoller {
     if (this.started && this.enabled && !this.options.isChild) {
       try {
         this.cached();
-        this.options.ledger.leases.reconcileNotice(LEASE_NAME, this.options.now);
+        if (!this.options.readOnly) this.options.ledger.leases.reconcileNotice(LEASE_NAME, this.options.now);
         const info = inspectUsageLease(this.options.ledger, LEASE_NAME, this.options.now(), this.owner);
         this.current.nextPollAt = info.nextDueAt;
         this.healthy(info);
@@ -148,7 +155,7 @@ export class CounterPoller {
       if (age < 0) {
         if (this.current.notice?.code !== "clock-skew") this.current.notice = { code: "clock-skew", at };
         result.notice = this.current.notice; result.availability = "stale";
-      } else if (age > HARD_STALE_MS || at > Math.max(result.latest!.ts + STALE_MS, (result.nextPollAt ?? 0) + 120000)) {
+      } else if (!counterSnapshotIsFresh(result.latest, at, result.nextPollAt)) {
         result.availability = "stale";
       }
     }
@@ -249,7 +256,7 @@ export class CounterPoller {
         this.epoch++; this.controller?.abort(); this.pendingSave = undefined;
         this.lease = undefined; this.current.role = "follower";
       }
-      this.lease ??= acquireUsageLease(this.options.ledger, LEASE_NAME, this.owner, this.options.now, TTL_MS);
+      if (!this.options.readOnly) this.lease ??= acquireUsageLease(this.options.ledger, LEASE_NAME, this.owner, this.options.now, TTL_MS);
       this.leaseBusy = false;
       if (!this.lease) {
         this.pendingError = undefined;

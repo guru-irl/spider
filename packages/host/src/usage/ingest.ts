@@ -1,13 +1,25 @@
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
+import { UsageJsonLine } from "./jsonl-projection.js";
 import type { Discovery, SourceInfo } from "./discovery.js";
 import type {
   CallRow, CoverageEdge, ImportBatch, ImportState, LedgerHealth, RunMeta,
   UsageLedger, SourceContext, PendingReport,
 } from "./ledger.js";
 
+export type IngestOptions = {
+  /** Full discovery is retained for attribution; only these sources are scanned. */
+  sourcePaths?: readonly string[];
+  maxBytes?: number;
+  /** Batched workers publish diagnostics once, not once per slice. */
+  skipHealth?: boolean;
+  /** Shared discovery facts and DB-only auxiliary events run once per cycle. */
+  skipShared?: boolean;
+  commitGuard?: () => boolean;
+};
 const CHUNK = 64 * 1024;
 const PREFIX = 4096;
 // These are direct UsageSinkFactory purposes, not arbitrary pi UsageEntry kinds.
@@ -37,6 +49,7 @@ type Memory = {
   edges: CoverageEdge[];
   contexts: Map<string, string>;
 };
+const headerCache = new WeakMap<UsageLedger, Map<string, { stamp: string; header: Record<string, unknown> | null }>>();
 const retained = new WeakMap<UsageLedger, Memory>();
 const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value : null;
 const object = (value: unknown): Record<string, unknown> =>
@@ -94,7 +107,7 @@ async function checkpoint(file: Awaited<ReturnType<typeof open>>, start: number,
  */
 async function readTranscript(
   source: SourceInfo, previous: ImportState | undefined,
-  context: SourceContext | undefined, signal: AbortSignal, ledger: UsageLedger,
+  context: SourceContext | undefined, signal: AbortSignal, ledger: UsageLedger, maxBytes: number,
 ): Promise<Scan | undefined> {
   const before = await stat(source.path);
   if (!before.isFile())
@@ -114,10 +127,10 @@ async function readTranscript(
     const resume = reset ? 0 : previous?.offset ?? 0;
     const lines: Line[] = [];
     let readOffset = resume, committed = resume;
-    let fragments: Buffer[] = [];
-    let fragmentBytes = 0;
+    let line = new UsageJsonLine();
+    let lineBytes = 0;
     const chunk = Buffer.alloc(CHUNK);
-    while (readOffset < before.size) {
+    while (readOffset < before.size && committed - resume < maxBytes) {
       if (signal.aborted)
         return undefined;
       const { bytesRead } = await file.read(chunk, 0, Math.min(CHUNK, before.size - readOffset), readOffset);
@@ -128,24 +141,18 @@ async function readTranscript(
       let start = 0, end: number;
       while ((end = data.indexOf(10, start)) !== -1) {
         const part = data.subarray(start, end + 1);
-        const raw = fragments.length ? Buffer.concat([...fragments, part], fragmentBytes + part.length) : part;
-        let json: unknown;
-        try {
-          json = compact(JSON.parse(raw.toString("utf8")));
-        }
-        catch {
-          json = undefined;
-        }
-        lines.push({ byteOffset: committed, json });
-        committed += raw.length;
+        line.write(part); lineBytes += part.length;
+        const projected = line.finish();
+        lines.push({ byteOffset: committed, json: projected === undefined ? undefined : compact(projected) });
+        committed += lineBytes;
         start = end + 1;
-        fragments = [];
-        fragmentBytes = 0;
+        line = new UsageJsonLine(); lineBytes = 0;
+        if (committed - resume >= maxBytes) break;
       }
+      if (committed - resume >= maxBytes) break;
       if (start < data.length) {
-        const part = Buffer.from(data.subarray(start));
-        fragments.push(part);
-        fragmentBytes += part.length;
+        const part = data.subarray(start);
+        line.write(part); lineBytes += part.length;
       }
     }
     const prefixHash = await checkpoint(file, 0, Math.min(PREFIX, committed));
@@ -166,7 +173,7 @@ async function readTranscript(
     const header = lines.map(l => object(l.json)).find(e => e.type === "session") ?? (reset ? undefined : context?.header ?? undefined);
     const entries = lines.filter(l => text(object(l.json).type)).map(l => ({ ...l, json: cheap(l.json) }));
     return {
-      parsed, lines, resume, reset, header, partial: fragmentBytes > 0,
+      parsed, lines, resume, reset, header, partial: lineBytes > 0 || committed < before.size,
       context: { header: header ?? null, entries, tailHash },
       state: {
         path: source.path, inode, size: before.size, mtimeMs: before.mtimeMs, offset: committed,
@@ -268,18 +275,25 @@ function reconcileProof(discovery: Discovery, memory: Memory, reports: Report[],
 /** Never throws into pi. Nothing is committed after cancellation or a failed apply.
  * All report model groups, generation resets, proof changes and cursors share one batch.
  */
-export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: number, signal: AbortSignal): Promise<LedgerHealth> {
+export function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: number, signal: AbortSignal, options: IngestOptions & { skipHealth: true }): Promise<undefined>;
+export function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: number, signal: AbortSignal, options?: IngestOptions & { skipHealth?: false }): Promise<LedgerHealth>;
+export function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: number, signal: AbortSignal, options?: IngestOptions): Promise<LedgerHealth | undefined>;
+export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: number, signal: AbortSignal, options: IngestOptions = {}): Promise<LedgerHealth | undefined> {
+  const health = () => options.skipHealth ? undefined : ledger.health();
   if (signal.aborted)
-    return ledger.health();
+    return health();
+  const savedRuns = new Map(ledger.getRuns().map(r => [JSON.stringify([r.dbPath, r.id]), r]));
+  const savedErrors = new Map(ledger.getSourceErrors().map(e => [e.path, e]));
+  const sharedErrors = options.skipShared ? [] : discovery.errors.filter(e => JSON.stringify(savedErrors.get(e.path)) !== JSON.stringify(e));
   const batch: ImportBatch = {
-    calls: [], runs: discovery.runs, states: [], resetSources: [], sourceErrors: [...discovery.errors],
-    detailedRunIds: [], restoreAggregateRunIds: [], at
+    calls: [], runs: options.skipShared ? [] : discovery.runs.filter(r => JSON.stringify(savedRuns.get(JSON.stringify([r.dbPath, r.id]))) !== JSON.stringify(r)), states: [], resetSources: [], sourceErrors: sharedErrors,
+    detailedRunIds: [], restoreAggregateRunIds: [], at, commitGuard: options.commitGuard
   };
   const calls: CallRow[] = [], states: ImportState[] = [], resets: {
     path: string;
     generation: number;
   }[] = [];
-  const errors = [...discovery.errors];
+  const errors = [...sharedErrors];
   try {
     const memory = historical(ledger);
     const contexts = new Map(memory.contexts);
@@ -351,10 +365,16 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       }
       return undefined;
     }
+    const cache = headerCache.get(ledger) ?? new Map(); headerCache.set(ledger, cache);
     // Preload only missing headers so a later-listed ancestor can own an earlier fork.
     // Full source parsing below persists them for all subsequent passes.
     for (const source of discovery.sources)
       if (!headers.has(source.path)) {
+        let stamp: string;
+        try { const info = statSync(source.path); stamp = `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`; }
+        catch { continue; }
+        const cached = cache.get(source.path);
+        if (cached?.stamp === stamp) { headers.set(source.path, cached.header); continue; }
         const f = await open(source.path, "r").catch(() => undefined);
         if (!f)
           continue;
@@ -363,20 +383,28 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
           const end = buffer.subarray(0, result.bytesRead).indexOf(10);
           if (end >= 0) {
             const h = object(JSON.parse(buffer.subarray(0, end).toString()));
-            if (h.type === "session")
-              headers.set(source.path, h);
+            headers.set(source.path, h.type === "session" ? h : null);
           }
         }
         catch { /* malformed headers are diagnosed in the scan */ }
         finally {
           await f.close();
+          cache.set(source.path, { stamp, header: headers.get(source.path) ?? null });
         }
       }
+    // Stat-skipped sources still supply attribution on a worker restart or a
+    // metadata-only cycle. These local contexts survive only a fenced commit.
+    for (const source of discovery.sources) {
+      const id = text(headers.get(source.path)?.id);
+      if (source.run && id) contexts.set(source.run.id, id);
+    }
     const tailGroups = new Set<string>();
     const scannedPaths = new Set<string>();
+    const selectedPaths = options.sourcePaths ? new Set(options.sourcePaths) : undefined;
     for (const source of discovery.sources) {
+      if (selectedPaths && !selectedPaths.has(source.path)) continue;
       if (signal.aborted)
-        return ledger.health();
+        return health();
       try {
         const previous = ledger.getImportState(source.path);
         // Do not deserialize historical ancestry at all on a no-change pass.
@@ -388,7 +416,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
             contexts.set(source.run.id, String(header!.id));
           continue;
         }
-        const scan = await readTranscript(source, previous, ledger.getSourceContext(source.path, []), signal, ledger);
+        const scan = await readTranscript(source, previous, ledger.getSourceContext(source.path, []), signal, ledger, Math.max(1, options.maxBytes ?? Infinity));
         if (!scan)
           continue;
         states.push(scan.state);
@@ -481,6 +509,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
     }
     // DB facts are immutable. Event identities include payloads so a recreated DB
     // can reuse numeric ids without deleting or colliding with its predecessor.
+    if (!options.skipShared) {
     const auxByDb = new Map<string, {
       event: NonNullable<Discovery["runEvents"]>[number];
       payload: Record<string, unknown>;
@@ -570,23 +599,25 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       states.push({ path, inode, size: offset, offset, mtimeMs: at, parseErrors, generation: 0, prefixHash });
       sourceContexts.push({ path, context: { header: { snapshotSize: size }, entries, tailHash: "" } });
     }
+    }
     const resetPaths = new Set(resets.map(s => s.path));
     const reports = memory.reports.filter(r => !resetPaths.has(r.path));
     for (const call of calls)
       if (call.sourceKind === "report" && !call.copied && call.runId)
         reports.push({ runId: call.runId, owner: call.parentRunId, path: call.sourceFile, ts: call.ts });
-    const knownRuns = new Map(ledger.getRuns().map(r => [JSON.stringify([r.dbPath, r.id]), r]));
+    const knownRuns = savedRuns;
     for (const run of discovery.runs)
       knownRuns.set(JSON.stringify([run.dbPath, run.id]), run);
     const proof = reconcileProof(discovery, memory, reports, [...knownRuns.values()], contexts);
     if (signal.aborted)
-      return ledger.health();
+      return health();
     try {
-      ledger.apply({
+      const committed = ledger.apply({
         ...batch, calls, states, resetSources: resets, sourceErrors: errors,
         coverageEdges: proof.edges, sourceContexts, pendingReports: pendingUpdates,
         removePendingReports: removePending, incompleteReports: incomplete, completeReports: complete
       });
+      if (!committed) return health();
     }
     catch (error) {
       // No replay/toggle of fallback facts, and no cursor advance. Record diagnostics
@@ -597,7 +628,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
         }
         catch { /* next pass retries */ }
       }
-      return ledger.health();
+      return health();
     }
     retained.set(ledger, { reports, edges: proof.edges, contexts });
   }
@@ -611,5 +642,5 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       catch { /* diagnostics must not escape into pi */ }
     }
   }
-  return ledger.health();
+  return health();
 }

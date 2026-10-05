@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@spider/db-core";
 import type { CounterSnapshot, UsageLedger } from "./ledger.js";
@@ -41,7 +42,7 @@ export type UsageLeaseStore = {
 type Row = {
   owner: string | null; token: string | null; acquired_at: number | null;
   expires_at: number | null; next_due_at: number | null; last_error_code: string | null;
-  notice_code: string | null; notice_at: number | null;
+  notice_code: string | null; notice_at: number | null; owner_pid: number | null; owner_host: string | null;
 };
 const time = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -53,13 +54,18 @@ export class UsageLeaseError extends Error {
 /** Writes hold one short IMMEDIATE transaction with a 25 ms busy timeout.
  * Read-only paths are plain SELECTs and never contend with WAL writers. */
 export function createUsageLeaseStore(db: Db, insertCounter: (snapshot: CounterSnapshot) => void): UsageLeaseStore {
-  const get = db.prepare("SELECT owner, token, acquired_at, expires_at, next_due_at, last_error_code, notice_code, notice_at FROM leases WHERE name=?");
-  const put = db.prepare(`INSERT INTO leases(name, owner, token, acquired_at, expires_at, next_due_at, last_error_code, notice_code, notice_at)
-    VALUES (@name, @owner, @token, @acquired_at, @expires_at, @next_due_at, @last_error_code, @notice_code, @notice_at)
+  // A follower may see the previous layout before the next writable migration.
+  // Unknown identities remain conservative until TTL, never a false PID steal.
+  const columns = new Set((db.prepare("PRAGMA table_info(leases)").all() as { name: string }[]).map(c => c.name));
+  const identities = columns.has("owner_pid") && columns.has("owner_host");
+  const get = db.prepare(`SELECT owner, token, acquired_at, expires_at, next_due_at, last_error_code, notice_code, notice_at,
+    ${identities ? "owner_pid, owner_host" : "NULL AS owner_pid, NULL AS owner_host"} FROM leases WHERE name=?`);
+  const put = db.prepare(`INSERT INTO leases(name, owner, token, acquired_at, expires_at, next_due_at, last_error_code, notice_code, notice_at${identities ? ", owner_pid, owner_host" : ""})
+    VALUES (@name, @owner, @token, @acquired_at, @expires_at, @next_due_at, @last_error_code, @notice_code, @notice_at${identities ? ", @owner_pid, @owner_host" : ""})
     ON CONFLICT(name) DO UPDATE SET owner=excluded.owner, token=excluded.token,
     acquired_at=excluded.acquired_at, expires_at=excluded.expires_at,
     next_due_at=excluded.next_due_at, last_error_code=excluded.last_error_code,
-    notice_code=excluded.notice_code, notice_at=excluded.notice_at`);
+    notice_code=excluded.notice_code, notice_at=excluded.notice_at${identities ? ", owner_pid=excluded.owner_pid, owner_host=excluded.owner_host" : ""}`);
   const read = (name: string) => get.get(name) as Row | undefined;
   const write = (name: string, row: Row) => { put.run({ name, ...row }); };
   const transaction = <T>(action: () => T, write = true): T => {
@@ -75,13 +81,19 @@ export function createUsageLeaseStore(db: Db, insertCounter: (snapshot: CounterS
       throw error;
     } finally { if (previousTimeout !== null) db.pragma(`busy_timeout = ${previousTimeout}`); }
   };
-  const empty = (): Row => ({ owner: null, token: null, acquired_at: null, expires_at: null, next_due_at: null, last_error_code: null, notice_code: null, notice_at: null });
+  const empty = (): Row => ({ owner: null, token: null, acquired_at: null, expires_at: null, next_due_at: null, last_error_code: null, notice_code: null, notice_at: null, owner_pid: null, owner_host: null });
   const notice = (row: Row, code: string, at: number) => { row.notice_code = code; row.notice_at = at; };
   const clearNotice = (row: Row) => { row.notice_code = null; row.notice_at = null; };
   const latestTime = db.prepare("SELECT ts FROM counter_snapshots ORDER BY rowid DESC LIMIT 1");
   const skew = (at: number) => {
     const latest = latestTime.get() as { ts: number } | undefined;
     return latest !== undefined && latest.ts > at;
+  };
+  const host = hostname();
+  const definitelyGone = (row: Row | undefined): boolean => {
+    if (row?.owner_host !== host || !Number.isSafeInteger(row.owner_pid) || row.owner_pid! <= 0) return false;
+    try { process.kill(row.owner_pid!, 0); return false; }
+    catch (error) { return (error as { code?: string }).code === "ESRCH"; }
   };
   return {
     reconcileNotice(name, clock) {
@@ -102,7 +114,7 @@ export function createUsageLeaseStore(db: Db, insertCounter: (snapshot: CounterS
         return {
           owner: text(row?.owner) ? row.owner : null,
           expiresAt: time(row?.expires_at) ? row.expires_at : null,
-          role: !row?.owner ? "free" : !time(row.expires_at) || row.expires_at <= at ? "expired" : row.owner === owner ? "owner" : "follower",
+          role: !row?.owner ? "free" : !time(row.expires_at) || row.expires_at <= at || definitelyGone(row) ? "expired" : row.owner === owner ? "owner" : "follower",
           nextDueAt: time(row?.next_due_at) ? row.next_due_at : null,
           lastErrorCode: row?.last_error_code ?? null,
           notice: text(row?.notice_code) && time(row?.notice_at) ? { code: row.notice_code, at: row.notice_at } : null,
@@ -133,9 +145,9 @@ export function createUsageLeaseStore(db: Db, insertCounter: (snapshot: CounterS
           notice(previous, "lease-row-corrupt", at);
           write(name, previous);
         }
-        if (previous.expires_at !== null && previous.expires_at > at) return undefined;
+        if (previous.expires_at !== null && previous.expires_at > at && !definitelyGone(previous)) return undefined;
         const token = randomUUID();
-        const record: Row = { ...previous, owner, token, acquired_at: at, expires_at: at + ttlMs,
+        const record: Row = { ...previous, owner, token, acquired_at: at, expires_at: at + ttlMs, owner_pid: process.pid, owner_host: host,
           last_error_code: transient(previous.last_error_code) ? null : previous.last_error_code };
         if (record.notice_code === "lease-row-corrupt") clearNotice(record);
         write(name, record);
@@ -156,7 +168,7 @@ export function createUsageLeaseStore(db: Db, insertCounter: (snapshot: CounterS
             if (released) return true;
             const row = read(name);
             if (row?.token !== token || row.owner !== owner) { released = true; return false; }
-            write(name, { ...row, owner: null, token: null, acquired_at: null, expires_at: null });
+            write(name, { ...row, owner: null, token: null, acquired_at: null, expires_at: null, owner_pid: null, owner_host: null });
             released = true; return true;
           }),
           nextPollAt: () => transaction(() => {

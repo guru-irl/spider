@@ -1,3 +1,6 @@
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { bootUsageWorker } from "./usage/worker-entry.js";
+export { UsageRuntime } from "./usage/runtime.js";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError } from "@spider/memory";
@@ -67,6 +70,15 @@ export { registerGlobalAction as registerAction };
 // Hot paths use the shared ready adapter, or FTS while initialization runs.
 // The running module owns the comparison location, regardless of session cwd.
 export const loadedBundle: LoadedBundle = { identity: LOADED_BUILD, url: import.meta.url };
+
+// Native imports/registration remain inert. A usage worker never invokes the
+// extension factory, tools, organism or model runtime, including through pi's shim.
+if (!isMainThread && workerData?.spiderUsageWorker === 1 && parentPort) {
+  void bootUsageWorker(parentPort, workerData.command).catch(() => {
+    try { parentPort?.postMessage({ type: "error", code: "usage-worker-failed" }); } catch { /* parent gone */ }
+    parentPort?.close();
+  });
+}
 
 const getEmbedder = async () => getReadyEmbedder();
 

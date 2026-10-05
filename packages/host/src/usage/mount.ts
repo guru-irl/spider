@@ -17,6 +17,19 @@ function displayCwd(cwd: string): string {
   return tail === "" ? "~" : !isAbsolute(tail) && tail !== ".." && !tail.startsWith(`..${sep}`) ? `~${sep}${tail}` : cwd;
 }
 
+/** Async callbacks must never crash pi, including when diagnostic logging fails. */
+function guarded(callback: () => void, source: string): () => void {
+  let logged = false;
+  return () => {
+    try { callback(); }
+    catch {
+      if (logged) return;
+      logged = true;
+      try { console.warn(`[spider usage] ${source} failed; will retry`); } catch { /* best effort */ }
+    }
+  };
+}
+
 /** Owns only the terminal footer, never the independent spider agents widget. */
 export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: UsageRuntime, config: UsageConfig): { refresh(): void; configure(config: UsageConfig): void; dispose(): void } {
   let current = ctx;
@@ -25,7 +38,6 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   let file: string | undefined, sessionId: string | undefined;
   let count = 0, cursor: string | undefined;
   let component: ReturnType<typeof createUsageFooter> | undefined;
-  let requestRender = () => {};
   let tick: ReturnType<typeof setInterval> | undefined;
   const subscriptions: (() => void)[] = [];
   const totals = new FooterAccumulator();
@@ -35,7 +47,6 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 
   function releaseFooter(): void {
     component?.dispose(); component = undefined;
-    requestRender = () => {};
     if (ownsFooter) { ownsFooter = false; current.ui.setFooter(undefined); }
   }
   function refresh(reset = false): void {
@@ -58,7 +69,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     input = {
       cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null,
       modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
-      context: current.getContextUsage() ?? (model ? { percent: null, contextWindow: model.contextWindow } : null),
+      context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
       subscription, totals: totals.snapshot(),
       counter: { availability: snapshot?.availability === "available" ? "available" : snapshot?.availability === "disabled" ? "disabled" : "unavailable", snapshot: snapshot?.latest ?? null },
     };
@@ -66,13 +77,13 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       ownsFooter = true;
       current.ui.setFooter((tui, theme, footerData) => {
         component?.dispose();
-        requestRender = () => tui.requestRender();
-        component = createUsageFooter(() => input, theme, footerData, requestRender);
+        component = createUsageFooter(() => input, theme, footerData, () => tui.requestRender());
         return component;
       });
     }
-    requestRender();
+    component?.refresh();
   }
+  const tickRefresh = guarded(() => refresh(), "footer tick");
   function configure(next: UsageConfig): void {
     if (disposed || child) return;
     const changed = settings.footer !== next.footer;
@@ -82,7 +93,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       releaseFooter(); if (tick) clearInterval(tick); tick = undefined;
     } else {
       refresh(changed);
-      if (!tick) { tick = setInterval(() => refresh(), 1000); tick.unref?.(); }
+      if (!tick) { tick = setInterval(tickRefresh, 1000); tick.unref?.(); }
     }
   }
   function dispose(): void {
@@ -99,7 +110,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       pi.on("session_tree", (_event, next) => { current = next; refresh(true); }),
       pi.on("session_start", (_event, next) => {
         // Same-instance hosts can replace contexts without a shutdown. Release the old UI first.
-        releaseFooter(); current = next; count = 0; cursor = undefined; configure(settings);
+        releaseFooter(); current = next; refresh(true);
       }), pi.on("session_shutdown", dispose));
     configure(config);
   }
@@ -113,7 +124,7 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
   let config = readUsageConfig({}, {}).value;
   let reloader: ReturnType<typeof makeConfigReloader> | undefined;
   let watchedFile: string | undefined;
-  const reload = () => reloader?.reload();
+  const reload = guarded(() => reloader?.reload(), "config reload");
   async function stop(): Promise<void> {
     if (watchedFile) unwatchFile(watchedFile, reload);
     watchedFile = undefined; reloader = undefined;
@@ -142,7 +153,9 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     watchFile(watchedFile, { persistent: false, interval: 1000 }, reload);
   });
   pi.on("session_shutdown", stop);
-  return { reload, doctor: () => usageDoctorLines(runtime?.snapshot() ?? {
+  return { reload, doctor: () => process.env.PI_SUBAGENT_CHILD === "1"
+    ? { ok: true, lines: ["- usage worker: not started (child session)"] }
+    : usageDoctorLines(runtime?.snapshot() ?? {
     health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null,
   }, config) };
 }

@@ -12,7 +12,7 @@ export type SlashCommandName = (typeof SLASH_COMMANDS)[number];
 
 const FORWARD: Record<SlashCommandName, (arg: string) => Record<string, unknown>> = {
 	spider: (arg) => {
-		if (!arg.startsWith("config")) return { action: "control", command: "stats" };
+		if (!/^config(?:\s|$)/.test(arg)) return { action: "control", command: "stats" };
 		const scopeFlag = /\s+--(global|local)$/.exec(arg);
 		const body = scopeFlag ? arg.slice(0, scopeFlag.index) : arg;
 		const match = /^config(?:\s+(get|set|unset))?(?:\s+([\w.]+))?(?:\s+(.*))?$/.exec(body);

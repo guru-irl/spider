@@ -10,7 +10,7 @@ import { makeConfigReloader } from "../../config-reload.js";
 import { readUsageConfig, isUsageConfigKey } from "../config.js";
 
 const defaults = { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
-const keys = ["usage.footer", "usage.counterPoll", "usage.alertsSessionCredits", "usage.alertsRunCredits"];
+const keys = ["usage.footer", "usage.counter.poll", "usage.alerts.sessionCredits", "usage.alerts.runCredits"];
 let root: string, previous: string;
 beforeEach(() => {
   root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-config-"));
@@ -31,11 +31,27 @@ describe("usage config", () => {
     });
     expect(isUsageConfigKey("usage.other")).toBe(false);
   });
-  it.each(keys)("set and unset reject local scope for %s through direct and command paths", key => {
+  it.each(keys)("set rejects local scope for %s through direct and command paths", key => {
     expect(() => controlConfig("set", root, key, true)).toThrow(/global/);
-    expect(() => controlConfig("unset", root, key)).toThrow(/global/);
     expect(applyConfigEdit(root, key, key.includes("alerts") ? "1" : "false")).toMatchObject({ ok: false, error: expect.stringMatching(/global/) });
-    expect(applyConfigUnset(root, key)).toMatchObject({ ok: false, error: expect.stringMatching(/global/) });
+  });
+  it.each(keys)("local unset removes ignored %s without touching global config", key => {
+    controlConfig("set", root, key, key.includes("alerts") ? 2 : false, "global");
+    const globalBefore = readFileSync(join(paths.globalRoot, "config.json"), "utf8");
+    for (const unset of [() => controlConfig("unset", root, key), () => applyConfigUnset(root, key)]) {
+      writeFileSync(join(root, "local/config.json"), JSON.stringify({ [key]: "hand-written", "ui.footer": false }));
+      expect(unset()).toMatchObject({ ok: true, scope: "local", notice: expect.stringMatching(/ignored anyway/) });
+      expect(JSON.parse(readFileSync(join(root, "local/config.json"), "utf8"))).toEqual({ "ui.footer": false });
+      expect(readFileSync(join(paths.globalRoot, "config.json"), "utf8")).toBe(globalBefore);
+      expect(controlConfig("get", root, key)).toBe(key.includes("alerts") ? 2 : false);
+    }
+  });
+  it.each([["usage.counter.poll", false, true], ["usage.alerts.sessionCredits", 2.5, 0], ["usage.alerts.runCredits", 4, 0]] as const)("round trips global %s through config consumers", (key, value, fallback) => {
+    expect(applyConfigEdit(root, key, String(value), "global").ok).toBe(true);
+    expect(controlConfig("get", root, key)).toBe(value);
+    expect(configValues(root).sources[key]).toBe("global");
+    expect(applyConfigUnset(root, key, "global").ok).toBe(true);
+    expect(controlConfig("get", root, key)).toBe(fallback);
   });
   it("manual local keys are ignored and diagnosed", () => {
     const local = Object.fromEntries(keys.map(key => [key, false]));
@@ -44,9 +60,9 @@ describe("usage config", () => {
     const got = configValues(root);
     expect(got.config["usage.footer"]).toBe(true);
     expect(got.sources["usage.footer"]).toBe("default");
-    expect(got.errors.join("\n")).toMatch(/usage.counterPoll.*ignored/);
+    expect(got.errors.join("\n")).toMatch(/usage.counter.poll.*ignored/);
   });
-  it.each([["usage.footer", "false"], ["usage.counterPoll", 1], ["usage.alertsSessionCredits", -1], ["usage.alertsRunCredits", Infinity], ["usage.alertsRunCredits", NaN]])("validates %s", (key, value) => {
+  it.each([["usage.footer", "false"], ["usage.counter.poll", 1], ["usage.alerts.sessionCredits", -1], ["usage.alerts.runCredits", Infinity], ["usage.alerts.runCredits", NaN]])("validates %s", (key, value) => {
     expect(readUsageConfig({ [key]: value }, {}).errors.length).toBe(1);
     expect(() => controlConfig("set", root, String(key), value, "global")).toThrow(/must|expected/);
   });
@@ -70,13 +86,13 @@ describe("usage config", () => {
     expect(paths.projectRoot).not.toHaveBeenCalled();
   });
   it("reload hands global-only footer and poll changes to the live consumer", () => {
-    writeFileSync(join(root, "local/config.json"), JSON.stringify({ "usage.footer": true, "usage.counterPoll": true }));
+    writeFileSync(join(root, "local/config.json"), JSON.stringify({ "usage.footer": true, "usage.counter.poll": true }));
     let value = defaults;
     const reload = makeConfigReloader(root, merged => { value = readUsageConfig(merged as Record<string, unknown>, {}).value; });
     applyConfigEdit(root, "usage.footer", "false", "global");
-    applyConfigEdit(root, "usage.counterPoll", "false", "global");
+    applyConfigEdit(root, "usage.counter.poll", "false", "global");
     reload.reload();
     expect(value).toEqual({ ...defaults, footer: false, counterPoll: false });
-    expect(JSON.parse(readFileSync(join(paths.globalRoot, "config.json"), "utf8"))).toMatchObject({ "usage.counterPoll": false });
+    expect(JSON.parse(readFileSync(join(paths.globalRoot, "config.json"), "utf8"))).toMatchObject({ "usage.counter.poll": false });
   });
 });

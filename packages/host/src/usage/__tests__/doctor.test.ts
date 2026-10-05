@@ -12,9 +12,28 @@ const fixture = (): UsageRuntimeSnapshot => ({
 describe("usage doctor", () => {
   it("reports schema counts parse/source errors aggregate estimates backfill progress and rate provenance", () => {
     const result = usageDoctorLines(fixture(), config);
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
     const text = result.lines.join("\n");
     for (const pattern of [/schema=1/, /calls=5/, /sources=2/, /parse_errors=3/, /source_errors=4/, /aggregate=1/, /unpriced.*fixture-model/, /backfill=running.*1\/2/, /lease.*owner/, /estimated/, /copilot-public-2026-10-04/, /effective.*2026-10-01/, /source.*2026-10-04/, /https:\/\/docs.github.com/]) expect(text).toMatch(pattern);
+  });
+  it("missing Copilot login is informational, not a health failure", () => {
+    const s = fixture();
+    s.counter = { ...s.counter!, availability: "unavailable", latest: null, errorCode: "missing-auth" };
+    const result = usageDoctorLines(s, config);
+    expect(result.ok).toBe(true);
+    expect(result.lines.join("\n")).toMatch(/counter: unavailable \(no Copilot login\)/);
+  });
+  it.each(["unavailable", "stale", "disabled"] as const)("%s counter and unavailable comparison are informational", availability => {
+    const s = fixture(); s.counter = { ...s.counter!, availability, errorCode: "http-503" }; s.reconciliation = null;
+    expect(usageDoctorLines(s, config).ok).toBe(true);
+  });
+  it.each(["usage-worker-failed", "usage-worker-oom", "usage-worker-unavailable", "usage-ledger-unavailable", "usage-ingest-failed"])("real fault %s fails health despite an available counter", errorCode => {
+    const s = fixture(); s.errorCode = errorCode;
+    expect(usageDoctorLines(s, config).ok).toBe(false);
+  });
+  it("failed backfill is unhealthy even without a worker error", () => {
+    const s = fixture(); s.backfill = "failed";
+    expect(usageDoctorLines(s, config).ok).toBe(false);
   });
   it("unavailable counter is not zero", () => {
     const s = fixture(); s.counter = { ...s.counter!, availability: "unavailable", latest: null, snapshotAgeMs: null };

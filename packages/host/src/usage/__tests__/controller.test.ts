@@ -8,6 +8,12 @@ import { controlConfig } from "../../control.js";
 import { registerUsage } from "../mount.js";
 import { registerSlashCommands } from "../../slash.js";
 import { applyConfigEdit, applyConfigUnset } from "../../control/config-cmd.js";
+const watcher = vi.hoisted(() => ({ callback: undefined as (() => void) | undefined }));
+vi.mock("node:fs", async importOriginal => ({
+  ...await importOriginal<typeof import("node:fs")>(),
+  watchFile: vi.fn((_file, _options, callback) => { watcher.callback = callback; }),
+  unwatchFile: vi.fn(() => { watcher.callback = undefined; }),
+}));
 const workers = vi.hoisted(() => ({ instances: [] as any[] }));
 vi.mock("node:worker_threads", async () => {
   const { EventEmitter } = await import("node:events");
@@ -51,8 +57,8 @@ it("published worker snapshot is the doctor's only usage input", async () => {
 });
 it("config reload hot-applies footer/poll and ignores manual local overrides", async () => {
   registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
-  writeFileSync(join(root, "local/config.json"), JSON.stringify({ "usage.footer": true, "usage.counterPoll": true }));
-  controlConfig("set", root, "usage.footer", false, "global"); controlConfig("set", root, "usage.counterPoll", false, "global"); registration.reload();
+  writeFileSync(join(root, "local/config.json"), JSON.stringify({ "usage.footer": true, "usage.counter.poll": true }));
+  controlConfig("set", root, "usage.footer", false, "global"); controlConfig("set", root, "usage.counter.poll", false, "global"); registration.reload();
   expect(footer).toHaveBeenLastCalledWith(undefined); expect(workers.instances[0].commands).toContainEqual({ type: "configure", poll: false });
   expect(registration.doctor().lines.join("\n")).toMatch(/footer=disabled poll=disabled/);
 });
@@ -63,8 +69,9 @@ it.each(["rpc", "print", "json"] as const)("parent %s starts ledger worker witho
 it("child session_start starts neither footer nor worker", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "1"); registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
   expect(workers.instances).toHaveLength(0); expect(footer).not.toHaveBeenCalled();
+  expect(registration.doctor()).toMatchObject({ ok: true, lines: ["- usage worker: not started (child session)"] });
 });
-it.each(["set usage.footer false", "unset usage.footer"])("slash config %s rejects local edits and accepts explicit global", async args => {
+it.each(["set usage.footer false"])("slash config %s rejects local edits and accepts explicit global", async args => {
   const commands = new Map<string, Function>(), messages: any[] = [];
   registerSlashCommands({ registerCommand: (name, definition) => commands.set(name, definition.handler), sendMessage: message => messages.push(message) }, {
     alreadyRegistered: new Set(), run: async a => {
@@ -74,4 +81,38 @@ it.each(["set usage.footer false", "unset usage.footer"])("slash config %s rejec
   });
   await commands.get("spider")!(`config ${args}`, ctx); expect(messages.at(-1).details.result.error).toMatch(/global/);
   await commands.get("spider")!(`config ${args} --global`, ctx); expect(messages.at(-1).details.result.details).toMatchObject({ ok: true, scope: "global", key: "usage.footer" });
+});
+
+it.each([["usage.counter.poll", "false", false, true], ["usage.alerts.sessionCredits", "2.5", 2.5, 0], ["usage.alerts.runCredits", "4", 4, 0]] as const)("slash set/get/unset round trips three-part %s", async (key, raw, value, fallback) => {
+  const commands = new Map<string, Function>(), messages: any[] = [];
+  registerSlashCommands({ registerCommand: (name, definition) => commands.set(name, definition.handler), sendMessage: message => messages.push(message) }, {
+    alreadyRegistered: new Set(), run: async a => {
+      if (a.op === "get") return { details: { value: controlConfig("get", root, String(a.key)) } };
+      const r = a.op === "unset" ? applyConfigUnset(root, String(a.key), a.scope === "global" ? "global" : "local") : applyConfigEdit(root, String(a.key), String(a.value), a.scope === "global" ? "global" : "local");
+      return r.ok ? { details: r } : { error: r.error };
+    },
+  });
+  const command = commands.get("spider")!;
+  await command(`config set ${key} ${raw} --global`, ctx);
+  expect(messages.at(-1).details.result.details).toMatchObject({ ok: true, key });
+  await command(`config get ${key}`, ctx); expect(messages.at(-1).details.result.details.value).toBe(value);
+  writeFileSync(join(root, "local/config.json"), JSON.stringify({ [key]: "ignored" }));
+  await command(`config unset ${key} --local`, ctx);
+  expect(messages.at(-1).details.result.details).toMatchObject({ ok: true, scope: "local", notice: expect.stringMatching(/ignored anyway/) });
+  expect(controlConfig("get", root, key)).toBe(value);
+  await command(`config unset ${key} --global`, ctx);
+  await command(`config get ${key}`, ctx); expect(messages.at(-1).details.result.details.value).toBe(fallback);
+});
+
+it("config watcher catches a throwing footer dependency, logs once, and keeps applying changes", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start");
+  const getter = vi.spyOn(ctx.sessionManager, "getEntries").mockImplementation(() => { throw new Error("fixture dependency failed"); });
+  expect(() => watcher.callback!()).not.toThrow(); expect(() => watcher.callback!()).not.toThrow();
+  expect(warning).toHaveBeenCalledTimes(1); expect(footer).toHaveBeenCalledTimes(1);
+  getter.mockRestore();
+  controlConfig("set", root, "usage.footer", false, "global");
+  watcher.callback!(); expect(footer).toHaveBeenLastCalledWith(undefined);
+  controlConfig("set", root, "usage.footer", true, "global");
+  watcher.callback!(); expect(footer).toHaveBeenCalledTimes(3);
 });

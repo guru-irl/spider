@@ -90,8 +90,8 @@ describe("usage footer layout", () => {
       creditsUsed: 0, entitlement: 1000, ts: 1234 } } }), 200)[1]).toContain("month 0.0%");
   });
 
-  it("unknown context is visibly unknown rather than zero", () => {
-    expect(renderUsageFooter(input({ context: null }), 200)[1]).toContain("?/?");
+  it("absent context matches pi zero while explicit unknown remains unknown", () => {
+    expect(renderUsageFooter(input({ context: null }), 200)[1]).toContain("0.0%/0");
     expect(renderUsageFooter(input({ context: { percent: null, contextWindow: 1000000 } }), 200)[1]).toContain("?/1.0M");
   });
 

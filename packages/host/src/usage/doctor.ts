@@ -26,10 +26,13 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
     `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources` : " progress=unavailable"}`];
   if (health) {
     lines.push(`- usage ledger: schema=${health.schemaVersion} calls=${health.calls} sources=${health.sources} parse_errors=${health.parseErrors} source_errors=${health.sourceErrors} aggregate=${health.aggregateCalls} possible_overlaps=${health.possibleOverlaps ?? 0}`);
+    if (health.parseErrors) lines.push(`- usage parse errors: ${health.parseErrors} (lifetime total)`);
+    if (health.sourceErrors) lines.push(`- usage source errors: ${health.sourceErrors} (lifetime total; includes missing deleted worktrees or projects)`);
     lines.push(`- usage unpriced models: ${health.unpricedModels.length ? health.unpricedModels.slice(0, 20).map(label).join(", ") : "none"}`);
   } else lines.push("- usage ledger: not published yet; no main-thread open or creation");
   if (counter) {
-    lines.push(`- usage counter: ${counter.availability}; lease role=${counter.role}; age_ms=${number(counter.snapshotAgeMs)} stale=${counter.availability === "stale"}`);
+    const reason = counter.errorCode === "missing-auth" ? " (no Copilot login)" : "";
+    lines.push(`- usage counter: ${counter.availability}${reason}; lease role=${counter.role}; age_ms=${number(counter.snapshotAgeMs)} stale=${counter.availability === "stale"}`);
     lines.push(`- usage counter: credits_used=${number(counter.latest?.creditsUsed)} last_success=${number(counter.lastSuccessAt)} last_attempt=${number(counter.lastAttemptAt)} next_poll=${number(counter.nextPollAt)} error=${safeCode(counter.errorCode)} notice=${safeCode(counter.notice?.code)}`);
   } else lines.push(`- usage counter: ${config.counterPoll ? "unavailable" : "disabled"}; lease role=inactive`);
   if (reconciliation) {
@@ -39,7 +42,6 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
   lines.push("- usage comparison: billing accuracy unresolved; account counter includes other clients and machines");
   for (const rate of COPILOT_RATE_VERSIONS) lines.push(`- usage rates (estimated): ${rate.id} effective=${rate.effectiveFrom} source_as_of=${rate.sourceAsOf}; ${rate.source}`);
   if (snapshot.errorCode) lines.push(`- usage worker: error=${safeCode(snapshot.errorCode)}`);
-  const ok = !snapshot.errorCode && snapshot.backfill !== "failed" && !(health?.parseErrors || health?.sourceErrors)
-    && (!config.counterPoll || (counter === null && snapshot.backfill === "pending") || counter?.availability === "available");
+  const ok = !snapshot.errorCode && snapshot.backfill !== "failed";
   return { ok, lines };
 }

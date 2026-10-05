@@ -90,7 +90,8 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
     }
   }
   errors.push(...readUsageConfig(global.config, local.config).errors);
-  return { global, local, globalFile, localFile, errors };
+  const warnings = [...readUsageConfig({}, local.config).errors];
+  return { global, local, globalFile, localFile, errors, warnings };
 }
 
 /** Read a user-controlled global value without honoring repository overrides. */
@@ -147,7 +148,7 @@ type ConfigSource = "default" | "global" | "local" | Record<string, "global" | "
 
 /** Effective config and its provenance come from the same read of both layers. */
 export function configValues(cwd: string, localRoot?: string): {
-  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[]; globalFile: string;
+  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[]; warnings: string[]; globalFile: string;
 } {
   const layers = configLayers(cwd, localRoot);
   const g = layers.global.config;
@@ -158,8 +159,11 @@ export function configValues(cwd: string, localRoot?: string): {
   all["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? g["subagents.extensions"] : DEFAULTS["subagents.extensions"];
   sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
   const usage = readUsageConfig(g, p).value;
-  for (const key of Object.keys(USAGE_DEFAULTS)) {
-    all[key] = usage[key.slice("usage.".length) as keyof typeof usage];
+  for (const [key, value] of Object.entries({
+    "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
+    "usage.alerts.sessionCredits": usage.alertsSessionCredits, "usage.alerts.runCredits": usage.alertsRunCredits,
+  })) {
+    all[key] = value;
     sources[key] = Object.hasOwn(g, key) && !usageConfigError(key, g[key]) ? "global" : "default";
   }
   if ("models.defaults" in g || "models.defaults" in p) {
@@ -169,12 +173,12 @@ export function configValues(cwd: string, localRoot?: string): {
     sources["models.defaults"] = Object.fromEntries(Object.keys({ ...global, ...local }).map(role =>
       [role, Object.hasOwn(local, role) ? "local" : "global"]));
   }
-  return { config: all, sources, errors: layers.errors, globalFile: layers.globalFile };
+  return { config: all, sources, errors: layers.errors, warnings: layers.warnings, globalFile: layers.globalFile };
 }
 
 export interface ConfigWriteResult {
   ok: true; op: "set" | "unset"; key: string; value: unknown;
-  scope: "local" | "global"; file: string; shadowedBy?: "local";
+  scope: "local" | "global"; file: string; shadowedBy?: "local"; notice?: string;
 }
 
 export function controlConfig(op: "set" | "unset", cwd: string, key: string, value?: unknown, scope?: "local" | "global"): ConfigWriteResult;
@@ -190,7 +194,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     throw new Error('subagents.extensions is global-only; use scope:"global"');
   }
   if (isUsageConfigKey(key)) {
-    if (scope !== "global") throw new Error(`${key} is global-only; use scope:"global"`);
+    if (op === "set" && scope !== "global") throw new Error(`${key} is global-only; use scope:"global"`);
     const error = op === "set" ? usageConfigError(key, value) : undefined;
     if (error) throw new Error(error);
   }
@@ -232,7 +236,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   } finally {
     rmSync(temp, { force: true });
   }
-  return { ok: true, op, key, value: cur[key], scope, file, ...(shadowed ? { shadowedBy: "local" } : {}) };
+  const notice = op === "unset" && scope === "local" && isUsageConfigKey(key)
+    ? `${key} removed from local config; local usage keys are ignored anyway (global-only)` : undefined;
+  return { ok: true, op, key, value: cur[key], scope, file, ...(shadowed ? { shadowedBy: "local" } : {}), ...(notice ? { notice } : {}) };
 }
 
 // ── doctor ──
@@ -244,7 +250,10 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   let usageConfig = readUsageConfig({}, {}).value;
   try {
     const values = configValues(cwd);
-    for (const error of values.errors) { ok = false; lines.push(`- config: FAILED (${error})`); }
+    for (const error of values.errors) {
+      if (values.warnings.includes(error)) lines.push(`- config: ${error}`);
+      else { ok = false; lines.push(`- config: FAILED (${error})`); }
+    }
     drainEnabled = values.config["embeddings.drain"] !== false;
     usageConfig = readUsageConfig(values.config, {}).value;
   } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }

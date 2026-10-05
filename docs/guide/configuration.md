@@ -3,7 +3,8 @@
 ## Files and precedence
 
 - Store keys as literal dotted JSON properties, not nested objects.
-- Built-in defaults are overridden by global config, then worktree-local config, except `subagents.extensions`, which is read from global config only.
+- Built-in defaults are overridden by global config, then worktree-local config.
+- `subagents.extensions`, `usage.footer`, `usage.counter.poll`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
 - Global file: `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
 - Local file: `<worktree>/.spider/config.json`.
 - For config writes, `scope:"repo"` means the local file, not the shared repository database. Omitted scope is local; `scope:"global"` selects global.
@@ -22,6 +23,7 @@ spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"re
 - Writes report `scope` (`global` or `local`) and the destination `file`.
 - A global write reports `shadowedBy:"local"` if that key remains locally overridden.
 - Unset normally deletes the selected layer's key so the lower layer supplies its value.
+- Usage sets require `scope:"global"`. A local usage unset removes a hand-written local key and reports that it is ignored anyway. It leaves the global value unchanged.
 - Only `memory.snapshotCharCap` supports the `"unlimited"` sentinel. Unsetting the snapshot cap writes `"unlimited"` in the chosen layer when the global file has a cap; this applies to global and local unset.
 - Setting the snapshot cap to `"unlimited"` or an empty string follows that unset path.
 - Other numeric keys and model references do not receive the sentinel.
@@ -70,6 +72,10 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector; next session. |
+| `usage.footer` | `true` | Global-only AIC footer in parent TUI sessions; changes apply live. |
+| `usage.counter.poll` | `true` | Global-only read-only account polling every ten minutes, parents only; changes apply live. |
+| `usage.alerts.sessionCredits` | `0` | Global-only finite nonnegative session threshold; reserved, alerts are not implemented. |
+| `usage.alerts.runCredits` | `0` | Global-only finite nonnegative run threshold; reserved, alerts are not implemented. |
 | `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
 | `subagents.keepCacheWarm` | `true` | Ask pi to keep the parent cache warm while its subagents start or run, within the limits below; applies at the next warming decision. |
 | `subagents.extensions` | `[]` | Global-only, user-managed array of absolute extension file paths for every child. |
@@ -104,6 +110,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 - Configuration readers use merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads that same flat map.
 - The organism refreshes configuration when resolving its runtime for a request or drain.
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
+- `usage.footer` and `usage.counter.poll` apply live. Usage alert thresholds are registered but inactive.
 - `subagents.childMode` and `subagents.extensions` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.
 - `memory.snapshotCharCap` is captured with the frozen memory block at the first agent start. Changes apply next session, after an extension reload, or when the memory binding target changes. Doctor uses the current value.

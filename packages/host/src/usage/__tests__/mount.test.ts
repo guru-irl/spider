@@ -33,6 +33,7 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   const runtime = { snapshot: () => snapshot, configure: vi.fn(), refresh: vi.fn() } as unknown as UsageRuntime;
   return { pi, ctx, runtime, setFooter, getEntries, getBranch, registry, unsubBranch, requestRender,
     append: (entry: unknown) => entries.push(entry), replace: (next: unknown[], nextFile = file) => { entries = next; file = nextFile; },
+    counter: (creditsUsed: number, ts = 100) => { snapshot = { ...snapshot, counter: { availability: "available", role: "owner", lastAttemptAt: ts, lastSuccessAt: ts, nextPollAt: ts + 600000, snapshotAgeMs: 0, errorCode: null, notice: null, latest: { creditsUsed, entitlement: 100, ts, raw: {} } } }; },
     failWorker: () => { snapshot = { ...snapshot, errorCode: "usage-worker-failed" }; },
     emit: (name: string, event: unknown = {}) => { for (const handler of [...events.get(name) ?? []]) handler(event, ctx); },
     render: (width = 200) => footer!.render(width), invalidate: () => footer!.invalidate(), listenerCount: () => [...events.values()].reduce((n, set) => n + set.size, 0) };
@@ -63,6 +64,12 @@ describe("public usage footer mount", () => {
     expect(f.render().join("\n")).not.toMatch(/\(auto\)/);
     expect(f.registry.getProvider).toHaveBeenCalledWith("github-copilot"); expect(f.registry.isUsingOAuth).toHaveBeenCalledWith(f.ctx.model);
   });
+  it("absent context usage matches pi 0.0 percent with the model window", () => {
+    const f = fixture(); vi.mocked(f.ctx.getContextUsage).mockReturnValue(undefined); mount(f);
+    expect(f.render()[1]).toContain("0.0%/100k");
+    vi.mocked(f.ctx.getContextUsage).mockReturnValue({ percent: null, tokens: null, contextWindow: 100000 });
+    mounted!.refresh(); expect(f.render()[1]).toContain("?/100k");
+  });
   it("all-entry initial load and tree navigation match installed pi, including abandoned branches", () => {
     const f = fixture(); f.append(assistant("abandoned", 200)); mount(f);
     expect(f.render()[1]).toMatch(/↑300 ↓20/);
@@ -82,6 +89,52 @@ describe("public usage footer mount", () => {
     f.append(generic("usage", "aux", 15)); f.emit("agent_settled");
     f.append(generic("usage", "warmer", 20)); vi.advanceTimersByTime(1000);
     expect(f.render()[1]).toMatch(/↑140 ↓40/);
+  });
+  it("tick catches a throwing dependency, logs once, and later updates the same footer", () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const f = fixture(); mount(f); f.render();
+    f.getEntries.mockImplementation(() => { throw new Error("fixture dependency failed"); });
+    expect(() => vi.advanceTimersByTime(2000)).not.toThrow();
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(f.render()[1]).toMatch(/↑100 ↓10/);
+    f.getEntries.mockImplementation(() => [assistant("a", 100), assistant("b", 200)]);
+    vi.advanceTimersByTime(1000);
+    expect(f.render()[1]).toMatch(/↑300 ↓20/);
+    expect(f.setFooter).toHaveBeenCalledTimes(1);
+  });
+  it("idle ticks check entries without requesting another TUI render", () => {
+    const f = fixture(); mount(f); f.render();
+    f.requestRender.mockClear(); f.getEntries.mockClear();
+    vi.advanceTimersByTime(3000);
+    expect(f.getEntries).toHaveBeenCalledTimes(3);
+    expect(f.requestRender).not.toHaveBeenCalled();
+    f.append(generic("usage", "warmer", 20)); vi.advanceTimersByTime(1000);
+    expect(f.requestRender).toHaveBeenCalledTimes(1);
+    expect(f.render()[1]).toMatch(/↑120 ↓20/);
+    vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(1);
+  });
+  it("tick renders changed context/model/thinking but not unrendered context tokens", () => {
+    const f = fixture(); mount(f); f.render(); f.requestRender.mockClear();
+    vi.mocked(f.ctx.getContextUsage).mockReturnValue({ percent: 25, tokens: 25001, contextWindow: 100000 });
+    vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
+    vi.mocked(f.ctx.getContextUsage).mockReturnValue({ percent: 26, tokens: 26000, contextWindow: 100000 });
+    vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(1); expect(f.render()[1]).toMatch(/26.0%/);
+    f.ctx.model = { ...f.ctx.model!, id: "fixture-other-model" };
+    vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(2); expect(f.render()[0]).toContain("fixture-other-model");
+    f.pi.getThinkingLevel = () => "low";
+    vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(3); expect(f.render()[0]).toContain("low");
+  });
+  it("counter changes render only when the displayed month percentage changes", () => {
+    const f = fixture(); f.counter(10); mount(f); f.render(); f.requestRender.mockClear();
+    f.counter(10, 200); vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
+    f.counter(11, 300); vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(1);
+    expect(f.render()[1]).toContain("month 11.0%");
+  });
+  it("same-file session_start re-reduces without double counting", () => {
+    const f = fixture(); mount(f); f.emit("session_start");
+    expect(f.render()[1]).toMatch(/↑100 ↓10/);
+    f.append(assistant("b", 200)); f.emit("turn_end");
+    expect(f.render()[1]).toMatch(/↑300 ↓20/);
   });
   it("compaction adds summary usage without resetting pre-compaction totals", () => {
     const f = fixture(); mount(f); f.append(generic("compaction", "compact", 50)); f.emit("session_compact");

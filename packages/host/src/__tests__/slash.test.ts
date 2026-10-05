@@ -74,6 +74,15 @@ describe("registerSlashCommands", () => {
 		expect((sendMessage.mock.calls[0]?.[0] as any).details.args).toMatchObject({ action: "control", command: "stats" });
 	});
 
+	it.each(["configure", "configuration", "configx"])("/spider %s does not enter the config parser", async arg => {
+		const { pi, handlers, sendMessage } = makePi();
+		const run = vi.fn(async () => ({ details: { totals: { rows: 3 } } }));
+		registerSlashCommands(pi, { run, alreadyRegistered: new Set() });
+		await handlers.spider(arg, { ui: {} });
+		expect(run).toHaveBeenCalledWith({ action: "control", command: "stats" }, { ui: {} });
+		expect((sendMessage.mock.calls[0]?.[0] as any).details.result).not.toHaveProperty("error");
+	});
+
 	it("falls back to ctx.ui.notify only when pi.sendMessage is unavailable", async () => {
 		const { handlers } = makePi();
 		const piNoSend = { registerCommand: (n: string, o: any) => { (handlers as any)[n] = o.handler; } } as any;

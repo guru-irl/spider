@@ -70,6 +70,14 @@ describe("configuration schema truthfulness", () => {
     expect(guard(DEFAULTS, { [file]: without })).toContain("no reader: usage.footer");
   });
 
+  it.each(["usage.counter.poll", "usage.alerts.sessionCredits", "usage.alerts.runCredits"])("catches a removed spec-named reader %s", key => {
+    expect(productionReaders(root).has(key)).toBe(true);
+    const file = resolve("packages/host/src/usage/config.ts");
+    const source = readFileSync(file, "utf8");
+    const without = source.replace(`values["${key}"]`, "undefined");
+    expect(guard(DEFAULTS, { [file]: without })).toContain(`no reader: ${key}`);
+  });
+
   it("requires every production reader to have an editable schema field", () => {
     const readers = productionReaders(root);
     expect([...readers].filter(key => !fields.some(field => field.key === key))).toEqual([]);

@@ -1,7 +1,7 @@
 export type UsageConfig = { footer: boolean; counterPoll: boolean; alertsSessionCredits: number; alertsRunCredits: number };
-export const USAGE_DEFAULTS: Readonly<{ "usage.footer": boolean; "usage.counterPoll": boolean; "usage.alertsSessionCredits": number; "usage.alertsRunCredits": number }> = Object.freeze({
-  "usage.footer": true, "usage.counterPoll": true,
-  "usage.alertsSessionCredits": 0, "usage.alertsRunCredits": 0,
+export const USAGE_DEFAULTS: Readonly<{ "usage.footer": boolean; "usage.counter.poll": boolean; "usage.alerts.sessionCredits": number; "usage.alerts.runCredits": number }> = Object.freeze({
+  "usage.footer": true, "usage.counter.poll": true,
+  "usage.alerts.sessionCredits": 0, "usage.alerts.runCredits": 0,
 });
 export function isUsageConfigKey(key: string): key is keyof typeof USAGE_DEFAULTS {
   return Object.hasOwn(USAGE_DEFAULTS, key);
@@ -25,6 +25,6 @@ export function readUsageConfig(global: Record<string, unknown>, local: Record<s
     if (error) errors.push(error);
     else values[key] = global[key];
   }
-  return { value: { footer: values["usage.footer"] as boolean, counterPoll: values["usage.counterPoll"] as boolean,
-    alertsSessionCredits: values["usage.alertsSessionCredits"] as number, alertsRunCredits: values["usage.alertsRunCredits"] as number }, errors };
+  return { value: { footer: values["usage.footer"] as boolean, counterPoll: values["usage.counter.poll"] as boolean,
+    alertsSessionCredits: values["usage.alerts.sessionCredits"] as number, alertsRunCredits: values["usage.alerts.runCredits"] as number }, errors };
 }

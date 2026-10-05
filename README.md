@@ -151,7 +151,7 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 ```
 
 - Common keys: `organism.enabled` (default `true`), `subagents.childMode` (`"rpc"`), `ui.footer` (`true`).
-- Global-only usage keys: `usage.footer` and `usage.counterPoll` default to `true`; `usage.alertsSessionCredits` and `usage.alertsRunCredits` default to `0`. Footer and polling changes apply live. Alerts are not implemented.
+- Global-only usage keys: `usage.footer` and `usage.counter.poll` default to `true`; `usage.alerts.sessionCredits` and `usage.alerts.runCredits` default to `0`. Footer and polling changes apply live. Alerts are not implemented.
 - Reviewers: `memory.reviewer.enabled` and `skills.reviewer.enabled` default to `true`.
 - `models.defaults` maps roles to model references. Resolution is explicit model, local override, global default, shipped role default, then parent model for unknown roles or an empty eligible catalog.
 - `memory.snapshotCharCap` defaults to unlimited injection of active memory; it does not change the storage cap.

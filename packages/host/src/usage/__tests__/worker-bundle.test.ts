@@ -1,6 +1,7 @@
-import { afterEach, expect, it } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -8,13 +9,23 @@ import Database from "better-sqlite3";
 const require = createRequire(import.meta.url);
 const { extensionShim } = require("../../../../../scripts/extension-shim.mjs");
 const children = new Set<ChildProcess>(), dirs: string[] = [];
+const run = promisify(execFile);
+let buildRoot: string, built: string;
+beforeAll(async () => {
+  const scratch = resolve(".spider/scratch");
+  mkdirSync(scratch, { recursive: true });
+  buildRoot = mkdtempSync(join(scratch, "worker-bundle-build-"));
+  const outDir = join(buildRoot, "dist");
+  built = join(outDir, "extension.js");
+  const options = { timeout: 60_000, killSignal: "SIGKILL" as const, maxBuffer: 10 * 1024 * 1024 };
+  // Use the real repo config, but never read or overwrite the checkout's dist.
+  await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", outDir], options);
+  // The real post-build gate resolves dist relative to cwd, including its native import.
+  await run(process.execPath, [resolve("scripts/assert-bundle.mjs")], { ...options, cwd: buildRoot });
+}, 150_000);
+afterAll(() => { if (buildRoot) rmSync(buildRoot, { recursive: true, force: true }); });
 afterEach(() => { for (const p of children) p.kill("SIGKILL"); children.clear(); for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); dirs.length = 0; });
 it.each(["direct", "shim", "oom"])("fresh single-file bundle through %s keeps pi alive and owns its workers", async mode => {
-  const built = resolve("dist/extension.js");
-  if (!existsSync(built)) throw new Error("Missing bundle: run a fresh npm run build before this test");
-  const inputs = [resolve("packages/host/src/extension.ts"), ...readdirSync(resolve("packages/host/src/usage")).filter(n => n.endsWith(".ts")).map(n => resolve("packages/host/src/usage", n))];
-  if (inputs.some(p => statSync(p).mtimeMs > statSync(built).mtimeMs)) throw new Error("Stale bundle: run a fresh npm run build before this test");
-  expect(readdirSync(resolve("dist"))).toEqual(["extension.js"]);
   const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-bundle-")); dirs.push(root);
   mkdirSync(join(root, "packaged", "dist"), { recursive: true });
   const bundle = join(root, "packaged", "dist", "extension.js"); cpSync(built, bundle);

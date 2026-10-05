@@ -92,9 +92,9 @@ function heading(input: FooterInput, width: number, theme?: Theme): string {
 
 function stats(input: FooterInput, width: number, theme?: Theme): string {
   const { totals, context } = input;
-  const percent = context?.percent;
+  const percent = context ? context.percent : 0;
   const percentText = typeof percent === "number" && Number.isFinite(percent) ? `${percent.toFixed(1)}%` : "?";
-  const window = context && context.contextWindow > 0 ? tokens(context.contextWindow) : "?";
+  const window = tokens(context?.contextWindow ?? 0);
   const contextText = `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
   const unpriced = totals.unpricedEntries > 0;
   const aic = `${totals.estimated || totals.aggregateEntries > 0 ? "~" : ""}${credits(totals.aic, unpriced)}${unpriced ? "+" : ""} AIC`;
@@ -141,15 +141,32 @@ export function createUsageFooter(
   theme: Theme,
   footerData: ReadonlyFooterDataProvider,
   requestRender: () => void,
-): Component & { dispose(): void } {
-  const unsubscribe = footerData.onBranchChange(requestRender);
-  let disposed = false;
+): Component & { refresh(): void; dispose(): void } {
+  let disposed = false, pending = false;
+  let lastWidth: number | undefined;
+  let lastLines: string[] | undefined;
+  const linesAt = (width: number) => render({ ...getInput(), branch: footerData.getGitBranch(),
+    statuses: footerData.getExtensionStatuses() }, width, theme);
+  function refresh(): void {
+    if (disposed) return;
+    if (lastWidth === undefined) {
+      if (!pending) { requestRender(); pending = true; }
+      return;
+    }
+    const lines = linesAt(lastWidth);
+    if (!lastLines || lines.length !== lastLines.length || lines.some((line, index) => line !== lastLines![index])) {
+      requestRender();
+      lastLines = lines;
+    }
+  }
+  const unsubscribe = footerData.onBranchChange(refresh);
   return {
+    refresh,
     render(width) {
-      return render({ ...getInput(), branch: footerData.getGitBranch(),
-        statuses: footerData.getExtensionStatuses() }, width, theme);
+      lastWidth = width; pending = false;
+      return lastLines = linesAt(width);
     },
-    // No cached themed strings or history work: every render uses the live inputs.
+    // Saved lines only gate refresh requests; every render uses live inputs, without history work.
     invalidate() {},
     dispose() {
       if (disposed) return;

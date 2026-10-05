@@ -1,0 +1,110 @@
+import type { DashboardQueryContext, OverviewData, OverviewDay, OverviewBreakdown, Slice, TokenTotals, DashboardRoute, ContextData } from "./dashboard-contract.js";
+import { querySourceErrors } from "./query-source-errors.js";
+import { readDashboardCounter } from "./dashboard-reader.js";
+import { countedUsageSql } from "./schema.js";
+import { compileSlice, readMeasure, measureColumns, measureFromRow, type MeasureRow, DAY_MS, safeTimestamp, invalidQuery,
+  parseSlice, validateParams, parsePage, decodeCursor, encodeCursor } from "./dashboard-selection.js";
+
+const publicLabel = (value: string | null): string | null => value === null ? null : [...value].slice(0, 160).join("");
+
+export const emptyMeasureRow: MeasureRow = {
+  calls: 0, pricedCalls: 0, unpricedCalls: 0, aggregateCalls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0,
+  cacheWrite1h: null, reasoning: null, aic: null, aicInput: null, aicCacheRead: null, aicCacheWrite: null,
+  aicOutput: null, piCost: null, possibleOverlap: 0, possibleUndercount: 0, pendingData: 0,
+};
+
+export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailyStart: number = slice.start): OverviewData {
+  const compiled = compileSlice(slice);
+  if (!safeTimestamp(dailyStart) || dailyStart < slice.start || dailyStart > slice.end ||
+    (dailyStart !== slice.start && dailyStart % DAY_MS !== 0)) invalidQuery();
+  const firstDay = Math.floor(dailyStart / DAY_MS) * DAY_MS;
+  const dailyEnd = Math.min(slice.end, firstDay + 31 * DAY_MS);
+  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, "c.*", "calls_period_read")}),
+    role_ranks AS MATERIALIZED (SELECT role, ROW_NUMBER() OVER (ORDER BY SUM(aic) DESC, role IS NULL, role) AS rank FROM counted GROUP BY role),
+    day_rows AS MATERIALIZED (SELECT * FROM counted WHERE ts >= ? AND ts < ?)
+    SELECT 'totals' AS branch, NULL AS label, 0 AS rank, NULL AS day, ${measureColumns} FROM counted
+    UNION ALL SELECT 'actor', actor, 0, NULL, ${measureColumns} FROM counted GROUP BY actor
+    UNION ALL SELECT 'role', CASE WHEN r.rank <= 8 THEN c.role ELSE 'Other' END,
+      CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END AS rank, NULL, ${measureColumns}
+      FROM counted c JOIN role_ranks r ON r.role IS c.role GROUP BY CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END
+    UNION ALL SELECT 'day', NULL, 0, (ts / ${DAY_MS}) * ${DAY_MS} AS day, ${measureColumns} FROM day_rows GROUP BY day
+    UNION ALL SELECT 'day-actor', actor, 0, (ts / ${DAY_MS}) * ${DAY_MS} AS day, ${measureColumns} FROM day_rows GROUP BY day,actor
+    UNION ALL SELECT 'day-role', CASE WHEN r.rank <= 8 THEN c.role ELSE 'Other' END,
+      CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END AS rank, (ts / ${DAY_MS}) * ${DAY_MS} AS day, ${measureColumns}
+      FROM day_rows c JOIN role_ranks r ON r.role IS c.role GROUP BY day,CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END
+    ORDER BY branch, day, rank, label`).all(...compiled.params, dailyStart, dailyEnd) as
+    (MeasureRow & { branch: string; label: string | null; rank: number; day: number | null })[];
+  const calibration = ctx.calibration.current(ctx.calibrationMode);
+  const total = rows.find(row => row.branch === "totals")!;
+  const empty = { ...emptyMeasureRow, pendingData: total.pendingData, possibleUndercount: total.pendingData ?? 0 };
+  const actorLabels = ["parent", "subagent", "aux", "compaction", "warmer"];
+  const actors = actorLabels.map(label => {
+    const row = rows.find(row => row.branch === "actor" && row.label === label) ?? empty;
+    return { label, isOther: false, measure: measureFromRow(ctx, row, calibration) };
+  });
+  const roles: OverviewBreakdown[] = rows.filter(row => row.branch === "role")
+    .map(row => ({ label: publicLabel(row.label), isOther: row.rank === 9, measure: measureFromRow(ctx, row, calibration) }));
+  const days: OverviewDay[] = [];
+  for (let day = firstDay; day < dailyEnd; day += DAY_MS) {
+    const row = rows.find(row => row.branch === "day" && row.day === day) ?? empty;
+    days.push({ start: Math.max(day, dailyStart), end: Math.min(day + DAY_MS, dailyEnd), label: new Date(day).toISOString().slice(0, 10),
+      measure: measureFromRow(ctx, row, calibration),
+      actors: actorLabels.map(label => ({ label, isOther: false, measure: measureFromRow(ctx, rows.find(row => row.branch === "day-actor" && row.day === day && row.label === label) ?? empty, calibration) })),
+      roles: rows.filter(row => row.branch === "role").map(role => ({ label: publicLabel(role.label), isOther: role.rank === 9,
+        measure: measureFromRow(ctx, rows.find(row => row.branch === "day-role" && row.day === day && row.rank === role.rank) ?? empty, calibration) })),
+    });
+  }
+  const daily = { rows: days, nextCursor: dailyEnd < slice.end ? encodeCursor("overview-daily", ctx.revision, slice, [dailyEnd]) : null };
+  const totals = measureFromRow(ctx, total, calibration);
+  const now = ctx.now();
+  const date = new Date(now);
+  const monthStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  const monthEnd = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1);
+  const counterObservation = readDashboardCounter(ctx.db, now);
+  /** Current month requests tolerate a client end timestamp up to 60 seconds behind now. */
+  const current = slice.start === monthStart && slice.end >= now - 60000;
+  const comparable = current && counterObservation.availability === "available" && counterObservation.ts! > monthStart;
+  const computed = comparable ? readMeasure(ctx, { start: monthStart, end: counterObservation.ts!, filters: [] }, undefined, calibration) : null;
+  const counterAic = comparable ? counterObservation.creditsUsed : null;
+  const elapsedFraction = current && now > monthStart ? (now - monthStart) / (monthEnd - monthStart) : null;
+  const scale = (value: number | null, factor: number) => value === null ? null : value * factor;
+  const projected = elapsedFraction === null ? null : {
+    tokens: Object.fromEntries(Object.entries(totals.tokens).map(([key, value]) => [key, scale(value, 1 / elapsedFraction)])) as TokenTotals,
+    aicDisplay: { ...totals.aicDisplay, primaryAic: scale(totals.aicDisplay.primaryAic, 1 / elapsedFraction),
+      publishedAic: scale(totals.aicDisplay.publishedAic, 1 / elapsedFraction) },
+    possibleOverlap: totals.possibleOverlap, possibleUndercount: totals.possibleUndercount, pendingData: totals.pendingData,
+  };
+  const counterFraction = comparable ? (counterObservation.ts! - monthStart) / (monthEnd - monthStart) : null;
+  return { calibration, totals, actors, roles, daily, counterObservation,
+    comparison: { start: current ? monthStart : slice.start, end: comparable ? counterObservation.ts! : slice.end, counterAic, computed,
+      gap: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null ? counterAic - computed.aic : null,
+      ratio: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null && counterAic > 0 ? computed.aic / counterAic : null },
+    pace: { projected, elapsedFraction, counterAic: counterFraction && counterAic !== null ? counterAic / counterFraction : null } };
+}
+
+export const OVERVIEW_ROUTES: readonly DashboardRoute[] = [
+  { path: "/api/status", handle(ctx, query) { validateParams(query, []); return ctx.status(); } },
+  { path: "/api/overview", handle(ctx, query) {
+    validateParams(query, ["start", "end", "filters", "cursor"]);
+    const base = new URLSearchParams(query); base.delete("cursor");
+    const slice = parseSlice(base, ctx.now());
+    let dailyStart: number | undefined;
+    if (query.has("cursor")) {
+      const key = decodeCursor(query.get("cursor")!, "overview-daily", ctx.revision, slice);
+      if (key.length !== 1 || typeof key[0] !== "number") invalidQuery();
+      dailyStart = key[0];
+    }
+    return queryOverview(ctx, slice, dailyStart);
+  } },
+  { path: "/api/context", handle(ctx, query): ContextData {
+    const slice = parseSlice(query, ctx.now());
+    const availability = ctx.composition.availability(slice);
+    return { contextFillPercent: null,
+      contextFillMessage: "Context fill unavailable: historical window not recorded",
+      composition: availability, carry: availability, itemReuse: availability };
+  } },
+  { path: "/api/source-errors", handle(ctx, query) {
+    validateParams(query, ["limit", "cursor"]);
+    return querySourceErrors(ctx, parsePage(query));
+  } },
+];

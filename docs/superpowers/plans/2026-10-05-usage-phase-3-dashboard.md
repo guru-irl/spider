@@ -46,7 +46,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 
 - `CompositionAvailability` is `{ status: "unavailable", phase: 2, reason: "not-built", message: "Not available yet (Phase 2)" }`.
 - Context, composition, carry and item reuse consume this contract.
-- Historical `contextFillPercent` is `null`. Pair prompt tokens with `Context fill unavailable: historical window not recorded`.
+- Historical `contextFillPercent` is `null`. Show `Context fill unavailable: historical window not recorded`; Context links to Overview and Session/Run for tokens and AIC, keeping `/api/context` at 0 SELECTs.
 - Recorded per-call windows are Phase 2 inputs, not catalogue guesses or live API calls. Footer context fill is unchanged; Task 1a changes its AIC only.
 - Exclude Phase 4 insights, what-if tools and alerts, including Overview insights. Retain simple pace reporting.
 
@@ -109,7 +109,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 - Use deferred snapshots, releasing before serialization. Caps: JSON 1 MiB, HTML 512 KiB, 600 authenticated requests/minute and 32 sockets.
 - Timeouts are 5 s/10 s, debounce 300 ms and busy 250 ms. Missing-reader retry is at most once per 5 s, never creating a DB. Status uses maintained totals, not health scans.
 - Overview materializes its counted window/result once in one statement with `UNION ALL` totals/actor/role branches.
-- A separate unfiltered account-month pass ends at a fresh current-month counter timestamp, using `counterSnapshotIsFresh` and persisted cadence.
+- A separate unfiltered account-month pass ends at a fresh current-month counter timestamp, using `counterSnapshotIsFresh` and persisted cadence. Comparison applies when `start` is the current UTC month start and `end >= now - 60000`.
 - Published gap = counter - computed; ratio = computed / counter. Zero/unavailable denominators are `null`.
 - Previous-month views retain dated observations, but current comparison/counter pace is `null`. Pace is linear over elapsed month with coverage qualifiers and D11 AIC.
 - Budgets apply to the default month, allowing about 200 ms per Phase 1 month pass, not a year-window promise:
@@ -180,13 +180,13 @@ export type CalibrationResult = {
   method: "trailing-7d-ratio";
 };
 export type AicDisplay = {
-  primaryAic: number | null; publishedAic: number | null; calibratedAic: number | null;
-  basis: "calibrated" | "published"; calibration: CalibrationResult; unpricedCalls: number;
+  primaryAic: number | null; publishedAic: number | null;
+  basis: "calibrated" | "published";
 };
 ```
 
 - Uncalibrated/off factor is null; implausible factor is clamped diagnostic evidence. Endpoints are null without an anchor; evidence is finite/nonnegative.
-- Only calibrated auto mode applies a factor. Otherwise primary equals published and calibrated AIC is null. Preserve D1 zero/null/lower-bound distinctions.
+- Only calibrated auto mode applies a factor. Otherwise primary equals published. Hoist `CalibrationResult` once per response (Overview uses `calibration`); measures retain primary/published values and basis, with unpriced counts on `UsageMeasure`. Preserve D1 zero/null/lower-bound distinctions.
 
 **Computation and history**
 
@@ -200,7 +200,7 @@ export type AicDisplay = {
 
 **Presentation and config**
 
-- Every AIC-displaying view, component and pace consumes `AicDisplay`, including any Context prompt AIC. Tokens/counts/pi cost/coverage/overlap flags stay unchanged.
+- Every AIC-displaying view, component and pace consumes `AicDisplay`. Tokens/counts/pi cost/coverage/overlap flags stay unchanged.
 - Calibrated primary is labelled `calibrated`, for example `≈1,234 AIC`, with dynamic legend `calibrated x0.56 over 7 days` and actual window/coverage evidence.
 - Show `published estimate` secondary where space permits: tables, Reconciliation, Rates and doctor. Published rates remain estimated; D2 placeholders are unchanged.
 - Reconciliation shows counter, published and calibrated per compatible period, keeping published gap/ratio and adding calibrated gap/ratio/status.
@@ -230,9 +230,9 @@ export type SeriesPoint = Period & { label: string; measure: UsageMeasure };
 export type ApiEnvelope<T> = { apiVersion: 1; revision: string; period: Period; generatedAt: number; data: T };
 ```
 
-- `TokenTotals`/`UsageMeasure` retain D1 fields; add `aicDisplay: AicDisplay`. Public-field fixtures pin spec/D1/D2/D8/D9/D11 DTOs, without paths/accounts.
+- `TokenTotals`/`UsageMeasure` retain D1 fields; add `aicDisplay: AicDisplay`. Overview has top-level `calibration`; breakdowns have `isOther` to distinguish a real role named Other from the bucket. Public-field fixtures pin spec/D1/D2/D8/D9/D11 DTOs, without paths/accounts.
 - `CompositionProvider.availability(slice: Slice & { sessionId?: string; runId?: string }): CompositionAvailability` uses D2.
-- `DashboardQueryContext` has `db: Db`, `revision: string`, `composition: CompositionProvider`, `now: () => number`, `rates: readonly RateVersion[]` and `status: () => DashboardStatus`.
+- `DashboardQueryContext` has `db: Db`, `instanceId: string`, `revision: string`, `composition: CompositionProvider`, `now: () => number`, `rates: readonly RateVersion[]` and `status: () => DashboardStatus`.
 - It also has `calibration: CalibrationService` and `calibrationMode: "auto" | "off"`.
 - `DashboardRoute` is `{ path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams): unknown }`.
 - `DashboardReader` has `revision(): string`, `status(): DashboardStatus`, `snapshot<T>(read: (ctx: DashboardQueryContext) => T): T` and `close(): void`.
@@ -246,9 +246,9 @@ export type ApiEnvelope<T> = { apiVersion: 1; revision: string; period: Period; 
 
 - GET/HEAD only, no HEAD body; JSON uses the envelope. Fixed errors are `{ apiVersion: 1, error: { code, message } }`.
 - Codes: 400 invalid-query; 401 unauthorized; 403 forbidden; 404 not-found; 405 method-not-allowed; 409 ledger-changed; 413 response-limit; 429 rate-limited.
-- 503 codes are ledger-unavailable, unsupported-schema and busy. No ingest/config/reprice/shutdown API.
+- 503 codes are ledger-unavailable, unsupported-schema and busy; 500 is internal. The reader maps runtime SQLite errors to fixed codes, never raw messages. No ingest/config/reprice/shutdown API.
 - Require start/end together; filters are JSON, `groupBy` comma-separated, days UTC. Use `URLSearchParams`; null differs from `Unknown`.
-- Base64url cursors contain version/endpoint/revision/query hash/full key. Query mismatch is 400; changed call content is 409; counter history freezes stable anchors.
+- Base64url cursors contain version/endpoint/revision/query hash/full key. Query mismatch is 400; changed call content is 409; counter history freezes stable anchors. Source-error cursors bind to the server instance, not call content, and page live stable `(rowid, kind)` keys.
 - Reconciliation rejects filters; source-errors accepts only limit/cursor. Missing ID is 400, nonexistent 404; suppressed representations explain their accounting.
 
 ## Verification and step convention
@@ -343,13 +343,13 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 - Produce `OVERVIEW_ROUTES` for status, overview, context and errors, and `phase2CompositionProvider`.
 - `seedDashboardFixture(ledger: UsageLedger): void`.
 
-- [ ] `readonly opener never creates or upgrades`: Leave missing/v1/future ledgers untouched; open v2 with `query_only`.
-- [ ] `snapshot revision tracks only call content`: Keep lease/publication cursors valid; expose changed content in the next snapshot.
-- [ ] `matches Phase 1 period selection`: Match `summarize` for fork, coverage and report totals.
-- [ ] `Overview materializes its slice once`: Reconcile totals/actor/role/Other from one materialized window.
-- [ ] `month comparison ends at counter timestamp`: Computed 12 and counter 10 give gap -2 and ratio 1.2, unfiltered. Old-month counter pace is null.
-- [ ] `status separates ingest and counter freshness`: Test four roles, ingest staleness after 120 s and independent counter freshness.
-- [ ] `source errors are bounded and path-redacted`: Page 450 errors without path/cursor leaks.
+- [x] `readonly opener never creates or upgrades`: Leave missing/v1/future ledgers untouched; open v2 with `query_only`.
+- [x] `snapshot revision tracks only call content`: Keep lease/publication cursors valid; expose changed content in the next snapshot.
+- [x] `matches Phase 1 period selection`: Match `summarize` for fork, coverage and report totals.
+- [x] `Overview materializes its slice once`: Reconcile totals/actor/role/Other from one materialized window.
+- [x] `month comparison ends at counter timestamp`: Computed 12 and counter 10 give gap -2 and ratio 1.2, unfiltered. Old-month counter pace is null.
+- [x] `status separates ingest and counter freshness`: Test four roles, ingest staleness after 120 s and independent counter freshness.
+- [x] `source errors are bounded and path-redacted`: Page 450 errors without path/cursor leaks.
 
 ## Task 1a: Counter-calibrated AIC, config, footer and doctor
 
@@ -479,6 +479,7 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 - Vite uses `configFile: false`, `write: false`, IIFE output and inline CSS; preserve SSR externals and watch support.
 - Resolve roots through `mount.ts`; lock and guard live under `join(paths.globalRoot, "usage-server")`.
 - Produce a minimal D11 primary-AIC/token page and connect the Task 3 participant hook.
+- The bundle test or a check asserts no non-browser host or worker source references `document` or `window`; the DOM lib reference applies program-wide.
 
 - [ ] `only usage slash can open browser`: Reject control/lifecycle launch and child sessions.
 - [ ] `reuse command mints a new nonce`: Reused PID produces a fresh nonce URL.
@@ -505,7 +506,7 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 - `ChartUnit` is `"estimated-aic" | "calibrated-aic" | "tokens" | "percent" | "ratio"`; retain `estimated-aic` for published fallback.
 - `renderTable(document: Document, options: { caption: string; columns: readonly string[]; rows: readonly (readonly (string | HTMLElement)[])[] }): HTMLTableElement`.
 - Keep `formatEstimatedAic(value: number | null, unpricedCalls: number): string` for published secondary formatting.
-- Add `formatAicDisplay(display: AicDisplay): { primary: string; secondary: string; legend: string }`, using D11 copy and markers.
+- Add `formatAicDisplay(display: AicDisplay, unpricedCalls: number, calibration: CalibrationResult): { primary: string; secondary: string; legend: string }`, using D11 copy and markers.
 - `formatTokens(value: number): string`; `mountOverview(ctx: ViewContext): Promise<MountedView>`.
 
 - [ ] `chart table has identical observations`: Share points, AIC basis and tokens; preserve keyboard focus.
@@ -609,7 +610,7 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 - `mountContext(ctx: ViewContext): Promise<MountedView>`. Show latency/subsets only when recorded.
 
 - [ ] `timeline is independent of call pagination`: Next call page leaves timeline observations/basis unchanged.
-- [ ] `historical fill and composition remain unavailable`: Keep exact D2 copy and aggregate, covered and unpriced explanations beside tokens and primary AIC; no fake zero.
+- [ ] `historical fill and composition remain unavailable`: Keep exact D2 copy and no fake zero; Context links to Overview and Session/Run for tokens and primary AIC. Detail keeps aggregate, covered and unpriced explanations beside those measures.
 
 ## Task 11: Analytical views
 

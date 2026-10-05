@@ -16,6 +16,10 @@ export interface ChildHandle {
   pid?: number;
   startTime?: string | null;
   cancellationReason?: string;
+  /** In-memory lifecycle state for parent cache warming; never queries the run DB. */
+  runStatus?: RunStatus;
+  /** Last observed child event, used only to bound parent cache warming. */
+  lastEventAt?: number;
   wait(): Promise<{ exitCode: number; result?: string }>;
   kill(reason?: string): void;
   killAsync?(graceMs?: number, reason?: string): Promise<void>;
@@ -134,7 +138,13 @@ export class Runner {
     const kill = handle.kill.bind(handle);
     const killAsync = handle.killAsync?.bind(handle);
     let exited = false;
-    const exit = handle.wait().then(value => { exited = true; return value; }, error => { exited = true; throw error; });
+    // Startup can already have finalized the row before the handle is registered.
+    handle.runStatus = shared ? this.deps.store.get(run.id)?.status ?? "running" : run.status;
+    const exit = handle.wait().then(value => {
+      exited = true;
+      handle.runStatus = value.exitCode === 0 ? "done" : "failed";
+      return value;
+    }, error => { exited = true; handle.runStatus = "failed"; throw error; });
     handle.wait = () => exit;
     // Snapshot BEFORE the cancel bookkeeping below is bound to this activation's DB: a reloaded
     // activation re-wraps the raw handle with its own store instead of calling into ours.

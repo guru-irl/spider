@@ -3,7 +3,7 @@ import type { RunEvent } from "@spider/db-core";
 import type { RunEventTailer } from "./event-tailer";
 import type { PipelineCoordinator } from "./pipeline";
 import type { ChildHandle } from "./runner";
-import type { RunStore } from "./run-store";
+import type { RunStatus, RunStore } from "./run-store";
 import { cancelPendingIntercom } from "./intercom";
 import { disposeSessionRegistries, killSharedEntry, parkSession, releaseShared, sharedRegistry, sharedSessionIds } from "./child-registry";
 import { shutdownReason } from "./shutdown-reason";
@@ -18,6 +18,8 @@ export interface SessionCoordinators {
   escalationNotifierCleanup?: () => void;
   /** Extra run DBs opened at their recorded paths during adoption after a binding change. */
   adoptionCleanup?: () => void;
+  /** Cached handle status follows child-reported run events without decision-time DB reads. */
+  childStatusCleanup?: () => void;
 }
 
 // Module-scoped registry — one extension activation owns it. The ONLY cross-build state is the
@@ -60,16 +62,48 @@ function slot(sessionId: string): SessionCoordinators {
   return c;
 }
 
+const CHILD_WARMING_SILENCE_LIMIT_MS = 60 * 60_000;
+
 export function registerChild(sessionId: string, runId: string, handle: ChildHandle): void {
-  slot(sessionId).children.set(runId, handle);
+  const c = slot(sessionId);
+  handle.lastEventAt = Date.now();
+  c.children.set(runId, handle);
+  c.childStatusCleanup ??= bus.on(event => {
+    if (event.sessionId !== sessionId || !event.runId) return;
+    const child = c.children.get(event.runId);
+    if (!child) return;
+    child.lastEventAt = Date.now();
+    if (event.type !== "status") return;
+    const status = (event.payload as { status?: unknown } | undefined)?.status;
+    if (typeof status !== "string" || !["queued", "running", "paused", "done", "failed", "cancelled"].includes(status)) return;
+    child.runStatus = status as RunStatus;
+  });
 }
 
 export function unregisterChild(sessionId: string, runId: string): void {
-  registry.get(sessionId)?.children?.delete(runId);
+  const c = registry.get(sessionId);
+  c?.children?.delete(runId);
+  if (c && c.children.size === 0) {
+    c.childStatusCleanup?.();
+    c.childStatusCleanup = undefined;
+  }
 }
 
 export function getChild(sessionId: string, runId: string): ChildHandle | undefined {
   return registry.get(sessionId)?.children?.get(runId);
+}
+
+/** Cheap in-memory count for idle cache decisions. Handles remain owned while
+ * terminal children shut down, but those children must not hold warming. */
+export function activeChildCount(sessionId: string): number {
+  let count = 0;
+  const now = Date.now();
+  for (const handle of registry.get(sessionId)?.children?.values() ?? []) {
+    if (handle.lastEventAt === undefined || now - handle.lastEventAt >= CHILD_WARMING_SILENCE_LIMIT_MS) continue;
+    const status = handle.runStatus;
+    if (!handle.cancellationReason && (status === undefined || status === "queued" || status === "running")) count++;
+  }
+  return count;
 }
 
 export function listChildSessions(): string[] {
@@ -84,6 +118,8 @@ export function teardownCoordinators(sessionId: string): void {
   // stopped tailer would swallow them.
   for (const [runId, h] of c.children ?? []) { try { h.kill(shutdownReason("quit")); } catch {} releaseShared(runId); }
   c.children?.clear();
+  c.childStatusCleanup?.();
+  c.childStatusCleanup = undefined;
   try { c.tailer?.stop(); } catch {}
   for (const p of c.pipelines) { try { p.dispose(); } catch {} }
   try { c.escalationNotifierCleanup?.(); } catch {}
@@ -134,6 +170,8 @@ export async function teardownSessionAsync(sessionId: string, opts: TeardownAsyn
     for (const runId of killed) releaseShared(runId);
     if (c) {
       c.children?.clear();
+      c.childStatusCleanup?.();
+      c.childStatusCleanup = undefined;
       try { c.tailer?.stop(); } catch {}
       for (const p of c.pipelines) { try { p.dispose(); } catch {} }
       try { c.escalationNotifierCleanup?.(); } catch {}
@@ -197,6 +235,8 @@ export async function detachForReload(sessionId: string, opts: DetachForReloadOp
       for (const p of c.pipelines) { try { (p as { abandonForReload?: () => void }).abandonForReload?.() ?? p.dispose(); } catch {} }
       try { c.escalationNotifierCleanup?.(); } catch {}
       c.children?.clear();
+      c.childStatusCleanup?.();
+      c.childStatusCleanup = undefined;
       try { c.adoptionCleanup?.(); } catch {}
       registry.delete(sessionId);
     }

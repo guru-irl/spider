@@ -16,6 +16,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
   "embeddings.drain": true,
   "subagents.childMode": "rpc",
+  "subagents.keepCacheWarm": true,
   "subagents.extensions": Object.freeze([]),
   "memory.reviewer.enabled": true,
   "memory.reviewer.model": "github-copilot/gpt-6-luna",

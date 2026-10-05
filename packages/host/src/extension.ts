@@ -7,7 +7,7 @@ import { isAbsolutePathList } from "@spider/ui";
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
-import type { ContextEvent } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEventResult, ContextEvent } from "@earendil-works/pi-coding-agent";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
@@ -36,7 +36,7 @@ import {
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand } from "@spider/todo";
-import { registerSubagentActions, adoptReloadedChildren, adoptableFor } from "@spider/subagents";
+import { registerSubagentActions, adoptReloadedChildren, adoptableFor, activeChildCount } from "@spider/subagents";
 import {
   registerOrganism,
   readOrganismConfig,
@@ -819,6 +819,20 @@ export default function spiderExtension(pi: PiToolAPI): void {
   registerContextActions(registerAction);
   // subagents runtime: run/message (child-guard + shutdown teardown handled inside).
   registerSubagentActions({ registerAction }, pi);
+
+  // A child completion will request a parent turn. Keep that parent's cache warm
+  // using the live session-owned handles, never a runs-table scan.
+  if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    pi.on("cache_warming_decision", (_event, ctx): CacheWarmingDecisionEventResult | undefined => {
+      try {
+        if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+        const sessionId = sessionIdOf(ctx);
+        if (!sessionId || activeChildCount(sessionId) === 0) return undefined;
+        if (controlConfig("get", cwdOf(ctx) ?? process.cwd(), "subagents.keepCacheWarm") !== true) return undefined;
+        return { action: "warm" };
+      } catch { return undefined; }
+    });
+  }
 
   // memory verbs (ctx-native): use the per-call ActionCtx DBs buildActionCtx resolved.
   registerAction("remember", async (args, ctx) => {

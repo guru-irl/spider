@@ -4,6 +4,10 @@
 
 - `spider run` supports single, parallel (`tasks`), sequential (`chain`), and pipeline dispatch.
 - Every run needs a concrete task. Children run in the background and report through `spider.subagent_done`.
+- `subagents.keepCacheWarm` defaults to `true` and asks pi to keep the parent prompt cache warm while that session has starting or running subagents. Set it to `false` to leave pi's warming decision unchanged. Child sessions do not override warming.
+- Warming only happens when pi knows the model's cache lifetime and idle warming is enabled.
+- Pi still applies its own idle warming limit.
+- A subagent silent for 60 minutes stops holding warming. Any child event resets this clock without changing the run status.
 - Child model calls, compactions, cache warming, and spider reviewer calls inside children count toward the dispatching session's pi footer, `/session`, and RPC totals after the run finishes, including failed or killed runs.
 - Run cards, completion messages, and `/agents` run details show tokens and cost.
 - The usage line appends `1 compaction` or `N compactions` when successful compactions are recorded. Aborted compactions do not count. Successful compactions still count when model usage accounting is unavailable.

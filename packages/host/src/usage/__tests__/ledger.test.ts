@@ -158,7 +158,7 @@ describe("usage ledger", () => {
     });
     migrateUsageLedger(db);
     expect(competingWriteSucceeded).toBe(false);
-    expect(db.pragma("user_version")).toBe(1);
+    expect(db.pragma("user_version")).toBe(2);
   });
 
   // M23: callers of migrate directly must not overwrite a future schema version.
@@ -301,7 +301,7 @@ describe("usage ledger", () => {
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
     expect(ledger.health()).toEqual({
-      schemaVersion: 1, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
+      schemaVersion: 2, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
       unpricedModels: [], aggregateCalls: 0, lastIngestAt: null
     });
     expect(reader().pragma("journal_mode")).toBe("wal");
@@ -318,7 +318,7 @@ describe("usage ledger", () => {
     first.close();
     const before = readFileSync(file);
     const second = openUsageLedger(file);
-    expect(second.health().schemaVersion).toBe(1);
+    expect(second.health().schemaVersion).toBe(2);
     expect(second.health().calls).toBe(1);
     second.close();
     expect(readFileSync(file)).toEqual(before);
@@ -553,13 +553,13 @@ describe("usage ledger", () => {
   });
 });
 
-// Pre-release v1 refinements must never leave the old counting view in service.
-it("fails loudly when opening an obsolete unreleased v1 ledger", () => {
+// A missing shipped-layout marker must never leave an unknown view in service.
+it("fails loudly when opening a ledger with an unknown layout marker", () => {
   const ledger = openUsageLedger(file); ledger.close();
   const legacy = new Database(file);
   legacy.exec("DELETE FROM ledger_metadata WHERE key='schema-layout'; DROP VIEW counted_calls; CREATE VIEW counted_calls AS SELECT * FROM calls");
   legacy.close();
-  expect(() => openUsageLedger(file)).toThrow(/obsolete.*dev ledger/i);
+  expect(() => openUsageLedger(file)).toThrow(/schema 2.*layout/i);
 });
 it("appends attribution entries without updating historical rows", () => {
   const ledger = track(openUsageLedger(file));

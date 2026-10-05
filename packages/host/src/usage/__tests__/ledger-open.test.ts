@@ -95,7 +95,7 @@ describe("usage ledger opening", () => {
     const start = performance.now();
     const ledger = openUsageLedger(file);
     ledgers.push(ledger);
-    expect(ledger.health().schemaVersion).toBe(1);
+    expect(ledger.health().schemaVersion).toBe(2);
     expect(performance.now() - start).toBeLessThan(2100);
     expect(await holder.exit).toBe(0);
   });
@@ -110,7 +110,7 @@ describe("usage ledger opening", () => {
       for (const process of group) process.child.send("go");
       const results = await Promise.all(group.map(process => process.result));
       for (const result of results) {
-        expect(result).toMatchObject({ version: 1 });
+        expect(result).toMatchObject({ version: 2 });
         expect((result as { elapsed: number }).elapsed).toBeLessThan(2100);
       }
       expect(await Promise.all(group.map(process => process.exit))).toEqual([0, 0, 0, 0, 0, 0]);

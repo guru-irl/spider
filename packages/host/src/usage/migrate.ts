@@ -1,20 +1,54 @@
 import type { Db } from "@spider/db-core";
-import { USAGE_SCHEMA, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOUT, USAGE_LEASE_SCHEMA, USAGE_LEASE_COLUMNS } from "./schema.js";
+import { USAGE_SCHEMA, USAGE_SCHEMA_V2, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOUT, USAGE_LEASE_SCHEMA, USAGE_LEASE_COLUMNS } from "./schema.js";
 
-// Append future versions here. Phase 3 can add (project, ts) and (role, ts)
-// indexes in v2 without restructuring or changing the Phase 1 schema.
-export const USAGE_MIGRATIONS: readonly { version: number; sql: string }[] = [{ version: 1, sql: USAGE_SCHEMA }];
+// Never rewrite shipped migration SQL. Append additive versions here.
+export const USAGE_MIGRATIONS: readonly { version: number; sql: string }[] = [
+  { version: 1, sql: USAGE_SCHEMA },
+  { version: 2, sql: USAGE_SCHEMA_V2 },
+];
+
+const normalizedDdl = (sql: string) => sql
+  .replace(/'[^']*(?:''[^']*)*'|\s+/g, token => token.startsWith("'") ? token : "")
+  .replace(/;$/, "");
+type SchemaObject = { type: string; name: string; tbl_name: string; sql: string | null };
+const durableSql = "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name != 'leases' AND name NOT LIKE 'sqlite_stat%' ORDER BY type,name";
+const normalizedObjects = (rows: SchemaObject[]) => rows.map(row => ({ ...row, sql: row.sql === null ? null : normalizedDdl(row.sql) }));
+const shippedObjects = new Map<number, SchemaObject[]>();
+function expectedObjects(db: Db, version: number): SchemaObject[] {
+  let objects = shippedObjects.get(version);
+  if (!objects) {
+    // Use the same SQLite engine to expand views, triggers and implicit indexes.
+    // This connection is strictly in-memory, never a user file or configuration.
+    const Database = db.raw.constructor as new (file: string) => Db["raw"];
+    const reference = new Database(":memory:");
+    try {
+      for (const migration of USAGE_MIGRATIONS) {
+        if (migration.version <= version) reference.exec(migration.sql);
+      }
+      objects = normalizedObjects(reference.prepare(durableSql).all() as SchemaObject[]);
+      shippedObjects.set(version, objects);
+    } finally { reference.close(); }
+  }
+  return objects;
+}
 
 export function assertUsageSchemaVersion(db: Db): void {
   const version = db.pragma("user_version") as number;
   if (version > USAGE_SCHEMA_VERSION) {
     throw new Error(`Unsupported future usage schema ${version}; supported version is ${USAGE_SCHEMA_VERSION}`);
   }
-  if (version === USAGE_SCHEMA_VERSION) {
+  if (version > 0) {
     const metadata = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ledger_metadata'").get();
     const layout = metadata ? db.prepare("SELECT value FROM ledger_metadata WHERE key='schema-layout'").get() as { value: string } | undefined : undefined;
     if (layout?.value !== USAGE_SCHEMA_LAYOUT) {
-      throw new Error("Obsolete unreleased usage schema 1 layout; rebuild the dev ledger before ingesting");
+      throw new Error(`Unsupported usage schema ${version} layout marker`);
+    }
+    // ALL durable objects must match, including added objects and SQL-less
+    // implicit indexes. SQLite-managed statistics are excluded; only leases
+    // retain Phase 1's transient repair exception.
+    const objects = normalizedObjects(db.prepare(durableSql).all() as SchemaObject[]);
+    if (JSON.stringify(objects) !== JSON.stringify(expectedObjects(db, version))) {
+      throw new Error(`Unsupported usage schema ${version} durable layout`);
     }
   }
 }

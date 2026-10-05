@@ -73,7 +73,7 @@ D11 supersedes the spec's published-estimate-only display rule.
   - `CREATE INDEX IF NOT EXISTS runs_meta_session ON runs_meta(session_id,db_path,id)`.
   - `ledger_metadata` key `call-selection-revision`, initially `0`.
 - Only the writable Phase 1 opener migrates. A shipped-v1-shaped synthetic fixture preserves facts/live leases; unknown layouts fail without repair.
-- Bump once per transaction for actual calls, alias/fingerprint, runs, coverage, pending/incomplete reports or selection-affecting import generation/offset/size/completeness changes.
+- SQLite triggers strictly increase revision on any actual calls, alias/fingerprint, runs, coverage, pending/incomplete reports or selection-affecting import generation/offset/size/completeness change, including old-build writes. No exact once-per-transaction count is required.
 - Replay, leases, publication, backfill status, counters, errors, mtime and last-ingest-only writes do not bump. Neither do rollback or fence rejection.
 - Reader revision = `instanceId` plus this key, never `PRAGMA data_version`. Counter/error append paging uses stable keys; new snapshots invalidate calibration separately.
 
@@ -312,10 +312,10 @@ Task 13 alone owns final full-suite/build/visual acceptance.
 **Interfaces:**
 - Preserve `migrateUsageLedger(db: Db): void` and `assertUsageSchemaVersion(db: Db): void`.
 
-- [ ] `v1 upgrades additively and twice is harmless`: Preserve v1 facts, live leases and DDL after two migrations.
-- [ ] `unknown shipped layout fails without repair`: Preserve unknown and future layouts, bytes and rows.
-- [ ] `actual selection changes advance revision`: Bump once per actual D5 mutation, including aliases.
-- [ ] `coordination and replay leave revision stable`: Keep lease/publication/counter/error/replay revisions stable.
+- [x] `v1 upgrades additively and twice is harmless`: Preserve v1 facts, live leases and DDL after two migrations.
+- [x] `unknown shipped layout fails without repair`: Preserve unknown and future layouts, bytes and rows.
+- [x] `actual selection changes advance revision`: Strictly increase on actual D5 changes, including aliases and old-build writes.
+- [x] `coordination and replay leave revision stable`: Keep lease/publication/counter/error/replay revisions stable.
 
 ## Task 1: Reader, contracts and Overview
 
@@ -333,6 +333,7 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 **Interfaces:**
 - Freeze the public contracts. Until Task 1a, return uncalibrated published fallback through its reserved service.
 - `openDashboardReader(file: string, options: ReaderOptions): DashboardReader | undefined`.
+- Readers on a v1 DB with no `call-selection-revision` key must treat the revision as unavailable, not as a stable cache key.
 - `parseSlice(params: URLSearchParams, now: number): Slice`.
 - `compileSlice(slice: Slice, scope?: { sessionId?: string; runId?: string }): { sql: string; params: readonly (string | number | null)[] }`.
 - `readMeasure(ctx, slice, scope?: { sessionId?: string; runId?: string }): UsageMeasure`.

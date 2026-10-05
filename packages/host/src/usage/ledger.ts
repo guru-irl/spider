@@ -193,7 +193,8 @@ function refreshModelAliases(db: Db): void {
   db.raw.transaction(() => {
     const stored = db.prepare("SELECT value FROM ledger_metadata WHERE key='model-aliases'").get() as { value: string } | undefined;
     if (stored?.value === digest) return;
-    const update = db.prepare("UPDATE calls SET model=@model, fingerprint=@fingerprint WHERE id=@id");
+    const update = db.prepare(`UPDATE calls SET model=@model, fingerprint=@fingerprint WHERE id=@id
+      AND (model IS NOT @model OR fingerprint IS NOT @fingerprint)`);
     const columns = `SELECT id, actor, aggregate, run_id AS runId, raw_provider AS provider,
       raw_model AS model, response_id AS responseId, entry_id AS entryId, ts,
       input, output, cache_read AS cacheRead, cache_write AS cacheWrite, cache_write_1h AS cacheWrite1h,
@@ -300,7 +301,9 @@ function createLedger(db: Db): UsageLedger {
       ON e.path=@path AND e.generation=@generation AND e.entry_id=w.id ORDER BY e.byte_offset`);
   const pending = db.prepare("SELECT path,run_id AS runId,generation,first_seen AS firstSeen,calls FROM pending_reports");
   const putPending = db.prepare(`INSERT INTO pending_reports(path,run_id,generation,first_seen,calls) VALUES (@path,@runId,@generation,@firstSeen,@calls)
-    ON CONFLICT(path,run_id) DO UPDATE SET generation=excluded.generation,first_seen=excluded.first_seen,calls=excluded.calls`);
+    ON CONFLICT(path,run_id) DO UPDATE SET generation=excluded.generation,first_seen=excluded.first_seen,calls=excluded.calls
+    WHERE (pending_reports.generation, pending_reports.first_seen, pending_reports.calls) IS NOT
+      (excluded.generation, excluded.first_seen, excluded.calls)`);
   const removePending = db.prepare("DELETE FROM pending_reports WHERE path=? AND run_id=?");
   const incomplete = db.prepare("SELECT path,run_id AS runId FROM incomplete_reports");
   const reportModels = db.prepare("SELECT raw_provider AS provider,requested_model AS requestedModel FROM calls WHERE source_file=? AND run_id=? AND is_report=1");

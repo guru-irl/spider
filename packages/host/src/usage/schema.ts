@@ -1,10 +1,49 @@
-// The ledger is unreleased: schema refinements remain version 1 until it ships.
-export const USAGE_SCHEMA_VERSION = 1;
+// Shipped v1 SQL/layout remain immutable; later versions are additive.
+export const USAGE_SCHEMA_VERSION = 2;
 export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
 
-// Ephemeral coordination state: migration checks names, types, keys and normalized DDL
-// (including CHECK constraints), and recreates incompatible tables while
-// v1 is unreleased. Durable snapshots and calls are never dropped.
+// Call content and attribution are revision-keyed reader inputs. Legacy counted /
+// origin_key flags, parser checkpoints and coordination are not selection inputs.
+const selectionColumns: Record<string, readonly string[]> = {
+  calls: ["id", "ts", "source_file", "entry_id", "source_generation", "project", "repo", "session_id", "run_id",
+    "actor", "role", "agent", "run_name", "phase", "parent_run_id", "aux_purpose", "provider", "model", "raw_provider", "raw_model",
+    "requested_model", "thinking", "api", "source_kind", "input", "output", "cache_read", "cache_write", "cache_write_1h",
+    "reasoning", "total_tokens", "aic", "aic_input", "aic_cache_read", "aic_cache_write", "aic_output", "price_status", "unpriced_reason",
+    "rate_version", "tier", "confidence", "pi_cost", "latency_ms", "aggregate", "response_id", "copied", "fingerprint"],
+  runs_meta: ["id", "db_path", "project", "repo", "session_id", "parent_run_id", "agent", "role", "name", "model", "thinking", "phase", "started_at", "ended_at"],
+  coverage_edges: ["report_run_id", "included_run_id", "evidence"],
+  pending_reports: ["path", "run_id", "generation", "first_seen", "calls"],
+  incomplete_reports: ["path", "run_id"],
+  import_state: ["path", "generation", "offset", "size"],
+  // Derived ancestry affects overlap hints. Reference-count-only updates do not.
+  call_ancestry_edges: ["parent", "child"],
+};
+const hasCursor = (row: "OLD" | "NEW") => `(${row}.size IS NOT NULL OR ${row}.offset IS NOT NULL OR ${row}.generation != 0)`;
+const revisionTriggers = Object.entries(selectionColumns).flatMap(([table, columns]) => {
+  const changed = columns.map(column => `OLD.${column} IS NOT NEW.${column}`).join(" OR ");
+  return ["INSERT", "DELETE", "UPDATE"].map(operation => {
+    const cursorGuard = table === "import_state"
+      ? operation === "UPDATE" ? `(${hasCursor("OLD")} OR ${hasCursor("NEW")})` : hasCursor(operation === "INSERT" ? "NEW" : "OLD")
+      : undefined;
+    const guards = [...(operation === "UPDATE" ? [`(${changed})`] : []), ...(cursorGuard ? [cursorGuard] : [])];
+    return `CREATE TRIGGER selection_revision_${table}_${operation.toLowerCase()}
+AFTER ${operation}${operation === "UPDATE" ? ` OF ${columns.join(",")}` : ""} ON ${table}
+${guards.length ? `WHEN ${guards.join(" AND ")}` : ""}
+BEGIN
+  INSERT INTO ledger_metadata(key,value) VALUES ('call-selection-revision','1')
+    ON CONFLICT(key) DO UPDATE SET value=CAST(ledger_metadata.value AS INTEGER)+1;
+END;`;
+  });
+}).join("\n");
+
+export const USAGE_SCHEMA_V2: string = `
+CREATE INDEX IF NOT EXISTS runs_meta_session ON runs_meta(session_id,db_path,id);
+INSERT INTO ledger_metadata(key,value) VALUES ('call-selection-revision','0') ON CONFLICT(key) DO NOTHING;
+${revisionTriggers}
+`;
+
+// Ephemeral coordination state retains Phase 1's DDL compatibility/repair policy,
+// including CHECK constraints. Durable snapshots and calls are never dropped.
 export const USAGE_LEASE_COLUMNS = ["name", "owner", "token", "acquired_at", "expires_at", "next_due_at", "last_error_code", "notice_code", "notice_at", "owner_pid", "owner_host"] as const;
 export const USAGE_LEASE_SCHEMA = `CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY NOT NULL,

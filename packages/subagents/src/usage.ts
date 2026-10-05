@@ -19,19 +19,32 @@ export function sumUsage(items: readonly UsageLike[]): UsageLike {
   return total;
 }
 
-export function runUsage(db: Db, runId: string): ModelUsage[] {
+export interface RunUsageSummary { usage: ModelUsage[]; compactionCount?: number }
+
+/** Count and pricing share one event scan. Missing compaction evidence stays undefined. */
+export function runUsageSummary(db: Db, runId: string): RunUsageSummary {
   const grouped = new Map<string, { provider: string; model: string; items: UsageLike[] }>();
-  const events = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='spider_usage' ORDER BY id").all(runId) as Array<{ payload: string }>;
+  const events = db.prepare("SELECT payload, type FROM run_events WHERE run_id=? AND type IN ('spider_usage','spider_compaction') ORDER BY id").all(runId) as Array<{ payload: string; type: string }>;
+  let compactionCount: number | undefined;
   for (const event of events) {
-    let record: ModelUsage;
+    let record: ModelUsage & { purpose?: string; compactionCount?: number; count?: number };
     try { record = JSON.parse(event.payload); } catch { continue; }
+    if (event.type === "spider_compaction") {
+      if (Number.isSafeInteger(record?.count) && record.count! > 0) compactionCount = (compactionCount ?? 0) + record.count!;
+      continue;
+    }
     if (!record?.provider || !record.model || !record.usage) continue;
+    if (record.purpose === "compaction" && record.compactionCount !== undefined) compactionCount = (compactionCount ?? 0) + record.compactionCount;
     const key = JSON.stringify([record.provider, record.model]);
     let group = grouped.get(key);
     if (!group) { group = { provider: record.provider, model: record.model, items: [] }; grouped.set(key, group); }
     group.items.push(record.usage);
   }
-  return [...grouped.values()].map(({ provider, model, items }) => ({ provider, model, usage: sumUsage(items) }));
+  return { usage: [...grouped.values()].map(({ provider, model, items }) => ({ provider, model, usage: sumUsage(items) })), compactionCount };
+}
+
+export function runUsage(db: Db, runId: string): ModelUsage[] {
+  return runUsageSummary(db, runId).usage;
 }
 
 /** A refused synchronous sink leaves usage retryable, including on an older host. */
@@ -55,7 +68,7 @@ export function reportRunUsage(db: Db, run: RunRow, sink: (run: RunRow, usage: M
     })();
   } catch (error) { if (error === refused) return false; throw error; }
 }
-export function recordRunUsage(db: Db, runId: string, record: ModelUsage, purpose?: string): void {
+export function recordRunUsage(db: Db, runId: string, record: ModelUsage, purpose?: string, compactionCount?: number): void {
   db.transaction(() => {
     // Write first so a concurrent child reporter cannot turn a read lock into a failed upgrade.
     const { totalTokens, input, output, cacheRead, cacheWrite } = record.usage;
@@ -63,7 +76,7 @@ export function recordRunUsage(db: Db, runId: string, record: ModelUsage, purpos
     if (!changed) return;
     const run = db.prepare("SELECT session_id FROM runs WHERE id=?").get(runId) as { session_id: string };
     appendRunEvent(db, { runId, sessionId: run.session_id, ts: Date.now(), type: "spider_usage",
-      payload: { type: "spider_usage", ...record, ...(purpose ? { purpose } : {}) } });
+      payload: { type: "spider_usage", ...record, ...(purpose ? { purpose } : {}), ...(compactionCount === undefined ? {} : { compactionCount }) } });
   })();
 }
 

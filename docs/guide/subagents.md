@@ -5,7 +5,10 @@
 - `spider run` supports single, parallel (`tasks`), sequential (`chain`), and pipeline dispatch.
 - Every run needs a concrete task. Children run in the background and report through `spider.subagent_done`.
 - Child model calls, compactions, cache warming, and spider reviewer calls inside children count toward the dispatching session's pi footer, `/session`, and RPC totals after the run finishes, including failed or killed runs.
-- `/agents` run details and completion messages show tokens and cost. Reload preserves accounting. A run finishing while another session is active is counted when its owner is next active or makes its next spider call, never in the other session.
+- Run cards, completion messages, and `/agents` run details show tokens and cost.
+- The usage line appends `1 compaction` or `N compactions` when successful compactions are recorded. Aborted compactions do not count. Successful compactions still count when model usage accounting is unavailable.
+- Zero compactions or runs without compaction records keep the usage line unchanged. Reload preserves accounting and compaction counts.
+- A run finishing while another session is active is counted when its owner is next active or makes its next spider call, never in the other session.
 - On hosts without model-attributed usage entries, run usage attaches to the owner's next spider tool result under tools and summaries. This fallback can lose usage if the host crashes before persisting the result.
 - Parallel dispatch defaults to concurrency `4`. Give tasks short names for the UI.
 - Chains pass `{previous}` to the next step. Pipeline templates also accept `{task}`, `{handoff}`, and `{outputs.<as>}`.

@@ -18,7 +18,7 @@
 // touches session B's children. The closures an older build left on an entry (`deliver`, the
 // expiry timer) keep running after a newer build adopts it, so their behaviour is part of the
 // contract too, not only the shape of the data.
-import { commandEnv, openDb, type Db } from "@spider/db-core";
+import { appendRunEvent, commandEnv, openDb, type Db } from "@spider/db-core";
 import { execFileSync } from "node:child_process";
 import { PERSISTED_EVENT_TYPES, type SteerAck } from "./rpc-child";
 import { recordRunUsage, warnUsage } from "./usage";
@@ -230,8 +230,14 @@ function bufferedLossNotes(db: Db, entry: SharedChildEntry): string[] {
     entry.handle.bindEvents?.(event => {
       if (!PERSISTED_EVENT_TYPES.includes(event.type)) return;
       if (event.type === "spider_usage") {
-        try { recordRunUsage(db, entry.runId, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose); }
+        try { recordRunUsage(db, entry.runId, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose, event.compactionCount); }
         catch (error) { warnUsage(db, { id: entry.runId, session_id: entry.sessionId }, error); }
+        return;
+      }
+      if (event.type === "spider_compaction") {
+        try {
+          appendRunEvent(db, { runId: entry.runId, sessionId: entry.sessionId, ts: Date.now(), type: event.type, summary: "Child compacted.", payload: event });
+        } catch (error) { warnUsage(db, { id: entry.runId, session_id: entry.sessionId }, error); }
         return;
       }
       events.push(event);

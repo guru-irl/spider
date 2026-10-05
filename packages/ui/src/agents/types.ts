@@ -7,7 +7,7 @@ export interface RunRow {
   agent: string; role?: string | null; name?: string | null;
   status: AgentStatus; phase?: string | null; model?: string | null; thinking?: string | null; task?: string | null;
   started_at?: number | null; ended_at?: number | null;
-  step_count: number; token_count: number; cost?: number; result?: string | null;
+  step_count: number; token_count: number; cost?: number; compactionCount?: number; result?: string | null;
 }
 
 export interface AgentSnapshot {
@@ -15,7 +15,7 @@ export interface AgentSnapshot {
   status: AgentStatus; phase?: string; model?: string; thinking?: string; task?: string;
   startedAt?: number; endedAt?: number;
   activity?: string; activityTool?: string;
-  stepCount: number; tokenCount: number; cost?: number; recentActivity: string[];
+  stepCount: number; tokenCount: number; cost?: number; compactionCount?: number; recentActivity: string[];
 }
 
 export interface HandoffEdge { from: string; to: string; phase?: string; ts: number; }

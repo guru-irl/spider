@@ -113,11 +113,11 @@ export class Runner {
   private rpcSink(run: RunRow): (event: Record<string, any>) => void {
     return event => {
       if (event.type === "spider_usage") {
-        try { recordRunUsage(this.db, run.id, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose); }
+        try { recordRunUsage(this.db, run.id, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose, event.compactionCount); }
         catch (error) { warnUsage(this.db, run, error); }
       } else if (PERSISTED_EVENT_TYPES.includes(event.type)) {
         appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(), type: event.type,
-          summary: event.message ?? event.error ?? "Child pending queue changed.", payload: event });
+          summary: event.message ?? event.error ?? (event.type === "spider_compaction" ? "Child compacted." : "Child pending queue changed."), payload: event });
         if (event.type === "warning" && isHandledPrompt(event)) {
           // This sink runs before stdin EOF. Reuse the normal finalizer so the
           // child's shutdown reporter sees a terminal row, with its guards intact.

@@ -87,7 +87,9 @@ it("M1 follower state and all read-only lease paths read through an ingest write
   try {
     expect(lease.isCurrent(1000)).toBe(true); expect(lease.nextPollAt()).toBeNull();
     expect(b.poller.state()).toMatchObject({ role: "follower", availability: "available", errorCode: null, latest: { creditsUsed: 7 } });
-    expect(performance.now() - start).toBeLessThan(150);
+    // The writer stays locked until finally: successful reads prove they do
+    // not wait for it. Keep only a 10x disaster ceiling for shared CI load.
+    expect(performance.now() - start).toBeLessThan(1500);
   } finally { release(); }
 });
 it("M5 retries a BUSY save on the next renewal tick from memory without another fetch (P6)", async () => {

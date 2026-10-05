@@ -61,6 +61,23 @@ describe("configuration schema truthfulness", () => {
     expect(guard(DEFAULTS)).toEqual([]);
   });
 
+  it("recognizes validated usage-map reads and catches a removed read", () => {
+    expect(productionReaders(root).has("usage.footer")).toBe(true);
+    const file = resolve("packages/host/src/usage/config.ts");
+    const source = readFileSync(file, "utf8");
+    const without = source.replace('values["usage.footer"] as boolean', "true");
+    expect(without).not.toBe(source);
+    expect(guard(DEFAULTS, { [file]: without })).toContain("no reader: usage.footer");
+  });
+
+  it.each(["usage.counter.poll", "usage.alerts.sessionCredits", "usage.alerts.runCredits"])("catches a removed spec-named reader %s", key => {
+    expect(productionReaders(root).has(key)).toBe(true);
+    const file = resolve("packages/host/src/usage/config.ts");
+    const source = readFileSync(file, "utf8");
+    const without = source.replace(`values["${key}"]`, "undefined");
+    expect(guard(DEFAULTS, { [file]: without })).toContain(`no reader: ${key}`);
+  });
+
   it("requires every production reader to have an editable schema field", () => {
     const readers = productionReaders(root);
     expect([...readers].filter(key => !fields.some(field => field.key === key))).toEqual([]);

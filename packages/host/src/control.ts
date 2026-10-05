@@ -8,12 +8,15 @@ import { getVectorState, getVectorErrors, getEmbedDrainState, getEmbedderState, 
 import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtime";
 
 import { isAbsolutePathList } from "@spider/ui";
+import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } from "./usage/config.js";
+import { usageDoctorLines } from "./usage/doctor.js";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
+  ...USAGE_DEFAULTS,
   "embeddings.drain": true,
   "subagents.childMode": "rpc",
   "subagents.keepCacheWarm": true,
@@ -64,9 +67,9 @@ export function embeddingDrainEnabled(projectRoot: string): boolean {
   return { ...DEFAULTS, ...global.config, ...local.config }["embeddings.drain"] !== false;
 }
 
-function configLayers(cwd: string) {
+function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
   const globalFile = configFile(paths.globalRoot);
-  const localFile = configFile(paths.projectRoot(cwd));
+  const localFile = configFile(localRoot);
   const global = readLayer(globalFile);
   const local = readLayer(localFile);
   const errors = [global.error, local.error].filter((s): s is string => s !== undefined);
@@ -86,7 +89,9 @@ function configLayers(cwd: string) {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
     }
   }
-  return { global, local, globalFile, localFile, errors };
+  errors.push(...readUsageConfig(global.config, local.config).errors);
+  const warnings = [...readUsageConfig({}, local.config).errors];
+  return { global, local, globalFile, localFile, errors, warnings };
 }
 
 /** Read a user-controlled global value without honoring repository overrides. */
@@ -142,10 +147,10 @@ export function modelDefaultLayerForEdit(cwd: string, scope: "local" | "global")
 type ConfigSource = "default" | "global" | "local" | Record<string, "global" | "local">;
 
 /** Effective config and its provenance come from the same read of both layers. */
-export function configValues(cwd: string): {
-  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[]; globalFile: string;
+export function configValues(cwd: string, localRoot?: string): {
+  config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[]; warnings: string[]; globalFile: string;
 } {
-  const layers = configLayers(cwd);
+  const layers = configLayers(cwd, localRoot);
   const g = layers.global.config;
   const p = layers.local.config;
   const all = { ...DEFAULTS, ...g, ...p };
@@ -153,6 +158,14 @@ export function configValues(cwd: string): {
     [key, Object.hasOwn(p, key) ? "local" : Object.hasOwn(g, key) ? "global" : "default"]));
   all["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? g["subagents.extensions"] : DEFAULTS["subagents.extensions"];
   sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
+  const usage = readUsageConfig(g, p).value;
+  for (const [key, value] of Object.entries({
+    "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
+    "usage.alerts.sessionCredits": usage.alertsSessionCredits, "usage.alerts.runCredits": usage.alertsRunCredits,
+  })) {
+    all[key] = value;
+    sources[key] = Object.hasOwn(g, key) && !usageConfigError(key, g[key]) ? "global" : "default";
+  }
   if ("models.defaults" in g || "models.defaults" in p) {
     const global = roleMap(g["models.defaults"]);
     const local = roleMap(p["models.defaults"]);
@@ -160,12 +173,12 @@ export function configValues(cwd: string): {
     sources["models.defaults"] = Object.fromEntries(Object.keys({ ...global, ...local }).map(role =>
       [role, Object.hasOwn(local, role) ? "local" : "global"]));
   }
-  return { config: all, sources, errors: layers.errors, globalFile: layers.globalFile };
+  return { config: all, sources, errors: layers.errors, warnings: layers.warnings, globalFile: layers.globalFile };
 }
 
 export interface ConfigWriteResult {
   ok: true; op: "set" | "unset"; key: string; value: unknown;
-  scope: "local" | "global"; file: string; shadowedBy?: "local";
+  scope: "local" | "global"; file: string; shadowedBy?: "local"; notice?: string;
 }
 
 export function controlConfig(op: "set" | "unset", cwd: string, key: string, value?: unknown, scope?: "local" | "global"): ConfigWriteResult;
@@ -180,12 +193,18 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   if (op === "set" && key === "subagents.extensions" && scope !== "global") {
     throw new Error('subagents.extensions is global-only; use scope:"global"');
   }
+  if (isUsageConfigKey(key)) {
+    if (op === "set" && scope !== "global") throw new Error(`${key} is global-only; use scope:"global"`);
+    const error = op === "set" ? usageConfigError(key, value) : undefined;
+    if (error) throw new Error(error);
+  }
   // Ordinary edits stay local unless the caller explicitly chooses global.
   const root = scope === "global" ? paths.globalRoot : paths.projectRoot(cwd);
   const file = configFile(root);
   assertTestConfigPath(file);
   mkdirSync(root, { recursive: true });
   const cur = readJson(file);
+  const existed = Object.hasOwn(cur, key);
   const timeoutMax = key === "skills.reviewer.timeoutMs" ? 600000 : 120000;
   if (op === "set" && ["memory.reviewer.timeoutMs", "skills.reviewer.timeoutMs"].includes(key) &&
     (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > timeoutMax)) {
@@ -209,7 +228,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     if (Object.hasOwn(global, key)) cur[key] = "unlimited";
     else delete cur[key];
   } else cur[key] = value;
-  const shadowed = key !== "subagents.extensions" && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
+  const shadowed = !isUsageConfigKey(key) && key !== "subagents.extensions" && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   assertTestConfigPath(temp);
   try {
@@ -218,18 +237,29 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   } finally {
     rmSync(temp, { force: true });
   }
-  return { ok: true, op, key, value: cur[key], scope, file, ...(shadowed ? { shadowedBy: "local" } : {}) };
+  const notice = op === "unset" && scope === "local" && isUsageConfigKey(key)
+    ? existed
+      ? `removed the ignored local value; the global value is unchanged: ${JSON.stringify(controlConfig("get", cwd, key))}`
+      : "no local value to remove; usage keys are global-only, use --global to reset the global value"
+    : undefined;
+  return { ok: true, op, key, value: cur[key], scope, file, ...(shadowed ? { shadowedBy: "local" } : {}), ...(notice ? { notice } : {}) };
 }
 
 // ── doctor ──
-export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBundle): { ok: boolean; lines: string[] } {
+export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBundle, usage?: ReturnType<typeof usageDoctorLines>): { ok: boolean; lines: string[] } {
   const lines: string[] = ["## spider doctor 🕸", ""];
   if (bundle) lines.push(bundleDoctorLine(bundle));
   let ok = true;
   let drainEnabled: boolean | undefined;
+  let usageConfig = readUsageConfig({}, {}).value;
   try {
-    for (const error of configReadErrors(cwd)) { ok = false; lines.push(`- config: FAILED (${error})`); }
-    drainEnabled = controlConfig("get", cwd, "embeddings.drain") !== false;
+    const values = configValues(cwd);
+    for (const error of values.errors) {
+      if (values.warnings.includes(error)) lines.push(`- config: ${error}`);
+      else { ok = false; lines.push(`- config: FAILED (${error})`); }
+    }
+    drainEnabled = values.config["embeddings.drain"] !== false;
+    usageConfig = readUsageConfig(values.config, {}).value;
   } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }
   if (drainEnabled === false) lines.push("- embeddings: drain disabled; queue age is informational");
 
@@ -298,5 +328,8 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   lines.push(`- embeddings: fastembed worker state=${provider.state} drain=${drainEnabled === undefined ? "unavailable" : drainEnabled ? "enabled" : "disabled"}${provider.lastError ? ` last_error=${provider.lastError}` : ""}`);
   if (provider.state === "unavailable") ok = false;
 
+  const usageReport = usage ?? usageDoctorLines({ health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null }, usageConfig);
+  ok &&= usageReport.ok;
+  lines.push(...usageReport.lines);
   return { ok, lines };
 }

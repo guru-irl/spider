@@ -1,3 +1,6 @@
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
+import { bootUsageWorker } from "./usage/worker-entry.js";
+export { UsageRuntime } from "./usage/runtime.js";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError } from "@spider/memory";
@@ -7,7 +10,8 @@ import { isAbsolutePathList } from "@spider/ui";
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
-import type { CacheWarmingDecisionEventResult, ContextEvent } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerUsage } from "./usage/mount.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
@@ -68,11 +72,21 @@ export { registerGlobalAction as registerAction };
 // The running module owns the comparison location, regardless of session cwd.
 export const loadedBundle: LoadedBundle = { identity: LOADED_BUILD, url: import.meta.url };
 
+// Native imports/registration remain inert. A usage worker never invokes the
+// extension factory, tools, organism or model runtime, including through pi's shim.
+if (!isMainThread && workerData?.spiderUsageWorker === 1 && parentPort) {
+  void bootUsageWorker(parentPort, workerData.command).catch(() => {
+    try { parentPort?.postMessage({ type: "error", code: "usage-worker-failed" }); } catch { /* parent gone */ }
+    parentPort?.close();
+  });
+}
+
 const getEmbedder = async () => getReadyEmbedder();
 
 // Each loaded extension owns its runtime; manual actions reuse its serialized workers.
 const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
 const usageRuntimes = new WeakMap<object, UsageAccounting>();
+const usageControllers = new WeakMap<object, ReturnType<typeof registerUsage>>();
 
 // A-M3 (branch-review A-architecture.md): per-pi-instance record of a `registerRouting`
 // setup failure, read by doctor so it is surfaced instead of fully swallowed. Mirrors
@@ -327,13 +341,13 @@ function renderUpstreamReport(report: {
 
 type DoctorActionCtx = Omit<ActionCtx, "repoDb"> & { repoDb?: Db };
 
-async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string): Promise<unknown> {
+async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string, usageController?: ReturnType<typeof registerUsage>): Promise<unknown> {
   const command = String(args.command ?? "");
   const cwd = String(args.cwd ?? ctx?.cwd ?? process.cwd());
   const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
-      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle);
+      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
       if (ctx) {
         // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
         // registration must not break extension load") with NOTHING anywhere
@@ -460,6 +474,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         const r = op === "unset"
           ? applyConfigUnset(cwd, String(args.key), scope)
           : applyConfigEdit(cwd, String(args.key), String(args.value), scope);
+        if (r.ok) (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.reload();
         return { details: r };
       }
       const { config, sources, errors } = configValues(cwd);
@@ -764,7 +779,7 @@ async function dispatchWithDoctorSnapshot(
     return await dispatch(params, actionCtx, ownedActions);
   } catch (e) {
     if (!injectionSnapshot) throw e;
-    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId) as { ok: boolean; lines: string[] };
+    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId, usageControllers.get(pi)) as { ok: boolean; lines: string[] };
     report.ok = false;
     report.lines.push(`- action context unavailable: ${safeError(e)}`);
     return report;
@@ -1112,6 +1127,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
   );
 
   registerHooks(pi);
+  const usageController = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url);
+  usageControllers.set(pi, usageController);
 
   // Register @spider/superpowers: writes the spider-managed AGENTS.md block once
   // per process (skipped under vitest so tests never mutate the real ~/.pi file),
@@ -1231,6 +1248,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       clearToolCallErrors(errorOwner);
       if (organismRuntimes.get(pi) === organism) organismRuntimes.delete(pi);
       if (usageRuntimes.get(pi) === accounting) usageRuntimes.delete(pi);
+      if (usageControllers.get(pi) === usageController) usageControllers.delete(pi);
       if (routingSetupErrors.get(pi) === routingSetupError) routingSetupErrors.delete(pi);
       routingDbs.clear();
       currentContext = undefined;

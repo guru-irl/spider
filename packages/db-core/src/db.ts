@@ -134,10 +134,16 @@ export function openDb(dbPath: string, opts: { fileMustExist?: boolean; busyTime
   if (!opts.fileMustExist) mkdirSync(dirname(dbPath), { recursive: true });
   const Database = loadDatabase();
   const raw = new Database(dbPath, { timeout: opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS, fileMustExist: opts.fileMustExist ?? false });
-  raw.pragma("journal_mode = WAL");
-  raw.pragma("synchronous = NORMAL");
-  raw.pragma("foreign_keys = ON");
-  raw.pragma(`busy_timeout = ${opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS}`);
+  try {
+    raw.pragma("journal_mode = WAL");
+    raw.pragma("synchronous = NORMAL");
+    raw.pragma("foreign_keys = ON");
+    raw.pragma(`busy_timeout = ${opts.busyTimeoutMs ?? BUSY_TIMEOUT_MS}`);
+  } catch (error) {
+    // The caller has no handle yet, notably when a fresh WAL switch is busy.
+    raw.close();
+    throw error;
+  }
 
   let vecLoaded = false;
   const effects: Array<Array<() => void>> = [];

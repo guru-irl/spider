@@ -43,6 +43,15 @@ describe("config schema", () => {
 		expect(field).toBeDefined();
 		expect(coerce(field!, raw)).toMatchObject({ ok: false, error: expect.stringMatching(/absolute.*paths/i) });
 	});
+	it("allows disabling subagent cache warming with a live boolean setting", () => {
+		const field = getField("subagents.keepCacheWarm");
+		expect(field).toBeDefined();
+		expect(field!.default).toBe(true);
+		expect(field!.restart).not.toBe(true);
+		expect(coerce(field!, "false")).toEqual({ ok: true, value: false });
+		expect(coerce(field!, "true")).toEqual({ ok: true, value: true });
+		expect(coerce(field!, "bogus").ok).toBe(false);
+	});
 	it("coerce validates booleans, enums and numeric ranges", () => {
 		const boolF = getField("ui.footer")!;
 		expect(coerce(boolF, "true")).toEqual({ ok: true, value: true });

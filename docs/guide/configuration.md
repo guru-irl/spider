@@ -71,6 +71,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector; next session. |
 | `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
+| `subagents.keepCacheWarm` | `true` | Ask pi to keep the parent cache warm while its subagents start or run, within the limits below; applies at the next warming decision. |
 | `subagents.extensions` | `[]` | Global-only, user-managed array of absolute extension file paths for every child. |
 | `exec.enforce` | `true` | Block the built-in bash tool. |
 | `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory; not a storage cap. |
@@ -88,6 +89,10 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 | `routing.secret_scrub` | `true` | Secret scanning and scrubbing. |
 | `routing.injection_scan` | `true` | Prompt-injection scanning. |
 | `routing.auto_index_threshold` | `10000` | Large-output indexing threshold in bytes. |
+
+- Warming only happens when pi knows the model's cache lifetime and idle warming is enabled.
+- Pi still applies its own idle warming limit.
+- A subagent silent for 60 minutes stops holding warming. Any child event resets this clock without changing the run status.
 
 - `organism.passes.runMemoryTodo`, `.todoMemory`, `.learning`, `.consolidation`, `.reflection`, and `.insights` default to `true`.
 - Reviewer defaults and limits are in [Memory and learning](memory-and-learning.md#reviewer-settings).

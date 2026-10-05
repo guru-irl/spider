@@ -52,6 +52,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "models.defaults", label: "Role defaults", type: "model-map", default: {}, description: "Explicit agent-role overrides; shipped defaults resolve from the catalog." },
 	]},
 	{ id: "subagents", label: "Subagents", fields: [
+		{ key: "subagents.keepCacheWarm", label: "Keep parent cache warm", type: "boolean", default: true, description: "Override pi's cache-warming decision while this parent session has starting or running subagents. Applies at the next decision." },
 		{ key: "subagents.extensions", label: "Child extensions", type: "absolute-path-list", default: [], description: "Global-only JSON array of fully absolute extension file paths. Only the user can edit it in the global config file. Missing files are skipped with a run warning." },
 		{ key: "subagents.childMode", label: "Child mode", type: "enum", enum: ["rpc", "print"], default: "rpc", description: "RPC permits steering. Print retains legacy one-shot behavior. Applies to new runs." },
 	]},

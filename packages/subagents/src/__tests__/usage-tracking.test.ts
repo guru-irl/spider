@@ -11,10 +11,18 @@ import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
 import { createEventGate, ownRpcChild, MAX_BUFFERED_EVENTS, MAX_BUFFERED_PERSISTED } from "../rpc-child";
 import { defaultSpawner } from "../spawn-default";
+import { runUsageSummary } from "../usage";
 import { detachShared, adoptShared, resetSharedRegistryForTests, disposeSessionRegistries } from "../child-registry";
 import { teardownAll, getChild } from "../coordinators";
 import { resolve } from "node:path";
-const usageWriteFailure = vi.hoisted(() => ({ disposal: false }));
+const usageWriteFailure = vi.hoisted(() => ({ disposal: false, compaction: false }));
+vi.mock("@spider/db-core", async original => {
+  const actual = await original<typeof import("@spider/db-core")>();
+  return { ...actual, appendRunEvent: (...args: Parameters<typeof actual.appendRunEvent>) => {
+    if (usageWriteFailure.compaction && args[1].type === "spider_compaction") throw Error("fixture disposal compaction failure");
+    return actual.appendRunEvent(...args);
+  } };
+});
 vi.mock("../usage", async original => {
   const actual = await original<typeof import("../usage")>();
   return { ...actual, recordRunUsage: (...args: Parameters<typeof actual.recordRunUsage>) => {
@@ -30,7 +38,7 @@ const message = { type: "message_end", message: { role: "assistant", provider: "
   api: "openai-responses", content: [{ type: "text", text: "report" }], stopReason: "stop", timestamp: 1, usage } };
 const dbs: Db[] = [], files: string[] = [];
 const streams: PassThrough[] = [];
-afterEach(() => { usageWriteFailure.disposal = false; teardownAll(); resetSharedRegistryForTests(); for (const s of streams.splice(0)) s.destroy(); for (const db of dbs.splice(0)) if (db.raw.open) db.close(); vi.restoreAllMocks(); for (const path of files.splice(0)) rmSync(path, { force: true }); });
+afterEach(() => { usageWriteFailure.compaction = false; usageWriteFailure.disposal = false; teardownAll(); resetSharedRegistryForTests(); for (const s of streams.splice(0)) s.destroy(); for (const db of dbs.splice(0)) if (db.raw.open) db.close(); vi.restoreAllMocks(); for (const path of files.splice(0)) rmSync(path, { force: true }); });
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 function fixture(mode: "rpc" | "print" = "rpc", failLaunch = false, failAccounting = false) {
   const path = testScratchPath(`usage-${randomUUID()}.db`), db = openDbAt(path, "project"); dbs.push(db); files.push(path);
@@ -150,7 +158,7 @@ it("attributes pre-assistant compaction through defaultSpawner RPC to its reques
   const handle = defaultSpawner({ argv: [process.execPath, "-e", script], env: {}, cwd: process.cwd(), sessionFile: "", childMode: "rpc", prompt: "fixture", model: "fixture/requested", onRpcEvent: event => seen.push(event) });
   try {
     expect((await handle.wait()).exitCode).toBe(0);
-    expect(seen.filter(e => e.type === "spider_usage")).toEqual([{ type: "spider_usage", provider: "fixture", model: "requested", purpose: "compaction", usage }]);
+    expect(seen.filter(e => e.type === "spider_usage")).toEqual([{ type: "spider_usage", provider: "fixture", model: "requested", purpose: "compaction", compactionCount: 1, usage }]);
   } finally { if (handle.pid) { try { process.kill(-handle.pid, "SIGKILL"); } catch {} } }
 });
 
@@ -181,6 +189,93 @@ const extras = [
   { type: "entry_appended", entry: { type: "usage", id: "warm", kind: "cache_warm", provider: "warm-provider", model: "warm-model", usage } },
   { type: "entry_appended", entry: { type: "branch_summary", id: "branch", summary: "branch summary", usage } },
 ];
+// Break: one completion produces both a usage-derived and a boundary-derived count, or aborts count.
+it("counts built-in and boundary-draft compactions once each from stored events", async () => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", model: "fixture/requested", task: "fixture", context: "fresh" });
+  f.event(extras[0]); // Built-in: compaction_end only, not entry_appended in pi 0.87.
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(1);
+  f.event(extras[1]); // Boundary draft: entry_appended only, not compaction_end.
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(2);
+  f.event({ ...extras[0], aborted: true });
+  f.event({ type: "compaction_end", aborted: false, result: undefined, errorMessage: "failed" });
+  f.event(extras[2]); f.event(extras[3]);
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(2);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+});
+
+// Break: a forwarded usage kind is mistaken for a dedicated successful compaction signal.
+it.each(["live", "buffered-before", "buffered-after"])("excludes forwarded compaction-kind usage from counts (%s)", async mode => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", model: "fixture/requested", task: "fixture", context: "fresh" });
+  const forwarded = { type: "entry_appended", entry: { type: "usage", kind: "compaction", provider: "fixture", model: "requested", usage } };
+  if (mode !== "live") await detachShared("owner");
+  if (mode !== "buffered-after") f.event(forwarded);
+  if (mode === "live") expect(runUsageSummary(f.db, row.id).compactionCount).toBeUndefined();
+  f.event(extras[0]);
+  if (mode === "buffered-after") f.event(forwarded);
+  if (mode !== "live") f.bind(f.sink);
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(1);
+  expect(f.store.get(row.id)?.token_count).toBe(40);
+  expect(runUsageSummary(f.db, row.id).usage[0].usage.cost.total).toBeCloseTo(0.74);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+});
+
+it.each([extras[0], extras[1]])("counts successful compactions even when model accounting is skipped ($type)", async event => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
+  f.event(event);
+  expect(runUsageSummary(f.db, row.id)).toMatchObject({ usage: [], compactionCount: 1 });
+  expect(f.store.get(row.id)?.token_count).toBe(0);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+});
+
+it("counts successful compactions without usage data", async () => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
+  f.event({ type: "compaction_end", aborted: false, result: { summary: "hook summary" } });
+  f.event({ type: "entry_appended", entry: { type: "compaction", id: "hook", summary: "boundary" } });
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(2);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+});
+
+it("preserves exact compaction counts when reload aggregates usage and persisted events overflow", async () => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
+  await detachShared("owner");
+  f.event(extras[0]); f.event(extras[1]); // Two unpriced compactions.
+  f.event(message);
+  f.event(extras[0]); f.event(extras[0]); f.event(extras[1]); // Three in one usage group.
+  for (let i = 0; i < MAX_BUFFERED_PERSISTED + 10; i++) f.event({ type: "warning", message: "noise" });
+  f.bind(f.sink);
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(5);
+  expect(f.store.get(row.id)?.token_count).toBe(80);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+});
+
+it("preserves compaction counts during never-adopted disposal replay", async () => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
+  await detachShared("owner"); f.event(extras[0]); f.event(message); f.event(extras[1]); f.event(extras[0]);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+  await disposeSessionRegistries("owner", "fixture shutdown");
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBe(3);
+});
+
+// Break: disposal silently swallows compaction writes or omits the runner's summary.
+it("records a warning when disposal replay cannot persist a count-only compaction", async () => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
+  await detachShared("owner"); f.event({ type: "compaction_end", aborted: false, result: { summary: "hook" } });
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+  usageWriteFailure.compaction = true;
+  await disposeSessionRegistries("owner", "fixture shutdown");
+  expect(f.store.get(row.id)?.status).toBe("done");
+  expect(runUsageSummary(f.db, row.id).compactionCount).toBeUndefined();
+  expect(f.db.prepare("SELECT summary FROM run_events WHERE run_id=? AND type='warning'").all(row.id)).toContainEqual({ summary: expect.stringContaining("fixture disposal compaction failure") });
+});
+
+it("records the runner summary for count-only compactions replayed during disposal", async () => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
+  await detachShared("owner"); f.event({ type: "compaction_end", aborted: false, result: { summary: "hook" } });
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+  await disposeSessionRegistries("owner", "fixture shutdown");
+  expect(f.db.prepare("SELECT summary FROM run_events WHERE run_id=? AND type='spider_compaction'").all(row.id)).toEqual([{ summary: "Child compacted." }]);
+});
+
 const ignored = [
   { ...extras[0], aborted: true },
   { type: "entry_appended", entry: { type: "custom", usage } },
@@ -219,7 +314,7 @@ it("uses a usage entry's own model even before an assistant message", () => {
 it("preserves an unqualified run model for pre-assistant compaction", () => {
   const seen: any[] = [], gate = createEventGate(event => seen.push(event), "unqualified");
   gate.report(extras[0]);
-  expect(seen.filter(e => e.type === "spider_usage")).toEqual([{ type: "spider_usage", provider: "unknown", model: "unqualified", purpose: "compaction", usage }]);
+  expect(seen.filter(e => e.type === "spider_usage")).toEqual([{ type: "spider_usage", provider: "unknown", model: "unqualified", purpose: "compaction", compactionCount: 1, usage }]);
 });
 
 it.each([extras[0], extras[1]])("persists a warning run event for compaction without a known model ($type)", async event => {
@@ -276,12 +371,12 @@ it.each(["rpc", "print"] as const)("attributes %s compaction before the first as
     try { expect((await handle.wait()).exitCode).toBe(0); }
     finally { if (handle.pid) { try { process.kill(-handle.pid, "SIGKILL"); } catch {} } }
   }
-  expect(seen.filter(e => e.type === "spider_usage")).toEqual([{ type: "spider_usage", provider: "fixture", model: "requested", purpose: "compaction", usage }]);
+  expect(seen.filter(e => e.type === "spider_usage")).toEqual([{ type: "spider_usage", provider: "fixture", model: "requested", purpose: "compaction", compactionCount: 1, usage }]);
 });
 
 it("passes the run's requested model to the child usage gate before any assistant message", () => {
   const f = fixture(), row = f.runner.runAsync({ agent: "worker", model: "fixture/requested", task: "fixture", context: "fresh" });
   f.event(extras[0]);
   expect(f.store.get(row.id)?.token_count).toBe(20);
-  expect(f.db.prepare("SELECT payload FROM run_events WHERE type='spider_usage'").get()).toEqual({ payload: JSON.stringify({ type: "spider_usage", provider: "fixture", model: "requested", usage, purpose: "compaction" }) });
+  expect(f.db.prepare("SELECT payload FROM run_events WHERE type='spider_usage'").get()).toEqual({ payload: JSON.stringify({ type: "spider_usage", provider: "fixture", model: "requested", usage, purpose: "compaction", compactionCount: 1 }) });
 });

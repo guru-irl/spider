@@ -1,6 +1,6 @@
 import { appendRunEvent, openDb, paths, type Db } from "@spider/db-core";
 import { RunStore } from "../run-store";
-import { runUsage, sumUsage, safelyReportUsage } from "../usage";
+import { runUsageSummary, sumUsage, safelyReportUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
 import { Runner, type Spawner } from "../runner";
 import { PipelineCoordinator } from "../pipeline";
@@ -15,6 +15,11 @@ import { latestRunOutput } from "../completion-output";
 import { resolveChildIntercom } from "../child-intercom";
 import { adoptShared, adoptableFor, getShared, sharedRegistry, type AdoptResult } from "../child-registry";
 import { isShutdownReason } from "../shutdown-reason";
+
+// Kept local to avoid a subagents -> UI dependency. Host parity tests cover both formatters.
+function formatCompactionCount(compactionCount?: number): string {
+  return (compactionCount ?? 0) > 0 ? ` · ${compactionCount} compaction${compactionCount === 1 ? "" : "s"}` : "";
+}
 
 /** Async-completion notifier: injects a message the parent agent sees next turn (so it
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
@@ -54,17 +59,20 @@ export function makeAsyncNotifier(ctx: any): (run: any, status: string, result?:
       // conversation continues automatically instead of waiting for the user to send a message.
       const completed = steps ?? [run];
       const tokenCount = completed.reduce((n, row) => n + (row.token_count ?? 0), 0);
-      let cost: number | undefined;
-      try { cost = sumUsage(completed.flatMap(row => runUsage(ctx.db, row.id).map(r => r.usage))).cost.total; }
-      catch { /* optional usage cannot suppress a completion or cancellation cause */ }
-      const usageLine = `${tokenCount.toLocaleString("en-US")} tokens${cost === undefined ? "" : ` · $${cost.toFixed(2)}`}`;
+      let cost: number | undefined, compactionCount: number | undefined;
+      try {
+        const usage = completed.map(row => runUsageSummary(ctx.db, row.id));
+        cost = sumUsage(usage.flatMap(summary => summary.usage.map(r => r.usage))).cost.total;
+        for (const summary of usage) if (summary.compactionCount !== undefined) compactionCount = (compactionCount ?? 0) + summary.compactionCount;
+      } catch { /* optional usage cannot suppress a completion or cancellation cause */ }
+      const usageLine = `${tokenCount.toLocaleString("en-US")} tokens${cost === undefined ? "" : ` · $${cost.toFixed(2)}`}${formatCompactionCount(compactionCount)}`;
       const content = `${headline}\n${usageLine}\n\n${output || "(no output)"}`;
       ctx.pi?.sendMessage?.(
         {
           customType: "spider.subagent_done",
           content,
           display: true,
-          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost },
+          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost, ...(compactionCount === undefined ? {} : { compactionCount }) },
         },
         shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
       );

@@ -1,7 +1,7 @@
 // packages/host/src/agents/run-source.ts
 import { bus, type Db } from "@spider/db-core";
 import type { RunEvent, RunRow, RunSource } from "@spider/ui";
-import { runUsage, sumUsage } from "@spider/subagents";
+import { runUsageSummary, sumUsage } from "@spider/subagents";
 
 const RETENTION_MS = 10_000;
 
@@ -12,14 +12,15 @@ export function createRunSource(db: Db, sessionId: string): RunSource {
   const eventsStmt = db.prepare(
     `SELECT run_id, session_id, ts, type, tool, summary, payload FROM run_events WHERE run_id = ? ORDER BY ts ASC, id ASC`);
   const safeParse = (s: unknown): unknown => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };
-  const costs = new Map<string, { tokens: number | undefined; cost: number }>();
+  const costs = new Map<string, { tokens: number | undefined; cost: number; compactionCount?: number }>();
   const withCost = (row: RunRow): RunRow => {
     let cached = costs.get(row.id);
     if (!cached || cached.tokens !== row.token_count) {
-      cached = { tokens: row.token_count, cost: sumUsage(runUsage(db, row.id).map(r => r.usage)).cost.total };
+      const summary = runUsageSummary(db, row.id);
+      cached = { tokens: row.token_count, cost: sumUsage(summary.usage.map(r => r.usage)).cost.total, compactionCount: summary.compactionCount };
       costs.set(row.id, cached);
     }
-    return { ...row, cost: cached.cost };
+    return { ...row, cost: cached.cost, compactionCount: cached.compactionCount };
   };
   return {
     listActive(): RunRow[] {
@@ -41,7 +42,13 @@ export function createRunSource(db: Db, sessionId: string): RunSource {
       }));
     },
     subscribe(fn: (e: RunEvent) => void): () => void {
-      return bus.on((e) => { if (e.sessionId === sessionId) fn(e); });
+      return bus.on((e) => {
+        if (e.sessionId !== sessionId) return;
+        // Successful unpriced compactions leave token_count unchanged. Invalidate
+        // before the store reads the row, without adding any render-time DB query.
+        if (e.runId && (e.type === "spider_usage" || e.type === "spider_compaction")) costs.delete(e.runId);
+        fn(e);
+      });
     },
   };
 }

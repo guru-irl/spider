@@ -46,7 +46,7 @@ export function attachRpcReader(stream: NodeJS.ReadableStream, onEvent: (event: 
 }
 
 /** Event types a sink persists (see Runner.rpcSink). Losing one is a loss of run history. */
-export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery", "spider_usage"];
+export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery", "spider_usage", "spider_compaction"];
 // JSON child records cannot carry a symbol key. Symbol.for keeps the key stable across a /reload,
 // where a new module instance reads events from the old gate.
 const HANDLED_PROMPT = Symbol.for("spider.handledPrompt.v1");
@@ -91,27 +91,34 @@ export function createEventGate(initial?: (event: Record<string, any>) => void, 
       const message = event.message;
       if (message.provider && (message.responseModel ?? message.model)) latest = { provider: message.provider, model: message.responseModel ?? message.model };
       if (event.type === "message_end" && message.usage && latest) report({ type: "spider_usage", ...latest, usage: message.usage });
-    } else if (event.type === "compaction_end" && event.aborted === false && event.result?.usage) {
+    } else if (event.type === "compaction_end" && event.aborted === false && event.result) {
       // pi 0.87 built-in compactions emit only compaction_end. Boundary drafts emit
       // only entry_appended, so these two paths cannot count the same compaction twice.
-      if (latest) report({ type: "spider_usage", ...latest, usage: event.result.usage, purpose: "compaction" });
-      else report({ type: "warning", message: "Usage accounting skipped compaction: model unknown." });
-    } else if (event.type === "entry_appended" && event.entry?.usage) {
+      reportCompaction(event.result.usage);
+    } else if (event.type === "entry_appended" && event.entry) {
       const entry = event.entry;
-      if (entry.type === "usage") {
+      if (entry.type === "compaction") reportCompaction(entry.usage);
+      else if (entry.type === "usage" && entry.usage) {
         report({ type: "spider_usage", provider: entry.provider, model: entry.model, usage: entry.usage, purpose: entry.kind });
-      } else if (["compaction", "branch_summary"].includes(entry.type)) {
+      } else if (entry.type === "branch_summary" && entry.usage) {
         // Defensive branch_summary support: pi does not emit it to children today.
         if (latest) report({ type: "spider_usage", ...latest, usage: entry.usage, purpose: entry.type });
         else report({ type: "warning", message: `Usage accounting skipped ${entry.type}: model unknown.` });
       }
     }
     if (!buffering) return deliver(event);
-    if (event.type === "spider_usage") {
-      const key = JSON.stringify([event.provider, event.model, event.purpose]);
+    if (event.type === "spider_usage" || event.type === "spider_compaction") {
+      const key = JSON.stringify([event.type, event.provider, event.model, event.purpose]);
       const prior = bufferedUsage.get(key);
-      if (prior) prior.event.usage = sumUsage([prior.event.usage, event.usage]);
-      else bufferedUsage.set(key, { seq: seq++, event: { ...event }, bytes: 0 });
+      if (prior) {
+        if (event.type === "spider_compaction") prior.event.count += event.count;
+        else {
+          prior.event.usage = sumUsage([prior.event.usage, event.usage]);
+          if (prior.event.compactionCount !== undefined || event.compactionCount !== undefined) {
+            prior.event.compactionCount = (prior.event.compactionCount ?? 0) + (event.compactionCount ?? 0);
+          }
+        }
+      } else bufferedUsage.set(key, { seq: seq++, event: { ...event }, bytes: 0 });
       return;
     }
     if (PARTIAL_EVENT_TYPES.includes(event.type)) return;
@@ -125,6 +132,15 @@ export function createEventGate(initial?: (event: Record<string, any>) => void, 
     while (queue.length > maxCount || ((isPersisted ? persistedBytes : otherBytes) > maxBytes && queue.length > 0)) {
       const evicted = queue.shift()!;
       if (isPersisted) { persistedBytes -= evicted.bytes; lostPersisted++; } else { otherBytes -= evicted.bytes; droppedOther++; }
+    }
+  };
+  const reportCompaction = (usage: unknown) => {
+    if (usage && latest) report({ type: "spider_usage", ...latest, usage, purpose: "compaction", compactionCount: 1 });
+    else {
+      // A successful compaction need not have priced usage. Store a count-only signal,
+      // never a fabricated model or token total, and aggregate it in the durable lane.
+      report({ type: "spider_compaction", count: 1 });
+      if (usage) report({ type: "warning", message: "Usage accounting skipped compaction: model unknown." });
     }
   };
   return {

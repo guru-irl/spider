@@ -21,6 +21,7 @@ export function projectRow(row: RunRow): AgentSnapshot {
     stepCount: row.step_count ?? 0,
     tokenCount: row.token_count ?? 0,
     cost: row.cost ?? 0,
+    compactionCount: row.compactionCount,
     recentActivity: [],
   };
 }

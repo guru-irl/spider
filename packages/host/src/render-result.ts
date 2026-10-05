@@ -64,7 +64,7 @@ function plainBody(text: string, expanded = false): Component {
   return textComponent({ content: [{ type: "text", text: text.replace(/^## [^\n]*\n?/, "") }] }, expanded);
 }
 
-interface RunLike { token_count?: number; cost?: number; id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
+interface RunLike { token_count?: number; cost?: number; compactionCount?: number; id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
 
 /** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] {
@@ -75,7 +75,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   const thinkSeg = r.thinking ? ` ${sep} ${t.fg("muted", r.thinking)}` : "";
   const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
   const lines = [expanded ? head : clip(head, width)];
-  if (["done", "failed", "cancelled"].includes(status) && (r.token_count ?? 0) > 0) lines.push(t.fg("dim", `    ${formatRunUsage(r.token_count ?? 0, r.cost)}`));
+  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) lines.push(t.fg("dim", `    ${formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount)}`));
   const task = (r.task ?? "").trim();
   if (task) {
     const body = expanded ? task.split("\n") : [clip(task, width - 7)];
@@ -796,7 +796,7 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   // Feed the same shape a real `spider run` produces: a title (renderCall) + a single run block
   // (renderResult) carrying the child's name/agent/model/status and its output as the result.
   const args = { action: "run" };
-  const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost } } };
+  const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, compactionCount: d.compactionCount } } };
   const box = new Box(1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, {}) as any);
   box.addChild(renderSpiderResult(result, { expanded }, theme, { args }) as any);

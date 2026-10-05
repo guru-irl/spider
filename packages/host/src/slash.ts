@@ -11,7 +11,16 @@ export const SLASH_COMMANDS = ["spider", "memory", "search", "insights", "learn"
 export type SlashCommandName = (typeof SLASH_COMMANDS)[number];
 
 const FORWARD: Record<SlashCommandName, (arg: string) => Record<string, unknown>> = {
-	spider: () => ({ action: "control", command: "stats" }),
+	spider: (arg) => {
+		if (!arg.startsWith("config")) return { action: "control", command: "stats" };
+		const scopeFlag = /\s+--(global|local)$/.exec(arg);
+		const body = scopeFlag ? arg.slice(0, scopeFlag.index) : arg;
+		const match = /^config(?:\s+(get|set|unset))?(?:\s+([\w.]+))?(?:\s+(.*))?$/.exec(body);
+		if (!match) return { error: "Use /spider config get|set|unset [key] [value] [--global|--local]" };
+		const [, op = "get", key, value] = match;
+		const scope = scopeFlag?.[1];
+		return { action: "control", command: "config", op, key, value, ...(scope === "global" ? { scope: "global" } : {}) };
+	},
 	memory: () => ({ action: "recall" }),
 	search: (arg) => ({ action: "search", query: arg }),
 	insights: () => ({ action: "control", command: "insights" }),
@@ -142,7 +151,7 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 					return;
 				}
 				const forwarded = FORWARD[name](arg);
-				const res = await deps.run(forwarded, ctx);
+				const res = typeof forwarded.error === "string" ? { error: forwarded.error } : await deps.run(forwarded, ctx);
 				if (!res) return;
 				// Primary: a persistent spider.command transcript entry rendered by renderCommandOutput
 				// (which reuses the tool's renderSpiderResult) — themed, identical to a real spider result.

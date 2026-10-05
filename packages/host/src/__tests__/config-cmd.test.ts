@@ -91,6 +91,9 @@ describe("applyConfigEdit round-trip", () => {
         const raw = field.type === "model-map" ? "{}" : field.type === "absolute-path-list" ? "[]" : field.type === "number" ? String(field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
         if (["exec.enforce", "subagents.extensions"].includes(key)) {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
+        } else if (field.scope === "global") {
+          expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
+          expect(applyConfigEdit(dir, key, raw, "global"), key).toMatchObject({ ok: true, scope: "global", file: join(paths.globalRoot, "config.json") });
         } else {
           expect(applyConfigEdit(dir, key, raw), key).toMatchObject({ ok: true, scope: "local", file: join(dir, ".spider", "config.json") });
         }

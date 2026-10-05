@@ -3,7 +3,7 @@ import { isAbsolutePathList } from "./absolute-paths.js";
 export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
-	enum?: readonly string[]; min?: number; max?: number; description: string; restart?: boolean;
+	enum?: readonly string[]; min?: number; max?: number; description: string; restart?: boolean; scope?: "global";
 }
 export interface ConfigGroup { id: string; label: string; fields: ConfigField[]; }
 
@@ -58,6 +58,12 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	]},
 	{ id: "exec", label: "Exec enforcement", fields: [
 		{ key: "exec.enforce", label: "Enforce spider exec", type: "boolean", default: true, description: "Block bash tool; model must use spider exec." },
+	]},
+	{ id: "usage", label: "Usage", fields: [
+		{ key: "usage.footer", label: "Usage footer", type: "boolean", default: true, scope: "global", description: "Global-only estimated AIC footer. Changes apply live, independently of the agents widget." },
+		{ key: "usage.counterPoll", label: "Counter poll", type: "boolean", default: true, scope: "global", description: "Global-only read-only account polling every ten minutes, parents only. Changes apply live." },
+		{ key: "usage.alertsSessionCredits", label: "Session alert credits", type: "number", default: 0, min: 0, scope: "global", description: "Global-only threshold. Reserved, alerts are not implemented." },
+		{ key: "usage.alertsRunCredits", label: "Run alert credits", type: "number", default: 0, min: 0, scope: "global", description: "Global-only threshold. Reserved, alerts are not implemented." },
 	]},
 	{ id: "ui", label: "UI", fields: [
 		{ key: "ui.footer", label: "Agents footer", type: "boolean", default: true, description: "Show the agents footer from the next session.", restart: true },

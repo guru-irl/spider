@@ -4,7 +4,8 @@ import { controlConfig, type ConfigWriteResult } from "../control.js";
 
 type ConfigEditResult = (ConfigWriteResult & { error?: undefined }) | { ok: false; error: string };
 
-function keyError(key: string): string | undefined {
+function keyError(key: string, scope: "local" | "global"): string | undefined {
+	if (getField(key, UI_CONFIG_SCHEMA)?.scope === "global" && scope !== "global") return `${key} is global-only; use scope:"global"`;
 	// Security settings can only be changed by the user.
 	if (key === "exec.enforce") {
 		return "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command";
@@ -18,7 +19,7 @@ function keyError(key: string): string | undefined {
 
 /** Resolve the field, coerce the raw string, and persist only valid edits in the chosen layer. */
 export function applyConfigEdit(cwd: string, key: string, raw: string, scope: "local" | "global" = "local"): ConfigEditResult {
-	const error = keyError(key);
+	const error = keyError(key, scope);
 	if (error) return { ok: false, error };
 	const c = coerce(getField(key, UI_CONFIG_SCHEMA)!, raw);
 	if (!c.ok) return { ok: false, error: c.error ?? "invalid value" };
@@ -28,7 +29,7 @@ export function applyConfigEdit(cwd: string, key: string, raw: string, scope: "l
 
 /** Unset uses the same key validation and protection as set, without value coercion. */
 export function applyConfigUnset(cwd: string, key: string, scope: "local" | "global" = "local"): ConfigEditResult {
-	const error = keyError(key);
+	const error = keyError(key, scope);
 	if (error) return { ok: false, error };
 	return controlConfig("unset", cwd, key, undefined, scope);
 }

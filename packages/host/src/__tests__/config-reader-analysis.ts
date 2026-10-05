@@ -29,6 +29,10 @@ export function productionReaders(root: string, overrides: Record<string, string
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "controlConfig"
         && node.arguments.length >= 3 && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "get"
         && ts.isStringLiteral(node.arguments[2])) readers.add(node.arguments[2].text);
+      if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "values"
+        && ts.isStringLiteral(node.argumentExpression) && node.argumentExpression.text.startsWith("usage.")) {
+        readers.add(node.argumentExpression.text);
+      }
       if (ts.isElementAccessExpression(node) && ts.isPropertyAccessExpression(node.expression)
         && node.expression.name.text === "config" && ts.isStringLiteral(node.argumentExpression)) {
         readers.add(node.argumentExpression.text);

@@ -36,7 +36,7 @@ beforeEach(() => {
   vi.spyOn(paths, "projectRoot").mockReturnValue(join(root, "local")); mkdirSync(join(root, "local"));
   handlers = new Map();
   pi = { on: (name: string, handler: Function) => { if (!handlers.has(name)) handlers.set(name, new Set()); handlers.get(name)!.add(handler); return () => handlers.get(name)?.delete(handler); }, getThinkingLevel: () => "high", getSessionName: () => undefined } as unknown as ExtensionAPI;
-  ctx = { cwd: root, mode: "tui", hasUI: true, ui: { setFooter: footer }, sessionManager: { getEntries: () => [], getSessionFile: () => "fixture.jsonl", getSessionId: () => "fixture" }, getContextUsage: () => undefined } as unknown as ExtensionContext;
+  ctx = { cwd: root, mode: "tui", hasUI: true, ui: { setFooter: footer, notify: vi.fn() }, sessionManager: { getEntries: () => [], getSessionFile: () => "fixture.jsonl", getSessionId: () => "fixture" }, getContextUsage: () => undefined } as unknown as ExtensionContext;
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); }));
 });
 afterEach(async () => { await emit("session_shutdown"); paths.globalRoot = previous; vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); });
@@ -98,18 +98,19 @@ it.each([["usage.counter.poll", "false", false, true], ["usage.alerts.sessionCre
   await command(`config get ${key}`, ctx); expect(messages.at(-1).details.result.details.value).toBe(value);
   writeFileSync(join(root, "local/config.json"), JSON.stringify({ [key]: "ignored" }));
   await command(`config unset ${key} --local`, ctx);
-  expect(messages.at(-1).details.result.details).toMatchObject({ ok: true, scope: "local", notice: expect.stringMatching(/ignored anyway/) });
+  expect(messages.at(-1).details.result.details).toMatchObject({ ok: true, scope: "local", notice: `removed the ignored local value; the global value is unchanged: ${value}` });
   expect(controlConfig("get", root, key)).toBe(value);
   await command(`config unset ${key} --global`, ctx);
   await command(`config get ${key}`, ctx); expect(messages.at(-1).details.result.details.value).toBe(fallback);
 });
 
-it("config watcher catches a throwing footer dependency, logs once, and keeps applying changes", async () => {
+it("config watcher catches a throwing footer dependency, notifies once without console output, and recovers", async () => {
   const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
   registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start");
   const getter = vi.spyOn(ctx.sessionManager, "getEntries").mockImplementation(() => { throw new Error("fixture dependency failed"); });
   expect(() => watcher.callback!()).not.toThrow(); expect(() => watcher.callback!()).not.toThrow();
-  expect(warning).toHaveBeenCalledTimes(1); expect(footer).toHaveBeenCalledTimes(1);
+  expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith("[spider usage] config reload failed; will retry", "warning");
+  expect(warning).not.toHaveBeenCalled(); expect(footer).toHaveBeenCalledTimes(1);
   getter.mockRestore();
   controlConfig("set", root, "usage.footer", false, "global");
   watcher.callback!(); expect(footer).toHaveBeenLastCalledWith(undefined);

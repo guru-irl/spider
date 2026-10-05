@@ -15,10 +15,10 @@ export type ReconciliationView = {
 };
 export type UsageProgress = { sourcesCompleted: number; sourcesTotal: number };
 export type UsageWorkerEvent =
-  | { type: "snapshot"; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress }
+  | { type: "snapshot"; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" }
   | { type: "error"; code: string }
   | { type: "stopped" };
 export type UsageRuntimeSnapshot = {
   health: LedgerHealth | null; counter: CounterState | null; backfill: BackfillState;
-  reconciliation: ReconciliationView | null; progress?: UsageProgress; errorCode: string | null;
+  reconciliation: ReconciliationView | null; progress?: UsageProgress; ingestRole?: "owner" | "follower"; errorCode: string | null;
 };

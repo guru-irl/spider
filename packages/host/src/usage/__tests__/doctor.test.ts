@@ -75,3 +75,9 @@ describe("usage doctor", () => {
     expect(text).toMatch(/redacted|unknown-error/);
   });
 });
+
+it.each(["usage-ingest-lease-lost", "usage-ingest-lease-busy"])("doctor treats %s as follower information", errorCode => {
+  const result = usageDoctorLines({ ...fixture(), errorCode }, config);
+  expect(result.ok).toBe(true);
+  expect(result.lines.join("\n")).toContain("ingest: follower (another pi session owns ingestion)");
+});

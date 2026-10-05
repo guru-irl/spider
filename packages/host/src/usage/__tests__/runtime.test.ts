@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { UsageRuntime, supportsUsageWorkers, type UsageRuntimeOptions } from "../runtime.js";
+import { usageDoctorLines } from "../doctor.js";
 import type { UsageWorkerEvent } from "../protocol.js";
 
 class FakeWorker extends EventEmitter {
@@ -126,4 +127,21 @@ it("worker-reported ledger failure survives a stopped event and exit", async () 
   f.worker.emit("message", { type: "error", code: "usage-ledger-unavailable" });
   f.worker.emit("message", { type: "stopped" }); f.worker.emit("exit", 0);
   expect(f.runtime.snapshot().errorCode).toBe("usage-ledger-unavailable");
+});
+
+it.each(["usage-ingest-lease-lost", "usage-ingest-lease-busy"])("%s becomes a healthy follower without failing backfill", async code => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  f.worker.emit("message", snapshot);
+  f.worker.emit("message", { type: "error", code });
+  const state = f.runtime.snapshot();
+  expect(state).toMatchObject({ backfill: "complete", errorCode: null, ingestRole: "follower" });
+  const report = usageDoctorLines(state, { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 });
+  expect(report.ok).toBe(true);
+  expect(report.lines.join("\n")).toContain("ingest: follower (another pi session owns ingestion)");
+});
+it("an ingest exception fails backfill with its distinct code", async () => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  f.worker.emit("message", snapshot); f.worker.emit("message", { type: "error", code: "usage-ingest-failed" });
+  expect(f.runtime.snapshot()).toMatchObject({ backfill: "failed", errorCode: "usage-ingest-failed" });
+  expect(usageDoctorLines(f.runtime.snapshot(), { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 }).ok).toBe(false);
 });

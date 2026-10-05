@@ -40,7 +40,7 @@ describe("usage config", () => {
     const globalBefore = readFileSync(join(paths.globalRoot, "config.json"), "utf8");
     for (const unset of [() => controlConfig("unset", root, key), () => applyConfigUnset(root, key)]) {
       writeFileSync(join(root, "local/config.json"), JSON.stringify({ [key]: "hand-written", "ui.footer": false }));
-      expect(unset()).toMatchObject({ ok: true, scope: "local", notice: expect.stringMatching(/ignored anyway/) });
+      expect(unset()).toMatchObject({ ok: true, scope: "local", notice: expect.stringMatching(/removed the ignored local value; the global value is unchanged:/) });
       expect(JSON.parse(readFileSync(join(root, "local/config.json"), "utf8"))).toEqual({ "ui.footer": false });
       expect(readFileSync(join(paths.globalRoot, "config.json"), "utf8")).toBe(globalBefore);
       expect(controlConfig("get", root, key)).toBe(key.includes("alerts") ? 2 : false);
@@ -95,4 +95,13 @@ describe("usage config", () => {
     expect(value).toEqual({ ...defaults, footer: false, counterPoll: false });
     expect(JSON.parse(readFileSync(join(paths.globalRoot, "config.json"), "utf8"))).toMatchObject({ "usage.counter.poll": false });
   });
+});
+
+it.each(keys)("local unset of absent %s does not claim a removal", key => {
+  const value = key.includes("alerts") ? 2 : false;
+  controlConfig("set", root, key, value, "global");
+  for (const unset of [() => controlConfig("unset", root, key), () => applyConfigUnset(root, key)]) {
+    expect(unset()).toMatchObject({ ok: true, scope: "local", notice: "no local value to remove; usage keys are global-only, use --global to reset the global value" });
+    expect(controlConfig("get", root, key)).toBe(value);
+  }
 });

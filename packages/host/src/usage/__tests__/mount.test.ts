@@ -24,7 +24,7 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   });
   const getEntries = vi.fn(() => [...entries]); const getBranch = vi.fn(() => entries.slice(0, 1));
   const registry = { getProvider: vi.fn(() => ({ auth: { oauth: { isSubscription: true } } })), isUsingOAuth: vi.fn(() => true) };
-  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: "/fixture/project", sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWidget: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
+  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: "/fixture/project", sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => {
     if (!events.has(name)) events.set(name, new Set()); events.get(name)!.add(handler);
     return () => events.get(name)?.delete(handler);
@@ -90,12 +90,13 @@ describe("public usage footer mount", () => {
     f.append(generic("usage", "warmer", 20)); vi.advanceTimersByTime(1000);
     expect(f.render()[1]).toMatch(/↑140 ↓40/);
   });
-  it("tick catches a throwing dependency, logs once, and later updates the same footer", () => {
+  it("tick catches a throwing dependency, notifies once without writing over the TUI, and recovers", () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const f = fixture(); mount(f); f.render();
     f.getEntries.mockImplementation(() => { throw new Error("fixture dependency failed"); });
     expect(() => vi.advanceTimersByTime(2000)).not.toThrow();
-    expect(warning).toHaveBeenCalledTimes(1);
+    expect(f.ctx.ui.notify).toHaveBeenCalledExactlyOnceWith("[spider usage] footer tick failed; will retry", "warning");
+    expect(warning).not.toHaveBeenCalled();
     expect(f.render()[1]).toMatch(/↑100 ↓10/);
     f.getEntries.mockImplementation(() => [assistant("a", 100), assistant("b", 200)]);
     vi.advanceTimersByTime(1000);

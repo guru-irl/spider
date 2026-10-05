@@ -17,15 +17,15 @@ function displayCwd(cwd: string): string {
   return tail === "" ? "~" : !isAbsolute(tail) && tail !== ".." && !tail.startsWith(`..${sep}`) ? `~${sep}${tail}` : cwd;
 }
 
-/** Async callbacks must never crash pi, including when diagnostic logging fails. */
-function guarded(callback: () => void, source: string): () => void {
+/** Async callbacks must never crash pi, including when notification delivery fails. */
+function guarded(callback: () => void, source: string, warn: (message: string) => void): () => void {
   let logged = false;
   return () => {
     try { callback(); }
     catch {
       if (logged) return;
       logged = true;
-      try { console.warn(`[spider usage] ${source} failed; will retry`); } catch { /* best effort */ }
+      try { warn(`[spider usage] ${source} failed; will retry`); } catch { /* best effort */ }
     }
   };
 }
@@ -83,7 +83,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     }
     component?.refresh();
   }
-  const tickRefresh = guarded(() => refresh(), "footer tick");
+  const tickRefresh = guarded(() => refresh(), "footer tick", message => current.ui?.notify?.(message, "warning"));
   function configure(next: UsageConfig): void {
     if (disposed || child) return;
     const changed = settings.footer !== next.footer;
@@ -119,12 +119,13 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
 export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; doctor(): ReturnType<typeof usageDoctorLines> } {
+  let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
   let config = readUsageConfig({}, {}).value;
   let reloader: ReturnType<typeof makeConfigReloader> | undefined;
   let watchedFile: string | undefined;
-  const reload = guarded(() => reloader?.reload(), "config reload");
+  const reload = guarded(() => reloader?.reload(), "config reload", message => current?.ui?.notify?.(message, "warning"));
   async function stop(): Promise<void> {
     if (watchedFile) unwatchFile(watchedFile, reload);
     watchedFile = undefined; reloader = undefined;
@@ -135,6 +136,7 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
   pi.on("session_start", async (_event, ctx) => {
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
     await stop();
+    current = ctx;
     config = readUsageConfig(controlConfig("get", ctx.cwd) as Record<string, unknown>, {}).value;
     const agentDir = getAgentDir();
     runtime = new UsageRuntime({ bundleUrl, child: false, roots: {

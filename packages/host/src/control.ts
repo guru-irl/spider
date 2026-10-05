@@ -204,6 +204,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   assertTestConfigPath(file);
   mkdirSync(root, { recursive: true });
   const cur = readJson(file);
+  const existed = Object.hasOwn(cur, key);
   const timeoutMax = key === "skills.reviewer.timeoutMs" ? 600000 : 120000;
   if (op === "set" && ["memory.reviewer.timeoutMs", "skills.reviewer.timeoutMs"].includes(key) &&
     (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > timeoutMax)) {
@@ -237,7 +238,10 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     rmSync(temp, { force: true });
   }
   const notice = op === "unset" && scope === "local" && isUsageConfigKey(key)
-    ? `${key} removed from local config; local usage keys are ignored anyway (global-only)` : undefined;
+    ? existed
+      ? `removed the ignored local value; the global value is unchanged: ${JSON.stringify(controlConfig("get", cwd, key))}`
+      : "no local value to remove; usage keys are global-only, use --global to reset the global value"
+    : undefined;
   return { ok: true, op, key, value: cur[key], scope, file, ...(shadowed ? { shadowedBy: "local" } : {}), ...(notice ? { notice } : {}) };
 }
 

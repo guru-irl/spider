@@ -31,6 +31,7 @@ export async function bootUsageWorker(
   let ledger: UsageLedger | undefined, lease: Lease | undefined, poller: CounterPoller | undefined;
   let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
   let poll = command.poll;
+  let reopen = false;
   let backfill: BackfillState = "pending";
   let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
   let cachedSnapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
@@ -38,7 +39,13 @@ export async function bootUsageWorker(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let controller = new AbortController();
-  const error = (failure: unknown, fallback = "usage-ingest-failed") => post({ type: "error", code: failure instanceof UsageLeaseError ? failure.code === "lease-busy" ? "usage-ingest-lease-busy" : "usage-ledger-unavailable" : fallback });
+  const error = (_failure: unknown, code = "usage-ingest-failed") => post({ type: "error", code });
+  function follow(code: "usage-ingest-lease-lost" | "usage-ingest-lease-busy"): void {
+    controller.abort(); lease = undefined; reopen = true;
+    // A normal ownership transition, not a failed import. Reopen only after the
+    // current ingest settles so its native connection is not closed underneath it.
+    post({ type: "error", code });
+  }
   const guard = () => !stopped && !controller.signal.aborted && !!lease?.isCurrent(now);
   const stateBatch = (state: BackfillState): ImportBatch => ({ calls: [], runs: [], states: [], resetSources: [], sourceErrors: [], detailedRunIds: [], restoreAggregateRunIds: [], at: now(), commitGuard: guard, backfillState: state });
   function counter(): void {
@@ -91,17 +98,21 @@ export async function bootUsageWorker(
       if (!latest || latest.ts !== comparison.windowEnd) {
         comparison.counterAIC = comparison.gap = comparison.ratio = null;
       }
-      post({ ...snapshot, counter: counterState, reconciliation: comparison });
+      post({ ...snapshot, ingestRole: "follower", counter: counterState, reconciliation: comparison });
       return;
     }
     const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }
   async function cycle(): Promise<void> {
     if (stopped) return;
+    if (reopen) {
+      await poller?.stop(); ledger?.close(); ledger = undefined;
+      controller = new AbortController(); reopen = false;
+    }
     if (!ledger) open();
     if (lease && !lease.renew(now)) {
       controller.abort(); lease = undefined;
@@ -162,6 +173,10 @@ export async function bootUsageWorker(
         pending = false;
         try { await cycle(); }
         catch (failure) {
+          if (failure instanceof UsageLeaseError && failure.code === "lease-busy") {
+            follow("usage-ingest-lease-busy");
+            continue;
+          }
           backfill = "failed";
           try { if (guard()) ledger!.apply(stateBatch("failed")); } catch { /* next cycle retries */ }
           error(failure, ledger ? "usage-ingest-failed" : "usage-ledger-unavailable");
@@ -192,8 +207,11 @@ export async function bootUsageWorker(
   try {
     open();
     heartbeat = setInterval(() => {
-      try { if (lease && !lease.renew(now)) { controller.abort(); post({ type: "error", code: "usage-ingest-lease-lost" }); } }
-      catch (failure) { error(failure); }
+      try { if (lease && !lease.renew(now)) follow("usage-ingest-lease-lost"); }
+      catch (failure) {
+        if (failure instanceof UsageLeaseError && failure.code === "lease-busy") follow("usage-ingest-lease-busy");
+        else error(failure);
+      }
     }, TTL_MS / 3);
     heartbeat.unref?.();
     timer = setTimeout(request, 0); timer.unref?.();

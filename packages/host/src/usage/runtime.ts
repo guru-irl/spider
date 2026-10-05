@@ -84,9 +84,15 @@ export class UsageRuntime {
     if (this.stopped) return;
     if (event?.type === "snapshot") {
       this.refreshPending = false;
-      this.current = { health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, errorCode: null };
+      this.current = { health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
       this.notify();
-    } else if (event?.type === "error") this.fail(wireErrors.has(event.code) ? event.code : "usage-worker-failed");
+    } else if (event?.type === "error") {
+      if (event.code === "usage-ingest-lease-lost" || event.code === "usage-ingest-lease-busy") {
+        this.refreshPending = false;
+        this.current = { ...this.current, ingestRole: "follower" };
+        this.notify();
+      } else this.fail(wireErrors.has(event.code) ? event.code : "usage-worker-failed");
+    }
   };
   private readonly onError = (error: Error): void => { this.workerFailed = true; if (!this.stopped) this.fail(failureCode(error)); this.stoppedAck?.(); };
   private readonly onExit = (): void => { const failed = this.workerFailed; this.workerFailed = true; if (!this.stopped && !failed && !this.current.errorCode) this.fail("usage-worker-failed"); this.stoppedAck?.(); };

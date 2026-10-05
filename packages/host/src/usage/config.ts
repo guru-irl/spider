@@ -19,7 +19,7 @@ export function readUsageConfig(global: Record<string, unknown>, local: Record<s
   const values: Record<string, unknown> = { ...USAGE_DEFAULTS };
   const errors: string[] = [];
   for (const key of Object.keys(USAGE_DEFAULTS)) {
-    if (Object.hasOwn(local, key)) errors.push(`${key} is ignored: global scope only`);
+    if (Object.hasOwn(local, key)) errors.push(`${key} is ignored: global scope only (remove with /spider config unset ${key})`);
     if (!Object.hasOwn(global, key)) continue;
     const error = usageConfigError(key, global[key]);
     if (error) errors.push(error);

@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { bootUsageWorker } from "../worker-entry.js";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
 import { ingestOnce } from "../ingest.js";
-import { acquireUsageLease } from "../lease.js";
+import { acquireUsageLease, UsageLeaseError } from "../lease.js";
 import type { UsageWorkerEvent } from "../protocol.js";
 const reads = vi.hoisted(() => ({ health: 0, summaries: 0, followers: [] as UsageLedger[] }));
 vi.mock("../ledger.js", async importOriginal => {
@@ -241,4 +241,39 @@ it.each(["fresh", "stale"])("disabled polling gives owner and follower the same 
   await vi.waitFor(() => expect(snapshots(follower).length).toBeGreaterThan(0));
   expect(snapshots(owner).at(-1)?.reconciliation.counterAIC).toBe(freshness === "fresh" ? 4 : null);
   expect(snapshots(follower).at(-1)?.reconciliation).toEqual(snapshots(owner).at(-1)?.reconciliation);
+});
+
+it.each(["lost", "busy"])("a %s heartbeat lease becomes a follower without failing the ledger", async mode => {
+  vi.useFakeTimers(); const c = command(), p = port(); let clock = at;
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(snapshots(p).at(-1)?.backfill).toBe("complete");
+  const Database = (await import("better-sqlite3")).default;
+  const db = new Database(c.roots.ledgerFile);
+  try {
+    if (mode === "lost") {
+      clock += 120001;
+      db.prepare("UPDATE leases SET owner=?, token=?, expires_at=? WHERE name='ingest'").run("successor", "successor-token", clock + 120000);
+    } else db.exec("BEGIN IMMEDIATE");
+    await vi.advanceTimersByTimeAsync(40000);
+    if (mode === "busy") db.exec("ROLLBACK");
+    p.emit("message", { type: "refresh" }); await vi.advanceTimersByTimeAsync(0);
+    expect(p.events.filter(e => e.type === "error" && !e.code.startsWith("usage-ingest-lease-"))).toEqual([]);
+    expect(snapshots(p).some(s => s.backfill === "failed")).toBe(false);
+    // Busy may reacquire on the next cycle, but the handover itself must be visible.
+    expect(p.events).toContainEqual({ type: "error", code: `usage-ingest-lease-${mode}` });
+    if (mode === "lost") expect(snapshots(p).at(-1)).toMatchObject({ ingestRole: "follower", backfill: "complete" });
+    const check = openUsageLedger(c.roots.ledgerFile);
+    try { expect(check.getBackfillState()).toBe("complete"); } finally { check.close(); }
+    p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+  } finally { if (db.inTransaction) db.exec("ROLLBACK"); db.close(); }
+});
+it.each(["exception", "storage"])("an ingest %s failure after ledger open reports usage-ingest-failed", async mode => {
+  const c = command(), p = port();
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }),
+    ingest: async () => { throw mode === "storage" ? new UsageLeaseError("lease-storage") : new Error("fixture ingest failure"); } });
+  await vi.waitFor(() => expect(p.events.some(e => e.type === "error")).toBe(true));
+  expect(p.events).toContainEqual({ type: "error", code: "usage-ingest-failed" });
+  const check = openUsageLedger(c.roots.ledgerFile);
+  try { expect(check.getBackfillState()).toBe("failed"); } finally { check.close(); }
 });

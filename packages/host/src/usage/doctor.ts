@@ -24,6 +24,9 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
   const { health, counter, reconciliation, progress } = snapshot;
   const lines = [`- usage: footer=${config.footer ? "enabled" : "disabled"} poll=${config.counterPoll ? "enabled" : "disabled"}; alerts not implemented`,
     `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources` : " progress=unavailable"}`];
+  const followerNotice = snapshot.errorCode === "usage-ingest-lease-lost" || snapshot.errorCode === "usage-ingest-lease-busy";
+  const role = followerNotice ? "follower" : snapshot.ingestRole;
+  lines.push(`- usage ingest: ${role === "follower" ? "follower (another pi session owns ingestion)" : role ?? "not published yet"}`);
   if (health) {
     lines.push(`- usage ledger: schema=${health.schemaVersion} calls=${health.calls} sources=${health.sources} parse_errors=${health.parseErrors} source_errors=${health.sourceErrors} aggregate=${health.aggregateCalls} possible_overlaps=${health.possibleOverlaps ?? 0}`);
     if (health.parseErrors) lines.push(`- usage parse errors: ${health.parseErrors} (lifetime total)`);
@@ -41,7 +44,7 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
   } else lines.push("- usage comparison (estimated): unavailable");
   lines.push("- usage comparison: billing accuracy unresolved; account counter includes other clients and machines");
   for (const rate of COPILOT_RATE_VERSIONS) lines.push(`- usage rates (estimated): ${rate.id} effective=${rate.effectiveFrom} source_as_of=${rate.sourceAsOf}; ${rate.source}`);
-  if (snapshot.errorCode) lines.push(`- usage worker: error=${safeCode(snapshot.errorCode)}`);
-  const ok = !snapshot.errorCode && snapshot.backfill !== "failed";
+  if (snapshot.errorCode && !followerNotice) lines.push(`- usage worker: error=${safeCode(snapshot.errorCode)}`);
+  const ok = (!snapshot.errorCode || followerNotice) && snapshot.backfill !== "failed";
   return { ok, lines };
 }

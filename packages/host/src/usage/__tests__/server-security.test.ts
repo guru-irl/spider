@@ -16,7 +16,7 @@ async function start(overrides: Partial<HttpOptions> = {}) {
   closers.push(() => fixture.close());
   const secret = randomBytes(32).toString("hex");
   const options: HttpOptions = { instanceId: "fixture-security", serverBuild: "fixture-build", secret,
-    reader: openDashboardReader(fixture.file, { instanceId: "fixture-security", serverBuild: "fixture-build", now: () => DASHBOARD_NOW }),
+    reader: openDashboardReader(fixture.file, { instanceId: "fixture-security", serverBuild: "fixture-build", now: () => DASHBOARD_NOW, calibrationMode: () => "auto" }),
     routes: OVERVIEW_ROUTES, html: "<!doctype html><title>Fixture</title><style>body{color:white}</style><script>void 0</script>",
     now: () => DASHBOARD_NOW, ...overrides };
   const server = await startUsageHttpServer(options);

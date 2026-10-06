@@ -32,6 +32,7 @@ function sqliteQueryError(error: unknown): DashboardQueryError | undefined {
 }
 
 export function openDashboardReader(file: string, options: ReaderOptions): DashboardReader | undefined {
+  if (typeof options.calibrationMode !== "function") throw new TypeError("calibrationMode must be a function");
   let opened: Db | undefined;
   try {
     const db = opened = openDbReadOnly(file, { busyTimeoutMs: 250 });
@@ -81,10 +82,12 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
       snapshot<T>(read: (ctx: DashboardQueryContext) => T): T {
         return mapped(() => {
           const now = options.now();
+          const calibrationMode = options.calibrationMode();
+          if (calibrationMode !== "auto" && calibrationMode !== "off") throw new TypeError("calibrationMode must return auto or off");
           return db.raw.transaction(() => read({ db, instanceId: options.instanceId, revision: revision(), now: () => now, rates,
           composition: phase2CompositionProvider,
           calibration,
-          calibrationMode: options.calibrationMode(), status: () => readStatus(now) })).deferred();
+          calibrationMode, status: () => readStatus(now) })).deferred();
         });
       },
       close() { db.close(); },

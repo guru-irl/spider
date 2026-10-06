@@ -12,7 +12,7 @@ type Reply = { status: number; headers: import("node:http").IncomingHttpHeaders;
 const closers: (() => void | Promise<void>)[] = [];
 afterEach(async () => { vi.useRealTimers(); for (const close of closers.splice(0).reverse()) await close(); });
 
-async function start(overrides: Partial<HttpOptions> = {}) {
+async function start(overrides: Partial<HttpOptions> = {}, calibrationMode: () => "auto" | "off" = () => "auto") {
   // An absent implementation is a behavioral RED, not a test-loader failure.
   const implementation = await import("../server.js").catch(() => undefined);
   expect(implementation?.startUsageHttpServer).toBeTypeOf("function");
@@ -20,7 +20,7 @@ async function start(overrides: Partial<HttpOptions> = {}) {
   closers.push(() => fixture.close());
   const secret = randomBytes(32).toString("hex");
   const options: HttpOptions = { instanceId: "fixture-instance", serverBuild: "fixture-build", secret,
-    reader: Object.hasOwn(overrides, "reader") ? overrides.reader : openDashboardReader(fixture.file, { instanceId: "fixture-instance", serverBuild: "fixture-build", now: () => DASHBOARD_NOW }),
+    reader: Object.hasOwn(overrides, "reader") ? overrides.reader : openDashboardReader(fixture.file, { instanceId: "fixture-instance", serverBuild: "fixture-build", now: () => DASHBOARD_NOW, calibrationMode }),
     routes: OVERVIEW_ROUTES, html: "<!doctype html><title>Fixture</title><style>body{color:white}</style><script>void 0</script>",
     now: () => DASHBOARD_NOW, ...overrides };
   const server: RunningServer = await implementation!.startUsageHttpServer(options);
@@ -46,6 +46,17 @@ async function login(server: { port: number; secret: string }): Promise<string> 
 }
 
 describe("usage HTTP", () => {
+  test("reader calibration mode reaches HTTP response bases", async () => {
+    let mode: "auto" | "off" = "off";
+    const server = await start({}, () => mode);
+    const cookie = await login(server);
+    for (const [selected, status] of [["off", "off"], ["auto", "uncalibrated"]] as const) {
+      mode = selected;
+      const reply = await get(server.port, "/api/overview", { Cookie: cookie });
+      expect(reply.status).toBe(200);
+      expect(JSON.parse(reply.body).data).toMatchObject({ calibration: { status }, totals: { aicDisplay: { basis: "published" } } });
+    }
+  });
   test("invalid queries fail before reader snapshots", async () => {
     const server = await start();
     const cookie = await login(server);
@@ -131,7 +142,7 @@ describe("usage HTTP", () => {
     let attempts = 0;
     const server = await start({ reader: undefined, now: () => now, retryOpenReader: () => {
       attempts++;
-      return ready ? openDashboardReader(server.fixture.file, { instanceId: "fixture-instance", serverBuild: "fixture-build", now: () => now }) : undefined;
+      return ready ? openDashboardReader(server.fixture.file, { instanceId: "fixture-instance", serverBuild: "fixture-build", now: () => now, calibrationMode: () => "auto" }) : undefined;
     } });
     const cookie = await login(server);
     const status = await get(server.port, "/api/status", { Cookie: cookie });

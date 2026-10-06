@@ -3,11 +3,42 @@ import * as dbCore from "@spider/db-core";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb } from "@spider/db-core";
+import type { DashboardQueryContext } from "../dashboard-contract.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 
 let fixture: ReturnType<typeof createDashboardFixture>;
 const readers: { close(): void }[] = [];
 afterEach(() => { for (const reader of readers.splice(0)) reader.close(); fixture?.close(); });
+
+it("rejects a missing calibration callback before opening a database", async () => {
+  fixture = createDashboardFixture();
+  const { openDashboardReader } = await import("../dashboard-reader.js");
+  const opener = vi.spyOn(dbCore, "openDbReadOnly");
+  try {
+    // @ts-expect-error Exercise an untyped caller omitting the required callback.
+    expect(() => openDashboardReader(join(fixture.root, "missing.db"), { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" }))
+      .toThrow("calibrationMode must be a function");
+    expect(opener).not.toHaveBeenCalled();
+  } finally { opener.mockRestore(); }
+});
+
+it("rejects invalid runtime modes without invoking snapshot queries", async () => {
+  fixture = createDashboardFixture();
+  const { openDashboardReader } = await import("../dashboard-reader.js");
+  let mode: unknown = "off";
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture",
+    calibrationMode: () => mode as "auto" | "off" })!;
+  readers.push(reader);
+  const query = vi.fn((ctx: DashboardQueryContext) => ctx.calibrationMode);
+  expect(reader.snapshot(query)).toBe("off");
+  query.mockClear();
+  for (mode of [undefined, null, "invalid"]) {
+    expect(() => reader.snapshot(query)).toThrow("internal");
+    expect(query).not.toHaveBeenCalled();
+  }
+  mode = "auto";
+  expect(reader.snapshot(query)).toBe("auto");
+});
 
 it("readonly opener never creates or upgrades", async () => {
   fixture = createDashboardFixture();

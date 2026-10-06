@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { constants, openSync, closeSync, readFileSync, writeFileSync, linkSync, unlinkSync, fstatSync, fchmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { sep } from "node:path";
+import { sep, posix, win32 } from "node:path";
 import { DashboardQueryError, type Dimension, type DashboardQueryContext, type Period, type Filter } from "./dashboard-contract.js";
 
 export const opaqueId = (value: unknown): value is string => typeof value === "string" && /^v1_[A-Za-z0-9_-]{43}$/.test(value);
@@ -27,13 +27,28 @@ function pathLabel(value: string, home: string): string {
 export function dashboardLabel(field: Dimension, value: string | null, home: string = normalizedHome()): string | null {
   if (value === null) return null;
   if (detailDimension(field)) return supportedDetailId(value) ? value : "unsupported id";
+  const hasHome = home !== "" && !/^(?:[\\/]+|[A-Za-z]:[\\/]*)$/.test(home);
+  const normalizedLabel = (path: string): string => {
+    if (path === "~") path = hasHome ? home : "";
+    if (path.startsWith("~/")) path = hasHome ? home + path.slice(1) : path.slice(2);
+    const windows = /^[A-Za-z]:|^\\\\|^\/\//.test(path), syntax = windows ? win32 : posix;
+    const normalized = syntax.normalize(path), base = syntax.normalize(home);
+    const compare = windows ? normalized.toLowerCase() : normalized;
+    const homeCompare = windows ? base.toLowerCase() : base;
+    if (hasHome && syntax.isAbsolute(normalized) && (compare === homeCompare || compare.startsWith(homeCompare.replace(/[\\/]+$/, "") + syntax.sep))) {
+      return "~/" + normalized.slice(base.replace(/[\\/]+$/, "").length).replace(/^[\\/]+/, "").replaceAll("\\", "/");
+    }
+    // Only real segments survive relative/upward paths, even after normalization.
+    const segments = normalized.replace(/^[A-Za-z]:/, "").split(/[\\/]+/).filter(part => part && part !== "." && part !== "..");
+    return pathLabel(segments.join("/"), "/");
+  };
   // Path-valued dimensions may contain whitespace in any segment.
-  if ((field === "project" || field === "repo") && /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value)) {
-    return [...pathLabel(value, home)].slice(0, 160).join("");
+  if ((field === "project" || field === "repo") && /^(?:\/|~(?:\/|$)|[A-Za-z]:[\\/]|\\\\)/.test(value)) {
+    return [...normalizedLabel(value)].slice(0, 160).join("");
   }
   // Keep the file: prefix intact, and include common embedded-path delimiters.
-  value = value.replace(/(^|file:|[\s=\[\]`,'"(])((?:[A-Za-z]:[\\/]|\\\\|\/)[^\s\]`,'")<>]*)/g,
-    (_match, before: string, path: string) => before + pathLabel(path, home));
+  value = value.replace(/(^|file:|[\s=\[\]`,'"(])((?:[A-Za-z]:[\\/]|\\\\|\/|\.\.?[\\/]|~\/)[^\s\]`,'")<>]*)/g,
+    (_match, before: string, path: string) => before + normalizedLabel(path));
   return [...value].slice(0, 160).join("");
 }
 const initialized = new WeakMap<DashboardQueryContext["db"], { key: (field: Dimension, value: string | null) => string | null;

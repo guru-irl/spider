@@ -593,12 +593,11 @@ Graceful stop retries any pending lease release once and reports whether release
 - Rates returns `factorHistory: Page<CalibrationHistoryPoint>`, plus current calibration, primary/published summaries and immutable rate provenance.
 - Use its existing page cursor to bound the daily history to 31 points; the cursor freezes a stable counter anchor and binds the slice and call revision.
 
-- [ ] `hit rate weights selected prompt tokens`: Weight cache read by prompt tokens; zero denominator is null. Keep warmer use separate and token weights unchanged.
-- [ ] `fork-copy reads do not defeat no-read observation`: Ignore copied/suppressed reads; count native selected lifetime reads.
-- [ ] `reconciliation pairs actual compatible anchors`: Computed 12 and counter 10 give published gap -2 and ratio 1.2; use actual periods/older anchors and period-end calibration, never a future
-  fit.
-- [ ] `reset account and clock boundaries are explicit`: Reset/account/clock/zero remain explicit or null in both comparisons.
-- [ ] `rates preserve stored amounts and provenance`: Metadata changes do not reprice calls; factor history uses bounded Task 1a results/status gaps.
+- [x] `hit rate weights selected prompt tokens`: Weight cache read by prompt tokens; zero denominator is null. Keep warmer use separate and token weights unchanged.
+- [x] `fork-copy reads do not defeat no-read observation`: Ignore copied/suppressed reads; count native selected lifetime reads.
+- [x] `reconciliation pairs actual compatible anchors`: Computed 12 and counter 10 give published gap -2 and ratio 1.2; use actual snapshot-pair spans; calibrated totals use each pair's endpoint fit. Only endpoints before the earliest accepted fit may use that fit with basis `back-applied`, as authorized by PLAN-NOTES; later gaps use published.
+- [x] `reset account and clock boundaries are explicit`: Reset/account/clock/zero remain explicit or null in both comparisons.
+- [x] `rates preserve stored amounts and provenance`: Metadata changes do not reprice calls; factor history uses bounded Task 1a results/status gaps.
 
 ## Task 9: Explorer view
 

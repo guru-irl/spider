@@ -12,6 +12,16 @@ import type { UsageConfig } from "./config.js";
 import { FooterAccumulator } from "./footer-state.js";
 import { createUsageFooter, type FooterInput } from "./footer.js";
 import { UsageRuntime } from "./runtime.js";
+import type { UsageRoots } from "./discovery.js";
+
+/** Pi and the detached dashboard must consume the same ledger and discovery roots. */
+export function resolveUsageRoots(): UsageRoots {
+  const agentDir = getAgentDir();
+  return {
+    registryDb: join(paths.globalRoot, "spider.db"), ledgerFile: join(paths.globalRoot, "usage.db"),
+    sessionsDir: join(agentDir, "sessions"), authPath: join(agentDir, "auth.json"), leaseDir: join(paths.globalRoot, "usage-leases"),
+  };
+}
 
 function displayCwd(cwd: string): string {
   const tail = relative(homedir(), cwd);
@@ -141,11 +151,7 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     await stop();
     current = ctx;
     config = readUsageConfig(controlConfig("get", ctx.cwd) as Record<string, unknown>, {}).value;
-    const agentDir = getAgentDir();
-    runtime = new UsageRuntime({ bundleUrl, child: false, roots: {
-      registryDb: join(paths.globalRoot, "spider.db"), ledgerFile: join(paths.globalRoot, "usage.db"),
-      sessionsDir: join(agentDir, "sessions"), authPath: join(agentDir, "auth.json"), leaseDir: join(paths.globalRoot, "usage-leases"),
-    }, onSnapshot: () => mounted?.refresh() });
+    runtime = new UsageRuntime({ bundleUrl, child: false, roots: resolveUsageRoots(), onSnapshot: () => mounted?.refresh() });
     runtime.start(config.counterPoll, config.calibration);
     mounted = mountUsage(pi, ctx, runtime, config);
     reloader = makeConfigReloader(ctx.cwd, merged => {

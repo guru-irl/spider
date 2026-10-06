@@ -478,7 +478,7 @@ Graceful stop retries any pending lease release once and reports whether release
 - Create: `packages/host/src/usage/{api-routes.ts,dashboard-command.ts,web/assets.ts}` and `scripts/usage-dashboard-assets.mjs`.
 - Create: `packages/host/src/usage/__tests__/{dashboard-command.test.ts,dashboard-assets.test.ts,dashboard-bundle.test.ts}`.
 - Modify: `packages/host/src/usage/{server-entry.ts,web/browser.d.ts}`, `packages/host/src/extension.ts` and `vite.config.mjs`.
-- Test: `packages/host/src/__tests__/slash.test.ts`.
+- Test: `packages/host/src/usage/__tests__/dashboard-command.test.ts`.
 
 **Interfaces:**
 - `registerUsageDashboardCommand(pi: ExtensionAPI, bundleUrl: string | URL): void`, for `/usage` only.
@@ -488,10 +488,10 @@ Graceful stop retries any pending lease release once and reports whether release
 - Produce a minimal D11 primary-AIC/token page and connect the Task 3 participant hook.
 - The bundle test or a check asserts no non-browser host or worker source references `document` or `window`; the DOM lib reference applies program-wide.
 
-- [ ] `only usage slash can open browser`: Reject control/lifecycle launch and child sessions.
-- [ ] `reuse command mints a new nonce`: Reused PID produces a fresh nonce URL.
-- [ ] `browser assets stay inside one bundle`: Browser graph has no Node/pi/DB imports, runtime Vite or extra dist assets.
-- [ ] `packaged slice works without source checkout`: Test `extension.js` alone, poisoned links and native/shim fixtures; no host browser imports.
+- [x] `only usage slash can open browser`: Reject control/lifecycle launch and child sessions.
+- [x] `reuse command mints a new nonce`: Reused PID produces a fresh nonce URL.
+- [x] `browser assets stay inside one bundle`: Browser graph has no Node/pi/DB imports, runtime Vite or extra dist assets.
+- [x] `packaged slice works without source checkout`: Test `extension.js` alone, poisoned links and native/shim fixtures; no host browser imports.
 
 ## Task 5b: Web primitives and Overview
 
@@ -672,6 +672,7 @@ Graceful stop retries any pending lease release once and reports whether release
 
 **Interfaces:**
 - Attach all views and hash state.
+- Guide: opener argv exposes the single-use 60 s bootstrap code to local process listings; it can be raced but never reveals the lock secret.
 - Publish optional `sourceErrorDiagnostics`: at most 20 D9 rows plus truncation in protocol/runtime snapshots.
 - `UsageLedger.getSourceErrorDiagnostics(limit: number)` reuses Task 1's helper and returns rows plus truncation.
 - Preserve pure `usageDoctorLines(snapshot, config, diagnostics?)` and D11 output.

@@ -37,8 +37,15 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
     if (next.period) rollingMonth = false;
     period = next.period ?? period; filters = next.filters ?? filters; route = { ...next, period, filters };
     for (const [key, button] of buttons) { if (key === route.view) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current"); }
-    header.replaceChildren(element(document, "p", `${new Date(period.start).toISOString()} to ${new Date(period.end).toISOString()} UTC`, "period-label"),
-      element(document, "p", filters.length ? `Selected filters: ${filters.map(filter => `${readableKey(filter.field)} = ${filter.value === null ? "Unknown (null)" : filter.value}`).join("; ")}` : "All recorded usage", "slice-label"));
+    const slice = element(document, "p", filters.length ? "Selected filters: " : "All recorded usage", "slice-label");
+    filters.forEach((filter, i) => {
+      const missing = String(filter.kind) === "missing" || filter.value === null;
+      const selection = element(document, "span", `${i ? "; " : ""}${readableKey(filter.field)}${missing ? ": " : " = "}`);
+      const value = element(document, "span", missing ? "No value" : filter.value ?? "", missing ? "missing-value" : undefined);
+      if (missing) value.setAttribute("aria-label", "No value (missing)");
+      selection.append(value); slice.append(selection);
+    });
+    header.replaceChildren(element(document, "p", `${new Date(period.start).toISOString()} to ${new Date(period.end).toISOString()} UTC`, "period-label"), slice);
     content.replaceChildren();
     const mount = mounts[route.view];
     if (!mount) {

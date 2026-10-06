@@ -109,3 +109,17 @@ p { overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }
+
+/* Explorer */
+.usage-explorer input, .usage-explorer select, .usage-explorer .data-table .action {
+  border: 0; font: inherit; font-family: var(--text-face); color: inherit;
+  min-width: 0; max-width: 100%;
+}
+.usage-explorer .pivot-chart { display: block; width: 100%; }
+.usage-explorer .pivot-chart text { fill: var(--text); font-family: var(--data-face); font-size: 12px; }
+.usage-explorer .pivot-chart .pivot-label { font-family: var(--text-face); }
+.missing-value { color: var(--text-secondary); }
+.usage-explorer .data-table .action.missing-value { color: var(--text-secondary); }
+.usage-explorer .pivot-chart .missing-value { fill: var(--text-secondary); }
+.usage-explorer .filter-pill { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; background: var(--surface); border-radius: 999px; padding: .35rem .65rem; }
+.usage-explorer .filter-pill .filter-remove { background: var(--raised); }

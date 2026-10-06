@@ -34,6 +34,30 @@ describe("web primitives", () => {
       expect(elements(chart, "circle").map(dot => Number(dot.getAttribute("cy")))).toEqual(positions);
     }
   });
+  it.each([
+    [undefined, "Gap: counter minus published"],
+    ["published", "Gap: counter minus published"],
+    ["calibrated", "Gap: counter minus calibrated"],
+    ["back-applied", "Gap: counter minus back-applied"],
+  ] as const)("gap basis %s names every representation", async (gapBasis, wording) => {
+    const { chartWithTable } = await import("../web/charts.js");
+    for (const points of [[], [{ start: 0, end: 1000, label: "One", value: 12, tokens: null }]]) {
+      const options = { title: "Account gap", unit: "gap-aic" as const, points, ...(gapBasis === undefined ? {} : { gapBasis }) };
+      const chart = chartWithTable(new PlainDocument().asDocument(), options);
+      const summary = elements(chart, "p")[0]!;
+      expect.soft(summary.textContent).toContain(wording);
+      expect.soft(elements(chart, "svg")[0]!.getAttribute("aria-label")).toBe(`Account gap · ${summary.textContent}`);
+      expect.soft(elements(chart, "caption")[0]!.textContent).toBe(`Account gap · ${wording}`);
+      expect.soft(elements(chart, "th")[2]!.textContent).toBe(wording);
+    }
+  });
+  it.each([[0, "0 tokens"], [1, "1 token"], [2, "2 tokens"]] as const)("token count %s pluralizes in table, tooltip and summary", async (value, wording) => {
+    const { chartWithTable } = await import("../web/charts.js");
+    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Tokens", unit: "tokens", points: [{ start: 0, end: 1000, label: "One", value, tokens: null }] });
+    expect.soft(elements(chart, "td")[2]!.textContent).toBe(wording);
+    expect.soft(elements(chart, "title")[1]!.textContent).toContain(` · ${wording} · `);
+    expect.soft(elements(chart, "p")[0]!.textContent).toContain(`${wording} minimum · ${wording} maximum`);
+  });
   it("gap lower bounds and missing values remain explicit", async () => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Gap", unit: "gap-aic", points: [
@@ -139,6 +163,23 @@ describe("web primitives", () => {
     expect(module.formatEstimatedAic(null, 3)).toBe("unpriced AIC");
     expect(module.formatEstimatedAic(null, 0)).toBe("AIC unavailable");
     expect(module.formatEstimatedAic(0, 0)).toBe("~0 AIC published estimate");
+  });
+  it.each([
+    [0, "0 days", 0, "0 unpriced calls"],
+    [1, "1 day", 1, "1 unpriced call"],
+    [2, "2 days", 2, "2 unpriced calls"],
+    [1.5, "1.5 days", 1, "1 unpriced call"],
+    [1.004, "1 day", 1, "1 unpriced call"],
+  ] as const)("calibration duration %s and count %s use readable legend copy", async (days, duration, calls, count) => {
+    const { formatAicDisplay } = await import("../web/format.js");
+    const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: days * 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: calls, method: "trailing-7d-ratio" as const };
+    for (const basis of ["published", "calibrated", "back-applied"] as const) {
+      const legend = formatAicDisplay({ primaryAic: 560, publishedAic: 1000, basis }, calls, fit).legend;
+      if (basis !== "published") expect.soft(legend).toContain(`over ${duration}`);
+      expect.soft(legend).toContain(count);
+      expect.soft(legend).toContain("trailing 7-day ratio");
+      expect.soft(legend).not.toContain("trailing-7d-ratio");
+    }
   });
   it("published rows retain their own legend under a calibrated response", async () => {
     const { formatAicDisplay } = await import("../web/format.js");

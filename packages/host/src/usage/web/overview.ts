@@ -1,7 +1,7 @@
 import type { OverviewData, OverviewBreakdown, UsageMeasure, CalibrationResult, TokenTotals, AicDisplay, DashboardStatus, Page, SourceErrorRow } from "../dashboard-contract.js";
 import type { ViewContext, MountedView } from "./views.js";
 import { action, element, liveMessage } from "./dom.js";
-import { formatAicDisplay, formatEstimatedAic, formatTokens, tokenObservation } from "./format.js";
+import { formatAicDisplay, formatCount, formatEstimatedAic, formatTokens, readableKey, tokenObservation } from "./format.js";
 import { chartWithTable, type ChartPoint } from "./charts.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { canRetry, errorCopy, DashboardClientError } from "./client.js";
@@ -10,7 +10,7 @@ function qualifiers(measure: Pick<UsageMeasure, "possibleOverlap" | "possibleUnd
   return [measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean);
 }
 function evidence(measure: UsageMeasure): string {
-  return [`${formatTokens(measure.calls)} calls; ${formatTokens(measure.unpricedCalls)} unpriced; ${formatTokens(measure.aggregateCalls)} aggregate`, ...qualifiers(measure)].join(" · ");
+  return [`${formatCount(measure.calls, "call")}; ${formatTokens(measure.unpricedCalls)} unpriced; ${formatTokens(measure.aggregateCalls)} aggregate`, ...qualifiers(measure)].join(" · ");
 }
 function displayRow(label: string, measure: { aicDisplay: AicDisplay; tokens: TokenTotals }, calibration: CalibrationResult, unpriced: number, note: string): string[] {
   const aic = formatAicDisplay(measure.aicDisplay, unpriced, calibration);
@@ -91,9 +91,9 @@ function mountHealth(ctx: ViewContext, parent: HTMLElement): { refresh(reset?: b
     try {
       const response = await ctx.client.get<Page<SourceErrorRow>>("/api/source-errors", params, errorController.signal);
       if (disposed || ctx.signal.aborted || current !== errorSequence) return;
-      errors.replaceChildren(tableRegion(document, renderTable(document, { caption: "Source diagnostics", columns: ["Source", "Project", "Code", "Count", "Last checked UTC"], rows: response.data.rows.map(row => [row.sourceLabel, row.projectLabel, row.code, formatTokens(row.count), new Date(row.lastCheckedAt).toISOString()]) })));
+      errors.replaceChildren(tableRegion(document, renderTable(document, { caption: "Source diagnostics", columns: ["Source", "Project", "Code", "Count", "Last checked UTC"], rows: response.data.rows.map(row => [row.sourceLabel, row.projectLabel, readableKey(row.code), formatTokens(row.count), new Date(row.lastCheckedAt).toISOString()]) })));
       nextCursor = response.data.nextCursor; next.disabled = !nextCursor; back.disabled = !previous.length;
-      errorMessage.textContent = response.data.rows.length ? `${response.data.rows.length} source diagnostics on this page` : "No source diagnostics recorded.";
+      errorMessage.textContent = response.data.rows.length ? `${formatCount(response.data.rows.length, "source diagnostic")} on this page` : "No source diagnostics recorded.";
     } catch (error) { if (!disposed && !ctx.signal.aborted && current === errorSequence) { errorMessage.textContent = errorCopy(error); retry.hidden = !canRetry(error); } }
   }
   async function refresh(reset: boolean): Promise<void> {
@@ -111,8 +111,8 @@ function mountHealth(ctx: ViewContext, parent: HTMLElement): { refresh(reset?: b
         element(document, "p", `Counter age: ${age(data.counter.ageMs)} (${data.counter.availability})`),
         element(document, "p", `Parse errors (recorded): ${formatTokens(data.parseErrors)}`),
         element(document, "p", `Source errors (current): ${formatTokens(data.sourceErrors)}`),
-        element(document, "p", `Backfill: ${data.ingest.backfill}${data.ingest.progress ? ` · ${formatTokens(data.ingest.progress.sourcesCompleted)} of ${formatTokens(data.ingest.progress.sourcesTotal)} sources` : ""}`),
-        element(document, "p", `Ingest error: ${data.ingest.errorCode ?? "none"}`),
+        element(document, "p", `Backfill: ${data.ingest.backfill}${data.ingest.progress ? ` · ${formatTokens(data.ingest.progress.sourcesCompleted)} of ${formatCount(data.ingest.progress.sourcesTotal, "source")}` : ""}`),
+        element(document, "p", `Ingest error: ${data.ingest.errorCode === null ? "none" : readableKey(data.ingest.errorCode)}`),
         element(document, "p", `Last ingest UTC: ${data.ingest.lastIngestAt === null ? "unavailable" : new Date(data.ingest.lastIngestAt).toISOString()}`),
         element(document, "p", `Counter observed UTC: ${data.counter.ts === null ? "unavailable" : new Date(data.counter.ts).toISOString()}`),
         element(document, "p", `Server ${data.serverBuild} · schema ${data.schemaVersion} · rates ${data.rateVersions.join(", ")}`, "muted"),

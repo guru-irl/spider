@@ -5,6 +5,7 @@ import type { ViewRoute, ViewMount, MountedView } from "./views.js";
 import { createDashboardClient } from "./client.js";
 import { action, element, liveMessage } from "./dom.js";
 import { loadFonts } from "./fonts.js";
+import { readableKey } from "./format.js";
 import { mountOverview } from "./overview.js";
 export type DashboardOptions = { document?: Document; root?: HTMLElement; client?: DashboardClient; now?: () => number; initialRoute?: ViewRoute; mounts?: Partial<Record<ViewRoute["view"], ViewMount>> };
 export function startDashboard(options: DashboardOptions = {}): MountedView {
@@ -37,7 +38,7 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
     period = next.period ?? period; filters = next.filters ?? filters; route = { ...next, period, filters };
     for (const [key, button] of buttons) { if (key === route.view) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current"); }
     header.replaceChildren(element(document, "p", `${new Date(period.start).toISOString()} to ${new Date(period.end).toISOString()} UTC`, "period-label"),
-      element(document, "p", filters.length ? `Selected filters: ${filters.map(filter => `${filter.field} = ${filter.value === null ? "Unknown (null)" : filter.value}`).join("; ")}` : "All recorded usage", "slice-label"));
+      element(document, "p", filters.length ? `Selected filters: ${filters.map(filter => `${readableKey(filter.field)} = ${filter.value === null ? "Unknown (null)" : filter.value}`).join("; ")}` : "All recorded usage", "slice-label"));
     content.replaceChildren();
     const mount = mounts[route.view];
     if (!mount) {

@@ -1,6 +1,21 @@
 import type { TokenTotals, AicDisplay, CalibrationResult } from "../dashboard-contract.js";
 const decimal = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const integer = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const countPlural = new Intl.PluralRules("en-US", { maximumFractionDigits: 0 });
+export function formatCount(value: number, singular: string): string {
+  return `${formatTokens(value)} ${countPlural.select(value) === "one" ? singular : `${singular}s`}`;
+}
+const keyLabels: Readonly<Record<string, string>> = {
+  "trailing-7d-ratio": "trailing 7-day ratio",
+  auxPurpose: "auxiliary purpose", repo: "repository", api: "API",
+  ENOENT: "file or directory not found", EACCES: "permission denied",
+  EPERM: "operation not permitted", EIO: "input/output error",
+};
+export function readableKey(key: string): string {
+  return Object.hasOwn(keyLabels, key) ? keyLabels[key]! : key.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ").replace(/:\s*/g, ": ").toLowerCase()
+    .replace(/\bdb\b/g, "database").replace(/\bsqlite\b/g, "SQLite");
+}
 export function formatTokens(value: number): string { return Number.isFinite(value) ? integer.format(value) : "unavailable"; }
 export function formatEstimatedAic(value: number | null, unpricedCalls: number): string {
   if (value === null) return unpricedCalls > 0 ? "unpriced AIC" : "AIC unavailable";
@@ -16,11 +31,11 @@ export function formatAicDisplay(display: AicDisplay, unpricedCalls: number, cal
   const window = hasWindow ? `${new Date(calibration.windowStart!).toISOString()} to ${new Date(calibration.windowEnd!).toISOString()} UTC` : "UTC window unavailable";
   const days = hasWindow ? decimal.format((calibration.windowEnd! - calibration.windowStart!) / 86400000) : "unavailable";
   const summary = calibrated
-    ? `${label} x${calibration.factor === null ? "unavailable" : decimal.format(calibration.factor)} over ${days} days`
+    ? `${label} x${calibration.factor === null ? "unavailable" : decimal.format(calibration.factor)} over ${days} ${days === "1" ? "day" : "days"}`
     : calibration.status === "off" ? "Calibration off. Published estimate."
     : calibration.status === "calibrated" ? "Published estimate. Row is not calibrated."
     : `Calibration unavailable (${calibration.status}). Published estimate.${calibration.status === "implausible" ? ` Diagnostic x${calibration.factor === null ? "unavailable" : calibration.factor.toFixed(2)} (clamped, not applied)` : ""}`;
-  const evidence = `${window} · ${decimal.format(calibration.coveredHours)} h covered · computed ~${formatTokens(calibration.computedAic)} AIC · counter delta ${formatTokens(calibration.counterDelta)} AIC · ${formatTokens(calibration.unpricedCalls)} unpriced calls · ${calibration.method}`;
+  const evidence = `${window} · ${decimal.format(calibration.coveredHours)} h covered · computed ~${formatTokens(calibration.computedAic)} AIC · counter delta ${formatTokens(calibration.counterDelta)} AIC · ${formatCount(calibration.unpricedCalls, "unpriced call")} · ${readableKey(calibration.method)}`;
   return { primary, secondary: formatEstimatedAic(display.publishedAic, unpricedCalls), legend: `${summary} · ${evidence}` };
 }
 export function tokenObservation(tokens: TokenTotals | null, subsets: "listed" | "recorded" = "listed"): string {

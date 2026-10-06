@@ -50,6 +50,53 @@ function deferredFixture() {
 function healthPanel(root: Parameters<typeof elements>[0]) { return elements(root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!; }
 
 describe("web Overview", () => {
+  it.each([0, 1, 2])("Overview count %s pluralizes call, diagnostic and source evidence", async count => {
+    const { mountOverview } = await import("../web/overview.js"), data = overview(), health = status();
+    data.totals = { ...data.totals, calls: count };
+    health.ingest.progress = { sourcesCompleted: count, sourcesTotal: count };
+    const f = fixture(data, path => path === "/api/status" ? health : path === "/api/source-errors" ? {
+      rows: Array.from({ length: count }, () => ({ sourceLabel: "source", projectLabel: "project", code: "parse-error", count: 1, lastCheckedAt: 0 })), nextCursor: null,
+    } : data);
+    const view = await mountOverview(f.ctx);
+    try {
+      await settle();
+      expect.soft(tableRows(f.root, "Selected usage")[0]![4]).toBe(`${count} ${count === 1 ? "call" : "calls"}; 0 unpriced; 0 aggregate`);
+      expect.soft(f.root.textContent).toContain(`Backfill: complete · ${count} of ${count} ${count === 1 ? "source" : "sources"}`);
+      expect.soft(f.root.textContent).toContain(count ? `${count} source ${count === 1 ? "diagnostic" : "diagnostics"} on this page` : "No source diagnostics recorded.");
+    } finally { view.dispose(); }
+  });
+  it("Overview diagnostics show readable codes instead of internal keys", async () => {
+    const { mountOverview } = await import("../web/overview.js"), health = status();
+    health.ingest.errorCode = "ingest-failed";
+    const codes = [
+      ["parse-error", "parse error"], ["missing-db", "missing database"],
+      ["runs-db-recreated:facts-retained", "runs database recreated: facts retained"],
+      ["SQLITE_BUSY", "SQLite busy"], ["SQLITE_CORRUPT", "SQLite corrupt"],
+      ["ENOENT", "file or directory not found"], ["EACCES", "permission denied"],
+      ["EPERM", "operation not permitted"], ["EIO", "input/output error"],
+    ];
+    const f = fixture(overview(), path => path === "/api/status" ? health : path === "/api/source-errors" ? {
+      rows: codes.map(([code]) => ({ sourceLabel: "source", projectLabel: "project", code, count: 1, lastCheckedAt: 0 })), nextCursor: null,
+    } : overview());
+    const view = await mountOverview(f.ctx);
+    try {
+      await settle();
+      expect.soft(f.root.textContent).toContain("Ingest error: ingest failed");
+      expect.soft(tableRows(f.root, "Source diagnostics").map(row => row[2])).toEqual(codes.map(([, label]) => label));
+    } finally { view.dispose(); }
+  });
+  it("filter header shows readable dimension names without changing filter values", async () => {
+    const { startDashboard } = await import("../web/app.js"), f = fixture();
+    const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client,
+      initialRoute: { view: "rates", filters: [
+        { field: "requestedModel", value: "model-key" }, { field: "runName", value: "run-key" },
+        { field: "parentRun", value: "parent-key" }, { field: "auxPurpose", value: "purpose-key" },
+        { field: "repo", value: "repo-key" }, { field: "api", value: "api-key" },
+      ] } });
+    try {
+      expect(elements(f.root, "p").find(node => node.className === "slice-label")!.textContent).toBe("Selected filters: requested model = model-key; run name = run-key; parent run = parent-key; auxiliary purpose = purpose-key; repository = repo-key; API = api-key");
+    } finally { app.dispose(); }
+  });
   it("Clear filters hides for other errors and after a successful refresh", async () => {
     const { mountOverview } = await import("../web/overview.js"), f = fixture();
     let code: "unknown-filter-id" | "ledger-changed" | null = "ledger-changed";
@@ -379,7 +426,7 @@ describe("web Overview", () => {
     const health = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!;
     button(health, "Next page").click(); await settle();
     expect(tableRows(f.root, "Source diagnostics")).toHaveLength(50);
-    expect(tableRows(f.root, "Source diagnostics")[0]).toEqual(["source-200.jsonl", "Unknown project", "parse-error", "3", "1970-01-01T00:00:01.000Z"]);
+    expect(tableRows(f.root, "Source diagnostics")[0]).toEqual(["source-200.jsonl", "Unknown project", "parse error", "3", "1970-01-01T00:00:01.000Z"]);
     expect(f.requests.filter(path => path.startsWith("/api/overview"))).toHaveLength(1);
     expect(f.requests.filter(path => path.startsWith("/api/source-errors"))).toEqual(["/api/source-errors?limit=200", "/api/source-errors?limit=200&cursor=fixture-page-2"]);
     for (const role of ["owner", "follower", "inactive", "standby"] as const) {
@@ -395,7 +442,7 @@ describe("web Overview", () => {
     const module = await import("../web/overview.js").catch(() => null);
     expect(module, "Overview mount is available").not.toBeNull();
     const f = fixture(); const view = await module!.mountOverview(f.ctx); await settle();
-    expect(tableRows(f.root, "Actors")[0]).toEqual(["parent", "560 AIC cal", "~1,000 AIC published estimate", "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable", "1 calls; 0 unpriced; 0 aggregate"]);
+    expect(tableRows(f.root, "Actors")[0]).toEqual(["parent", "560 AIC cal", "~1,000 AIC published estimate", "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable", "1 call; 0 unpriced; 0 aggregate"]);
     expect(tableRows(f.root, "Roles").map(row => row[0])).toEqual(["Other", "Other (remaining roles)"]);
     expect(tableRows(f.root, "Month pace")[0]!.slice(0, 3)).toEqual(["Linear month-end projection", "1,120 AIC cal", "~2,000 AIC published estimate"]);
     expect(tableRows(f.root, "Month pace")[0]![3]).toContain("total 200");

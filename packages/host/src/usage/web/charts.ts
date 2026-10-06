@@ -1,6 +1,6 @@
 import type { TokenTotals } from "../dashboard-contract.js";
 import { action, element } from "./dom.js";
-import { formatTokens, tokenObservation } from "./format.js";
+import { formatCount, formatTokens, tokenObservation } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
 export type ChartUnit = "estimated-aic" | "calibrated-aic" | "back-applied-aic" | "gap-aic" | "tokens" | "percent" | "ratio";
 export type ChartPoint = { start: number; end: number; label: string; value: number | null; tokens: TokenTotals | null; lowerBound?: boolean; note?: string };
@@ -11,13 +11,13 @@ function observation(value: number | null, unit: ChartUnit, lowerBound = false):
     const rounded = Math.round(Math.abs(value)) * Math.sign(value);
     return `${rounded > 0 ? "+" : ""}${formatTokens(rounded === 0 ? 0 : rounded)}${lowerBound ? "+" : ""} AIC`;
   }
-  if (unit === "tokens") return `${formatTokens(value)} tokens`;
+  if (unit === "tokens") return formatCount(value, "token");
   if (unit === "percent") return `~${decimal.format(value)}%`;
   if (unit === "ratio") return `~${decimal.format(value)} ratio`;
   if (unit === "back-applied-aic") return `${formatTokens(value)}${lowerBound ? "+" : ""} AIC calibrated, back-applied`;
   return unit === "calibrated-aic" ? `${formatTokens(value)}${lowerBound ? "+" : ""} AIC calibrated` : `~${formatTokens(value)}${lowerBound ? "+" : ""} AIC published estimate`;
 }
-export function chartWithTable(document: Document, options: { title: string; points: readonly ChartPoint[]; unit: ChartUnit; subsets?: "listed" | "recorded" }): HTMLElement {
+export function chartWithTable(document: Document, options: { title: string; points: readonly ChartPoint[]; unit: ChartUnit; gapBasis?: "published" | "calibrated" | "back-applied"; subsets?: "listed" | "recorded" }): HTMLElement {
   const section = element(document, "section", undefined, "chart-panel");
   section.append(element(document, "h3", options.title));
   const rows = options.points.map(point => [point.label, `${new Date(point.start).toISOString()} to ${new Date(point.end).toISOString()}`,
@@ -51,7 +51,7 @@ export function chartWithTable(document: Document, options: { title: string; poi
   const label = element(document, "p", undefined, "numeric chart-summary");
   const extreme = (value: number) => observation(value, options.unit, valid.some(point => point.value === value && point.lowerBound));
   label.textContent = valid.length ? `${options.points[0]!.label} to ${options.points.at(-1)!.label} · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum` : "No recorded values in this period";
-  const gapLabel = "Gap: counter minus published";
+  const gapLabel = `Gap: counter minus ${options.gapBasis ?? "published"}`;
   if (options.unit === "gap-aic") label.textContent = `${gapLabel} · ${label.textContent}`;
   svg.setAttribute("aria-label", `${options.title} · ${label.textContent}`);
   const region = tableRegion(document, renderTable(document, { caption: options.unit === "gap-aic" ? `${options.title} · ${gapLabel}` : options.title, columns: ["Observation", "UTC period", options.unit === "gap-aic" ? gapLabel : "Value", "Tokens (subsets not additive)", "Evidence"], rows }));

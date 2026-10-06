@@ -52,7 +52,7 @@ function readJson(file: string): Record<string, unknown> {
     throw new ConfigParseError(`cannot parse config file ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-function readLayer(file: string): { config: Record<string, unknown>; error?: string } {
+export function readLayer(file: string): { config: Record<string, unknown>; error?: string } {
   try { return { config: readJson(file) }; }
   catch (error) {
     if (!(error instanceof ConfigParseError)) throw error;

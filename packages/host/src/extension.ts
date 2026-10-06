@@ -1,5 +1,7 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
+import { runUsageServerEntry } from "./usage/server-entry.js";
+export { runUsageServerEntry } from "./usage/server-entry.js";
 export { UsageRuntime } from "./usage/runtime.js";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
@@ -80,6 +82,8 @@ if (!isMainThread && workerData?.spiderUsageWorker === 1 && parentPort) {
     parentPort?.close();
   });
 }
+
+void runUsageServerEntry(import.meta.url).catch(() => { process.exitCode = 1; });
 
 const getEmbedder = async () => getReadyEmbedder();
 

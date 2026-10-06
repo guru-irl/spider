@@ -95,9 +95,10 @@ D11 supersedes the spec's published-estimate-only display rule.
 - Use current Node, native `bundle.js` or `.mjs` and a direct-main sentinel. No IPC; spawn detached with ignored stdio, `unref()` and its own process group.
 - Cwd is private 0700 `usage-server`. Strip `NODE_OPTIONS`, preloads, inspector options and pi identities.
 - Validate/consume roots through a fenced 0600 startup record. Authenticated readiness allows 5 s; locks/guards are atomic and instance-fenced.
-- Never signal reused PIDs. Verify instance/API/build before reuse; report the server's loaded rates/build.
+- Publish atomic 0600 `replace-intent.json` on cold starts and replacements, with a fixed 10 s expiry. Live identity-matched strictly newer intents make launchers yield before minting nonces, replacing or spawning; equal builds do not yield. A stalled live owner or intent reports `usage-server-busy` at the launch deadline.
+- Never signal reused PIDs except for authenticated, identity-checked replacement by a strictly newer build. Verify instance/API/build before reuse; report the server's loaded rates/build.
 - Embedding prior art supplies spawn/env/capability checks only, not disconnect or parent-death watchdog semantics.
-- Survive launcher exit/SIGKILL before/after ready and removed launcher cwd. Private 0600 `crash.log` is code-only, at most 8192 bytes, readable by doctor.
+- Survive launcher exit/SIGKILL before/after ready and removed launcher cwd. Private 0600 `crash.log` is code-only, at most 8192 bytes, readable by doctor; unsafe server directories use a private sibling `usage-server-failures` when the parent is private and owned.
 - Authenticated idle timeout is 30 min; drain for 2 s, stop the optional participant, close the reader and remove only the owned lock. Heartbeats/rejections are inert.
 
 ### D8. Query bounds and performance
@@ -454,16 +455,19 @@ Graceful stop retries any pending lease release once and reports whether release
 
 **Interfaces:**
 - `readUsageServerCrashCodes(dir: string): Promise<readonly string[]>`.
-- `UsageServerLock` contains `version: 1`, `instanceId: string`, `pid: number`, `port: number | null` and `secret: string`.
-- `ensureUsageServer(options: LaunchOptions): Promise<{ pid: number; port: number; bootstrapUrl: string; reused: boolean }>`.
-- `bootUsageServer(options: LaunchOptions & { instanceId: string; startParticipant?: () => IngestHandle }): Promise<void>`.
+- `UsageServerLock` contains `version: 1`, `instanceId: string`, `pid: number`, `port: number | null`, `secret: string`, `processIdentity` and `serverBuild`.
+- `UsageServerLaunchOptions = LaunchOptions & { calibrationMode: "auto" | "off"; calibrationConfigFile?: string }`.
+- Build IDs are `<sha>@<ISO time>`. Task 5a MUST pass the bundle's own `${LOADED_BUILD.sha}@${LOADED_BUILD.builtAt}`, the same constant `/doctor` shows. Any other label disables upgrades; an unparseable launcher ID logs `usage-server-build-invalid` once.
+- `ensureUsageServer(options: UsageServerLaunchOptions): Promise<{ pid: number; port: number; bootstrapUrl: string; reused: boolean; serverBuild: string; rateVersions: readonly string[] }>`.
+- `bootUsageServer(options: UsageServerLaunchOptions & { instanceId: string; startParticipant?: () => IngestHandle }, testHook?: { now?: () => number; idleMs?: number }): Promise<void>`.
+- `runUsageServerEntry(moduleUrl: string | URL, hooks?: { startParticipant?: () => IngestHandle; testHook?: { now?: () => number; idleMs?: number } }): Promise<void>`.
 
-- [ ] `concurrent launchers reuse only authenticated owner`: Reuse PID/port with fresh nonces, never PID signals.
-- [ ] `server survives launcher exiting`: Survive exit/kill before/after ready and deleted launcher cwd.
-- [ ] `new start rotates secret and rejects old session`: Rotate secret; reject previous cookies/nonces.
-- [ ] `startup files are bounded and fenced`: Enforce private permissions, bounds, symlink rejection and stale/corrupt instance fencing.
-- [ ] `import and worker entry are inert`: Start HTTP only with the direct-main sentinel.
-- [ ] `private crash log contains only codes`: Fixed codes, at most 8192 bytes, never tokens.
+- [x] `concurrent launchers reuse only authenticated owner`: Reuse authenticated PID/port with fresh nonces; only an authenticated, identity-matched strictly older build may be signalled for replacement.
+- [x] `server survives launcher exiting`: Survive exit/kill before/after ready and deleted launcher cwd.
+- [x] `new start rotates secret and rejects old session`: Rotate secret; reject previous cookies/nonces.
+- [x] `startup files are bounded and fenced`: Enforce private permissions, bounds, symlink rejection and stale/corrupt instance fencing.
+- [x] `import and worker entry are inert`: Start HTTP only with the direct-main sentinel.
+- [x] `private crash log contains only codes`: Fixed codes, at most 8192 bytes, never tokens.
 
 ## Task 5a: Slash command and packaged entry
 

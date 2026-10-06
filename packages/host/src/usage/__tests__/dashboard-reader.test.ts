@@ -133,6 +133,29 @@ it("status refreshes schema version after a writable migration", async () => {
   expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(2);
 });
 
+it("reader generations retain the launcher owner prefix and invalidate old cursors", async () => {
+  // A generation appended before the owner separator makes a healthy server fail readiness.
+  fixture = createDashboardFixture();
+  const { openDashboardReader } = await import("../dashboard-reader.js");
+  const { encodeCursor, decodeCursor } = await import("../dashboard-selection.js");
+  const options = { instanceId: "fixture-owner", now: () => DASHBOARD_NOW,
+    calibrationMode: () => "off" as const, serverBuild: "fixture-build" };
+  const first = openDashboardReader(fixture.file, options)!;
+  readers.push(first);
+  const revision = first.revision();
+  expect(revision.startsWith("fixture-owner:")).toBe(true);
+  const cursor = encodeCursor("fixture-endpoint", revision, {}, ["fixture-key"]);
+  expect(decodeCursor(cursor, "fixture-endpoint", revision, {})).toEqual(["fixture-key"]);
+  const firstInstance = first.snapshot(ctx => ctx.instanceId);
+  readers.pop(); first.close();
+  const reopened = openDashboardReader(fixture.file, options)!;
+  readers.push(reopened);
+  expect(reopened.revision().startsWith("fixture-owner:")).toBe(true);
+  expect(reopened.snapshot(ctx => ctx.instanceId)).not.toBe(firstInstance);
+  expect(reopened.revision()).not.toBe(revision);
+  expect(() => decodeCursor(cursor, "fixture-endpoint", reopened.revision(), {})).toThrow("ledger-changed");
+});
+
 it("snapshot revision tracks only call content", async () => {
   fixture = createDashboardFixture();
   const { openDashboardReader } = await import("../dashboard-reader.js");

@@ -175,7 +175,7 @@ describe("usage HTTP", () => {
     const cookie = await login(server);
     const data = await get(server.port, "/api/overview", { Cookie: cookie });
     expect(data.status).toBe(200);
-    expect(JSON.parse(data.body)).toMatchObject({ apiVersion: 1, revision: expect.stringMatching(/^fixture-instance-[0-9a-f-]{36}:\d+$/),
+    expect(JSON.parse(data.body)).toMatchObject({ apiVersion: 1, revision: expect.stringMatching(/^fixture-instance:[0-9a-f-]{36}:\d+$/),
       generatedAt: DASHBOARD_NOW, period: { start: Date.UTC(2026, 9, 1), end: DASHBOARD_NOW }, data: { totals: { calls: 5 } } });
     const head = await get(server.port, "/api/overview", { Cookie: cookie }, "HEAD");
     expect(head.status).toBe(200); expect(head.body).toBe("");

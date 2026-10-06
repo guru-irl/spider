@@ -41,8 +41,8 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
     if (db.pragma("user_version") === 0) throw new DashboardQueryError("unsupported-schema");
     try { assertUsageSchemaVersion(db); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("unsupported-schema"); }
     db.pragma("query_only=ON");
-    // The caller's name is not a boot identity. Reopening must invalidate old cursors.
-    const instanceId = `${options.instanceId}-${randomUUID()}`;
+    // Keep the launcher's owner prefix; a fresh reader generation invalidates old cursors.
+    const instanceId = `${options.instanceId}:${randomUUID()}`;
     const revisionStatement = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'");
     const revision = () => {
       const row = revisionStatement.get() as { value: string } | undefined;

@@ -133,15 +133,16 @@ it("meets the 500-run, 20000-row write and total-query budgets", () => {
   } finally { db.close(); ledger.close(); rmSync(root, { recursive: true, force: true }); }
 }, 120000);
 
-// Reuses the reviewer's probe-perf2 shape: 4,000 runs, 200 calls/run,
-// 50 parent calls/run, missing every eighth transcript, over twelve months.
-it("bounds month and session reads with overlap at 904000 all-time rows", () => {
+// Keep the same twelve-month shape (200 calls/run, 50 parent calls/run,
+// missing every eighth transcript), but separate plan protection from scale.
+function yearFixture(runCount: 40 | 4000, checkPlans: boolean) {
   const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-year-perf-"));
-  const file = join(root, "usage.db"), { ledger, queries } = observedLedger(file), db = openDbReadOnly(file)!;
+  const file = join(root, "usage.db"), { ledger, queries } = observedLedger(file), db = openDb(file);
+  const startSeed = performance.now();
   try {
     let pending: CallRow[] = [];
     let runs: ImportBatch["runs"][number][] = [];
-    for (let r = 0; r < 4000; r++) {
+    for (let r = 0; r < runCount; r++) {
       const ts = 1000 * (r % 12), parentRunId = r % 4 ? `R${r - r % 4}` : null;
       const calls = r % 8 === 0 ? [] : Array.from({ length: 200 }, (_, n) => call(`c${r}-${n}`, {
         ts: ts + 10, runId: `R${r}`, actor: "subagent", parentRunId,
@@ -159,7 +160,23 @@ it("bounds month and session reads with overlap at 904000 all-time rows", () => 
         startedAt: ts, endedAt: ts + 30 });
       if (r % 10 === 9) { ledger.apply({ ...batch(pending), runs }); pending = []; runs = []; }
     }
-    expect(db.prepare("SELECT COUNT(*) AS n FROM calls").get()).toEqual({ n: 904000 });
+    const seedMs = performance.now() - startSeed;
+    const rows = runCount * 226;
+    expect(db.prepare("SELECT COUNT(*) AS n FROM calls").get()).toEqual({ n: rows });
+    // Neither ledger open/apply nor the DB wrapper runs ANALYZE/optimize.
+    // Fail if that changes, rather than silently relying on row-count-free plans.
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_stat%'").all()).toEqual([]);
+    if (checkPlans) {
+      const assertYearPlans = () => {
+        for (let month = 0; month < 12; month++) assertReadPlans(db, queries, month * 1000, (month + 1) * 1000, `parent${month}`);
+      };
+      assertYearPlans();
+      // Imported ledgers may have statistics even though spider never makes
+      // them. Prove range/partial-index access on this ~10k fixture both ways.
+      db.exec("ANALYZE; PRAGMA optimize;");
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_stat%'").all().length).toBeGreaterThan(0);
+      assertYearPlans();
+    }
     const monthTimes: number[] = [];
     let summary = ledger.summarize(0, 1000);
     for (let month = 0; month < 12; month++) {
@@ -167,8 +184,8 @@ it("bounds month and session reads with overlap at 904000 all-time rows", () => 
       const current = ledger.summarize(month * 1000, (month + 1) * 1000);
       monthTimes.push(performance.now() - startMonth);
       if (month === 0) summary = current;
-      const runCount = Math.floor((3999 - month) / 12) + 1;
-      expect(current.aic).toBe(runCount * 250);
+      const monthRuns = Math.floor((runCount - 1 - month) / 12) + 1;
+      expect(current.aic).toBe(monthRuns * 250);
     }
     const startHealth = performance.now(); const health = ledger.health();
     const healthMs = performance.now() - startHealth;
@@ -176,15 +193,26 @@ it("bounds month and session reads with overlap at 904000 all-time rows", () => 
     const session = db.prepare(sessionSql)
       .get("parent0", 0, 1000);
     const sessionMs = performance.now() - startSession;
-    console.log("LEDGER_YEAR_PERF", JSON.stringify({ rows: 904000, months: 12, monthTimes, worstMonthMs: Math.max(...monthTimes), sessionMs, healthMs }));
-    expect(health.calls).toBe(904000);
-    // Health uses partial-index plans and a transaction-maintained total;
-    // this 10x ceiling catches disasters, not shared-runner latency variation.
-    expect(healthMs).toBeLessThan(500);
-    expect(summary.aic).toBe(83500); expect(summary.possibleOverlap).toBe(true);
-    expect(session).toEqual({ aic: 50100, overlap: 1 });
-    for (let month = 0; month < 12; month++) assertReadPlans(db, queries, month * 1000, (month + 1) * 1000, `parent${month}`);
-    // As in the smaller fixture, tolerate shared CI load with 10x ceilings.
-    expect(Math.max(...monthTimes)).toBeLessThan(2500); expect(sessionMs).toBeLessThan(2000);
+    expect(health.calls).toBe(rows);
+    expect(summary.aic).toBe(runCount === 40 ? 1000 : 83500); expect(summary.possibleOverlap).toBe(true);
+    expect(session).toEqual({ aic: runCount === 40 ? 600 : 50100, overlap: 1 });
+    return { rows, months: 12, seedMs, monthTimes, worstMonthMs: Math.max(...monthTimes), sessionMs, healthMs };
   } finally { db.close(); ledger.close(); rmSync(root, { recursive: true, force: true }); }
-}, 300000);
+}
+
+it("bounds month and session reads with overlap at 9040 all-time rows, with and without statistics", () => {
+  yearFixture(40, true);
+});
+
+// Same local-only opt-in convention as the calibration benchmarks. Unlike
+// the regression tests, elapsed times are measurements, never pass/fail gates.
+const benchmarkEnabled = process.env.SPIDER_USAGE_BENCHMARK === "1";
+if (!benchmarkEnabled) console.log("SKIP ledger 904000-row benchmark: set SPIDER_USAGE_BENCHMARK=1 locally (refused in CI)");
+it.skipIf(!benchmarkEnabled)("measures 904000 all-time rows (local opt-in only)", async () => {
+  if (process.env.CI) throw new Error("local ledger benchmark refuses CI");
+  const { loadavg } = await import("node:os");
+  const beforeLoad = loadavg();
+  const start = performance.now();
+  const report = yearFixture(4000, false);
+  console.log("LEDGER_YEAR_PERF", JSON.stringify({ ...report, totalMs: performance.now() - start, beforeLoad, afterLoad: loadavg() }));
+}, 1800000);

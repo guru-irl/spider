@@ -527,9 +527,10 @@ Graceful stop retries any pending lease release once and reports whether release
 **Needs:** 5b.
 
 **Files:**
-- Create: `scripts/usage-dashboard-screenshot.mjs`.
-- Create: `packages/host/src/usage/__tests__/{visual-script.test.ts,dashboard-visual.test.ts}`.
-- Create: `packages/host/src/usage/__tests__/fixtures/dashboard-browser-fixture.ts`.
+- Create: `scripts/usage-dashboard-screenshot.{mjs,d.mts}`.
+- Create: `scripts/usage-dashboard-cdp.{mjs,d.mts}`.
+- Create: `packages/host/src/usage/__tests__/{visual-script.test.ts,dashboard-visual.test.ts,cdp-transport.test.ts,screenshot-lifecycle.test.ts}`.
+- Create: `packages/host/src/usage/__tests__/fixtures/{dashboard-browser-fixture.ts,cdp-pipe-fixture.ts}`.
 
 **Interfaces:**
 - CLI uses `SPIDER_USAGE_BROWSER` and `--out`; the exported capture helper is inert on import.
@@ -537,8 +538,8 @@ Graceful stop retries any pending lease release once and reports whether release
 - CLI runs installed Vitest `dashboard-visual.test.ts`; the test imports the helper, without CLI recursion.
 - Use a synthetic bundle and block network access.
 
-- [ ] `CI and missing browser skip explicitly`: Emit SKIP/77 and a regular-suite skip reason.
-- [ ] `capture errors fail and close owned processes`: Return nonzero on errors and close all fixtures.
+- [x] `CI and missing browser skip explicitly`: Emit SKIP/77 and a regular-suite skip reason.
+- [x] `capture errors fail and close owned processes`: Return nonzero on errors and close all fixtures.
 - [ ] `real Overview chart toggles to table`: Capture 1440x1000 PNG and verify toggle/parity.
 
 ## Task 6: Explorer queries

@@ -181,7 +181,7 @@ export type CalibrationResult = {
 };
 export type AicDisplay = {
   primaryAic: number | null; publishedAic: number | null;
-  basis: "calibrated" | "published";
+  basis: "calibrated" | "back-applied" | "published";
 };
 ```
 
@@ -191,21 +191,21 @@ export type AicDisplay = {
 **Computation and history**
 
 - One bounded snapshot read and one indexed counted-call pass assign calls to pairs; no all-time scans or per-pair queries.
-- Use one account-wide result per reader snapshot. Owners publish on generation changes; followers reuse their DTO without scans.
-- Memoize per `(latest snapshot ts, call-selection revision)` within a fixed rate/build reader or worker instance. Lease/error/replay writes do not invalidate.
+- Evaluate account-wide period endpoints once in a bounded batch per response. Owners publish on generation changes; followers reuse their DTO without scans.
+- Memoize per `(latest snapshot rowid, call-selection revision)` within a fixed rate/build reader or worker instance. Lease/error/replay writes do not invalidate. Find the earliest fit in one chronological seven-day sliding pass, using one indexed counted-call query grouped by snapshot pair over accepted snapshot-covered intervals.
 - Snapshots are append-only; validate duplicate anchors with stable-key tie rules. Off-to-auto validates the current generation before reuse.
 - Rates returns daily trailing factors, at most 31 points/page, each anchored at its last snapshot at/before day end with actual window/status and no fake zero.
 - Batch the page plus seven-day lookback in one call pass with prefix/daily aggregates. Cache page/end-day keys within that generation; cursors freeze stable anchors.
-- Historical Reconciliation applies its period-end result, never a future fit. Current slices/footer use the latest factor; unsupported history falls back explicitly.
+- Overview and per-period displays use `at(min(period.end, now) - 1)`. Back-apply the earliest calibrated fit only when the period endpoint is before its anchor, with basis `back-applied`, labelled `calibrated, back-applied`. All other windows without a fit use published with their own `uncalibrated` or `implausible` status. The current footer uses the latest factor.
 
 **Presentation and config**
 
 - Every AIC-displaying view, component and pace consumes `AicDisplay`. Tokens/counts/pi cost/coverage/overlap flags stay unchanged.
-- Calibrated primary is labelled `calibrated`, for example `≈1,234 AIC`, with dynamic legend `calibrated x0.56 over 7 days` and actual window/coverage evidence.
+- Calibrated primary is labelled `calibrated`, for example `1,234 AIC`, with dynamic legend `calibrated x0.56 over 7 days` and actual window/coverage evidence.
 - Show `published estimate` secondary where space permits: tables, Reconciliation, Rates and doctor. Published rates remain estimated; D2 placeholders are unchanged.
 - Reconciliation shows counter, published and calibrated per compatible period, keeping published gap/ratio and adding calibrated gap/ratio/status.
 - Doctor adds one line with status, factor, UTC window, covered hours, computed AIC, counter delta, unpriced calls and method; comparison retains both amounts.
-- Footer shows primary only: `≈1,234 AIC cal` when calibrated, `≈1,234 AIC ?` when uncalibrated/implausible, `≈1,234 AIC est` when off.
+- Footer shows primary only: `1,234 AIC cal` when calibrated, `~2,222 AIC ?` when uncalibrated/implausible, `~2,222 AIC est` when off. A back-applied fit, if shown, is explained by footer/doctor copy.
 - `cal` means calibrated; `?` means unavailable calibration, explained by doctor; `est` means published by config. Preserve rounding, lower-bound `+` and whole-item drop priorities.
 - `usage.calibration` is global-only, `auto` default or `off`. Add it to `DEFAULTS` in `packages/host/src/control.ts` through existing `USAGE_DEFAULTS` composition.
 - Keep this exact key and Phase 1 three-part dotted-key support, including `usage.counter.poll`. Validation, local rejection/diagnostics and get/unset/source follow Phase 1.
@@ -382,28 +382,28 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 
 **Tests:** Use `calibration.test.ts` unless a file is named.
 
-- [ ] `calibration uses counted interval calls`: Exclude copies/covered reports; count boundaries once. At 24 h, computed 1000 and counter 560 give factor 0.56 and status `calibrated`.
-- [ ] `calibration drops reset-spanning pairs`: Reset-date changes and negative deltas exclude spanning calls/deltas/hours; retain valid later pairs.
-- [ ] `calibration requires covered span and priced evidence`: 23.99 h or 499.99 AIC fails; 24 h and 500 AIC passes. Rejected gaps do not count; no anchor/zero gives null.
-- [ ] `calibration rejects implausible ratios`: 0.05 and 2.0 pass; 0.049 and 2.01 clamp but fall back, with status `implausible` and doctor evidence.
-- [ ] `calibration tolerates five minute billing lag`: Seven days of steady priced calls, 10 min snapshots and integer credits: shifting billing 5 min changes the factor by less than 1%.
-- [ ] `calibration excludes and reports unpriced calls`: Count unpriced calls but exclude their AIC; preserve mixed lower bounds and fail all-unpriced evidence.
-- [ ] `calibration cache invalidates only on evidence changes`: New snapshot/call revision recomputes; leases/publication/errors/replay do not. Off-to-auto checks generation.
-- [ ] `calibration history batches daily trailing windows`: Use each day's own window/status, at most 31 points and one bounded call pass; preserve reset/account/clock gaps.
+- [x] `calibration uses counted interval calls`: Exclude copies/covered reports; count boundaries once. At 24 h, computed 1000 and counter 560 give factor 0.56 and status `calibrated`.
+- [x] `calibration drops reset-spanning pairs`: Reset-date changes and negative deltas exclude spanning calls/deltas/hours; retain valid later pairs.
+- [x] `calibration requires covered span and priced evidence`: 23.99 h or 499.99 AIC fails; 24 h and 500 AIC passes. Rejected gaps do not count; no anchor/zero gives null.
+- [x] `calibration rejects implausible ratios`: 0.05 and 2.0 pass; 0.049 and 2.01 clamp but fall back, with status `implausible` and doctor evidence.
+- [x] `calibration tolerates five minute billing lag`: Seven days of steady priced calls, 10 min snapshots and integer credits: shifting billing 5 min changes the factor by less than 1%.
+- [x] `calibration excludes and reports unpriced calls`: Count unpriced calls but exclude their AIC; preserve mixed lower bounds and fail all-unpriced evidence.
+- [x] `calibration cache invalidates only on evidence changes`: New snapshot/call revision recomputes; leases/publication/errors/replay do not. Off-to-auto checks generation.
+- [x] `calibration history batches daily trailing windows`: Use each day's own window/status, at most 31 points and one bounded call pass; preserve reset/account/clock gaps.
 
 **Integration cycles:**
 
-- [ ] `aic-display.test.ts`: `all AIC displays share calibration fallback`: Scale AIC only when calibrated; preserve D1 tokens/counts/pi cost/coverage/null/zero/lower bounds and all
+- [x] `aic-display.test.ts`: `all AIC displays share calibration fallback`: Scale AIC only when calibrated; preserve D1 tokens/counts/pi cost/coverage/null/zero/lower bounds and all
   fallbacks.
-- [ ] `query-overview.test.ts`: `Overview calibration is account wide`: Filters leave factor unchanged; all branches expose primary/published AIC and unchanged tokens.
-- [ ] `config.test.ts`: `calibration config is global only auto by default`: Test auto default, auto/off, invalid values and ignored local overrides.
-- [ ] `config-tool.test.ts`: `calibration config preserves dotted key conventions`: Test get/set/unset/source, local rejection and existing `usage.counter.poll` parsing.
-- [ ] `runtime.test.ts` and `worker-entry.test.ts`: `calibration DTO preserves old snapshots and reloads`: Old DTOs fall back; owners publish without revision churn, followers reuse,
+- [x] `query-overview.test.ts`: `Overview calibration is account wide`: Filters leave factor unchanged; all branches expose primary/published AIC and unchanged tokens.
+- [x] `config.test.ts`: `calibration config is global only auto by default`: Test auto default, auto/off, invalid values and ignored local overrides.
+- [x] `config-tool.test.ts`: `calibration config preserves dotted key conventions`: Test get/set/unset/source, local rejection and existing `usage.counter.poll` parsing.
+- [x] `runtime.test.ts` and `worker-entry.test.ts`: `calibration DTO preserves old snapshots and reloads`: Old DTOs fall back; owners publish without revision churn, followers reuse,
   and reload preserves polling/tokens.
-- [ ] `footer-layout.test.ts`: `footer calibration markers fit forty to two hundred columns`: Every width from 40 to 200 fits whole primary-only items: `cal`, `?` for both unavailable
+- [x] `footer-layout.test.ts`: `footer calibration markers fit forty to two hundred columns`: Every width from 40 to 200 fits whole primary-only items: `cal`, `?` for both unavailable
   statuses and `est` when off.
-- [ ] `footer-state.test.ts`: `footer calibration leaves token parity unchanged`: Auto/off/factor changes preserve all Phase 1 parity cases and published append/reset totals.
-- [ ] `doctor.test.ts`: `doctor reports calibration evidence and fallback`: Add one complete D11 evidence line and both AIC amounts; make fallback explicit without account identity.
+- [x] `footer-state.test.ts`: `footer calibration leaves token parity unchanged`: Auto/off/factor changes preserve all Phase 1 parity cases and published append/reset totals.
+- [x] `doctor.test.ts`: `doctor reports calibration evidence and fallback`: Add one complete D11 evidence line and both AIC amounts; make fallback explicit without account identity.
 
 ## Task 2: HTTP and security
 

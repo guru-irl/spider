@@ -1,4 +1,6 @@
 import type { UsageWorkerEvent } from "./protocol.js";
+import type { CalibrationResult } from "./dashboard-contract.js";
+import { createCalibrationService, calibrationFallback } from "./calibration.js";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -133,6 +135,7 @@ export interface UsageLedger {
   getProof(): { reports: { runId: string; owner: string | null; path: string; ts: number }[]; edges: CoverageEdge[] };
   insertCounter(snapshot: CounterSnapshot): void;
   latestCounter(): CounterSnapshot | undefined;
+  getCalibration(mode: "auto" | "off"): CalibrationResult;
   summarize(start: number, end: number): UsageSummary;
   health(): LedgerHealth;
   getBackfillState(): "pending" | "running" | "complete" | "failed";
@@ -282,6 +285,11 @@ export function openUsageLedgerReadOnly(file: string): UsageLedger | undefined {
 }
 
 function createLedger(db: Db): UsageLedger {
+  const calibration = createCalibrationService(db, { revision: () => {
+    const row = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get() as { value: string } | undefined;
+    if (!row || !/^\d+$/.test(row.value)) throw new Error("usage-revision-unavailable");
+    return row.value;
+  } });
   const context = db.prepare("SELECT header, tail_hash AS tailHash FROM source_context WHERE path=?");
   const headers = db.prepare("SELECT path, header FROM source_context");
   const putContext = db.prepare(`INSERT INTO source_context(path,header,tail_hash) VALUES (?,?,?)
@@ -516,6 +524,13 @@ function createLedger(db: Db): UsageLedger {
         entitlement: snapshot.entitlement ?? null, remaining: snapshot.remaining ?? null,
         resetDate: snapshot.resetDate ?? null, raw: JSON.stringify(snapshot.raw),
       });
+    },
+    getCalibration(mode) {
+      try { return calibration.current(mode); }
+      catch (error) {
+        if (error instanceof Error && error.message === "usage-revision-unavailable") return calibrationFallback(mode);
+        throw error;
+      }
     },
     latestCounter() {
       const row = latestCounter.get() as

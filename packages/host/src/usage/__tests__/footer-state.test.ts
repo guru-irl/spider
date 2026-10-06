@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as pricing from "../price.js";
 import { FooterAccumulator } from "../footer-state.js";
+import { renderUsageFooter, type FooterInput } from "../footer.js";
+import { calibrationFallback } from "../calibration.js";
 import type { UsageTokens } from "../types.js";
 
 const timestamp = "2026-10-02T12:00:00.000Z";
@@ -136,4 +138,24 @@ describe("FooterAccumulator", () => {
     expect(state.snapshot()).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
       piCost: 0, aic: 0, unpricedEntries: 0, aggregateEntries: 0, estimated: false, latestCacheHitRate: null });
   });
+});
+
+it("footer calibration leaves token parity unchanged", () => {
+  const state = new FooterAccumulator();
+  state.reset([assistant("a", null), extra("subagent"), extra("spider-aux"), extra("cache_warm")]);
+  const published = state.snapshot();
+  expect(published).toMatchObject({ input: 40, output: 80, cacheRead: 120, cacheWrite: 160, piCost: 1 });
+  for (const status of ["calibrated", "uncalibrated", "implausible", "off"] as const) {
+    const input: FooterInput = { cwd: "fixture", branch: null, sessionName: null, modelId: "fixture", thinking: "off", context: null,
+      subscription: false, totals: published, counter: { availability: "disabled", snapshot: null }, statuses: new Map(),
+      calibration: { ...calibrationFallback(), status, factor: status === "calibrated" ? 0.5 : null } };
+    expect(renderUsageFooter(input, 200)[1]).toContain(status === "calibrated" ? "0.1 AIC cal" : "~0.1 AIC");
+    expect(state.snapshot()).toEqual(published);
+    expect(renderUsageFooter(input, 200)[1]).toContain("↑40 ↓80 R120 W160");
+  }
+  state.append([assistant("b", "a")]);
+  expect(state.snapshot()).toMatchObject({ input: 50, output: 100, cacheRead: 150, cacheWrite: 200 });
+  expect(state.snapshot().aic).toBeCloseTo(0.1615);
+  state.reset([assistant("a", null)]);
+  expect(state.snapshot().aic).toBeCloseTo(0.0323);
 });

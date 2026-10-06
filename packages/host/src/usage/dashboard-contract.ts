@@ -27,13 +27,19 @@ export type CalibrationResult = {
 };
 export type AicDisplay = {
   primaryAic: number | null; publishedAic: number | null;
-  /** Selects the primary estimate's basis, never a claim of exact billing. Evidence is stored once per response. */
-  basis: "calibrated" | "published";
+  /** Selects the primary estimate's basis, never a claim of exact billing.
+   * Back-applied uses the earliest calibrated fit only when the period endpoint is before that fit's anchor;
+   * otherwise windows without a fit use published, with their uncalibrated or implausible status.
+   * Label back-applied values "calibrated, back-applied". Evidence is hoisted once per response.
+   */
+  basis: "calibrated" | "back-applied" | "published";
 };
 export type CalibrationHistoryPoint = { day: number; calibration: CalibrationResult };
 export interface CalibrationService {
   current(mode: "auto" | "off"): CalibrationResult;
   at(windowEnd: number, mode: "auto" | "off"): CalibrationResult;
+  /** Earliest accepted snapshot-window fit, or an explicit published fallback if none exists. */
+  earliest(mode: "auto" | "off"): CalibrationResult;
   atMany(windowEnds: readonly number[], mode: "auto" | "off"): readonly CalibrationResult[];
   history(period: Period, page: { limit: number; cursor?: string }, mode: "auto" | "off"): Page<CalibrationHistoryPoint>;
 }
@@ -79,6 +85,8 @@ export type OverviewComparison = Period & {
   counterAic: number | null; computed: UsageMeasure | null; gap: number | null; ratio: number | null;
 };
 export type OverviewData = {
+  /** Response-level calibration result. Whether a displayed value is back-applied
+   * comes from that value's `aicDisplay.basis`; daily and comparison evidence may differ. */
   calibration: CalibrationResult;
   totals: UsageMeasure; actors: readonly OverviewBreakdown[]; roles: readonly OverviewBreakdown[];
   daily: Page<OverviewDay>; comparison: OverviewComparison;
@@ -106,7 +114,7 @@ export interface DashboardReader {
 }
 export type ReaderOptions = {
   instanceId: string; now: () => number; serverBuild: string; rates?: readonly RateVersion[];
-  ingestStatus?: () => DashboardIngestState; calibrationMode?: () => "auto" | "off";
+  ingestStatus?: () => DashboardIngestState; calibrationMode: () => "auto" | "off";
 };
 export type HttpOptions = {
   instanceId: string; serverBuild: string; reader: DashboardReader | undefined;

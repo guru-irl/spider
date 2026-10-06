@@ -70,3 +70,18 @@ it.each(["tool", "slash"])("%s local usage unset distinguishes an ignored value 
     expect(readFileSync(join(paths.globalRoot, "config.json"), "utf8")).toBe(globalBefore);
   }
 });
+
+it("calibration config preserves dotted key conventions", async () => {
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "auto", source: "default" });
+  await slash("config set usage.calibration off --global");
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "off", source: "global" });
+  expect((await run({ op: "set", key: "usage.calibration", value: "auto", scope: "repo" })).isError).toBe(true);
+  writeFileSync(join(root, ".spider/config.json"), JSON.stringify({ "usage.calibration": "auto" }));
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "off", source: "global" });
+  await slash("config unset usage.calibration");
+  expect(JSON.parse(readFileSync(join(root, ".spider/config.json"), "utf8"))).toEqual({});
+  await slash("config unset usage.calibration --global");
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "auto", source: "default" });
+  await slash("config set usage.counter.poll false --global");
+  expect((await run({ op: "get", key: "usage.counter.poll" })).details.value).toBe(false);
+});

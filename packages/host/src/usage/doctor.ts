@@ -2,6 +2,9 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import type { UsageConfig } from "./config.js";
 import type { UsageRuntime } from "./runtime.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
+import { calibrationFallback } from "./calibration.js";
+import { toAicDisplay } from "./aic-display.js";
+import { safeTimestamp } from "./dashboard-selection.js";
 
 // Never show arbitrary error messages, source payloads, paths, account identities or raw JSON.
 const codes = new Set([
@@ -38,9 +41,14 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
     lines.push(`- usage counter: ${counter.availability}${reason}; lease role=${counter.role}; age_ms=${number(counter.snapshotAgeMs)} stale=${counter.availability === "stale"}`);
     lines.push(`- usage counter: credits_used=${number(counter.latest?.creditsUsed)} last_success=${number(counter.lastSuccessAt)} last_attempt=${number(counter.lastAttemptAt)} next_poll=${number(counter.nextPollAt)} error=${safeCode(counter.errorCode)} notice=${safeCode(counter.notice?.code)}`);
   } else lines.push(`- usage counter: ${config.counterPoll ? "unavailable" : "disabled"}; lease role=inactive`);
+  const calibration = config.calibration === "off" ? calibrationFallback("off") : snapshot.calibration ?? calibrationFallback();
+  const utc = (ts: number | null) => ts !== null && safeTimestamp(ts) ? new Date(ts).toISOString() : "unavailable";
+  lines.push(`- usage calibration: status=${calibration.status} factor=${calibration.status === "implausible" ? `${number(calibration.computedAic > 0 ? calibration.counterDelta / calibration.computedAic : null)} (rejected)` : number(calibration.factor)} window_utc=${utc(calibration.windowStart)}..${utc(calibration.windowEnd)} covered_hours=${Number.isFinite(calibration.coveredHours) ? calibration.coveredHours.toFixed(1) : "unavailable"} computed_aic=${number(calibration.computedAic)} counter_delta=${number(calibration.counterDelta)} unpriced_calls=${number(calibration.unpricedCalls)} method=trailing-7d-ratio${calibration.status === "calibrated" ? " (estimated; account-wide)" : " (published fallback)"}`);
   if (reconciliation) {
+    const display = toAicDisplay(reconciliation.computedAIC, reconciliation.unpricedCalls, calibration);
+    const primary = display.primaryAic === null ? null : Number(display.primaryAic.toPrecision(12));
     const gap = reconciliation.gap;
-    lines.push(`- usage comparison (estimated): computed=${number(reconciliation.computedAIC)} counter=${number(reconciliation.counterAIC)} gap=${typeof gap === "number" && gap > 0 ? "+" : ""}${number(gap)} ratio=${number(reconciliation.ratio)} unpriced_calls=${reconciliation.unpricedCalls}`);
+    lines.push(`- usage comparison (estimated): computed=${number(reconciliation.computedAIC)} counter=${number(reconciliation.counterAIC)} gap=${typeof gap === "number" && gap > 0 ? "+" : ""}${number(gap)} ratio=${number(reconciliation.ratio)} unpriced_calls=${reconciliation.unpricedCalls} primary=${number(primary)} basis=${display.basis} published_estimate=${number(display.publishedAic)}`);
   } else lines.push("- usage comparison (estimated): unavailable");
   lines.push("- usage comparison: billing accuracy unresolved; account counter includes other clients and machines");
   for (const rate of COPILOT_RATE_VERSIONS) lines.push(`- usage rates (estimated): ${rate.id} effective=${rate.effectiveFrom} source_as_of=${rate.sourceAsOf}; ${rate.source}`);

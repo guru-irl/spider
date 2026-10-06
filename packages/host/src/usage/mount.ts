@@ -4,6 +4,7 @@ import { watchFile, unwatchFile } from "node:fs";
 import { controlConfig } from "../control.js";
 import { makeConfigReloader } from "../config-reload.js";
 import { readUsageConfig } from "./config.js";
+import { calibrationFallback } from "./calibration.js";
 import { usageDoctorLines } from "./doctor.js";
 import { homedir } from "node:os";
 import { isAbsolute, relative, sep, join } from "node:path";
@@ -65,12 +66,14 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     const model = current.model;
     const subscription = !!model && (model.provider === "kimi-coding" ||
       (current.modelRegistry.isUsingOAuth(model) && current.modelRegistry.getProvider(model.provider)?.auth?.oauth?.isSubscription === true));
-    const snapshot = runtime.snapshot().counter;
+    const runtimeSnapshot = runtime.snapshot();
+    const snapshot = runtimeSnapshot.counter;
     input = {
       cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null,
       modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
       context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
       subscription, totals: totals.snapshot(),
+      calibration: settings.calibration === "off" ? calibrationFallback("off") : runtimeSnapshot.calibration ?? calibrationFallback(),
       counter: { availability: snapshot?.availability === "available" ? "available" : snapshot?.availability === "disabled" ? "disabled" : "unavailable", snapshot: snapshot?.latest ?? null },
     };
     if (!ownsFooter) {
@@ -88,7 +91,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     if (disposed || child) return;
     const changed = settings.footer !== next.footer;
     settings = next;
-    runtime.configure(next.counterPoll);
+    runtime.configure(next.counterPoll, next.calibration);
     if (!eligible() || !next.footer) {
       releaseFooter(); if (tick) clearInterval(tick); tick = undefined;
     } else {
@@ -143,12 +146,12 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
       registryDb: join(paths.globalRoot, "spider.db"), ledgerFile: join(paths.globalRoot, "usage.db"),
       sessionsDir: join(agentDir, "sessions"), authPath: join(agentDir, "auth.json"), leaseDir: join(paths.globalRoot, "usage-leases"),
     }, onSnapshot: () => mounted?.refresh() });
-    runtime.start(config.counterPoll);
+    runtime.start(config.counterPoll, config.calibration);
     mounted = mountUsage(pi, ctx, runtime, config);
     reloader = makeConfigReloader(ctx.cwd, merged => {
       config = readUsageConfig(merged as Record<string, unknown>, {}).value;
       if (ctx.mode === "tui") mounted?.configure(config);
-      else runtime?.configure(config.counterPoll);
+      else runtime?.configure(config.counterPoll, config.calibration);
     });
     watchedFile = join(paths.globalRoot, "config.json");
     // Config I/O is separate from rendering. This also catches edits in another parent.

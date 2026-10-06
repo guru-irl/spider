@@ -160,7 +160,7 @@ export function configValues(cwd: string, localRoot?: string): {
   sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
   const usage = readUsageConfig(g, p).value;
   for (const [key, value] of Object.entries({
-    "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
+    "usage.calibration": usage.calibration, "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
     "usage.alerts.sessionCredits": usage.alertsSessionCredits, "usage.alerts.runCredits": usage.alertsRunCredits,
   })) {
     all[key] = value;

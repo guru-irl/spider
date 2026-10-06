@@ -60,6 +60,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "exec.enforce", label: "Enforce spider exec", type: "boolean", default: true, description: "Block bash tool; model must use spider exec." },
 	]},
 	{ id: "usage", label: "Usage", fields: [
+		{ key: "usage.calibration", label: "AIC calibration", type: "enum", enum: ["auto", "off"], default: "auto", scope: "global", description: "Global-only trailing seven-day counter calibration. Auto uses sufficient evidence; off shows published estimates. Changes apply live." },
 		{ key: "usage.footer", label: "Usage footer", type: "boolean", default: true, scope: "global", description: "Global-only estimated AIC footer. Changes apply live, independently of the agents widget." },
 		{ key: "usage.counter.poll", label: "Counter poll", type: "boolean", default: true, scope: "global", description: "Global-only read-only account polling every ten minutes, parents only. Changes apply live." },
 		{ key: "usage.alerts.sessionCredits", label: "Session alert credits", type: "number", default: 0, min: 0, scope: "global", description: "Global-only threshold. Reserved, alerts are not implemented." },

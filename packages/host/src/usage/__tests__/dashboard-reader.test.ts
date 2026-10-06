@@ -13,7 +13,7 @@ it("readonly opener never creates or upgrades", async () => {
   fixture = createDashboardFixture();
   const api = await import("../dashboard-reader.js").catch(() => null);
   expect(api, "reader API must exist").not.toBeNull();
-  const options = { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" };
+  const options = { calibrationMode: () => "auto" as const, instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" };
   const missing = join(fixture.root, "missing.db");
   expect(api!.openDashboardReader(missing, options)).toBeUndefined();
   expect(existsSync(missing)).toBe(false);
@@ -55,7 +55,7 @@ it.each([
   const { openDashboardReader } = await import("../dashboard-reader.js");
   const opener = vi.spyOn(dbCore, "openDbReadOnly").mockImplementationOnce(() => { throw Object.assign(new Error("synthetic private error"), { code }); });
   try {
-    expect(() => openDashboardReader("synthetic.db", { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })).toThrow(expected);
+    expect(() => openDashboardReader("synthetic.db", { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })).toThrow(expected);
   } finally { opener.mockRestore(); }
 });
 
@@ -67,7 +67,7 @@ it("first pragma failure closes its handle and maps corrupt errors", async () =>
   const pragma = vi.spyOn(db, "pragma").mockImplementationOnce(() => { throw Object.assign(new Error("synthetic corrupt"), { code: "SQLITE_CORRUPT" }); });
   const opener = vi.spyOn(dbCore, "openDbReadOnly").mockReturnValueOnce(db);
   try {
-    expect(() => openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })).toThrow("unsupported-schema");
+    expect(() => openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })).toThrow("unsupported-schema");
     expect(closed).toHaveBeenCalledOnce();
   } finally { opener.mockRestore(); pragma.mockRestore(); closed.mockRestore(); }
 });
@@ -75,7 +75,7 @@ it("first pragma failure closes its handle and maps corrupt errors", async () =>
 it("standalone status reads all tables in a deferred transaction", async () => {
   fixture = createDashboardFixture();
   const { openDashboardReader } = await import("../dashboard-reader.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   readers.push(reader);
   const db = reader.snapshot(ctx => ctx.db);
   const prepare = db.prepare.bind(db);
@@ -92,7 +92,7 @@ it("status refreshes schema version after a writable migration", async () => {
   const v1 = openDb(file);
   try { v1.exec(readFileSync(new URL("./fixtures/usage-v1.sql", import.meta.url), "utf8")); } finally { v1.close(); }
   const { openDashboardReader } = await import("../dashboard-reader.js");
-  const reader = openDashboardReader(file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })!;
+  const reader = openDashboardReader(file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   readers.push(reader);
   expect(reader.status().schemaVersion).toBe(1);
   const { openUsageLedger } = await import("../ledger.js");
@@ -105,7 +105,7 @@ it("status refreshes schema version after a writable migration", async () => {
 it("snapshot revision tracks only call content", async () => {
   fixture = createDashboardFixture();
   const { openDashboardReader } = await import("../dashboard-reader.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build" })!;
   readers.push(reader);
   const revision = reader.revision();
   fixture.db.prepare("INSERT INTO leases(name,owner,token) VALUES ('ingest','fixture-owner','fixture-token')").run();
@@ -143,7 +143,7 @@ it.each([
   fixture = createDashboardFixture(false);
   const { openDashboardReader } = await import("../dashboard-reader.js");
   const { DashboardQueryError } = await import("../dashboard-contract.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   readers.push(reader);
   const db = reader.snapshot(ctx => ctx.db);
   // Revision owns a prepared statement, so inject at SQLite's transaction/statement boundary.

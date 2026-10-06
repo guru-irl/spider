@@ -57,7 +57,7 @@ it("tokens do not double-count subsets", async () => {
   const selection = await import("../dashboard-selection.js");
   expect(selection).toHaveProperty("readMeasure", expect.any(Function));
   const { openDashboardReader } = await import("../dashboard-reader.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build" })!;
   try {
     reader.snapshot(ctx => {
       const measure = selection.readMeasure(ctx, { start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [] });
@@ -112,7 +112,7 @@ it("empty unpriced and priced zero remain distinct", async () => {
 it("phase two availability touches no context tables", async () => {
   fixture = createDashboardFixture();
   const { openDashboardReader } = await import("../dashboard-reader.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build" })!;
   try {
     reader.snapshot(ctx => {
       const slice = { start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [], sessionId: "fixture-session", runId: "fixture-run" };
@@ -176,3 +176,7 @@ it.each(["open", "seed"] as const)("fixture restores owned environment when %s t
     if (closed) expect(closed).toHaveBeenCalledOnce();
   } finally { opener.mockRestore(); closed?.mockRestore(); }
 });
+
+// @ts-expect-error calibration mode is required so callers cannot ignore off.
+const missingCalibrationMode: import("../dashboard-contract.js").ReaderOptions = { instanceId: "fixture", now: () => 0, serverBuild: "fixture" };
+void missingCalibrationMode;

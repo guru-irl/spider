@@ -9,7 +9,7 @@ let fixture: ReturnType<typeof createDashboardFixture>;
 let reader: DashboardReader;
 beforeEach(() => {
   fixture = createDashboardFixture();
-  reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" })!;
+  reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build" })!;
 });
 afterEach(() => { reader.close(); fixture.close(); });
 const slice = () => ({ start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [] });
@@ -34,7 +34,7 @@ it("matches Phase 1 period selection", () => {
     expect(readMeasure(ctx, slice(), { runId: "covered-run" }).calls).toBe(0);
     const spy = vi.spyOn(ctx.db, "prepare");
     expect(readMeasure(ctx, slice(), { sessionId: "parent-session" }).aic).toBe(4);
-    expect(spy.mock.calls[0]![0]).toContain("INDEXED BY calls_session_read");
+    expect(spy.mock.calls.find(([sql]) => sql.includes("calls_session_read"))?.[0]).toContain("INDEXED BY calls_session_read");
     spy.mockRestore();
   });
   // Later native evidence suppresses a report globally even when the evidence is outside this slice.
@@ -93,14 +93,18 @@ it("month comparison ends at counter timestamp", async () => {
   fixture.ledger.insertCounter({ ts: counterTs, creditsUsed: 10, entitlement: 100, remaining: 90, resetDate: "2026-11-01", accountLogin: "synthetic-account", raw: { private: "synthetic-only" } });
   fixture.db.prepare("INSERT INTO leases(name,next_due_at) VALUES ('counter',?)").run(DASHBOARD_NOW + 600000);
   const { queryOverview } = await import("../query-overview.js");
-  reader.snapshot(ctx => {
+  const ctx = reader.snapshot(ctx => ctx);
+  {
     const spy = vi.spyOn(ctx.db, "prepare");
     const result = queryOverview(ctx, { ...slice(), filters: [{ field: "project", value: "fixture-project" }] });
     const queries = spy.mock.calls.map(([sql]) => sql);
     spy.mockRestore();
     const args = [[DASHBOARD_MONTH, DASHBOARD_NOW, "fixture-project", DASHBOARD_MONTH, DASHBOARD_NOW], [], [DASHBOARD_MONTH, counterTs]];
-    const plans = queries.map((sql, index) => ctx.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args[index]!));
-    expect(queries).toHaveLength(3);
+    const comparisonQueries = queries.filter(sql => !sql.includes("WITH cap AS MATERIALIZED") && !sql.includes("call-selection-revision") && !sql.includes("SELECT COALESCE(MAX(rowid)") && !sql.includes("FROM counter_snapshots INDEXED"));
+    const plans = comparisonQueries.map((sql, index) => ctx.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args[index]!));
+    expect(comparisonQueries).toHaveLength(3);
+    // One endpoint batch; earliest discovery no longer evaluates candidate batches.
+    expect(queries.filter(sql => sql.includes("WITH cap AS MATERIALIZED"))).toHaveLength(1);
     expect(plans).toHaveLength(3);
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
     expect(result.comparison).toMatchObject({ start: DASHBOARD_MONTH, end: counterTs, counterAic: 10, gap: -2, ratio: 1.2 });
@@ -117,7 +121,7 @@ it("month comparison ends at counter timestamp", async () => {
     expect(previous.pace.counterAic).toBeNull();
     expect(previous.pace.projected).toBeNull();
     expect(previous.counterObservation.ts).toBe(counterTs);
-  });
+  }
   fixture.db.prepare("DELETE FROM counter_snapshots").run();
   fixture.ledger.insertCounter({ ts: counterTs, creditsUsed: 0, raw: {} });
   expect(reader.snapshot(ctx => queryOverview(ctx, slice()).comparison.ratio)).toBeNull();
@@ -130,7 +134,7 @@ it("status separates ingest and counter freshness", () => {
   let now = DASHBOARD_NOW;
   let role: "owner" | "follower" | "standby" | "inactive" = "owner";
   reader.close();
-  reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => now, serverBuild: "fixture-build",
+  reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => now, calibrationMode: () => "auto", serverBuild: "fixture-build",
     ingestStatus: () => ({ role, lastIngestAt: DASHBOARD_NOW, backfill: "complete", errorCode: null }) })!;
   fixture.ledger.insertCounter({ ts: DASHBOARD_NOW - 600000, creditsUsed: 10, raw: {} });
   fixture.db.prepare("INSERT INTO leases(name,next_due_at) VALUES ('counter',?)").run(DASHBOARD_NOW + 600000);
@@ -222,7 +226,7 @@ it("Overview labels are bounded without losing measures", async () => {
 
 it("absent participant timestamp does not inherit published freshness", () => {
   reader.close();
-  reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build",
+  reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build",
     ingestStatus: () => ({ role: "standby", lastIngestAt: null, backfill: "pending", errorCode: "synthetic/path/must-not-leak" }) })!;
   const status = reader.status();
   expect(status.ingest.lastIngestAt).toBeNull();
@@ -321,7 +325,7 @@ it("Context route performs zero SELECTs", async () => {
 
 it("current month comparison rejects pre-month counter anchors", async () => {
   reader.close();
-  reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_MONTH + 1000, serverBuild: "fixture" })!;
+  reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_MONTH + 1000, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   fixture.ledger.insertCounter({ ts: DASHBOARD_MONTH - 1, creditsUsed: 10, raw: {} });
   const { queryOverview } = await import("../query-overview.js");
   const result = reader.snapshot(ctx => queryOverview(ctx, { start: DASHBOARD_MONTH, end: DASHBOARD_MONTH + 1000, filters: [] }));
@@ -385,7 +389,7 @@ it("independent power-of-two accounting hand totals", () => {
     dashboardCall("edge", { ts: M + 10 * D, responseId: "r-edge", price: priced(512) }),
   ], { runs: [run("N", null), run("R", M + 13 * D)],
     coverageEdges: [{ reportRunId: "R", includedRunId: "C", evidence: "transcript" }] }));
-  const reader = openDashboardReader(fixture.file, { instanceId: "i", now: () => M + 25 * D, serverBuild: "b" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "i", now: () => M + 25 * D, calibrationMode: () => "auto", serverBuild: "b" })!;
   try {
     const P = { start: M, end: M + 10 * D, filters: [] };
     const Q = { start: M + 10 * D, end: M + 20 * D, filters: [] };
@@ -414,11 +418,79 @@ it("independent power-of-two accounting hand totals", () => {
 it("Overview evaluates calibration once including the account comparison", () => {
   fixture.ledger.insertCounter({ ts: DASHBOARD_NOW - 100, creditsUsed: 10, raw: {} });
   reader.snapshot(ctx => {
-    const current = vi.spyOn(ctx.calibration, "current");
+    const current = vi.spyOn(ctx.calibration, "atMany");
     try {
       const result = queryOverview(ctx, slice());
       expect(result.comparison.computed).not.toBeNull();
-      expect(current).toHaveBeenCalledExactlyOnceWith("auto");
+      expect(current).toHaveBeenCalledTimes(1);
+      expect(current.mock.calls[0]![0].length).toBeLessThanOrEqual(33);
+      expect(current.mock.calls[0]![0]).toContain(DASHBOARD_NOW - 1);
     } finally { current.mockRestore(); }
   });
+});
+
+it("Overview calibration is account wide", () => {
+  fixture.ledger.apply(dashboardBatch([dashboardCall("calibration-evidence", { ts: DASHBOARD_NOW - DASHBOARD_DAY - 1, project: "other-project", role: "calibration-role",
+    price: { status: "priced", aic: 1000, components: { input: 1000, cacheRead: 0, cacheWrite: 0, output: 0 }, rateVersion: "fixture", tier: "fixture", confidence: "estimated" } })]));
+  fixture.ledger.insertCounter({ ts: DASHBOARD_NOW - DASHBOARD_DAY - 1, creditsUsed: 0, raw: {} });
+  fixture.ledger.insertCounter({ ts: DASHBOARD_NOW - 1, creditsUsed: 560, raw: {} });
+  reader.snapshot(ctx => {
+    const current = vi.spyOn(ctx.calibration, "atMany");
+    const full = queryOverview(ctx, slice());
+    expect(current).toHaveBeenCalledTimes(1);
+    const filtered = queryOverview(ctx, { ...slice(), filters: [{ field: "project", value: "fixture-project" }] });
+    expect(current).toHaveBeenCalledTimes(2); current.mockRestore();
+    expect(full.calibration.factor).toBe(0.56); expect(filtered.calibration).toEqual(full.calibration);
+    expect(filtered.totals).toMatchObject({ aic: 4, calls: 5, unpricedCalls: 1, tokens: { prompt: 300, total: 350 } });
+    expect(filtered.totals.aicDisplay.primaryAic).toBeCloseTo(2.24);
+    const measures = [full.totals, ...full.actors.map(x => x.measure), ...full.roles.map(x => x.measure),
+      ...full.daily.rows.flatMap(x => [x.measure, ...x.actors.map(a => a.measure), ...x.roles.map(r => r.measure)]), full.comparison.computed!];
+    for (const measure of measures) {
+      expect(["calibrated", "back-applied"]).toContain(measure.aicDisplay.basis);
+      expect(measure.aicDisplay.publishedAic).toBe(measure.aic);
+      if (measure.aic !== null) expect(measure.aicDisplay.primaryAic).toBeCloseTo(measure.aic * 0.56);
+    }
+    expect(full.pace.projected!.aicDisplay.primaryAic).toBeCloseTo(full.pace.projected!.aicDisplay.publishedAic! * 0.56);
+    expect(JSON.stringify(full).match(/"calibration":/g)).toHaveLength(1);
+  });
+});
+
+it("Overview uses period-end windows, earliest back-application, and current fit", () => {
+  const M = DASHBOARD_MONTH, D = DASHBOARD_DAY;
+  fixture.db.exec("DELETE FROM calls");
+  const pricedCall = (id: string, ts: number) => dashboardCall(id, { ts, price: priced(1000) });
+  fixture.ledger.apply(dashboardBatch([pricedCall("past", M - D), ...Array.from({ length: 14 }, (_, i) => pricedCall(`fit-${i}`, M + i * D))]));
+  for (let i = 0; i <= 14; i++) fixture.ledger.insertCounter({ ts: M + i * D, creditsUsed: i <= 7 ? i * 500 : 3500 + (i - 7) * 1000, raw: {} });
+  const ctx = reader.snapshot(ctx => ctx);
+  {
+    const beforeSlice = { start: M - D, end: M, filters: [] };
+    const before = queryOverview(ctx, beforeSlice);
+    expect(readMeasure(ctx, beforeSlice).aicDisplay).toMatchObject({ primaryAic: 500, basis: "back-applied" });
+    expect(before.totals.aicDisplay).toMatchObject({ primaryAic: 500, publishedAic: 1000, basis: "back-applied" });
+    expect(before.calibration.windowEnd).toBe(M + D);
+    const past = queryOverview(ctx, { start: M, end: M + 7 * D + 1, filters: [] });
+    expect(past.calibration.factor).toBe(0.5); expect(past.totals.aicDisplay.basis).toBe("calibrated");
+    expect(past.totals.aicDisplay.primaryAic).toBe(past.totals.aic! * 0.5);
+    const current = queryOverview(ctx, { start: M + 7 * D, end: DASHBOARD_NOW, filters: [] });
+    expect(current.calibration.factor).toBe(1); expect(current.totals.aicDisplay.primaryAic).toBe(current.totals.aic);
+    const daily = current.daily.rows.find(day => day.start === M + 7 * D)!;
+    expect(daily.measure.aicDisplay.primaryAic).toBe(daily.measure.aic! * 0.5);
+    expect(current.daily.rows.at(-1)!.measure.aicDisplay.basis).toBe("calibrated");
+    expect(before.daily.rows[0]!.measure.aicDisplay.basis).toBe("back-applied");
+    const currentMonth = queryOverview({ ...ctx, now: () => M + 14 * D + 1000 }, { start: M, end: M + 14 * D + 1000, filters: [] });
+    expect(currentMonth.calibration.factor).toBe(1);
+    expect(currentMonth.comparison.computed!.aicDisplay.primaryAic).toBeCloseTo(currentMonth.comparison.computed!.aic! * (6500 / 7000));
+  }
+});
+
+it("a gap after the first fit stays published even when a later fit exists", () => {
+  const M = DASHBOARD_MONTH, D = DASHBOARD_DAY;
+  fixture.db.exec("DELETE FROM calls");
+  fixture.ledger.apply(dashboardBatch([dashboardCall("early", { ts: M, price: priced(1000) }), dashboardCall("gap-period", { ts: M + 10 * D, price: priced(1000) })]));
+  for (const [day, credits] of [[0, 0], [1, 500], [10, 600], [11, 1600]]) fixture.ledger.insertCounter({ ts: M + day! * D, creditsUsed: credits!, raw: {} });
+  const ctx = reader.snapshot(ctx => ctx);
+  const result = queryOverview(ctx, { start: M + 10 * D, end: M + 10 * D + 1, filters: [] });
+  expect(result.calibration).toMatchObject({ status: "uncalibrated", windowEnd: M + 10 * D });
+  expect(result.totals.aicDisplay).toEqual({ primaryAic: 1000, publishedAic: 1000, basis: "published" });
+  expect(readMeasure(ctx, { start: M + 10 * D, end: M + 10 * D + 1, filters: [] }).aicDisplay).toEqual(result.totals.aicDisplay);
 });

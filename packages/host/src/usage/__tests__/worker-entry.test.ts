@@ -8,7 +8,7 @@ import { openUsageLedger, type UsageLedger } from "../ledger.js";
 import { ingestOnce } from "../ingest.js";
 import { acquireUsageLease, UsageLeaseError } from "../lease.js";
 import type { UsageWorkerEvent } from "../protocol.js";
-const reads = vi.hoisted(() => ({ health: 0, summaries: 0, followers: [] as UsageLedger[] }));
+const reads = vi.hoisted(() => ({ health: 0, summaries: 0, calibration: 0, followers: [] as UsageLedger[] }));
 vi.mock("../ledger.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../ledger.js")>();
   return { ...actual, openUsageLedgerReadOnly: (file: string) => {
@@ -16,6 +16,7 @@ vi.mock("../ledger.js", async importOriginal => {
     if (store) { reads.followers.push(store); const health = store.health.bind(store), summarize = store.summarize.bind(store);
       store.health = () => { reads.health++; return health(); };
       store.summarize = (...args) => { reads.summaries++; return summarize(...args); };
+      if (store.getCalibration) { const calibrate = store.getCalibration.bind(store); store.getCalibration = mode => { reads.calibration++; return calibrate(mode); }; }
     }
     return store;
   } };
@@ -276,4 +277,38 @@ it.each(["exception", "storage"])("an ingest %s failure after ledger open report
   expect(p.events).toContainEqual({ type: "error", code: "usage-ingest-failed" });
   const check = openUsageLedger(c.roots.ledgerFile);
   try { expect(check.getBackfillState()).toBe("failed"); } finally { check.close(); }
+});
+
+it("calibration DTO preserves old snapshots and reloads", async () => {
+  const { dashboardBatch, dashboardCall } = await import("./fixtures/dashboard-ledger.js");
+  const c = command(), owner = port();
+  const ledger = openUsageLedger(c.roots.ledgerFile);
+  ledger.apply(dashboardBatch([dashboardCall("calibration-call", { ts: at - 86400000, price: { status: "priced", aic: 1000, components: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, rateVersion: "fixture", tier: "fixture", confidence: "estimated" } })]));
+  ledger.insertCounter({ ts: at - 86400000, creditsUsed: 0, raw: {} }); ledger.insertCounter({ ts: at, creditsUsed: 560, raw: {} });
+  ledger.close();
+  const Database = (await import("better-sqlite3")).default, check = new Database(c.roots.ledgerFile);
+  const revision = () => check.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get();
+  const before = revision();
+  try {
+    await bootUsageWorker(owner as unknown as MessagePort, { ...c, calibration: "auto" }, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+    await vi.waitFor(() => expect(snapshots(owner).at(-1)?.backfill).toBe("complete"));
+    expect(snapshots(owner).at(-1)?.calibration).toMatchObject({ status: "calibrated", factor: 0.56 });
+    expect(revision()).toEqual(before);
+    reads.calibration = 0; const follower = port();
+    await bootUsageWorker(follower as unknown as MessagePort, { ...c, owner: `${process.pid}:calibration-follower`, calibration: "auto" }, { now: () => at });
+    await vi.waitFor(() => expect(snapshots(follower).length).toBeGreaterThan(0));
+    expect(snapshots(follower).at(-1)?.calibration).toEqual(snapshots(owner).at(-1)?.calibration);
+    expect(reads.calibration).toBe(0);
+    const offFollower = port();
+    await bootUsageWorker(offFollower as unknown as MessagePort, { ...c, owner: `${process.pid}:off-follower`, calibration: "off" }, { now: () => at });
+    await vi.waitFor(() => expect(snapshots(offFollower).length).toBeGreaterThan(0));
+    expect(snapshots(offFollower).at(-1)?.calibration).toMatchObject({ status: "off", factor: null });
+    expect(snapshots(owner).at(-1)?.calibration?.status).toBe("calibrated");
+    owner.emit("message", { type: "configure", poll: false, calibration: "off" });
+    await vi.waitFor(() => expect(snapshots(owner).at(-1)?.calibration?.status).toBe("off"));
+    expect(snapshots(owner).at(-1)?.health.calls).toBe(1); expect(snapshots(owner).at(-1)?.counter.availability).toBe("disabled");
+    owner.emit("message", { type: "configure", poll: false, calibration: "auto" });
+    await vi.waitFor(() => expect(snapshots(owner).at(-1)?.calibration?.status).toBe("calibrated"));
+    expect(revision()).toEqual(before);
+  } finally { check.close(); }
 });

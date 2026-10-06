@@ -1,19 +1,11 @@
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { assertUsageSchemaVersion } from "./migrate.js";
 import { counterSnapshotIsFresh } from "./counter.js";
+import { createCalibrationService } from "./calibration.js";
 import { safeTimestamp } from "./dashboard-selection.js";
 import { phase2CompositionProvider } from "./composition-provider.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
-import { DashboardQueryError, type DashboardReader, type ReaderOptions, type DashboardQueryContext, type CalibrationService, type CalibrationResult, type DashboardCounter, type DashboardStatus, type DashboardIngestState } from "./dashboard-contract.js";
-
-const fallback = (mode: "auto" | "off"): CalibrationResult => ({
-  status: mode === "off" ? "off" : "uncalibrated", factor: null, windowStart: null, windowEnd: null,
-  coveredHours: 0, computedAic: 0, counterDelta: 0, unpricedCalls: 0, method: "trailing-7d-ratio",
-});
-const calibration: CalibrationService = {
-  current: fallback, at: (_end, mode) => fallback(mode), atMany: (ends, mode) => ends.map(() => fallback(mode)),
-  history: () => ({ rows: [], nextCursor: null }),
-};
+import { DashboardQueryError, type DashboardReader, type ReaderOptions, type DashboardQueryContext, type DashboardCounter, type DashboardStatus, type DashboardIngestState } from "./dashboard-contract.js";
 
 export function readDashboardCounter(db: Db, now: number): DashboardCounter {
   const row = db.prepare(`SELECT ts, credits_used AS creditsUsed, entitlement, remaining, reset_date AS resetDate,
@@ -53,6 +45,7 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
       if (!row || !/^\d+$/.test(row.value)) throw new DashboardQueryError("ledger-unavailable");
       return `${options.instanceId}:${row.value}`;
     };
+    const calibration = createCalibrationService(db, { revision });
     const rates = options.rates ?? COPILOT_RATE_VERSIONS;
     const readStatus = (now: number): DashboardStatus => {
       const metadata = db.prepare("SELECT key,value FROM ledger_metadata WHERE key IN ('worker-snapshot','backfill-state')").all() as { key: string; value: string }[];
@@ -91,7 +84,7 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
           return db.raw.transaction(() => read({ db, instanceId: options.instanceId, revision: revision(), now: () => now, rates,
           composition: phase2CompositionProvider,
           calibration,
-          calibrationMode: options.calibrationMode?.() ?? "auto", status: () => readStatus(now) })).deferred();
+          calibrationMode: options.calibrationMode(), status: () => readStatus(now) })).deferred();
         });
       },
       close() { db.close(); },

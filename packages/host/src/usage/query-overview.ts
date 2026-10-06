@@ -1,4 +1,4 @@
-import type { DashboardQueryContext, OverviewData, OverviewDay, OverviewBreakdown, Slice, TokenTotals, DashboardRoute, ContextData } from "./dashboard-contract.js";
+import type { DashboardQueryContext, OverviewData, OverviewDay, OverviewBreakdown, Slice, TokenTotals, DashboardRoute, ContextData, CalibrationResult, AicDisplay } from "./dashboard-contract.js";
 import { querySourceErrors } from "./query-source-errors.js";
 import { readDashboardCounter } from "./dashboard-reader.js";
 import { countedUsageSql } from "./schema.js";
@@ -34,28 +34,6 @@ export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailySta
       FROM day_rows c JOIN role_ranks r ON r.role IS c.role GROUP BY day,CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END
     ORDER BY branch, day, rank, label`).all(...compiled.params, dailyStart, dailyEnd) as
     (MeasureRow & { branch: string; label: string | null; rank: number; day: number | null })[];
-  const calibration = ctx.calibration.current(ctx.calibrationMode);
-  const total = rows.find(row => row.branch === "totals")!;
-  const empty = { ...emptyMeasureRow, pendingData: total.pendingData, possibleUndercount: total.pendingData ?? 0 };
-  const actorLabels = ["parent", "subagent", "aux", "compaction", "warmer"];
-  const actors = actorLabels.map(label => {
-    const row = rows.find(row => row.branch === "actor" && row.label === label) ?? empty;
-    return { label, isOther: false, measure: measureFromRow(ctx, row, calibration) };
-  });
-  const roles: OverviewBreakdown[] = rows.filter(row => row.branch === "role")
-    .map(row => ({ label: publicLabel(row.label), isOther: row.rank === 9, measure: measureFromRow(ctx, row, calibration) }));
-  const days: OverviewDay[] = [];
-  for (let day = firstDay; day < dailyEnd; day += DAY_MS) {
-    const row = rows.find(row => row.branch === "day" && row.day === day) ?? empty;
-    days.push({ start: Math.max(day, dailyStart), end: Math.min(day + DAY_MS, dailyEnd), label: new Date(day).toISOString().slice(0, 10),
-      measure: measureFromRow(ctx, row, calibration),
-      actors: actorLabels.map(label => ({ label, isOther: false, measure: measureFromRow(ctx, rows.find(row => row.branch === "day-actor" && row.day === day && row.label === label) ?? empty, calibration) })),
-      roles: rows.filter(row => row.branch === "role").map(role => ({ label: publicLabel(role.label), isOther: role.rank === 9,
-        measure: measureFromRow(ctx, rows.find(row => row.branch === "day-role" && row.day === day && row.rank === role.rank) ?? empty, calibration) })),
-    });
-  }
-  const daily = { rows: days, nextCursor: dailyEnd < slice.end ? encodeCursor("overview-daily", ctx.revision, slice, [dailyEnd]) : null };
-  const totals = measureFromRow(ctx, total, calibration);
   const now = ctx.now();
   const date = new Date(now);
   const monthStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
@@ -64,7 +42,53 @@ export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailySta
   /** Current month requests tolerate a client end timestamp up to 60 seconds behind now. */
   const current = slice.start === monthStart && slice.end >= now - 60000;
   const comparable = current && counterObservation.availability === "available" && counterObservation.ts! > monthStart;
-  const computed = comparable ? readMeasure(ctx, { start: monthStart, end: counterObservation.ts!, filters: [] }, undefined, calibration) : null;
+  const endPoint = (end: number) => Math.max(0, Math.min(end, now) - 1);
+  // Memoize exact endpoints (not day buckets): partial days and now must keep
+  // their own valid fit. One batch per response, at most 31 days + slice end + comparison end.
+  const ends = [...new Set([endPoint(slice.end), ...(comparable ? [endPoint(counterObservation.ts!)] : []), ...Array.from({ length: Math.ceil((dailyEnd - firstDay) / DAY_MS) },
+    (_, i) => endPoint(Math.min(firstDay + (i + 1) * DAY_MS, dailyEnd)))])];
+  const fits = ctx.calibration.atMany(ends, ctx.calibrationMode);
+  let earliest: CalibrationResult | undefined;
+  const fitByEnd = new Map(ends.map((end, i) => {
+    let fit = fits[i]!, basis: AicDisplay["basis"] = fit.status === "calibrated" ? "calibrated" : "published";
+    if (ctx.calibrationMode !== "off" && fit.status !== "calibrated") {
+      earliest ??= ctx.calibration.earliest(ctx.calibrationMode);
+      if (earliest.status === "calibrated" && earliest.windowEnd !== null && end < earliest.windowEnd) { fit = earliest; basis = "back-applied"; }
+    }
+    return [end, { fit, basis }] as const;
+  }));
+  const periodFit = fitByEnd.get(endPoint(slice.end))!;
+  const calibration = periodFit.fit;
+  const measure = (row: MeasureRow, selected = periodFit) => {
+    const result = measureFromRow(ctx, row, selected.fit);
+    if (result.aicDisplay.basis === "calibrated") result.aicDisplay.basis = selected.basis;
+    return result;
+  };
+  const total = rows.find(row => row.branch === "totals")!;
+  const empty = { ...emptyMeasureRow, pendingData: total.pendingData, possibleUndercount: total.pendingData ?? 0 };
+  const actorLabels = ["parent", "subagent", "aux", "compaction", "warmer"];
+  const actors = actorLabels.map(label => {
+    const row = rows.find(row => row.branch === "actor" && row.label === label) ?? empty;
+    return { label, isOther: false, measure: measure(row) };
+  });
+  const roles: OverviewBreakdown[] = rows.filter(row => row.branch === "role")
+    .map(row => ({ label: publicLabel(row.label), isOther: row.rank === 9, measure: measure(row) }));
+  const days: OverviewDay[] = [];
+  for (let day = firstDay; day < dailyEnd; day += DAY_MS) {
+    const dayFit = fitByEnd.get(endPoint(Math.min(day + DAY_MS, dailyEnd)))!;
+    const row = rows.find(row => row.branch === "day" && row.day === day) ?? empty;
+    days.push({ start: Math.max(day, dailyStart), end: Math.min(day + DAY_MS, dailyEnd), label: new Date(day).toISOString().slice(0, 10),
+      measure: measure(row, dayFit),
+      actors: actorLabels.map(label => ({ label, isOther: false, measure: measure(rows.find(row => row.branch === "day-actor" && row.day === day && row.label === label) ?? empty, dayFit) })),
+      roles: rows.filter(row => row.branch === "role").map(role => ({ label: publicLabel(role.label), isOther: role.rank === 9,
+        measure: measure(rows.find(row => row.branch === "day-role" && row.day === day && row.rank === role.rank) ?? empty, dayFit) })),
+    });
+  }
+  const daily = { rows: days, nextCursor: dailyEnd < slice.end ? encodeCursor("overview-daily", ctx.revision, slice, [dailyEnd]) : null };
+  const totals = measure(total);
+  const comparisonFit = comparable ? fitByEnd.get(endPoint(counterObservation.ts!))! : periodFit;
+  const computed = comparable ? readMeasure(ctx, { start: monthStart, end: counterObservation.ts!, filters: [] }, undefined, comparisonFit.fit) : null;
+  if (computed?.aicDisplay.basis === "calibrated") computed.aicDisplay.basis = comparisonFit.basis;
   const counterAic = comparable ? counterObservation.creditsUsed : null;
   const elapsedFraction = current && now > monthStart ? (now - monthStart) / (monthEnd - monthStart) : null;
   const scale = (value: number | null, factor: number) => value === null ? null : value * factor;

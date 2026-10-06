@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { DashboardQueryError, type Dimension, type Slice, type DashboardQueryContext, type UsageMeasure, type CalibrationResult } from "./dashboard-contract.js";
+import { DashboardQueryError, type Dimension, type Slice, type DashboardQueryContext, type UsageMeasure, type CalibrationResult, type AicDisplay } from "./dashboard-contract.js";
 
 import { countedUsageSql } from "./schema.js";
+import { toAicDisplay } from "./aic-display.js";
 
 export const DAY_MS = 86_400_000;
 const columns: Record<Dimension, string> = {
@@ -102,17 +103,28 @@ export function measureFromRow(ctx: DashboardQueryContext, row: MeasureRow, cali
     tokens: { input: row.input, cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, output: row.output,
       cacheWrite1h: row.cacheWrite1h, reasoning: row.reasoning, prompt, total: prompt + row.output },
     aic, aicComponents: { input: row.aicInput, cacheRead: row.aicCacheRead, cacheWrite: row.aicCacheWrite, output: row.aicOutput },
-    aicDisplay: { primaryAic: aic, publishedAic: aic, basis: "published" },
+    aicDisplay: toAicDisplay(aic, row.unpricedCalls, calibration),
     piCost: row.piCost, possibleOverlap: Boolean(row.possibleOverlap), possibleUndercount: Boolean(row.possibleUndercount),
     pendingData: Boolean(row.pendingData), estimated: Boolean(row.possibleOverlap || row.possibleUndercount),
   };
 }
 export function readMeasure(ctx: DashboardQueryContext, slice: Slice, scope?: { sessionId?: string; runId?: string },
-  calibration: CalibrationResult = ctx.calibration.current(ctx.calibrationMode)): UsageMeasure {
+  calibration?: CalibrationResult): UsageMeasure {
+  let basis: AicDisplay["basis"] | undefined;
+  if (!calibration) {
+    const end = Math.max(0, Math.min(slice.end, ctx.now()) - 1);
+    calibration = ctx.calibration.at(end, ctx.calibrationMode);
+    if (ctx.calibrationMode !== "off" && calibration.status !== "calibrated") {
+      const earliest = ctx.calibration.earliest(ctx.calibrationMode);
+      if (earliest.status === "calibrated" && earliest.windowEnd !== null && end < earliest.windowEnd) { calibration = earliest; basis = "back-applied"; }
+    }
+  }
   const compiled = compileSlice(slice, scope);
   const row = ctx.db.prepare(`SELECT ${measureColumns} FROM (${countedUsageSql(compiled.sql, "c.*", scope?.sessionId ? "calls_session_read" : "calls_period_read")})`)
     .get(...compiled.params) as MeasureRow;
-  return measureFromRow(ctx, row, calibration);
+  const result = measureFromRow(ctx, row, calibration);
+  if (basis) result.aicDisplay.basis = basis;
+  return result;
 }
 
 export function validatePage(page: { limit: number; cursor?: string }, maximum = 200): void {

@@ -1,6 +1,7 @@
 import type { ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
+import { calibrationFallback } from "../calibration.js";
 import { FooterAccumulator } from "../footer-state.js";
 import * as pricing from "../price.js";
 import { createUsageFooter, renderUsageFooter, type FooterInput } from "../footer.js";
@@ -63,7 +64,7 @@ describe("usage footer layout", () => {
 
   it("row two drops entire lowest priority items", () => {
     const variant = input();
-    const items = ["14.6%/1.0M", "~3,294 AIC", "CH99.3%", "month 3.4%", "↑3.7M ↓4.0M", "R763M W65M"];
+    const items = ["14.6%/1.0M", "~3,294 AIC ?", "CH99.3%", "month 3.4%", "↑3.7M ↓4.0M", "R763M W65M"];
     for (let retained = items.length; retained > 0; retained--) {
       const expected = items.slice(0, retained).join(" ");
       expect(renderUsageFooter(variant, visibleWidth(expected))[1]).toBe(expected);
@@ -95,15 +96,20 @@ describe("usage footer layout", () => {
     expect(renderUsageFooter(input({ context: { percent: null, contextWindow: 1000000 } }), 200)[1]).toContain("?/1.0M");
   });
 
-  it("labels partial and estimated AIC independently of subscription or dollars", () => {
-    const variant = input();
+  it.each([
+    ["off", null, "~3,294+ AIC est"], ["uncalibrated", null, "~3,294+ AIC ?"],
+    ["implausible", 2, "~3,294+ AIC ?"], ["calibrated", 0.56, "1,844+ AIC cal"],
+  ] as const)("labels partial and estimated AIC with %s calibration independently of subscription or dollars", (status, factor, expected) => {
+    const variant = input({ calibration: { ...calibrationFallback(), status, factor } });
     variant.totals.unpricedEntries = 2;
-    expect(renderUsageFooter(variant, 200)[1]).toContain("~3,294+ AIC");
-    expect(renderUsageFooter({ ...variant, subscription: false }, 200)[1]).toBe(renderUsageFooter(variant, 200)[1]);
+    expect(variant.totals.estimated).toBe(true);
+    const rendered = renderUsageFooter(variant, 200)[1];
+    expect(rendered).toContain(expected);
+    if (status === "calibrated") expect(rendered).not.toContain("~");
+    expect(renderUsageFooter({ ...variant, subscription: false }, 200)[1]).toBe(rendered);
     variant.totals.estimated = false;
     variant.totals.aggregateEntries = 0;
-    expect(renderUsageFooter(variant, 200)[1]).toContain("3,294+ AIC");
-    expect(renderUsageFooter(variant, 200)[1]).not.toContain("~");
+    expect(renderUsageFooter(variant, 200)[1]).toBe(rendered);
   });
 
   it("retains nonzero fractional AIC rather than presenting estimated zero", () => {
@@ -285,7 +291,7 @@ describe("public usage footer component", () => {
       const component = themed(input({ context: { percent, contextWindow: 1000000 } }));
       try {
         expect(component.render(200)[1]).toContain(`${color}${percent.toFixed(1)}%/1.0M\x1b[0m`);
-        expect(component.render(200)[1]).toContain("\x1b[2m~3,294 AIC\x1b[0m");
+        expect(component.render(200)[1]).toContain("\x1b[2m~3,294 AIC ?\x1b[0m");
       } finally { component.dispose(); }
     });
 
@@ -330,4 +336,19 @@ describe("public usage footer component", () => {
       component.dispose();
     } finally { spy.mockRestore(); }
   });
+});
+
+it.each([["calibrated", 0.56, "1,845", "cal"], ["uncalibrated", null, "3,294", "?"], ["implausible", 2, "3,294", "?"], ["off", null, "3,294", "est"]] as const)("footer %s calibration marker fits forty to two hundred columns", (status, factor, amount, marker) => {
+    const variant = input({ calibration: { ...calibrationFallback(), status, factor } });
+    for (let width = 40; width <= 200; width++) {
+      const lines = renderUsageFooter(variant, width);
+      for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+      expect(lines[1]).toContain(`${status === "calibrated" ? "" : "~"}${amount} AIC ${marker}`);
+      expect(lines[1]).not.toContain("published");
+      expect(lines[1]).not.toContain("≈");
+      if (status === "calibrated") expect(lines[1]).not.toContain("~");
+      if (status === "calibrated") expect(lines[1]).not.toContain("3,294");
+    }
+    variant.totals.unpricedEntries = 1;
+    expect(renderUsageFooter(variant, 80)[1]).toContain(`${status === "calibrated" ? "" : "~"}${status === "calibrated" ? "1,844" : amount}+ AIC ${marker}`);
 });

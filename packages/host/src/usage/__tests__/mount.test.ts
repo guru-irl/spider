@@ -4,9 +4,10 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import { mountUsage } from "../mount.js";
 import type { UsageRuntime } from "../runtime.js";
 import type { UsageRuntimeSnapshot } from "../protocol.js";
+import { calibrationFallback } from "../calibration.js";
 import * as pricing from "../price.js";
 vi.mock("../ledger.js", () => ({ openUsageLedger: () => { throw new Error("main-thread ledger open forbidden"); } }));
-const config = { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
+const config = { calibration: "auto" as "auto" | "off", footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
 const stamp = "2026-10-04T12:00:00.000Z";
 const usage = (input: number) => ({ input, output: 10, cacheRead: 20, cacheWrite: 0, totalTokens: input + 30, cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 } });
 const assistant = (id: string, input: number) => ({ type: "message", id, parentId: null, timestamp: stamp, message: { role: "assistant", content: [], api: "openai-responses", provider: "github-copilot", model: "gpt-6.1-sol", usage: usage(input), stopReason: "stop", timestamp: Date.parse(stamp) } });
@@ -34,6 +35,7 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   return { pi, ctx, runtime, setFooter, getEntries, getBranch, registry, unsubBranch, requestRender,
     append: (entry: unknown) => entries.push(entry), replace: (next: unknown[], nextFile = file) => { entries = next; file = nextFile; },
     counter: (creditsUsed: number, ts = 100) => { snapshot = { ...snapshot, counter: { availability: "available", role: "owner", lastAttemptAt: ts, lastSuccessAt: ts, nextPollAt: ts + 600000, snapshotAgeMs: 0, errorCode: null, notice: null, latest: { creditsUsed, entitlement: 100, ts, raw: {} } } }; },
+    calibrate: () => { snapshot = { ...snapshot, calibration: { ...calibrationFallback(), status: "calibrated", factor: 0.5 } }; },
     failWorker: () => { snapshot = { ...snapshot, errorCode: "usage-worker-failed" }; },
     emit: (name: string, event: unknown = {}) => { for (const handler of [...events.get(name) ?? []]) handler(event, ctx); },
     render: (width = 200) => footer!.render(width), invalidate: () => footer!.invalidate(), listenerCount: () => [...events.values()].reduce((n, set) => n + set.size, 0) };
@@ -56,7 +58,7 @@ describe("public usage footer mount", () => {
   });
   it("poll changes hot-apply separately from footer and alerts", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, counterPoll: false, alertsSessionCredits: 10 });
-    expect(f.runtime.configure).toHaveBeenLastCalledWith(false); expect(f.render()[1]).toMatch(/AIC/);
+    expect(f.runtime.configure).toHaveBeenLastCalledWith(false, "auto"); expect(f.render()[1]).toMatch(/AIC/);
   });
   it("reads public thinking name context and subscription flag and omits unknown auto state", () => {
     const f = fixture(); mount(f);
@@ -161,4 +163,15 @@ describe("public usage footer mount", () => {
   it("worker error does not uninstall a working footer", () => {
     const f = fixture(); mount(f); f.failWorker(); mounted!.refresh(); expect(f.render()[1]).toMatch(/AIC/); expect(f.setFooter).toHaveBeenCalledTimes(1);
   });
+});
+
+it("calibration reload changes footer without repricing tokens", () => {
+  const f = fixture(); f.replace([assistant("a", 1000000)]); f.calibrate();
+  const price = vi.spyOn(pricing, "priceCall"); mount(f);
+  expect(f.render()[1]).toContain("200 AIC cal");
+  mounted!.configure({ ...config, calibration: "off" });
+  expect(f.runtime.configure).toHaveBeenLastCalledWith(true, "off");
+  expect(f.render()[1]).toContain("~400 AIC est");
+  expect(f.render()[1]).toContain("↑1.0M ↓10");
+  expect(price).toHaveBeenCalledTimes(1);
 });

@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { calibrationFallback } from "./calibration.js";
 import type { MessagePort } from "node:worker_threads";
 import { discoverUsageSources } from "./discovery.js";
 import { ingestOnce } from "./ingest.js";
@@ -31,6 +32,7 @@ export async function bootUsageWorker(
   let ledger: UsageLedger | undefined, lease: Lease | undefined, poller: CounterPoller | undefined;
   let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
   let poll = command.poll;
+  let calibrationMode = command.calibration ?? "auto";
   let reopen = false;
   let backfill: BackfillState = "pending";
   let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
@@ -90,7 +92,7 @@ export async function bootUsageWorker(
     if (!lease) {
       const currentVersion = ledger.dataVersion();
       if (version !== currentVersion) { cachedSnapshot = ledger.getPublishedSnapshot(); version = currentVersion; }
-      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0, unpricedModels: [] }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
+      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, calibration: calibrationFallback(), health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0, unpricedModels: [] }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
       const comparison = { ...snapshot.reconciliation };
       // Until the owner publishes the matching window, do not compare a new
       // counter to a summary of a different interval. No follower ledger scan.
@@ -98,12 +100,14 @@ export async function bootUsageWorker(
       if (!latest || latest.ts !== comparison.windowEnd) {
         comparison.counterAIC = comparison.gap = comparison.ratio = null;
       }
-      post({ ...snapshot, ingestRole: "follower", counter: counterState, reconciliation: comparison });
+      const calibration = calibrationMode === "off" ? calibrationFallback("off")
+        : snapshot.calibration?.status === "off" ? calibrationFallback() : snapshot.calibration ?? calibrationFallback();
+      post({ ...snapshot, calibration, ingestRole: "follower", counter: counterState, reconciliation: comparison });
       return;
     }
     const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }
@@ -201,7 +205,7 @@ export async function bootUsageWorker(
     if (message?.type === "stop") { void stop(); return; }
     if (stopped) return;
     if (message?.type === "refresh") request();
-    else if (message?.type === "configure") { poll = message.poll; poller?.setEnabled(poll); request(); }
+    else if (message?.type === "configure") { poll = message.poll; calibrationMode = message.calibration ?? calibrationMode; poller?.setEnabled(poll); request(); }
   }
   port.on("message", onMessage);
   try {

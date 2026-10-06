@@ -135,7 +135,7 @@ it.each(["usage-ingest-lease-lost", "usage-ingest-lease-busy"])("%s becomes a he
   f.worker.emit("message", { type: "error", code });
   const state = f.runtime.snapshot();
   expect(state).toMatchObject({ backfill: "complete", errorCode: null, ingestRole: "follower" });
-  const report = usageDoctorLines(state, { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 });
+  const report = usageDoctorLines(state, { calibration: "auto", footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 });
   expect(report.ok).toBe(true);
   expect(report.lines.join("\n")).toContain("ingest: follower (another pi session owns ingestion)");
 });
@@ -143,5 +143,38 @@ it("an ingest exception fails backfill with its distinct code", async () => {
   const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
   f.worker.emit("message", snapshot); f.worker.emit("message", { type: "error", code: "usage-ingest-failed" });
   expect(f.runtime.snapshot()).toMatchObject({ backfill: "failed", errorCode: "usage-ingest-failed" });
-  expect(usageDoctorLines(f.runtime.snapshot(), { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 }).ok).toBe(false);
+  expect(usageDoctorLines(f.runtime.snapshot(), { calibration: "auto", footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 }).ok).toBe(false);
+});
+
+it("calibration DTO preserves old snapshots and reloads", async () => {
+  const f = fixture(); f.runtime.start(false, "auto"); await vi.advanceTimersByTimeAsync(0);
+  expect((f.factory.mock.calls[0] as unknown as [URL, any])[1].workerData.command.calibration).toBe("auto");
+  f.worker.emit("message", snapshot);
+  expect(f.runtime.snapshot().calibration).toMatchObject({ status: "uncalibrated", factor: null });
+  const calibration = { status: "calibrated", factor: 0.56, windowStart: 0, windowEnd: 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 0, method: "trailing-7d-ratio" };
+  f.worker.emit("message", { ...snapshot, calibration });
+  expect(f.runtime.snapshot().calibration).toEqual(calibration);
+  f.runtime.configure(false, "off");
+  expect(f.worker.commands.at(-1)).toMatchObject({ type: "configure", poll: false, calibration: "off" });
+  expect(f.runtime.snapshot()).toMatchObject({ health: { calls: 3 }, calibration: { status: "off", factor: null } });
+  f.runtime.configure(false, "auto");
+  expect(f.runtime.snapshot()).toMatchObject({ health: { calls: 3 }, calibration: { status: "uncalibrated" } });
+  f.worker.emit("message", { ...snapshot, calibration });
+  expect(f.runtime.snapshot().calibration?.factor).toBe(0.56);
+});
+
+it("unchanged calibration keeps legacy poll-only configure DTO", async () => {
+  const f = fixture(); f.runtime.start(true, "auto"); await vi.advanceTimersByTimeAsync(0);
+  f.runtime.configure(false, "auto");
+  expect(f.worker.commands.at(-1)).toEqual({ type: "configure", poll: false });
+  f.runtime.configure(false, "off");
+  expect(f.worker.commands.at(-1)).toEqual({ type: "configure", poll: false, calibration: "off" });
+  f.runtime.configure(true, "off");
+  expect(f.worker.commands.at(-1)).toEqual({ type: "configure", poll: true });
+});
+
+it("runtime snapshot enforces off after a calibrated worker event", async () => {
+  const f = fixture(); f.runtime.start(false, "off"); await vi.advanceTimersByTimeAsync(0);
+  f.worker.emit("message", { ...snapshot, calibration: { status: "calibrated", factor: 0.56 } });
+  expect(f.runtime.snapshot().calibration).toMatchObject({ status: "off", factor: null });
 });

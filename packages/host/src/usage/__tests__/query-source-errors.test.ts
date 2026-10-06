@@ -13,7 +13,7 @@ it("source errors page kinds through a single rowid scan without a temp sort", a
     sourceErrors: [{ path: "synthetic/a.jsonl", code: "EIO" }],
   }));
   const { querySourceErrors } = await import("../query-source-errors.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   try {
     reader.snapshot(ctx => {
       const original = ctx.db.prepare.bind(ctx.db);
@@ -50,7 +50,7 @@ it("source errors are bounded and path-redacted", async () => {
   }));
   const api = await import("../query-source-errors.js").catch(() => null);
   expect(api, "redacted source errors API must exist").not.toBeNull();
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, serverBuild: "fixture-build" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build" })!;
   try {
     let cursor: string | undefined;
     const rows = [];
@@ -112,8 +112,8 @@ it("single-kind sources page completely at limit one across call ingest", async 
   }));
   const { querySourceErrors, readSourceErrorDiagnostics } = await import("../query-source-errors.js");
   const { encodeCursor } = await import("../dashboard-selection.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, serverBuild: "fixture" })!;
-  const other = openDashboardReader(fixture.file, { instanceId: "other", now: () => DASHBOARD_NOW, serverBuild: "fixture" })!;
+  const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
+  const other = openDashboardReader(fixture.file, { instanceId: "other", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   try {
     const first = reader.snapshot(ctx => querySourceErrors(ctx, { limit: 1 }));
     expect(first.nextCursor).not.toBeNull();

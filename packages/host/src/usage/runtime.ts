@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { calibrationFallback } from "./calibration.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { UsageRoots } from "./discovery.js";
 import type { UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
@@ -30,6 +31,7 @@ export class UsageRuntime {
   private started = false;
   private stopped = false;
   private poll = false;
+  private calibrationMode: "auto" | "off" | undefined;
   private refreshPending = false;
   private workerFailed = false;
   private stopping: Promise<void> | undefined;
@@ -37,9 +39,9 @@ export class UsageRuntime {
   private current: UsageRuntimeSnapshot = { health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null };
   constructor(private readonly options: UsageRuntimeOptions) {}
 
-  start(poll: boolean): void {
+  start(poll: boolean, calibration?: "auto" | "off"): void {
     if (this.started || this.stopped || this.options.child) return;
-    this.started = true; this.poll = poll;
+    this.started = true; this.poll = poll; this.calibrationMode = calibration;
     // A macrotask, not an awaited session_start hook or a microtask inside it.
     this.startup = setTimeout(() => {
       this.startup = undefined;
@@ -50,6 +52,7 @@ export class UsageRuntime {
         if (entry.protocol !== "file:" || !/\.m?js$/.test(entry.pathname)) { this.fail("usage-worker-unavailable"); return; }
         const command: Extract<UsageWorkerCommand, { type: "start" }> = {
           type: "start", roots: this.options.roots, owner: `${process.pid}:${randomUUID()}`, child: false, poll: this.poll,
+          ...(this.calibrationMode ? { calibration: this.calibrationMode } : {}),
         };
         const env = { ...process.env };
         delete env.NODE_OPTIONS;
@@ -71,11 +74,20 @@ export class UsageRuntime {
     if (!this.worker || this.stopped || this.refreshPending) return;
     this.refreshPending = true; this.send({ type: "refresh" });
   }
-  configure(poll: boolean): void {
+  configure(poll: boolean, calibration?: "auto" | "off"): void {
     this.poll = poll;
-    if (this.worker && !this.stopped) this.send({ type: "configure", poll });
+    const modeChanged = calibration !== undefined && calibration !== (this.calibrationMode ?? "auto");
+    if (modeChanged) {
+      this.calibrationMode = calibration;
+      this.current = { ...this.current, calibration: calibrationFallback(calibration) };
+      this.notify();
+    }
+    if (this.worker && !this.stopped) this.send({ type: "configure", poll, ...(modeChanged ? { calibration } : {}) });
   }
-  snapshot(): UsageRuntimeSnapshot { return structuredClone(this.current); }
+  snapshot(): UsageRuntimeSnapshot {
+    return structuredClone({ ...this.current, calibration: this.calibrationMode === "off" ? calibrationFallback("off")
+      : this.current.calibration ?? calibrationFallback() });
+  }
   private notify(): void { try { this.options.onSnapshot?.(this.snapshot()); } catch { /* UI errors do not escape the lifecycle */ } }
   private fail(code: string): void { this.refreshPending = false; this.current = { ...this.current, backfill: "failed", errorCode: code }; this.notify(); }
   private send(command: UsageWorkerCommand): void { try { this.worker?.postMessage(command); } catch (error) { if (!this.stopped) this.fail(failureCode(error)); } }
@@ -84,7 +96,7 @@ export class UsageRuntime {
     if (this.stopped) return;
     if (event?.type === "snapshot") {
       this.refreshPending = false;
-      this.current = { health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
+      this.current = { calibration: event.calibration, health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
       this.notify();
     } else if (event?.type === "error") {
       if (event.code === "usage-ingest-lease-lost" || event.code === "usage-ingest-lease-busy") {

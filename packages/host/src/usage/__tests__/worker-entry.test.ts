@@ -41,6 +41,24 @@ it("child boot opens nothing and stops immediately", async () => {
   const p = port(); await bootUsageWorker(p as unknown as MessagePort, command(true));
   expect(p.events).toEqual([{ type: "stopped" }]); expect(p.closed).toBe(true);
 });
+it("worker publishes twenty redacted diagnostics for owners and followers", async () => {
+  const c = command(), p = port();
+  const errors = Array.from({ length: 21 }, (_, i) => ({ path: `/synthetic-private/source-${i}.jsonl`, code: "EACCES" }));
+  await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => ({ sources: [], runs: [], errors }), now: () => at });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  const owner = snapshots(p).at(-1)!;
+  expect(owner.sourceErrorDiagnostics?.rows).toHaveLength(20);
+  expect(owner.sourceErrorDiagnostics?.truncated).toBe(true);
+  expect(owner.sourceErrorDiagnostics?.rows[0]).toEqual({ sourceLabel: "source-0.jsonl", projectLabel: "Unknown project", code: "EACCES", count: 1, lastCheckedAt: at });
+  expect(JSON.stringify(owner.sourceErrorDiagnostics)).not.toContain("synthetic-private");
+  const follower = port();
+  await bootUsageWorker(follower as unknown as MessagePort, { ...c, owner: `${process.pid}:follower` }, {
+    discover: async () => { throw new Error("follower must not discover"); }, now: () => at,
+  });
+  await vi.waitFor(() => expect(snapshots(follower).at(-1)?.ingestRole).toBe("follower"));
+  expect(snapshots(follower).at(-1)?.sourceErrorDiagnostics).toEqual(owner.sourceErrorDiagnostics);
+});
+
 it("refresh and the sixty second cycle coalesce without concurrent imports", async () => {
   vi.useFakeTimers(); const p = port(); let release!: () => void, started = 0, active = 0, peak = 0;
   const blocked = new Promise<void>(r => { release = r; });

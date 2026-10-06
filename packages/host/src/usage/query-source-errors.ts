@@ -1,9 +1,10 @@
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import type { Db } from "@spider/db-core";
 import type { DashboardQueryContext, Page, SourceErrorRow } from "./dashboard-contract.js";
 import { decodeCursor, encodeCursor, invalidQuery, validatePage } from "./dashboard-selection.js";
 
 /** Labels are presentation only and must never be used as filesystem inputs. */
-function label(value: string | null, fallback: string): string {
+export function sourceErrorLabel(value: string | null, fallback: string): string {
   if (!value) return fallback;
   let decoded = value;
   try {
@@ -14,11 +15,11 @@ function label(value: string | null, fallback: string): string {
     }
   } catch { return fallback; }
   if (/%[0-9a-f]{2}/i.test(decoded)) return fallback;
-  const name = decoded.split(/[\\/]/).filter(Boolean).at(-1)?.split("#")[0]?.replace(/[\u0000-\u001f\u007f]/g, "");
+  const name = stripTerminalSequences(decoded).split(/[\\/]/).filter(Boolean).at(-1)?.split("#")[0]?.replace(/[\u0000-\u001f\u007f]/g, "");
   return name && name !== "." && name !== ".." ? [...name].slice(0, 160).join("") : fallback;
 }
-function code(value: string): string {
-  if (value.startsWith("unknown-aux-purpose:")) return "unknown-aux-purpose";
+export function sourceErrorCode(value: string): string {
+  if (value === "unknown-aux-purpose" || value.startsWith("unknown-aux-purpose:")) return "unknown-aux-purpose";
   return ["parse-errors", "missing-source", "missing-db", "not-file", "source-changed", "invalid-project", "invalid-run-id",
     "invalid-run-event", "legacy-run-events", "runs-db-recreated:facts-retained", "ENOENT", "EACCES", "EPERM", "EIO",
     "SQLITE_BUSY", "SQLITE_CORRUPT", "discovery-failed", "ingest-failed"].includes(value) ? value : "source-error";
@@ -46,8 +47,8 @@ function readErrors(db: Db, limit: number, after: readonly [number, number]): Er
   return rows.slice(0, limit + 1);
 }
 function publicRow(row: ErrorRecord): SourceErrorRow {
-  return { sourceLabel: label(row.path, "Unknown source"), projectLabel: label(row.project, "Unknown project"),
-    code: code(row.code), count: row.count, lastCheckedAt: row.lastCheckedAt };
+  return { sourceLabel: sourceErrorLabel(row.path, "Unknown source"), projectLabel: sourceErrorLabel(row.project, "Unknown project"),
+    code: sourceErrorCode(row.code), count: row.count, lastCheckedAt: row.lastCheckedAt };
 }
 export function querySourceErrors(ctx: DashboardQueryContext, page: { limit: number; cursor?: string }): Page<SourceErrorRow> {
   validatePage(page);

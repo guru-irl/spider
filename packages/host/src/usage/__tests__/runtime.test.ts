@@ -137,8 +137,24 @@ it.each(["usage-ingest-lease-lost", "usage-ingest-lease-busy"])("%s becomes a he
   expect(state).toMatchObject({ backfill: "complete", errorCode: null, ingestRole: "follower" });
   const report = usageDoctorLines(state, { calibration: "auto", footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 });
   expect(report.ok).toBe(true);
-  expect(report.lines.join("\n")).toContain("ingest: follower (another pi session owns ingestion)");
+  expect(report.lines.join("\n")).toContain("ingest: follower (another ingest participant owns ingestion)");
 });
+it("runtime snapshots retain bounded diagnostics without sharing mutable rows", async () => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  const diagnostics = { rows: Array.from({ length: 20 }, (_, i) => ({ code: "EACCES", count: 1, sourceLabel: `source-${i}.jsonl`, projectLabel: "Unknown project", lastCheckedAt: 1 })), truncated: false };
+  f.worker.emit("message", { ...snapshot, sourceErrorDiagnostics: diagnostics });
+  const state = f.runtime.snapshot();
+  expect(state.sourceErrorDiagnostics?.rows).toHaveLength(20);
+  expect(state.sourceErrorDiagnostics?.truncated).toBe(false);
+  expect(usageDoctorLines(state, { calibration: "auto", footer: true, counterPoll: false, alertsSessionCredits: 0, alertsRunCredits: 0 }).lines.join("\n")).toContain("code=EACCES count=1 source=source-0.jsonl");
+  state.sourceErrorDiagnostics!.rows[0]!.sourceLabel = "changed";
+  expect(f.runtime.snapshot().sourceErrorDiagnostics?.rows[0]?.sourceLabel).toBe("source-0.jsonl");
+  f.worker.emit("message", { ...snapshot, sourceErrorDiagnostics: { rows: diagnostics.rows.slice(0, 1), truncated: true } });
+  expect(f.runtime.snapshot().sourceErrorDiagnostics?.truncated).toBe(true);
+  f.worker.emit("message", snapshot);
+  expect(f.runtime.snapshot().sourceErrorDiagnostics).toBeUndefined();
+});
+
 it("an ingest exception fails backfill with its distinct code", async () => {
   const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
   f.worker.emit("message", snapshot); f.worker.emit("message", { type: "error", code: "usage-ingest-failed" });
@@ -195,4 +211,20 @@ it("dashboard runtime disables polling on every command", async () => {
   expect((f.factory.mock.calls[0] as unknown as [URL, any])[1].workerData.command).toMatchObject({ dashboardMode: true, poll: false, calibration: "auto" });
   f.runtime.configure(true, "off");
   expect(f.worker.commands.at(-1)).toEqual({ type: "configure", poll: false, calibration: "off" });
+});
+
+it.each([
+  null, {}, { rows: null }, { rows: "bad", truncated: false }, { rows: [], truncated: "false" },
+  { rows: [null], truncated: false },
+  ...["sourceLabel", "projectLabel", "code", "count", "lastCheckedAt"].map(field => ({
+    rows: [{ sourceLabel: "source", projectLabel: "project", code: "EACCES", count: 1, lastCheckedAt: 1, [field]: null }], truncated: false,
+  })),
+  { rows: Array.from({ length: 21 }, () => ({ sourceLabel: "source", projectLabel: "project", code: "EACCES", count: 1, lastCheckedAt: 1 })), truncated: false },
+  { rows: [{ sourceLabel: "source", projectLabel: "project", code: "EACCES", count: NaN, lastCheckedAt: 1 }], truncated: false },
+])("drops malformed replayed source diagnostics without throwing: %j", async sourceErrorDiagnostics => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  f.worker.emit("message", { ...snapshot, sourceErrorDiagnostics: { rows: [], truncated: false } });
+  expect(() => f.worker.emit("message", { ...snapshot, sourceErrorDiagnostics })).not.toThrow();
+  expect(f.runtime.snapshot().sourceErrorDiagnostics).toBeUndefined();
+  expect(f.runtime.snapshot().backfill).toBe(snapshot.backfill);
 });

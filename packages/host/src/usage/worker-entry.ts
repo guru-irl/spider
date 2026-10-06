@@ -148,7 +148,7 @@ export async function bootUsageWorker(
     }
     const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }

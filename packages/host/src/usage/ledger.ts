@@ -1,4 +1,5 @@
 import type { UsageWorkerEvent } from "./protocol.js";
+import { readSourceErrorDiagnostics } from "./query-source-errors.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
 import { createCalibrationService, calibrationFallback } from "./calibration.js";
 import { createHash } from "node:crypto";
@@ -120,6 +121,7 @@ export interface UsageLedger {
   /** False means the lease fence rejected the entire transaction. */
   apply(batch: ImportBatch): boolean;
   getSourceErrors(): readonly { path: string; code: string; checkedPaths?: readonly string[] }[];
+  getSourceErrorDiagnostics(limit: number): ReturnType<typeof readSourceErrorDiagnostics>;
   getProgress(): { calls: number; sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null };
   getPublishedSnapshot(): Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
   dataVersion(): number;
@@ -485,6 +487,7 @@ function createLedger(db: Db): UsageLedger {
       const totals = db.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get() as { calls: number };
       return { ...totals, ...healthSources.get() as { sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null } };
     },
+    getSourceErrorDiagnostics(limit) { return readSourceErrorDiagnostics(db, limit); },
     getSourceErrors() {
       return (db.prepare("SELECT path, source_error_code AS code, source_error_paths AS checkedPaths FROM import_state WHERE source_error_code IS NOT NULL").all() as { path: string; code: string; checkedPaths: string | null }[])
         .map(({ checkedPaths, ...row }) => ({ ...row, ...(checkedPaths === null ? {} : { checkedPaths: JSON.parse(checkedPaths) }) }));

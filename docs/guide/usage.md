@@ -46,7 +46,7 @@
 - `/doctor` reads the worker's published usage snapshot. It does not open or create the usage ledger on pi's main thread.
 - Usage diagnostics include schema and call/source counts, backfill state and source progress, counter lease role, availability, age, staleness, notices, sanitized errors, parse/source error counts, unpriced models, aggregate counts and rate provenance.
 - No published ledger yet is reported as such. Worker failure keeps the terminal footer working from session entries.
-- Usage health fails only for a failed or crashed worker, unavailable worker-thread runtime, unavailable ledger or failed ledger open/migration, or failed backfill. Lifetime parse/source error counts, missing project databases, missing Copilot login, counter HTTP errors, stale or unavailable counters, disabled polling and unavailable comparison are informational.
+- Usage health fails only for a failed or crashed worker, unavailable worker-thread runtime, unavailable ledger or failed ledger open/migration, or failed backfill. Recorded parse error counts, current source error counts, dashboard server failures, missing project databases, missing Copilot login, counter HTTP errors, stale or unavailable counters, disabled polling and unavailable comparison are informational.
 - Children report `usage worker: not started (child session)`.
 - The comparison is labelled estimated. Its signed gap is account counter minus computed AIC. Its ratio is computed AIC divided by the counter; a zero or unavailable counter has no ratio.
 - Exact billing reconciliation remains unresolved. The account counter includes other clients and machines, and estimated rates or incomplete attribution can leave a gap. Do not treat the footer or comparison as an exact bill.

@@ -5,6 +5,8 @@ import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import { calibrationFallback } from "./calibration.js";
 import { toAicDisplay } from "./aic-display.js";
 import { safeTimestamp } from "./dashboard-selection.js";
+import type { SourceErrorRow } from "./dashboard-contract.js";
+import { sourceErrorCode, sourceErrorLabel } from "./query-source-errors.js";
 
 // Never show arbitrary error messages, source payloads, paths, account identities or raw JSON.
 const codes = new Set([
@@ -22,20 +24,48 @@ function safeCode(value: string | null | undefined): string {
 const label = (value: string) => stripTerminalSequences(value).replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 120);
 const number = (value: number | null | undefined): string => typeof value === "number" && Number.isFinite(value) ? String(value) : "unavailable";
 
+export { usageServerCrashCodes } from "./server-crash-codes.js";
+import { usageServerCrashCodes } from "./server-crash-codes.js";
+export type UsageDoctorDiagnostics = {
+  sourceErrors: readonly SourceErrorRow[]; truncated: boolean;
+  serverFailures: readonly { code: string; mtimeMs: number }[]; now: number;
+};
+function relativeFailureTime(ageMs: number): string {
+  const [size, unit] = ageMs >= 86400000 ? [86400000, "day"] : ageMs >= 3600000 ? [3600000, "hour"]
+    : ageMs >= 60000 ? [60000, "minute"] : [1000, "second"];
+  const count = Math.floor(Math.max(0, ageMs) / (size as number));
+  return `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+}
+
 /** A pure diagnosis: snapshot is the worker's last published view, not a DB query. */
-export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>, config: UsageConfig): { ok: boolean; lines: readonly string[] } {
+export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>, config: UsageConfig, diagnostics?: UsageDoctorDiagnostics): { ok: boolean; lines: readonly string[] } {
   const { health, counter, reconciliation, progress } = snapshot;
   const lines = [`- usage: footer=${config.footer ? "enabled" : "disabled"} poll=${config.counterPoll ? "enabled" : "disabled"}; alerts not implemented`,
     `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources` : " progress=unavailable"}`];
   const followerNotice = snapshot.errorCode === "usage-ingest-lease-lost" || snapshot.errorCode === "usage-ingest-lease-busy";
   const role = followerNotice ? "follower" : snapshot.ingestRole;
-  lines.push(`- usage ingest: ${role === "follower" ? "follower (another pi session owns ingestion)" : role ?? "not published yet"}`);
+  lines.push(`- usage ingest: ${role === "follower" ? "follower (another ingest participant owns ingestion)" : role ?? "not published yet"}`);
   if (health) {
     lines.push(`- usage ledger: schema=${health.schemaVersion} calls=${health.calls} sources=${health.sources} parse_errors=${health.parseErrors} source_errors=${health.sourceErrors} aggregate=${health.aggregateCalls} possible_overlaps=${health.possibleOverlaps ?? 0}`);
-    if (health.parseErrors) lines.push(`- usage parse errors: ${health.parseErrors} (lifetime total)`);
-    if (health.sourceErrors) lines.push(`- usage source errors: ${health.sourceErrors} (lifetime total; includes missing deleted worktrees or projects)`);
+    if (health.parseErrors) lines.push(`- usage parse errors: ${health.parseErrors} (recorded count)`);
+    if (health.sourceErrors) lines.push(`- usage source errors: ${health.sourceErrors} (current errors; includes missing deleted worktrees or projects)`);
     lines.push(`- usage unpriced models: ${health.unpricedModels.length ? health.unpricedModels.slice(0, 20).map(label).join(", ") : "none"}`);
   } else lines.push("- usage ledger: not published yet; no main-thread open or creation");
+  const sourceErrors = diagnostics?.sourceErrors ?? snapshot.sourceErrorDiagnostics?.rows ?? [];
+  for (const row of sourceErrors.slice(0, 20)) lines.push(`- usage source diagnostic: code=${sourceErrorCode(row.code)} count=${number(row.count)} source=${label(sourceErrorLabel(stripTerminalSequences(row.sourceLabel), "Unknown source"))} project=${label(sourceErrorLabel(stripTerminalSequences(row.projectLabel), "Unknown project"))}`);
+  if (diagnostics?.truncated || snapshot.sourceErrorDiagnostics?.truncated || sourceErrors.length > 20)
+    lines.push("- usage source diagnostics: truncated; open /usage for more");
+  if (diagnostics) {
+    const seen = new Set<string>();
+    const failures = diagnostics.serverFailures.filter(({ code, mtimeMs }) => usageServerCrashCodes.has(code) &&
+      Number.isFinite(mtimeMs) && diagnostics.now - mtimeMs <= 7 * 86400000).slice().reverse().sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const { code, mtimeMs } of failures) {
+      if (seen.has(code)) continue;
+      seen.add(code);
+      lines.push(`- Last dashboard server failure: ${code}, ${relativeFailureTime(diagnostics.now - mtimeMs)}`);
+      if (seen.size === 3) break;
+    }
+  }
   if (counter) {
     const reason = counter.errorCode === "missing-auth" ? " (no Copilot login)" : "";
     lines.push(`- usage counter: ${counter.availability}${reason}; lease role=${counter.role}; age_ms=${number(counter.snapshotAgeMs)} stale=${counter.availability === "stale"}`);

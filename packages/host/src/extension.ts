@@ -363,7 +363,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
   const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
-      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
+      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
       if (ctx) {
         // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
         // registration must not break extension load") with NOTHING anywhere

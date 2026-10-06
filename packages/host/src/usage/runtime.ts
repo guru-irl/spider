@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { calibrationFallback } from "./calibration.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { UsageRoots } from "./discovery.js";
-import type { UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
+import type { SourceErrorDiagnostics, UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
 
 export type UsageWorker = Pick<Worker, "on" | "off" | "postMessage" | "terminate" | "unref">;
 export type UsageRuntimeOptions = {
@@ -25,6 +25,17 @@ export function supportsUsageWorkers(): boolean {
 }
 const failureCode = (error: unknown): string => (error as { code?: string })?.code === "ERR_WORKER_OUT_OF_MEMORY" ? "usage-worker-oom" : "usage-worker-failed";
 const wireErrors = new Set(["usage-worker-failed", "usage-worker-oom", "usage-worker-unavailable", "usage-ledger-unavailable", "usage-ingest-failed", "usage-ingest-lease-lost", "usage-ingest-lease-busy"]);
+
+/** Published metadata can be replayed from older or malformed ledger JSON. */
+function validSourceDiagnostics(value: unknown): value is SourceErrorDiagnostics {
+  if (!value || typeof value !== "object") return false;
+  const diagnostics = value as Partial<SourceErrorDiagnostics>;
+  return Array.isArray(diagnostics.rows) && diagnostics.rows.length <= 20 && typeof diagnostics.truncated === "boolean" &&
+    diagnostics.rows.every(row => row !== null && typeof row === "object" &&
+      typeof row.sourceLabel === "string" && typeof row.projectLabel === "string" && typeof row.code === "string" &&
+      typeof row.count === "number" && Number.isFinite(row.count) &&
+      typeof row.lastCheckedAt === "number" && Number.isFinite(row.lastCheckedAt));
+}
 
 /** History, credentials and polling stay in the worker. Only the dashboard
  * parent may clean up a terminated worker; pi never opens the ledger here. */
@@ -103,7 +114,9 @@ export class UsageRuntime {
     if (this.stopped) return;
     if (event?.type === "snapshot") {
       this.refreshPending = false;
-      this.current = { calibration: event.calibration, health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
+      const diagnostics = validSourceDiagnostics(event.sourceErrorDiagnostics) ? event.sourceErrorDiagnostics : undefined;
+      this.current = { ...(diagnostics ? { sourceErrorDiagnostics: { rows: diagnostics.rows.slice(0, 20),
+        truncated: diagnostics.truncated } } : {}), calibration: event.calibration, health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
       this.notify();
     } else if (event?.type === "standby") {
       this.refreshPending = false;

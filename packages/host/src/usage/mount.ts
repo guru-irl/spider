@@ -6,6 +6,7 @@ import { makeConfigReloader } from "../config-reload.js";
 import { readUsageConfig } from "./config.js";
 import { calibrationFallback } from "./calibration.js";
 import { usageDoctorLines } from "./doctor.js";
+import { readUsageServerCrashDiagnostics } from "./server-runtime.js";
 import { homedir } from "node:os";
 import { isAbsolute, relative, sep, join } from "node:path";
 import type { UsageConfig } from "./config.js";
@@ -131,7 +132,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 }
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
-export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; doctor(): ReturnType<typeof usageDoctorLines> } {
+export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
   let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
@@ -164,9 +165,11 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     watchFile(watchedFile, { persistent: false, interval: 1000 }, reload);
   });
   pi.on("session_shutdown", stop);
-  return { reload, doctor: () => process.env.PI_SUBAGENT_CHILD === "1"
-    ? { ok: true, lines: ["- usage worker: not started (child session)"] }
-    : usageDoctorLines(runtime?.snapshot() ?? {
-    health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null,
-  }, config) };
+  return { reload, doctor: async () => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
+    const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
+    const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
+    return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
+      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.codes.map(code => ({ code, mtimeMs: crash.mtimeMs })) ?? []), now: Date.now() });
+  } };
 }

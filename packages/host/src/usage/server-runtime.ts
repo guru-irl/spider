@@ -68,7 +68,8 @@ async function authenticatedOwner(lock: UsageServerLock, deadline: number): Prom
     return { serverBuild: dto.data.serverBuild, rateVersions: dto.data.rateVersions as string[] };
   } catch { return undefined; }
 }
-const crashCodes = new Set(["usage-server-crashed", "usage-server-startup-invalid", "usage-server-not-ready", "usage-server-spawn-failed", "usage-server-close-failed", "usage-server-unsupported-runtime", "usage-server-unsupported-platform", "usage-server-busy", "usage-server-build-invalid"]);
+import { usageServerCrashCodes } from "./server-crash-codes.js";
+export { usageServerCrashCodes } from "./server-crash-codes.js";
 function readCrashFd(fd: number): string[] {
   const info = fstatSync(fd);
   if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600) throw new Error("usage-server-record-invalid");
@@ -77,9 +78,10 @@ function readCrashFd(fd: number): string[] {
   const length = readSync(fd, bytes, 0, bytes.length, offset);
   const rows = bytes.subarray(0, length).toString("utf8").split("\n");
   if (offset) rows.shift(); // Never interpret a partial code at the truncation boundary.
-  return rows.filter(row => crashCodes.has(row));
+  return rows.filter(row => usageServerCrashCodes.has(row));
 }
-export async function readUsageServerCrashCodes(dir: string): Promise<readonly string[]> {
+export type UsageServerCrashDiagnostics = { codes: readonly string[]; mtimeMs: number };
+export async function readUsageServerCrashDiagnostics(dir: string): Promise<UsageServerCrashDiagnostics | undefined> {
   let fd: number | undefined;
   try {
     try { assertPrivateServerDir(dir); }
@@ -89,11 +91,16 @@ export async function readUsageServerCrashCodes(dir: string): Promise<readonly s
       assertPrivateServerDir(dir);
     }
     fd = openSync(join(dir, "crash.log"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    return readCrashFd(fd);
-  } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
+    const codes = readCrashFd(fd);
+    return { codes, mtimeMs: fstatSync(fd).mtimeMs };
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
+/** Compatibility reader for consumers that only need the bounded code list. */
+export async function readUsageServerCrashCodes(dir: string): Promise<readonly string[]> {
+  return (await readUsageServerCrashDiagnostics(dir))?.codes ?? [];
 }
 export async function writeUsageServerCrashCode(dir: string, code: string, until: number = Date.now() + 5000): Promise<void> {
-  if (!crashCodes.has(code)) return;
+  if (!usageServerCrashCodes.has(code)) return;
   let fd: number | undefined, acquired = false;
   const instanceId = randomBytes(16).toString("hex");
   let guard = join(dir, "crash.guard");
@@ -180,7 +187,7 @@ export async function ensureUsageServer(options: UsageServerLaunchOptions): Prom
   try { return await ensureServer(options, until); }
   catch (error) {
     const message = error instanceof Error ? error.message : "";
-    const code = crashCodes.has(message) ? message : "usage-server-startup-invalid";
+    const code = usageServerCrashCodes.has(message) ? message : "usage-server-startup-invalid";
     if (typeof options.lockFile === "string" && isAbsolute(options.lockFile)) await writeUsageServerCrashCode(dirname(options.lockFile), code, until);
     throw new Error(code);
   }

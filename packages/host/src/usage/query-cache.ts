@@ -1,8 +1,8 @@
 import { dashboardKey, dashboardLabel } from "./dashboard-identities.js";
 import type { AicDisplay, CalibrationResult, DashboardQueryContext, Page, Slice, UsageMeasure } from "./dashboard-contract.js";
 import { toAicDisplay } from "./aic-display.js";
-import { countedUsageSql } from "./schema.js";
-import { compileSlice, DAY_MS, decodeCursor, encodeCursor, invalidQuery, measureColumns, measureFromRow, safeTimestamp, validatePage, type MeasureRow } from "./dashboard-selection.js";
+import { storedSelection, countedUsageSql } from "./schema.js";
+import { compileSlice, DAY_MS, decodeCursor, encodeCursor, invalidQuery, measureSelectionProjection, measureColumns, measureFromRow, safeTimestamp, validatePage, type MeasureRow } from "./dashboard-selection.js";
 import { emptyMeasureRow } from "./query-overview.js";
 
 export type AnalysisFit = { calibration: CalibrationResult; basis: AicDisplay["basis"] };
@@ -66,7 +66,7 @@ export function queryCache(ctx: DashboardQueryContext, slice: Slice, page: { lim
     after = key[0];
   }
   const firstDay = Math.floor(dailyStart / DAY_MS) * DAY_MS, dailyEnd = Math.min(slice.end, firstDay + 31 * DAY_MS);
-  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, "c.*", "calls_period_read")})
+  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, `${measureSelectionProjection},c.ts,c.actor`, "calls_period_read", storedSelection(ctx.db))})
     SELECT 'totals' AS branch,NULL AS day,${cacheMeasureColumns} FROM counted
     UNION ALL SELECT 'warmer',NULL,${cacheMeasureColumns} FROM counted WHERE actor='warmer'
     UNION ALL SELECT 'day',(ts/${DAY_MS})*${DAY_MS} AS day,${cacheMeasureColumns} FROM counted WHERE ts>=? AND ts<? GROUP BY day
@@ -77,11 +77,11 @@ export function queryCache(ctx: DashboardQueryContext, slice: Slice, page: { lim
   const fit = fits[0]!, totalRow = rows.find(row => row.branch === "totals")!;
   const empty = { ...emptyMeasureRow, pendingData: totalRow.pendingData, possibleUndercount: totalRow.pendingData ?? 0 };
   const totals = analysisMeasure(ctx, totalRow, fit), warmer = analysisMeasure(ctx, rows.find(row => row.branch === "warmer")!, fit);
-  const candidates = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, "c.*,c.rowid AS callRow", "calls_period_read")}),
+  const candidates = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, `${measureSelectionProjection},c.session_id,c.project,c.rowid AS callRow`, "calls_period_read", storedSelection(ctx.db))}),
     candidates AS MATERIALIZED (SELECT session_id,MIN(project) AS project,MIN(callRow) AS firstRow,${cacheMeasureColumns}
       FROM counted WHERE session_id IS NOT NULL GROUP BY session_id
       HAVING SUM(cache_write)>0 AND SUM(cache_read)=0 AND MIN(callRow)>? ORDER BY firstRow LIMIT ?)
-    SELECT candidate.*,NOT EXISTS (SELECT 1 FROM (${countedUsageSql("c.session_id=candidate.session_id AND c.cache_read>0 AND c.copied=0", "c.*", "calls_session_read")})) AS noReads
+    SELECT candidate.*,NOT EXISTS (SELECT 1 FROM (${countedUsageSql("c.session_id=candidate.session_id AND c.cache_read>0 AND c.copied=0", "c.run_id,c.is_report,c.source_file", "calls_session_read", storedSelection(ctx.db))})) AS noReads
     FROM candidates candidate ORDER BY firstRow`).all(...compiled.params, after, page.limit + 1) as
       (MeasureRow & { session_id: string; project: string | null; firstRow: number; noReads: number })[];
   const selected = candidates.slice(0, page.limit);

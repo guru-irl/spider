@@ -114,7 +114,7 @@ it("standalone status reads all tables in a deferred transaction", async () => {
     expect(db.raw.inTransaction).toBe(true);
     return prepare(sql);
   });
-  try { expect(reader.status().schemaVersion).toBe(2); } finally { spy.mockRestore(); }
+  try { expect(reader.status().schemaVersion).toBe(3); } finally { spy.mockRestore(); }
 });
 
 it("status refreshes schema version after a writable migration", async () => {
@@ -129,8 +129,8 @@ it("status refreshes schema version after a writable migration", async () => {
   const { openUsageLedger } = await import("../ledger.js");
   const migrated = openUsageLedger(file);
   migrated.close();
-  expect(reader.status().schemaVersion).toBe(2);
-  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(2);
+  expect(reader.status().schemaVersion).toBe(3);
+  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(3);
 });
 
 it("reader generations retain the launcher owner prefix and invalidate old cursors", async () => {

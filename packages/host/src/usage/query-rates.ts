@@ -1,7 +1,7 @@
 import type { CalibrationHistoryPoint, CalibrationResult, DashboardQueryContext, DashboardRoute, Page, Slice, UsageMeasure } from "./dashboard-contract.js";
 import type { RateTier, RateVersion } from "./types.js";
-import { countedUsageSql } from "./schema.js";
-import { compileSlice, decodeCursor, encodeCursor, invalidQuery, measureColumns, parsePage, parseSlice, validatePage, validateParams, safeTimestamp, type MeasureRow } from "./dashboard-selection.js";
+import { storedSelection, countedUsageSql } from "./schema.js";
+import { compileSlice, decodeCursor, encodeCursor, invalidQuery, measureSelectionProjection, measureColumns, parsePage, parseSlice, validatePage, validateParams, safeTimestamp, type MeasureRow } from "./dashboard-selection.js";
 import { analysisFits, analysisMeasure, queryCache } from "./query-cache.js";
 import { dashboardKey, dashboardLabel } from "./dashboard-identities.js";
 import { queryReconciliation } from "./query-reconciliation.js";
@@ -31,7 +31,7 @@ export function queryRates(ctx: DashboardQueryContext, slice: Slice, page: { lim
   const factorHistory = historyDone ? { rows: [], nextCursor: null } : ctx.calibration.history({ start: slice.start, end: slice.end },
     { limit: Math.min(31, page.limit), cursor: historyCursor }, ctx.calibrationMode);
   const fit = analysisFits(ctx, [slice.end])[0]!, calibration = ctx.calibration.current(ctx.calibrationMode);
-  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, "c.*,c.rowid AS callRow", "calls_period_read")}),
+  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, `${measureSelectionProjection},c.provider,c.model,c.unpriced_reason,c.rowid AS callRow`, "calls_period_read", storedSelection(ctx.db))}),
     unpriced AS MATERIALIZED (SELECT provider,model,unpriced_reason,MIN(callRow) AS firstRow,${measureColumns}
       FROM counted WHERE price_status='unpriced' AND ?=0 GROUP BY provider,model,unpriced_reason
       HAVING MIN(callRow)>? ORDER BY firstRow LIMIT ?)
@@ -41,7 +41,7 @@ export function queryRates(ctx: DashboardQueryContext, slice: Slice, page: { lim
     .all(...compiled.params, Number(unpricedDone), unpricedAfter, page.limit + 1) as (MeasureRow & { branch: string; provider: string | null; model: string | null; unpriced_reason: string; firstRow: number })[];
   const totals = analysisMeasure(ctx, rows.find(row => row.branch === "totals")!, fit);
   const unpriced = rows.filter(row => row.branch === "unpriced"), selected = unpriced.slice(0, page.limit);
-  const stored = ctx.db.prepare(`SELECT rate_version FROM (${countedUsageSql(compiled.sql, "c.rate_version,c.run_id,c.is_report,c.source_file,c.source_kind", "calls_period_read")})
+  const stored = ctx.db.prepare(`SELECT rate_version FROM (${countedUsageSql(compiled.sql, "c.rate_version,c.run_id,c.is_report,c.source_file", "calls_period_read", storedSelection(ctx.db))})
     WHERE rate_version IS NOT NULL GROUP BY rate_version ORDER BY rate_version LIMIT 201`).all(...compiled.params) as { rate_version: string }[];
   const rates = metadata.slice(rateIndex, rateIndex + page.limit);
   const rateRows: RateRow[] = rates.map(({ version, model, tier }) => ({ modelKey: dashboardKey(ctx, "model", model.id)!,

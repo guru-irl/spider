@@ -1,3 +1,4 @@
+import { DIMENSION_COLUMNS } from "./dimension-values.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { constants, openSync, closeSync, readFileSync, writeFileSync, linkSync, unlinkSync, fstatSync, fchmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -7,11 +8,7 @@ import { DashboardQueryError, type Dimension, type DashboardQueryContext, type P
 export const opaqueId = (value: unknown): value is string => typeof value === "string" && /^v1_[A-Za-z0-9_-]{43}$/.test(value);
 export const supportedDetailId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
 const detailDimension = (field: Dimension) => field === "session" || field === "run";
-export const identityColumns: Record<Dimension, string> = {
-  project: "project", repo: "repo", session: "session_id", actor: "actor", role: "role", agent: "agent",
-  provider: "provider", model: "model", requestedModel: "requested_model", thinking: "thinking", run: "run_id",
-  runName: "run_name", phase: "phase", parentRun: "parent_run_id", auxPurpose: "aux_purpose", api: "api", day: "ts",
-};
+export const identityColumns: Readonly<Record<Dimension, string>> = DIMENSION_COLUMNS;
 function normalizedHome(): string {
   let home = homedir();
   try { home = realpathSync(home); } catch { /* A missing home still has a safe lexical boundary. */ }

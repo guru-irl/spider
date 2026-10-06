@@ -1,10 +1,13 @@
 import type { Db } from "@spider/db-core";
 import { USAGE_SCHEMA, USAGE_SCHEMA_V2, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOUT, USAGE_LEASE_SCHEMA, USAGE_LEASE_COLUMNS } from "./schema.js";
 
+import { USAGE_SCHEMA_V3 } from "./schema-v3.js";
+
 // Never rewrite shipped migration SQL. Append additive versions here.
 export const USAGE_MIGRATIONS: readonly { version: number; sql: string }[] = [
   { version: 1, sql: USAGE_SCHEMA },
   { version: 2, sql: USAGE_SCHEMA_V2 },
+  { version: 3, sql: USAGE_SCHEMA_V3 },
 ];
 
 const normalizedDdl = (sql: string) => sql

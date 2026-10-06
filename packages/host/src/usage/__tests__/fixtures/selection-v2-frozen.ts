@@ -1,7 +1,6 @@
-import type { Db } from "@spider/db-core";
-
+// Frozen pre-v3 selection SQL for differential tests. Do not regenerate from runtime SQL.
 // Shipped v1 SQL/layout remain immutable; later versions are additive.
-export const USAGE_SCHEMA_VERSION = 3;
+export const USAGE_SCHEMA_VERSION = 2;
 export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
 
 // Call content and attribution are revision-keyed reader inputs. Legacy counted /
@@ -77,49 +76,39 @@ covered(id) AS MATERIALIZED (
 )
 `;
 
-export function storedSelection(db: Db): boolean { return Number(db.pragma("user_version")) >= 3; }
-
-export function selectedPredicate(alias: string, stored: boolean): string {
-  return `${stored ? `${alias}.selection_shadowed = 0` : `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = ${alias}.fingerprint
-    AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (${alias}.copied, ${alias}.source_file, ${alias}.entry_id, ${alias}.id))`}
+export function selectedPredicate(alias = "c"): string {
+  return `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = ${alias}.fingerprint
+    AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (${alias}.copied, ${alias}.source_file, ${alias}.entry_id, ${alias}.id))
   AND ((${alias}.is_report = 1 AND ${alias}.run_id IN (SELECT id FROM selected_reports))
     OR (${alias}.is_report = 0 AND (${alias}.run_id IS NULL OR ${alias}.run_id NOT IN (SELECT id FROM covered))))`;
 }
 
-function activeRun(id: string, stored: boolean): string {
+function activeRun(id: string): string {
   return `(${id} IN (SELECT id FROM selected_reports) OR (${id} NOT IN (SELECT id FROM covered)
     AND EXISTS (SELECT 1 FROM calls active WHERE active.run_id = ${id} AND active.is_report = 0
-      AND ${stored ? "active.selection_shadowed = 0" : `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = active.fingerprint
-        AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (active.copied, active.source_file, active.entry_id, active.id))`})))`;
+      AND NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = active.fingerprint
+        AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (active.copied, active.source_file, active.entry_id, active.id)))))`;
 }
 
 // Predicates/projections are trusted SQL authored by the caller, never user input.
 // Bind values with prepared-statement parameters. Scope before deriving overlap,
 // but canonical provenance and report replacement always remain global.
-export function countedUsageSql(predicate: string, projection: string, index: "calls_period_read" | "calls_session_read" | undefined, stored: boolean): string {
-  // Narrow stored projections accept only plain c.<column> or c.<column> AS <alias>.
-  // SQL expressions (including comma-bearing function calls) must fail at build time.
-  const storedProjection = stored && projection !== "c.*" ? projection.split(",").map(column => {
-    const entry = /^\s*c\.([A-Za-z_][A-Za-z_0-9]*)(?:\s+AS\s+([A-Za-z_][A-Za-z_0-9]*))?\s*$/i.exec(column);
-    if (!entry) throw new Error("Stored projection requires plain c.<column> entries with optional AS <alias>");
-    return `w.${entry[2] ?? entry[1]}`;
-  }).join(",") : "w.*";
-  const windowProjection = stored && projection !== "c.*" ? `${projection}, c.selection_undercount` : projection;
+export function countedUsageSql(predicate = "1", projection = "c.*", index?: "calls_period_read" | "calls_session_read"): string {
   return `WITH RECURSIVE
 ${selectionCtes},
-window AS MATERIALIZED (SELECT ${windowProjection} FROM calls c ${index ? `INDEXED BY ${index}` : ""} WHERE ${predicate} AND ${selectedPredicate("c", stored)}),
+window AS MATERIALIZED (SELECT ${projection} FROM calls c ${index ? `INDEXED BY ${index}` : ""} WHERE ${predicate} AND ${selectedPredicate()}),
 window_runs(id) AS MATERIALIZED (SELECT DISTINCT run_id FROM window WHERE run_id IS NOT NULL),
 ${overlapCtes("SELECT id FROM window_runs")},
 pairs AS MATERIALIZED (SELECT root, id FROM hinted h WHERE root != id
   AND (root IN (SELECT id FROM window_runs) OR id IN (SELECT id FROM window_runs))
-  AND ${activeRun("h.id", stored)}),
+  AND ${activeRun("h.id")}),
 overlap_runs(id) AS MATERIALIZED (SELECT root FROM pairs UNION SELECT id FROM pairs)
-SELECT ${storedProjection}, CASE WHEN w.run_id IN (SELECT id FROM overlap_runs) THEN 1 ELSE 0 END AS possible_overlap,
-  ${stored ? "w.selection_undercount" : `CASE WHEN EXISTS (SELECT 1 FROM import_state s WHERE s.path = w.source_file AND s.offset < s.size)
+SELECT w.*, CASE WHEN w.run_id IN (SELECT id FROM overlap_runs) THEN 1 ELSE 0 END AS possible_overlap,
+  CASE WHEN EXISTS (SELECT 1 FROM import_state s WHERE s.path = w.source_file AND s.offset < s.size)
     OR EXISTS (SELECT 1 FROM incomplete_reports i WHERE i.path=w.source_file AND i.run_id=w.run_id)
     OR (w.is_report = 0 AND EXISTS (SELECT 1 FROM runs_meta r
       WHERE r.id = w.run_id AND r.ended_at IS NULL))
-    THEN 1 ELSE 0 END`} AS possible_undercount
+    THEN 1 ELSE 0 END AS possible_undercount
 FROM window w`;
 }
 
@@ -308,7 +297,7 @@ WHERE evidence IN ('transcript', 'runs-db');
 -- Legacy counted/restore signals never participate in this declarative rule.
 CREATE VIEW selected_usage_calls AS
 WITH RECURSIVE ${selectionCtes}
-SELECT c.* FROM calls c WHERE ${selectedPredicate("c", false)};
+SELECT c.* FROM calls c WHERE ${selectedPredicate()};
 
 -- Diagnostic all-time pairs. Dashboard period/session reads use countedUsageSql
 -- with a bounded predicate, not this intentionally unbounded diagnostic view.
@@ -317,7 +306,7 @@ WITH RECURSIVE ${selectionCtes}, ${overlapCtes("SELECT id FROM selected_reports"
 SELECT DISTINCT h.root AS report_run_id, h.id AS included_run_id,
   COALESCE(e.evidence, 'none') AS evidence
 FROM hinted h LEFT JOIN coverage_edges e ON e.report_run_id = h.root AND e.included_run_id = h.id
-WHERE h.root != h.id AND ${activeRun("h.id", false)};
+WHERE h.root != h.id AND ${activeRun("h.id")};
 
-CREATE VIEW counted_calls AS ${countedUsageSql("1", "c.*", undefined, false)};
+CREATE VIEW counted_calls AS ${countedUsageSql()};
 `;

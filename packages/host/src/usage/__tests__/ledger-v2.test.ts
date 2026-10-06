@@ -23,7 +23,7 @@ function revision(db: Db): number {
 function facts(db: Db) {
   return Object.fromEntries(["calls", "runs_meta", "import_state", "counter_snapshots", "coverage_edges",
     "pending_reports", "incomplete_reports", "source_context", "source_entries", "leases", "ledger_totals"]
-    .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all().map(row => Object.fromEntries(Object.entries(row as Record<string, unknown>).filter(([key]) => !["selection_shadowed", "selection_undercount"].includes(key))))]));
 }
 beforeEach(() => {
   root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-v2-"));
@@ -50,20 +50,23 @@ it("v1 upgrades additively and twice is harmless", () => {
   expect(revision(db)).toBe(-1);
   migrateUsageLedger(db);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(2);
+  expect(db.pragma("user_version")).toBe(3);
   expect(revision(db)).toBe(0);
   expect(facts(db)).toEqual(before);
   const afterDdl = db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").all();
   expect(afterDdl.filter(row => {
     const name = (row as { name: string }).name;
-    return name !== "runs_meta_session" && !name.startsWith("selection_revision_");
-  })).toEqual(ddl);
+    return name !== "calls" && ddl.some(old => (old as { name: string }).name === name);
+  })).toEqual(ddl.filter(row => (row as { name: string }).name !== "calls"));
+  const callsSql = (afterDdl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql;
+  const stripSelection = (sql: string) => sql.replace(/,\s*selection_(?:shadowed|undercount) INTEGER NOT NULL DEFAULT 0 CHECK \(selection_(?:shadowed|undercount) IN \(0,1\)\)/g, "");
+  expect(stripSelection(callsSql)).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
   expect(db.prepare("PRAGMA index_info(runs_meta_session)").all().map(row => (row as { name: string }).name))
     .toEqual(["session_id", "db_path", "id"]);
   expect(db.prepare("SELECT * FROM ledger_metadata WHERE key != 'call-selection-revision' ORDER BY key").all()).toEqual(metadata);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   const writable = track(openUsageLedger(file));
-  expect(writable.health().schemaVersion).toBe(2);
+  expect(writable.health().schemaVersion).toBe(3);
   expect(writable.leases.inspect("ingest", 2000)).toMatchObject({ owner: "fixture-owner", role: "follower", expiresAt: 121000 });
   expect(writable.leases.acquire("ingest", "other-owner", 2000, 120000)).toBeUndefined();
   expect(facts(db)).toEqual(before);
@@ -74,7 +77,7 @@ it("v1 upgrades additively and twice is harmless", () => {
   const shipped = v1();
   const shippedFacts = facts(shipped);
   const writer = track(openUsageLedger(file));
-  expect(writer.health().schemaVersion).toBe(2);
+  expect(writer.health().schemaVersion).toBe(3);
   expect(revision(shipped)).toBe(0);
   expect(facts(shipped)).toEqual(shippedFacts);
 });

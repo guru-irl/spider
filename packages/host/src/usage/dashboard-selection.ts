@@ -1,17 +1,13 @@
+import { DIMENSION_COLUMNS } from "./dimension-values.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { DashboardQueryError, type Dimension, type Slice, type DashboardQueryContext, type UsageMeasure, type CalibrationResult, type AicDisplay } from "./dashboard-contract.js";
+import { DashboardQueryError, type Slice, type DashboardQueryContext, type UsageMeasure, type CalibrationResult, type AicDisplay } from "./dashboard-contract.js";
 
 import { primeFilterIds, resolveFilterId } from "./dashboard-identities.js";
-import { countedUsageSql } from "./schema.js";
+import { storedSelection, countedUsageSql } from "./schema.js";
 import { toAicDisplay } from "./aic-display.js";
 
 export const DAY_MS = 86_400_000;
-const columns: Record<Dimension, string> = {
-  project: "project", repo: "repo", session: "session_id", actor: "actor", role: "role", agent: "agent",
-  provider: "provider", model: "model", requestedModel: "requested_model", thinking: "thinking",
-  run: "run_id", runName: "run_name", phase: "phase", parentRun: "parent_run_id",
-  auxPurpose: "aux_purpose", api: "api", day: "ts",
-};
+const columns = DIMENSION_COLUMNS;
 export function invalidQuery(): never { throw new DashboardQueryError("invalid-query"); }
 export function validateParams(params: URLSearchParams, allowed: readonly string[]): void {
   if (Buffer.byteLength(params.toString()) > 8192) invalidQuery();
@@ -92,6 +88,19 @@ export function compileSlice(slice: Slice, scope?: { sessionId?: string; runId?:
   return { sql: clauses.join(" AND "), params };
 }
 
+/** Only Overview's grouping, measure and selection-flag inputs. Avoid spilling
+ * raw provenance and labels into its repeatedly read materialized window. */
+export const overviewSelectionProjection: string = ["ts", "actor", "role", "price_status", "aggregate", "input", "cache_read",
+  "cache_write", "output", "cache_write_1h", "reasoning", "aic", "aic_input", "aic_cache_read", "aic_cache_write",
+  "aic_output", "pi_cost", "run_id", "is_report", "source_file", "source_kind"].map(column => `c.${column}`).join(",");
+
+/** Task 8's measure inputs plus the run/provenance columns required by
+ * countedUsageSql's overlap and v2 undercount decisions. Each reader appends
+ * only its own grouping, label or rowid columns. */
+export const measureSelectionProjection: string = ["price_status", "aggregate", "input", "cache_read", "cache_write",
+  "output", "cache_write_1h", "reasoning", "aic", "aic_input", "aic_cache_read", "aic_cache_write", "aic_output",
+  "pi_cost", "run_id", "is_report", "source_file"].map(column => `c.${column}`).join(",");
+
 /** Aggregation is shared by all bounded dashboard counted-call passes. */
 export const measureColumns = `COUNT(*) AS calls,
   COALESCE(SUM(price_status='priced'),0) AS pricedCalls, COALESCE(SUM(price_status='unpriced'),0) AS unpricedCalls,
@@ -136,7 +145,7 @@ export function readMeasure(ctx: DashboardQueryContext, slice: Slice, scope?: { 
     }
   }
   const compiled = compileSlice(slice, scope, ctx);
-  const row = ctx.db.prepare(`SELECT ${measureColumns} FROM (${countedUsageSql(compiled.sql, "c.*", scope?.sessionId ? "calls_session_read" : "calls_period_read")})`)
+  const row = ctx.db.prepare(`SELECT ${measureColumns} FROM (${countedUsageSql(compiled.sql, "c.*", scope?.sessionId ? "calls_session_read" : "calls_period_read", storedSelection(ctx.db))})`)
     .get(...compiled.params) as MeasureRow;
   const result = measureFromRow(ctx, row, calibration);
   if (basis) result.aicDisplay.basis = basis;

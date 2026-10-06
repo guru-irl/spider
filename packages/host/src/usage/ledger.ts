@@ -7,7 +7,7 @@ import { dirname } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import { canonicalModelId, COPILOT_RATE_VERSIONS } from "./rates.js";
 import type { Actor, PriceResult, UsageTokens } from "./types.js";
-import { countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
+import { storedSelection, countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
 import { assertUsageSchemaVersion, migrateUsageLedger } from "./migrate.js";
 import { createUsageLeaseStore, type UsageLeaseStore } from "./lease.js";
 
@@ -372,19 +372,19 @@ function createLedger(db: Db): UsageLedger {
       OR EXISTS (SELECT 1 FROM import_state WHERE offset < size)
       OR EXISTS (SELECT 1 FROM pending_reports)) AS possibleUndercount,
     COALESCE(MAX(possible_overlap), 0) AS possibleOverlap
-    FROM (${countedUsageSql("c.ts >= ? AND c.ts < ?", "c.aic, c.price_status, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_period_read")})`);
+    FROM (${countedUsageSql("c.ts >= ? AND c.ts < ?", "c.aic, c.price_status, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_period_read", storedSelection(db))})`);
   // Do not evaluate counted_calls over historical detail. Only the indexed
   // report/unpriced candidates need selection; total rows are transaction-maintained.
   const healthCalls = db.prepare(`WITH RECURSIVE ${selectionCtes}
     SELECT (SELECT calls FROM ledger_totals WHERE singleton = 1) AS calls,
     (SELECT COUNT(*) FROM calls c INDEXED BY calls_health_reports
-      WHERE c.is_report = 1 AND ${selectedPredicate()}) AS aggregateCalls`);
+      WHERE c.is_report = 1 AND ${selectedPredicate("c", storedSelection(db))}) AS aggregateCalls`);
   const healthOverlaps = db.prepare("SELECT COUNT(*) AS possibleOverlaps FROM usage_possible_overlaps");
   const healthSources = db.prepare(`SELECT COUNT(*) AS sources, COALESCE(SUM(parse_errors), 0) AS parseErrors,
     COALESCE(SUM(source_error_code IS NOT NULL), 0) AS sourceErrors, MAX(last_ingest_at) AS lastIngestAt FROM import_state`);
   const unpricedModels = db.prepare(`WITH RECURSIVE ${selectionCtes}
     SELECT DISTINCT c.model FROM calls c INDEXED BY calls_health_unpriced
-    WHERE c.price_status = 'unpriced' AND c.model IS NOT NULL AND ${selectedPredicate()} ORDER BY c.model`);
+    WHERE c.price_status = 'unpriced' AND c.model IS NOT NULL AND ${selectedPredicate("c", storedSelection(db))} ORDER BY c.model`);
 
   const ledger: UsageLedger = {
     leases: createUsageLeaseStore(db, snapshot => ledger.insertCounter(snapshot)),

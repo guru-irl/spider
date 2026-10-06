@@ -1,7 +1,8 @@
+import { DIMENSION_COLUMNS } from "./dimension-values.js";
 import { initializeIds, opaqueId, supportedDetailId } from "./dashboard-identities.js";
 import { type AicDisplay, type CalibrationResult, type DashboardQueryContext, type Dimension, type Slice, type UsageMeasure, type Page, type DashboardRoute, type FilterValue } from "./dashboard-contract.js";
 import { compileSlice, invalidQuery, measureColumns, measureFromRow, type MeasureRow, validatePage, decodeCursor, encodeCursor, parseSlice, parsePage, validateParams, cursorWindow } from "./dashboard-selection.js";
-import { countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
+import { storedSelection, countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
 
 export type ExplorerQuery = { slice: Slice; groupBy: readonly Dimension[]; page: { limit: number; cursor?: string } };
 /** Keys are dimension-scoped opaque ids; labels are presentation only, clamped to 160 code points. */
@@ -10,11 +11,8 @@ export type ExplorerData = { groupBy: readonly Dimension[]; calibration: Calibra
   rows: readonly ExplorerRow[]; nextCursor: string | null };
 
 // Identifiers and expressions are trusted, never interpolated from request values.
-const dimensions: Record<Dimension, string> = {
-  project: "project", repo: "repo", session: "session_id", actor: "actor", role: "role", agent: "agent",
-  provider: "provider", model: "model", requestedModel: "requested_model", thinking: "thinking", run: "run_id",
-  runName: "run_name", phase: "phase", parentRun: "parent_run_id", auxPurpose: "aux_purpose", api: "api",
-  day: "strftime('%Y-%m-%d', ts / 1000, 'unixepoch')",
+const dimensions: Readonly<Record<Dimension, string>> = {
+  ...DIMENSION_COLUMNS, day: "strftime('%Y-%m-%d', ts / 1000, 'unixepoch')",
 };
 const isDimension = (field: unknown): field is Dimension => typeof field === "string" && Object.hasOwn(dimensions, field);
 function explorerSlice(ctx: DashboardQueryContext, slice: Slice, batchIds = false): ReturnType<typeof compileSlice> {
@@ -119,10 +117,10 @@ export function queryFilterValues(ctx: DashboardQueryContext, slice: Slice, fiel
     // The extra indexed probe runs only when that sentinel is present.
     const detail = field === "session" || field === "run";
     const count = detail ? `CASE WHEN raw_value = '' THEN (SELECT COUNT(*) FROM calls c INDEXED BY calls_period_read
-      WHERE ${compiled.sql} AND ${selectedPredicate()} AND ${column} = '') END` : "NULL";
+      WHERE ${compiled.sql} AND ${selectedPredicate("c", storedSelection(ctx.db))} AND ${column} = '') END` : "NULL";
     rows = ctx.db.prepare(`WITH RECURSIVE ${selectionCtes},
     distinct_values AS MATERIALIZED (SELECT DISTINCT ${column} AS raw_value FROM calls c INDEXED BY calls_period_read
-      WHERE ${compiled.sql} AND ${selectedPredicate()}),
+      WHERE ${compiled.sql} AND ${selectedPredicate("c", storedSelection(ctx.db))}),
     values_in_slice AS MATERIALIZED (SELECT ${key} AS value, explorer_label('${field}', raw_value) AS label, ${count} AS count FROM distinct_values),
     sorted AS (SELECT *, explorer_fold(label) AS sort_label FROM values_in_slice)
     SELECT value, label, sort_label, count FROM sorted WHERE ${prefix ? "label LIKE ? ESCAPE '\\'" : "1"} AND (${after.sql})
@@ -169,7 +167,7 @@ export function queryExplorer(ctx: DashboardQueryContext, query: ExplorerQuery):
     "cache_write_1h", "reasoning", "aic", "aic_input", "aic_cache_read", "aic_cache_write", "aic_output", "pi_cost",
     ...query.groupBy.filter((field: Dimension) => field !== "day").map((field: Dimension) => dimensions[field])];
   const countedProjection = [...new Set(needed)].map(column => `c.${column}`).join(", ");
-  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, countedProjection, "calls_period_read")}),
+  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, countedProjection, "calls_period_read", storedSelection(ctx.db))}),
     grouped AS MATERIALIZED (SELECT ${raw}, ${measureColumns} FROM counted GROUP BY ${keys.join(", ")}),
     identified AS MATERIALIZED (SELECT ${projection}, ${labels}, ${measures} FROM grouped),
     page AS (SELECT * FROM identified WHERE (${after.sql}) ORDER BY ${keys.join(", ")} LIMIT ?)

@@ -20,7 +20,7 @@ function batch(calls: readonly CallRow[], coverageEdges: readonly CoverageEdge[]
   return { calls, runs: [], states: [], detailedRunIds: [], restoreAggregateRunIds: [], resetSources: [], sourceErrors: [], at: 1000, coverageEdges };
 }
 
-const sessionSql = `SELECT SUM(aic) AS aic, MAX(possible_overlap) AS overlap FROM (${countedUsageSql("c.session_id=? AND c.ts>=? AND c.ts<?", "c.aic, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_session_read")})`;
+const sessionSql = `SELECT SUM(aic) AS aic, MAX(possible_overlap) AS overlap FROM (${countedUsageSql("c.session_id=? AND c.ts>=? AND c.ts<?", "c.aic, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_session_read", true)})`;
 
 // Observe the real statements without replacing execution or copying ledger SQL.
 function observedLedger(file: string) {

@@ -1,6 +1,6 @@
 import type { Db } from "@spider/db-core";
 import type { CalibrationResult, CalibrationService, Period } from "./dashboard-contract.js";
-import { countedUsageSql } from "./schema.js";
+import { storedSelection, countedUsageSql } from "./schema.js";
 import { DAY_MS as DAY, safeTimestamp, invalidQuery, validatePage, encodeCursor, decodeCursor } from "./dashboard-selection.js";
 
 const MAX_TS = 8_640_000_000_000_000;
@@ -110,7 +110,7 @@ export function createCalibrationService(db: Db, options: { revision: () => stri
         SELECT r.rowid FROM json_each(?) span CROSS JOIN calls r INDEXED BY calls_period_read
         WHERE r.ts>=json_extract(span.value,'$[0]') AND r.ts<json_extract(span.value,'$[1]'))`;
       const calls = db.prepare(`SELECT ts,COALESCE(SUM(aic),0) AS aic,SUM(price_status='unpriced') AS unpriced
-        FROM (${countedUsageSql(predicate, "c.ts,c.aic,c.price_status,c.run_id,c.is_report,c.source_file,c.source_kind", contiguous ? "calls_period_read" : undefined)})
+        FROM (${countedUsageSql(predicate, "c.ts,c.aic,c.price_status,c.run_id,c.is_report,c.source_file,c.source_kind", contiguous ? "calls_period_read" : undefined, storedSelection(db))})
         GROUP BY ts ORDER BY ts`).all(...(contiguous ? ranges[0]! : [JSON.stringify(ranges)])) as CallTotal[];
       const prefix: Evidence[] = [{ span: 0, aic: 0, delta: 0, unpriced: 0 }];
       let cursor = 0;
@@ -183,7 +183,7 @@ export function createCalibrationService(db: Db, options: { revision: () => stri
             FROM json_each(?) span CROSS JOIN calls r INDEXED BY calls_period_read
             WHERE r.ts>=json_extract(span.value,'$[1]') AND r.ts<json_extract(span.value,'$[2]')),
             counted AS MATERIALIZED (${countedUsageSql("c.rowid IN (SELECT callId FROM interval_calls)",
-              "c.rowid AS callId,c.aic,c.price_status,c.run_id,c.is_report,c.source_file,c.source_kind")})
+              "c.rowid AS callId,c.aic,c.price_status,c.run_id,c.is_report,c.source_file,c.source_kind", undefined, storedSelection(db))})
             SELECT i.pair,COALESCE(SUM(c.aic),0) AS aic,SUM(c.price_status='unpriced') AS unpriced
             FROM interval_calls i JOIN counted c USING(callId) GROUP BY i.pair ORDER BY i.pair`).all(JSON.stringify(ranges)) as
             { pair: number; aic: number; unpriced: number }[];

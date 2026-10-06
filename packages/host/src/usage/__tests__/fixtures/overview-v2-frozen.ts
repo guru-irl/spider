@@ -1,11 +1,12 @@
-import type { DashboardQueryContext, OverviewData, OverviewDay, OverviewBreakdown, Slice, TokenTotals, DashboardRoute, ContextData, CalibrationResult, AicDisplay } from "./dashboard-contract.js";
-import { querySourceErrors } from "./query-source-errors.js";
-import { readDashboardCounter } from "./dashboard-reader.js";
-import { storedSelection, countedUsageSql } from "./schema.js";
-import { compileSlice, readMeasure, overviewSelectionProjection, measureColumns, measureFromRow, type MeasureRow, DAY_MS, safeTimestamp, invalidQuery,
-  parseSlice, validateParams, parsePage, decodeCursor, encodeCursor } from "./dashboard-selection.js";
+// Frozen pre-cube Overview reader, independent dynamic selection reference.
+import type { DashboardQueryContext, OverviewData, OverviewDay, OverviewBreakdown, Slice, TokenTotals, DashboardRoute, ContextData, CalibrationResult, AicDisplay } from "../../dashboard-contract.js";
+import { querySourceErrors } from "../../query-source-errors.js";
+import { readDashboardCounter } from "../../dashboard-reader.js";
+import { countedUsageSql } from "./selection-v2-frozen.js";
+import { compileSlice, overviewSelectionProjection, measureColumns, measureFromRow, type MeasureRow, DAY_MS, safeTimestamp, invalidQuery,
+  parseSlice, validateParams, parsePage, decodeCursor, encodeCursor } from "../../dashboard-selection.js";
 
-import { dashboardLabel } from "./dashboard-identities.js";
+import { dashboardLabel } from "../../dashboard-identities.js";
 const publicLabel = (value: string | null): string | null => dashboardLabel("role", value);
 
 export const emptyMeasureRow: MeasureRow = {
@@ -14,47 +15,26 @@ export const emptyMeasureRow: MeasureRow = {
   aicOutput: null, piCost: null, possibleOverlap: 0, possibleUndercount: 0, pendingData: 0,
 };
 
-// Overview permits changed REAL sum order; other views retain their existing precision.
-const roundAic = (value: number | null): number | null => value === null ? null : Math.round(value * 1e6) / 1e6 || 0;
-function roundOverviewAic<T extends { aic: number | null; aicComponents: Record<string, number | null>; aicDisplay: AicDisplay }>(measure: T): T {
-  measure.aic = roundAic(measure.aic);
-  for (const key of Object.keys(measure.aicComponents)) measure.aicComponents[key] = roundAic(measure.aicComponents[key]!);
-  measure.aicDisplay.primaryAic = roundAic(measure.aicDisplay.primaryAic);
-  measure.aicDisplay.publishedAic = roundAic(measure.aicDisplay.publishedAic);
-  return measure;
-}
-
 export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailyStart: number = slice.start): OverviewData {
   const compiled = compileSlice(slice, undefined, ctx);
   if (!safeTimestamp(dailyStart) || dailyStart < slice.start || dailyStart > slice.end ||
     (dailyStart !== slice.start && dailyStart % DAY_MS !== 0)) invalidQuery();
   const firstDay = Math.floor(dailyStart / DAY_MS) * DAY_MS;
   const dailyEnd = Math.min(slice.end, firstDay + 31 * DAY_MS);
-  // One raw-call aggregation; all response branches read the small day/actor/role cube.
-  const sum = (prefix = "") => `${["calls", "pricedCalls", "unpricedCalls", "aggregateCalls", "input", "cacheRead", "cacheWrite", "output"]
-    .map(column => `COALESCE(SUM(${prefix}${column}),0) AS ${column}`).join(",")},
-    ${["cacheWrite1h", "reasoning", "aic", "aicInput", "aicCacheRead", "aicCacheWrite", "aicOutput", "piCost"]
-      .map(column => `SUM(${prefix}${column}) AS ${column}`).join(",")},
-    COALESCE(MAX(${prefix}possibleOverlap),0) AS possibleOverlap,
-    (EXISTS (SELECT 1 FROM import_state WHERE offset < size) OR EXISTS (SELECT 1 FROM pending_reports)) AS pendingData,
-    (COALESCE(MAX(${prefix}possibleUndercount),0) OR EXISTS (SELECT 1 FROM import_state WHERE offset < size)
-      OR EXISTS (SELECT 1 FROM pending_reports)) AS possibleUndercount`;
-  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (
-      SELECT (ts / ${DAY_MS}) * ${DAY_MS} AS day, actor, role, ${measureColumns}
-      FROM (${countedUsageSql(compiled.sql, overviewSelectionProjection, "calls_period_read", storedSelection(ctx.db))}) GROUP BY day,actor,role),
+  const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, overviewSelectionProjection, "calls_period_read")}),
     role_ranks AS MATERIALIZED (SELECT role, ROW_NUMBER() OVER (ORDER BY SUM(aic) DESC, role IS NULL, role) AS rank FROM counted GROUP BY role),
-    day_rows AS MATERIALIZED (SELECT * FROM counted WHERE day >= ? AND day < ?)
-    SELECT 'totals' AS branch, NULL AS label, 0 AS rank, NULL AS day, ${sum()} FROM counted
-    UNION ALL SELECT 'actor', actor, 0, NULL, ${sum()} FROM counted GROUP BY actor
+    day_rows AS MATERIALIZED (SELECT * FROM counted WHERE ts >= ? AND ts < ?)
+    SELECT 'totals' AS branch, NULL AS label, 0 AS rank, NULL AS day, ${measureColumns} FROM counted
+    UNION ALL SELECT 'actor', actor, 0, NULL, ${measureColumns} FROM counted GROUP BY actor
     UNION ALL SELECT 'role', CASE WHEN r.rank <= 8 THEN c.role ELSE 'Other' END,
-      CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END AS rank, NULL, ${sum("c.")}
+      CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END AS rank, NULL, ${measureColumns}
       FROM counted c JOIN role_ranks r ON r.role IS c.role GROUP BY CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END
-    UNION ALL SELECT 'day', NULL, 0, day, ${sum()} FROM day_rows GROUP BY day
-    UNION ALL SELECT 'day-actor', actor, 0, day, ${sum()} FROM day_rows GROUP BY day,actor
+    UNION ALL SELECT 'day', NULL, 0, (ts / ${DAY_MS}) * ${DAY_MS} AS day, ${measureColumns} FROM day_rows GROUP BY day
+    UNION ALL SELECT 'day-actor', actor, 0, (ts / ${DAY_MS}) * ${DAY_MS} AS day, ${measureColumns} FROM day_rows GROUP BY day,actor
     UNION ALL SELECT 'day-role', CASE WHEN r.rank <= 8 THEN c.role ELSE 'Other' END,
-      CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END AS rank, c.day, ${sum("c.")}
-      FROM day_rows c JOIN role_ranks r ON r.role IS c.role GROUP BY c.day,CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END
-    ORDER BY branch, day, rank, label`).all(...compiled.params, firstDay, dailyEnd) as
+      CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END AS rank, (ts / ${DAY_MS}) * ${DAY_MS} AS day, ${measureColumns}
+      FROM day_rows c JOIN role_ranks r ON r.role IS c.role GROUP BY day,CASE WHEN r.rank <= 8 THEN r.rank ELSE 9 END
+    ORDER BY branch, day, rank, label`).all(...compiled.params, dailyStart, dailyEnd) as
     (MeasureRow & { branch: string; label: string | null; rank: number; day: number | null })[];
   const now = ctx.now();
   const date = new Date(now);
@@ -84,7 +64,7 @@ export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailySta
   const measure = (row: MeasureRow, selected = periodFit) => {
     const result = measureFromRow(ctx, row, selected.fit);
     if (result.aicDisplay.basis === "calibrated") result.aicDisplay.basis = selected.basis;
-    return roundOverviewAic(result);
+    return result;
   };
   const total = rows.find(row => row.branch === "totals")!;
   const empty = { ...emptyMeasureRow, pendingData: total.pendingData, possibleUndercount: total.pendingData ?? 0 };
@@ -107,27 +87,27 @@ export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailySta
     });
   }
   const daily = { rows: days, nextCursor: dailyEnd < slice.end ? encodeCursor("overview-daily", ctx.revision, slice, [dailyEnd]) : null };
-  // Projection must not amplify the display rounding error early in the month.
-  const unroundedTotal = measureFromRow(ctx, total, periodFit.fit);
   const totals = measure(total);
   const comparisonFit = comparable ? fitByEnd.get(endPoint(counterObservation.ts!))! : periodFit;
-  const computed = comparable ? readMeasure(ctx, { start: monthStart, end: counterObservation.ts!, filters: [] }, undefined, comparisonFit.fit) : null;
+  const comparisonSlice = comparable ? compileSlice({ start: monthStart, end: counterObservation.ts!, filters: [] }, undefined, ctx) : null;
+  const comparisonRow = comparisonSlice ? ctx.db.prepare(`SELECT ${measureColumns} FROM (${countedUsageSql(comparisonSlice.sql, "c.*", "calls_period_read")})`)
+    .get(...comparisonSlice.params) as MeasureRow : null;
+  const computed = comparisonRow ? measureFromRow(ctx, comparisonRow, comparisonFit.fit) : null;
   if (computed?.aicDisplay.basis === "calibrated") computed.aicDisplay.basis = comparisonFit.basis;
-  if (computed) roundOverviewAic(computed);
   const counterAic = comparable ? counterObservation.creditsUsed : null;
   const elapsedFraction = current && now > monthStart ? (now - monthStart) / (monthEnd - monthStart) : null;
   const scale = (value: number | null, factor: number) => value === null ? null : value * factor;
   const projected = elapsedFraction === null ? null : {
     tokens: Object.fromEntries(Object.entries(totals.tokens).map(([key, value]) => [key, scale(value, 1 / elapsedFraction)])) as TokenTotals,
-    aicDisplay: { ...totals.aicDisplay, primaryAic: roundAic(scale(unroundedTotal.aicDisplay.primaryAic, 1 / elapsedFraction)),
-      publishedAic: roundAic(scale(unroundedTotal.aicDisplay.publishedAic, 1 / elapsedFraction)) },
+    aicDisplay: { ...totals.aicDisplay, primaryAic: scale(totals.aicDisplay.primaryAic, 1 / elapsedFraction),
+      publishedAic: scale(totals.aicDisplay.publishedAic, 1 / elapsedFraction) },
     possibleOverlap: totals.possibleOverlap, possibleUndercount: totals.possibleUndercount, pendingData: totals.pendingData,
   };
   const counterFraction = comparable ? (counterObservation.ts! - monthStart) / (monthEnd - monthStart) : null;
   return { calibration, totals, actors, roles, daily, counterObservation,
     comparison: { start: current ? monthStart : slice.start, end: comparable ? counterObservation.ts! : slice.end, counterAic, computed,
-      gap: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null ? roundAic(counterAic - computed.aic) : null,
-      ratio: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null && counterAic > 0 ? roundAic(computed.aic / counterAic) : null },
+      gap: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null ? counterAic - computed.aic : null,
+      ratio: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null && counterAic > 0 ? computed.aic / counterAic : null },
     pace: { projected, elapsedFraction, counterAic: counterFraction && counterAic !== null ? counterAic / counterFraction : null } };
 }
 

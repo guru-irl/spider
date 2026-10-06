@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, type Db } from "@spider/db-core";
-import { assertUsageSchemaVersion, migrateUsageLedger } from "../migrate.js";
+import { assertUsageSchemaVersion, migrateUsageLedger, USAGE_MIGRATIONS } from "../migrate.js";
 import { openUsageLedger, type ImportBatch } from "../ledger.js";
 
 let root: string;
@@ -151,13 +151,13 @@ it("an upgraded v2 ledger reopens after ANALYZE and PRAGMA optimize", () => {
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_stat%'").all().length).toBeGreaterThan(0);
   const ledger = openUsageLedger(db.raw.name);
   try {
-    expect(ledger.health().schemaVersion).toBe(2);
+    expect(ledger.health().schemaVersion).toBe(3);
     expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   } finally { ledger.close(); }
 });
 
 // Reject missing, changed and extra objects of every durable type, not only tables.
-for (const version of [1, 2]) {
+for (const version of [1, 2, 3]) {
   it(`schema ${version} validates all durable objects before any migration repair`, () => {
     const changes = [
       "DROP TRIGGER calls_insert_total", "DROP TRIGGER calls_delete_total", "DROP INDEX calls_ts_actor", "DROP VIEW counted_calls",
@@ -166,11 +166,11 @@ for (const version of [1, 2]) {
       "DROP TRIGGER calls_insert_total; CREATE TRIGGER calls_insert_total AFTER INSERT ON calls BEGIN SELECT 1; END",
       "CREATE TABLE unexpected(value TEXT)", "CREATE INDEX unexpected ON calls(actor)",
       "CREATE TRIGGER unexpected AFTER INSERT ON calls BEGIN SELECT 1; END", "CREATE VIEW unexpected AS SELECT 1",
-      ...(version === 2 ? ["DROP TRIGGER selection_revision_calls_insert", "DROP INDEX runs_meta_session"] : []),
+      ...(version >= 2 ? ["DROP TRIGGER selection_revision_calls_insert", "DROP INDEX runs_meta_session"] : []),
     ];
     for (const change of changes) {
       const db = fixture();
-      if (version === 2) migrateUsageLedger(db);
+      for (const m of USAGE_MIGRATIONS.filter(m => m.version > 1 && m.version <= version)) { db.exec(m.sql); db.pragma(`user_version=${m.version}`); }
       db.exec(change);
       const before = db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
       const rev = revision(db);
@@ -183,7 +183,7 @@ for (const version of [1, 2]) {
   });
   it(`schema ${version} reports its own version for an unknown marker`, () => {
     const db = fixture();
-    if (version === 2) migrateUsageLedger(db);
+    for (const m of USAGE_MIGRATIONS.filter(m => m.version > 1 && m.version <= version)) { db.exec(m.sql); db.pragma(`user_version=${m.version}`); }
     db.exec("UPDATE ledger_metadata SET value='unknown' WHERE key='schema-layout'");
     expect(() => assertUsageSchemaVersion(db)).toThrow(new RegExp(`schema ${version}.*layout`));
   });

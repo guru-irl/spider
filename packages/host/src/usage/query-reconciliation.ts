@@ -1,6 +1,6 @@
 import type { CalibrationResult, DashboardQueryContext, Page, Period, UsageMeasure } from "./dashboard-contract.js";
-import { countedUsageSql } from "./schema.js";
-import { compileSlice, DAY_MS, decodeCursor, encodeCursor, invalidQuery, measureColumns, validatePage, safeTimestamp, type MeasureRow } from "./dashboard-selection.js";
+import { storedSelection, countedUsageSql } from "./schema.js";
+import { compileSlice, DAY_MS, decodeCursor, encodeCursor, invalidQuery, measureSelectionProjection, measureColumns, validatePage, safeTimestamp, type MeasureRow } from "./dashboard-selection.js";
 import { analysisFits, analysisMeasure } from "./query-cache.js";
 import { emptyMeasureRow } from "./query-overview.js";
 
@@ -105,7 +105,7 @@ export function queryReconciliation(ctx: DashboardQueryContext, period: Period, 
   const measures = ranges.length ? ctx.db.prepare(`WITH interval_calls AS MATERIALIZED (
     SELECT json_extract(span.value,'$[0]') AS pair,r.rowid AS callId FROM json_each(?) span CROSS JOIN calls r INDEXED BY calls_period_read
     WHERE r.ts>=json_extract(span.value,'$[1]') AND r.ts<json_extract(span.value,'$[2]')),
-    counted AS MATERIALIZED (${countedUsageSql("c.rowid IN (SELECT callId FROM interval_calls)", "c.*,c.rowid AS callId")})
+    counted AS MATERIALIZED (${countedUsageSql("c.rowid IN (SELECT callId FROM interval_calls)", `${measureSelectionProjection},c.rowid AS callId`, undefined, storedSelection(ctx.db))})
     SELECT i.pair,${measureColumns} FROM interval_calls i JOIN counted c USING(callId) GROUP BY i.pair`)
     .all(JSON.stringify(ranges)) as (MeasureRow & { pair: number })[] : [];
   const pending = Boolean((ctx.db.prepare(`SELECT EXISTS (SELECT 1 FROM import_state WHERE offset<size)

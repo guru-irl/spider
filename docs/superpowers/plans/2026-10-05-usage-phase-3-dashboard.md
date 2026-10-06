@@ -79,13 +79,13 @@ D11 supersedes the spec's published-estimate-only display rule.
 
 ### D6. Authentication
 
-- Bind only `127.0.0.1` on a random port, with one exact Host. Reject forwarded headers and absolute targets; enable no CORS.
+- Bind only `127.0.0.1` on a random port, with one exact Host. Reject forwarded headers and noncanonical/non-origin targets; security and routing share one validated path. Enable no CORS.
 - Generate a fresh 32-byte secret on every start. Keep it in a 0600 lockfile, never URLs, argv, logs or tool output.
 - Only `/usage` launches a browser. Every call/reuse mints a random, single-use 60 s nonce through `GET /local/bootstrap-nonce`.
 - That bounded `no-store` route requires Bearer lock-secret authentication with `timingSafeEqual`; reject cookie/browser Origin/fetch metadata.
-- It has no ledger, config or path controls. `GET /bootstrap?nonce` consumes atomically before `issuedAt + 60000`, then redirects 303 to clean `/` before assets/fonts.
+- It has no ledger, config or path controls. `GET /bootstrap?nonce` consumes atomically before `issuedAt + 60000`, then redirects 303 to clean `/` before assets/fonts. A valid current-instance cookie reuses its session without issuing a new cookie.
 - Issue an independent random session cookie: HttpOnly, SameSite=Strict, Path=/ and a port-qualified name. No Domain, Max-Age, Expires or Secure claim over HTTP.
-- Cookies are not port-scoped. Document other `127.0.0.1` services' exposure and session lifetime. Restart rejects old cookies/nonces.
+- Cookies are not port-scoped. Document other `127.0.0.1` services' exposure and session lifetime. Instance-secret-bound lookups reject old cookies/nonces. Sweep expired nonces/idle sessions every second and on insert; cap at 64 nonces/32 sessions. Reject mints at the nonce cap; at the session cap, a new bootstrap evicts the least recently used tab session, which recovers by reopening `/usage`.
 - Reject foreign/`null` Origins. API fetch metadata is `same-origin` when present; `none` is document/bootstrap-only. Non-browser clients may omit it.
 - CSP uses hashes, no unsafe inline/eval, Google CSS/font allowlists and self-only connect/img. Object/base/form/frame sources are none.
 - App-added CSS links are allowed, not remote font JavaScript. Use classes/CSSOM, never `setAttribute("style", ...)`. Errors/logs contain fixed codes.
@@ -106,7 +106,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 - Limits: 16 AND filters, 3 groups, page 50/default or 200/maximum plus lookahead, timeline 200 buckets, daily page 31, top 8 roles plus Other and fixed actors.
 - Bounds: labels 160 characters, keys 1024 bytes, prefixes 160 characters, cursors 2048 bytes and query strings 8192 bytes.
 - Reject bad/duplicate/unknown parameters before SQL. Use keysets/null ordering, not OFFSET, client aggregation or N+1 queries.
-- Use deferred snapshots, releasing before serialization. Caps: JSON 1 MiB, HTML 512 KiB, 600 authenticated requests/minute and 32 sockets.
+- Use deferred snapshots, releasing before serialization. Caps: JSON 1 MiB, HTML 512 KiB, 600 authenticated requests/minute server-wide across sessions, 120 unauthenticated requests/minute server-wide and 32 sockets. Valid local mint bearers and live instance bootstrap nonces are exempt from unauthenticated admission; cross-site rejections have a separate 120/minute bucket that cannot spend owner admission. Keep-alive is 2 s, at most 100 requests per socket.
 - Timeouts are 5 s/10 s, debounce 300 ms and busy 250 ms. Missing-reader retry is at most once per 5 s, never creating a DB. Status uses maintained totals, not health scans.
 - Overview materializes its counted window/result once in one statement with `UNION ALL` totals/actor/role branches.
 - A separate unfiltered account-month pass ends at a fresh current-month counter timestamp, using `counterSnapshotIsFresh` and persisted cadence. Comparison applies when `start` is the current UTC month start and `end >= now - 60000`.
@@ -413,14 +413,14 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 
 **Interfaces:**
 - `startUsageHttpServer(options: HttpOptions): Promise<{ pid: number; port: number; close(): Promise<void> }>`.
-- `validateUsageRequest(req: IncomingMessage, expected: { port: number; secret: string }): boolean`.
+- `validateTransport(req: IncomingMessage, port: number, path: string): boolean` (Host/origin/metadata only; supply the parsed canonical path). Protected resources use one instance-local `requireSession` cookie gate.
 
-- [ ] `binds only authenticated IPv4 loopback`: Use IPv4/random port; unauthenticated resources return 401.
-- [ ] `local nonce mint requires lock secret`: Reject cookie/browser minting; accept the authenticated local channel.
-- [ ] `bootstrap nonce is single use and short lived`: Return 303; reject replay/expiry; issue an independent D6 cookie.
-- [ ] `Host rebinding fails before reader access`: Reject malformed/duplicate/missing Host before reader access.
-- [ ] `API accepts only same-origin fetch metadata`: Reject API `none`; permit document `none`.
-- [ ] `authenticated admission is bounded`: Request 601 returns 429; oversized output returns valid 413.
+- [x] `binds only authenticated IPv4 loopback`: Use IPv4/random port; unauthenticated resources return 401.
+- [x] `local nonce mint requires lock secret`: Reject cookie/browser minting; accept the authenticated local channel.
+- [x] `bootstrap nonce is single use and short lived`: Return 303; reject replay/expiry; issue an independent D6 cookie.
+- [x] `Host rebinding fails before reader access`: Reject malformed/duplicate/missing Host before reader access.
+- [x] `API accepts only same-origin fetch metadata`: Reject API `none`; permit document `none`.
+- [x] `authenticated admission is bounded`: Request 601 returns 429; oversized output returns valid 413.
 
 ## Task 3: Non-sticky ingest
 

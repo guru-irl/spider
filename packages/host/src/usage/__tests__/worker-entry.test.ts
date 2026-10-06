@@ -92,7 +92,7 @@ it("stop aborts an outstanding counter fetch releases both leases closes handles
   await vi.waitFor(() => expect(p.closed).toBe(true)); expect(signal?.aborted).toBe(true);
   const ledger = openUsageLedger(c.roots.ledgerFile);
   try { expect(ledger.leases.inspect("ingest", at).owner).toBeNull(); expect(ledger.leases.inspect("counter", at).owner).toBeNull(); } finally { ledger.close(); }
-  expect(p.events.at(-1)).toEqual({ type: "stopped" });
+  expect(p.events.at(-1)).toEqual({ type: "stopped", released: true });
 });
 
 it("multi-source cycles pay shared work once, publish bounded progress, and skip unchanged batches", async () => {
@@ -311,4 +311,40 @@ it("calibration DTO preserves old snapshots and reloads", async () => {
     await vi.waitFor(() => expect(snapshots(owner).at(-1)?.calibration?.status).toBe("calibrated"));
     expect(revision()).toEqual(before);
   } finally { check.close(); }
+});
+
+it("dashboard standby and handback retain calibration DTOs without follower scans", async () => {
+  vi.useFakeTimers();
+  const { dashboardBatch, dashboardCall } = await import("./fixtures/dashboard-ledger.js");
+  const c = command(), server = port(), pi = port();
+  let clock = at;
+  const ledger = openUsageLedger(c.roots.ledgerFile);
+  ledger.apply(dashboardBatch([dashboardCall("server-calibration", { ts: at - 86400000,
+    price: { status: "priced", aic: 1000, components: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, rateVersion: "fixture", tier: "fixture", confidence: "estimated" } })]));
+  ledger.insertCounter({ ts: at - 86400000, creditsUsed: 0, raw: {} });
+  ledger.insertCounter({ ts: at, creditsUsed: 560, raw: {} }); ledger.close();
+  const discover = async () => ({ sources: [], runs: [], errors: [] });
+  await bootUsageWorker(server as unknown as MessagePort, { ...c, dashboardMode: true, calibration: "auto" }, { now: () => clock, discover });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(server.events.at(-1)).toEqual({ type: "standby" });
+  expect(snapshots(server).at(-1)?.calibration).toMatchObject({ status: "calibrated", factor: 0.56 });
+  await bootUsageWorker(pi as unknown as MessagePort, { ...c, owner: `${process.pid}:calibration-pi` }, { now: () => clock, discover });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(snapshots(pi).at(-1)?.calibration).toMatchObject({ status: "calibrated", factor: 0.56 });
+  reads.calibration = reads.health = reads.summaries = 0;
+  server.emit("message", { type: "configure", poll: true, calibration: "off" });
+  clock += 10000; await vi.advanceTimersByTimeAsync(10000);
+  expect(snapshots(server).at(-1)).toMatchObject({ ingestRole: "follower", calibration: { status: "off", factor: null }, health: { calls: 1 }, counter: { availability: "disabled" } });
+  server.emit("message", { type: "configure", poll: true, calibration: "auto" }); await vi.advanceTimersByTimeAsync(0);
+  expect(snapshots(server).at(-1)?.calibration).toMatchObject({ status: "calibrated", factor: 0.56 });
+  expect(reads.calibration).toBe(0); expect(reads.health).toBe(0); expect(reads.summaries).toBe(0);
+  const writer = openUsageLedger(c.roots.ledgerFile);
+  try {
+    const published = writer.getPublishedSnapshot()!;
+    const { calibration: _oldDto, ...old } = published;
+    writer.apply({ calls: [], runs: [], states: [], resetSources: [], sourceErrors: [], detailedRunIds: [], restoreAggregateRunIds: [], at, publishedSnapshot: old });
+  } finally { writer.close(); }
+  server.emit("message", { type: "refresh" }); await vi.advanceTimersByTimeAsync(0);
+  expect(snapshots(server).at(-1)?.calibration).toMatchObject({ status: "uncalibrated", factor: null });
+  for (const p of [pi, server]) p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
 });

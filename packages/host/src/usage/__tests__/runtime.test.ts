@@ -178,3 +178,21 @@ it("runtime snapshot enforces off after a calibrated worker event", async () => 
   f.worker.emit("message", { ...snapshot, calibration: { status: "calibrated", factor: 0.56 } });
   expect(f.runtime.snapshot().calibration).toMatchObject({ status: "off", factor: null });
 });
+
+it("standby acknowledges refresh without discarding calibration or failure", async () => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  const calibration = { status: "calibrated", factor: 0.56, windowStart: 0, windowEnd: 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 0, method: "trailing-7d-ratio" };
+  f.worker.emit("message", { ...snapshot, calibration });
+  f.runtime.refresh(); f.worker.emit("message", { type: "error", code: "usage-ingest-failed" });
+  f.worker.emit("message", { type: "standby" });
+  expect(f.runtime.snapshot()).toMatchObject({ ingestRole: "standby", errorCode: "usage-ingest-failed", calibration });
+  f.runtime.refresh(); expect(f.worker.commands.filter((command: any) => command.type === "refresh")).toHaveLength(2);
+});
+
+it("dashboard runtime disables polling on every command", async () => {
+  const f = fixture({ dashboardMode: true }); f.runtime.start(true, "auto");
+  await vi.advanceTimersByTimeAsync(0);
+  expect((f.factory.mock.calls[0] as unknown as [URL, any])[1].workerData.command).toMatchObject({ dashboardMode: true, poll: false, calibration: "auto" });
+  f.runtime.configure(true, "off");
+  expect(f.worker.commands.at(-1)).toEqual({ type: "configure", poll: false, calibration: "off" });
+});

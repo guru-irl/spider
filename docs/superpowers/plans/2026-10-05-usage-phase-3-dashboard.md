@@ -432,14 +432,16 @@ Stop and escalate if this requires a second tsconfig or package change. No such 
 
 **Interfaces:**
 - Add optional `dashboardMode?: boolean`, default false, to `UsageRuntimeOptions` and the start command; expose a standby event.
-- `startUsageServerIngest(options: IngestOptions): IngestHandle`.
+- `startUsageServerIngest(options: ServerIngestOptions): IngestHandle`, with required `getCalibrationMode: () => "auto" | "off"`.
 
-- [ ] `server worker always disables polling`: Never read auth, fetch or acquire counter, even after configure.
-- [ ] `server never holds ingest across passes`: Release after success/failure, then standby for 10 s.
-- [ ] `running pi reacquires within one pass plus three seconds`: Pi owns ingest by pass end plus 3 s; no duplicate ingestion.
-- [ ] `handback restores pi counter polling`: Followers cannot poll; pi polls after handback.
-- [ ] `server takes over after pi stops or dies`: Stop/kill permits takeover within remaining backoff plus 3 s.
-- [ ] `unattended ingestion keeps minute cadence`: Next pass starts after completion plus 60 s, without retained ownership.
+- [x] `server worker always disables polling`: Never read auth, fetch or acquire counter, even after configure.
+- [x] `server never holds ingest across passes`: Release after success/failure, then standby for 10 s.
+- [x] `running pi reacquires within one pass plus three seconds`: Pi owns ingest by pass end plus 3 s; no duplicate ingestion.
+- [x] `handback restores pi counter polling`: Followers cannot poll; pi polls after handback.
+- [x] `server takes over after pi stops or dies`: Stop/kill permits takeover within remaining backoff plus 3 s.
+- [x] `unattended ingestion keeps minute cadence`: Next pass starts after completion plus 60 s, without retained ownership.
+
+Graceful stop retries any pending lease release once and reports whether release completed. After termination, only the dashboard parent may perform fenced release-style cleanup of ingest and counter ownership, preserving schedules and diagnostics. If cleanup remains busy, or in pi mode where the main thread never opens the ledger, TTL/PID recovery applies. First-open failures retry from 3 s with exponential backoff capped at 60 s; unsupported schema failures use the cap immediately. Calibration getter failures retain the last good mode (off before the first successful read) and report `usage-calibration-config-failed`; stopping clears the reload timer.
 
 ## Task 4: Detached server
 

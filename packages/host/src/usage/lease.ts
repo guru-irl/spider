@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
-import type { Db } from "@spider/db-core";
+import { openDb, type Db } from "@spider/db-core";
 import type { CounterSnapshot, UsageLedger } from "./ledger.js";
 
 // Runtime callers pass a clock, sampled after BEGIN IMMEDIATE. Numeric times
@@ -226,4 +226,17 @@ export function acquireUsageLease(ledger: UsageLedger, name: string, owner: stri
 /** /doctor can inspect ownership, expiry, cadence and recovery errors, not tokens. */
 export function inspectUsageLease(ledger: UsageLedger, name: string, at: number = Date.now(), owner?: string): UsageLeaseInspection {
   return ledger.leases.inspect(name, at, owner);
+}
+
+/** Dashboard parent after termination only. Preserve schedule and diagnostics.
+ * Never clears another worker or process identity. Pi uses TTL/PID recovery. */
+export function releaseUsageProcessLeases(file: string, owner: string): void {
+  let db: Db | undefined;
+  try {
+    db = openDb(file, { fileMustExist: true, busyTimeoutMs: LEASE_BUSY_MS, checkpointOnClose: false });
+    db.prepare(`UPDATE leases SET owner=NULL, token=NULL, acquired_at=NULL, expires_at=NULL,
+      owner_pid=NULL, owner_host=NULL WHERE name IN ('ingest', 'counter')
+      AND owner=? AND owner_pid=? AND owner_host=?`).run(owner, process.pid, hostname());
+  } catch { /* Best effort under a stuck writer; expiry still fences recovery. */ }
+  finally { try { db?.close(); } catch { /* no handle retained */ } }
 }

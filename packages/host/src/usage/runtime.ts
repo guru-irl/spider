@@ -1,3 +1,4 @@
+import { releaseUsageProcessLeases } from "./lease.js";
 import { randomUUID } from "node:crypto";
 import { calibrationFallback } from "./calibration.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
@@ -10,6 +11,7 @@ export type UsageRuntimeOptions = {
   bundleUrl: string | URL;
   roots: UsageRoots;
   child: boolean;
+  dashboardMode?: boolean;
   workerFactory?: (entry: URL, options: WorkerOptions) => UsageWorker;
   onSnapshot?: (snapshot: UsageRuntimeSnapshot) => void;
   supportsWorkers?: () => boolean;
@@ -24,9 +26,12 @@ export function supportsUsageWorkers(): boolean {
 const failureCode = (error: unknown): string => (error as { code?: string })?.code === "ERR_WORKER_OUT_OF_MEMORY" ? "usage-worker-oom" : "usage-worker-failed";
 const wireErrors = new Set(["usage-worker-failed", "usage-worker-oom", "usage-worker-unavailable", "usage-ledger-unavailable", "usage-ingest-failed", "usage-ingest-lease-lost", "usage-ingest-lease-busy"]);
 
-/** No filesystem, transcript, DB, credential or model work runs on pi's thread. */
+/** History, credentials and polling stay in the worker. Only the dashboard
+ * parent may clean up a terminated worker; pi never opens the ledger here. */
 export class UsageRuntime {
   private worker: UsageWorker | undefined;
+  private workerOwner: string | undefined;
+  private gracefulStop = false;
   private startup: ReturnType<typeof setTimeout> | undefined;
   private started = false;
   private stopped = false;
@@ -41,7 +46,7 @@ export class UsageRuntime {
 
   start(poll: boolean, calibration?: "auto" | "off"): void {
     if (this.started || this.stopped || this.options.child) return;
-    this.started = true; this.poll = poll; this.calibrationMode = calibration;
+    this.started = true; this.poll = !this.options.dashboardMode && poll; this.calibrationMode = calibration;
     // A macrotask, not an awaited session_start hook or a microtask inside it.
     this.startup = setTimeout(() => {
       this.startup = undefined;
@@ -53,6 +58,7 @@ export class UsageRuntime {
         const command: Extract<UsageWorkerCommand, { type: "start" }> = {
           type: "start", roots: this.options.roots, owner: `${process.pid}:${randomUUID()}`, child: false, poll: this.poll,
           ...(this.calibrationMode ? { calibration: this.calibrationMode } : {}),
+          ...(this.options.dashboardMode ? { dashboardMode: true } : {}),
         };
         const env = { ...process.env };
         delete env.NODE_OPTIONS;
@@ -62,6 +68,7 @@ export class UsageRuntime {
           execArgv: [], // No inherited eval flags, inspector or arbitrary host preloads.
           env,
         });
+        this.workerOwner = command.owner;
         this.worker.on("message", this.onMessage);
         this.worker.on("error", this.onError);
         this.worker.on("exit", this.onExit);
@@ -75,14 +82,14 @@ export class UsageRuntime {
     this.refreshPending = true; this.send({ type: "refresh" });
   }
   configure(poll: boolean, calibration?: "auto" | "off"): void {
-    this.poll = poll;
+    this.poll = !this.options.dashboardMode && poll;
     const modeChanged = calibration !== undefined && calibration !== (this.calibrationMode ?? "auto");
     if (modeChanged) {
       this.calibrationMode = calibration;
       this.current = { ...this.current, calibration: calibrationFallback(calibration) };
       this.notify();
     }
-    if (this.worker && !this.stopped) this.send({ type: "configure", poll, ...(modeChanged ? { calibration } : {}) });
+    if (this.worker && !this.stopped) this.send({ type: "configure", poll: this.poll, ...(modeChanged ? { calibration } : {}) });
   }
   snapshot(): UsageRuntimeSnapshot {
     return structuredClone({ ...this.current, calibration: this.calibrationMode === "off" ? calibrationFallback("off")
@@ -92,11 +99,15 @@ export class UsageRuntime {
   private fail(code: string): void { this.refreshPending = false; this.current = { ...this.current, backfill: "failed", errorCode: code }; this.notify(); }
   private send(command: UsageWorkerCommand): void { try { this.worker?.postMessage(command); } catch (error) { if (!this.stopped) this.fail(failureCode(error)); } }
   private readonly onMessage = (event: UsageWorkerEvent): void => {
-    if (event?.type === "stopped") { this.stoppedAck?.(); return; }
+    if (event?.type === "stopped") { this.gracefulStop = event.released !== false; this.stoppedAck?.(); return; }
     if (this.stopped) return;
     if (event?.type === "snapshot") {
       this.refreshPending = false;
       this.current = { calibration: event.calibration, health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
+      this.notify();
+    } else if (event?.type === "standby") {
+      this.refreshPending = false;
+      this.current = { ...this.current, ingestRole: "standby" };
       this.notify();
     } else if (event?.type === "error") {
       if (event.code === "usage-ingest-lease-lost" || event.code === "usage-ingest-lease-busy") {
@@ -114,6 +125,7 @@ export class UsageRuntime {
     if (this.startup) clearTimeout(this.startup);
     this.startup = undefined;
     const worker = this.worker;
+    this.worker = undefined;
     if (!worker) return this.stopping = Promise.resolve();
     this.stopping = (async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -121,7 +133,7 @@ export class UsageRuntime {
         if (!this.workerFailed) await new Promise<void>(resolve => {
           this.stoppedAck = resolve;
           timer = setTimeout(resolve, 2000);
-          this.send({ type: "stop" });
+          try { worker.postMessage({ type: "stop" }); } catch { resolve(); }
         });
       } finally {
         clearTimeout(timer); this.stoppedAck = undefined;
@@ -129,7 +141,9 @@ export class UsageRuntime {
         // Keep an error sink until termination finishes to avoid unhandled emitter errors.
         const ignore = () => {}; worker.on("error", ignore);
         try { await worker.terminate(); } catch { /* worker already exited */ }
-        worker.off("error", ignore); this.worker = undefined;
+        worker.off("error", ignore);
+        const owner = this.workerOwner; this.workerOwner = undefined;
+        if (this.options.dashboardMode && !this.gracefulStop && owner) releaseUsageProcessLeases(this.options.roots.ledgerFile, owner);
       }
     })();
     return this.stopping;

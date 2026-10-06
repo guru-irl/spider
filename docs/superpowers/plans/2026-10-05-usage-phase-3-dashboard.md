@@ -516,11 +516,11 @@ Graceful stop retries any pending lease release once and reports whether release
 - Add `formatAicDisplay(display: AicDisplay, unpricedCalls: number, calibration: CalibrationResult): { primary: string; secondary: string; legend: string }`, using D11 copy and markers.
 - `formatTokens(value: number): string`; `mountOverview(ctx: ViewContext): Promise<MountedView>`.
 
-- [ ] `chart table has identical observations`: Share points, AIC basis and tokens; preserve keyboard focus.
-- [ ] `hostile labels remain text`: Keep payloads inert, with no HTML/style attributes.
-- [ ] `fonts load locally before conditional link`: Local success adds no link; failure stays readable.
-- [ ] `Overview pairs estimates and tokens`: Pair actor/role/pace primary AIC with tokens, legend and table secondary; no insights.
-- [ ] `Overview health separates ages and errors`: Keep roles/ages/error paging independent.
+- [x] `chart table has identical observations`: Share points, AIC basis and tokens; preserve keyboard focus.
+- [x] `hostile labels remain text`: Keep payloads inert, with no HTML/style attributes.
+- [x] `fonts load locally before conditional link`: Local success adds no link; failure stays readable.
+- [x] `Overview pairs estimates and tokens`: Pair actor/role/pace primary AIC with tokens, legend and table secondary; no insights.
+- [x] `Overview health separates ages and errors`: Keep roles/ages/error paging independent.
 
 ## Task 5c: Screenshot tool
 

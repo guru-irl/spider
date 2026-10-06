@@ -7,17 +7,35 @@ export type Period = { start: number; end: number };
 export type Dimension = "project" | "repo" | "session" | "actor" | "role" | "agent" | "provider"
   | "model" | "requestedModel" | "thinking" | "run" | "runName" | "phase"
   | "parentRun" | "auxPurpose" | "api" | "day";
-export type Filter = { field: Dimension; value: string | null };
+/** Discovery keys are dimension-scoped opaque ids, except safe stored session/run ids.
+ * Unsupported session/run ids carry no key but still count. Their count is informational:
+ * a null id with a non-null label has no filter action. A row with null id and null
+ * label is a missing value, shown as Unknown and selectable with { field, kind: "missing" }.
+ * Never submit a null id or raw null filter.
+ * Labels are presentation only,
+ * clamped to 160 code points. Paths use ~/ inside home, …/ plus two segments outside.
+ * Labels must never become filesystem inputs.
+ */
+export type FilterValue = { id: string | null; label: string | null; count?: number };
+/** Omitted kind is a raw stored-value filter for compatibility. Public discovery consumers
+ * must send kind: "id" explicitly, including safe stored session/run ids. Never infer by shape.
+ * Missing filters have no value, select SQL NULL (not the literal "Unknown"), and count
+ * against the 16-filter cap. Raw null and null-id filters are rejected. */
+export type Filter = { field: Dimension; value: string; kind?: "raw" | "id" }
+  | { field: Dimension; kind: "missing"; value?: never };
 export type Slice = Period & { filters: readonly Filter[] };
 export type Page<T> = { rows: readonly T[]; nextCursor: string | null };
 export type ApiEnvelope<T> = {
   apiVersion: 1;
-  /** Instance-scoped call-selection revision, not coordination or counter freshness. Endpoint cursors may freeze separate source generations. */
+  /** Opaque to clients: do not parse or assume a format. Reader revisions use
+   * <name>-<uuid>:<n>; bootstrap/unavailable envelopes use <name>:<state>.
+   * Instance-scoped call selection, not coordination or counter freshness.
+   * Endpoint cursors may freeze separate source generations. */
   revision: string;
   period: Period; generatedAt: number; data: T;
 };
 export type ApiErrorCode = "invalid-query" | "ledger-changed" | "ledger-unavailable" | "unsupported-schema" | "busy" | "not-found"
-  | "unauthorized" | "forbidden" | "method-not-allowed" | "response-limit" | "rate-limited" | "internal";
+  | "identity-unavailable" | "unknown-filter-id" | "unauthorized" | "forbidden" | "method-not-allowed" | "response-limit" | "rate-limited" | "internal";
 export type ApiErrorBody = { apiVersion: 1; error: { code: ApiErrorCode; message: string } };
 export type CalibrationResult = {
   status: "calibrated" | "uncalibrated" | "implausible" | "off";
@@ -105,7 +123,10 @@ export type DashboardQueryContext = {
   rates: readonly RateVersion[]; status: () => DashboardStatus;
   calibration: CalibrationService; calibrationMode: "auto" | "off";
 };
-export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams): unknown };
+export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams): unknown;
+  /** Pure validation/window resolution, including authenticated cursor windows, for the HTTP envelope. */
+  resolvePeriod?(query: URLSearchParams, now: number): Period;
+};
 export interface DashboardReader {
   revision(): string;
   status(): DashboardStatus;

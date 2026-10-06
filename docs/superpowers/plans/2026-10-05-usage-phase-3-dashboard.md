@@ -119,10 +119,10 @@ D11 supersedes the spec's published-estimate-only display rule.
 | --- | --- | --- | --- |
 | status | 4 | 8 | 100 |
 | source-errors | 1 | 64 | 300 |
-| overview | 6, 2 call passes | 512 | 1000 |
-| explorer | 3 | 256 | 1000 |
-| filter-values | 1 | 64 | 500 |
-| detail | 6 | 512 | Session 1000; run 1500 |
+| overview | 6, 2 call passes plus one per id-filtered field on a dictionary miss | 512 | 1000 |
+| explorer | 1 plus one per id-filtered field on a dictionary miss | 256 | 1000 |
+| filter-values | 2 including batched cache-miss id lookups | 64 | 500 |
+| detail | 6 plus one per id-filtered field on a dictionary miss | 512 | Session 1000; run 1500 |
 | detail-links | 2 | 64 | 300 |
 | context | 0 | 8 | 50 |
 | cache | 6 | 256 | 1500 |
@@ -142,6 +142,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 - Parse errors use persisted counts; source errors count one current error, not lifetime totals. `lastCheckedAt` is `last_ingest_at`, not error time.
 - One indexed correlated project probe supplies labels in the same statement. Labels never become filesystem inputs.
 - Phase 1 doctor has aggregates only; Task 13 adds redacted source diagnostics and crash codes.
+- Keep the private `<ledger>.explorer-salt` sidecar with the ledger. Unusable salts give `identity-unavailable` (503), cached for 5 s. Deleting a stray publication temp hardlink (`<ledger>.explorer-salt.<24 hex>`) preserves bookmarks; removing an unusable salt lets the next request after the 5 s failure-cache window recreate it without reopening, but invalidates opaque-id bookmarks (`unknown-filter-id`, 400). Reopen only to drop an already loaded salt. Task 13's guide must explain recovery and rebuilding bookmarks. Path labels use `~/` inside normalized home, `…/` plus the last two segments outside, including embedded paths.
 - Cache copy is `Sessions with writes and no recorded reads`: bounded candidates, then global counted selection in indexed lifetime session probes.
 - Selected reads outside the period count; fork copies/suppressed reports do not. Ongoing/incomplete evidence is provisional, not an item-reuse claim.
 
@@ -246,10 +247,10 @@ export type ApiEnvelope<T> = { apiVersion: 1; revision: string; period: Period; 
 **Wire rules**
 
 - GET/HEAD only, no HEAD body; JSON uses the envelope. Fixed errors are `{ apiVersion: 1, error: { code, message } }`.
-- Codes: 400 invalid-query; 401 unauthorized; 403 forbidden; 404 not-found; 405 method-not-allowed; 409 ledger-changed; 413 response-limit; 429 rate-limited.
-- 503 codes are ledger-unavailable, unsupported-schema and busy; 500 is internal. The reader maps runtime SQLite errors to fixed codes, never raw messages. No ingest/config/reprice/shutdown API.
+- Codes: 400 invalid-query or unknown-filter-id; 401 unauthorized; 403 forbidden; 404 not-found; 405 method-not-allowed; 409 ledger-changed; 413 response-limit; 429 rate-limited.
+- 503 codes are ledger-unavailable, identity-unavailable, unsupported-schema and busy; 500 is internal. The reader maps runtime SQLite errors to fixed codes, never raw messages. No ingest/config/reprice/shutdown API.
 - Require start/end together; filters are JSON, `groupBy` comma-separated, days UTC. Use `URLSearchParams`; null differs from `Unknown`.
-- Base64url cursors contain version/endpoint/revision/query hash/full key. Query mismatch is 400; changed call content is 409; counter history freezes stable anchors. Source-error cursors bind to the server instance, not call content, and page live stable `(rowid, kind)` keys.
+- HMAC-signed base64url cursors contain version/endpoint/revision/queryHash/full key/mac and an optional resolved window. Query mismatch or in-process tampering is 400; changed call content or a previous server instance is 409; counter history freezes stable anchors. Source-error cursors bind to the server instance, not call content, and page live stable `(rowid, kind)` keys.
 - Reconciliation rejects filters; source-errors accepts only limit/cursor. Missing ID is 400, nonexistent 404; suppressed representations explain their accounting.
 
 ## Verification and step convention
@@ -548,11 +549,17 @@ Graceful stop retries any pending lease release once and reports whether release
 
 **Interfaces:**
 - `queryExplorer(ctx, query: ExplorerQuery): ExplorerData`.
-- `queryFilterValues(ctx, slice, field: Dimension, prefix: string, limit: number, cursor?: string): Page<string | null>`. Produce `EXPLORER_ROUTES`.
+- `queryFilterValues(ctx, slice, field: Dimension, prefix: string, limit: number, cursor?: string): Page<FilterValue>`. Produce `EXPLORER_ROUTES`.
 
-- [ ] `every attribution pivot reconciles`: All dimensions and 2-3 groups reconcile published/calibrated totals, tokens and unpriced counts.
-- [ ] `filter values continue safely`: Page 450 values with literal LIKE wildcards.
-- [ ] `cursor belongs to complete query and content`: Stable ties; query mismatch 400, changed content 409, lease changes valid.
+- Task 6 owns `dashboard-identities.ts`, the shared helper for Tasks 7/8. Keys are dimension-scoped opaque HMAC ids except session/run, which use stored ids matching `^[A-Za-z0-9._:-]{1,128}$`; unsupported ids still count, carry no key and label `unsupported id`. Filter-values rows are `{id, label}` (null stays null), with an informational `count` for unsupported ids. Missing values are `{id: null, label: null}` rows, shown as Unknown and selectable with `{field, kind: "missing"}` (SQL IS NULL, counted against the 16-filter cap). Unsupported-id count rows have a non-null label and no filter action; explicit null-id and raw null filters reject with 400. Discovery filters explicitly use `kind: "id"`, never inferred from shape.
+- Persist a private 0600 ledger-adjacent salt across restarts with exclusive atomic publication; refuse symlinks, nonregular/multiply linked or foreign-owned files. Skip the mode check on win32. Hash distinct values after grouping, never per row; resolve explicit ids through per-revision/period distinct caches using `calls_period_read`, never decode paths from client tokens.
+- Normalize HOME through realpath and remove trailing separators; replace its prefix on a separator boundary with `~`, keeping worktrees distinguishable. Outside-home paths use `…/` plus the last two segments. Redact embedded POSIX/drive/UNC paths including after `=`, `[`, a backtick or comma, preserving `file:`. Clamp labels to 160 code points.
+- Sort Explorer null-first by its full identity tuple; typeahead sorts case-insensitively by label then id, bounded and keyset-paged. Sign cursors with a process-private instance secret; bind canonical filters and carry the resolved first-page window when end is omitted.
+- Shorten pages to their byte budgets with a continuation cursor. Prefixes are literal and ASCII-case-insensitive; non-ASCII case remains significant.
+
+- [x] `every attribution pivot reconciles`: All dimensions and 2-3 groups reconcile published/calibrated totals, tokens and unpriced counts.
+- [x] `filter values continue safely`: Page 450 values with literal LIKE wildcards.
+- [x] `cursor belongs to complete query and content`: Stable ties; query mismatch 400, changed content 409, lease changes valid.
 
 ## Task 7: Session/Run queries
 

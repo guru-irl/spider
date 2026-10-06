@@ -8,6 +8,7 @@ import { equalCredential, hasMintBearer, hasSafeBrowserMetadata, isBrowserMint, 
 const errors = {
   unauthorized: [401, "Unauthorized"], forbidden: [403, "Forbidden"], "invalid-query": [400, "Invalid query"],
   "ledger-changed": [409, "Ledger changed"], "ledger-unavailable": [503, "Ledger unavailable"],
+  "identity-unavailable": [503, "Dashboard identity unavailable"], "unknown-filter-id": [400, "Unknown filter id"],
   "unsupported-schema": [503, "Unsupported schema"], busy: [503, "Busy"], internal: [500, "Internal error"],
   "rate-limited": [429, "Rate limited"], "response-limit": [413, "Response limit"],
   "method-not-allowed": [405, "Method not allowed"], "not-found": [404, "Not found"],
@@ -206,7 +207,8 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
         if (target.searchParams.has("start") || target.searchParams.has("end") || target.searchParams.has("filters")) {
           const sliceParams = new URLSearchParams();
           for (const key of ["start", "end", "filters"]) if (target.searchParams.has(key)) sliceParams.set(key, target.searchParams.get(key)!);
-          parseSlice(sliceParams, now());
+          if (route.resolvePeriod) route.resolvePeriod(target.searchParams, now());
+          else parseSlice(sliceParams, now());
         }
         if (target.pathname === "/api/status") validateParams(target.searchParams, []);
         if (!reader && options.retryOpenReader && now() - lastOpenAt >= 5000) {
@@ -223,7 +225,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
           const timestamp = ctx.now();
           const date = new Date(timestamp);
           return { apiVersion: 1, revision: ctx.revision, generatedAt: timestamp,
-            period: { start: target.searchParams.has("start") ? Number(target.searchParams.get("start")) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1),
+            period: route.resolvePeriod?.(target.searchParams, timestamp) ?? { start: target.searchParams.has("start") ? Number(target.searchParams.get("start")) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1),
               end: target.searchParams.has("end") ? Number(target.searchParams.get("end")) : timestamp },
             data: route.handle(ctx, target.searchParams) };
         });

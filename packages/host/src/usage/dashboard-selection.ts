@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { DashboardQueryError, type Dimension, type Slice, type DashboardQueryContext, type UsageMeasure, type CalibrationResult, type AicDisplay } from "./dashboard-contract.js";
 
+import { primeFilterIds, resolveFilterId } from "./dashboard-identities.js";
 import { countedUsageSql } from "./schema.js";
 import { toAicDisplay } from "./aic-display.js";
 
@@ -32,10 +33,15 @@ function validateSlice(slice: Slice): void {
   if (!safeTimestamp(slice.start) || !safeTimestamp(slice.end) || slice.end < slice.start || slice.end - slice.start > 366 * DAY_MS) invalidQuery();
   if (!Array.isArray(slice.filters) || slice.filters.length > 16) invalidQuery();
   for (const filter of slice.filters) {
-    if (!filter || typeof filter !== "object" || Object.keys(filter).length !== 2 ||
-      !Object.hasOwn(filter, "field") || !Object.hasOwn(filter, "value") || !Object.hasOwn(columns, filter.field) ||
-      (filter.value !== null && (typeof filter.value !== "string" || Buffer.byteLength(filter.value) > 1024))) invalidQuery();
-    if (filter.field === "day" && filter.value !== null) utcDay(filter.value);
+    if (!filter || typeof filter !== "object" || Object.keys(filter).some(key => !["field", "value", "kind"].includes(key)) ||
+      !Object.hasOwn(filter, "field") || !Object.hasOwn(columns, filter.field)) invalidQuery();
+    if (filter.kind === "missing") {
+      if (Object.hasOwn(filter, "value")) invalidQuery();
+      continue;
+    }
+    if ((filter.kind !== undefined && filter.kind !== "raw" && filter.kind !== "id") ||
+      !Object.hasOwn(filter, "value") || typeof filter.value !== "string" || Buffer.byteLength(filter.value) > 1024) invalidQuery();
+    if (filter.field === "day" && filter.kind !== "id") utcDay(filter.value);
   }
 }
 export function parseSlice(params: URLSearchParams, now: number): Slice {
@@ -55,16 +61,26 @@ export function parseSlice(params: URLSearchParams, now: number): Slice {
   validateSlice(slice);
   return slice;
 }
-export function compileSlice(slice: Slice, scope?: { sessionId?: string; runId?: string }): { sql: string; params: readonly (string | number | null)[] } {
+export function compileSlice(slice: Slice, scope?: { sessionId?: string; runId?: string }, ctx?: DashboardQueryContext, batchIds = false): { sql: string; params: readonly (string | number | null)[] } {
   validateSlice(slice);
+  if (batchIds && ctx) primeFilterIds(ctx, slice.filters, slice);
   const clauses = ["c.ts >= ?", "c.ts < ?"];
   const params: (string | number | null)[] = [slice.start, slice.end];
   for (const filter of slice.filters) {
-    if (filter.field === "day" && filter.value !== null) {
-      const day = utcDay(filter.value);
+    if (filter.kind === "missing") {
+      clauses.push(`c.${columns[filter.field]} IS NULL`);
+      continue;
+    }
+    let value = filter.value;
+    if (filter.kind === "id" && value !== null) {
+      if (!ctx) invalidQuery();
+      value = resolveFilterId(ctx, filter.field, value, slice);
+    }
+    if (filter.field === "day" && value !== null) {
+      const day = utcDay(value);
       clauses.push("c.ts >= ? AND c.ts < ?"); params.push(day, day + DAY_MS);
     } else {
-      clauses.push(`c.${columns[filter.field]} IS ?`); params.push(filter.value);
+      clauses.push(`c.${columns[filter.field]} IS ?`); params.push(value);
     }
   }
   for (const [key, column] of [["sessionId", "session_id"], ["runId", "run_id"]] as const) {
@@ -119,7 +135,7 @@ export function readMeasure(ctx: DashboardQueryContext, slice: Slice, scope?: { 
       if (earliest.status === "calibrated" && earliest.windowEnd !== null && end < earliest.windowEnd) { calibration = earliest; basis = "back-applied"; }
     }
   }
-  const compiled = compileSlice(slice, scope);
+  const compiled = compileSlice(slice, scope, ctx);
   const row = ctx.db.prepare(`SELECT ${measureColumns} FROM (${countedUsageSql(compiled.sql, "c.*", scope?.sessionId ? "calls_session_read" : "calls_period_read")})`)
     .get(...compiled.params) as MeasureRow;
   const result = measureFromRow(ctx, row, calibration);
@@ -138,19 +154,61 @@ export function parsePage(params: URLSearchParams): { limit: number; cursor?: st
   validatePage(page);
   return page;
 }
-const queryHash = (query: unknown) => createHash("sha256").update(JSON.stringify(query)).digest("hex");
-export function encodeCursor(endpoint: string, revision: string, query: unknown, key: readonly (string | number | null)[]): string {
-  const cursor = Buffer.from(JSON.stringify({ version: 1, endpoint, revision, queryHash: queryHash(query), key })).toString("base64url");
+// Filter conjunctions have no order. Normalize object shape as well as the filter list.
+function canonicalQuery(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalQuery);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => {
+    const normalized = canonicalQuery(item);
+    return [key, key === "filters" && Array.isArray(normalized)
+      ? [...new Map(normalized.map(filter => [JSON.stringify(filter), filter])).entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, filter]) => filter)
+      : normalized];
+  }));
+}
+const queryHash = (query: unknown) => createHash("sha256").update(JSON.stringify(canonicalQuery(query))).digest("hex");
+// Instance namespaces are generated by the launcher. The independent signing secret
+// never leaves this server process, is shared by all endpoints and rotates on restart.
+const cursorSecrets = new Map<string, Buffer>();
+function cursorSecret(revision: string): Buffer {
+  const instance = revision.split(":")[0]!;
+  let secret = cursorSecrets.get(instance);
+  if (!secret) { secret = randomBytes(32); cursorSecrets.set(instance, secret); }
+  return secret;
+}
+type CursorPayload = { version: 2; endpoint: string; revision: string; queryHash: string;
+  key: readonly (string | number | null)[]; window?: { start: number; end: number } };
+export function encodeCursor(endpoint: string, revision: string, query: unknown, key: readonly (string | number | null)[],
+  window?: { start: number; end: number }): string {
+  const payload: CursorPayload = { version: 2, endpoint, revision, queryHash: queryHash(query), key, ...(window ? { window } : {}) };
+  const mac = createHmac("sha256", cursorSecret(revision)).update(JSON.stringify(payload)).digest("base64url");
+  const cursor = Buffer.from(JSON.stringify({ ...payload, mac })).toString("base64url");
   if (Buffer.byteLength(cursor) > 2048) invalidQuery();
   return cursor;
 }
-export function decodeCursor(cursor: string, endpoint: string, revision: string, query: unknown): readonly (string | number | null)[] {
+function authenticatedCursor(cursor: string, endpoint: string): CursorPayload {
   if (!cursor || Buffer.byteLength(cursor) > 2048 || !/^[A-Za-z0-9_-]+$/.test(cursor)) invalidQuery();
-  let value: { version?: unknown; endpoint?: unknown; revision?: unknown; queryHash?: unknown; key?: unknown };
+  let value: CursorPayload & { mac: string };
   try { value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")); } catch { invalidQuery(); }
-  if (!value || typeof value !== "object" || Object.keys(value).length !== 5 || value.version !== 1 ||
-    value.endpoint !== endpoint || typeof value.revision !== "string" || value.queryHash !== queryHash(query) ||
+  if (!value || typeof value !== "object" || Object.keys(value).some(key => !["version", "endpoint", "revision", "queryHash", "key", "window", "mac"].includes(key)) ||
+    value.version !== 2 || value.endpoint !== endpoint || typeof value.revision !== "string" || typeof value.queryHash !== "string" ||
+    typeof value.mac !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.mac) ||
     !Array.isArray(value.key) || value.key.length > 32 || value.key.some(item => item !== null && typeof item !== "string" && typeof item !== "number")) invalidQuery();
+  if (value.window && (!safeTimestamp(value.window.start) || !safeTimestamp(value.window.end) ||
+    Object.keys(value.window).length !== 2 || value.window.end < value.window.start)) invalidQuery();
+  const { mac, ...payload } = value;
+  const secret = cursorSecrets.get(value.revision.split(":")[0]!);
+  if (!secret) throw new DashboardQueryError("ledger-changed");
+  const expected = createHmac("sha256", secret).update(JSON.stringify(payload)).digest();
+  if (!timingSafeEqual(expected, Buffer.from(mac, "base64url"))) invalidQuery();
+  return payload;
+}
+/** Read only an authenticated resolved window. Query and revision binding are still checked by decodeCursor. */
+export function cursorWindow(cursor: string, endpoint: string): { start: number; end: number } | undefined {
+  return authenticatedCursor(cursor, endpoint).window;
+}
+export function decodeCursor(cursor: string, endpoint: string, revision: string, query: unknown): readonly (string | number | null)[] {
+  const value = authenticatedCursor(cursor, endpoint);
+  if (value.queryHash !== queryHash(query)) invalidQuery();
   if (value.revision !== revision) throw new DashboardQueryError("ledger-changed");
-  return value.key as (string | number | null)[];
+  return value.key;
 }

@@ -133,7 +133,7 @@ it("single-kind sources page completely at limit one across call ingest", async 
     expect(readSourceErrorDiagnostics(fixture.db, 4)).toMatchObject({ truncated: false, rows: expect.any(Array) });
     expect(readSourceErrorDiagnostics(fixture.db, 4).rows).toHaveLength(4);
     reader.snapshot(ctx => {
-      const cursor = encodeCursor("source-errors", "fixture:source-errors", { limit: 1 }, [1, 2]);
+      const cursor = encodeCursor("source-errors", `${ctx.instanceId}:source-errors`, { limit: 1 }, [1, 2]);
       expect(() => querySourceErrors(ctx, { limit: 1, cursor })).toThrow("invalid-query");
     });
   } finally { other.close(); reader.close(); }

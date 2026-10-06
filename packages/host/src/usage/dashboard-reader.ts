@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { assertUsageSchemaVersion } from "./migrate.js";
 import { counterSnapshotIsFresh } from "./counter.js";
@@ -40,11 +41,13 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
     if (db.pragma("user_version") === 0) throw new DashboardQueryError("unsupported-schema");
     try { assertUsageSchemaVersion(db); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("unsupported-schema"); }
     db.pragma("query_only=ON");
+    // The caller's name is not a boot identity. Reopening must invalidate old cursors.
+    const instanceId = `${options.instanceId}-${randomUUID()}`;
     const revisionStatement = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'");
     const revision = () => {
       const row = revisionStatement.get() as { value: string } | undefined;
       if (!row || !/^\d+$/.test(row.value)) throw new DashboardQueryError("ledger-unavailable");
-      return `${options.instanceId}:${row.value}`;
+      return `${instanceId}:${row.value}`;
     };
     const calibration = createCalibrationService(db, { revision });
     const rates = options.rates ?? COPILOT_RATE_VERSIONS;
@@ -84,7 +87,7 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
           const now = options.now();
           const calibrationMode = options.calibrationMode();
           if (calibrationMode !== "auto" && calibrationMode !== "off") throw new TypeError("calibrationMode must return auto or off");
-          return db.raw.transaction(() => read({ db, instanceId: options.instanceId, revision: revision(), now: () => now, rates,
+          return db.raw.transaction(() => read({ db, instanceId, revision: revision(), now: () => now, rates,
           composition: phase2CompositionProvider,
           calibration,
           calibrationMode, status: () => readStatus(now) })).deferred();

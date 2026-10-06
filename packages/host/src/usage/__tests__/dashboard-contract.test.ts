@@ -11,7 +11,7 @@ afterEach(() => { fixture?.close(); fixture = undefined; });
 
 it("wire errors expose all fixed codes and the versioned body", () => {
   expectTypeOf<ApiErrorCode>().toEqualTypeOf<"invalid-query" | "ledger-changed" | "ledger-unavailable" | "unsupported-schema" | "busy" | "not-found"
-    | "unauthorized" | "forbidden" | "method-not-allowed" | "response-limit" | "rate-limited" | "internal">();
+    | "identity-unavailable" | "unknown-filter-id" | "unauthorized" | "forbidden" | "method-not-allowed" | "response-limit" | "rate-limited" | "internal">();
   expectTypeOf<ApiErrorBody>().toEqualTypeOf<{ apiVersion: 1; error: { code: ApiErrorCode; message: string } }>();
 });
 
@@ -39,13 +39,13 @@ it("invalid slice fails before SQL", async () => {
   ]) expect(() => api!.parseSlice(new URLSearchParams(query), DASHBOARD_NOW), query).toThrow("invalid-query");
   expect(api!.parseSlice(new URLSearchParams(), DASHBOARD_NOW)).toEqual({ start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [] });
   const slice: Slice = { start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [
-    { field: "role", value: null }, { field: "model", value: "Unknown" }, { field: "day", value: "2026-10-02" },
+    { field: "role", kind: "missing" }, { field: "model", value: "Unknown" }, { field: "day", value: "2026-10-02" },
   ] };
   expect(api!.parseSlice(new URLSearchParams({ start: String(slice.start), end: String(slice.end), filters: JSON.stringify(slice.filters) }), DASHBOARD_NOW)).toEqual(slice);
   const compiled = api!.compileSlice(slice, { sessionId: "fixture-session" });
   expect(compiled.sql).toContain("c.session_id = ?");
-  expect(compiled.sql).toContain("c.role IS ?");
-  expect(compiled.params).toContain(null);
+  expect(compiled.sql).toContain("c.role IS NULL");
+  expect(compiled.params).not.toContain(null);
   expect(compiled.params).toContain("Unknown");
   expect(() => api!.compileSlice({ ...slice, start: NaN })).toThrow("invalid-query");
 });

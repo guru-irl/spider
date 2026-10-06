@@ -5,7 +5,8 @@ import { countedUsageSql } from "./schema.js";
 import { compileSlice, readMeasure, measureColumns, measureFromRow, type MeasureRow, DAY_MS, safeTimestamp, invalidQuery,
   parseSlice, validateParams, parsePage, decodeCursor, encodeCursor } from "./dashboard-selection.js";
 
-const publicLabel = (value: string | null): string | null => value === null ? null : [...value].slice(0, 160).join("");
+import { dashboardLabel } from "./dashboard-identities.js";
+const publicLabel = (value: string | null): string | null => dashboardLabel("role", value);
 
 export const emptyMeasureRow: MeasureRow = {
   calls: 0, pricedCalls: 0, unpricedCalls: 0, aggregateCalls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0,
@@ -14,7 +15,7 @@ export const emptyMeasureRow: MeasureRow = {
 };
 
 export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailyStart: number = slice.start): OverviewData {
-  const compiled = compileSlice(slice);
+  const compiled = compileSlice(slice, undefined, ctx);
   if (!safeTimestamp(dailyStart) || dailyStart < slice.start || dailyStart > slice.end ||
     (dailyStart !== slice.start && dailyStart % DAY_MS !== 0)) invalidQuery();
   const firstDay = Math.floor(dailyStart / DAY_MS) * DAY_MS;

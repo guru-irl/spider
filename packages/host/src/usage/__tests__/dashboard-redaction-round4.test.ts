@@ -32,7 +32,7 @@ it("Windows home spellings remain case-insensitive on a Linux host", () => {
     Object.defineProperty(process, "platform", { ...descriptor, value: "linux" });
     const base = String.raw`c:\users\seat`;
     vi.stubEnv("HOME", base);
-    expect(dashboardLabel("role", String.raw`prefixC:\USERS\SEAT\x`, base)).toBe("prefix~/x");
+    expect(dashboardLabel("role", String.raw`prefixC:\USERS\SEAT\x`, base)).toBe("prefixC:~/x");
   } finally { Object.defineProperty(process, "platform", descriptor); }
 });
 

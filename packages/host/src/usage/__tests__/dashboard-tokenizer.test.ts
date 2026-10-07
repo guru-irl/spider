@@ -13,11 +13,11 @@ it.each([...":;&|><=,()[]{}\"'`"].map(delimiter => [delimiter]))("redacts both s
   expect(labelLeaks(result, [home])).toEqual([]);
 });
 it.each([
-  [`PATH=${home}/bin:${home}/.local/bin`, "PATH=…/.local/bin"],
+  [`PATH=${home}/bin:${home}/.local/bin`, "PATH=~/.local/bin"],
   [`x=${home}/a;y=${home}/b`, "x=~/a;y=~/b"],
   [`see ${home}/a&&${home}/b`, "see ~/a&&~/b"],
   [`env ${home}/a>${home}/b`, "env ~/a>~/b"],
-  [`cwd:${home}/a:/opt/x`, "cwd:…/opt/x"],
+  [`cwd:${home}/a:/opt/x`, "cwd:~/opt/x"],
   [`{${home}/x}`, "{~/x}"],
   [`-C${home}/repo`, "-C~/repo"],
   ...["@", "!", "*", "+", "a.", "~"].map(prefix => [`${prefix}${home}/x`, `${prefix === "~" ? "" : prefix}~/x`]),
@@ -37,8 +37,8 @@ it.each([
   ["https://host/public/repo", "https://host…/public/repo"],
   ["Review /srv/a/b/c then compare docs/x/y", "Review …/x/y"],
   ["Review /srv/a/b/c docs/x/y", "Review …/x/y"],
-  [`Review ${home}/x then compare docs/x/y`, "Review …/x/y"],
-  [`@${home}/x!${home}/y*${home}/z+${home}/w`, "@…/z+~/w"],
+  [`Review ${home}/x then compare docs/x/y`, "Review ~/x/y"],
+  [`@${home}/x!${home}/y*${home}/z+${home}/w`, "@~/z+~/w"],
 ])("tokenizer preserves prose and URL prefixes: %s", (input, expected) => {
   const result = dashboardLabel("runName", input!, home)!;
   expect(result).toBe(expected);

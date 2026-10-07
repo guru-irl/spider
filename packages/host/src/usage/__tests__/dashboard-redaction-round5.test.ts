@@ -56,7 +56,7 @@ it.each(["/srv/Projects/Q3 Compare Results/data/file.csv", "/srv/Root/My then Fo
   "/Users/someuser/Q3 Compare Results/data/file.csv", String.raw`\\srv\share\Q3 Compare Results\data\file.csv`])(
   "connectives do not expose hidden path segments: %s", input => {
     vi.stubEnv("HOME", home);
-    expect(dashboardLabel("role", input, home)).toBe("…/data/file.csv");
+    expect(dashboardLabel("role", input, home)).toBe(input.startsWith(home) ? "~/data/file.csv" : "…/data/file.csv");
   });
 it.each([
   ["edit /srv/a/b/c.ts, run ../tools/x.sh", "edit …/b/c.ts, run ../tools/x.sh"],

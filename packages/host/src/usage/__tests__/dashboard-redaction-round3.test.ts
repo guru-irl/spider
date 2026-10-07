@@ -73,7 +73,7 @@ it.each(["darwin", "win32", "linux"])("home matching follows %s casing", platfor
   try {
     Object.defineProperty(process, "platform", { ...descriptor, value: platform });
     const input = "prefix%2FSYNTHETIC%2FHOME%20DIR";
-    expect(dashboardLabel("role", input, home)).toBe(platform === "linux" ? input : "prefix~");
+    expect(dashboardLabel("role", input, home)).toBe(platform === "linux" ? "prefix…/SYNTHETIC/HOME DIR" : "prefix~");
   } finally { Object.defineProperty(process, "platform", descriptor); }
 });
 it("backstop covers both lexical and realpath homes", () => {

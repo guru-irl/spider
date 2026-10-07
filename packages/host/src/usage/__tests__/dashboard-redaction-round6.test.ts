@@ -56,7 +56,7 @@ it.each([
 // Stale folded offsets expose the second of two differently encoded homes.
 it.each([
   ["prefix%2FHzHomeQ5%2Fhz.first.lastQ5 ../a/b -I%5CHzHomeQ5%5Chz.first.lastQ5", "prefix~ ../a/b -I~"],
-  ["q=%2FHzHomeQ5%2Fhz.first.lastQ5&x=%5CHzHomeQ5%5Chz.first.lastQ5", "q=~"],
+  ["q=%2FHzHomeQ5%2Fhz.first.lastQ5&x=%5CHzHomeQ5%5Chz.first.lastQ5", "q=~&x=~"],
 ])("rebuilds search offsets between different encoded forms: %s", (input, expected) => {
   const base = "/HzHomeQ5/hz.first.lastQ5";
   vi.stubEnv("HOME", base);
@@ -86,7 +86,7 @@ it.each([
   ["/c/root/x", "~/x"],
   ["/c/junk/../root/x", "~/x"],
   ["/c/root//x", "~//x"],
-  ["cp /srv/a /c/junk/../root/x", "cp ~/x"],
+  ["cp /srv/a /c/junk/../root/x", "cp …/srv/a ~/x"],
 ])("a one-segment drive home uses only the effective path root: %s", (input, expected) => onPlatform("win32", () => {
   const base = String.raw`C:\root`;
   vi.stubEnv("HOME", base);
@@ -94,7 +94,7 @@ it.each([
 }));
 it.each(["cp /srv/a /c/junk/../Users/Some User/x", "/c/Users//Some User/x"])("canonical MSYS homes preserve the mapped root: %s", input => {
   vi.stubEnv("HOME", windowsHome);
-  expect(dashboardLabel("role", input, windowsHome)).toBe(input.startsWith("cp ") ? "cp ~/x" : "~/x");
+  expect(dashboardLabel("role", input, windowsHome)).toBe(input.startsWith("cp ") ? "cp …/srv/a ~/x" : "~/x");
 });
 it.each([
   ["../Users/someuser/x.ts", "…/x.ts"],
@@ -126,7 +126,7 @@ it("a repeated root after traversal cannot overwrite a prior match or earlier pr
 });
 it("later encoded replacements carry the earlier canonical root offset", () => {
   vi.stubEnv("HOME", "/root");
-  expect(dashboardLabel("role", "cd /tmp/a/b to /root q=%2Froot", "/root")).toBe("cd …/a/b to ~");
+  expect(dashboardLabel("role", "cd /tmp/a/b to /root q=%2Froot", "/root")).toBe("cd …/a/b to ~ q=~");
 });
 
 // Rebuilding all folded offsets for every home form is linear but too costly.

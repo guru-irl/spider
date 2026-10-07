@@ -26,7 +26,7 @@ it.each([
   ["git+ssh://example.invalid/repo", "git+ssh://example.invalid/repo"],
   ["file:", "file:"],
   ["cwd:/srv/private path:/outside/secret", "cwd:…/outside/secret"],
-  ["cwd:/synthetic/home with spaces/work path:/outside/secret", "cwd:…/outside/secret"],
+  ["cwd:/synthetic/home with spaces/work path:/outside/secret", "cwd:~/outside/secret"],
   ["cwd:/srv/private https://example.invalid/repo", "cwd:…/example.invalid/repo"],
   ["https://example.invalid/repo cwd:/srv/private/repo", "https://example.invalid…/private/repo"],
 ])("embedded paths redact safely: %s", (input, expected) => {

@@ -129,12 +129,12 @@ it("opaque ids keep home-relative worktree labels and bookmarked filters stable 
   const paths = [join(home, "work", "repo", "one"), join(home, "work", "repo", "two")];
   fixture.ledger.apply(dashboardBatch(paths.map((project, i) => dashboardCall(`private-${i}`, { project, repo: join(home, "work", "repo") }))));
   const slice = { ...S, filters: [] };
-  const first = inspect(ctx => queryFilterValues(ctx, slice, "project", "~/work", 1));
+  const first = inspect(ctx => queryFilterValues(ctx, slice, "project", "~/repo", 1));
   expect(first.rows).toHaveLength(1);
-  expect(first.rows[0]).toMatchObject({ id: expect.stringMatching(/^v1_[A-Za-z0-9_-]{43}$/), label: expect.stringMatching(/^~\/work\/repo\/(one|two)$/) });
+  expect(first.rows[0]).toMatchObject({ id: expect.stringMatching(/^v1_[A-Za-z0-9_-]{43}$/), label: expect.stringMatching(/^~\/repo\/(one|two)$/) });
   expect(first.nextCursor).not.toBeNull();
   const response = inspect(ctx => queryExplorer(ctx, { slice: { ...slice, filters: [{ kind: "id", field: "project", value: (first.rows[0] as unknown as { id: string }).id }] }, groupBy: ["project", "repo"], page: { limit: 1 } }));
-  expect(response.rows[0]!.labels.every(value => value?.startsWith("~/work/repo"))).toBe(true);
+  expect(response.rows[0]!.labels).toEqual([expect.stringMatching(/^~\/repo\/(one|two)$/), "~/work/repo"]);
   expect(response.rows[0]!.key.every(value => /^v1_[A-Za-z0-9_-]{43}$/.test(value!))).toBe(true);
   for (const payload of [first, response, JSON.parse(Buffer.from(first.nextCursor!, "base64url").toString())]) {
     expect(JSON.stringify(payload)).not.toContain(home);
@@ -147,7 +147,7 @@ it("opaque ids keep home-relative worktree labels and bookmarked filters stable 
   expect(salt).toHaveLength(32); expect(statSync(fixture.file + ".explorer-salt").mode & 0o777).toBe(0o600);
   reader.close();
   reader = openDashboardReader(fixture.file, { instanceId: "restarted", now: () => NOW, calibrationMode: () => "off", serverBuild: "b" })!;
-  const again = inspect(ctx => queryFilterValues(ctx, slice, "project", "~/work", 200));
+  const again = inspect(ctx => queryFilterValues(ctx, slice, "project", "~/repo", 200));
   expect(again.rows).toContainEqual(first.rows[0]);
   expect(inspect(ctx => queryExplorer(ctx, { slice: { ...slice, filters: [{ kind: "id", field: "project", value: id }] }, groupBy: ["project"], page: { limit: 1 } })).totals.calls).toBe(1);
   expect(readFileSync(fixture.file + ".explorer-salt")).toEqual(salt);

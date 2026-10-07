@@ -2,7 +2,6 @@ import { DIMENSION_COLUMNS } from "./dimension-values.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { constants, openSync, closeSync, readFileSync, writeFileSync, linkSync, unlinkSync, fstatSync, fchmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { sep, posix, win32 } from "node:path";
 import { DashboardQueryError, type Dimension, type DashboardQueryContext, type Period, type Filter } from "./dashboard-contract.js";
 
 import { supportedDetailId } from "./dashboard-keys.js";
@@ -17,47 +16,20 @@ function normalizedHome(): string {
   return home.replace(/[\\/]+$/, "");
 }
 const meaningfulHome = (home: string) => home !== "" && !/^(?:[\\/]+|[A-Za-z]:[\\/]*)$/.test(home);
-function pathLabel(value: string, home: string): string {
-  const compare = process.platform === "win32" ? value.toLowerCase() : value;
-  const base = process.platform === "win32" ? home.toLowerCase() : home;
-  if (compare === base || compare.startsWith(base + sep)) return "~" + value.slice(home.length);
-  return "…/" + value.split(/[\\/]+/).filter(Boolean).slice(-2).join("/");
-}
-// Only home-origin traversal may hide a surviving home prefix. Shared words
-// in an unrelated path or in a home-relative tail remain ordinary segments.
-function outsideHomeTail(segments: string[], home: string): string[] {
-  const windows = /^(?:[A-Za-z]:|\\\\|\/\/)/.test(home), syntax = windows ? win32 : posix;
-  const parents = syntax.normalize(home).replace(/^[A-Za-z]:/, "").split(/[\\/]+/).filter(Boolean);
-  const fold = (value: string) => windows || process.platform === "darwin" || process.platform === "win32" ? value.toLowerCase() : value;
-  let shared = 0;
-  while (shared < segments.length && shared < parents.length && fold(segments[shared]!) === fold(parents[shared]!)) shared++;
-  return segments.slice(shared);
-}
-function normalizedPathLabel(path: string, home: string): string {
-  const hasHome = meaningfulHome(home), homeOrigin = path === "~" || path.startsWith("~/");
-  if (path === "~") path = hasHome ? home : "";
-  if (path.startsWith("~/")) path = hasHome ? home + path.slice(1) : path.slice(2);
-  const windows = /^[A-Za-z]:|^\\\\|^\/\//.test(path), syntax = windows ? win32 : posix;
-  const normalized = syntax.normalize(path), base = syntax.normalize(home);
-  const compare = windows ? normalized.toLowerCase() : normalized;
-  const homeCompare = windows ? base.toLowerCase() : base;
-  if (hasHome && syntax.isAbsolute(normalized) && (compare === homeCompare || compare.startsWith(homeCompare.replace(/[\\/]+$/, "") + syntax.sep))) {
-    return "~/" + normalized.slice(base.replace(/[\\/]+$/, "").length).replace(/^[\\/]+/, "").replaceAll("\\", "/");
-  }
-  // Only real segments survive relative/upward paths, even after normalization.
-  const segments = normalized.replace(/^[A-Za-z]:/, "").split(/[\\/]+/).filter(part => part && part !== "." && part !== "..");
-  return pathLabel((homeOrigin ? outsideHomeTail(segments, base) : segments).join("/"), "/");
-}
-/** Capped whitespace runs, not delimiter-driven tokens. An outside path consumes
- * the rest of its run. Separator-bearing continuation runs stay private until
- * plain prose. Home spellings are mapped before path detection and again as a
- * final backstop, including encoded/alternate separators and cap-cut prefixes.
+/** Two passes over capped input: source-offset home substitutions for privacy,
+ * then whitespace-run path truncation for presentation. The path pass sees only
+ * safe roots and never reconstructs a home from tilde.
  */
 const redactEmbeddedPaths = (() => {
   type HomeForm = { text: string; folded: string; failure: number[]; firstSegmentEnd: number; rootOnly: boolean };
-  type CanonicalHome = { segments: string[]; drive?: string };
+  type CanonicalHome = { segments: string[]; drive?: string; initials: string[] };
   const cache = new Map<string, { forms: HomeForm[]; canonical: CanonicalHome[] }>();
-  const whitespace = (c: string) => /\s/.test(c);
+  const whitespace = (c: string) => {
+    const code = c.charCodeAt(0);
+    return code === 32 || code >= 9 && code <= 13 || code === 0xa0 || code === 0x1680 ||
+      code >= 0x2000 && code <= 0x200a || code === 0x2028 || code === 0x2029 ||
+      code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+  };
   const separator = (c: string) => c === "/" || c === "\\";
   const letter = (c: string) => /^[A-Za-z]$/.test(c);
   const schemeChar = (c: string) => /^[A-Za-z0-9+.-]$/.test(c);
@@ -77,9 +49,16 @@ const redactEmbeddedPaths = (() => {
       const text = insensitive ? s.toLowerCase() : s;
       return text.includes("%") ? text.replace(/%[0-9a-f]{1,2}/gi, hex => hex.toLowerCase()) : text;
     };
-    const searchable = (s: string) => {
+    type Search = { text: string; original: (i: number) => number; folded: (i: number) => number };
+    const searches = new Map<string, Search>();
+    const searchable = (s: string): Search => {
+      const existing = searches.get(s);
+      if (existing) return existing;
       const text = fold(s);
-      if (text.length === s.length) return { text, original: (i: number) => i, folded: (i: number) => i };
+      if (text.length === s.length) {
+        const result = { text, original: (i: number) => i, folded: (i: number) => i };
+        searches.set(s, result); return result;
+      }
       // Rare expanding Unicode folds need offsets in the original string.
       const original: number[] = [], folded: number[] = [];
       let position = 0, cursor = 0;
@@ -90,7 +69,8 @@ const redactEmbeddedPaths = (() => {
         position += point.length; cursor += lower.length;
       }
       original[cursor] = position; folded[position] = cursor;
-      return { text, original: (i: number) => original[i]!, folded: (i: number) => folded[i]! };
+      const result = { text, original: (i: number) => original[i]!, folded: (i: number) => folded[i]! };
+      searches.set(s, result); return result;
     };
     const rawHome = homedir().replace(/[\\/]+$/, "");
     const cacheKey = JSON.stringify([home, rawHome, insensitive]);
@@ -115,7 +95,10 @@ const redactEmbeddedPaths = (() => {
             if (!segment || segment === ".") continue;
             if (segment === "..") originals.pop(); else originals.push(segment);
           }
-          canonical.push({ segments: originals.map(fold), drive });
+          const first = [...(originals[0] ?? "")][0] ?? "";
+          const initials = [...new Set([first, ...(insensitive ? [first.toLowerCase(), first.toUpperCase()] : [])])];
+          canonical.push({ segments: originals.map(fold), drive, initials: initials.flatMap(point => [fold(point),
+            [...Buffer.from(point)].map(byte => "%" + byte.toString(16).padStart(2, "0")).join("")]).filter(Boolean) });
           // The literal/cap-cut backstop must recognize the same effective
           // drive homes as the component matcher, including encoded aliases.
           const aliases = drive && originals.length ? [drive, drive.toUpperCase()].flatMap(letter =>
@@ -139,21 +122,26 @@ const redactEmbeddedPaths = (() => {
         const root = /^(?:[A-Za-z](?::|%3a))?(?:[\\/]|%(?:2f|5c))+/i.exec(folded)?.[0].length ?? 0;
         const next = folded.slice(root).search(/[\\/]|%(?:2f|5c)/i);
         const rootOnly = rootOnlyForms.has(text);
-        return { text, folded, failure, firstSegmentEnd: next < 0 ? folded.length : root + next, rootOnly };
+        return { text, folded, failure, firstSegmentEnd: rootOnly ? Math.min(next < 0 ? folded.length : root + next, folded.search(/\s|%20|\+/i) < 0 ? folded.length : folded.search(/\s|%20|\+/i)) : next < 0 ? folded.length : root + next, rootOnly };
       });
       if (cache.size >= 16) cache.delete(cache.keys().next().value!);
       cached = { forms, canonical };
       cache.set(cacheKey, cached);
     }
     const { forms, canonical } = cached;
-    const relativeRoot = (source: string, start: number) =>
-      /(?:^|[^\p{L}\p{N}\p{M}._~\/\\-])\.{1,2}$/u.test(source.slice(Math.max(0, start - 4), start));
+    // Only the final relative marker is needed. The path pass canonicalizes
+    // any earlier markers before the mapped relative root to the same …/ root.
+    const relativeRoot = (source: string, start: number): number | undefined =>
+      /(?:^|[^\p{L}\p{N}\p{M}._~…\/\\-])\.{1,2}$/u.test(source.slice(Math.max(0, start - 4), start)) ?
+        start - (source[start - 2] === "." ? 2 : 1) : undefined;
     const pathStart = (source: string, start: number) => start === 0 ||
-      !/[\p{L}\p{N}\p{M}._~…\/\\-]/u.test(source[start - 1] ?? "");
+      !/[\p{L}\p{N}\p{M}._~…\/\\-]/u.test(source[start - 1] ?? "") ||
+      /-[A-Za-z]$/.test(source.slice(Math.max(0, start - 2), start));
+    type Match = { start: number; end: number; sibling?: boolean; relative?: boolean; prefix?: boolean; cut?: boolean };
     let mappedRoots = new Map<number, "home" | "sibling">();
-    // Keep home-root offsets through replacements without reserving any input
-    // character as a sentinel. Literal tildes and control characters stay literal.
-    const replaceMatches = (source: string, matches: { start: number; end: number; sibling?: boolean; relative?: boolean }[], track: boolean): string => {
+    // Privacy substitutions only copy untouched slices and replace matched spans.
+    // Offset metadata is presentation-only; no reserved input character is used.
+    const replaceMatches = (source: string, matches: Match[]): string => {
       const parts: string[] = [], next = new Map<number, "home" | "sibling">();
       const offsets = [...mappedRoots].sort(([a], [b]) => a - b);
       let previous = 0, length = 0, cursor = 0;
@@ -168,38 +156,87 @@ const redactEmbeddedPaths = (() => {
       };
       for (const match of matches) {
         append(match.start);
-        if (track) next.set(length, match.sibling || match.relative ? "sibling" : "home");
-        const root = match.sibling || match.relative ? "…/" : "~";
+        const root = match.cut ? "~…" : match.sibling || match.relative ? "…/" : match.prefix ? "…/~" : "~";
+        next.set(length + (match.prefix && !match.sibling && !match.relative ? 2 : 0), root.startsWith("~") || root === "…/~" ? "home" : "sibling");
         parts.push(root); length += root.length;
         previous = match.end;
       }
       append(source.length);
-      if (track) mappedRoots = next;
+      mappedRoots = next;
       return parts.join("");
     };
-    // Match raw paths segment by segment, retaining source offsets. Separator
-    // runs, dot segments and traversal do not alter a home's identity. Matching
-    // at every stack suffix also covers homes inside longer absolute paths.
-    const replaceCanonicalHomes = (source: string): string => {
-      if (!canonical.length || !/[\\/]/.test(source)) return source;
+    // Decoding is a matching view only. Original spelling outside substitutions
+    // survives, including percent escapes, plus signs, quotes and URL authority.
+    const decoded = (source: string, track = true) => {
+      if (!/[%+]/.test(source)) return { text: source, original: (i: number) => i };
+      if (!track) return { text: source.replace(/\+|%[cd][0-9a-f](?:%[89ab][0-9a-f])|%e[0-9a-f](?:%[89ab][0-9a-f]){2}|%f[0-4](?:%[89ab][0-9a-f]){3}|%[0-7][0-9a-f]/gi, point => {
+        if (point === "+") return " ";
+        if (point.length === 3) return String.fromCharCode(parseInt(point.slice(1), 16));
+        try { return decodeURIComponent(point); } catch { return point; }
+      }), original: (i: number) => i };
+      const parts: string[] = [], offsets: number[] = [];
+      let length = 0;
+      for (let i = 0; i < source.length;) {
+        let end = i + 1, part = source[i]!;
+        if (part === "+") part = " ";
+        else if (part === "%") {
+          const run = source.slice(i, i + 12);
+          if (/^%[0-9a-f]{2}/i.test(run)) {
+            // Decode UTF-8 points separately to retain exact boundary offsets.
+            const byte = parseInt(run.slice(1, 3), 16);
+            const count = byte < 128 ? 1 : byte >= 0xc2 && byte <= 0xdf ? 2 : byte >= 0xe0 && byte <= 0xef ? 3 : byte >= 0xf0 && byte <= 0xf4 ? 4 : 1;
+            const escape = run.slice(0, count * 3);
+            try { part = decodeURIComponent(escape); end = i + escape.length; } catch { /* Invalid escapes stay literal. */ }
+          }
+        }
+        for (let j = 0; j < part.length; j++) offsets[length + j] = i;
+        parts.push(part); length += part.length; i = end; offsets[length] = i;
+      }
+      return { text: parts.join(""), original: (i: number) => offsets[i]! };
+    };
+    // The home pass tracks each path's own canonical stack, independently of
+    // whitespace-run truncation. No match may reach into an earlier path.
+    const replaceCanonicalHomes = (raw: string): string => {
+      if (!canonical.length) return raw;
+      // A necessary first-point check avoids decoding unrelated escape soup.
+      // Include UTF-8 percent bytes and casing variants, not just raw letters.
+      const rawFold = searchable(raw).text;
+      if (!canonical.some(candidate => candidate.initials.some(initial => rawFold.includes(initial)))) return raw;
+      const source = decoded(raw, false).text;
+      if (!/[\/\\]/.test(source)) return raw;
+      const sourceFold = fold(source);
+      if (!canonical.some(candidate => candidate.segments[0] && sourceFold.includes(candidate.segments[0]))) return raw;
+      if (cap === input.length && !canonical.some(candidate => sourceFold.includes(candidate.segments.at(-1) ?? ""))) return raw;
+      const view = source === raw ? { original: (i: number) => i } : decoded(raw);
       const stack: { text: string; start: number }[] = [];
-      const matches: { start: number; end: number; sibling?: boolean; relative?: boolean }[] = [];
-      const separators = [...source.matchAll(/[\\/]+/g)];
+      const matches: Match[] = [];
+      const separators = [...source.matchAll(/[\/\\]+/g)];
       let previous = 0;
-      let pathRoot: number | undefined;
-      let driveRoot: { start: number } | undefined;
+      let pathRoot: number | undefined, relativeStart: number | undefined, driveRoot: number | undefined;
       for (let i = 0; i < separators.length; i++) {
         const sep = separators[i]!, start = sep.index!, begin = start + sep[0].length;
         const end = separators[i + 1]?.index ?? source.length;
-        const prefix = source.slice(Math.max(0, start - 16), start);
-        if (pathStart(source, start) && !relativeRoot(source, start)) {
-          pathRoot = start; driveRoot = undefined; stack.length = 0;
+        const prefix = source.slice(Math.max(0, start - 24), start);
+        const relative = relativeRoot(source, start);
+        const preceding = source.slice((separators[i - 1]?.index ?? 0) + (separators[i - 1]?.[0].length ?? 0), start);
+        if (/\s/.test(preceding) && !canonical.some(candidate => candidate.segments.includes(fold(preceding)))) {
+          stack.length = 0; pathRoot = undefined; driveRoot = undefined; relativeStart = undefined;
         }
-        const drive = /(?:[\\/]{2}[?.][\\/])?([A-Za-z]):$/.exec(prefix);
-        const aliasDrive = /(?<!:)[\\/](?:(?:cygdrive|mnt)[\\/])?([A-Za-z])$/.exec(prefix);
-        const rootDrive = drive ?? (aliasDrive && pathStart(source, start - aliasDrive[0].length) ? aliasDrive : null);
+        if (relative !== undefined || pathStart(source, start) && (pathRoot === undefined || /[\s=:,; &|><!+*()\[\]{}"'`]/u.test(source.slice(separators[i - 1]?.index ?? 0, start)))) {
+          pathRoot = start; driveRoot = undefined; relativeStart = relative; stack.length = 0;
+        }
+        const driveMatch = /(?:[\/\\]{2}[?.][\/\\])?([A-Za-z]):$/.exec(prefix);
+        const drive = driveMatch && pathStart(source, start - driveMatch[0].length) ? driveMatch : null;
+        const aliasDrive = /(?<!:)[\/\\](?:(?:cygdrive|mnt)[\/\\])?([A-Za-z])$/i.exec(prefix);
+        const rootDrive = (/^(?:path|cwd|file):$/i.test(prefix.trim()) || drive && /[A-Za-z][a-z]:$/.test(prefix) && !/(?:^|[^\p{L}\p{N}])-[A-Za-z][A-Za-z]:$/u.test(prefix) ? null : (/(?:https?|git\+ssh|ssh|s3|ftp|file|vscode(?:-insiders)?|cursor|jetbrains):$/i.test(prefix) && sep[0].length >= 2 ? null : drive)) ?? (aliasDrive && pathStart(source, start - aliasDrive[0].length) ? aliasDrive : null);
         if (rootDrive) {
-          pathRoot = start; driveRoot = { start: start - rootDrive[0].length }; stack.length = 0;
+          pathRoot = start; driveRoot = start - rootDrive[0].length; relativeStart = undefined; stack.length = 0;
+        }
+        const scheme = source[start - 1] === ":" ? /([A-Za-z][A-Za-z0-9+.-]*):$/.exec(prefix)?.[1] : undefined;
+        if (scheme && /^(?:https?|git\+ssh|ssh|s3|ftp|file|vscode(?:-insiders)?|cursor|jetbrains)$/i.test(scheme) && sep[0].length >= 2) {
+          stack.length = 0; driveRoot = undefined; relativeStart = undefined;
+          if (sep[0].length === 2) { pathRoot = separators[i + 1]?.index; continue; }
+          pathRoot = start + 2;
         }
         const segment = source.slice(begin, end);
         if (segment === ".") continue;
@@ -214,30 +251,43 @@ const redactEmbeddedPaths = (() => {
           const consumed = search.original(last.length);
           const sibling = /[\p{L}\p{N}\p{M}_-]/u.test(segment[consumed] ?? "");
           if (!candidate.segments.slice(0, -1).every((part, j) => stack[offset + j]!.text === part)) continue;
-          let from = stack[offset]!.start;
-          // One-segment homes identify only an effective root. Longer homes
-          // keep the conservative mid-path rule, independent of drive identity.
-          if (count === 1 && (offset !== 0 || pathRoot === undefined && !relativeRoot(source, from))) continue;
-          if (candidate.drive) from = driveRoot?.start ?? (count === 1 ? pathRoot ?? from : from);
-          else if (count === 1) from = pathRoot ?? from;
-          const relative = relativeRoot(source, from);
-          if (relative) from -= source[from - 2] === "." ? 2 : 1;
-          if (from < previous) continue;
-          // A file URL's third slash is its path root, not its sentinel.
+          if (count === 1 && (offset !== 0 || pathRoot === undefined)) continue;
+          const homeStart = stack[offset]!.start;
+          let from = relativeStart ?? (candidate.drive ? driveRoot : undefined) ?? pathRoot ?? stack[0]!.start;
+          from = Math.max(previous, from);
+          // Leave URL sentinels and authorities outside the matched path span.
           if (source[from - 1] === ":" && source.startsWith("///", from)) from += 2;
-          if (source[from - 1] === "~") from--;
-          // A glued sibling keeps its complete folder name, never the home's
-          // parent segments. Only exact canonical segments earn a ~ root.
-          previous = sibling ? begin : begin + consumed;
-          matches.push({ start: from, end: previous, sibling, relative });
+          if (from > previous && source[from - 1] === "~") from--;
+          const to = sibling ? begin : begin + consumed;
+          if (to <= from) continue;
+          const prior = matches.at(-1);
+          if (prior && view.original(from) === prior.end && pathRoot !== undefined && pathRoot < previous) {
+            prior.end = view.original(to); prior.sibling = sibling;
+          } else matches.push({ start: view.original(from), end: view.original(to), sibling,
+            relative: relativeStart !== undefined, prefix: from < homeStart });
+          previous = to;
           break;
         }
       }
-      return replaceMatches(source, matches, true);
+      if (cap < input.length && stack.length) {
+        let cut: number | undefined;
+        for (const candidate of canonical) for (let depth = 1; depth <= candidate.segments.length; depth++) {
+          const offset = stack.length - depth;
+          if (offset < 0 || depth === 1 && stack.at(-1)!.text.length < 3) continue;
+          if (!candidate.segments.slice(0, depth - 1).every((part, j) => stack[offset + j]!.text === part)) continue;
+          const tail = stack.at(-1)!.text;
+          if (!candidate.segments[depth - 1]!.startsWith(tail) || depth === candidate.segments.length && tail === candidate.segments[depth - 1]) continue;
+          if (candidate.segments.length === 1 && (offset !== 0 || pathRoot === undefined)) continue;
+          const from = candidate.drive ? driveRoot ?? stack[offset]!.start : stack[offset]!.start;
+          if (from >= previous) cut = Math.min(cut ?? from, from);
+        }
+        if (cut !== undefined) matches.push({ start: view.original(cut), end: raw.length, cut: true });
+      }
+      return replaceMatches(raw, matches);
     };
     // Protect homes BEFORE choosing suffixes. Otherwise a merged outside path
     // can discard the full home while retaining a private home segment.
-    const replaceHomes = (result: string, beforePaths = false): string => {
+    const replaceHomes = (result: string): string => {
       let search = searchable(result);
       for (const form of forms) {
         const matches: { start: number; end: number; relative?: boolean }[] = [];
@@ -246,26 +296,23 @@ const redactEmbeddedPaths = (() => {
         do {
           const start = search.original(pos), end = search.original(pos + form.folded.length);
           const relative = relativeRoot(result, start);
-          const from = relative ? start - (result[start - 2] === "." ? 2 : 1) : start;
+          const from = relative ?? start;
           if ((!form.rootOnly || pathStart(result, from)) &&
-            (!beforePaths || /%[0-9a-f]{2}|\+/i.test(form.text) || !/[\p{L}\p{N}\p{M}_-]/u.test(result[end] ?? ""))) {
-            matches.push({ start: from > previous && result[from - 1] === "~" ? from - 1 : from, end, relative }); previous = end;
+            (/%[0-9a-f]{2}|\+/i.test(form.text) || !/[\p{L}\p{N}\p{M}_-]/u.test(result[end] ?? ""))) {
+            matches.push({ start: from > previous && result[from - 1] === "~" ? from - 1 : from, end, relative: relative !== undefined }); previous = end;
           }
           pos = search.text.indexOf(form.folded, pos + form.folded.length);
         } while (pos !== -1);
         if (previous) {
-          result = replaceMatches(result, matches, beforePaths);
+          result = replaceMatches(result, matches);
           search = searchable(result);
         }
       }
       return result;
     };
-    value = replaceHomes(replaceCanonicalHomes(value), true).replace(/~\\/g, "~/");
+    value = replaceHomes(replaceCanonicalHomes(value)).replace(/~\\/g, "~/");
     const finish = (result: string) => [...result].slice(0, 160).join("");
-    if (pathValue && /^(?:\/|~(?:\/|$)|[A-Za-z]:[\\/]|\\\\)/.test(value) &&
-      ![...mappedRoots.keys()].some(offset => offset > 0)) {
-      return finish(replaceHomes(normalizedPathLabel(value, home)));
-    }
+    if (pathValue && value === "~") return meaningfulHome(home) ? "~/" : "…/";
     // KMP gives the longest home prefix at a string's end in linear time.
     const tailPrefix = (s: string, form: HomeForm): number => {
       let j = 0;
@@ -275,7 +322,7 @@ const redactEmbeddedPaths = (() => {
       }
       return j;
     };
-    const search = searchable(value), folded = search.text;
+    let search = searchable(value), folded = search.text;
     const atomEnds = new Int32Array(value.length + 1);
     let cutTail = value.length;
     for (const form of forms) {
@@ -288,6 +335,13 @@ const redactEmbeddedPaths = (() => {
         if ((length >= 8 || length >= form.firstSegmentEnd) && length < form.folded.length) cutTail = Math.min(cutTail, search.original(folded.length - length));
       }
     }
+    if (cutTail < value.length) {
+      value = value.slice(0, cutTail) + "~…";
+      for (const offset of mappedRoots.keys()) if (offset >= cutTail) mappedRoots.delete(offset);
+      mappedRoots.set(cutTail, "home");
+      search = searchable(value); folded = search.text;
+    }
+    // Path pass: only substitute spans beginning at a detected path start.
     // Full home spellings have already become ~, including their whitespace.
     // Splitting is whitespace-only; delimiters cannot hide an absolute start.
     const runs: { start: number; end: number; lastSeparator: number; continuation: number }[] = [];
@@ -299,12 +353,48 @@ const redactEmbeddedPaths = (() => {
         if (i < value.length && !whitespace(value[i]!)) i++;
       }
       let lastSeparator = -1;
-      for (let pos = start; pos < i; pos++) if (separator(value[pos]!) || mappedRoots.has(pos)) lastSeparator = pos;
+      for (let pos = start; pos < i; pos++) if (separator(value[pos]!) || pos + 3 < i && /^%(?:2f|5c)/i.test(value.slice(pos, pos + 3)) || mappedRoots.has(pos)) lastSeparator = pos;
       runs.push({ start, end: i, lastSeparator, continuation: runs.length });
     }
     // A short two-component slash token cannot start a path or bridge by
     // itself. Within an already detected path it is ambiguous, so N2 applies.
     const abbreviation = (run: string) => /^(?:[A-Za-z0-9]{1,3}\/[A-Za-z0-9]{0,3})$/.test(run);
+    const roots = [...mappedRoots.keys()].sort((a, b) => a - b);
+    const rootIndex = (start: number) => {
+      let low = 0, high = roots.length;
+      while (low < high) { const middle = (low + high) >>> 1; if (roots[middle]! < start) low = middle + 1; else high = middle; }
+      return low;
+    };
+    const bareHome = (start: number, end: number, ownPath = true) => {
+      for (let i = rootIndex(start); i < roots.length && roots[i]! < end; i++) {
+        const offset = roots[i]!, kind = mappedRoots.get(offset);
+        if (kind !== "home") continue;
+        const prefix = value.slice(start, offset).replace(/…\/$/, "");
+        if (ownPath && !/^[^\p{L}\p{N}\p{M}\/\\]*(?:-[A-Za-z]|--?[\w-]+=|[\w-]+=)?$/u.test(prefix)) continue;
+        const tail = value.slice(offset + 1, end);
+        if (!/[\/\\]/.test(tail) || /^[\/\\]*(?:\.)?[\p{Pe}\p{Pf}"'`.,;:!?]*$/u.test(tail) ||
+          /^[\/\\][^\/\\]+[\/\\]\.\.[\/\\]*[\p{Pe}\p{Pf}"'`.,;:!?]*$/u.test(tail)) return offset;
+      }
+      return -1;
+    };
+    // A bare home glued with punctuation still has an independent path span.
+    // Split the run, not its preceding prose or the earlier path's suffix.
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i]!, homeRoot = bareHome(run.start, run.end, false);
+      if (homeRoot <= run.start || /^%(?:2f|5c).+/i.test(value.slice(homeRoot + 1, run.end))) continue;
+      let boundary = homeRoot;
+      if (value.slice(Math.max(run.start, boundary - 2), boundary) === "…/") boundary -= 2;
+      if (!/[\/\\]/.test(value.slice(run.start, boundary))) continue;
+      // Walk opening punctuation first; a quote must not hide the glue.
+      while (boundary > run.start && /['"`\p{Ps}\p{Pi}$=]/u.test(value[boundary - 1]!)) boundary--;
+      if (value[boundary - 1] !== ":" && value[boundary - 1] !== ",") continue;
+      boundary--;
+      let lastSeparator = -1;
+      for (let pos = run.start; pos < boundary; pos++) if (separator(value[pos]!)) lastSeparator = pos;
+      runs.splice(i, 1, { start: run.start, end: boundary, lastSeparator, continuation: i },
+        { start: boundary, end: run.end, lastSeparator: run.lastSeparator, continuation: i + 1 });
+    }
+    for (let i = 0; i < runs.length; i++) runs[i]!.continuation = i;
     // Reverse dynamic programming bridges separator-free words inside a path
     // segment. Explicit relative starts and terminal punctuation end a bridge.
     // Each gap is scanned once, including runs not consumed by redaction.
@@ -313,13 +403,28 @@ const redactEmbeddedPaths = (() => {
       if (runs[i + 1]!.lastSeparator >= 0) nextSeparator = i + 1;
       const next = runs[nextSeparator]!;
       if (runs[i]!.lastSeparator < 0 || next.lastSeparator < 0) continue;
-      const bareMappedHome = next.lastSeparator === next.start && mappedRoots.get(next.start) === "home";
-      const newStart = bareMappedHome || /^(?:[\\/]|~[\\/]|[A-Za-z]:[\\/]|\.{1,2}[\\/])/.test(value.slice(next.start, next.end)) ||
+      const bareMappedHome = bareHome(next.start, next.end) >= 0;
+      const nextText = value.slice(next.start, next.end);
+      const nextRoot = roots[rootIndex(next.start)];
+      const homePrefix = nextRoot === undefined ? "" : value.slice(next.start, nextRoot);
+      const prefixedHome = nextRoot !== undefined && nextRoot < next.end && mappedRoots.get(nextRoot) === "home" &&
+        /^(?:["'`<\p{Ps}\p{Pi}$]*…\/|(?:[\w-]+[:,=]|["'`<\p{Ps}\p{Pi}$]+)[^\/\\\p{Pe}\p{Pf}>]*?(?:…\/)?)$/u.test(homePrefix) &&
+        !/%(?:2f|5c)/i.test(homePrefix);
+      const newStart = /^(?:[\\/]|…\/~|~[\\/]|[A-Za-z]:[\\/]|\.{1,2}[\\/])/.test(nextText) ||
         /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value.slice(next.start, next.end));
       if (runs[i]!.lastSeparator >= 0 && next.lastSeparator >= 0 && next.start < cutTail &&
         !/[,;]$/.test(value.slice(runs[i]!.start, runs[i]!.end)) &&
-        !bareMappedHome && !/^\.{1,2}[\\/]/.test(value.slice(next.start, next.end)) &&
+        !prefixedHome && !bareMappedHome && bareHome(runs[i]!.start, runs[i]!.end) < 0 && !/^\.{1,2}[\\/]/.test(value.slice(next.start, next.end)) &&
         (nextSeparator === i + 1 || !newStart)) runs[i]!.continuation = next.continuation;
+    }
+    // Whether the next segment contains an escape, indexed once. Never split
+    // the entire remaining path at each slash in a long relative marker chain.
+    const encodedSegments = new Uint8Array(value.length + 1);
+    let encodedSegment = false;
+    for (let i = value.length - 1; i >= 0; i--) {
+      if (separator(value[i]!) || whitespace(value[i]!)) encodedSegment = false;
+      else if (value[i] === "%" && /^%[0-9a-f]{2}/i.test(value.slice(i, i + 3))) encodedSegment = true;
+      encodedSegments[i] = encodedSegment ? 1 : 0;
     }
     const firstPath = (start: number, end: number, lastSlash: number): number => {
       const run = value.slice(start, end);
@@ -354,7 +459,7 @@ const redactEmbeddedPaths = (() => {
           if (i - begin >= 2 && boundary && !driveLike) {
             let path = i + 3;
             if (!(letter(value[path] ?? "") && value[path + 1] === ":" && separator(value[path + 2] ?? ""))) {
-              while (path < end && !separator(value[path]!) && !value.startsWith("~/", path)) path++;
+              while (path < end && !separator(value[path]!) && !/^%(?:2f|5c)/i.test(value.slice(path, path + 3)) && !value.startsWith("~/", path) && !value.startsWith("…/~", path)) path++;
             }
             explicitlyRelative = false;
             i = path - 1;
@@ -366,11 +471,13 @@ const redactEmbeddedPaths = (() => {
           while (begin > start && schemeChar(value[begin - 1]!)) begin--;
           if ((!explicitlyRelative || begin === i) && !/^(?:path|cwd|file)$/i.test(value.slice(begin, i + 1))) return begin;
         }
-        if (value.startsWith("\\\\", i) || value.startsWith("~/", i) || mappedRoots.has(i) && i <= lastSlash) return i;
+        if (i + 3 < end && /^%(?:2f|5c)/i.test(value.slice(i, i + 3))) return i;
+        if (value.startsWith("…/~", i) || value.startsWith("\\\\", i) || value.startsWith("~/", i) || mappedRoots.has(i) && i <= lastSlash) return i;
         // Single-backslash roots are conservatively private too. Only relative
         // separators are exempt, not absolute starts glued after relative prose.
-        if (separator(value[i]!) && i < lastSlash && (!relative || value[i] === "\\")) {
+        if (separator(value[i]!) && (i < lastSlash || /%[0-9a-f]{2}/i.test(run)) && (!relative || value[i] === "\\")) {
           const relativeSeparator = explicitlyRelative &&
+            !encodedSegments[i + 1] &&
             /[\p{L}\p{N}\p{M}\p{Extended_Pictographic}._~/\\-]/u.test(pointBefore(i)) &&
             !/(?:-[A-Za-z]|[\p{L}\p{N}]\.)$/u.test(value.slice(Math.max(start, i - 3), i));
           if (!relativeSeparator) return i;
@@ -383,7 +490,7 @@ const redactEmbeddedPaths = (() => {
     for (let r = 0; r < runs.length; r++) {
       const run = runs[r]!;
       const last = run.continuation, end = runs[last]!.end;
-      const path = firstPath(run.start, run.end, runs[last]!.lastSeparator);
+      const path = runs[last]!.lastSeparator < 0 ? -1 : firstPath(run.start, run.end, runs[last]!.lastSeparator);
       pieces.push(value.slice(previous, path < 0 ? run.end : path));
       if (path >= 0) {
         r = last;
@@ -392,56 +499,51 @@ const redactEmbeddedPaths = (() => {
         // A mapped home inside an outside path resets the presentation root.
         // No pre-home segment can become part of the visible suffix.
         let rootOffset = 0;
-        for (const [offset] of mappedRoots) {
-          if (offset >= path && offset < bodyEnd && (offset === path || !rawBody.startsWith("~/") ||
+        const bareSubstitutions = mappedRoots.get(path) === "home" && !/[\/\\]|%(?:2f|5c)/i.test(rawBody);
+        for (let i = rootIndex(path); i < roots.length && roots[i]! < bodyEnd; i++) {
+          const offset = roots[i]!;
+          if ( (offset === path || !rawBody.startsWith("~/") && !bareSubstitutions ||
             /[\p{L}\p{N}\p{M}._~\/\\\s-]/u.test(value[offset - 1] ?? ""))) rootOffset = offset - path;
         }
         rawBody = rawBody.slice(rootOffset);
-        const tildeBody = rawBody.startsWith("~/");
-        const expandedHome = meaningfulHome(home) && tildeBody &&
-          rawBody.split(/[\\/]+/).some(segment => segment === "." || segment === "..");
-        if (expandedHome) rawBody = home + rawBody.slice(1);
-        const root = /^(?:[~…][\\/]|[A-Za-z]:[\\/]+|[\\/]+)/.exec(rawBody)?.[0] ?? "";
-        const rawSegments = rawBody.slice(root.length).split(/[\\/]+/).filter(Boolean);
-        const segments: string[] = [];
-        for (let segment of rawSegments) {
-          const dot = /^\.{1,2}(?=\s|$)/.exec(segment)?.[0];
-          if (dot) {
-            if (dot === "..") segments.pop();
-            segment = segment.slice(dot.length).trimStart();
+        // Opaque encoded tails retain their established spelling unless a
+        // home-named segment needs a real separator for its safe presentation.
+        let opaqueHome = mappedRoots.get(path + rootOffset) === "home" && !/[\/\\]/.test(rawBody);
+        if (opaqueHome && rawBody.includes("%")) {
+          const decodedBody = decoded(rawBody, false).text;
+          if (canonical.some(candidate => candidate.segments.some(segment => fold(decodedBody).includes(segment)))) {
+            rawBody = decodedBody; opaqueHome = false;
           }
-          if (segment) segments.push(segment);
         }
-        // Keep unchanged spelling (including home forms and punctuation) unless
-        // traversal needs normalization. Empty stacks clamp at the detected root.
-        const body = rawSegments.some(segment => /^\.{1,2}(?:\s|$)/.test(segment)) ? root + segments.join("/") : rawBody;
-        const bodySearch = searchable(body);
-        const formOffset = body.startsWith("~") ? 1 : 0;
-        const underHome = forms.find(form => bodySearch.text.startsWith(form.folded, formOffset) &&
-          (body.length === bodySearch.original(formOffset + form.folded.length) || separator(body[bodySearch.original(formOffset + form.folded.length)]!)));
-        const suffix = underHome ? body.slice(bodySearch.original(formOffset + underHome.folded.length)) : meaningfulHome(home) && body.startsWith("~/") ? body.slice(1) : undefined;
-        // A single short home-relative path keeps its familiar label. Joined
-        // paths consume one suffix, just like outside-home paths, rather than
-        // passing a second absolute root through an initial home exemption.
-        if (mappedRoots.get(path + rootOffset) === "home" && !/[\\/]/.test(body)) pieces.push(body);
-        else if (suffix !== undefined && suffix.split(/[\\/]+/).filter(Boolean).length <= 2) pieces.push(body.replaceAll("\\", "/") + (tildeBody && suffix === "" ? "/" : ""));
-        else pieces.push("…/" + (expandedHome ? outsideHomeTail(segments, home) : segments).slice(-2).join("/"));
+        if (opaqueHome) pieces.push(rawBody);
+        else {
+          const root = /^(?:[~…][\/\\]|[A-Za-z]:[\/\\]+|[\/\\]+|(?:%(?:2f|5c))+)/i.exec(rawBody)?.[0] ?? "";
+          const rawSegments = rawBody.slice(root.length).split(/[\/\\]+|(?:%(?:2f|5c))+/i).filter(Boolean);
+          const segments: string[] = [];
+          let escapedTilde = false, traversal = false;
+          for (let segment of rawSegments) {
+            // Decode only potential dot markers here, and only the kept tail
+            // below. Discarded UTF-8 segments need no presentation decoding.
+            if (/^%2e/i.test(segment)) segment = decoded(segment, false).text;
+            const dot = /^\.{1,2}(?=\s|$)/.exec(segment)?.[0];
+            if (dot) {
+              traversal = true;
+              if (dot === "..") { if (!segments.length && root.startsWith("~")) escapedTilde = true; segments.pop(); }
+              segment = segment.slice(dot.length).trimStart();
+            }
+            if (segment) segments.push(segment);
+          }
+          const underHome = meaningfulHome(home) && !escapedTilde && root.startsWith("~");
+          if (underHome && segments.length <= 2 && !traversal && !rawBody.includes("%")) pieces.push(rawBody.replaceAll("\\", "/"));
+          else pieces.push((underHome ? "~/" : "…/") + segments.slice(-2).map(segment =>
+            segment.includes("%") ? decoded(segment, false).text : segment).join("/"));
+        }
         pieces.push(value.slice(bodyEnd, end));
       }
       previous = path < 0 ? run.end : end;
     }
     pieces.push(value.slice(previous));
-    let result = pieces.join("");
-    result = replaceHomes(result);
-    if (cap < input.length) {
-      const search = searchable(result);
-      let length = 0;
-      for (const form of forms) {
-        const prefix = tailPrefix(search.text, form);
-        if ((prefix >= 8 || prefix >= form.firstSegmentEnd) && prefix < form.folded.length) length = Math.max(length, result.length - search.original(search.text.length - prefix));
-      }
-      if (length) result = result.slice(0, -length) + "~…";
-    }
+    const result = pieces.join("");
     return finish(result);
   };
 })();

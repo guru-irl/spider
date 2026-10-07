@@ -129,7 +129,7 @@ export function queryReconciliation(ctx: DashboardQueryContext, period: Period, 
     let computed: UsageMeasure | null = null, calibratedAic: number | null = null;
     if (accepted.length) {
       const sum: MeasureRow = { ...emptyMeasureRow, pendingData: Number(pending), possibleUndercount: Number(pending) };
-      let primary = 0, calibrated = 0, publishedPrimary = true, backApplied = false, allCalibrated = true;
+      let primary = 0, calibrated = 0, hasPublished = false, backApplied = false, allCalibrated = true;
       for (const pair of accepted) {
         const row = measureByPair.get(pair.key) ?? emptyMeasureRow, pairFit = fits[pair.key]!;
         for (const field of Object.keys(emptyMeasureRow) as (keyof MeasureRow)[]) {
@@ -139,15 +139,15 @@ export function queryReconciliation(ctx: DashboardQueryContext, period: Period, 
         }
         const display = analysisMeasure(ctx, row, pairFit).aicDisplay;
         primary += display.primaryAic ?? 0;
-        publishedPrimary &&= display.basis === "published";
+        hasPublished ||= display.basis === "published";
         backApplied ||= display.basis === "back-applied";
         allCalibrated &&= pairFit.calibration.status === "calibrated";
         calibrated += display.primaryAic ?? 0;
       }
       if (sum.calls === 0 && !pending) sum.aic = 0;
       computed = analysisMeasure(ctx, sum, fit);
-      computed.aicDisplay.primaryAic = computed.aic === null ? null : primary;
-      computed.aicDisplay.basis = publishedPrimary ? "published" : backApplied ? "back-applied" : "calibrated";
+      computed.aicDisplay.primaryAic = hasPublished ? computed.aic : computed.aic === null ? null : primary;
+      computed.aicDisplay.basis = hasPublished ? "published" : backApplied ? "back-applied" : "calibrated";
       calibratedAic = computed.calls === 0 ? pending ? null : 0 : allCalibrated && computed.aic !== null ? calibrated : null;
     }
     const counterAic = accepted.length ? accepted.reduce((sum, pair) => sum + pair.later.credits - pair.earlier!.credits, 0) : null;

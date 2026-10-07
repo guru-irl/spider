@@ -1,7 +1,7 @@
 import { DIMENSION_COLUMNS } from "./dimension-values.js";
 import { initializeIds, opaqueId, supportedDetailId } from "./dashboard-identities.js";
 import { type AicDisplay, type CalibrationResult, type DashboardQueryContext, type Dimension, type Slice, type UsageMeasure, type Page, type DashboardRoute, type FilterValue } from "./dashboard-contract.js";
-import { compileSlice, invalidQuery, measureColumns, measureFromRow, type MeasureRow, validatePage, decodeCursor, encodeCursor, parseSlice, parsePage, validateParams, cursorWindow } from "./dashboard-selection.js";
+import { compileSlice, invalidQuery, measureColumns, measureFromRow, type MeasureRow, DAY_MS, validatePage, decodeCursor, encodeCursor, parseSlice, parsePage, validateParams, cursorWindow } from "./dashboard-selection.js";
 import { storedSelection, countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
 
 export type ExplorerQuery = { slice: Slice; groupBy: readonly Dimension[]; page: { limit: number; cursor?: string } };
@@ -86,7 +86,7 @@ function valueCache(ctx: DashboardQueryContext) {
   }
   return cache;
 }
-type PivotRecord = MeasureRow & { branch: string; k0: string | null; k1: string | null; k2: string | null; l0: string | null; l1: string | null; l2: string | null };
+type PivotRecord = MeasureRow & { branch: string; day: number | null; k0: string | null; k1: string | null; k2: string | null; l0: string | null; l1: string | null; l2: string | null };
 
 /** Prefixes match presentation labels literally, ignoring ASCII case only (SQLite LIKE).
  * Non-ASCII case is preserved. Keys, filter values and cursor tuples are opaque ids.
@@ -162,39 +162,61 @@ export function queryExplorer(ctx: DashboardQueryContext, query: ExplorerQuery):
   const projection = [0, 1, 2].map(i => `${i < keys.length && query.groupBy[i] !== "session" && query.groupBy[i] !== "run"
     ? `explorer_id('${query.groupBy[i]}', k${i})` : `k${i}`} AS k${i}`).join(", ");
   const labels = [0, 1, 2].map(i => `${i < keys.length ? `explorer_label('${query.groupBy[i]}', k${i})` : "NULL"} AS l${i}`).join(", ");
+  const byDay = query.groupBy.includes("day");
   const measures = "calls, pricedCalls, unpricedCalls, aggregateCalls, input, cacheRead, cacheWrite, output, cacheWrite1h, reasoning, aic, aicInput, aicCacheRead, aicCacheWrite, aicOutput, piCost, possibleOverlap, pendingData, possibleUndercount";
   const needed = ["ts", "run_id", "source_file", "is_report", "price_status", "aggregate", "input", "cache_read", "cache_write", "output",
     "cache_write_1h", "reasoning", "aic", "aic_input", "aic_cache_read", "aic_cache_write", "aic_output", "pi_cost",
     ...query.groupBy.filter((field: Dimension) => field !== "day").map((field: Dimension) => dimensions[field])];
   const countedProjection = [...new Set(needed)].map(column => `c.${column}`).join(", ");
   const rows = ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql(compiled.sql, countedProjection, "calls_period_read", storedSelection(ctx.db))}),
-    grouped AS MATERIALIZED (SELECT ${raw}, ${measureColumns} FROM counted GROUP BY ${keys.join(", ")}),
-    identified AS MATERIALIZED (SELECT ${projection}, ${labels}, ${measures} FROM grouped),
+    grouped AS MATERIALIZED (SELECT ${raw}, ${byDay ? `MIN(ts / ${DAY_MS}) * ${DAY_MS}` : "NULL"} AS day, ${measureColumns} FROM counted GROUP BY ${keys.join(", ")}),
+    identified AS MATERIALIZED (SELECT ${projection}, ${labels}, day, ${measures} FROM grouped),
     page AS (SELECT * FROM identified WHERE (${after.sql}) ORDER BY ${keys.join(", ")} LIMIT ?)
-    SELECT 'totals' AS branch, NULL AS k0, NULL AS k1, NULL AS k2, NULL AS l0, NULL AS l1, NULL AS l2, ${measureColumns} FROM counted
+    SELECT 'totals' AS branch, NULL AS k0, NULL AS k1, NULL AS k2, NULL AS l0, NULL AS l1, NULL AS l2, NULL AS day, ${measureColumns} FROM counted
     UNION ALL SELECT 'group', * FROM page ORDER BY branch DESC, k0, k1, k2`).all(...compiled.params, ...after.params, query.page.limit + 1) as PivotRecord[];
-  const end = Math.max(0, Math.min(query.slice.end, ctx.now()) - 1);
-  let calibration = ctx.calibration.at(end, ctx.calibrationMode);
-  let basis: AicDisplay["basis"] = calibration.status === "calibrated" ? "calibrated" : "published";
-  if (ctx.calibrationMode !== "off" && calibration.status !== "calibrated") {
-    const earliest = ctx.calibration.earliest(ctx.calibrationMode);
-    if (earliest.status === "calibrated" && earliest.windowEnd !== null && end < earliest.windowEnd) {
-      calibration = earliest; basis = "back-applied";
+  const now = ctx.now();
+  const endpoint = (end: number) => Math.max(0, Math.min(end, now) - 1);
+  const end = endpoint(query.slice.end);
+  const dayEnd = (day: number) => endpoint(Math.min(day + DAY_MS, query.slice.end));
+  // Keep a contiguous key prefix, not a filtered set: the cursor after its last
+  // row then preserves every remaining row even when day is a nested grouping.
+  const days = new Set<number>();
+  const pageRows: PivotRecord[] = [];
+  for (const row of rows.slice(1, query.page.limit + 1)) {
+    if (byDay) {
+      if (!days.has(row.day!) && days.size === 32) break;
+      days.add(row.day!);
     }
+    pageRows.push(row);
   }
-  const measure = (row: MeasureRow): UsageMeasure => {
-    const result = measureFromRow(ctx, row, calibration);
-    if (result.aicDisplay.basis === "calibrated") result.aicDisplay.basis = basis;
+  const ends = [...new Set([end, ...[...days].map(dayEnd)])];
+  const fits = ctx.calibration.atMany(ends, ctx.calibrationMode);
+  let earliest: CalibrationResult | undefined;
+  const fitByEnd = new Map(ends.map((point, i) => {
+    let calibration = fits[i]!, basis: AicDisplay["basis"] = calibration.status === "calibrated" ? "calibrated" : "published";
+    if (ctx.calibrationMode !== "off" && calibration.status !== "calibrated") {
+      earliest ??= ctx.calibration.earliest(ctx.calibrationMode);
+      if (earliest.status === "calibrated" && earliest.windowEnd !== null && point < earliest.windowEnd) {
+        calibration = earliest; basis = "back-applied";
+      }
+    }
+    return [point, { calibration, basis }] as const;
+  }));
+  const periodFit = fitByEnd.get(end)!;
+  const calibration = periodFit.calibration;
+  const measure = (row: MeasureRow, fit = periodFit): UsageMeasure => {
+    const result = measureFromRow(ctx, row, fit.calibration);
+    if (result.aicDisplay.basis === "calibrated") result.aicDisplay.basis = fit.basis;
     return result;
   };
   const positions = new WeakMap<ExplorerRow, readonly (string | null)[]>();
-  const selected = rows.slice(1, query.page.limit + 1).map(row => {
+  const selected = pageRows.map(row => {
     const key = [row.k0, row.k1, row.k2].slice(0, keys.length);
-    const result = { key: key.map(value => value === "" ? null : value), labels: [row.l0, row.l1, row.l2].slice(0, keys.length), measure: measure(row) };
+    const result = { key: key.map(value => value === "" ? null : value), labels: [row.l0, row.l1, row.l2].slice(0, keys.length), measure: measure(row, byDay ? fitByEnd.get(dayEnd(row.day!))! : periodFit) };
     positions.set(result, key); return result;
   });
   return boundedPage({ groupBy: [...query.groupBy], calibration, totals: measure(rows[0]!) }, selected,
-    rows.length > query.page.limit + 1, 256, row => outputCursor("explorer", ctx, identity, positions.get(row)!, query.slice));
+    rows.length > selected.length + 1, 256, row => outputCursor("explorer", ctx, identity, positions.get(row)!, query.slice));
 }
 
 function routeSlice(query: URLSearchParams, now: number, endpoint: string): Slice {

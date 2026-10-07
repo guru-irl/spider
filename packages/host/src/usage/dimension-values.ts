@@ -8,7 +8,8 @@ export type DimensionValue = { value: string | null; firstSeen: number; lastSeen
 
 /** Historical non-null raw values, not display labels or id resolution.
  * Missing-value counts are queried from the selected period, not this registry.
- * Values survive deletion/reset so other-period ids remain resolvable. */
+ * Values survive deletion/reset for historical enumeration. Dashboard filter-id
+ * resolution still uses selected-period values; this registry does not resolve ids. */
 export function readDimensionValues(db: Db, dimension: Dimension, page: { limit?: number; after?: string | null } = {}): readonly DimensionValue[] {
   const limit = page.limit ?? 200;
   if (!Object.hasOwn(USAGE_V3_DIMENSION_COLUMNS, dimension) || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000 ||

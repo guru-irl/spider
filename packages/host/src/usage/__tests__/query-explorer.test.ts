@@ -58,11 +58,15 @@ it("every attribution pivot reconciles", async () => {
   const groups: readonly (readonly Dimension[])[] = [...dimensions.map(field => [field]), ["role", "model"], ["project", "actor", "day"]];
   inspect(ctx => {
     for (const groupBy of groups) {
+      const many = vi.spyOn(ctx.calibration, "atMany");
       const at = vi.spyOn(ctx.calibration, "at");
       const prepares = vi.spyOn(ctx.db, "prepare");
       const result = queryExplorer(ctx, { slice: slice(), groupBy, page: { limit: 200 } });
-      expect(at).toHaveBeenCalledExactlyOnceWith(M + 3 * D - 1, "auto");
-      at.mockRestore();
+      expect(many).toHaveBeenCalledTimes(1);
+      expect([...many.mock.calls[0]![0]].sort((a, b) => a - b)).toEqual(groupBy.includes("day") ? [M + 2 * D - 1, M + 3 * D - 1] : [M + 3 * D - 1]);
+      expect(many.mock.calls[0]![1]).toBe("auto");
+      expect(at).not.toHaveBeenCalled();
+      many.mockRestore(); at.mockRestore();
       const calls = prepares.mock.calls.map(([sql]) => sql).filter(sql => sql.startsWith("WITH counted AS MATERIALIZED"));
       prepares.mockRestore();
       expect(calls).toHaveLength(1);

@@ -89,6 +89,28 @@ test("small fixture plans enforce range access", async () => {
   }
 });
 
+test.each(["day", "model,day", "model,actor,day"])("day-grouped Explorer %s keeps the batched calibration budgets", groupBy => {
+  const fixture = createDashboardFixture(false); closers.push(fixture.close);
+  const seed = seedPlanLedger(fixture.file, 10_000);
+  for (const period of seed.periods) {
+    const reader = openDashboardReader(fixture.file, { instanceId: "day-plans", serverBuild: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto" })!;
+    try {
+      const request = planRequests(period, seed.sessionId, seed.runId).find(r => r.name === "explorer")!;
+      request.params.set("groupBy", groupBy); request.params.set("limit", "200");
+      const run = () => reader.snapshot(ctx => captureQueries(ctx, () => DASHBOARD_ROUTES.find(r => r.path === request.path)!.handle(ctx, request.params)));
+      const cold = run(), hit = run(), db = reader.snapshot(ctx => ctx.db);
+      for (const result of [cold, hit]) {
+        assertRoutePlans(request, result.queries, explainQueries(db, result.queries));
+        expect(result.queries.filter(q => !q.calibration && !q.sql.includes("call-selection-revision")), groupBy).toHaveLength(1);
+      }
+      expect(planModule.callPassQueries(db, cold.queries.filter(q => q.calibration)), groupBy).toHaveLength(1);
+      expect(cold.queries.filter(q => q.calibration), groupBy).toHaveLength(2);
+      expect(planModule.callPassQueries(db, hit.queries.filter(q => q.calibration)), groupBy).toHaveLength(0);
+      expect(hit.queries.filter(q => q.calibration), groupBy).toHaveLength(1);
+    } finally { reader.close(); }
+  }
+});
+
 test.each([
   ["calibration_intervals AS MATERIALIZED", "c"],
   ["interval_calls AS MATERIALIZED", "r"],

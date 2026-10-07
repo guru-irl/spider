@@ -13,7 +13,6 @@ import { readDimensionValues } from "../dimension-values.js";
 let fixture: ReturnType<typeof createDashboardFixture>;
 beforeEach(() => { fixture = createDashboardFixture(false); });
 afterEach(() => { vi.restoreAllMocks(); fixture.close(); });
-const rounded = (x: number) => Math.round(x * 1e6) / 1e6 || 0;
 function overview(now: number, check: (ctx: DashboardQueryContext) => void): void {
   const reader = openDashboardReader(fixture.file, { instanceId: "final", serverBuild: "fixture", now: () => now, calibrationMode: () => "off" })!;
   let failure: unknown;
@@ -43,7 +42,7 @@ it("Overview uses MAX undercount across mixed complete and open-run cube cells",
   });
 });
 
-it.each([0.1234564, 0.1234566, -0.0000001])("Overview rounds exactly to 1e-6 and normalizes negative zero for %s", aic => {
+it.each([0.1234564, 0.1234566, -0.0000001])("Overview preserves unrounded AIC throughout its branches for %s", aic => {
   fixture.ledger.apply(dashboardBatch([dashboardCall("precision", { price: price(aic) })]));
   overview(DASHBOARD_MONTH + 3 * DASHBOARD_DAY, ctx => {
     const result = queryOverview(ctx, { start: DASHBOARD_MONTH, end: ctx.now(), filters: [] });
@@ -51,7 +50,7 @@ it.each([0.1234564, 0.1234566, -0.0000001])("Overview rounds exactly to 1e-6 and
       ...result.roles.map(x => x.measure), ...result.daily.rows.filter(x => x.measure.calls).map(x => x.measure)];
     for (const measure of measures) {
       for (const value of [measure.aic, measure.aicComponents.input, measure.aicDisplay.primaryAic, measure.aicDisplay.publishedAic])
-        expect(Object.is(value, rounded(aic))).toBe(true);
+        expect(Object.is(value, aic)).toBe(true);
     }
   });
 });
@@ -72,13 +71,13 @@ it.each([1 / 744, 0.2].flatMap(fraction => ["published", "calibrated", "back-app
     expect(actual.pace.projected!.aicDisplay.basis).toBe(basis);
     for (const key of ["primaryAic", "publishedAic"] as const) {
       const expected = reference.pace.projected!.aicDisplay[key]!;
-      expect(actual.pace.projected!.aicDisplay[key]).toBe(rounded(expected));
+      expect(actual.pace.projected!.aicDisplay[key]).toBe(expected);
       expect(Math.abs(actual.pace.projected!.aicDisplay[key]! - expected)).toBeLessThan(1e-6);
     }
-    expect(actual.comparison.computed!.aic).toBe(0.123456);
-    expect(actual.comparison.computed!.aicDisplay.primaryAic).toBe(rounded(reference.comparison.computed!.aicDisplay.primaryAic!));
-    expect(actual.comparison.gap).toBe(rounded(0.9876543 - 0.123456));
-    expect(actual.comparison.ratio).toBe(rounded(0.123456 / 0.9876543));
+    expect(actual.comparison.computed!.aic).toBe(0.1234564);
+    expect(actual.comparison.computed!.aicDisplay.primaryAic).toBe(reference.comparison.computed!.aicDisplay.primaryAic!);
+    expect(actual.comparison.gap).toBe(0.9876543 - 0.1234564);
+    expect(actual.comparison.ratio).toBe(0.1234564 / 0.9876543);
     for (const key of ["gap", "ratio"] as const)
       expect(Math.abs(actual.comparison[key]! - reference.comparison[key]!)).toBeLessThan(1e-6);
   });

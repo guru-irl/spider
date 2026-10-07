@@ -14,16 +14,7 @@ export const emptyMeasureRow: MeasureRow = {
   aicOutput: null, piCost: null, possibleOverlap: 0, possibleUndercount: 0, pendingData: 0,
 };
 
-// Overview permits changed REAL sum order; other views retain their existing precision.
-const roundAic = (value: number | null): number | null => value === null ? null : Math.round(value * 1e6) / 1e6 || 0;
-function roundOverviewAic<T extends { aic: number | null; aicComponents: Record<string, number | null>; aicDisplay: AicDisplay }>(measure: T): T {
-  measure.aic = roundAic(measure.aic);
-  for (const key of Object.keys(measure.aicComponents)) measure.aicComponents[key] = roundAic(measure.aicComponents[key]!);
-  measure.aicDisplay.primaryAic = roundAic(measure.aicDisplay.primaryAic);
-  measure.aicDisplay.publishedAic = roundAic(measure.aicDisplay.publishedAic);
-  return measure;
-}
-
+// AIC retains SQL/fit precision at the DTO boundary, consistently with other routes.
 export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailyStart: number = slice.start): OverviewData {
   const compiled = compileSlice(slice, undefined, ctx);
   if (!safeTimestamp(dailyStart) || dailyStart < slice.start || dailyStart > slice.end ||
@@ -84,7 +75,7 @@ export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailySta
   const measure = (row: MeasureRow, selected = periodFit) => {
     const result = measureFromRow(ctx, row, selected.fit);
     if (result.aicDisplay.basis === "calibrated") result.aicDisplay.basis = selected.basis;
-    return roundOverviewAic(result);
+    return result;
   };
   const total = rows.find(row => row.branch === "totals")!;
   const empty = { ...emptyMeasureRow, pendingData: total.pendingData, possibleUndercount: total.pendingData ?? 0 };
@@ -107,27 +98,24 @@ export function queryOverview(ctx: DashboardQueryContext, slice: Slice, dailySta
     });
   }
   const daily = { rows: days, nextCursor: dailyEnd < slice.end ? encodeCursor("overview-daily", ctx.revision, slice, [dailyEnd]) : null };
-  // Projection must not amplify the display rounding error early in the month.
-  const unroundedTotal = measureFromRow(ctx, total, periodFit.fit);
   const totals = measure(total);
   const comparisonFit = comparable ? fitByEnd.get(endPoint(counterObservation.ts!))! : periodFit;
   const computed = comparable ? readMeasure(ctx, { start: monthStart, end: counterObservation.ts!, filters: [] }, undefined, comparisonFit.fit) : null;
   if (computed?.aicDisplay.basis === "calibrated") computed.aicDisplay.basis = comparisonFit.basis;
-  if (computed) roundOverviewAic(computed);
   const counterAic = comparable ? counterObservation.creditsUsed : null;
   const elapsedFraction = current && now > monthStart ? (now - monthStart) / (monthEnd - monthStart) : null;
   const scale = (value: number | null, factor: number) => value === null ? null : value * factor;
   const projected = elapsedFraction === null ? null : {
     tokens: Object.fromEntries(Object.entries(totals.tokens).map(([key, value]) => [key, scale(value, 1 / elapsedFraction)])) as TokenTotals,
-    aicDisplay: { ...totals.aicDisplay, primaryAic: roundAic(scale(unroundedTotal.aicDisplay.primaryAic, 1 / elapsedFraction)),
-      publishedAic: roundAic(scale(unroundedTotal.aicDisplay.publishedAic, 1 / elapsedFraction)) },
+    aicDisplay: { ...totals.aicDisplay, primaryAic: scale(totals.aicDisplay.primaryAic, 1 / elapsedFraction),
+      publishedAic: scale(totals.aicDisplay.publishedAic, 1 / elapsedFraction) },
     possibleOverlap: totals.possibleOverlap, possibleUndercount: totals.possibleUndercount, pendingData: totals.pendingData,
   };
   const counterFraction = comparable ? (counterObservation.ts! - monthStart) / (monthEnd - monthStart) : null;
   return { calibration, totals, actors, roles, daily, counterObservation,
     comparison: { start: current ? monthStart : slice.start, end: comparable ? counterObservation.ts! : slice.end, counterAic, computed,
-      gap: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null ? roundAic(counterAic - computed.aic) : null,
-      ratio: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null && counterAic > 0 ? roundAic(computed.aic / counterAic) : null },
+      gap: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null ? counterAic - computed.aic : null,
+      ratio: computed?.aic !== null && computed?.aic !== undefined && counterAic !== null && counterAic > 0 ? computed.aic / counterAic : null },
     pace: { projected, elapsedFraction, counterAic: counterFraction && counterAic !== null ? counterAic / counterFraction : null } };
 }
 

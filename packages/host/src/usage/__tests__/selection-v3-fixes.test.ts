@@ -133,7 +133,7 @@ it.each([2, 3])("Overview, Explorer and filter values select correctly on unmigr
     for (const sql of selections) expect(sql.includes("c.selection_shadowed = 0"), sql).toBe(version === 3);
   } finally { spy.mockRestore(); reader.close(); }
 });
-it.each(["published", "calibrated", "back-applied"])("Overview rounds %s AIC throughout its branches, not Explorer", basis => {
+it.each(["published", "calibrated", "back-applied"])("Overview preserves %s AIC throughout its branches, identically to Explorer", basis => {
   migrateUsageLedger(db); insert("a");
   const reader = openDashboardReader(file, { instanceId: "rounding", serverBuild: "fixture", now: () => 1000, calibrationMode: () => "auto" })!;
   try {
@@ -145,11 +145,17 @@ it.each(["published", "calibrated", "back-applied"])("Overview rounds %s AIC thr
       const result = queryOverview(ctx, { start: 0, end: 1000, filters: [] });
       const measures = [result.totals, ...result.actors.map(x => x.measure), ...result.roles.map(x => x.measure),
         ...result.daily.rows.flatMap(x => [x.measure, ...x.actors.map(a => a.measure), ...x.roles.map(r => r.measure)])];
-      for (const m of measures) for (const v of [m.aic, ...Object.values(m.aicComponents), m.aicDisplay.publishedAic, m.aicDisplay.primaryAic])
-        if (v !== null) expect(v).toBe(Math.round(v * 1e6) / 1e6 || 0);
+      for (const measure of measures) {
+        const publishedAic = measure.calls ? 0.123456789 : null;
+        expect(measure.aic).toBe(publishedAic);
+        expect(measure.aicComponents).toEqual({ input: publishedAic, cacheRead: measure.calls ? 0 : null,
+          cacheWrite: measure.calls ? 0 : null, output: measure.calls ? 0 : null });
+        expect(measure.aicDisplay).toEqual({ publishedAic, primaryAic: publishedAic === null ? null :
+          basis === "published" ? publishedAic : publishedAic * 0.54321987, basis });
+      }
       expect(result.totals.aicDisplay.basis).toBe(basis);
       const explorer = queryExplorer(ctx, { slice: { start: 0, end: 1000, filters: [] }, groupBy: ["actor"], page: { limit: 20 } });
-      expect(explorer.totals.aic).toBe(0.123456789);
+      expect(explorer.totals).toEqual(result.totals);
     });
   } finally { reader.close(); }
 });

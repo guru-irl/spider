@@ -82,3 +82,13 @@ it("reviewers expose independent thinking and timeout settings", () => {
 it("explains that enum policy must be injected instead of reporting an empty option list", () => {
   expect(coerce(getField("memory.reviewer.thinking")!, "max")).toMatchObject({ ok: false, error: expect.stringMatching(/host must inject.*levels/i) });
 });
+
+it("calibration setting offers live global auto and off", () => {
+  const field = getField("usage.calibration");
+  expect(field).toBeDefined();
+  expect(field).toMatchObject({ scope: "global", default: "auto", type: "enum" });
+  expect(coerce(field!, "auto")).toEqual({ ok: true, value: "auto" });
+  expect(coerce(field!, "off")).toEqual({ ok: true, value: "off" });
+  expect(coerce(field!, "false").ok).toBe(false);
+  expect(field!.restart).not.toBe(true);
+});

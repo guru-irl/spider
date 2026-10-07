@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { calibrationFallback } from "./calibration.js";
 import type { MessagePort } from "node:worker_threads";
 import { discoverUsageSources } from "./discovery.js";
 import { ingestOnce } from "./ingest.js";
@@ -11,13 +12,15 @@ export type UsageWorkerDependencies = {
   discover?: typeof discoverUsageSources;
   ingest?: (...args: Parameters<typeof ingestOnce>) => ReturnType<typeof ingestOnce>;
   now?: () => number;
+  monotonicNow?: () => number;
   fetch?: typeof globalThis.fetch;
 };
 const TTL_MS = 120000;
-const CYCLE_MS = 60000;
+export const CYCLE_MS = 60000;
 const BATCH_SOURCES = 8;
 const BATCH_BYTES = 4 * 1024 * 1024;
-const SNAPSHOT_MS = 3000;
+export const SNAPSHOT_MS = 3000;
+export const DASHBOARD_BACKOFF_MS = 10000;
 
 /** Boot only from the marked worker seam, never from extension registration. */
 export async function bootUsageWorker(
@@ -26,12 +29,24 @@ export async function bootUsageWorker(
   const post = (event: UsageWorkerEvent) => { try { port.postMessage(event); } catch { /* parent gone */ } };
   if (command.child) { post({ type: "stopped" }); port.close(); return; }
   const now = dependencies.now ?? Date.now;
+  const monotonicNow = dependencies.monotonicNow ?? (() => performance.now());
   const discover = dependencies.discover ?? discoverUsageSources;
   const ingest = dependencies.ingest ?? ingestOnce;
   let ledger: UsageLedger | undefined, lease: Lease | undefined, poller: CounterPoller | undefined;
   let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
-  let poll = command.poll;
+  let poll = !command.dashboardMode && command.poll;
+  let calibrationMode = command.calibration ?? "auto";
   let reopen = false;
+  let opened = false, openFailures = 0, retryOpenAt = 0;
+  function failedFirstOpen(failure: unknown): void {
+    if (opened) return;
+    const permanent = failure instanceof Error && /^Unsupported (?:future )?usage schema /.test(failure.message);
+    const delay = permanent ? CYCLE_MS : Math.min(CYCLE_MS, SNAPSHOT_MS * 2 ** Math.min(openFailures++, 5));
+    retryOpenAt = monotonicNow() + delay;
+  }
+  let dashboardPass = false, standbyUntil = 0, nextPassAt = 0;
+  let dashboardLease: Lease | undefined;
+  let pendingRelease: { lease: Lease; ledger: UsageLedger } | undefined;
   let backfill: BackfillState = "pending";
   let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
   let cachedSnapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
@@ -51,17 +66,43 @@ export async function bootUsageWorker(
   function counter(): void {
     poller = new CounterPoller({ ledger: ledger!, authPath: command.roots.authPath, enabled: poll, isChild: false, readOnly: !lease, now, fetch: dependencies.fetch ?? globalThis.fetch });
     poller.start();
+    opened = true;
+  }
+  // Detach before a fallible close/stop/open, so the next cycle can retry.
+  function closeLedger(): void {
+    const previous = ledger; ledger = undefined;
+    previous?.close();
+  }
+  async function stopCounter(): Promise<void> {
+    const previous = poller; poller = undefined;
+    await previous?.stop();
+  }
+  function retryRelease(): void {
+    const previous = pendingRelease;
+    if (!previous) return;
+    try { previous.lease.release(); }
+    catch (failure) {
+      error(failure, failure instanceof UsageLeaseError && failure.code === "lease-busy"
+        ? "usage-ingest-lease-busy" : "usage-ingest-failed");
+      return;
+    }
+    pendingRelease = undefined;
+    previous.ledger.close();
   }
   function open(): void {
     // SQLite data_version is connection-local, not a ledger-wide revision.
     version = -1; cachedSnapshot = undefined;
     // A live owner means followers never even use the writable opener/migrations.
     ledger = openUsageLedgerReadOnly(command.roots.ledgerFile);
+    if (command.dashboardMode && monotonicNow() < nextPassAt) {
+      if (!ledger) throw new Error("ledger unavailable");
+      counter(); return;
+    }
     if (ledger && ledger.leases.inspect("ingest", now(), command.owner).role === "follower") { counter(); return; }
-    ledger?.close(); ledger = openUsageLedger(command.roots.ledgerFile);
+    closeLedger(); ledger = openUsageLedger(command.roots.ledgerFile);
     try { lease = acquireUsageLease(ledger, "ingest", command.owner, now, TTL_MS); }
     catch (failure) { if (!(failure instanceof UsageLeaseError && failure.code === "lease-busy")) throw failure; }
-    if (!lease) { ledger.close(); ledger = openUsageLedgerReadOnly(command.roots.ledgerFile); }
+    if (!lease) { closeLedger(); ledger = openUsageLedgerReadOnly(command.roots.ledgerFile); }
     if (!ledger) throw new Error("ledger unavailable");
     counter();
   }
@@ -90,7 +131,7 @@ export async function bootUsageWorker(
     if (!lease) {
       const currentVersion = ledger.dataVersion();
       if (version !== currentVersion) { cachedSnapshot = ledger.getPublishedSnapshot(); version = currentVersion; }
-      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0, unpricedModels: [] }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
+      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, calibration: calibrationFallback(), health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0, unpricedModels: [] }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
       const comparison = { ...snapshot.reconciliation };
       // Until the owner publishes the matching window, do not compare a new
       // counter to a summary of a different interval. No follower ledger scan.
@@ -98,31 +139,68 @@ export async function bootUsageWorker(
       if (!latest || latest.ts !== comparison.windowEnd) {
         comparison.counterAIC = comparison.gap = comparison.ratio = null;
       }
-      post({ ...snapshot, ingestRole: "follower", counter: counterState, reconciliation: comparison });
+      const calibration = calibrationMode === "off" ? calibrationFallback("off")
+        : snapshot.calibration?.status === "off" ? calibrationFallback() : snapshot.calibration ?? calibrationFallback();
+      const ingestRole = command.dashboardMode && ledger.leases.inspect("ingest", now(), command.owner).role !== "follower"
+        ? "standby" : "follower";
+      post({ ...snapshot, calibration, ingestRole, counter: counterState, reconciliation: comparison });
       return;
     }
     const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }
-  async function cycle(): Promise<void> {
+  async function standby(): Promise<void> {
+    const completedAt = monotonicNow();
+    standbyUntil = completedAt + DASHBOARD_BACKOFF_MS;
+    nextPassAt = completedAt + CYCLE_MS;
+    controller.abort(); reopen = true;
+    await stopCounter();
+    const release = lease ?? dashboardLease;
+    lease = dashboardLease = undefined;
+    if (release && ledger) {
+      pendingRelease = { lease: release, ledger }; ledger = undefined;
+      retryRelease();
+    } else closeLedger();
     if (stopped) return;
+    controller = new AbortController(); reopen = false;
+    version = -1; cachedSnapshot = undefined;
+    ledger = openUsageLedgerReadOnly(command.roots.ledgerFile);
+    if (!ledger) throw new Error("ledger unavailable");
+    counter(); post({ type: "standby" });
+  }
+  async function cycle(): Promise<void> {
+    dashboardPass = !!command.dashboardMode && !!lease;
+    dashboardLease = dashboardPass ? lease : undefined;
+    retryRelease();
+    if (stopped || !opened && monotonicNow() < retryOpenAt || command.dashboardMode && monotonicNow() < standbyUntil) return;
     if (reopen) {
-      await poller?.stop(); ledger?.close(); ledger = undefined;
+      await stopCounter(); closeLedger();
       controller = new AbortController(); reopen = false;
     }
     if (!ledger) open();
+    // Capture a recovery acquisition before its first fallible renewal.
+    if (command.dashboardMode && lease) { dashboardPass = true; dashboardLease = lease; }
     if (lease && !lease.renew(now)) {
       controller.abort(); lease = undefined;
-      await poller?.stop(); ledger!.close(); ledger = undefined;
+      await stopCounter(); closeLedger();
       controller = new AbortController(); open();
     }
+    if (command.dashboardMode && !lease) {
+      const owner = ledger!.leases.inspect("ingest", now(), command.owner);
+      // Once another participant owns the lease, its departure is takeover,
+      // not a second unattended pass. Dead-PID/host/TTL rules stay in the store.
+      if (owner.owner !== null && owner.owner !== command.owner) nextPassAt = 0;
+      if (monotonicNow() < nextPassAt) { publish(); return; }
+    }
     if (!lease && ledger!.leases.inspect("ingest", now(), command.owner).role !== "follower") {
-      await poller?.stop(); ledger!.close(); ledger = undefined; open();
+      await stopCounter(); closeLedger(); open();
     }
     if (!lease) { backfill = ledger!.getBackfillState(); publish(); return; }
+    dashboardPass = !!command.dashboardMode;
+    if (dashboardPass) dashboardLease = lease;
     const first = ledger!.getBackfillState() !== "complete";
     if (first) { ledger!.apply(stateBatch("running")); backfill = "running"; publish(); }
     const discovery = await discover(command.roots);
@@ -162,7 +240,11 @@ export async function bootUsageWorker(
     if (stopped) return;
     clearTimeout(timer);
     // New followers observe the initial owner's completion promptly, read-only.
-    timer = setTimeout(request, !lease ? SNAPSHOT_MS : CYCLE_MS);
+    const at = monotonicNow();
+    const delay = !opened ? Math.max(0, retryOpenAt - at) : pendingRelease ? SNAPSHOT_MS : command.dashboardMode && at < standbyUntil ? standbyUntil - at
+      : command.dashboardMode && !lease && nextPassAt > at ? Math.min(SNAPSHOT_MS, nextPassAt - at)
+      : !lease ? SNAPSHOT_MS : CYCLE_MS;
+    timer = setTimeout(request, delay);
     timer.unref?.();
   }
   function request(): void {
@@ -173,6 +255,7 @@ export async function bootUsageWorker(
         pending = false;
         try { await cycle(); }
         catch (failure) {
+          failedFirstOpen(failure);
           if (failure instanceof UsageLeaseError && failure.code === "lease-busy") {
             follow("usage-ingest-lease-busy");
             continue;
@@ -180,6 +263,11 @@ export async function bootUsageWorker(
           backfill = "failed";
           try { if (guard()) ledger!.apply(stateBatch("failed")); } catch { /* next cycle retries */ }
           error(failure, ledger ? "usage-ingest-failed" : "usage-ledger-unavailable");
+        } finally {
+          if (dashboardPass) {
+            try { await standby(); }
+            catch (failure) { error(failure, "usage-ledger-unavailable"); }
+          }
         }
       } while (pending && !stopped);
     })().finally(() => { task = undefined; if (pending && !stopped) request(); else schedule(); });
@@ -188,11 +276,17 @@ export async function bootUsageWorker(
     if (stopping) return stopping;
     stopped = true; pending = false; controller.abort(); clearTimeout(timer); clearInterval(heartbeat);
     stopping = (async () => {
-      try { await task; await poller?.stop(); }
+      try { await task; await stopCounter(); }
       finally {
-        try { lease?.release(); } catch { /* lease expiry still permits recovery */ }
-        try { ledger?.close(); } catch { /* no native handle survives port close */ }
-        port.off("message", onMessage); post({ type: "stopped" }); port.close();
+        const release = lease ?? dashboardLease; lease = dashboardLease = undefined;
+        let released = true;
+        try { release?.release(); } catch { released = false; /* parent cleanup or TTL */ }
+        try { retryRelease(); } catch { /* released connection close failed */ }
+        released = released && !pendingRelease;
+        const releasing = pendingRelease; pendingRelease = undefined;
+        try { releasing?.ledger.close(); } catch { /* forced parent cleanup or expiry */ }
+        try { closeLedger(); } catch { /* no native handle survives port close */ }
+        port.off("message", onMessage); post({ type: "stopped", released }); port.close();
       }
     })();
     return stopping;
@@ -201,19 +295,17 @@ export async function bootUsageWorker(
     if (message?.type === "stop") { void stop(); return; }
     if (stopped) return;
     if (message?.type === "refresh") request();
-    else if (message?.type === "configure") { poll = message.poll; poller?.setEnabled(poll); request(); }
+    else if (message?.type === "configure") { poll = !command.dashboardMode && message.poll; calibrationMode = message.calibration ?? calibrationMode; poller?.setEnabled(poll); request(); }
   }
   port.on("message", onMessage);
-  try {
-    open();
-    heartbeat = setInterval(() => {
+  heartbeat = setInterval(() => {
       try { if (lease && !lease.renew(now)) follow("usage-ingest-lease-lost"); }
       catch (failure) {
         if (failure instanceof UsageLeaseError && failure.code === "lease-busy") follow("usage-ingest-lease-busy");
         else error(failure);
       }
     }, TTL_MS / 3);
-    heartbeat.unref?.();
-    timer = setTimeout(request, 0); timer.unref?.();
-  } catch (failure) { error(failure, "usage-ledger-unavailable"); await stop(); }
+  heartbeat.unref?.();
+  try { open(); timer = setTimeout(request, 0); timer.unref?.(); }
+  catch (failure) { failedFirstOpen(failure); error(failure, "usage-ledger-unavailable"); schedule(); }
 }

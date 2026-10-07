@@ -1,11 +1,14 @@
 import type { UsageWorkerEvent } from "./protocol.js";
+import { readSourceErrorDiagnostics } from "./query-source-errors.js";
+import type { CalibrationResult } from "./dashboard-contract.js";
+import { createCalibrationService, calibrationFallback } from "./calibration.js";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import { canonicalModelId, COPILOT_RATE_VERSIONS } from "./rates.js";
 import type { Actor, PriceResult, UsageTokens } from "./types.js";
-import { countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
+import { storedSelection, countedUsageSql, selectionCtes, selectedPredicate } from "./schema.js";
 import { assertUsageSchemaVersion, migrateUsageLedger } from "./migrate.js";
 import { createUsageLeaseStore, type UsageLeaseStore } from "./lease.js";
 
@@ -118,6 +121,7 @@ export interface UsageLedger {
   /** False means the lease fence rejected the entire transaction. */
   apply(batch: ImportBatch): boolean;
   getSourceErrors(): readonly { path: string; code: string; checkedPaths?: readonly string[] }[];
+  getSourceErrorDiagnostics(limit: number): ReturnType<typeof readSourceErrorDiagnostics>;
   getProgress(): { calls: number; sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null };
   getPublishedSnapshot(): Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
   dataVersion(): number;
@@ -133,6 +137,7 @@ export interface UsageLedger {
   getProof(): { reports: { runId: string; owner: string | null; path: string; ts: number }[]; edges: CoverageEdge[] };
   insertCounter(snapshot: CounterSnapshot): void;
   latestCounter(): CounterSnapshot | undefined;
+  getCalibration(mode: "auto" | "off"): CalibrationResult;
   summarize(start: number, end: number): UsageSummary;
   health(): LedgerHealth;
   getBackfillState(): "pending" | "running" | "complete" | "failed";
@@ -193,7 +198,8 @@ function refreshModelAliases(db: Db): void {
   db.raw.transaction(() => {
     const stored = db.prepare("SELECT value FROM ledger_metadata WHERE key='model-aliases'").get() as { value: string } | undefined;
     if (stored?.value === digest) return;
-    const update = db.prepare("UPDATE calls SET model=@model, fingerprint=@fingerprint WHERE id=@id");
+    const update = db.prepare(`UPDATE calls SET model=@model, fingerprint=@fingerprint WHERE id=@id
+      AND (model IS NOT @model OR fingerprint IS NOT @fingerprint)`);
     const columns = `SELECT id, actor, aggregate, run_id AS runId, raw_provider AS provider,
       raw_model AS model, response_id AS responseId, entry_id AS entryId, ts,
       input, output, cache_read AS cacheRead, cache_write AS cacheWrite, cache_write_1h AS cacheWrite1h,
@@ -281,6 +287,11 @@ export function openUsageLedgerReadOnly(file: string): UsageLedger | undefined {
 }
 
 function createLedger(db: Db): UsageLedger {
+  const calibration = createCalibrationService(db, { revision: () => {
+    const row = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get() as { value: string } | undefined;
+    if (!row || !/^\d+$/.test(row.value)) throw new Error("usage-revision-unavailable");
+    return row.value;
+  } });
   const context = db.prepare("SELECT header, tail_hash AS tailHash FROM source_context WHERE path=?");
   const headers = db.prepare("SELECT path, header FROM source_context");
   const putContext = db.prepare(`INSERT INTO source_context(path,header,tail_hash) VALUES (?,?,?)
@@ -300,7 +311,9 @@ function createLedger(db: Db): UsageLedger {
       ON e.path=@path AND e.generation=@generation AND e.entry_id=w.id ORDER BY e.byte_offset`);
   const pending = db.prepare("SELECT path,run_id AS runId,generation,first_seen AS firstSeen,calls FROM pending_reports");
   const putPending = db.prepare(`INSERT INTO pending_reports(path,run_id,generation,first_seen,calls) VALUES (@path,@runId,@generation,@firstSeen,@calls)
-    ON CONFLICT(path,run_id) DO UPDATE SET generation=excluded.generation,first_seen=excluded.first_seen,calls=excluded.calls`);
+    ON CONFLICT(path,run_id) DO UPDATE SET generation=excluded.generation,first_seen=excluded.first_seen,calls=excluded.calls
+    WHERE (pending_reports.generation, pending_reports.first_seen, pending_reports.calls) IS NOT
+      (excluded.generation, excluded.first_seen, excluded.calls)`);
   const removePending = db.prepare("DELETE FROM pending_reports WHERE path=? AND run_id=?");
   const incomplete = db.prepare("SELECT path,run_id AS runId FROM incomplete_reports");
   const reportModels = db.prepare("SELECT raw_provider AS provider,requested_model AS requestedModel FROM calls WHERE source_file=? AND run_id=? AND is_report=1");
@@ -361,19 +374,19 @@ function createLedger(db: Db): UsageLedger {
       OR EXISTS (SELECT 1 FROM import_state WHERE offset < size)
       OR EXISTS (SELECT 1 FROM pending_reports)) AS possibleUndercount,
     COALESCE(MAX(possible_overlap), 0) AS possibleOverlap
-    FROM (${countedUsageSql("c.ts >= ? AND c.ts < ?", "c.aic, c.price_status, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_period_read")})`);
+    FROM (${countedUsageSql("c.ts >= ? AND c.ts < ?", "c.aic, c.price_status, c.run_id, c.is_report, c.source_file, c.source_kind", "calls_period_read", storedSelection(db))})`);
   // Do not evaluate counted_calls over historical detail. Only the indexed
   // report/unpriced candidates need selection; total rows are transaction-maintained.
   const healthCalls = db.prepare(`WITH RECURSIVE ${selectionCtes}
     SELECT (SELECT calls FROM ledger_totals WHERE singleton = 1) AS calls,
     (SELECT COUNT(*) FROM calls c INDEXED BY calls_health_reports
-      WHERE c.is_report = 1 AND ${selectedPredicate()}) AS aggregateCalls`);
+      WHERE c.is_report = 1 AND ${selectedPredicate("c", storedSelection(db))}) AS aggregateCalls`);
   const healthOverlaps = db.prepare("SELECT COUNT(*) AS possibleOverlaps FROM usage_possible_overlaps");
   const healthSources = db.prepare(`SELECT COUNT(*) AS sources, COALESCE(SUM(parse_errors), 0) AS parseErrors,
     COALESCE(SUM(source_error_code IS NOT NULL), 0) AS sourceErrors, MAX(last_ingest_at) AS lastIngestAt FROM import_state`);
   const unpricedModels = db.prepare(`WITH RECURSIVE ${selectionCtes}
     SELECT DISTINCT c.model FROM calls c INDEXED BY calls_health_unpriced
-    WHERE c.price_status = 'unpriced' AND c.model IS NOT NULL AND ${selectedPredicate()} ORDER BY c.model`);
+    WHERE c.price_status = 'unpriced' AND c.model IS NOT NULL AND ${selectedPredicate("c", storedSelection(db))} ORDER BY c.model`);
 
   const ledger: UsageLedger = {
     leases: createUsageLeaseStore(db, snapshot => ledger.insertCounter(snapshot)),
@@ -474,6 +487,7 @@ function createLedger(db: Db): UsageLedger {
       const totals = db.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get() as { calls: number };
       return { ...totals, ...healthSources.get() as { sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null } };
     },
+    getSourceErrorDiagnostics(limit) { return readSourceErrorDiagnostics(db, limit); },
     getSourceErrors() {
       return (db.prepare("SELECT path, source_error_code AS code, source_error_paths AS checkedPaths FROM import_state WHERE source_error_code IS NOT NULL").all() as { path: string; code: string; checkedPaths: string | null }[])
         .map(({ checkedPaths, ...row }) => ({ ...row, ...(checkedPaths === null ? {} : { checkedPaths: JSON.parse(checkedPaths) }) }));
@@ -513,6 +527,13 @@ function createLedger(db: Db): UsageLedger {
         entitlement: snapshot.entitlement ?? null, remaining: snapshot.remaining ?? null,
         resetDate: snapshot.resetDate ?? null, raw: JSON.stringify(snapshot.raw),
       });
+    },
+    getCalibration(mode) {
+      try { return calibration.current(mode); }
+      catch (error) {
+        if (error instanceof Error && error.message === "usage-revision-unavailable") return calibrationFallback(mode);
+        throw error;
+      }
     },
     latestCounter() {
       const row = latestCounter.get() as

@@ -1,10 +1,51 @@
-// The ledger is unreleased: schema refinements remain version 1 until it ships.
-export const USAGE_SCHEMA_VERSION = 1;
+import type { Db } from "@spider/db-core";
+
+// Shipped v1 SQL/layout remain immutable; later versions are additive.
+export const USAGE_SCHEMA_VERSION = 3;
 export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
 
-// Ephemeral coordination state: migration checks names, types, keys and normalized DDL
-// (including CHECK constraints), and recreates incompatible tables while
-// v1 is unreleased. Durable snapshots and calls are never dropped.
+// Call content and attribution are revision-keyed reader inputs. Legacy counted /
+// origin_key flags, parser checkpoints and coordination are not selection inputs.
+const selectionColumns: Record<string, readonly string[]> = {
+  calls: ["id", "ts", "source_file", "entry_id", "source_generation", "project", "repo", "session_id", "run_id",
+    "actor", "role", "agent", "run_name", "phase", "parent_run_id", "aux_purpose", "provider", "model", "raw_provider", "raw_model",
+    "requested_model", "thinking", "api", "source_kind", "input", "output", "cache_read", "cache_write", "cache_write_1h",
+    "reasoning", "total_tokens", "aic", "aic_input", "aic_cache_read", "aic_cache_write", "aic_output", "price_status", "unpriced_reason",
+    "rate_version", "tier", "confidence", "pi_cost", "latency_ms", "aggregate", "response_id", "copied", "fingerprint"],
+  runs_meta: ["id", "db_path", "project", "repo", "session_id", "parent_run_id", "agent", "role", "name", "model", "thinking", "phase", "started_at", "ended_at"],
+  coverage_edges: ["report_run_id", "included_run_id", "evidence"],
+  pending_reports: ["path", "run_id", "generation", "first_seen", "calls"],
+  incomplete_reports: ["path", "run_id"],
+  import_state: ["path", "generation", "offset", "size"],
+  // Derived ancestry affects overlap hints. Reference-count-only updates do not.
+  call_ancestry_edges: ["parent", "child"],
+};
+const hasCursor = (row: "OLD" | "NEW") => `(${row}.size IS NOT NULL OR ${row}.offset IS NOT NULL OR ${row}.generation != 0)`;
+const revisionTriggers = Object.entries(selectionColumns).flatMap(([table, columns]) => {
+  const changed = columns.map(column => `OLD.${column} IS NOT NEW.${column}`).join(" OR ");
+  return ["INSERT", "DELETE", "UPDATE"].map(operation => {
+    const cursorGuard = table === "import_state"
+      ? operation === "UPDATE" ? `(${hasCursor("OLD")} OR ${hasCursor("NEW")})` : hasCursor(operation === "INSERT" ? "NEW" : "OLD")
+      : undefined;
+    const guards = [...(operation === "UPDATE" ? [`(${changed})`] : []), ...(cursorGuard ? [cursorGuard] : [])];
+    return `CREATE TRIGGER selection_revision_${table}_${operation.toLowerCase()}
+AFTER ${operation}${operation === "UPDATE" ? ` OF ${columns.join(",")}` : ""} ON ${table}
+${guards.length ? `WHEN ${guards.join(" AND ")}` : ""}
+BEGIN
+  INSERT INTO ledger_metadata(key,value) VALUES ('call-selection-revision','1')
+    ON CONFLICT(key) DO UPDATE SET value=CAST(ledger_metadata.value AS INTEGER)+1;
+END;`;
+  });
+}).join("\n");
+
+export const USAGE_SCHEMA_V2: string = `
+CREATE INDEX IF NOT EXISTS runs_meta_session ON runs_meta(session_id,db_path,id);
+INSERT INTO ledger_metadata(key,value) VALUES ('call-selection-revision','0') ON CONFLICT(key) DO NOTHING;
+${revisionTriggers}
+`;
+
+// Ephemeral coordination state retains Phase 1's DDL compatibility/repair policy,
+// including CHECK constraints. Durable snapshots and calls are never dropped.
 export const USAGE_LEASE_COLUMNS = ["name", "owner", "token", "acquired_at", "expires_at", "next_due_at", "last_error_code", "notice_code", "notice_at", "owner_pid", "owner_host"] as const;
 export const USAGE_LEASE_SCHEMA = `CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY NOT NULL,
@@ -36,39 +77,49 @@ covered(id) AS MATERIALIZED (
 )
 `;
 
-export function selectedPredicate(alias = "c"): string {
-  return `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = ${alias}.fingerprint
-    AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (${alias}.copied, ${alias}.source_file, ${alias}.entry_id, ${alias}.id))
+export function storedSelection(db: Db): boolean { return Number(db.pragma("user_version")) >= 3; }
+
+export function selectedPredicate(alias: string, stored: boolean): string {
+  return `${stored ? `${alias}.selection_shadowed = 0` : `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = ${alias}.fingerprint
+    AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (${alias}.copied, ${alias}.source_file, ${alias}.entry_id, ${alias}.id))`}
   AND ((${alias}.is_report = 1 AND ${alias}.run_id IN (SELECT id FROM selected_reports))
     OR (${alias}.is_report = 0 AND (${alias}.run_id IS NULL OR ${alias}.run_id NOT IN (SELECT id FROM covered))))`;
 }
 
-function activeRun(id: string): string {
+function activeRun(id: string, stored: boolean): string {
   return `(${id} IN (SELECT id FROM selected_reports) OR (${id} NOT IN (SELECT id FROM covered)
     AND EXISTS (SELECT 1 FROM calls active WHERE active.run_id = ${id} AND active.is_report = 0
-      AND NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = active.fingerprint
-        AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (active.copied, active.source_file, active.entry_id, active.id)))))`;
+      AND ${stored ? "active.selection_shadowed = 0" : `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint = active.fingerprint
+        AND (prior.copied, prior.source_file, prior.entry_id, prior.id) < (active.copied, active.source_file, active.entry_id, active.id))`})))`;
 }
 
 // Predicates/projections are trusted SQL authored by the caller, never user input.
 // Bind values with prepared-statement parameters. Scope before deriving overlap,
 // but canonical provenance and report replacement always remain global.
-export function countedUsageSql(predicate = "1", projection = "c.*", index?: "calls_period_read" | "calls_session_read"): string {
+export function countedUsageSql(predicate: string, projection: string, index: "calls_period_read" | "calls_session_read" | undefined, stored: boolean): string {
+  // Narrow stored projections accept only plain c.<column> or c.<column> AS <alias>.
+  // SQL expressions (including comma-bearing function calls) must fail at build time.
+  const storedProjection = stored && projection !== "c.*" ? projection.split(",").map(column => {
+    const entry = /^\s*c\.([A-Za-z_][A-Za-z_0-9]*)(?:\s+AS\s+([A-Za-z_][A-Za-z_0-9]*))?\s*$/i.exec(column);
+    if (!entry) throw new Error("Stored projection requires plain c.<column> entries with optional AS <alias>");
+    return `w.${entry[2] ?? entry[1]}`;
+  }).join(",") : "w.*";
+  const windowProjection = stored && projection !== "c.*" ? `${projection}, c.selection_undercount` : projection;
   return `WITH RECURSIVE
 ${selectionCtes},
-window AS MATERIALIZED (SELECT ${projection} FROM calls c ${index ? `INDEXED BY ${index}` : ""} WHERE ${predicate} AND ${selectedPredicate()}),
+window AS MATERIALIZED (SELECT ${windowProjection} FROM calls c ${index ? `INDEXED BY ${index}` : ""} WHERE ${predicate} AND ${selectedPredicate("c", stored)}),
 window_runs(id) AS MATERIALIZED (SELECT DISTINCT run_id FROM window WHERE run_id IS NOT NULL),
 ${overlapCtes("SELECT id FROM window_runs")},
 pairs AS MATERIALIZED (SELECT root, id FROM hinted h WHERE root != id
   AND (root IN (SELECT id FROM window_runs) OR id IN (SELECT id FROM window_runs))
-  AND ${activeRun("h.id")}),
+  AND ${activeRun("h.id", stored)}),
 overlap_runs(id) AS MATERIALIZED (SELECT root FROM pairs UNION SELECT id FROM pairs)
-SELECT w.*, CASE WHEN w.run_id IN (SELECT id FROM overlap_runs) THEN 1 ELSE 0 END AS possible_overlap,
-  CASE WHEN EXISTS (SELECT 1 FROM import_state s WHERE s.path = w.source_file AND s.offset < s.size)
+SELECT ${storedProjection}, CASE WHEN w.run_id IN (SELECT id FROM overlap_runs) THEN 1 ELSE 0 END AS possible_overlap,
+  ${stored ? "w.selection_undercount" : `CASE WHEN EXISTS (SELECT 1 FROM import_state s WHERE s.path = w.source_file AND s.offset < s.size)
     OR EXISTS (SELECT 1 FROM incomplete_reports i WHERE i.path=w.source_file AND i.run_id=w.run_id)
     OR (w.is_report = 0 AND EXISTS (SELECT 1 FROM runs_meta r
       WHERE r.id = w.run_id AND r.ended_at IS NULL))
-    THEN 1 ELSE 0 END AS possible_undercount
+    THEN 1 ELSE 0 END`} AS possible_undercount
 FROM window w`;
 }
 
@@ -257,7 +308,7 @@ WHERE evidence IN ('transcript', 'runs-db');
 -- Legacy counted/restore signals never participate in this declarative rule.
 CREATE VIEW selected_usage_calls AS
 WITH RECURSIVE ${selectionCtes}
-SELECT c.* FROM calls c WHERE ${selectedPredicate()};
+SELECT c.* FROM calls c WHERE ${selectedPredicate("c", false)};
 
 -- Diagnostic all-time pairs. Dashboard period/session reads use countedUsageSql
 -- with a bounded predicate, not this intentionally unbounded diagnostic view.
@@ -266,7 +317,7 @@ WITH RECURSIVE ${selectionCtes}, ${overlapCtes("SELECT id FROM selected_reports"
 SELECT DISTINCT h.root AS report_run_id, h.id AS included_run_id,
   COALESCE(e.evidence, 'none') AS evidence
 FROM hinted h LEFT JOIN coverage_edges e ON e.report_run_id = h.root AND e.included_run_id = h.id
-WHERE h.root != h.id AND ${activeRun("h.id")};
+WHERE h.root != h.id AND ${activeRun("h.id", false)};
 
-CREATE VIEW counted_calls AS ${countedUsageSql()};
+CREATE VIEW counted_calls AS ${countedUsageSql("1", "c.*", undefined, false)};
 `;

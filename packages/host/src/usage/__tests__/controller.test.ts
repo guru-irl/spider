@@ -49,18 +49,19 @@ it("registration is inert and parent session_start lazily starts worker with pub
   expect(footer).toHaveBeenCalledTimes(1);
   await emit("session_shutdown"); expect(workers.instances[0].terminate).toHaveBeenCalledTimes(1); expect(footer).toHaveBeenLastCalledWith(undefined);
 });
-it("published worker snapshot is the doctor's only usage input", async () => {
-  registration = registerUsage(pi, "file:///fixture/extension.js"); expect(registration.doctor().lines.join("\n")).toMatch(/not published/);
+it("published worker snapshot supplies ledger diagnostics without main-thread opens", async () => {
+  registration = registerUsage(pi, "file:///fixture/extension.js"); expect((await registration.doctor()).lines.join("\n")).toMatch(/not published/);
   await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
-  workers.instances[0].emit("message", { type: "snapshot", backfill: "running", progress: { sourcesCompleted: 2, sourcesTotal: 4 }, health: { schemaVersion: 1, calls: 123, sources: 4, parseErrors: 0, sourceErrors: 0, aggregateCalls: 0, unpricedModels: [], lastIngestAt: 1 }, counter: { availability: "disabled", role: "inactive", latest: null }, reconciliation: null });
-  expect(registration.doctor().lines.join("\n")).toMatch(/calls=123/); expect(registration.doctor().lines.join("\n")).toMatch(/2\/4/);
+  workers.instances[0].emit("message", { type: "snapshot", backfill: "running", progress: { sourcesCompleted: 2, sourcesTotal: 4 }, health: { schemaVersion: 1, calls: 123, sources: 4, parseErrors: 0, sourceErrors: 0, aggregateCalls: 0, unpricedModels: [], lastIngestAt: 1 }, counter: { availability: "disabled", role: "inactive", latest: null }, reconciliation: null, sourceErrorDiagnostics: { rows: [{ sourceLabel: "source.jsonl", projectLabel: "project", code: "EACCES", count: 1, lastCheckedAt: 1 }], truncated: false } });
+  expect((await registration.doctor()).lines).toContain("- usage source diagnostic: code=EACCES count=1 source=source.jsonl project=project");
+  expect((await registration.doctor()).lines.join("\n")).toMatch(/calls=123/); expect((await registration.doctor()).lines.join("\n")).toMatch(/2\/4/);
 });
 it("config reload hot-applies footer/poll and ignores manual local overrides", async () => {
   registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
   writeFileSync(join(root, "local/config.json"), JSON.stringify({ "usage.footer": true, "usage.counter.poll": true }));
   controlConfig("set", root, "usage.footer", false, "global"); controlConfig("set", root, "usage.counter.poll", false, "global"); registration.reload();
   expect(footer).toHaveBeenLastCalledWith(undefined); expect(workers.instances[0].commands).toContainEqual({ type: "configure", poll: false });
-  expect(registration.doctor().lines.join("\n")).toMatch(/footer=disabled poll=disabled/);
+  expect((await registration.doctor()).lines.join("\n")).toMatch(/footer=disabled poll=disabled/);
 });
 it.each(["rpc", "print", "json"] as const)("parent %s starts ledger worker without a terminal footer", async mode => {
   ctx = { ...ctx, mode }; registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
@@ -69,7 +70,7 @@ it.each(["rpc", "print", "json"] as const)("parent %s starts ledger worker witho
 it("child session_start starts neither footer nor worker", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "1"); registration = registerUsage(pi, "file:///fixture/extension.js"); await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
   expect(workers.instances).toHaveLength(0); expect(footer).not.toHaveBeenCalled();
-  expect(registration.doctor()).toMatchObject({ ok: true, lines: ["- usage worker: not started (child session)"] });
+  expect(await registration.doctor()).toMatchObject({ ok: true, lines: ["- usage worker: not started (child session)"] });
 });
 it.each(["set usage.footer false"])("slash config %s rejects local edits and accepts explicit global", async args => {
   const commands = new Map<string, Function>(), messages: any[] = [];

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { UsageRuntimeSnapshot } from "../protocol.js";
+import { calibrationFallback } from "../calibration.js";
 import { usageDoctorLines } from "../doctor.js";
 vi.mock("../ledger.js", () => ({ openUsageLedger: () => { throw new Error("main-thread ledger open forbidden"); }, openUsageLedgerReadOnly: () => { throw new Error("main-thread ledger open forbidden"); } }));
-const config = { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
+const config = { calibration: "auto" as "auto" | "off", footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
 const fixture = (): UsageRuntimeSnapshot => ({
   health: { schemaVersion: 1, calls: 5, sources: 2, parseErrors: 3, sourceErrors: 4, unpricedModels: ["github-copilot/fixture-model"], aggregateCalls: 1, lastIngestAt: 1 },
   counter: { availability: "available", role: "owner", lastAttemptAt: 100, lastSuccessAt: 100, nextPollAt: 600100, snapshotAgeMs: 2000, errorCode: null, notice: null, latest: { ts: 100, creditsUsed: 10, entitlement: 100, raw: { token: "fixture-secret" } } },
@@ -79,5 +80,32 @@ describe("usage doctor", () => {
 it.each(["usage-ingest-lease-lost", "usage-ingest-lease-busy"])("doctor treats %s as follower information", errorCode => {
   const result = usageDoctorLines({ ...fixture(), errorCode }, config);
   expect(result.ok).toBe(true);
-  expect(result.lines.join("\n")).toContain("ingest: follower (another pi session owns ingestion)");
+  expect(result.lines.join("\n")).toContain("ingest: follower (another ingest participant owns ingestion)");
+});
+
+it("doctor reports calibration evidence and fallback", () => {
+  const s = fixture();
+  s.calibration = { ...calibrationFallback(), status: "calibrated", factor: 0.56, windowStart: 0, windowEnd: 86400000,
+    coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 2 };
+  const lines = usageDoctorLines(s, { ...config, calibration: "auto" }).lines;
+  expect(lines.filter(line => line.startsWith("- usage calibration:"))).toHaveLength(1);
+  expect(lines.join("\n")).toMatch(/status=calibrated.*factor=0.56.*1970-01-01T00:00:00.000Z.*1970-01-02T00:00:00.000Z.*covered_hours=24.*computed_aic=1000.*counter_delta=560.*unpriced_calls=2.*method=trailing-7d-ratio/);
+  expect(lines.join("\n")).toContain("primary=6.72 basis=calibrated published_estimate=12");
+  for (const status of ["uncalibrated", "implausible", "off"] as const) {
+    s.calibration = { ...s.calibration, status, factor: status === "implausible" ? 2 : null };
+    const text = usageDoctorLines(s, { ...config, calibration: "auto" }).lines.join("\n");
+    expect(text).toContain(`status=${status}`); expect(text).toContain("published fallback");
+    expect(text).toContain("primary=12 basis=published published_estimate=12");
+    expect(text).not.toMatch(/synthetic-token|account_login|raw body/);
+  }
+  delete s.calibration;
+  expect(usageDoctorLines(s, { ...config, calibration: "off" }).lines.join("\n")).toContain("status=off");
+});
+
+it("doctor rounds covered hours and labels raw implausible factors rejected", () => {
+  const s = fixture();
+  s.calibration = { ...calibrationFallback(), status: "implausible", factor: 2, coveredHours: 24.123456, computedAic: 1000, counterDelta: 2500 };
+  const text = usageDoctorLines(s, config).lines.join("\n");
+  expect(text).toContain("covered_hours=24.1"); expect(text).not.toContain("24.123456");
+  expect(text).toContain("factor=2.5 (rejected)"); expect(text).toContain("published fallback");
 });

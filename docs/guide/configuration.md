@@ -4,7 +4,7 @@
 
 - Store keys as literal dotted JSON properties, not nested objects.
 - Built-in defaults are overridden by global config, then worktree-local config.
-- `subagents.extensions`, `usage.footer`, `usage.counter.poll`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
+- `subagents.extensions`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
 - Global file: `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
 - Local file: `<worktree>/.spider/config.json`.
 - For config writes, `scope:"repo"` means the local file, not the shared repository database. Omitted scope is local; `scope:"global"` selects global.
@@ -74,6 +74,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 | `ui.footer` | `true` | Footer and run selector; next session. |
 | `usage.footer` | `true` | Global-only AIC footer in parent TUI sessions; changes apply live. |
 | `usage.counter.poll` | `true` | Global-only read-only account polling every ten minutes, parents only; changes apply live. |
+| `usage.calibration` | `auto` | Global-only `auto` or `off`; auto uses sufficient trailing seven-day counter evidence, off shows published estimates and disables factor history. Changes apply live. |
 | `usage.alerts.sessionCredits` | `0` | Global-only finite nonnegative session threshold; reserved, alerts are not implemented. |
 | `usage.alerts.runCredits` | `0` | Global-only finite nonnegative run threshold; reserved, alerts are not implemented. |
 | `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
@@ -110,7 +111,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 - Configuration readers use merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads that same flat map.
 - The organism refreshes configuration when resolving its runtime for a request or drain.
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
-- `usage.footer` and `usage.counter.poll` apply live. Usage alert thresholds are registered but inactive.
+- `usage.footer`, `usage.counter.poll` and `usage.calibration` apply live. Usage alert thresholds are registered but inactive.
 - `subagents.childMode` and `subagents.extensions` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.
 - `memory.snapshotCharCap` is captured with the frozen memory block at the first agent start. Changes apply next session, after an extension reload, or when the memory binding target changes. Doctor uses the current value.

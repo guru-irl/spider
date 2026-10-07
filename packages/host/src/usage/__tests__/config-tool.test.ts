@@ -8,6 +8,7 @@ import { controlDoctor } from "../../control.js";
 
 let root: string, previous: string;
 let slash: (args: string) => Promise<any>;
+let doctorSlash: () => Promise<any>;
 let messages: any[];
 let run: (args: Record<string, unknown>) => Promise<any>;
 beforeEach(() => {
@@ -22,6 +23,7 @@ beforeEach(() => {
   messages = [];
   spiderExtension({ registerTool: (t: any) => { if (t.name === "spider") tool = t; }, registerCommand: (name: string, opts: any) => { handlers[name] = opts.handler; }, sendMessage: (m: any) => messages.push(m), on() {} } as never);
   slash = args => handlers.spider(args, { cwd: root, ui: {} });
+  doctorSlash = () => handlers.doctor("", { cwd: root, ui: {} });
   run = args => tool.execute("usage-config", { action: "control", command: "config", cwd: root, ...args }, undefined, undefined, { cwd: root });
 });
 afterEach(() => {
@@ -54,6 +56,21 @@ it("doctor diagnoses a hand-written ignored local usage key without failing conf
   expect(controlDoctor(root).ok).toBe(true);
 });
 
+it.each(["tool", "slash"])("%s doctor awaits code-only startup diagnostics", async path => {
+  const baseline = path === "tool" ? (await run({ command: "doctor" })).details
+    : (await doctorSlash(), messages.at(-1)?.details.result);
+  const server = join(paths.globalRoot, "usage-server");
+  mkdirSync(server, { mode: 0o700 });
+  writeFileSync(join(server, "crash.log"), "usage-server-startup-invalid\nsynthetic-secret /private/path\n", { mode: 0o600 });
+  writeFileSync(join(server, "startup.json"), "corrupt startup synthetic-secret", { mode: 0o600 });
+  const report = path === "tool" ? (await run({ command: "doctor" })).details
+    : (await doctorSlash(), messages.at(-1)?.details.result);
+  expect(report.lines.join("\n")).toContain("Last dashboard server failure: usage-server-startup-invalid,");
+  expect(report.lines.join("\n")).not.toMatch(/synthetic-secret|corrupt startup|private\/path/);
+  // This headless fixture has no active organism runtime. Dashboard history must not alter its health.
+  expect(report.ok).toBe(baseline.ok);
+});
+
 it.each(["tool", "slash"])("%s local usage unset distinguishes an ignored value from no local value", async path => {
   const key = "usage.footer";
   await run({ op: "set", key, value: false, scope: "global" });
@@ -69,4 +86,19 @@ it.each(["tool", "slash"])("%s local usage unset distinguishes an ignored value 
     expect(JSON.parse(readFileSync(join(root, ".spider/config.json"), "utf8"))).toEqual({ "ui.footer": false });
     expect(readFileSync(join(paths.globalRoot, "config.json"), "utf8")).toBe(globalBefore);
   }
+});
+
+it("calibration config preserves dotted key conventions", async () => {
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "auto", source: "default" });
+  await slash("config set usage.calibration off --global");
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "off", source: "global" });
+  expect((await run({ op: "set", key: "usage.calibration", value: "auto", scope: "repo" })).isError).toBe(true);
+  writeFileSync(join(root, ".spider/config.json"), JSON.stringify({ "usage.calibration": "auto" }));
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "off", source: "global" });
+  await slash("config unset usage.calibration");
+  expect(JSON.parse(readFileSync(join(root, ".spider/config.json"), "utf8"))).toEqual({});
+  await slash("config unset usage.calibration --global");
+  expect((await run({ op: "get", key: "usage.calibration" })).details).toMatchObject({ value: "auto", source: "default" });
+  await slash("config set usage.counter.poll false --global");
+  expect((await run({ op: "get", key: "usage.counter.poll" })).details.value).toBe(false);
 });

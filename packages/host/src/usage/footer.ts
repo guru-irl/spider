@@ -1,6 +1,9 @@
 import type { ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { FooterTotals } from "./footer-state.js";
+import type { CalibrationResult } from "./dashboard-contract.js";
+import { calibrationFallback } from "./calibration.js";
+import { toAicDisplay } from "./aic-display.js";
 
 export type CounterSnapshotView = { creditsUsed: number; entitlement?: number; ts: number };
 export type CounterStateView = {
@@ -18,6 +21,7 @@ export type FooterInput = {
   autoCompaction?: boolean;
   subscription: boolean;
   totals: FooterTotals;
+  calibration?: CalibrationResult;
   counter: CounterStateView;
   statuses: ReadonlyMap<string, string>;
 };
@@ -97,7 +101,10 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const window = tokens(context?.contextWindow ?? 0);
   const contextText = `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
   const unpriced = totals.unpricedEntries > 0;
-  const aic = `${totals.estimated || totals.aggregateEntries > 0 ? "~" : ""}${credits(totals.aic, unpriced)}${unpriced ? "+" : ""} AIC`;
+  const calibration = input.calibration ?? calibrationFallback();
+  const display = toAicDisplay(totals.aic, totals.unpricedEntries, calibration);
+  const marker = display.basis === "calibrated" ? "cal" : calibration.status === "off" ? "est" : "?";
+  const aic = `${display.basis === "calibrated" ? "" : "~"}${credits(display.primaryAic!, unpriced)}${unpriced ? "+" : ""} AIC ${marker}`;
   const items = [contextText, aic];
   if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && totals.latestCacheHitRate !== null) {
     items.push(`CH${totals.latestCacheHitRate.toFixed(1)}%`);

@@ -1,0 +1,6 @@
+.detail-prose { font-family: var(--text-face); font-variant-numeric: normal; }
+.detail-calls .detail-prose p { margin: 0; }
+
+.wide-table .attribution-summary { display: inline-flex; align-items: flex-start; white-space: nowrap; }
+.wide-table .attribution-summary > * { flex: none; }
+.wide-table td[data-label="Attribution"] { max-width: none; }

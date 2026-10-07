@@ -4,13 +4,25 @@ import { watchFile, unwatchFile } from "node:fs";
 import { controlConfig } from "../control.js";
 import { makeConfigReloader } from "../config-reload.js";
 import { readUsageConfig } from "./config.js";
+import { calibrationFallback } from "./calibration.js";
 import { usageDoctorLines } from "./doctor.js";
+import { readUsageServerCrashDiagnostics } from "./server-runtime.js";
 import { homedir } from "node:os";
 import { isAbsolute, relative, sep, join } from "node:path";
 import type { UsageConfig } from "./config.js";
 import { FooterAccumulator } from "./footer-state.js";
 import { createUsageFooter, type FooterInput } from "./footer.js";
 import { UsageRuntime } from "./runtime.js";
+import type { UsageRoots } from "./discovery.js";
+
+/** Pi and the detached dashboard must consume the same ledger and discovery roots. */
+export function resolveUsageRoots(): UsageRoots {
+  const agentDir = getAgentDir();
+  return {
+    registryDb: join(paths.globalRoot, "spider.db"), ledgerFile: join(paths.globalRoot, "usage.db"),
+    sessionsDir: join(agentDir, "sessions"), authPath: join(agentDir, "auth.json"), leaseDir: join(paths.globalRoot, "usage-leases"),
+  };
+}
 
 function displayCwd(cwd: string): string {
   const tail = relative(homedir(), cwd);
@@ -65,12 +77,14 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     const model = current.model;
     const subscription = !!model && (model.provider === "kimi-coding" ||
       (current.modelRegistry.isUsingOAuth(model) && current.modelRegistry.getProvider(model.provider)?.auth?.oauth?.isSubscription === true));
-    const snapshot = runtime.snapshot().counter;
+    const runtimeSnapshot = runtime.snapshot();
+    const snapshot = runtimeSnapshot.counter;
     input = {
       cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null,
       modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
       context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
       subscription, totals: totals.snapshot(),
+      calibration: settings.calibration === "off" ? calibrationFallback("off") : runtimeSnapshot.calibration ?? calibrationFallback(),
       counter: { availability: snapshot?.availability === "available" ? "available" : snapshot?.availability === "disabled" ? "disabled" : "unavailable", snapshot: snapshot?.latest ?? null },
     };
     if (!ownsFooter) {
@@ -88,7 +102,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     if (disposed || child) return;
     const changed = settings.footer !== next.footer;
     settings = next;
-    runtime.configure(next.counterPoll);
+    runtime.configure(next.counterPoll, next.calibration);
     if (!eligible() || !next.footer) {
       releaseFooter(); if (tick) clearInterval(tick); tick = undefined;
     } else {
@@ -118,7 +132,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 }
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
-export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; doctor(): ReturnType<typeof usageDoctorLines> } {
+export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
   let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
@@ -138,26 +152,24 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     await stop();
     current = ctx;
     config = readUsageConfig(controlConfig("get", ctx.cwd) as Record<string, unknown>, {}).value;
-    const agentDir = getAgentDir();
-    runtime = new UsageRuntime({ bundleUrl, child: false, roots: {
-      registryDb: join(paths.globalRoot, "spider.db"), ledgerFile: join(paths.globalRoot, "usage.db"),
-      sessionsDir: join(agentDir, "sessions"), authPath: join(agentDir, "auth.json"), leaseDir: join(paths.globalRoot, "usage-leases"),
-    }, onSnapshot: () => mounted?.refresh() });
-    runtime.start(config.counterPoll);
+    runtime = new UsageRuntime({ bundleUrl, child: false, roots: resolveUsageRoots(), onSnapshot: () => mounted?.refresh() });
+    runtime.start(config.counterPoll, config.calibration);
     mounted = mountUsage(pi, ctx, runtime, config);
     reloader = makeConfigReloader(ctx.cwd, merged => {
       config = readUsageConfig(merged as Record<string, unknown>, {}).value;
       if (ctx.mode === "tui") mounted?.configure(config);
-      else runtime?.configure(config.counterPoll);
+      else runtime?.configure(config.counterPoll, config.calibration);
     });
     watchedFile = join(paths.globalRoot, "config.json");
     // Config I/O is separate from rendering. This also catches edits in another parent.
     watchFile(watchedFile, { persistent: false, interval: 1000 }, reload);
   });
   pi.on("session_shutdown", stop);
-  return { reload, doctor: () => process.env.PI_SUBAGENT_CHILD === "1"
-    ? { ok: true, lines: ["- usage worker: not started (child session)"] }
-    : usageDoctorLines(runtime?.snapshot() ?? {
-    health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null,
-  }, config) };
+  return { reload, doctor: async () => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
+    const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
+    const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
+    return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
+      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now() });
+  } };
 }

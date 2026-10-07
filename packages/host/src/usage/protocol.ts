@@ -1,11 +1,12 @@
 import type { UsageRoots } from "./discovery.js";
 import type { LedgerHealth } from "./ledger.js";
 import type { CounterState } from "./counter.js";
+import type { CalibrationResult, SourceErrorRow } from "./dashboard-contract.js";
 
 export type UsageWorkerCommand =
-  | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean }
+  | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean; calibration?: "auto" | "off"; dashboardMode?: boolean }
   | { type: "refresh" }
-  | { type: "configure"; poll: boolean }
+  | { type: "configure"; poll: boolean; calibration?: "auto" | "off" }
   | { type: "stop" };
 export type BackfillState = "pending" | "running" | "complete" | "failed";
 export type ReconciliationView = {
@@ -14,11 +15,15 @@ export type ReconciliationView = {
   unpricedCalls: number; estimated: boolean;
 };
 export type UsageProgress = { sourcesCompleted: number; sourcesTotal: number };
+/** At most 20 redacted D9 rows. Older workers may omit this field. */
+export type SourceErrorDiagnostics = { rows: readonly SourceErrorRow[]; truncated: boolean };
 export type UsageWorkerEvent =
-  | { type: "snapshot"; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" }
+  | { type: "snapshot"; sourceErrorDiagnostics?: SourceErrorDiagnostics; calibration?: CalibrationResult; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" | "standby" }
   | { type: "error"; code: string }
-  | { type: "stopped" };
+  | { type: "standby" }
+  | { type: "stopped"; released?: boolean };
 export type UsageRuntimeSnapshot = {
-  health: LedgerHealth | null; counter: CounterState | null; backfill: BackfillState;
-  reconciliation: ReconciliationView | null; progress?: UsageProgress; ingestRole?: "owner" | "follower"; errorCode: string | null;
+  sourceErrorDiagnostics?: SourceErrorDiagnostics;
+  calibration?: CalibrationResult; health: LedgerHealth | null; counter: CounterState | null; backfill: BackfillState;
+  reconciliation: ReconciliationView | null; progress?: UsageProgress; ingestRole?: "owner" | "follower" | "standby"; errorCode: string | null;
 };

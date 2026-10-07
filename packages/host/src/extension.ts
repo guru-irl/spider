@@ -1,5 +1,9 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
+import { isUsageServerMain, runUsageServerEntry } from "./usage/server-entry.js";
+import { startUsageServerIngest } from "./usage/server-ingest.js";
+import { writeUsageServerCrashCode } from "./usage/server-runtime.js";
+export { runUsageServerEntry } from "./usage/server-entry.js";
 export { UsageRuntime } from "./usage/runtime.js";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
@@ -12,6 +16,7 @@ import { isAbsolutePathList } from "@spider/ui";
 // attach action handlers via registerAction (re-exported below).
 import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerUsage } from "./usage/mount.js";
+import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
@@ -78,6 +83,17 @@ if (!isMainThread && workerData?.spiderUsageWorker === 1 && parentPort) {
   void bootUsageWorker(parentPort, workerData.command).catch(() => {
     try { parentPort?.postMessage({ type: "error", code: "usage-worker-failed" }); } catch { /* parent gone */ }
     parentPort?.close();
+  });
+}
+
+if (isUsageServerMain(import.meta.url)) {
+  // The virtual module becomes a string inside extension.js. Ordinary imports,
+  // pi's shim and ingest workers never evaluate a browser entry or start HTTP.
+  void import("virtual:spider-usage-dashboard").then(({ DASHBOARD_HTML }) =>
+    runUsageServerEntry(import.meta.url, { html: DASHBOARD_HTML, startParticipant: startUsageServerIngest }),
+  ).catch(async () => {
+    await writeUsageServerCrashCode(process.cwd(), "usage-server-startup-invalid");
+    process.exitCode = 1;
   });
 }
 
@@ -347,7 +363,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
   const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
-      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
+      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
       if (ctx) {
         // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
         // registration must not break extension load") with NOTHING anywhere
@@ -1127,6 +1143,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   );
 
   registerHooks(pi);
+  registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
   const usageController = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url);
   usageControllers.set(pi, usageController);
 

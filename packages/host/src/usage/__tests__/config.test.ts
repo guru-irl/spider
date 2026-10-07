@@ -9,7 +9,7 @@ import { applyConfigEdit, applyConfigUnset } from "../../control/config-cmd.js";
 import { makeConfigReloader } from "../../config-reload.js";
 import { readUsageConfig, isUsageConfigKey } from "../config.js";
 
-const defaults = { footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
+const defaults = { calibration: "auto" as "auto" | "off", footer: true, counterPoll: true, alertsSessionCredits: 0, alertsRunCredits: 0 };
 const keys = ["usage.footer", "usage.counter.poll", "usage.alerts.sessionCredits", "usage.alerts.runCredits"];
 let root: string, previous: string;
 beforeEach(() => {
@@ -104,4 +104,24 @@ it.each(keys)("local unset of absent %s does not claim a removal", key => {
     expect(unset()).toMatchObject({ ok: true, scope: "local", notice: "no local value to remove; usage keys are global-only, use --global to reset the global value" });
     expect(controlConfig("get", root, key)).toBe(value);
   }
+});
+
+it("calibration config is global only auto by default", () => {
+  expect(readUsageConfig({}, {}).value).toMatchObject({ calibration: "auto" });
+  expect(DEFAULTS["usage.calibration"]).toBe("auto");
+  for (const mode of ["auto", "off"]) {
+    expect(readUsageConfig({ "usage.calibration": mode }, { "usage.calibration": "invalid-local" })).toMatchObject({ value: { calibration: mode }, errors: [expect.stringMatching(/ignored.*global/)] });
+    controlConfig("set", root, "usage.calibration", mode, "global");
+    expect(controlConfig("get", root, "usage.calibration")).toBe(mode);
+    expect(configValues(root).sources["usage.calibration"]).toBe("global");
+  }
+  for (const value of [true, 1, null, "other"]) {
+    expect(readUsageConfig({ "usage.calibration": value }, {}).errors).toHaveLength(1);
+    expect(() => controlConfig("set", root, "usage.calibration", value, "global")).toThrow(/auto.*off/);
+  }
+  expect(() => controlConfig("set", root, "usage.calibration", "off")).toThrow(/global-only/);
+  writeFileSync(join(root, "local/config.json"), JSON.stringify({ "usage.calibration": "auto" }));
+  expect(configValues(root)).toMatchObject({ config: { "usage.calibration": "off" }, sources: { "usage.calibration": "global" } });
+  controlConfig("unset", root, "usage.calibration", undefined, "global");
+  expect(controlConfig("get", root, "usage.calibration")).toBe("auto");
 });

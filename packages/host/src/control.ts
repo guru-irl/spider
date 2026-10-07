@@ -52,7 +52,7 @@ function readJson(file: string): Record<string, unknown> {
     throw new ConfigParseError(`cannot parse config file ${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
-function readLayer(file: string): { config: Record<string, unknown>; error?: string } {
+export function readLayer(file: string): { config: Record<string, unknown>; error?: string } {
   try { return { config: readJson(file) }; }
   catch (error) {
     if (!(error instanceof ConfigParseError)) throw error;
@@ -160,7 +160,7 @@ export function configValues(cwd: string, localRoot?: string): {
   sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
   const usage = readUsageConfig(g, p).value;
   for (const [key, value] of Object.entries({
-    "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
+    "usage.calibration": usage.calibration, "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
     "usage.alerts.sessionCredits": usage.alertsSessionCredits, "usage.alerts.runCredits": usage.alertsRunCredits,
   })) {
     all[key] = value;

@@ -14,6 +14,10 @@ export class PlainElement {
   value = "";
   constructor(readonly ownerDocument: PlainDocument, readonly tagName: string, readonly namespaceURI: string | null = null) {}
   get firstElementChild(): PlainElement | null { return this.children[0] ?? null; }
+  get lastElementChild(): PlainElement | null { return this.children.at(-1) ?? null; }
+  getAttributeNames(): string[] { return [...this.attributes.keys()]; }
+  hasAttribute(key: string): boolean { return this.attributes.has(key); }
+  replaceWith(node: PlainElement): void { const parent = this.parentElement; if (!parent) return; const index = parent.children.indexOf(this); this.remove(); node.remove(); node.parentElement = parent; parent.children.splice(index, 0, node); }
   querySelector<T extends Element = Element>(selector: string): T | null { const tags = selector.split(",").map(tag => tag.trim().toLowerCase()); return (descendants(this).slice(1).find(node => tags.includes(node.tagName.toLowerCase())) ?? null) as unknown as T | null; }
   get textContent(): string { return this.ownText + this.children.map(child => child.textContent).join(""); }
   set textContent(value: string) { this.ownText = String(value); this.replaceChildren(); }
@@ -39,7 +43,7 @@ export class PlainElement {
   appendChild<T extends PlainElement>(child: T): T { child.remove(); child.parentElement = this; this.children.push(child); return child; }
   replaceChildren(...children: PlainElement[]): void { for (const child of [...this.children]) child.remove(); this.append(...children); }
   remove(): void { if (this.parentElement) { if (this.contains(this.ownerDocument.activeElement)) this.ownerDocument.activeElement = this.ownerDocument.body; const siblings = this.parentElement.children; siblings.splice(siblings.indexOf(this), 1); this.parentElement = null; } }
-  addEventListener(type: string, listener: Listener): void { const list = this.listeners.get(type) ?? new Set(); list.add(listener); this.listeners.set(type, list); }
+  addEventListener(type: string, listener: Listener, options?: unknown): void { const list = this.listeners.get(type) ?? new Set(); list.add(listener); this.listeners.set(type, list); }
   removeEventListener(type: string, listener: Listener): void { this.listeners.get(type)?.delete(listener); }
   dispatchEvent(event: Event): boolean { for (const listener of this.listeners.get(event.type) ?? []) listener(event); return true; }
   click(): void { if (!this.disabled) this.dispatchEvent(new Event("click")); }
@@ -54,8 +58,9 @@ export class PlainDocument {
   readyState: DocumentReadyState = "complete";
   fonts: { load(font: string): Promise<unknown[]>; check?(font: string): boolean } | undefined;
   readonly listeners: Map<string, Set<Listener>> = new Map<string, Set<Listener>>();
+  readonly listenerOptions: Map<string, unknown> = new Map<string, unknown>();
   createElement(tag: string): PlainElement {
-    if (!/^(a|button|caption|code|dd|div|dl|dt|h1|h2|h3|header|label|link|main|nav|p|section|small|span|table|tbody|td|th|thead|tr)$/i.test(tag)) throw new Error(`plain-dom: unsupported element ${tag}`);
+    if (!/^(a|button|caption|code|dd|div|dl|dt|h1|h2|h3|header|label|link|main|nav|p|section|small|span|table|tbody|td|th|thead|time|tr)$/i.test(tag)) throw new Error(`plain-dom: unsupported element ${tag}`);
     return new PlainElement(this, tag.toUpperCase());
   }
   createElementNS(ns: string, tag: string): PlainElement {
@@ -63,7 +68,7 @@ export class PlainDocument {
     return new PlainElement(this, tag, ns);
   }
   getElementById(id: string): PlainElement | null { return descendants(this.body).find(node => node.id === id) ?? null; }
-  addEventListener(type: string, listener: Listener): void { const list = this.listeners.get(type) ?? new Set(); list.add(listener); this.listeners.set(type, list); }
+  addEventListener(type: string, listener: Listener, options?: unknown): void { const list = this.listeners.get(type) ?? new Set(); list.add(listener); this.listeners.set(type, list); this.listenerOptions.set(type, options); }
   removeEventListener(type: string, listener: Listener): void { this.listeners.get(type)?.delete(listener); }
   dispatchEvent(event: Event): boolean { for (const listener of this.listeners.get(event.type) ?? []) listener(event); return true; }
   asDocument(): Document { return this as unknown as Document; }
@@ -72,3 +77,6 @@ export function descendants(element: PlainElement): PlainElement[] { return [ele
 export function elements(element: HTMLElement | PlainElement, tag: string): PlainElement[] { return descendants(element as PlainElement).filter(node => node.tagName.toLowerCase() === tag.toLowerCase()); }
 export function button(element: HTMLElement | PlainElement, label: string): PlainElement { const found = elements(element, "button").find(node => node.textContent === label); if (!found) throw new Error(`Missing button: ${label}`); return found; }
 export async function settle(): Promise<void> { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+
+/** The visible stacked label is silent; accounting assertions use cell values. */
+export function cellText(cell: PlainElement): string { return cell.children.find(child => child.className === "cell-value")?.textContent ?? cell.textContent; }

@@ -1,6 +1,6 @@
 import type { UsageMeasure } from "../dashboard-contract.js";
 import type { ViewContext, MountedView } from "./views.js";
-import { action, element } from "./dom.js";
+import { action, element, updateEvidence } from "./dom.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { formatTokens } from "./format.js";
 import { canRetry, DashboardClientError } from "./client.js";
@@ -49,7 +49,8 @@ export async function mountAnalysis<T>(ctx: ViewContext, options: {
   const { document } = ctx, section = element(document, "section"); section.append(element(document, "h1", options.title));
   const controls = element(document, "div", undefined, "view-actions"), summary = element(document, "div", undefined, "overview-evidence");
   let disposed = false, sequence = 0, controller: AbortController | undefined;
-  let lastActivity = Date.now(), loading = false, shutdown = false;
+  let lastActivity = Date.now(), loading = false, shutdown = false, paused = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
   let queuedChoice: number | undefined;
   const pages = options.pages.map((spec, index) => ({ spec, pager: createPager(document, { ...spec, clearFilters: ctx.clearFilters, onLoad() { void refresh(true, index); } }) }));
   const refreshButton = action(document, "Refresh", () => { void refresh(true); }); controls.append(refreshButton);
@@ -67,11 +68,13 @@ export async function mountAnalysis<T>(ctx: ViewContext, options: {
   controls.append(...choices); section.append(controls, summary, ...pages.map(p => p.pager.region)); ctx.root.append(section);
   // A joint endpoint may refresh multiple lists, but only the initiating lane
   // speaks or gains a failed target. View-wide actions use the first lane.
-  async function refresh(announce: boolean, initiator?: number): Promise<void> {
+  async function refresh(announce: boolean, initiator?: number, preserveFocus = false): Promise<void> {
     if (disposed || ctx.signal.aborted) return;
+    if (paused) resume();
+    ctx.requestStarted?.();
     controller?.abort(); controller = new AbortController(); const current = ++sequence;
     const target = initiator ?? 0;
-    loading = true; pages.forEach((page, i) => page.pager.busy(announce && i === target, announce && i !== target));
+    loading = true; pages.forEach((page, i) => page.pager.busy(announce && i === target, announce && i !== target, preserveFocus));
     const params = options.params();
     const requests = pages.map(page => {
       const cursorParams = new URLSearchParams();
@@ -88,10 +91,10 @@ export async function mountAnalysis<T>(ctx: ViewContext, options: {
       const response = await ctx.client.get<T>(options.path, params, controller.signal);
       if (disposed || ctx.signal.aborted || current !== sequence) return;
       shutdown = false;
-      const rendered = options.render(response.data); summary.replaceChildren(...(rendered.summary ? [rendered.summary] : []));
+      const rendered = options.render(response.data); updateEvidence(summary, ...(rendered.summary ? [rendered.summary] : []));
       pages.forEach((page, i) => {
         if (!included[i]) { page.pager.cancel(); return; }
-        page.pager.content.replaceChildren(rendered.panels[i]!);
+        updateEvidence(page.pager.content, rendered.panels[i]!);
         page.pager.accept(response.period, page.spec.next(response.data), announce && (initiator === undefined || i === target)); page.pager.complete(response.generatedAt, announce && i === target);
       });
     } catch (error) {
@@ -126,11 +129,19 @@ export async function mountAnalysis<T>(ctx: ViewContext, options: {
     }
     return false;
   };
-  const timer = setInterval(() => {
-    const idle = Date.now() - lastActivity;
+  function resume(): void {
+    if (disposed || ctx.signal.aborted) return;
+    paused = false; lastActivity = Date.now(); clearInterval(timer);
+    timer = setInterval(() => {
+    const idle = ctx.idleMs?.() ?? Date.now() - lastActivity;
     if (!disposed && !shutdown && !loading && document.visibilityState === "visible" && idle >= 10000 && idle < 300000 && !focusedControl()) void refresh(false);
-  }, 60000);
+    }, 60000);
+  }
+  resume();
   const dispose = () => { if (disposed) return; disposed = true; ++sequence; clearInterval(timer); document.removeEventListener("keydown", activity); document.removeEventListener("pointerdown", activity); controller?.abort(); ctx.signal.removeEventListener("abort", dispose); section.remove(); };
   ctx.signal.addEventListener("abort", dispose, { once: true });
-  void refresh(true); return { dispose };
+  void refresh(true); return { dispose, resume, refresh() { if (!loading) void refresh(true, undefined, true); }, suspend(abort) {
+    paused = true; clearInterval(timer); timer = undefined;
+    if (abort) { ++sequence; controller?.abort(); loading = false; pages.forEach(page => page.pager.cancel()); }
+  } };
 }

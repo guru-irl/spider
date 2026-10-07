@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getEventListeners } from "node:events";
-import { PlainDocument, button, elements, descendants } from "./fixtures/plain-dom.js";
+import { PlainDocument, button, elements, descendants, cellText } from "./fixtures/plain-dom.js";
 
 const tokens = { input: 10, cacheRead: 20, cacheWrite: 30, output: 40, prompt: 60, total: 100, reasoning: null, cacheWrite1h: null };
 
@@ -20,7 +20,7 @@ describe("web primitives", () => {
   ] as const)("signed gap observations %j share whole AIC and a zero line", async (values, cells, positions, zero) => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Account gap", unit: "gap-aic", points: values.map((value, i) => ({ start: i * 1000, end: (i + 1) * 1000, label: String(i), value, tokens: null })) });
-    expect(elements(chart, "tr").slice(1).map(row => row.children[2]!.textContent)).toEqual(cells);
+    expect(elements(chart, "tr").slice(1).map(row => cellText(row.children[2]!))).toEqual(cells);
     const summary = elements(chart, "p")[0]!;
     expect(summary.textContent).toContain("Gap: counter minus published");
     expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toContain(summary.textContent);
@@ -54,7 +54,7 @@ describe("web primitives", () => {
   it.each([[0, "0 tokens"], [1, "1 token"], [2, "2 tokens"]] as const)("token count %s pluralizes in table, tooltip and summary", async (value, wording) => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Tokens", unit: "tokens", points: [{ start: 0, end: 1000, label: "One", value, tokens: null }] });
-    expect.soft(elements(chart, "td")[2]!.textContent).toBe(wording);
+    expect.soft(cellText(elements(chart, "td")[2]!)).toBe(wording);
     expect.soft(elements(chart, "title")[1]!.textContent).toContain(` · ${wording} · `);
     expect.soft(elements(chart, "p")[0]!.textContent).toContain(`${wording} minimum · ${wording} maximum`);
   });
@@ -66,7 +66,7 @@ describe("web primitives", () => {
       { start: 2000, end: 3000, label: "Missing", value: null, tokens: null },
       { start: 3000, end: 4000, label: "Invalid", value: Infinity, tokens: null },
     ] });
-    expect(elements(chart, "tr").slice(1).map(row => row.children[2]!.textContent)).toEqual(["+12+ AIC", "-3+ AIC", "unavailable", "unavailable"]);
+    expect(elements(chart, "tr").slice(1).map(row => cellText(row.children[2]!))).toEqual(["+12+ AIC", "-3+ AIC", "unavailable", "unavailable"]);
     expect(elements(chart, "p")[0]!.textContent).toBe("Gap: counter minus published · One to Invalid · -3+ AIC minimum · +12+ AIC maximum");
     expect(elements(chart, "circle")).toHaveLength(2);
     const empty = chartWithTable(new PlainDocument().asDocument(), { title: "Gap", unit: "gap-aic", points: [] });
@@ -262,7 +262,7 @@ describe("web primitives", () => {
       { start: 1000, end: 2000, label: "Two", value: 2, tokens: null },
     ] });
     expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toBe("Daily AIC · One to Two · 2 AIC calibrated minimum · 4+ AIC calibrated maximum");
-    expect(elements(chart, "td")[2]!.textContent).toBe("4+ AIC calibrated");
+    expect(cellText(elements(chart, "td")[2]!)).toBe("4+ AIC calibrated");
     expect(elements(chart, "p")[0]!.textContent).toContain("4+ AIC calibrated maximum");
     const table = elements(chart, "table")[0]!, region = table.parentElement!, caption = elements(table, "caption")[0]!;
     expect(region.getAttribute("aria-labelledby")).toBe(caption.id); expect(caption.id).not.toBe("");
@@ -275,7 +275,7 @@ describe("web primitives", () => {
   it("chart values and maximum retain lower-bound markers", async () => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "AIC", unit: "estimated-aic", points: [{ start: 0, end: 1000, label: "One", value: 4, tokens: null, lowerBound: true }] });
-    expect(elements(chart, "td")[2]!.textContent).toBe("~4+ AIC published estimate");
+    expect(cellText(elements(chart, "td")[2]!)).toBe("~4+ AIC published estimate");
     expect(elements(chart, "p")[0]!.textContent).toContain("~4+ AIC published estimate maximum");
   });
   it("Chart and Table pills select one representation without dropping focus", async () => {
@@ -297,13 +297,13 @@ describe("web primitives", () => {
   it("back-applied value cells preserve their calibration basis", async () => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Back applied", unit: "back-applied-aic", points: [{ start: 0, end: 1000, label: "One", value: 560, tokens, lowerBound: true }] });
-    expect(elements(chart, "td")[2]!.textContent).toBe("560+ AIC calibrated, back-applied");
+    expect(cellText(elements(chart, "td")[2]!)).toBe("560+ AIC calibrated, back-applied");
     expect(elements(chart, "p")[0]!.textContent).toContain("560+ AIC calibrated, back-applied maximum");
   });
   it("empty tables explain that this period has no rows", async () => {
     const { renderTable } = await import("../web/tables.js");
     const table = renderTable(new PlainDocument().asDocument(), { caption: "Roles", columns: ["Role", "Value"], rows: [] });
-    expect(elements(table, "td")[0]!.textContent).toBe("No rows for this period");
+    expect(cellText(elements(table, "td")[0]!)).toBe("No rows for this period");
     expect(elements(table, "td")[0]!.getAttribute("colspan")).toBe("2");
   });
   it("table regions are named after their captions", async () => {
@@ -321,9 +321,9 @@ describe("web primitives", () => {
     const expected = "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100" + (subsets === "listed" ? "; cache write 1h unavailable; reasoning unavailable" : "");
     expect.soft(tokenObservation(tokens, subsets)).toBe(expected);
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Tokens", unit: "tokens", subsets, points: [{ start: 0, end: 1000, label: "One", value: 100, tokens }, { start: 1000, end: 2000, label: "Two", value: 100, tokens: { ...tokens, cacheWrite1h: 0, reasoning: 2 } }] });
-    expect.soft(elements(chart, "td")[3]!.textContent).toBe(expected);
-    expect.soft(elements(chart, "title")[1]!.textContent).toBe(`One · 1970-01-01T00:00:00.000Z to 1970-01-01T00:00:01.000Z · 100 tokens · ${expected} · `);
-    expect(elements(chart, "td")[8]!.textContent).toBe("input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h 0; reasoning 2");
+    expect.soft(cellText(elements(chart, "td")[3]!)).toBe(expected);
+    expect.soft(elements(chart, "title")[1]!.textContent).toBe(`One · 1 Jan 1970 to 1 Jan 1970, 00:00:01 UTC · 100 tokens · ${expected} · `);
+    expect(cellText(elements(chart, "td")[8]!)).toBe("input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h 0; reasoning 2");
     expect(tokenObservation(null, subsets)).toBe("tokens unavailable");
   });
   it("chart text lives outside the scaled plot at a readable CSS pixel size", async () => {
@@ -333,7 +333,7 @@ describe("web primitives", () => {
     expect(svg.getAttribute("viewBox")).toBeNull(); expect(label.parentElement).toBe(svg.parentElement); expect(label.namespaceURI).toBeNull();
     expect(label.className.split(" ")).toContain("chart-summary");
     expect(elements(svg, "text")).toHaveLength(0); expect(svg.getAttribute("aria-describedby")).toBe(label.id); expect(label.id).not.toBe("");
-    expect(svg.getAttribute("width")).toBe("100%"); expect(svg.getAttribute("height")).toBe("160");
+    expect(svg.getAttribute("width")).toBe("100%"); expect(svg.getAttribute("height")).toBe("96");
     const plot = elements(chart, "svg")[1]!;
     expect(plot.getAttribute("viewBox")).toBe("0 0 600 160"); expect(elements(plot, "circle")).toHaveLength(1); expect(elements(plot, "text")).toHaveLength(0);
   });
@@ -358,10 +358,10 @@ describe("web primitives", () => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: response.data, unit: "tokens", points: [{ start: 0, end: 1000, label: hostile, value: 100, tokens }] });
     expect(elements(chart, "img")).toHaveLength(0); expect(elements(chart, "style")).toHaveLength(0);
-    expect(elements(chart, "td")[0]!.textContent).toBe(hostile);
+    expect(cellText(elements(chart, "td")[0]!)).toBe(hostile);
     expect(elements(chart, "h3")[0]!.textContent).toBe(hostile);
     expect(elements(chart, "title")[0]!.textContent).toBe(hostile);
-    expect(elements(chart, "p")[0]!.textContent).toBe(`${hostile} to ${hostile} · 100 tokens minimum · 100 tokens maximum`);
+    expect(elements(chart, "p")[0]!.textContent).toBe(`${hostile} · 100 tokens minimum · 100 tokens maximum`);
     for (const node of descendants(chart as never)) for (const name of node.attributes.keys()) expect(name).not.toMatch(/^(style|on)/i);
   });
   it("chart table has identical observations", async () => {
@@ -375,10 +375,10 @@ describe("web primitives", () => {
     ] });
     const titles = elements(chart, "title").slice(1).map(node => node.textContent);
     expect(titles).toEqual([
-      "One · 1970-01-01T00:00:00.000Z to 1970-01-01T00:00:01.000Z · 0 AIC calibrated · input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable · published estimate ~0 AIC",
-      "Two · 1970-01-01T00:00:01.000Z to 1970-01-01T00:00:02.000Z · unavailable · tokens unavailable · unpriced",
+      "One · 1 Jan 1970 to 1 Jan 1970, 00:00:01 UTC · 0 AIC calibrated · input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable · published estimate ~0 AIC",
+      "Two · 1 Jan 1970, 00:00:01 UTC to 1 Jan 1970, 00:00:02 UTC · unavailable · tokens unavailable · unpriced",
     ]);
-    expect(elements(chart, "tr").slice(1).map(row => row.children.map(cell => cell.textContent).join(" · "))).toEqual(titles);
+    expect(elements(chart, "tr").slice(1).map(row => row.children.map(cell => cellText(cell)).join(" · "))).toEqual(titles);
     expect(elements(chart, "circle")).toHaveLength(1); // null is never plotted as zero
     const toggle = button(chart, "Table"); toggle.focus(); toggle.click();
     expect(elements(chart, "table")[0]!.parentElement!.hidden).toBe(false);
@@ -388,4 +388,26 @@ describe("web primitives", () => {
     expect(doc.activeElement).toBe(chartButton);
     expect(elements(chart, "svg")[0]!.parentElement!.hidden).toBe(false);
   });
+});
+
+
+it("successful retained-focus pager refresh hides Retry and focuses the section heading", async () => {
+  // Break caught: success leaves a focused error-only action visible.
+  const { createPager } = await import("../web/pager.js"), { DashboardClientError } = await import("../web/client.js");
+  const doc = new PlainDocument(), pager = createPager(doc.asDocument(), { title: "Usage", param: "cursor", onLoad() {} });
+  doc.body.append(pager.region as unknown as import("./fixtures/plain-dom.js").PlainElement);
+  pager.fail(new DashboardClientError("busy"), true); const retry = button(pager.region, "Retry"); retry.focus();
+  pager.busy(true, false, true); expect(retry.hidden).toBe(false);
+  pager.accept({ start: 0, end: 100 }, null); pager.complete(100, true);
+  expect(retry.hidden).toBe(true); expect(doc.activeElement).toBe(elements(pager.region, "h2")[0]);
+});
+
+it("updateEvidence keeps reordered row buttons but adopts each new row action", async () => {
+  // Break caught: retained row buttons execute stale closures after a reorder.
+  const { action, updateEvidence } = await import("../web/dom.js"), { renderTable } = await import("../web/tables.js");
+  const doc = new PlainDocument(), parent = doc.createElement("div"), chosen: string[] = [];
+  const render = (ids: string[]) => renderTable(doc.asDocument(), { caption: "Rows", columns: ["Name"], rows: ids.map(id => [action(doc.asDocument(), id, () => chosen.push(id))]) });
+  updateEvidence(parent as unknown as HTMLElement, render(["first", "second"])); const retained = elements(parent, "button");
+  updateEvidence(parent as unknown as HTMLElement, render(["second", "first"]));
+  expect(elements(parent, "button")).toEqual(retained); retained[0]!.click(); retained[1]!.click(); expect(chosen).toEqual(["second", "first"]);
 });

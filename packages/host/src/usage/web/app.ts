@@ -5,7 +5,7 @@ import type { ViewRoute, ViewMount, MountedView } from "./views.js";
 import { createDashboardClient } from "./client.js";
 import { action, element, liveMessage } from "./dom.js";
 import { loadFonts } from "./fonts.js";
-import { readableKey } from "./format.js";
+import { readableKey, periodTimes } from "./format.js";
 import { mountOverview } from "./overview.js";
 export type DashboardOptions = { document?: Document; root?: HTMLElement; client?: DashboardClient; now?: () => number; initialRoute?: ViewRoute; mounts?: Partial<Record<ViewRoute["view"], ViewMount>> };
 export function startDashboard(options: DashboardOptions = {}): MountedView {
@@ -26,12 +26,66 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
   const header = element(document, "header", undefined, "period-header"), content = element(document, "div");
   main.append(header, content); shell.append(rail, main); root.replaceChildren(shell);
   const mounts: Partial<Record<ViewRoute["view"], ViewMount>> = { overview: mountOverview, ...options.mounts };
+  let wakePending = false;
+  let suspended = false, hiddenAt: number | undefined;
+  let lastActivity = clock();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined, resumeTimer: ReturnType<typeof setTimeout> | undefined;
+  function pause(): void {
+    clearTimeout(resumeTimer); resumeTimer = undefined;
+    if (disposed || suspended) return;
+    suspended = true;
+    view?.suspend?.(true);
+  }
+  function checkIdle(): void {
+    idleTimer = undefined;
+    if (disposed || suspended || !mounts[route.view]) return;
+    const remaining = 300000 - (clock() - (hiddenAt ?? lastActivity));
+    if (remaining <= 0) pause();
+    else idleTimer = setTimeout(checkIdle, remaining);
+  }
+  function armIdle(): void {
+    clearTimeout(idleTimer); idleTimer = undefined;
+    if (!disposed && !suspended && mounts[route.view]) checkIdle();
+  }
+  function activity(): void {
+    if (disposed || document.visibilityState !== "visible") return;
+    const now = clock();
+    // High-frequency passive events only record activity once per second.
+    if (now - lastActivity >= 1000 || suspended) lastActivity = now;
+    if (suspended) { suspended = false; view?.resume?.(); armIdle(); wakePending = true; }
+    if (!wakePending) return;
+    // Collapse wake events into one bounded in-place Refresh, never a remount.
+    if (resumeTimer === undefined) resumeTimer = setTimeout(() => {
+      resumeTimer = undefined;
+      if (!disposed && document.visibilityState === "visible") { wakePending = false; view?.refresh?.(); }
+    }, 300);
+  }
+  function requestStarted(): void {
+    wakePending = false;
+    clearTimeout(resumeTimer); resumeTimer = undefined;
+  }
+  function visibility(): void {
+    if (document.visibilityState !== "visible") {
+      clearTimeout(resumeTimer); resumeTimer = undefined;
+      if (hiddenAt === undefined) hiddenAt = clock();
+      view?.suspend?.(false); armIdle();
+      return;
+    }
+    const wasHidden = hiddenAt !== undefined; hiddenAt = undefined;
+    if (!view && !controller) { navigate({ ...route, period: rollingMonth ? undefined : period }); return; }
+    const wasSuspended = suspended; activity();
+    if (wasHidden && !wasSuspended) { view?.resume?.(); lastActivity = clock(); armIdle(); }
+  }
+  const activityEvents = ["keydown", "pointerdown", "pointermove", "wheel", "click", "input", "change", "touchstart"];
+  for (const event of activityEvents) document.addEventListener(event, activity, { passive: true, capture: true });
+  document.addEventListener("visibilitychange", visibility);
   const buttons = new Map<ViewRoute["view"], HTMLButtonElement>();
   for (const [key, label] of [["overview", "Overview"], ["explorer", "Explorer"], ["session", "Session"], ["run", "Run"], ["context", "Context"], ["cache", "Cache"], ["reconciliation", "Reconciliation"], ["rates", "Rates"]] as const) {
     const button = action(document, label, () => navigate({ view: key })); buttons.set(key, button); rail.append(button);
   }
   function navigate(next: ViewRoute, focusAfterRetry = false): void {
     if (disposed) return;
+    clearTimeout(resumeTimer); resumeTimer = undefined; wakePending = false; suspended = false; lastActivity = clock();
     ++generation; const current = generation;
     controller?.abort(); view?.dispose(); view = undefined; controller = new AbortController();
     if (next.period) rollingMonth = false;
@@ -45,24 +99,28 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
       if (missing) value.setAttribute("aria-label", "No value (missing)");
       selection.append(value); slice.append(selection);
     });
-    header.replaceChildren(element(document, "p", `${new Date(period.start).toISOString()} to ${new Date(period.end).toISOString()} UTC`, "period-label"), slice);
+    const periodLabel = element(document, "p", undefined, "period-label"); periodLabel.append(periodTimes(document, period.start, period.end));
+    header.replaceChildren(periodLabel, slice);
     content.replaceChildren();
     const mount = mounts[route.view];
+    armIdle();
     if (!mount) {
       content.append(element(document, "h1", buttons.get(route.view)?.textContent ?? "Usage"), element(document, "p", "This view is not included in this build."), action(document, "Return to Overview", () => navigate({ view: "overview" })));
       return;
     }
-    void mount({ document, root: content, client, id: route.id, get period(): Period {
+    if (document.visibilityState !== "visible") { controller = undefined; hiddenAt ??= clock(); armIdle(); return; }
+    void mount({ document, root: content, client, get id() { return route.id; }, get period(): Period {
       if (rollingMonth) {
         const end = clock(), date = new Date(end);
         period = { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end };
         const label = header.firstElementChild;
-        if (label) label.textContent = `${new Date(period.start).toISOString()} to ${new Date(period.end).toISOString()} UTC`;
+        if (label) label.replaceChildren(periodTimes(document, period.start, period.end));
       }
       return period;
-    }, filters, signal: controller.signal, navigate, clearFilters() { navigate({ ...route, period: rollingMonth ? undefined : period, filters: [] }, true); } }).then(mounted => {
+    }, get filters() { return filters; }, signal: controller.signal, navigate, requestStarted, idleMs() { return clock() - lastActivity; }, clearFilters() { navigate({ ...route, period: rollingMonth ? undefined : period, filters: [] }, true); } }).then(mounted => {
       if (disposed || current !== generation) mounted.dispose(); else {
         view = mounted;
+        if (suspended || document.visibilityState !== "visible") view.suspend?.(suspended);
         if (focusAfterRetry && (document.activeElement === document.body || !document.activeElement)) {
           const heading = content.querySelector<HTMLElement>("h1, h2, h3");
           if (heading) { heading.setAttribute("tabindex", "-1"); heading.focus(); }
@@ -78,7 +136,12 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
   }
   void loadFonts(document, lifetime.signal);
   navigate(route);
-  return { dispose() { if (disposed) return; disposed = true; ++generation; lifetime.abort(); controller?.abort(); view?.dispose(); } };
+  return { dispose() {
+    if (disposed) return; disposed = true; ++generation; clearTimeout(idleTimer); clearTimeout(resumeTimer);
+    for (const event of activityEvents) document.removeEventListener(event, activity, true);
+    document.removeEventListener("visibilitychange", visibility);
+    lifetime.abort(); controller?.abort(); view?.dispose();
+  } };
 }
 // Task 5a bundles this module as an IIFE. There is no host import or runtime Vite.
 if (typeof document !== "undefined") {

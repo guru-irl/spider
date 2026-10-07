@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import type { ApiEnvelope, UsageMeasure } from "../dashboard-contract.js";
 import type { CacheData } from "../query-cache.js";
 import { createDashboardClient, DashboardClientError, type DashboardClient } from "../web/client.js";
-import { PlainDocument, elements, button, settle } from "./fixtures/plain-dom.js";
+import { PlainDocument, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
 
 const period = { start: 0, end: 172800000 };
 const fit = { status: "calibrated" as const, factor: 0.5, windowStart: 0, windowEnd: 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 500, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
@@ -20,7 +20,7 @@ function data(): CacheData {
     sessionsWithWritesNoReads: { rows: [{ sessionId: "session-1", sessionLabel: "<script>evil()</script>", projectKey: "opaque-project", projectLabel: "project <img src=x>", measure: m }, { sessionId: null, sessionLabel: "unsupported id", projectKey: null, projectLabel: null, measure: m }], nextCursor: "session-next" },
     observation: "Sessions with writes and no recorded reads", itemReuse: { status: "unavailable", phase: 2, reason: "not-built", message: "Not available yet (Phase 2)" } };
 }
-function rows(root: Parameters<typeof elements>[0], caption: string) { const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption); expect(table, caption).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cell.textContent)); }
+function rows(root: Parameters<typeof elements>[0], caption: string) { const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption); expect(table, caption).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cellText(cell))); }
 function fixture() {
   const doc = new PlainDocument(), root = doc.createElement("main"); doc.body.append(root);
   const requests: URL[] = [], routes: unknown[] = []; const source = data();
@@ -357,5 +357,29 @@ it.each(lifecycleCases)("$name empty tables use only the shared empty message", 
     expect(f.root.textContent).not.toContain("No daily calibration evidence on this page.");
     const captions = entry.name === "Cache" ? ["Sessions with writes and no recorded reads", "Daily cache write split"] : entry.name === "Reconciliation" ? ["Published comparison", "Calibrated comparison", "Snapshot coverage"] : ["Unpriced evidence", "Daily calibration evidence"];
     for (const caption of captions) expect(rows(f.root, caption)).toEqual([["No rows for this period"]]);
+  } finally { view.dispose(); }
+});
+
+it.each(lifecycleCases)("$name suspends owned work and refreshes the retained view in place", async entry => {
+  vi.useFakeTimers(); const f = fixture(); const signals: AbortSignal[] = []; let hold = false;
+  const client = createDashboardClient(async (input, init) => { f.requests.push(new URL(String(input), "https://fixture")); signals.push(init!.signal as AbortSignal); if (hold) return new Promise<Response>((_, reject) => init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true })); return new Response(JSON.stringify({ apiVersion: 1, revision: "fixture", period, generatedAt: period.end, data: entry.data() })); });
+  const view = await (await entry.mount())({ ...f.ctx, client }); await settle();
+  try {
+    const refresh = button(f.root, "Refresh"); refresh.focus(); const section = f.root.children[0]; const count = f.requests.length;
+    view.suspend!(false); await vi.advanceTimersByTimeAsync(120000); expect(f.requests).toHaveLength(count);
+    hold = true; refresh.click(); await settle(); view.suspend!(true); expect(signals.at(-1)!.aborted).toBe(true); hold = false; expect(f.controller.signal.aborted).toBe(false);
+    view.resume!(); view.refresh!(); await settle(); expect(f.requests).toHaveLength(count + 2); expect(f.root.children[0]).toBe(section); expect(f.doc.activeElement).toBe(refresh);
+    view.suspend!(true); refresh.click(); await settle(); expect(f.requests).toHaveLength(count + 3);
+  } finally { view.dispose(); vi.useRealTimers(); }
+});
+
+it.each(lifecycleCases)("$name successful wake refresh hides Retry and focuses its section heading", async entry => {
+  const f = fixture(); let fail = true;
+  const client: DashboardClient = { async get<T>() { if (fail) throw new DashboardClientError("busy"); return { apiVersion: 1, revision: "f", period, generatedAt: period.end, data: entry.data() as T }; } };
+  const view = await (await entry.mount())({ ...f.ctx, client }); await settle();
+  try {
+    const retry = button(f.root, "Retry"); expect(retry.hidden).toBe(false); retry.focus();
+    view.suspend!(true); view.resume!(); fail = false; view.refresh!(); await settle();
+    expect(retry.hidden).toBe(true); expect(f.doc.activeElement).toBe(elements(retry.parentElement!.parentElement!, "h2")[0]);
   } finally { view.dispose(); }
 });

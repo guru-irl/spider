@@ -1,6 +1,6 @@
 import type { TokenTotals } from "../dashboard-contract.js";
 import { action, element } from "./dom.js";
-import { formatCount, formatTokens, tokenObservation } from "./format.js";
+import { formatCount, formatTokens, tokenObservation, tokenList, periodTimes, numericText } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
 export type ChartUnit = "estimated-aic" | "calibrated-aic" | "back-applied-aic" | "gap-aic" | "tokens" | "percent" | "ratio";
 export type ChartPoint = { start: number; end: number; label: string; value: number | null; tokens: TokenTotals | null; lowerBound?: boolean; note?: string };
@@ -20,13 +20,16 @@ function observation(value: number | null, unit: ChartUnit, lowerBound = false):
 export function chartWithTable(document: Document, options: { title: string; points: readonly ChartPoint[]; unit: ChartUnit; gapBasis?: "published" | "calibrated" | "back-applied"; subsets?: "listed" | "recorded" }): HTMLElement {
   const section = element(document, "section", undefined, "chart-panel");
   section.append(element(document, "h3", options.title));
-  const rows = options.points.map(point => [point.label, `${new Date(point.start).toISOString()} to ${new Date(point.end).toISOString()}`,
+  const rows = options.points.map(point => [point.label, periodTimes(document, point.start, point.end),
+    numericText(document, observation(point.value, options.unit, point.lowerBound)), tokenList(document, point.tokens, options.subsets), point.note ?? ""]);
+  const tooltipRows = options.points.map((point, i) => [point.label, (rows[i]![1] as HTMLElement).textContent,
     observation(point.value, options.unit, point.lowerBound), tokenObservation(point.tokens, options.subsets), point.note ?? ""]);
+  const compact = options.points.length < 3;
   const svgNode = <K extends keyof SVGElementTagNameMap>(tag: K) => document.createElementNS("http://www.w3.org/2000/svg", tag);
-  const svg = svgNode("svg"); svg.setAttribute("width", "100%"); svg.setAttribute("height", "160"); svg.setAttribute("role", "img");
+  const svg = svgNode("svg"); svg.setAttribute("width", "100%"); svg.setAttribute("height", compact ? "96" : "160"); svg.setAttribute("role", "img");
   // Only the glyph-free plot scales. Text stays in the outer CSS-pixel viewport.
-  const plot = svgNode("svg"); plot.setAttribute("viewBox", "0 0 600 160"); plot.setAttribute("width", "100%"); plot.setAttribute("height", "140"); plot.setAttribute("aria-hidden", "true");
-  svg.setAttribute("aria-label", options.title); svg.setAttribute("class", "observation-chart");
+  const plot = svgNode("svg"); plot.setAttribute("viewBox", "0 0 600 160"); plot.setAttribute("width", "100%"); plot.setAttribute("height", compact ? "76" : "140"); plot.setAttribute("aria-hidden", "true");
+  svg.setAttribute("aria-label", options.title); svg.setAttribute("class", compact ? "observation-chart compact-chart" : "observation-chart");
   const title = svgNode("title"); title.textContent = options.title; svg.append(title);
   const valid = options.points.filter(point => point.value !== null && Number.isFinite(point.value));
   const minimum = Math.min(0, ...valid.map(point => point.value!)), maximum = Math.max(0, ...valid.map(point => point.value!));
@@ -38,7 +41,7 @@ export function chartWithTable(document: Document, options: { title: string; poi
   }
   const start = Math.min(...options.points.map(point => point.start)), end = Math.max(...options.points.map(point => point.end));
   options.points.forEach((point, i) => {
-    const group = svgNode("g"), tooltip = svgNode("title"); tooltip.textContent = rows[i]!.join(" · "); group.append(tooltip);
+    const group = svgNode("g"), tooltip = svgNode("title"); tooltip.textContent = tooltipRows[i]!.join(" · "); group.append(tooltip);
     if (point.value !== null && Number.isFinite(point.value)) {
       const dot = svgNode("circle");
       dot.setAttribute("cx", String(24 + ((point.start - start) / (end - start || 1)) * 550));
@@ -48,9 +51,10 @@ export function chartWithTable(document: Document, options: { title: string; poi
     plot.append(group);
   });
   svg.append(plot);
-  const label = element(document, "p", undefined, "numeric chart-summary");
+  const label = element(document, "p", undefined, "chart-summary");
   const extreme = (value: number) => observation(value, options.unit, valid.some(point => point.value === value && point.lowerBound));
-  label.textContent = valid.length ? `${options.points[0]!.label} to ${options.points.at(-1)!.label} · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum` : "No recorded values in this period";
+  const range = options.points.length === 1 ? options.points[0]!.label : `${options.points[0]?.label} to ${options.points.at(-1)?.label}`;
+  label.textContent = valid.length ? `${range} · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum` : "No recorded values in this period";
   const gapLabel = `Gap: counter minus ${options.gapBasis ?? "published"}`;
   if (options.unit === "gap-aic") label.textContent = `${gapLabel} · ${label.textContent}`;
   svg.setAttribute("aria-label", `${options.title} · ${label.textContent}`);

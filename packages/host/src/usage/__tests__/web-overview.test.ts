@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiEnvelope, OverviewData, DashboardStatus, UsageMeasure } from "../dashboard-contract.js";
 import { createDashboardClient, DashboardClientError, type DashboardClient } from "../web/client.js";
 import type { ViewContext } from "../web/views.js";
-import { PlainDocument, elements, button, settle } from "./fixtures/plain-dom.js";
+import { PlainDocument, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
 
 const period = { start: 0, end: 172800000 };
 const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
@@ -35,7 +35,7 @@ function fixture(data = overview(), response?: (path: string, params: URLSearchP
 }
 function tableRows(root: Parameters<typeof elements>[0], caption: string): string[][] {
   const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption);
-  expect(table, `table ${caption}`).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cell.textContent));
+  expect(table, `table ${caption}`).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cellText(cell)));
 }
 
 function deferredFixture() {
@@ -50,6 +50,21 @@ function deferredFixture() {
 function healthPanel(root: Parameters<typeof elements>[0]) { return elements(root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!; }
 
 describe("web Overview", () => {
+  it("Overview timestamps are readable time elements and markers have a plain-word key", async () => {
+    // Break caught: raw ISO copy, timestamp semantics lost, or unexplained footer markers.
+    const { mountOverview } = await import("../web/overview.js"), f = fixture();
+    const view = await mountOverview(f.ctx);
+    try {
+      await settle();
+      expect(f.root.textContent).toContain("Updated 3 Jan 1970, 00:00 UTC");
+      expect(f.root.textContent).toContain("cal means calibrated");
+      expect(f.root.textContent).toContain("? means calibration unavailable");
+      expect(f.root.textContent).toContain("est means published estimate with calibration off");
+      expect(elements(f.root, "time").some(node => node.getAttribute("datetime") === "1970-01-03T00:00:00.000Z")).toBe(true);
+      expect(f.root.textContent).not.toContain("1970-01-01T00:00:00.000Z");
+      expect(elements(f.root, "dl").length).toBeGreaterThan(0);
+    } finally { view.dispose(); }
+  });
   it.each([0, 1, 2])("Overview count %s pluralizes call, diagnostic and source evidence", async count => {
     const { mountOverview } = await import("../web/overview.js"), data = overview(), health = status();
     data.totals = { ...data.totals, calls: count };
@@ -132,7 +147,7 @@ describe("web Overview", () => {
       expect.soft(context!.id).toBe("session-fixture"); expect(context!.period.end).toBe(Date.parse("2030-01-31T23:59:30.000Z"));
       await vi.advanceTimersByTimeAsync(60000);
       expect(context!.period).toEqual({ start: Date.parse("2030-02-01T00:00:00.000Z"), end: Date.parse("2030-02-01T00:00:30.000Z") });
-      expect(elements(f.root, "p").find(node => node.className === "period-label")!.textContent).toBe("2030-02-01T00:00:00.000Z to 2030-02-01T00:00:30.000Z UTC");
+      expect(elements(f.root, "p").find(node => node.className === "period-label")!.textContent).toBe("1 Feb 2030 to 1 Feb 2030, 00:00:30 UTC");
       context!.navigate({ view: "session", id: "new-session" }); await settle(); expect(context!.id).toBe("new-session");
       const request = new URL(f.requests.filter(path => path.startsWith("/api/overview")).at(-1)!, "http://fixture");
       expect(request.searchParams.get("end")).toBe(String(Date.parse("2030-02-01T00:00:30.000Z"))); app.dispose();
@@ -260,12 +275,13 @@ describe("web Overview", () => {
     try {
       const { startDashboard } = await import("../web/app.js"); const f = deferredFixture();
       const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client }); await settle();
-      expect(f.doc.listeners.get("keydown")?.size).toBe(1); expect(vi.getTimerCount()).toBe(1);
+      expect(f.doc.listeners.get("keydown")?.size).toBe(2); expect(vi.getTimerCount()).toBe(2);
       if (mode === "navigation") { button(f.root, "Context").click(); await settle(); } else app.dispose();
       expect(f.pending.find(request => request.path === "/api/overview")!.signal.aborted).toBe(true);
       expect(f.pending.every(request => request.signal.aborted)).toBe(true);
-      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(0); expect(vi.getTimerCount()).toBe(0);
+      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(mode === "navigation" ? 1 : 0); expect(vi.getTimerCount()).toBe(0);
       app.dispose();
+      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(0);
     } finally { vi.useRealTimers(); }
   });
   it.each(["navigation", "app disposal"])("%s releases a mounted view that does not subscribe to abort", async mode => {
@@ -426,7 +442,7 @@ describe("web Overview", () => {
     const health = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!;
     button(health, "Next page").click(); await settle();
     expect(tableRows(f.root, "Source diagnostics")).toHaveLength(50);
-    expect(tableRows(f.root, "Source diagnostics")[0]).toEqual(["source-200.jsonl", "Unknown project", "parse error", "3", "1970-01-01T00:00:01.000Z"]);
+    expect(tableRows(f.root, "Source diagnostics")[0]).toEqual(["source-200.jsonl", "Unknown project", "parse error", "3", "1 Jan 1970, 00:00:01 UTC"]);
     expect(f.requests.filter(path => path.startsWith("/api/overview"))).toHaveLength(1);
     expect(f.requests.filter(path => path.startsWith("/api/source-errors"))).toEqual(["/api/source-errors?limit=200", "/api/source-errors?limit=200&cursor=fixture-page-2"]);
     for (const role of ["owner", "follower", "inactive", "standby"] as const) {
@@ -458,4 +474,118 @@ describe("web Overview", () => {
     expect(new URL(f.requests.find(path => path.startsWith("/api/overview"))!, "http://127.0.0.1").searchParams.get("filters")).toBe('[{"field":"actor","value":"parent"}]');
     view.dispose();
   });
+});
+
+it("in-place resume retains Overview chart selection, focus and page cursors; Refresh and Next still work", async () => {
+  vi.useFakeTimers();
+  const { mountOverview } = await import("../web/overview.js"); const data = overview(); data.daily.nextCursor = "page-2";
+  const f = fixture(data); const view = await mountOverview(f.ctx);
+  try {
+    await settle(); const toggle = button(f.root, "Table"); toggle.click(); toggle.focus();
+    const region = elements(f.root, "table").find(t => elements(t, "caption")[0]?.textContent === "Daily total · calibrated")!.parentElement!;
+    const count = f.requests.length; view.suspend!(false); await vi.advanceTimersByTimeAsync(120000); expect(f.requests).toHaveLength(count);
+    view.suspend!(true); expect(f.controller.signal.aborted).toBe(false); view.resume!(); view.refresh!(); await settle();
+    expect(button(f.root, "Table")).toBe(toggle); expect(f.doc.activeElement).toBe(toggle); expect(region.hidden).toBe(false);
+    view.suspend!(true); button(f.root, "Next page").click(); await settle();
+    expect(new URL(f.requests.filter(p => p.startsWith("/api/overview")).at(-1)!, "https://fixture").searchParams.get("cursor")).toBe("page-2");
+    view.suspend!(true); button(f.root, "Refresh").click(); await settle();
+    expect(new URL(f.requests.filter(p => p.startsWith("/api/overview")).at(-1)!, "https://fixture").searchParams.get("cursor")).toBe("page-2");
+  } finally { view.dispose(); vi.useRealTimers(); }
+});
+it("suspension aborts every owned Overview request without disposal or stale repaint", async () => {
+  const { mountOverview } = await import("../web/overview.js"), f = deferredFixture(); const view = await mountOverview(f.ctx);
+  try {
+    view.suspend!(true); expect(f.pending.every(p => p.signal.aborted)).toBe(true); expect(f.controller.signal.aborted).toBe(false);
+    f.pending.forEach(p => p.resolve(p.path === "/api/status" ? status() : overview())); await settle();
+    expect(f.root.textContent).not.toContain("Selected period");
+    view.resume!(); view.refresh!(); expect(f.pending.filter(p => !p.signal.aborted)).toHaveLength(2);
+  } finally { view.dispose(); }
+});
+it("comparison dates append directly without serializing and reparsing ISO", async () => {
+  const { mountOverview } = await import("../web/overview.js"), f = fixture();
+  const parse = vi.spyOn(Date, "parse"); const view = await mountOverview(f.ctx);
+  try {
+    await settle();
+    // Calibration's backward-compatible legend still parses its ISO; the
+    // comparison must not add another start/end pair to that list.
+    expect(parse.mock.calls.filter(([value]) => value === "1970-01-02T00:00:00.000Z")).toHaveLength(0);
+    const table = elements(f.root, "table").find(t => elements(t, "caption")[0]?.textContent === "Account comparison")!;
+    expect(elements(table, "time").map(t => t.getAttribute("datetime"))).toEqual(["1970-01-01T00:00:00.000Z", "1970-01-02T00:00:00.000Z"]);
+  } finally { parse.mockRestore(); view.dispose(); }
+});
+
+it.each(["Refresh", "Next page"])("paused app runs the user's %s without remount or a redundant wake refresh", async label => {
+  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js"); const data = overview(); data.daily.nextCursor = "page-2";
+  const f = fixture(data); const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", period, filters: f.ctx.filters } });
+  try {
+    await settle(); const section = f.root.children[0]; const control = button(f.root, label); control.focus();
+    await vi.advanceTimersByTimeAsync(300000); const count = f.requests.filter(p => p.startsWith("/api/overview")).length;
+    f.doc.dispatchEvent(new Event("click")); control.click(); await settle(); await vi.advanceTimersByTimeAsync(300);
+    expect(f.requests.filter(p => p.startsWith("/api/overview"))).toHaveLength(count + 1);
+    expect(f.root.children[0]).toBe(section); expect(button(f.root, label)).toBe(control); expect(f.doc.activeElement).toBe(control);
+    expect(new URL(f.requests.filter(p => p.startsWith("/api/overview")).at(-1)!, "https://fixture").searchParams.get("cursor")).toBe(label === "Next page" ? "page-2" : null);
+  } finally { app.dispose(); vi.useRealTimers(); }
+});
+
+it("app-owned pointer activity keeps real Overview polling for twenty minutes", async () => {
+  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js"); const f = fixture();
+  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", period } });
+  try {
+    await settle();
+    for (let i = 0; i < 20; i++) { await vi.advanceTimersByTimeAsync(60000); f.doc.dispatchEvent(new Event("pointermove")); }
+    expect(f.requests.filter(p => p.startsWith("/api/overview"))).toHaveLength(21);
+  } finally { app.dispose(); vi.useRealTimers(); }
+});
+
+it("a successful key wake refresh hides Retry and focuses the section heading", async () => {
+  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js"); const f = fixture(); let fail = true;
+  const client: DashboardClient = { async get<T>(path: string) { if (fail && path === "/api/overview") throw new DashboardClientError("busy"); return envelope((path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview()) as T); } };
+  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client, initialRoute: { view: "overview", period } });
+  try {
+    await settle(); const retry = button(f.root, "Retry"); expect(retry.hidden).toBe(false); retry.focus(); await vi.advanceTimersByTimeAsync(300000);
+    fail = false; f.doc.dispatchEvent(new Event("keydown")); await vi.advanceTimersByTimeAsync(300); await settle();
+    expect(retry.hidden).toBe(true); expect(f.doc.activeElement).toBe(elements(f.root, "h1")[0]); expect(elements(f.root, "h1")[0]!.getAttribute("tabindex")).toBe("-1");
+  } finally { app.dispose(); vi.useRealTimers(); }
+});
+
+it("paused health Next page runs its own action once, cancelling the pending wake refresh", async () => {
+  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js");
+  const f = fixture(overview(), path => path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: "diag-2" } : overview());
+  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", period } });
+  try {
+    await settle(); const next = button(healthPanel(f.root), "Next page"); next.focus(); await vi.advanceTimersByTimeAsync(300000);
+    const count = f.requests.length; f.doc.dispatchEvent(new Event("click")); next.click(); await settle(); await vi.advanceTimersByTimeAsync(300);
+    expect(f.requests).toHaveLength(count + 1); expect(f.requests.at(-1)).toContain("cursor=diag-2"); expect(f.doc.activeElement).toBe(next);
+  } finally { app.dispose(); vi.useRealTimers(); }
+});
+
+it("a resumed Overview cursor keeps its response period across a rolling-month boundary", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(Date.UTC(2030, 0, 31, 23, 59)); const { startDashboard } = await import("../web/app.js"); const f = fixture();
+  const requests: URLSearchParams[] = []; const data = overview(); data.daily.nextCursor = "page-2";
+  const client: DashboardClient = { async get<T>(path: string, params: URLSearchParams) {
+    if (path === "/api/overview") requests.push(new URLSearchParams(params));
+    return { ...envelope((path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : data) as T), period: params.has("start") ? { start: Number(params.get("start")), end: Number(params.get("end")) } : period };
+  } };
+  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client });
+  try {
+    await settle(); button(f.root, "Next page").click(); await settle(); const pin = requests.at(-1)!;
+    await vi.advanceTimersByTimeAsync(300000); f.doc.dispatchEvent(new Event("keydown")); await vi.advanceTimersByTimeAsync(300); await settle();
+    expect(requests.at(-1)!.get("cursor")).toBe("page-2"); expect(requests.at(-1)!.get("start")).toBe(pin.get("start")); expect(requests.at(-1)!.get("end")).toBe(pin.get("end"));
+    button(f.root, "Previous page").click(); await settle(); expect(requests.at(-1)!.get("cursor")).toBeNull(); expect(requests.at(-1)!.get("start")).toBe(String(Date.UTC(2030, 1, 1)));
+  } finally { app.dispose(); vi.useRealTimers(); }
+});
+
+
+it.each([0, 2])("successful wake with %s source errors hides health Retry and focuses its heading", async sourceErrors => {
+  // Break caught: diagnostics success leaves a focused Retry visible or loses focus.
+  const { mountOverview } = await import("../web/overview.js"); const f = fixture(); let fail = true;
+  f.ctx.client = { async get<T>(path: string) {
+    if (path === "/api/source-errors" && fail) throw new DashboardClientError("busy");
+    return envelope((path === "/api/status" ? { ...status(), sourceErrors: fail ? 2 : sourceErrors, parseErrors: 0 } : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview()) as T);
+  } };
+  const view = await mountOverview(f.ctx);
+  try {
+    await settle(); const panel = healthPanel(f.root), retry = button(panel, "Retry"); expect(retry.hidden).toBe(false); retry.focus();
+    fail = false; view.refresh!(); await settle(); expect(retry.hidden).toBe(true); expect(f.doc.activeElement).toBe(elements(panel, "h2")[0]);
+  } finally { view.dispose(); }
 });

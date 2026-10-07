@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import type { ApiEnvelope, UsageMeasure } from "../dashboard-contract.js";
 import type { RatesData } from "../query-rates.js";
 import { createDashboardClient } from "../web/client.js";
-import { PlainDocument, elements, button, settle } from "./fixtures/plain-dom.js";
+import { PlainDocument, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
 const period = { start: 0, end: 172800000 };
 const fit = { status: "calibrated" as const, factor: 0.5, windowStart: 0, windowEnd: 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 500, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
 function measure(): UsageMeasure { return { calls: 3, pricedCalls: 2, unpricedCalls: 1, aggregateCalls: 0,
@@ -13,7 +13,7 @@ function data(): RatesData { return { calibration: { ...fit, factor: 0.8 }, peri
   rates: { rows: [{ modelKey: "opaque-model", version: "rates-changing", model: "<img src=x onerror=evil()>", aliases: ["alias-one", "alias-two"], validUntil: "2031-03-04T00:00:00Z", tier: "wide tier", abovePromptTokens: 98765, usdPerMillion: { input: 0.000012, cacheRead: 0.23, cacheWrite: 4.56, output: 7.89 } }], nextCursor: "tier-next" }, storedRateVersions: ["stored-old"], storedRateVersionsTruncated: true,
   unpricedModels: { rows: [{ modelKey: "unpriced-model", providerKey: "unpriced-provider", provider: "provider <script>x</script>", model: "unknown-model", reason: "no-rate-at-time", measure: { ...measure(), aic: null, aicDisplay: { primaryAic: null, publishedAic: null, basis: "published" }, pricedCalls: 0, unpricedCalls: 3 } }], nextCursor: null },
   factorHistory: { rows: [{ day: 0, calibration: fit }, { day: 86400000, calibration: { ...fit, status: "implausible", factor: 2, windowStart: 86400000, windowEnd: 172800000, coveredHours: 25, unpricedCalls: 2 } }], nextCursor: "rates-next" }, factorHistoryEnabled: true, nextCursor: "rates-next" }; }
-function rows(root: Parameters<typeof elements>[0], caption: string) { const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption); expect(table, caption).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cell.textContent)); }
+function rows(root: Parameters<typeof elements>[0], caption: string) { const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption); expect(table, caption).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cellText(cell))); }
 it("Rates renders changing metadata without constants", async () => {
   // Breaks: importing catalogue constants, repricing history, collapsing evidence gaps into factors, or applying a factor in off mode.
   const module = await import("../web/rates.js").catch(() => null); expect(module, "Rates mount is available").not.toBeNull();

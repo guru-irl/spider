@@ -16,11 +16,23 @@ export type DashboardBrowserPage = {
 
 // Build precisely the packaged app and stylesheet. Only its HTTP responses are
 // synthetic: no real ledger, account data, filesystem paths or server is used.
-export async function createDashboardBrowserPage(): Promise<DashboardBrowserPage> {
+export async function createDashboardBrowserPage(fakeClock = false): Promise<DashboardBrowserPage> {
   const { buildUsageDashboard } = await import(/* @vite-ignore */ new URL("../../../../../../scripts/usage-dashboard-assets.mjs", import.meta.url).href);
-  const { html } = await buildUsageDashboard();
+  const built = await buildUsageDashboard();
   const start = Date.UTC(2026, 0, 1), middle = Date.UTC(2026, 0, 2), end = Date.UTC(2026, 0, 3);
   const period = { start, end };
+  // The real packaged app still starts itself. Only this fixture's clock is
+  // pinned before startup, so its header and synthetic January data agree.
+  const prelude = fakeClock ? `let now = ${end}, sequence = 0; const timers = new Map();
+    Date.now = () => now;
+    window.setTimeout = (run, delay = 0) => { const id = ++sequence; timers.set(id, { run, due: now + delay }); return id; };
+    window.setInterval = (run, delay) => { const id = ++sequence; timers.set(id, { run, due: now + delay, delay }); return id; };
+    window.clearTimeout = window.clearInterval = id => timers.delete(id);
+    window.__usageClock = { advance(ms) { now += ms; for (const [id, timer] of Array.from(timers)) if (timer.due <= now && timers.has(id)) { if (timer.delay) timer.due = now + timer.delay; else timers.delete(id); timer.run(); } } };
+    window.__usageFetches = 0; window.__usageCompleted = 0;
+    const originalFetch = window.fetch; window.fetch = (...args) => { ++window.__usageFetches; return originalFetch(...args).then(response => { ++window.__usageCompleted; return response; }); };
+  ` : `Date.now = () => ${end};`;
+  const html = built.html.replace("<script>", `<script>${prelude}`);
   const measure = (primaryAic: number, publishedAic: number, total: number, basis: "calibrated" | "back-applied"): UsageMeasure => ({
     calls: 1, pricedCalls: 1, unpricedCalls: 0, aggregateCalls: 0,
     tokens: { input: total - 200, output: 200, cacheRead: 0, cacheWrite: 0, cacheWrite1h: null, reasoning: null, prompt: total - 200, total },
@@ -37,7 +49,7 @@ export async function createDashboardBrowserPage(): Promise<DashboardBrowserPage
     calibration: { status: "calibrated", factor: 2, windowStart: middle, windowEnd: end, coveredHours: 24,
       computedAic: 6, counterDelta: 12, unpricedCalls: 0, method: "trailing-7d-ratio" },
     totals, actors: [], roles: [],
-    daily: { nextCursor: null, rows: [
+    daily: { nextCursor: fakeClock ? "page-2" : null, rows: [
       { start, end: middle, label: "Day 1", measure: backApplied, actors: [], roles: [] },
       { start: middle, end, label: "Day 2", measure: calibrated, actors: [], roles: [] },
     ] },
@@ -70,7 +82,7 @@ export async function createDashboardBrowserPage(): Promise<DashboardBrowserPage
       return [parts[0], Number(parts[2].match(/[\\d,]+/)[0].replaceAll(',', '')), Number(parts[3].match(/total ([\\d,]+)/)[1].replaceAll(',', ''))];
     })`,
     readTable: `Array.from(document.querySelectorAll('.chart-panel table tbody tr'), row => {
-      const cells = Array.from(row.cells, cell => cell.textContent);
+      const cells = Array.from(row.cells, cell => cell.querySelector(".cell-value")?.textContent ?? cell.textContent);
       return [cells[0], Number(cells[2].match(/[\\d,]+/)[0].replaceAll(',', '')), Number(cells[3].match(/total ([\\d,]+)/)[1].replaceAll(',', ''))];
     })`,
     toggleTable: `Array.from(document.querySelectorAll('.chart-panel')).every(panel => {

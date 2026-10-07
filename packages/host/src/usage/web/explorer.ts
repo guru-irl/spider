@@ -1,7 +1,7 @@
 import type { Dimension, Filter, FilterValue, Page, Period, UsageMeasure } from "../dashboard-contract.js";
 import type { ExplorerData, ExplorerRow } from "../query-explorer.js";
 import type { ViewContext, MountedView, ViewMount } from "./views.js";
-import { action, element, liveMessage } from "./dom.js";
+import { action, element, liveMessage, updateEvidence } from "./dom.js";
 import { DashboardClientError, errorCopy, canRetry } from "./client.js";
 import { formatAicDisplay, formatTokens, tokenObservation } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
@@ -143,7 +143,9 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   const results = element(document, "div", undefined, "view-actions"), searchMessage = liveMessage(document), searchNotice = liveMessage(document);
   searchMessage.setAttribute("tabindex", "-1"); searchNotice.setAttribute("tabindex", "-1");
   let disposed = false, sequence = 0, timer: ReturnType<typeof setTimeout> | undefined, groupTimer: ReturnType<typeof setTimeout> | undefined;
-  let lastActivity = Date.now(), stopped = false, pivotLoading = false, searchLoading = false;
+  let pendingGroup = false, pendingSearch = false;
+  let lastActivity = Date.now(), stopped = false, pivotLoading = false, searchLoading = false, paused = false;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const activity = () => { lastActivity = Date.now(); };
   let searchController: AbortController | undefined, selected: FilterValue | undefined;
   let period = ctx.period, searchPeriod = period;
@@ -164,7 +166,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   const clear = action(document, "Clear filters", () => ctx.clearFilters?.()); clear.disabled = !filters.length; clear.setAttribute("aria-disabled", String(clear.disabled));
   const active = element(document, "section", undefined, "view-actions"); active.setAttribute("aria-label", "Active filters");
   function activeFilters(): void {
-    active.replaceChildren();
+    const pills: HTMLElement[] = [];
     for (const filter of uniqueFilters(filters)) {
       const label = `${dimensionLabels[filter.field]} = ${filter.kind === "missing" ? "No value" : state!.labels.get(filterKey(filter)) ?? "Saved selection (label unavailable in this period)"}`;
       const pill = element(document, "span", undefined, "filter-pill");
@@ -175,8 +177,9 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
       const remove = action(document, "Remove", () => navigate(filters.filter(candidate => filterKey(candidate) !== filterKey(filter))));
       remove.className = "action filter-remove"; remove.setAttribute("aria-label", `Remove filter ${filter.field}`);
       pill.append(name, remove);
-      active.append(pill);
+      pills.push(pill);
     }
+    updateEvidence(active, ...pills);
   }
   activeFilters();
   const filterPanel = element(document, "section"); filterPanel.setAttribute("aria-label", "Filter values");
@@ -210,69 +213,74 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   const next = action(document, "Next page", () => { if (nextCursor && !pivotLoading && !disposed) { activity(); previous.push(cursor); cursor = nextCursor; void readPivot(); } });
   const back = action(document, "Previous page", () => { if (previous.length && !pivotLoading && !disposed) { activity(); cursor = previous.pop(); void readPivot(); } });
   const retry = action(document, "Retry", () => { if (pivotLoading || retry.hidden || disposed) return; activity(); if (failed) restore(failed); void readPivot(); }); retry.hidden = true;
-  const refresh = action(document, "Refresh", () => { activity(); refreshPivot(); });
+  const refresh = action(document, "Refresh", () => { activity(); resetPage(); refreshPivot(); });
   const paging = element(document, "div", undefined, "view-actions"); paging.append(back, next, retry);
   const pivotPanel = element(document, "section"); pivotPanel.setAttribute("aria-label", "Pivot");
   grouping.append(...groups.map((group, i) => labelled(document, `Group by ${i + 1}`, group)), refresh);
-  pivotPanel.append(element(document, "h2", "Attribution pivot"), grouping, pageNotice, pivotMessage, pivot, paging); root.append(pivotPanel);
+  const pivotHeading = element(document, "h2", "Attribution pivot"); pivotHeading.setAttribute("tabindex", "-1");
+  pivotPanel.append(pivotHeading, grouping, pageNotice, pivotMessage, pivot, paging); root.append(pivotPanel);
   function pager(panel: HTMLElement, back: HTMLButtonElement, next: HTMLButtonElement, busy: boolean, hasBack: boolean, hasNext: boolean): void {
     panel.setAttribute("aria-busy", String(busy));
     back.setAttribute("aria-disabled", String(busy || !hasBack)); next.setAttribute("aria-disabled", String(busy || !hasNext));
   }
   function resetPage(): void { cursor = undefined; nextCursor = null; previous.length = 0; committed = { cursor, previous: [] }; failed = undefined; }
-  const labelController = new AbortController();
+  let labelController = new AbortController(), labelSequence = 0;
   let resolving: Promise<void> | undefined, revision = "";
   const unavailableKey = (filter: ExplorerFilter) => JSON.stringify([revision, filterKey(filter)]);
   // A fixed error code intentionally contains no raw id. Validate saved filters individually to remove only invalid ones.
   function resolveLabels(force = false): Promise<void> {
     if (resolving) return force ? resolving.then(() => resolveLabels(true)) : resolving;
+    const current = labelSequence;
     resolving = (async () => {
       const invalid = new Set<string>();
       await Promise.all(uniqueFilters(filters).map(async filter => {
-        if (disposed || ctx.signal.aborted) return;
+        if (disposed || ctx.signal.aborted || current !== labelSequence) return;
         if (filter.kind === "missing" || (!force && (state!.labels.has(filterKey(filter)) || state!.unavailable.has(unavailableKey(filter))))) return;
         const unavailable = unavailableKey(filter);
         const params = sliceParams(period, [filter]); params.set("field", filter.field); params.set("prefix", ""); params.set("limit", "1");
         try {
           const response = await ctx.client.get<Page<FilterValue>>("/api/filter-values", params, labelController.signal);
-          if (disposed || ctx.signal.aborted) return;
+          if (disposed || ctx.signal.aborted || current !== labelSequence) return;
           const row = response.data.rows.find(row => row.id === filter.value);
           if (row?.label !== null && row?.label !== undefined) state!.labels.set(filterKey(filter), row.label);
           else state!.unavailable.add(unavailable);
         } catch (error) {
-          if (disposed || ctx.signal.aborted) return;
+          if (disposed || ctx.signal.aborted || current !== labelSequence) return;
           if (error instanceof DashboardClientError && error.code === "unknown-filter-id") invalid.add(filterKey(filter));
         }
       }));
-      if (disposed || ctx.signal.aborted) return;
+      if (disposed || ctx.signal.aborted || current !== labelSequence) return;
       if (invalid.size) {
         state!.notice = "A saved filter no longer matches any data and was removed";
         pageNotice.textContent = state!.notice;
         navigate(filters.filter(filter => !invalid.has(filterKey(filter))));
       } else activeFilters();
-    })().finally(() => { resolving = undefined; });
+    })().finally(() => { if (current === labelSequence) resolving = undefined; });
     return resolving;
   }
   function cursorNotice(error: unknown): string | undefined {
     if (!(error instanceof DashboardClientError)) return;
     if (error.code === "ledger-changed" || error.code === "invalid-query") return "Page link no longer valid. Showing page 1.";
   }
-  async function readPivot(user = true, resetNotice = "", focusRetry = document.activeElement === retry): Promise<void> {
+  async function readPivot(user = true, resetNotice = "", focusRetry = document.activeElement === retry, preserveFocus = false): Promise<void> {
     if (disposed || ctx.signal.aborted) return;
+    if (paused) resume();
+    ctx.requestStarted?.();
     pivotController?.abort(); pivotController = new AbortController(); const current = ++pivotSequence; pivotLoading = true;
     const params = sliceParams(period, filters); params.set("groupBy", groupBy.join(",")); params.set("limit", "50");
     if (cursor) params.set("cursor", cursor);
     if (user) pivotMessage.textContent = "Loading pivot";
-    pager(pivot, back, next, true, !!previous.length, !!nextCursor); retry.hidden = true;
+    pager(pivot, back, next, true, !!previous.length, !!nextCursor); if (!preserveFocus || document.activeElement !== retry) retry.hidden = true;
     try {
       const response = await ctx.client.get<ExplorerData>("/api/explorer", params, pivotController.signal);
       if (disposed || ctx.signal.aborted || current !== pivotSequence) return;
+      if (document.activeElement === retry) pivotHeading.focus(); retry.hidden = true;
       period = response.period; revision = response.revision; stopped = false;
       committed = { cursor, previous: [...previous] }; failed = undefined;
       for (const row of response.data.rows) for (const [i, field] of response.data.groupBy.entries()) {
         if (row.key[i] !== null && row.labels[i] !== null) state!.labels.set(filterKey({ field, kind: "id", value: row.key[i]! }), row.labels[i]!);
       }
-      pivot.replaceChildren(renderPivot(ctx, response.data, row => {
+      updateEvidence(pivot, renderPivot(ctx, response.data, row => {
         const tuple = tupleFilters(response.data, row);
         if (tuple && uniqueFilters([...filters, ...tuple]).length <= 16) navigate([...filters, ...tuple]);
       }));
@@ -297,14 +305,14 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
       if (current === pivotSequence) { pivotLoading = false; pager(pivot, back, next, false, !!previous.length, !!nextCursor); }
     }
   }
-  function refreshPivot(): void {
+  function refreshPivot(preserveFocus = false): void {
     if (disposed || ctx.signal.aborted) return;
-    resetPage(); period = ctx.period; pageNotice.textContent = ""; void readPivot();
+    if (!cursor) period = ctx.period; pageNotice.textContent = ""; void readPivot(true, "", !preserveFocus && document.activeElement === retry, preserveFocus);
   }
   function regroup(): void {
-    activity(); if (groupTimer !== undefined) clearTimeout(groupTimer);
+    pendingGroup = true; activity(); if (groupTimer !== undefined) clearTimeout(groupTimer);
     groupTimer = setTimeout(() => {
-      groupTimer = undefined;
+      groupTimer = undefined; pendingGroup = false;
       const selected = groups.map(group => group.value).filter(Boolean) as Dimension[];
       if (!selected.length || new Set(selected).size !== selected.length) { pivotMessage.textContent = "Choose one to three different groups."; return; }
       groupBy = selected; resetPage(); period = ctx.period; pageNotice.textContent = ""; void readPivot();
@@ -312,13 +320,15 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   }
   for (const group of groups) group.addEventListener("change", regroup);
   function cancelSearch(): void {
-    ++sequence; searchController?.abort(); if (timer !== undefined) clearTimeout(timer); timer = undefined;
+    pendingSearch = false; ++sequence; searchController?.abort(); if (timer !== undefined) clearTimeout(timer); timer = undefined;
     selected = undefined; add.disabled = true; results.replaceChildren(); searchLoading = false;
     searchCursor = undefined; searchNextCursor = null; searchPrevious.length = 0; searchCommitted = { cursor: undefined, previous: [] }; searchFailed = undefined; valuesRetry.hidden = true;
     pager(results, valuesBack, valuesNext, false, false, false);
   }
   async function search(current: number, resetNotice = "", focusRetry = document.activeElement === valuesRetry): Promise<void> {
     if (disposed || ctx.signal.aborted || current !== sequence) return;
+    if (paused) resume();
+    ctx.requestStarted?.();
     searchController?.abort(); searchController = new AbortController(); searchLoading = true;
     selected = undefined; add.disabled = true; valuesRetry.hidden = true;
     pager(results, valuesBack, valuesNext, true, !!searchPrevious.length, !!searchNextCursor);
@@ -367,17 +377,25 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   function changed(): void {
     activity(); cancelSearch(); searchMessage.textContent = ""; searchNotice.textContent = ""; searchPeriod = ctx.period;
     prefix.value = [...prefix.value].slice(0, 160).join("");
-    const current = sequence; timer = setTimeout(() => { timer = undefined; void search(current); }, 300);
+    pendingSearch = true; const current = sequence; timer = setTimeout(() => { timer = undefined; pendingSearch = false; void search(current); }, 300);
   }
   pager(results, valuesBack, valuesNext, false, false, false); pager(pivot, back, next, false, false, false);
   prefix.addEventListener("input", changed); field.addEventListener("change", changed);
   document.addEventListener("keydown", activity); document.addEventListener("pointerdown", activity);
-  const refreshTimer = setInterval(() => {
-    if (!stopped && !pivotLoading && document.visibilityState === "visible" && Date.now() - lastActivity < 300000 && !root.contains(document.activeElement)) {
+  function resume(): void {
+    if (disposed || ctx.signal.aborted) return;
+    paused = false; lastActivity = Date.now(); clearInterval(refreshTimer);
+    if (labelController.signal.aborted) labelController = new AbortController();
+    if (pendingGroup) regroup();
+    if (pendingSearch) changed();
+    refreshTimer = setInterval(() => {
+    if (!stopped && !pivotLoading && document.visibilityState === "visible" && (ctx.idleMs?.() ?? Date.now() - lastActivity) < 300000 && !root.contains(document.activeElement)) {
       if (!cursor) period = ctx.period;
       void readPivot(false);
     }
-  }, 60000);
+    }, 60000);
+  }
+  resume();
   function dispose(): void {
     if (disposed) return; disposed = true; cancelSearch(); labelController.abort();
     ++pivotSequence; pivotController?.abort(); clearInterval(refreshTimer);
@@ -390,7 +408,16 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   if (ctx.signal.aborted) dispose();
   else if (malformed) { state.notice = "Saved filter removed"; pageNotice.textContent = state.notice; navigate(filters); }
   else void readPivot(true, initialNotice);
-  return { dispose };
+  return { dispose, resume, refresh() { if (!pivotLoading) refreshPivot(true); }, suspend(abort) {
+    paused = true; clearInterval(refreshTimer); refreshTimer = undefined;
+    if (abort) {
+      if (timer !== undefined) clearTimeout(timer); timer = undefined;
+      if (groupTimer !== undefined) clearTimeout(groupTimer); groupTimer = undefined;
+      ++sequence; ++pivotSequence; ++labelSequence; searchController?.abort(); pivotController?.abort(); labelController.abort(); resolving = undefined;
+      pivotLoading = searchLoading = false;
+      pager(pivot, back, next, false, !!previous.length, !!nextCursor); pager(results, valuesBack, valuesNext, false, !!searchPrevious.length, !!searchNextCursor);
+    }
+  } };
 }
 
 /** Pass to startDashboard({ mounts: EXPLORER_MOUNTS }); Task 13 owns default registry integration. */

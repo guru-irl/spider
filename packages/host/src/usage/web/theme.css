@@ -70,8 +70,8 @@ button:disabled, button[aria-disabled="true"] { color: var(--text-secondary); cu
 .rail-title { font-weight: 600; letter-spacing: .015em; margin: 0 0 1.3rem; padding-inline: .8rem; }
 .usage-main { min-width: 0; padding: 2rem clamp(1rem, 3vw, 3.2rem) 4rem; }
 .period-header { margin-bottom: 2rem; overflow-wrap: anywhere; }
-.period-label, .numeric { font-family: var(--data-face); font-variant-numeric: tabular-nums; }
-.period-label { font-size: .78rem; margin: 0; }
+.numeric { font-family: var(--data-face); font-variant-numeric: tabular-nums; }
+.period-label { font-size: .9rem; margin: 0; }
 .slice-label { margin: .45rem 0 0; }
 h1 { font-size: 2rem; line-height: 1.15; font-weight: 600; letter-spacing: -.025em; margin: 0 0 1.5rem; }
 h2 { font-size: 1.2rem; font-weight: 600; margin: 0 0 1rem; }
@@ -82,17 +82,38 @@ p { overflow-wrap: anywhere; }
 .muted { color: var(--text-secondary); font-size: .85rem; }
 .calibration-evidence { font-size: .9rem; max-width: 90ch; }
 .overview-evidence { display: grid; gap: .8rem; min-width: 0; }
-.table-region { max-width: 100%; min-width: 0; overflow-x: auto; background: var(--surface); border-radius: .8rem; }
-.data-table { width: 100%; min-width: 42rem; border-collapse: collapse; table-layout: fixed; text-align: left; }
+.table-region { max-width: 100%; min-width: 0; container-type: inline-size; overflow-x: auto; background: var(--surface); border-radius: .8rem; }
+.data-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; text-align: left; }
 .data-table caption { text-align: left; padding: 1rem 1.1rem .5rem; font-weight: 600; }
 .data-table th { vertical-align: bottom; padding: .7rem 1.1rem; font-size: .78rem; font-weight: 500; }
-.data-table td { vertical-align: top; padding: .85rem 1.1rem; font-size: .76rem; font-family: var(--data-face); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.data-table td { vertical-align: top; padding: .85rem 1.1rem; font-size: .85rem; overflow-wrap: anywhere; }
+.token-list { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: .15rem .6rem; margin: 0; }
+.token-list dt, .token-list dd { min-width: 0; margin: 0; }
+.token-list dd { text-align: right; }
+.token-separator { display: none; }
+.overview .data-table:not(.wide-table) th:nth-child(4), .overview .data-table:not(.wide-table) td:nth-child(4) { width: 28%; }
+.cell-label { display: none; }
+.cell-value { min-width: 0; }
+.wide-table { width: max-content; min-width: 100%; table-layout: auto; }
+.wide-table th, .wide-table td { min-width: 9.6rem; max-width: 14rem; }
+.scroll-cue { position: sticky; left: 0; margin: 0; padding: .55rem 1.1rem; color: var(--text-secondary); font-size: .8rem; background: var(--surface); }
+@container (max-width: 42rem) {
+  .data-table:not(.wide-table), .data-table:not(.wide-table) tbody, .data-table:not(.wide-table) tr { display: block; }
+  .data-table:not(.wide-table) caption { display: block; }
+  /* Clipped native headers and explicit roles retain Safari's table semantics. */
+  .data-table:not(.wide-table) thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .data-table:not(.wide-table) td { display: grid; grid-template-columns: minmax(0, 38%) minmax(0, 1fr); gap: .75rem; width: auto; padding: .55rem 1.1rem; }
+  .data-table:not(.wide-table) .cell-label { display: block; font-family: var(--text-face); color: var(--text-secondary); font-size: .8rem; }
+  .data-table:not(.wide-table) td[colspan] { display: block; }
+  .data-table:not(.wide-table) tr { padding-block: .4rem; }
+  .overview .data-table:not(.wide-table) th:nth-child(4), .overview .data-table:not(.wide-table) td:nth-child(4) { width: auto; }
+}
 .data-table tbody tr:nth-child(even) { background: var(--bg); }
-.data-table th:nth-child(4), .data-table td:nth-child(4) { width: 28%; }
 .small-multiples { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 1.2rem; margin: 1.5rem 0; }
 .chart-panel { background: var(--surface); border-radius: .8rem; padding: 1.1rem; min-width: 0; }
 .observation-chart { display: block; width: 100%; height: 160px; }
-.chart-summary { color: var(--text); font-family: var(--data-face); font-size: 12px; }
+.compact-chart { height: 96px; }
+.chart-summary { color: var(--text); font-size: 12px; }
 .chart-dot { fill: var(--accent); }
 .chart-zero-line { stroke: var(--text-secondary); }
 .health-panel { background: var(--surface); border-radius: .8rem; padding: 1.4rem; margin-top: 2rem; }

@@ -225,7 +225,7 @@ it("gapChart labels supplied back-applied gaps natively", async () => {
   // Breaks: gapChart discards the supplied basis instead of using 5b's native option.
   const f = await fixture(1);
   const chart = gapChart(f.ctx, "Back-applied gap", [{ start: 0, end: 1000, label: "one", value: 2, tokens: null }], "back-applied");
-  expect(elements(chart, "p").find(p => p.className === "numeric chart-summary")!.textContent).toContain("Gap: counter minus back-applied");
+  expect(elements(chart, "p").find(p => p.className.split(" ").includes("chart-summary"))!.textContent).toContain("Gap: counter minus back-applied");
   expect(elements(chart, "th")[2]!.textContent).toBe("Gap: counter minus back-applied");
 });
 

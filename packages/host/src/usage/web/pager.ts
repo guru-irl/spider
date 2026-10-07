@@ -9,7 +9,7 @@ export interface AnalysisPager {
   accept(period: Period, next: string | null, clearFailed?: boolean): void;
   reset(): void;
   recover(error: unknown): boolean;
-  busy(announce: boolean, clearStatus?: boolean): void;
+  busy(announce: boolean, clearStatus?: boolean, preserveFocus?: boolean): void;
   notice(message: string, announce: boolean): void;
   complete(at: number, announce: boolean): void;
   fail(error: unknown, announce: boolean): void;
@@ -37,7 +37,7 @@ export function createPager(document: Document, options: { title: string; param:
   const stamp = element(document, "p", "", "muted numeric"), controls = element(document, "div", undefined, "view-actions");
   let cursor: string | undefined, pinned: Period | undefined, nextCursor: string | null = null;
   const previous: (string | undefined)[] = [];
-  let loading = false, recoveryNotice = false, retryable = false;
+  let loading = false, recoveryNotice = false, retryable = false, preserveFocus = false;
   type Position = { cursor: string | undefined; pinned?: Period; previous: (string | undefined)[] };
   let committed: Position = { cursor: undefined, previous: [] }, failed: Position | undefined;
   const position = (): Position => ({ cursor, pinned: pinned ? { ...pinned } : undefined, previous: [...previous] });
@@ -86,11 +86,11 @@ export function createPager(document: Document, options: { title: string; param:
       recoveryNotice = true;
       if (announce) status.textContent = message;
     },
-    busy(announce: boolean, clearStatus = false): void {
-      loading = true;
-      if (document.activeElement === retry || document.activeElement === clearFilters) heading.focus();
-      clearFilters.hidden = true;
-      retry.hidden = true;
+    busy(announce: boolean, clearStatus = false, retainFocus = false): void {
+      loading = true; preserveFocus = retainFocus;
+      if (!preserveFocus && (document.activeElement === retry || document.activeElement === clearFilters)) heading.focus();
+      if (!preserveFocus || document.activeElement !== clearFilters) clearFilters.hidden = true;
+      if (!preserveFocus || document.activeElement !== retry) retry.hidden = true;
       if (clearStatus) status.textContent = "";
       if (announce && !recoveryNotice) status.textContent = "Loading usage";
       updateControls();
@@ -98,7 +98,10 @@ export function createPager(document: Document, options: { title: string; param:
     complete(at: number, announce: boolean): void {
       loading = false; stamp.textContent = `${recoveryNotice && !announce ? "Page link no longer valid. Showing page 1. " : ""}Updated ${new Date(at).toISOString()}`;
       if (announce && !recoveryNotice) status.textContent = "Usage updated.";
-      recoveryNotice = false; retry.hidden = !failed || !retryable; updateControls();
+      recoveryNotice = false;
+      if (!failed || !retryable) { if (document.activeElement === retry) heading.focus(); retry.hidden = true; }
+      else retry.hidden = false;
+      updateControls();
     },
     fail(error: unknown, announce: boolean): void {
       failed = position(); restore(committed);

@@ -4,7 +4,7 @@ import type { ExplorerData } from "../query-explorer.js";
 import { createDashboardClient, DashboardClientError, type DashboardClient } from "../web/client.js";
 import { readFileSync } from "node:fs";
 import type { ViewRoute } from "../web/views.js";
-import { PlainDocument, PlainElement, descendants, elements, button, settle } from "./fixtures/plain-dom.js";
+import { PlainDocument, PlainElement, descendants, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
 
 // Only extend structure for native form controls. This fixture does not simulate layout.
 class ExplorerDocument extends PlainDocument {
@@ -68,7 +68,7 @@ function key(node: PlainElement, value: string): void {
 function tableRows(root: PlainElement, caption: string): string[][] {
   const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption);
   expect(table, `table ${caption}`).toBeDefined();
-  return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cell.textContent));
+  return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cellText(cell)));
 }
 
 describe("web Explorer", () => {
@@ -341,7 +341,11 @@ describe("Explorer fix round", () => {
     button(field(f.root, "Filter values"), "Next page").click(); await settle();
     expect(sent.filter(r => r.params.has("cursor")).map(r => r.params.get("end"))).toEqual(["150", "150"]);
     expect(field(f.root, "Filter values").textContent).toContain("Choose a value");
-    button(f.root, "Refresh").click(); await settle(); expect(sent.at(-1)!.params.get("end")).toBe("300");
+    // Wake Refresh alone preserves page 2 and its server-pinned period.
+    view.suspend!(true); view.resume!(); view.refresh!(); await settle();
+    expect(sent.at(-1)!.params.get("end")).toBe("150"); expect(sent.at(-1)!.params.get("cursor")).toBe("pivot-page");
+    // Manual Refresh returns to page 1 with the current period.
+    button(f.root, "Refresh").click(); await settle(); expect(sent.at(-1)!.params.get("end")).toBe("300"); expect(sent.at(-1)!.params.has("cursor")).toBe(false);
     view.dispose();
   });
   it("keeps focused pagers focusable and guards repeated clicks while busy", async () => {
@@ -896,4 +900,61 @@ describe("Explorer final round", () => {
     expect(f.labelRequests).toHaveLength(2); await settle(); expect(f.routes.at(-1)?.filters).toEqual([]);
     expect(f.root.textContent).toContain("A saved filter no longer matches any data and was removed"); view.dispose();
   });
+});
+
+it("Explorer suspension retains prefix, focus and grouping while aborting owned work and resuming in place", async () => {
+  vi.useFakeTimers(); let hold = false; const f = fixture(() => hold ? new Promise(() => {}) : data()); const view = await mount(f.ctx); await settle();
+  try {
+    const prefix = field(f.root, "Filter prefix"); prefix.value = "kept text"; prefix.focus();
+    const count = f.requests.length; view.suspend!(false); await vi.advanceTimersByTimeAsync(120000); expect(f.requests).toHaveLength(count);
+    hold = true; button(f.root, "Refresh").click(); await settle(); view.suspend!(true); expect(f.requests.at(-1)!.signal.aborted).toBe(true); hold = false; expect(f.controller.signal.aborted).toBe(false);
+    view.resume!(); view.refresh!(); await settle(); expect(f.requests).toHaveLength(count + 2);
+    expect(field(f.root, "Filter prefix")).toBe(prefix); expect(prefix.value).toBe("kept text"); expect(f.doc.activeElement).toBe(prefix);
+    view.suspend!(true); button(f.root, "Refresh").click(); await settle(); expect(f.requests).toHaveLength(count + 3);
+  } finally { view.dispose(); }
+});
+
+it("Explorer successful wake refresh hides pivot Retry and focuses its heading", async () => {
+  let fail = true; const f = fixture(() => fail ? new Response(JSON.stringify({ error: { code: "busy" } }), { status: 503 }) : data()); const view = await mount(f.ctx); await settle();
+  try {
+    const pivot = field(f.root, "Pivot"), retry = button(pivot, "Retry"); expect(retry.hidden).toBe(false); retry.focus();
+    view.suspend!(true); view.resume!(); fail = false; view.refresh!(); await settle();
+    expect(retry.hidden).toBe(true); const heading = elements(pivot, "h2")[0]!; expect(f.doc.activeElement).toBe(heading); expect(heading.getAttribute("tabindex")).toBe("-1");
+  } finally { view.dispose(); }
+});
+
+
+it.each(["regroup", "search"])("Explorer resumes pending %s with the latest controls", async mode => {
+  // Break caught: suspension clears a debounce and leaves controls inconsistent with results.
+  vi.useFakeTimers(); const f = fixture(r => r.path === "/api/filter-values" ? { rows: [{ id: "latest", label: r.params.get("prefix")! }], nextCursor: null } : { ...data(), groupBy: r.params.get("groupBy")!.split(",") });
+  const view = await mount(f.ctx); await settle();
+  try {
+    if (mode === "regroup") { const group = field(f.root, "Group by 1"); group.value = "role"; group.dispatchEvent(new Event("change")); }
+    else input(f.root, "old");
+    await vi.advanceTimersByTimeAsync(100); view.suspend!(true);
+    if (mode === "regroup") field(f.root, "Group by 1").value = "actor";
+    else { field(f.root, "Filter prefix").value = "latest"; field(f.root, "Filter field").value = "role"; }
+    const count = f.requests.length; await vi.advanceTimersByTimeAsync(300000); expect(f.requests).toHaveLength(count);
+    view.resume!(); await vi.advanceTimersByTimeAsync(300); await settle();
+    const request = f.requests.at(-1)!;
+    if (mode === "regroup") { expect(request.params.get("groupBy")).toBe("actor"); expect(elements(elements(f.root, "table").at(-1)!, "th")[0]!.textContent).toBe("Actor"); }
+    else { expect(request.params.get("prefix")).toBe("latest"); expect(request.params.get("field")).toBe("role"); expect(button(field(f.root, "Filter values"), "latest")).toBeDefined(); }
+    expect(f.requests).toHaveLength(count + 1);
+  } finally { view.dispose(); }
+});
+
+it("Explorer resolves filter labels after an aborted suspension", async () => {
+  // Break caught: reusing the aborted label controller makes later lookups fail.
+  let hold = true;
+  const f = fixture(() => data(), r => {
+    if (hold) return new Promise(() => {});
+    if (r.signal.aborted) throw new DOMException("Aborted", "AbortError");
+    return { rows: [{ id: "opaque-parent", label: "Resumed parent" }], nextCursor: null };
+  });
+  const view = await mount(f.ctx); await settle();
+  try {
+    expect(f.labelRequests).toHaveLength(1); view.suspend!(true); expect(f.labelRequests[0]!.signal.aborted).toBe(true);
+    hold = false; view.resume!(); view.refresh!(); await settle(); await settle();
+    expect(f.labelRequests).toHaveLength(2); expect(f.labelRequests[1]!.signal.aborted).toBe(false); expect(f.root.textContent).toContain("Resumed parent");
+  } finally { view.dispose(); }
 });

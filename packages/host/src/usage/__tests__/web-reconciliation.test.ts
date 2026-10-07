@@ -6,7 +6,7 @@ import { expect, it } from "vitest";
 import type { ApiEnvelope, UsageMeasure } from "../dashboard-contract.js";
 import type { ReconciliationData, ReconciliationRow } from "../query-reconciliation.js";
 import { createDashboardClient } from "../web/client.js";
-import { PlainDocument, elements, button, settle } from "./fixtures/plain-dom.js";
+import { PlainDocument, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
 const period = { start: 0, end: 172800000 };
 const fit = { status: "calibrated" as const, factor: 0.5, windowStart: 0, windowEnd: 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 500, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
 function measure(): UsageMeasure { return { calls: 1, pricedCalls: 1, unpricedCalls: 0, aggregateCalls: 0,
@@ -19,7 +19,7 @@ function data(): ReconciliationData {
   return { periods: { rows: [row, ...(["no-snapshot", "reset", "clock", "account-change", "missing-anchor", "counter-decrease", "invalid-counter"] as const).map((status, i) => ({ ...row, start: 86400000 + i, end: 172800000, bucketStart: 86400000 + i, bucketEnd: 172800000, coverage: 0, coveredMs: 0, resetAnchors: 0, exclusions: {}, counterStart: null, counterEnd: null, status, counterAic: null, computed: null, gap: null, ratio: null, calibratedAic: null, calibratedGap: null, calibratedRatio: null, calibration: { ...fit, status: "uncalibrated" as const, factor: null } }))], nextCursor: "pair-next" },
     counterGranularityAic: 1, billingLagCaveat: "billing-lag-minutes", caveats: ["The counter is account-wide and includes other clients.", "Hostile caveat <script>evil()</script>"] };
 }
-function rows(root: Parameters<typeof elements>[0], caption: string) { const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption); expect(table, caption).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cell.textContent)); }
+function rows(root: Parameters<typeof elements>[0], caption: string) { const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption); expect(table, caption).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cellText(cell))); }
 it("Reconciliation displays matched endpoints and signed gap", async () => {
   // Breaks: using calendar endpoints as compared coverage, reversing counter-computed, or plotting missing evidence as zero.
   const module = await import("../web/reconciliation.js").catch(() => null); expect(module, "Reconciliation mount is available").not.toBeNull();
@@ -41,7 +41,7 @@ it("Reconciliation displays matched endpoints and signed gap", async () => {
     const calibratedChart = elements(root, "section").find(n => n.children.some(c => c.tagName === "H3" && c.textContent === "Calibrated gap"))!;
     expect(elements(calibratedChart, "circle")).toHaveLength(1);
     expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![2]).toBe("+2 AIC");
-    expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![1]).toBe("1970-01-01T01:00:00.000Z to 1970-01-01T02:00:00.000Z");
+    expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![1]).toBe("1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC");
     expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![4]).toContain("~0.76 ratio");
     expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")).toHaveLength(1);
     expect(rows(gaps, "Published gap · Gap: counter minus published")[0]![2]).toBe("-2 AIC");
@@ -68,7 +68,7 @@ it("Reconciliation distinguishes pair-fit nulls and signed whole-AIC gaps", asyn
     expect(rows(root, "Published comparison").map(r => r[5])).toEqual(["0 AIC", "-2 AIC"]);
     const calibrated = rows(root, "Calibrated comparison"); expect(calibrated[0]![2]).toBe("unavailable"); expect(calibrated[1]!.slice(2, 5)).toEqual(["~8 AIC calibrated", "+2 AIC", "~0.76 ratio"]);
     expect(elements(root, "th").some(n => n.textContent === "Primary AIC (approximate)")).toBe(false);
-    const caption = elements(chart, "p").find(n => n.className === "numeric chart-summary")!;
+    const caption = elements(chart, "p").find(n => n.className.split(" ").includes("chart-summary"))!;
     expect(caption.textContent).toContain("Gap: counter minus calibrated"); expect(caption.textContent).toContain("+2 AIC minimum");
     expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toContain(caption.textContent);
     expect(elements(chart, "svg")[0]!.getAttribute("aria-describedby")).toBe(caption.id);
@@ -115,7 +115,7 @@ it("Reconciliation uses day/month bucket labels and end-snapshot labels, while t
   const client = createDashboardClient(async () => new Response(JSON.stringify({ apiVersion: 1, revision: "fixture:0", period, generatedAt: 0, data: source })));
   const view = await mountReconciliation({ document: doc.asDocument(), root: root as unknown as HTMLElement, client, period, filters: [], signal: new AbortController().signal, navigate() {} }); await settle();
   const chart = () => elements(root, "section").find(n => n.children.some(c => c.tagName === "H3" && c.textContent === "Published gap"))!;
-  const summary = () => elements(chart(), "p").find(p => p.className === "numeric chart-summary")!.textContent;
+  const summary = () => elements(chart(), "p").find(p => p.className.split(" ").includes("chart-summary"))!.textContent;
   try {
     expect(summary()).toContain("1970-01-01 to 1970-01-02 ·");
     expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1970-01-01", "1970-01-02"]);

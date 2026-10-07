@@ -681,11 +681,11 @@ Graceful stop retries any pending lease release once and reports whether release
 - Make `mount.doctor` async to read bounded crash codes; the extension's `handleControl` awaits it.
 - Follower copy says another ingest participant. Source counts are recorded/current, not a lifetime total.
 
-- [ ] `navigation disposes old view and preserves selection`: Routes/back preserve slice and dispose old fetches.
-- [ ] `hidden abandoned tabs stop refreshing`: Hidden/inactive for 5 min stops fetch; reopen uses bounded refresh.
-- [ ] `doctor shows bounded redacted source diagnostics`: At most 20 code/count/label rows, no paths; truncation points to `/usage`; retain calibration line.
-- [ ] `doctor explains failed startup without secret`: Codes only, never corrupt startup bytes.
-- [ ] `real browser all-view acceptance has no overflow`: Verify desktop/narrow parity, keyboard access and no overflow in all calibration states, Rates history and three-way Reconciliation.
+- [x] `navigation disposes old view and preserves selection`: Routes/back preserve slice and dispose old fetches.
+- [x] `hidden abandoned tabs stop refreshing`: Hidden/inactive for 5 min stops fetch; reopen uses bounded refresh.
+- [x] `doctor shows bounded redacted source diagnostics`: At most 20 code/count/label rows, no paths; truncation points to `/usage`; retain calibration line.
+- [x] `doctor explains failed startup without secret`: Codes only, never corrupt startup bytes.
+- [x] `real browser all-view acceptance has no overflow`: Verify desktop/narrow parity, keyboard access and no overflow in all calibration states, Rates history and three-way Reconciliation.
 
 ## Test ownership and integration commands
 
@@ -723,17 +723,18 @@ env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER
 
 Task 13 final acceptance:
 
-- [ ] Document D1-D11 in `docs/guide/usage.md`: cookie/nonce risks, handback cost, watcher deviation and local commands.
-- [ ] Include auto/off, footer markers, account-wide limits, evidence gates/history and published fallback, without account data.
-- [ ] Verify bundled routes, pi-server-pi handback, zero server polling and idle release.
-- [ ] Capture eight routes at 1440x1000 and Overview/Explorer/Session at 390x844; check keyboard/parity/error paging/overflow/local and blocked fonts.
-- [ ] Run `gate run typecheck` and targeted plus affected slash/extension-shim/controller/worker-bundle tests; save counts.
-- [ ] Run full `gate test` once; rerun only exec-timing failures once and disclose both.
-- [ ] Run `gate run build`; only `extension.js` is emitted.
-- [ ] Run `gate test -- packages/host/src/usage/__tests__/dashboard-bundle.test.ts` against the fresh bundle.
-- [ ] Run `visual`, inspect/critique PNGs; 77 is missing acceptance. Report benchmark overages/load.
+- [x] Document D1-D11 in `docs/guide/usage.md`: cookie/nonce risks, handback cost, watcher deviation and local commands.
+- [x] Include auto/off, footer markers, account-wide limits, evidence gates/history and published fallback, without account data.
+- [x] Verify bundled routes, pi-server-pi handback, zero server polling and idle release.
+- [x] Capture eight routes at 1440x1000 and Overview/Explorer/Session at 390x844; check keyboard/parity/error paging/overflow/local and blocked fonts.
+  Superseded: the final integration brief requires all eight routes at 1272x900 and 390x844.
+- [x] Run `gate run typecheck` and targeted plus usage regression tests; save counts.
+- [ ] Run full `gate test` once; rerun only exec-timing failures once and disclose both. Superseded for this integration pass: the final brief prohibits the full suite and requires targeted plus usage tests only.
+- [x] Run `gate run build`; only `extension.js` is emitted.
+- [x] Run `gate test -- packages/host/src/usage/__tests__/dashboard-bundle.test.ts` against the fresh bundle.
+- [x] Run the committed visual tool through the Edge tests, inspect/critique PNGs; 77 is missing acceptance. Final all-view, visual-script and detail gates pass three consecutive runs with no skips or flakes. Opt-in benchmarks were not requested.
 - [ ] Check no survivors or private-data/token/path/dependency leaks; obtain fresh orchestrator read-only review.
-- [ ] Make no git mutations; report skips and billing limitations as concerns.
+- [x] Make no git mutations in the worktree; report skips and billing limitations as concerns. Mutants used independent scratch clones initialized only as explicitly authorized.
 
 ## Parallel-worktree map and shared ownership
 

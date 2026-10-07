@@ -62,6 +62,7 @@ button:disabled, button[aria-disabled="true"] { color: var(--text-secondary); cu
 .action:focus-visible:not([aria-pressed]):not(:disabled):not([aria-disabled="true"]) { background: var(--text); color: var(--bg); opacity: 1; }
 .action[aria-pressed]:focus-visible:not(:disabled):not([aria-disabled="true"]) { text-decoration: underline 2px; text-underline-offset: 3px; }
 .action:disabled, .action[aria-disabled="true"] { background: var(--raised); color: var(--text-secondary); }
+.action[aria-disabled="true"]:focus-visible { text-decoration: underline 2px; text-underline-offset: 3px; }
 .table-region:focus-visible .data-table caption { color: var(--bg); background: var(--text); }
 .usage-shell { display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 100vh; }
 .usage-rail { display: flex; flex-direction: column; align-items: stretch; gap: .45rem; padding: 2rem .9rem; background: var(--surface); }
@@ -144,3 +145,7 @@ p { overflow-wrap: anywhere; }
 .usage-explorer .pivot-chart .missing-value { fill: var(--text-secondary); }
 .usage-explorer .filter-pill { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; background: var(--surface); border-radius: 999px; padding: .35rem .65rem; }
 .usage-explorer .filter-pill .filter-remove { background: var(--raised); }
+
+.token-summary { white-space: nowrap; }
+.wide-table td:has(.token-summary) { max-width: none; }
+.wide-table td[data-label="Calibration evidence"] { min-width: 24rem; max-width: 26rem; }

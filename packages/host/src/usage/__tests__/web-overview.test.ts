@@ -50,16 +50,13 @@ function deferredFixture() {
 function healthPanel(root: Parameters<typeof elements>[0]) { return elements(root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!; }
 
 describe("web Overview", () => {
-  it("Overview timestamps are readable time elements and markers have a plain-word key", async () => {
-    // Break caught: raw ISO copy, timestamp semantics lost, or unexplained footer markers.
+  it("Overview timestamps are readable time elements", async () => {
+    // Break caught: raw ISO copy or timestamp semantics lost.
     const { mountOverview } = await import("../web/overview.js"), f = fixture();
     const view = await mountOverview(f.ctx);
     try {
       await settle();
       expect(f.root.textContent).toContain("Updated 3 Jan 1970, 00:00 UTC");
-      expect(f.root.textContent).toContain("cal means calibrated");
-      expect(f.root.textContent).toContain("? means calibration unavailable");
-      expect(f.root.textContent).toContain("est means published estimate with calibration off");
       expect(elements(f.root, "time").some(node => node.getAttribute("datetime") === "1970-01-03T00:00:00.000Z")).toBe(true);
       expect(f.root.textContent).not.toContain("1970-01-01T00:00:00.000Z");
       expect(elements(f.root, "dl").length).toBeGreaterThan(0);
@@ -274,7 +271,7 @@ describe("web Overview", () => {
     vi.useFakeTimers();
     try {
       const { startDashboard } = await import("../web/app.js"); const f = deferredFixture();
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client }); await settle();
+      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { context: undefined } }); await settle();
       expect(f.doc.listeners.get("keydown")?.size).toBe(2); expect(vi.getTimerCount()).toBe(2);
       if (mode === "navigation") { button(f.root, "Context").click(); await settle(); } else app.dispose();
       expect(f.pending.find(request => request.path === "/api/overview")!.signal.aborted).toBe(true);
@@ -288,7 +285,7 @@ describe("web Overview", () => {
     vi.useFakeTimers();
     try {
       const { startDashboard } = await import("../web/app.js"); const f = fixture(); let ticks = 0;
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { overview: async () => {
+      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { context: undefined, overview: async () => {
         const timer = setInterval(() => { ++ticks; }, 1000); return { dispose() { clearInterval(timer); } };
       } } }); await settle();
       await vi.advanceTimersByTimeAsync(1000); expect(ticks).toBe(1);
@@ -419,7 +416,8 @@ describe("web Overview", () => {
     const refresh = button(f.root, "Refresh"); refresh.focus(); refresh.click(); await settle();
     expect(f.doc.activeElement).toBe(refresh);
     button(f.root, "Context").click(); await settle();
-    expect(f.root.textContent).toContain("This view is not included in this build.");
+    expect(elements(f.root, "h1")[0]!.textContent).toBe("Context");
+    expect(f.requests.some(path => path.startsWith("/api/context?"))).toBe(true);
     button(f.root, "Overview").click(); await settle();
     expect(f.requests.filter(path => path.startsWith("/api/overview")).every(path => new URL(path, "http://127.0.0.1").searchParams.get("filters") === '[{"field":"actor","value":"parent"}]')).toBe(true);
     app.dispose();

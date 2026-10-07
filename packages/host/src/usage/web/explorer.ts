@@ -3,11 +3,13 @@ import type { ExplorerData, ExplorerRow } from "../query-explorer.js";
 import type { ViewContext, MountedView, ViewMount } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
 import { DashboardClientError, errorCopy, canRetry } from "./client.js";
-import { formatAicDisplay, formatTokens, tokenObservation } from "./format.js";
+import { formatAicDisplay, formatTokens, tokenObservation, tokenList, tokenCell, datedText, numericText } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
+import { representation, selectRepresentation } from "./representation.js";
+import { analysisProse } from "./analysis-shared.js";
 
 // Only presentation state is retained across Explorer remounts, scoped to its document.
-const presentation = new WeakMap<Document, { labels: Map<string, string>; unavailable: Set<string>; tables: Set<string>; focus: boolean; notice: string }>();
+const presentation = new WeakMap<Document, { labels: Map<string, string>; unavailable: Set<string>; focus: boolean; notice: string }>();
 // Task 6's final contract adds missing selections. Keep this adapter local until that snapshot lands.
 export type ExplorerFilter = Filter | { field: Dimension; kind: "missing"; value?: never };
 function normalizeFilter(filter: ExplorerFilter | { field: Dimension; value: null; kind?: "raw" | "id" }): ExplorerFilter | undefined {
@@ -56,9 +58,10 @@ function renderPivot(ctx: ViewContext, data: ExplorerData, drill: (row: Explorer
     const aic = formatAicDisplay(measure.aicDisplay, measure.unpricedCalls, data.calibration);
     return [aic.primary, aic.secondary, tokenObservation(measure.tokens), evidence(measure)];
   };
+  const tableValues = (measure: UsageMeasure): (string | HTMLElement)[] => values(measure).map((value, i) => i === 2 ? tokenCell(document, measure.tokens) : datedText(document, value, text => numericText(document, text)));
   root.append(element(document, "p", "AIC is approximate; tokens are recorded. Pivot cells select the complete tuple, not its labels.", "muted"),
-    element(document, "p", formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend, "calibration-evidence"),
-    tableRegion(document, renderTable(document, { caption: "Selected usage", columns, rows: [values(data.totals)] })));
+    analysisProse(ctx, formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend, "calibration-evidence"),
+    tableRegion(document, renderTable(document, { caption: "Selected usage", columns, rows: [tableValues(data.totals)] })));
   if (!data.rows.length) root.append(element(document, "p", "No rows for this period"));
   const panels = element(document, "div", undefined, "small-multiples");
   for (const basis of ["calibrated", "back-applied", "published"] as const) {
@@ -88,15 +91,16 @@ function renderPivot(ctx: ViewContext, data: ExplorerData, drill: (row: Explorer
       svg.append(group);
     });
     // Match the shared chart caption, but keep categorical placement and full tuple evidence.
-    const summary = element(document, "p", undefined, "numeric chart-summary");
+    const summary = element(document, "p", undefined, "chart-summary");
     const extreme = (value: number): string => {
       const lowerBound = priced.some(row => row.measure.aicDisplay.primaryAic === value && row.measure.unpricedCalls > 0);
       const amount = `${formatTokens(value)}${lowerBound ? "+" : ""} AIC`;
       return basis === "published" ? `~${amount} published estimate` : `${amount} ${basis === "back-applied" ? "calibrated, back-applied" : "calibrated"}`;
     };
-    summary.textContent = priced.length
+    const summaryText = priced.length
       ? `${rows[0]!.labels.map((_, i) => rowLabel(rows[0]!, i)).join(" · ")} to ${rows.at(-1)!.labels.map((_, i) => rowLabel(rows.at(-1)!, i)).join(" · ")} · ${extreme(Math.min(...priced.map(row => row.measure.aicDisplay.primaryAic!)))} minimum · ${extreme(Math.max(...priced.map(row => row.measure.aicDisplay.primaryAic!)))} maximum`
       : "No recorded values in this period";
+    summary.append(numericText(document, summaryText));
     svg.setAttribute("aria-label", `${titleText} · ${summary.textContent}`);
     const table = renderTable(document, { caption: titleText, columns: [...data.groupBy.map(field => dimensionLabels[field]), ...columns], rows: rows.map(row => [
       ...row.labels.map((_, i) => {
@@ -107,22 +111,22 @@ function renderPivot(ctx: ViewContext, data: ExplorerData, drill: (row: Explorer
         if (row.labels[i] === null) { cell.setAttribute("class", `${cell.className} missing-value`.trim()); cell.setAttribute("aria-label", "No value (missing)"); }
         if (selectable) cell.setAttribute("aria-label", `Drill into ${data.groupBy[i]}: ${label}`);
         return cell;
-      }), ...values(row.measure),
+      }), ...tableValues(row.measure),
     ]) });
-    const region = tableRegion(document, table), state = presentation.get(document)!;
-    region.hidden = !state.tables.has(basis);
+    const chartId = `chart:explorer:pivot:${basis}`;
+    const region = tableRegion(document, table);
+    region.hidden = representation(document, chartId) !== "table";
     summary.id = `${region.id}-summary`; svg.setAttribute("aria-describedby", summary.id);
     const graphic = element(document, "div"); graphic.id = `${region.id}-chart`; graphic.append(svg, summary); graphic.hidden = !region.hidden;
     const select = (table: boolean) => {
       region.hidden = !table; graphic.hidden = table;
-      if (table) state.tables.add(basis); else state.tables.delete(basis);
       chartButton.setAttribute("aria-pressed", String(!table)); tableButton.setAttribute("aria-pressed", String(table));
     };
-    const chartButton = action(document, "Chart", () => select(false));
-    const tableButton = action(document, "Table", () => select(true));
+    const chartButton = action(document, "Chart", () => { select(false); selectRepresentation(document, chartId, "chart"); });
+    const tableButton = action(document, "Table", () => { select(true); selectRepresentation(document, chartId, "table"); });
     chartButton.setAttribute("aria-controls", graphic.id); tableButton.setAttribute("aria-controls", region.id);
     const group = element(document, "div", undefined, "view-actions"); group.setAttribute("role", "group"); group.setAttribute("aria-label", "Chart representation"); group.append(chartButton, tableButton);
-    select(state.tables.has(basis));
+    select(representation(document, chartId) === "table");
     panel.append(group, graphic, region); panels.append(panel);
   }
   root.append(panels); return root;
@@ -133,7 +137,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
   const malformed = normalized.some(filter => !filter);
   const filters = uniqueFilters(normalized.filter((filter): filter is ExplorerFilter => !!filter));
   let state = presentation.get(document);
-  if (!state) { state = { labels: new Map(), unavailable: new Set(), tables: new Set(), focus: false, notice: "" }; presentation.set(document, state); }
+  if (!state) { state = { labels: new Map(), unavailable: new Set(), focus: false, notice: "" }; presentation.set(document, state); }
   const root = element(document, "section", undefined, "usage-explorer overview-evidence"), heading = element(document, "h1", "Explorer");
   heading.setAttribute("tabindex", "-1"); root.append(heading); ctx.root.append(root);
   if (state.focus) { state.focus = false; if (!document.activeElement || document.activeElement === document.body) heading.focus(); }
@@ -195,7 +199,13 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
     if (searchPrevious.length && !searchLoading && !disposed) { activity(); searchCursor = searchPrevious.pop(); void search(++sequence); }
   });
   const valuesRetry = action(document, "Retry", () => { if (searchLoading || valuesRetry.hidden || disposed) return; activity(); if (searchFailed) restoreSearch(searchFailed); void search(++sequence); }); valuesRetry.hidden = true;
-  const valuesPaging = element(document, "div", undefined, "view-actions"); valuesPaging.append(valuesBack, valuesNext, valuesRetry);
+  const valuesPaging = element(document, "div", undefined, "view-actions"); valuesPaging.setAttribute("aria-label", "Filter values pages"); valuesPaging.append(valuesBack, valuesNext, valuesRetry);
+  function searchVisibility(): void {
+    searchNotice.hidden = !searchNotice.textContent; searchMessage.hidden = !searchMessage.textContent;
+    results.hidden = !results.children.length;
+    valuesPaging.hidden = !searchPrevious.length && !searchNextCursor && valuesRetry.hidden;
+  }
+  searchVisibility();
   controls.append(labelled(document, "Filter field", field), labelled(document, "Filter prefix", prefix), add, clear);
   filterPanel.append(element(document, "h2", "Filters"), active, controls, searchNotice, searchMessage, results, valuesPaging); root.append(filterPanel);
   const grouping = element(document, "div", undefined, "view-actions");
@@ -323,7 +333,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
     pendingSearch = false; ++sequence; searchController?.abort(); if (timer !== undefined) clearTimeout(timer); timer = undefined;
     selected = undefined; add.disabled = true; results.replaceChildren(); searchLoading = false;
     searchCursor = undefined; searchNextCursor = null; searchPrevious.length = 0; searchCommitted = { cursor: undefined, previous: [] }; searchFailed = undefined; valuesRetry.hidden = true;
-    pager(results, valuesBack, valuesNext, false, false, false);
+    pager(results, valuesBack, valuesNext, false, false, false); searchMessage.textContent = ""; searchNotice.textContent = ""; searchVisibility();
   }
   async function search(current: number, resetNotice = "", focusRetry = document.activeElement === valuesRetry): Promise<void> {
     if (disposed || ctx.signal.aborted || current !== sequence) return;
@@ -335,7 +345,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
     const params = sliceParams(searchPeriod, filters);
     params.set("field", field.value); params.set("prefix", [...prefix.value].slice(0, 160).join("")); params.set("limit", "50");
     if (searchCursor) params.set("cursor", searchCursor);
-    searchMessage.textContent = "Loading filter values";
+    searchMessage.textContent = "Loading filter values"; searchVisibility();
     try {
       const response = await ctx.client.get<Page<FilterValue>>("/api/filter-values", params, searchController.signal);
       if (disposed || ctx.signal.aborted || current !== sequence) return;
@@ -351,7 +361,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
           const choose = action(document, row.label ?? "No value", () => {
             if (disposed || current !== sequence) return;
             selected = row; add.disabled = uniqueFilters([...filters, selection]).length > 16;
-            searchMessage.textContent = add.disabled ? "At most 16 filters. Clear filters to add another." : `Selected ${row.label ?? "No value"}`;
+            searchMessage.textContent = add.disabled ? "At most 16 filters. Clear filters to add another." : `Selected ${row.label ?? "No value"}`; searchVisibility();
           });
           if (row.id === null) { choose.className = "action missing-value"; choose.setAttribute("aria-label", "No value (missing)"); }
           results.append(choose);
@@ -371,7 +381,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
       if (focusRetry && (!document.activeElement || document.activeElement === document.body)) (valuesRetry.hidden ? searchMessage : valuesRetry).focus();
       if (error instanceof DashboardClientError && error.code === "unknown-filter-id") await resolveLabels(true);
     } finally {
-      if (current === sequence) { searchLoading = false; pager(results, valuesBack, valuesNext, false, !!searchPrevious.length, !!searchNextCursor); }
+      if (current === sequence) { searchLoading = false; pager(results, valuesBack, valuesNext, false, !!searchPrevious.length, !!searchNextCursor); searchVisibility(); }
     }
   }
   function changed(): void {

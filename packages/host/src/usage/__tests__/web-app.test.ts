@@ -3,11 +3,115 @@ import { PlainDocument, elements, settle, button, cellText } from "./fixtures/pl
 import { startDashboard } from "../web/app.js";
 import { chartWithTable } from "../web/charts.js";
 import { renderTable } from "../web/tables.js";
-import { tokenList, periodTimes, formatUtcTimestamp } from "../web/format.js";
+import { tokenList, periodTimes, formatUtcTimestamp, datedText } from "../web/format.js";
 import * as dom from "../web/dom.js";
 
 const period = { start: Date.UTC(2026, 9, 1), end: Date.UTC(2026, 9, 6, 22, 13) };
 const tokens = { input: 10, cacheRead: 20, cacheWrite: 30, output: 40, prompt: 60, total: 100, reasoning: null, cacheWrite1h: 0 };
+
+function browserWindow(doc: PlainDocument, hash = "") {
+  const win = new EventTarget();
+  const location = { hash };
+  const entries = [hash]; let index = 0;
+  const history = {
+    pushState(_state: unknown, _title: string, url: string) { location.hash = url; entries.splice(++index); entries.push(url); },
+    replaceState(_state: unknown, _title: string, url: string) { location.hash = url; entries[index] = url; },
+    back() { if (index > 0) { location.hash = entries[--index]!; win.dispatchEvent(new Event("popstate")); win.dispatchEvent(new Event("hashchange")); } },
+    forward() { if (index < entries.length - 1) { location.hash = entries[++index]!; win.dispatchEvent(new Event("popstate")); win.dispatchEvent(new Event("hashchange")); } },
+  };
+  Object.assign(win, { location, history }); Object.defineProperty(doc, "defaultView", { value: win });
+  return { win, location, history };
+}
+
+it("navigation disposes old view and preserves selection", async () => {
+  // Breaks: failing to serialize or restore slice/representation, leaked old work, duplicate history events.
+  vi.useFakeTimers(); const doc = new PlainDocument(), browser = browserWindow(doc);
+  const listenerAdd = vi.spyOn(browser.win, "addEventListener"), listenerRemove = vi.spyOn(browser.win, "removeEventListener");
+  const reads: { view: string; period: unknown; filters: unknown; signal: AbortSignal }[] = [];
+  const disposals: string[] = [];
+  const mount = (name: string): import("../web/views.js").ViewMount => async ctx => {
+    reads.push({ view: name, period: ctx.period, filters: ctx.filters, signal: ctx.signal });
+    const timer = setInterval(() => {}, 60000);
+    ctx.root.append(chartWithTable(ctx.document, { title: name, unit: "tokens", points: [{ ...period, label: "Day", value: 100, tokens }] }));
+    return { dispose() { disposals.push(name); clearInterval(timer); } };
+  };
+  const mounts = { overview: mount("overview"), cache: mount("cache") };
+  let app = startDashboard({ document: doc.asDocument(), initialRoute: { view: "overview", period, filters: [{ field: "role", kind: "id", value: "v1_safe" }] }, mounts });
+  try {
+    await settle(); button(doc.body, "Table").click();
+    expect(browser.location.hash).not.toContain("mode=");
+    button(doc.body, "Cache").click(); await settle();
+    expect(disposals).toEqual(["overview"]); expect(reads[0]!.signal.aborted).toBe(true);
+    expect(reads[1]).toMatchObject({ view: "cache", period, filters: [{ field: "role", kind: "id", value: "v1_safe" }] });
+    expect(button(doc.body, "Table").getAttribute("aria-pressed")).toBe("false");
+    browser.history.back(); await settle();
+    expect(reads).toHaveLength(3); expect(reads[2]).toMatchObject({ view: "overview", period, filters: [{ field: "role", kind: "id", value: "v1_safe" }] });
+    expect(disposals).toEqual(["overview", "cache"]); expect(reads[1]!.signal.aborted).toBe(true);
+    browser.history.forward(); await settle(); expect(reads).toHaveLength(4); expect(reads[3]!.view).toBe("cache");
+    app.dispose();
+    app = startDashboard({ document: doc.asDocument(), mounts }); await settle();
+    expect(reads.at(-1)).toMatchObject({ view: "cache", period, filters: [{ field: "role", kind: "id", value: "v1_safe" }] });
+    expect(button(doc.body, "Table").getAttribute("aria-pressed")).toBe("false");
+    const count = reads.length; app.dispose(); browser.history.back(); await settle(); expect(reads).toHaveLength(count);
+  } finally {
+    app.dispose(); expect(vi.getTimerCount()).toBe(0); vi.useRealTimers();
+    expect([...doc.listeners.values()].every(set => set.size === 0)).toBe(true);
+    expect(listenerRemove.mock.calls).toHaveLength(listenerAdd.mock.calls.length);
+  }
+});
+
+it("default Explorer restores representation and every view explains AIC markers", async () => {
+  const { createDashboardBrowserPage } = await import("./fixtures/dashboard-browser-fixture.js");
+  const { allViewPage } = await import("./fixtures/all-view-browser-fixture.js");
+  const { createDashboardClient } = await import("../web/client.js");
+  const fixture = allViewPage(await createDashboardBrowserPage(), "calibrated");
+  const doc = new PlainDocument(), browser = browserWindow(doc, "#view=explorer&mode=table");
+  const client = createDashboardClient(async input => {
+    const url = new URL(String(input), "https://dashboard.invalid"); const route = fixture.routes[url.pathname]!;
+    return new Response(route.body as string);
+  });
+  const app = startDashboard({ document: doc.asDocument(), client });
+  try {
+    for (let i = 0; i < 30; i++) await settle();
+    expect(button(doc.body, "Table").getAttribute("aria-pressed")).toBe("true");
+    button(doc.body, "Chart").click(); expect(button(doc.body, "Chart").getAttribute("aria-pressed")).toBe("true"); expect(browser.location.hash).not.toContain("mode=");
+    for (const label of ["Overview", "Session", "Run", "Context", "Cache", "Reconciliation", "Rates"]) {
+      button(doc.body, label).click(); for (let i = 0; i < 30; i++) await settle();
+      expect(elements(doc.body, "p").filter(n => n.className === "muted aic-key").map(n => n.textContent)).toEqual(["cal means calibrated; ? means calibration unavailable; est means published estimate with calibration off."]);
+    }
+  } finally { app.dispose(); }
+});
+
+it.each(["explorer", "cache", "reconciliation", "rates"] as const)("default %s uses compact token cells and readable calibration dates", async view => {
+  // Breaks: one consumer collapses token categories into prose or shows raw ISO evidence.
+  const { createDashboardBrowserPage } = await import("./fixtures/dashboard-browser-fixture.js");
+  const { allViewPage } = await import("./fixtures/all-view-browser-fixture.js");
+  const { createDashboardClient } = await import("../web/client.js");
+  const fixture = allViewPage(await createDashboardBrowserPage(), "calibrated"), doc = new PlainDocument();
+  const client = createDashboardClient(async input => new Response(fixture.routes[new URL(String(input), "https://dashboard.invalid").pathname]!.body as string));
+  const app = startDashboard({ document: doc.asDocument(), initialRoute: { view }, client });
+  try {
+    for (let i = 0; i < 30; i++) await settle();
+    const table = elements(doc.body, "table")[0]!;
+    if (view === "reconciliation") { expect(elements(table, "dt")).toHaveLength(0); expect(table.textContent).toContain("prompt 500 · output 200 · total 700"); }
+    else { expect(elements(table, "dt").map(n => n.textContent.trim())).toContain("prompt"); expect(elements(table, "dd").map(n => n.textContent.replace(/; $/, ""))).toContain("1,700"); }
+    if (view !== "reconciliation") expect(elements(doc.body, "p").filter(n => n.className === "calibration-evidence").every(n => !n.textContent.includes("T00:00:00.000Z"))).toBe(true);
+  } finally { app.dispose(); }
+});
+
+it("mount failures use shared error and recovery copy", async () => {
+  const { DashboardClientError } = await import("../web/client.js");
+  const doc = new PlainDocument();
+  const app = startDashboard({ document: doc.asDocument(), initialRoute: { view: "cache" }, mounts: { cache: async () => { throw new DashboardClientError("ledger-unavailable"); } } });
+  try { await settle(); expect(doc.body.textContent).toContain("Usage ledger unavailable. Retry after ingestion starts."); expect(button(doc.body, "Retry")).toBeDefined(); }
+  finally { app.dispose(); }
+});
+
+it.each(["#view=unknown", "#%E0%A4%A", "#view=cache&start=bad&end=2", "#view=cache&start=2&end=1", "#view=cache&filters=%7B", "#view=cache&filters=%5Bnull%5D", "#view=cache&mode=invalid", "#view=cache&filters=" + encodeURIComponent(JSON.stringify([{ field: "path", value: "private" }]))])("malformed hash %s falls back safely", async hash => {
+  const doc = new PlainDocument(); browserWindow(doc, hash); const mounted: string[] = [];
+  const app = startDashboard({ document: doc.asDocument(), mounts: { overview: async () => { mounted.push("overview"); return { dispose() {} }; }, cache: async () => { mounted.push("cache"); return { dispose() {} }; } } });
+  try { await settle(); expect(mounted).toEqual(["overview"]); } finally { app.dispose(); }
+});
 
 describe("Task 13 shared presentation", () => {
   it("period header displays readable UTC dates with exact machine timestamps", () => {
@@ -19,6 +123,17 @@ describe("Task 13 shared presentation", () => {
       expect(label.textContent).toBe("1 Oct 2026 to 6 Oct 2026, 22:13 UTC");
       expect(elements(label, "time").map(node => node.getAttribute("datetime"))).toEqual(["2026-10-01T00:00:00.000Z", "2026-10-06T22:13:00.000Z"]);
     } finally { app.dispose(); }
+  });
+  it("invalid timestamp-looking labels remain text without exceptions", () => {
+    const text = "Synthetic-2026-99-99T99:99:99.000Z";
+    const node = datedText(new PlainDocument().asDocument(), text);
+    expect(node.textContent).toBe(text); expect(elements(node, "time")).toHaveLength(0);
+  });
+  it("chart evidence uses shared readable UTC dates", () => {
+    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Daily", unit: "tokens", points: [{ ...period, label: "Day", value: 100, tokens, note: "Window 2026-10-01T00:00:00.000Z to 2026-10-06T22:13:00.000Z UTC" }] });
+    const evidence = elements(chart, "td")[4]!;
+    expect(evidence.textContent).toContain("Window 1 Oct 2026 to 6 Oct 2026, 22:13 UTC");
+    expect(elements(evidence, "time").map(n => n.getAttribute("datetime"))).toEqual(["2026-10-01T00:00:00.000Z", "2026-10-06T22:13:00.000Z"]);
   });
   it("shared tables carry column labels without changing observations", () => {
     // Break caught: unlabeled values when the shared responsive table stacks.

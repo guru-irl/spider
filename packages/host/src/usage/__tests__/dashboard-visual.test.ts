@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pixels } from "./fixtures/png-pixels.js";
@@ -7,6 +7,7 @@ import { expect, test } from "vitest";
 import { PlainDocument } from "./fixtures/plain-dom.js";
 import { renderTable, tableRegion } from "../web/tables.js";
 import { createDashboardBrowserPage } from "./fixtures/dashboard-browser-fixture.js";
+import { acceptanceStates, allViewPage } from "./fixtures/all-view-browser-fixture.js";
 
 const checkout = fileURLToPath(new URL("../../../../../", import.meta.url));
 function visualRun(): { scratch: string; temp: string; clean(): void } {
@@ -14,6 +15,94 @@ function visualRun(): { scratch: string; temp: string; clean(): void } {
   const temp = mkdtempSync(join(scratch, "run-"));
   return { scratch: temp, temp, clean() { rmSync(temp, { recursive: true, force: true }); try { rmdirSync(scratch); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOTEMPTY" && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } } };
 }
+
+test("real browser all-view acceptance has no overflow", async context => {
+  const reason = implementation.screenshotSkipReason(); if (reason) { context.skip(reason); return; }
+  const base = await createDashboardBrowserPage(true), run = visualRun();
+  const out = process.env.SPIDER_USAGE_ACCEPTANCE_OUT || join(checkout, ".spider/scratch/usage-dashboard-screenshots/t13f");
+  const parity = new Map<string, unknown>();
+  const ready = `new Promise(resolve => { const deadline = performance.now() + 5000; const check = () => {
+    if (document.querySelector('h1') && __usageCompleted === __usageFetches && !document.querySelector('main').textContent.includes('Loading')) requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+    else if (performance.now() > deadline) resolve(false); else requestAnimationFrame(check); }; check(); })`;
+  try {
+    for (const state of acceptanceStates) for (const width of [390, 1272]) {
+      const fixture = allViewPage(base, state); let pid = 0;
+      await implementation.captureDashboard({ html: fixture.html, routes: fixture.routes, out: join(out, state, String(width)), scratchDir: run.temp,
+        viewport: { width, height: width === 390 ? 844 : 900 }, verifyTimeoutMs: 120000, verify: async page => {
+          pid = page.pid;
+          for (const view of ["overview", "explorer", "session", "run", "context", "cache", "reconciliation", "rates"]) {
+            const id = view === "session" ? "&id=session-fixture" : view === "run" ? "&id=run-fixture" : "";
+            await page.evaluate(`location.hash = ${JSON.stringify(`#view=${view}&mode=chart${id}`)}`);
+            expect(await page.evaluate(ready), `${state}/${width}/${view} ready`).toBe(true);
+            expect(await page.evaluate("document.querySelector('h1').textContent.toLowerCase().startsWith(" + JSON.stringify(view) + ")")).toBe(true);
+            expect(await page.evaluate("document.querySelector('main').textContent.includes('This view is not included')")).toBe(false);
+            expect(await page.evaluate("Array.from(document.querySelectorAll('button')).some(n => n.textContent === 'Retry' && !n.hidden)")).toBe(false);
+            expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth"), `${state}/${width}/${view} page overflow`).toBe(true);
+            if (width === 1272 && state === "calibrated" && ["explorer", "reconciliation"].includes(view)) {
+              const measurements = await page.evaluate(`(() => {
+              const table = caption => Array.from(document.querySelectorAll('table')).find(t => t.caption.textContent === caption);
+              if (${JSON.stringify(view)} === 'reconciliation') return ['Published comparison','Calibrated comparison'].map(c => [c, Array.from(table(c).querySelectorAll('tbody tr'),r => r.getBoundingClientRect().height)]);
+              const filters=document.querySelector('[aria-label="Filter values"]'), controls=filters.querySelector('input').closest('.view-actions'), pivot=document.querySelector('[aria-label="Pivot"] h2');
+              return {gap:pivot.getBoundingClientRect().top-controls.getBoundingClientRect().bottom};
+            })()`) as { gap: number } | [string, number[]][];
+              if (view === "explorer") expect((measurements as {gap:number}).gap).toBeLessThan(40);
+              else for (const [, heights] of measurements as [string, number[]][]) for (const height of heights) expect(height).toBeLessThan(150);
+              if (process.env.SPIDER_USAGE_LAYOUT_OUT) appendFileSync(process.env.SPIDER_USAGE_LAYOUT_OUT, JSON.stringify({view, measurements}) + "\n");
+            }
+            // Save both the true viewport and the whole view for manual inspection.
+            await page.evaluate("scrollTo(0,0)");
+            await page.screenshot(`${view}-viewport.png`);
+            await page.screenshot(`${view}-full.png`, true);
+            const dataCells = "Array.from(document.querySelectorAll('main > div table tbody .cell-value'), n => n.textContent)";
+            if (view === "rates") {
+              const history = await page.evaluate("Array.from(document.querySelectorAll('table')).find(t=>t.caption.textContent==='Daily calibration evidence')?.querySelectorAll('tbody tr').length ?? 0");
+              expect(history).toBe(state === "off" ? 0 : 2);
+              if (state === "off") expect(await page.evaluate("document.querySelector('main > div').textContent.includes('Factor history disabled')")).toBe(true);
+              else expect(await page.evaluate("Array.from(document.querySelectorAll('table')).find(t=>t.caption.textContent==='Daily calibration evidence').querySelector('tbody tr').textContent.includes(" + JSON.stringify(state === "unavailable" ? "uncalibrated" : "calibrated") + ")")).toBe(true);
+              expect(await page.evaluate(dataCells)).toContain("synthetic-v3");
+            }
+            if (view === "reconciliation") {
+              const comparisons = await page.evaluate(`['Published comparison','Calibrated comparison'].map(c => Array.from(document.querySelectorAll('table')).find(t=>t.caption.textContent===c).querySelector('tbody tr')).map(r=>Array.from(r.querySelectorAll('.cell-value'),c=>c.textContent))`) as string[][];
+              expect(comparisons[0]![3]).toBe("20 AIC counter"); expect(comparisons[0]![4]).toBe("~4 AIC published estimate");
+              expect(comparisons[1]![2]).toBe(state === "off" || state === "unavailable" ? "unavailable" : state === "back-applied" ? "~8 AIC calibrated, back-applied" : "~8 AIC calibrated");
+            }
+            if (!["context", "reconciliation"].includes(view)) {
+              const cells = await page.evaluate(dataCells) as string[];
+              expect(cells).toContain(state === "off" ? "~10 AIC est" : state === "unavailable" ? "~10 AIC ?" : state === "back-applied" ? "20 AIC calibrated, back-applied" : "20 AIC cal");
+            }
+            if (state === "off" || state === "unavailable") expect(await page.evaluate(dataCells)).not.toEqual(expect.arrayContaining([expect.stringMatching(/\d[\d,+]* AIC cal(?:\b|ibrated)/)]));
+            // Full evidence must be identical, including the alternative chart tables.
+            await page.evaluate("Array.from(document.querySelectorAll('[aria-label=\"Chart representation\"] button')).filter(b => b.textContent === 'Table').forEach(b => b.click())");
+            expect(await page.evaluate(`Array.from(document.querySelectorAll('.cell-value,.calibration-evidence,.muted')).filter(n => n.getClientRects().length && /\\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z/.test(n.textContent)).map(n => n.textContent)`), `${state}/${width}/${view} raw ISO evidence`).toEqual([]);
+            if (view !== "context") expect(await page.evaluate("document.querySelector('main table .token-list dt, main table .token-summary') !== null")).toBe(true);
+            const evidence = await page.evaluate("Array.from(document.querySelectorAll('main table'), t => [t.caption.textContent, Array.from(t.querySelectorAll('tbody tr'), r => Array.from(r.cells, c => c.querySelector('.cell-value')?.textContent ?? c.textContent))])");
+            const key = `${state}/${view}`;
+            if (width === 390) parity.set(key, evidence); else expect(evidence, `${key} desktop/narrow parity`).toEqual(parity.get(key));
+            expect(await page.evaluate(`Array.from(document.querySelectorAll('.cell-value, .action, .chart-summary')).filter(n => n.getClientRects().length).map(n => ({ text:n.textContent, fits:n.scrollWidth <= n.clientWidth + 1 })).filter(n => !n.fits)`), `${key}/${width} clipped text`).toEqual([]);
+            // Real Tab, not element.focus(): every enabled control and scroll region in DOM order.
+            const controls = await page.evaluate(`(() => {
+              window.__tabStops = Array.from(document.querySelectorAll('button,input,select,a[href],[tabindex]')).filter(n => n.tabIndex >= 0 && !n.disabled && n.getClientRects().length);
+              window.__tabStops.forEach((n,i) => n.dataset.acceptanceTab = String(i));
+              document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute('tabindex');
+              return __tabStops.length;
+            })()`) as number;
+            expect(controls).toBeGreaterThan(8);
+            for (let i = 0; i < controls; i++) {
+              const before = await page.evaluate(`(() => { const n=__tabStops[${i}], s=getComputedStyle(n); return [s.backgroundColor,s.color,s.textDecorationLine,s.outlineStyle,s.outlineWidth]; })()`);
+              await page.pressKey("Tab");
+              expect(await page.evaluate("document.activeElement.dataset.acceptanceTab"), `${key}/${width} Tab ${i}`).toBe(String(i));
+              const focus = await page.evaluate("(() => { const n=document.activeElement,r=n.getBoundingClientRect(),s=getComputedStyle(n);return {tag:n.tagName,text:n.getAttribute('aria-label')??n.textContent.slice(0,80),top:r.top,bottom:r.bottom,height:r.height,left:r.left,right:r.right,background:s.backgroundColor,decoration:s.textDecorationLine};})()");
+              expect(await page.evaluate(`(() => { const n=document.activeElement, r=n.getBoundingClientRect(), s=getComputedStyle(n); const focused=[s.backgroundColor,s.color,s.textDecorationLine,s.outlineStyle,s.outlineWidth];
+                const region=n.classList.contains('table-region') && getComputedStyle(n.querySelector('caption')).backgroundColor !== 'rgba(0, 0, 0, 0)';
+                const indicator=region?n.querySelector('caption').getBoundingClientRect():r;
+                return n.matches(':focus-visible') && (region || JSON.stringify(focused)!==${JSON.stringify(JSON.stringify(before))}) && indicator.top>=-1 && indicator.bottom<=innerHeight+1 && r.left>=-1 && r.right<=innerWidth+1; })()`), `${key}/${width} visible focus ${i}: ${JSON.stringify(focus)}`).toBe(true);
+            }
+          }
+        } });
+      expect(() => process.kill(pid, 0)).toThrow();
+    }
+  } finally { run.clean(); }
+}, implementation.BROWSER_TEST_TIMEOUT_MS * 8);
 
 // A placeholder, broken CSP/API wiring, missing calibration bucket or blank
 // capture must fail this acceptance gate. Observations come from rendered DOM.
@@ -173,3 +262,45 @@ test("Edge ten-column Rates-tier fixture scrolls at 390px, 1024px and 1272px wit
     }
   } finally { run.clean(); }
 }, implementation.BROWSER_TEST_TIMEOUT_MS * 3);
+
+
+test("Edge Explorer retains independent per-basis chart choices after Refresh and rail navigation", async context => {
+  const reason = implementation.screenshotSkipReason(); if (reason) { context.skip(reason); return; }
+  const fixture = allViewPage(await createDashboardBrowserPage(true), "calibrated"), run = visualRun();
+  const route = fixture.routes["/api/explorer"]!;
+  const data = JSON.parse(route.body as string);
+  data.data.rows.push({ ...data.data.rows[0], key: ["v1_other"], labels: ["Other model"], measure: { ...data.data.totals, aicDisplay: { ...data.data.totals.aicDisplay, basis: "back-applied" } } });
+  route.body = JSON.stringify(data);
+  const ready = `new Promise(resolve => { const until=performance.now()+5000; const check=()=>{ if (__usageCompleted===__usageFetches && document.querySelectorAll('.usage-explorer .chart-panel').length===2) requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))); else if(performance.now()>until) resolve(false); else requestAnimationFrame(check); }; check(); })`;
+  const modes = "Array.from(document.querySelectorAll('.usage-explorer .chart-panel'),p=>p.querySelectorAll('[aria-label=\"Chart representation\"] button')[1].getAttribute('aria-pressed'))";
+  try { await implementation.captureDashboard({ html: fixture.html, routes: fixture.routes, out: join(run.temp, "retention"), scratchDir: run.temp, viewport: { width: 1272, height: 900 }, verify: async page => {
+    await page.evaluate("location.hash='#view=explorer'"); expect(await page.evaluate(ready)).toBe(true);
+    await page.evaluate("document.querySelector('.usage-explorer .chart-panel [aria-label=\"Chart representation\"] button:last-child').click()");
+    expect(await page.evaluate(modes)).toEqual(["true", "false"]);
+    await page.evaluate("Array.from(document.querySelectorAll('.usage-explorer button')).find(b=>b.textContent==='Refresh').click()"); expect(await page.evaluate(ready)).toBe(true); expect(await page.evaluate(modes)).toEqual(["true", "false"]);
+    await page.evaluate("Array.from(document.querySelectorAll('.usage-rail button')).find(b=>b.textContent==='Cache').click()");
+    expect(await page.evaluate(`new Promise(resolve=>{const until=performance.now()+5000;const check=()=>{if(document.querySelector('h1')?.textContent==='Cache' && __usageCompleted===__usageFetches) requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)));else if(performance.now()>until)resolve(false);else requestAnimationFrame(check);};check();})`)).toBe(true);
+    await page.evaluate("Array.from(document.querySelectorAll('.usage-rail button')).find(b=>b.textContent==='Explorer').click()"); expect(await page.evaluate(ready)).toBe(true); expect(await page.evaluate(modes)).toEqual(["true", "false"]);
+    await page.evaluate("document.querySelector('.usage-explorer input').value='Syn'; document.querySelector('.usage-explorer input').dispatchEvent(new Event('input',{bubbles:true})); __usageClock.advance(300)");
+    expect(await page.evaluate(`new Promise(resolve=>{const until=performance.now()+5000;const check=()=>{if(__usageCompleted===__usageFetches && document.querySelector('[aria-label="Filter values"]').textContent.includes('Choose a value'))resolve(true);else if(performance.now()>until)resolve(false);else requestAnimationFrame(check);};check();})`)).toBe(true);
+    expect(await page.evaluate("document.querySelector('[aria-label=\"Filter values pages\"]').hidden")).toBe(true);
+    expect(await page.evaluate("Array.from(document.querySelectorAll('[aria-label=\"Filter values\"] .notice'),p=>p.hidden||p.textContent.length>0).every(Boolean)")).toBe(true);
+  } }); } finally { run.clean(); }
+}, implementation.BROWSER_TEST_TIMEOUT_MS);
+
+test("Edge Detail Recorded calls stay compact at 1272px",async context=>{
+ const reason=implementation.screenshotSkipReason();if(reason){context.skip(reason);return;}
+ const run=visualRun(),fixture=allViewPage(await createDashboardBrowserPage(true),"calibrated");
+ const measurements: {view:string;heights:number[]}[]=[];
+ try {await implementation.captureDashboard({html:fixture.html,routes:fixture.routes,out:join(run.temp,"detail"),scratchDir:run.temp,viewport:{width:1272,height:900},verify:async page=>{
+ for(const view of ["session","run"]) {
+ await page.evaluate(`location.hash=${JSON.stringify("#view=")}+${JSON.stringify(view)}+"&id="+${JSON.stringify(view)}+"-fixture"`);
+ expect(await page.evaluate(`new Promise(resolve=>{const end=performance.now()+5000;const check=()=>{if(document.querySelector('.detail-calls table')&&__usageCompleted===__usageFetches)requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)));else if(performance.now()>end)resolve(false);else requestAnimationFrame(check);};check();})`)).toBe(true);
+ const heights=await page.evaluate("Array.from(document.querySelector('.detail-calls table').querySelectorAll('tbody tr'),r=>r.getBoundingClientRect().height)") as number[];
+ measurements.push({view,heights});
+ }
+ }});
+ if(process.env.SPIDER_USAGE_LAYOUT_OUT)appendFileSync(process.env.SPIDER_USAGE_LAYOUT_OUT,JSON.stringify({detail:measurements})+"\n");
+ for(const {heights} of measurements){expect(heights.length).toBeGreaterThan(0);for(const height of heights)expect(height).toBeLessThan(150);}
+ }finally{run.clean();}
+}, implementation.BROWSER_TEST_TIMEOUT_MS * 2);

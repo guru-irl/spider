@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ApiEnvelope, Period } from "../dashboard-contract.js";
 import { DashboardClientError, type DashboardClient } from "../web/client.js";
-import { mountAnalysis, analysisProse, gapChart } from "../web/analysis-shared.js";
+import { mountAnalysis, analysisProse, analysisTable, gapChart } from "../web/analysis-shared.js";
 import { element } from "../web/dom.js";
 import { createPager } from "../web/pager.js";
 import { PlainDocument, elements, button, settle } from "./fixtures/plain-dom.js";
@@ -28,6 +28,26 @@ async function fixture(lanes = 2, clearFilters?: () => void, initialPeriod: Peri
   const statuses = panels.map(p => elements(p, "p").find(n => n.getAttribute("role") === "status")!);
   return { doc, root, ctx, requests, panels, statuses };
 }
+
+it("analysis pagers use readable Updated timestamps with exact datetime values", () => {
+  const doc = new PlainDocument(), pager = createPager(doc.asDocument(), { title: "Evidence", param: "cursor", onLoad() {} });
+  pager.complete(Date.UTC(2026, 0, 3), true);
+  expect(pager.region.textContent).toContain("Updated 3 Jan 2026, 00:00 UTC");
+  expect(elements(pager.region, "time").map(n => n.getAttribute("datetime"))).toEqual(["2026-01-03T00:00:00.000Z"]);
+  expect(elements(pager.region, "p").filter(n => n.className.includes("numeric"))).toHaveLength(0);
+});
+
+it("analysis prose and tables render readable semantic UTC evidence", async () => {
+  // Breaks: raw ISO text or monospaced timestamp fragments, unlike Overview/Detail.
+  const f = await fixture(1), text = "2026-01-01T00:00:00.000Z to 2026-01-03T00:00:00.000Z UTC · x0.5 · trailing 7-day ratio";
+  const prose = analysisProse(f.ctx, text), table = analysisTable(f.ctx, "Evidence", ["Window"], [[text]]);
+  for (const node of [prose, table]) {
+    expect(node.textContent).toContain("1 Jan 2026 to 3 Jan 2026, 00:00 UTC");
+    expect(node.textContent).not.toContain("2026-01-01T");
+    expect(elements(node, "time").map(n => n.getAttribute("datetime"))).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-03T00:00:00.000Z"]);
+    expect(elements(node, "span").filter(n => n.className === "numeric").some(n => n.textContent.includes("2026-"))).toBe(false);
+  }
+});
 
 it.each(["invalid-query", "ledger-changed"] as const)("page-1 %s errors never self-retry", async code => {
   // Breaks: recovering without a cursor loops on page-1 400/409. Keep the second request pending if broken.
@@ -233,7 +253,7 @@ it("manual lane failure preserves the other lane's Updated stamp; Refresh remove
   // Breaks: E19 replaces Daily's stamp after Sessions fails; D8 preserves Sessions Retry after Refresh.
   const f = await fixture(); f.requests[0]!.resolve(); await settle();
   const stamp = f.panels[0]!.children[3]!.textContent;
-  expect(stamp).toBe("Updated 1970-01-01T00:00:01.000Z");
+  expect(stamp).toBe("Updated 1 Jan 1970, 00:00:01 UTC");
   button(f.panels[1]!, "Next page").click(); f.requests[1]!.reject(new DashboardClientError("busy")); await settle();
   expect(f.panels[0]!.children[3]!.textContent).toBe(stamp);
   expect(f.statuses[1]!.textContent).toBe("Usage is temporarily unavailable. Retry.");

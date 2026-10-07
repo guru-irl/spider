@@ -1,7 +1,7 @@
 import type { Period, OverviewData, OverviewBreakdown, UsageMeasure, CalibrationResult, TokenTotals, AicDisplay, DashboardStatus, Page, SourceErrorRow } from "../dashboard-contract.js";
 import type { ViewContext, MountedView } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
-import { formatAicDisplay, formatCount, formatEstimatedAic, formatTokens, readableKey, tokenList, numericText, datedText, utcTime, periodTimes } from "./format.js";
+import { formatAicDisplay, formatCount, formatEstimatedAic, formatTokens, readableKey, tokenList, numericText, evidenceText, utcTime, periodTimes } from "./format.js";
 import { chartWithTable, type ChartPoint } from "./charts.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { canRetry, errorCopy, DashboardClientError } from "./client.js";
@@ -14,7 +14,7 @@ function evidence(measure: UsageMeasure): string {
 }
 function displayRow(document: Document, label: string, measure: { aicDisplay: AicDisplay; tokens: TokenTotals }, calibration: CalibrationResult, unpriced: number, note: string | HTMLElement): (string | HTMLElement)[] {
   const aic = formatAicDisplay(measure.aicDisplay, unpriced, calibration);
-  return [label, numericText(document, aic.primary), numericText(document, aic.secondary), tokenList(document, measure.tokens), typeof note === "string" ? datedText(document, note) : note];
+  return [label, numericText(document, aic.primary), numericText(document, aic.secondary), tokenList(document, measure.tokens), typeof note === "string" ? evidenceText(document, note) : note];
 }
 const columns = ["Observation", "Primary AIC (approximate)", "Published estimate", "Tokens (subsets not additive)", "Evidence"];
 function breakdownLabel(row: OverviewBreakdown): string { return row.isOther ? "Other (remaining roles)" : row.label ?? "Unknown"; }
@@ -23,7 +23,7 @@ function breakdown(ctx: ViewContext, title: string, rows: readonly OverviewBreak
 }
 function charts(ctx: ViewContext, data: OverviewData): HTMLElement {
   const root = element(ctx.document, "div", undefined, "small-multiples");
-  const draw = (title: string, rows: readonly { start: number; end: number; label: string; measure: UsageMeasure }[]) => {
+  const draw = (section: string, title: string, rows: readonly { start: number; end: number; label: string; measure: UsageMeasure }[]) => {
     // A series can change basis across days. Separate series keep each axis honest,
     // without scaling, summing or replacing unavailable observations with zero.
     for (const basis of ["calibrated", "back-applied", "published"] as const) {
@@ -32,28 +32,28 @@ function charts(ctx: ViewContext, data: OverviewData): HTMLElement {
       const points: ChartPoint[] = selected.map(row => ({ start: row.start, end: row.end, label: row.label,
         value: row.measure.aicDisplay.primaryAic, tokens: row.measure.tokens, lowerBound: row.measure.unpricedCalls > 0,
         note: `${formatAicDisplay(row.measure.aicDisplay, row.measure.unpricedCalls, data.calibration).primary} · published estimate ${formatEstimatedAic(row.measure.aicDisplay.publishedAic, row.measure.unpricedCalls).replace(/ published estimate$/, "")} · ${basis === "back-applied" ? "calibrated, back-applied" : basis} · ${evidence(row.measure)}` }));
-      root.append(chartWithTable(ctx.document, { title: `${title} · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`, points,
+      root.append(chartWithTable(ctx.document, { view: "overview", section: `${section}:${basis}`, title: `${title} · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`, points,
         unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic" }));
     }
   };
-  draw("Daily total", data.daily.rows);
+  draw("daily-total", "Daily total", data.daily.rows);
   for (const dimension of ["actors", "roles"] as const) {
     for (const row of data[dimension]) {
       const days = data.daily.rows.flatMap(day => {
         const match = day[dimension].find(item => item.label === row.label && item.isOther === row.isOther);
         return match ? [{ start: day.start, end: day.end, label: day.label, measure: match.measure }] : [];
       });
-      draw(`Daily ${dimension === "actors" ? "actor" : "role"} · ${breakdownLabel(row)}`, days);
+      draw(`${dimension}:${JSON.stringify([row.label, row.isOther])}`, `Daily ${dimension === "actors" ? "actor" : "role"} · ${breakdownLabel(row)}`, days);
     }
   }
   return root;
 }
 function renderOverview(ctx: ViewContext, data: OverviewData): HTMLElement {
   const root = element(ctx.document, "div", undefined, "overview-evidence");
-  root.append(element(ctx.document, "p", "AIC is approximate; tokens are recorded. cal means calibrated. ? means calibration unavailable. est means published estimate with calibration off.", "muted"));
+  root.append(element(ctx.document, "p", "AIC is approximate; tokens are recorded.", "muted"));
   const legend = formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend;
   const calibrationEvidence = element(ctx.document, "p", undefined, "calibration-evidence");
-  calibrationEvidence.append(datedText(ctx.document, legend)); root.append(calibrationEvidence);
+  calibrationEvidence.append(evidenceText(ctx.document, legend)); root.append(calibrationEvidence);
   root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Selected usage", columns,
     rows: [displayRow(ctx.document, "Selected period", data.totals, data.calibration, data.totals.unpricedCalls, evidence(data.totals))] })));
   root.append(element(ctx.document, "p", "The counter is account-wide and includes other clients. Billing lags and integer quantization limit comparison. Calibration does not prove exact billing or completeness.", "muted"));

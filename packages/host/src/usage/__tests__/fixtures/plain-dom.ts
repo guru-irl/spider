@@ -60,7 +60,7 @@ export class PlainDocument {
   readonly listeners: Map<string, Set<Listener>> = new Map<string, Set<Listener>>();
   readonly listenerOptions: Map<string, unknown> = new Map<string, unknown>();
   createElement(tag: string): PlainElement {
-    if (!/^(a|button|caption|code|dd|div|dl|dt|h1|h2|h3|header|label|link|main|nav|p|section|small|span|table|tbody|td|th|thead|time|tr)$/i.test(tag)) throw new Error(`plain-dom: unsupported element ${tag}`);
+    if (!/^(a|button|caption|code|dd|div|dl|dt|h1|h2|h3|header|input|label|link|main|nav|option|p|section|select|small|span|table|tbody|td|th|thead|time|tr)$/i.test(tag)) throw new Error(`plain-dom: unsupported element ${tag}`);
     return new PlainElement(this, tag.toUpperCase());
   }
   createElementNS(ns: string, tag: string): PlainElement {

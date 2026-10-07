@@ -39,7 +39,7 @@ describe("Detail registration", () => {
     const source = readFileSync(url, "utf8"); expect(source).not.toMatch(/\b(?:import|require|export)\b[^;]*["'](?:node:|crypto|fs|os|path)[^"']*["']/);
     expect(source).not.toMatch(/\b(?:import|require)\b/);
     const { supportedDetailId } = await import("../dashboard-keys.js"); expect(supportedDetailId("safe-key:1")).toBe(true); expect(supportedDetailId("../bad")).toBe(false);
-    const context = readFileSync(new URL("../web/context.ts", import.meta.url), "utf8"); expect(context).toContain('from "../dashboard-keys.js"'); expect(context).not.toContain("{1,128}");
+    const context = readFileSync(new URL("../web/context.ts", import.meta.url), "utf8"); expect(context).toContain('from "./detail-id.js"'); expect(context).not.toContain("{1,128}");
   });
   it("text-faced prose and token column sizing are local to Detail", () => {
     const url = new URL("../web/detail.css", import.meta.url); expect(existsSync(url)).toBe(true);

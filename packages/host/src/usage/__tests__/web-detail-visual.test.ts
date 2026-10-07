@@ -86,14 +86,14 @@ test.skipIf(Boolean(screenshotSkipReason())).each(["session", "run"] as const)("
       expect(await page.evaluate("Array.from(document.querySelectorAll('.numeric')).every(n=>getComputedStyle(n).fontFamily.includes('Usage Code'))")).toBe(true);
       expect(await page.evaluate("document.querySelector('.detail-calls time').dateTime")).toBe("2026-01-01T00:00:01.000Z");
       expect(await page.evaluate("document.querySelector('.detail-calls time').textContent")).toBe("1 Jan 2026, 00:00:01 UTC");
-      expect(await page.evaluate("document.querySelector('.detail-calls .token-list').querySelectorAll('dt').length")).toBe(6);
+      expect(await page.evaluate("document.querySelector('.detail-calls .token-summary').textContent")).toBe("prompt 1,300 · output 400 · total 1,700");
       const heights = await page.evaluate("Array.from(document.querySelectorAll('.chart-panel svg[role=\"img\"]'),n=>n.getBoundingClientRect().height)") as number[];
       expect(heights.length).toBeGreaterThan(0); expect(heights.every(h=>h===96)).toBe(true);
       const diameters = await page.evaluate(markerDiameters) as number[][]; expect(diameters.length).toBeGreaterThan(0);
       expect(diameters.every(([w,h])=>Math.abs(w!-7)<0.05&&Math.abs(h!-7)<0.05)).toBe(true);
       expect(await page.evaluate(`Array.from(document.querySelectorAll('.table-region')).filter(r=>!r.closest('[hidden]')).every(r=>r.classList.contains('wide-table-region')||r.scrollWidth<=r.clientWidth+1)`)).toBe(true);
       expect(await page.evaluate(`Array.from(document.querySelectorAll('.wide-table td .cell-value')).every(n=>n.clientWidth>=72&&n.scrollWidth<=n.clientWidth+1)`)).toBe(true);
-      expect(await page.evaluate(`(()=>{const cell=document.querySelector('.detail-calls td:nth-child(5)');return cell.getBoundingClientRect().width<=14*parseFloat(getComputedStyle(document.documentElement).fontSize)+1;})()`)).toBe(true);
+      expect(await page.evaluate(`(()=>{const summary=document.querySelector('.detail-calls .token-summary');return summary.getBoundingClientRect().height<=1.6*parseFloat(getComputedStyle(summary).fontSize);})()`)).toBe(true);
       expect(await page.evaluate(`(()=>{const r=document.querySelector('.wide-table-region'),cue=r.querySelector('.scroll-cue');return r.tabIndex===0&&r.getAttribute('aria-describedby')===cue.id&&cue.textContent.length>0&&getComputedStyle(cue).position==='sticky';})()`)).toBe(true);
       if(width===390)expect(await page.evaluate("Array.from(document.querySelectorAll('.data-table:not(.wide-table)')).filter(n=>!n.closest('[hidden]')).every(n=>getComputedStyle(n).display==='block')")).toBe(true);
       // Navigate both owned pagers before suspension. The fixture accepts any
@@ -154,9 +154,9 @@ test.skipIf(Boolean(screenshotSkipReason()))("Edge compact Attribution is conten
   try {
     await captureDashboard({html:fixture.html,routes:fixture.routes,scratchDir:owned,out:owned,viewport:{width:1272,height:900},verify:async page=>{
       pid=page.pid;expect(await page.evaluate(ready)).toBe(true);
-      const result=await page.evaluate(`(()=>{const row=document.querySelector('.detail-calls tbody tr'),cell=row.cells[6],p=cell.querySelector('p'),content=cell.querySelector('.detail-prose');return {height:row.getBoundingClientRect().height,content:content.getBoundingClientRect().height,margin:parseFloat(getComputedStyle(p).marginTop),offset:p.getBoundingClientRect().top-row.cells[0].querySelector('.cell-value').getBoundingClientRect().top};})()` ) as {height:number;content:number;margin:number;offset:number};
+      const result=await page.evaluate(`(()=>{const row=document.querySelector('.detail-calls tbody tr'),cell=row.cells[6],p=cell.querySelector('.attribution-summary > span'),content=cell.querySelector('.detail-prose');return {height:row.getBoundingClientRect().height,content:content.getBoundingClientRect().height,margin:parseFloat(getComputedStyle(p).marginTop),offset:p.getBoundingClientRect().top-row.cells[0].querySelector('.cell-value').getBoundingClientRect().top};})()` ) as {height:number;content:number;margin:number;offset:number};
       console.log("Recorded calls dimensions",JSON.stringify(result));
-      expect(result.margin).toBe(0);expect(result.offset).toBeLessThan(1);expect(result.height-result.content).toBeLessThan(40);expect(result.height).toBeLessThan(360);
+      expect(result.margin).toBe(0);expect(result.offset).toBeLessThan(1);expect(result.height-result.content).toBeLessThan(40);expect(result.height).toBeLessThan(150);
     }});expect(()=>process.kill(pid,0)).toThrow();
   }finally{rmSync(owned,{recursive:true,force:true});}
 },BROWSER_TEST_TIMEOUT_MS);

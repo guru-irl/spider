@@ -1,6 +1,7 @@
+import { representation, selectRepresentation } from "./representation.js";
 import type { TokenTotals } from "../dashboard-contract.js";
 import { action, element } from "./dom.js";
-import { formatCount, formatTokens, tokenObservation, tokenList, periodTimes, numericText } from "./format.js";
+import { formatCount, formatTokens, tokenObservation, tokenList, periodTimes, numericText, evidenceText } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
 export type ChartUnit = "estimated-aic" | "calibrated-aic" | "back-applied-aic" | "gap-aic" | "tokens" | "percent" | "ratio";
 export type ChartPoint = { start: number; end: number; label: string; value: number | null; tokens: TokenTotals | null; lowerBound?: boolean; note?: string };
@@ -17,11 +18,12 @@ function observation(value: number | null, unit: ChartUnit, lowerBound = false):
   if (unit === "back-applied-aic") return `${formatTokens(value)}${lowerBound ? "+" : ""} AIC calibrated, back-applied`;
   return unit === "calibrated-aic" ? `${formatTokens(value)}${lowerBound ? "+" : ""} AIC calibrated` : `~${formatTokens(value)}${lowerBound ? "+" : ""} AIC published estimate`;
 }
-export function chartWithTable(document: Document, options: { title: string; points: readonly ChartPoint[]; unit: ChartUnit; gapBasis?: "published" | "calibrated" | "back-applied"; subsets?: "listed" | "recorded" }): HTMLElement {
+export function chartWithTable(document: Document, options: { id?: string; view?: string; section?: string; title: string; points: readonly ChartPoint[]; unit: ChartUnit; gapBasis?: "published" | "calibrated" | "back-applied"; subsets?: "listed" | "recorded" }): HTMLElement {
+  const chartId = options.id ?? `chart:${options.view ?? "standalone"}:${options.section ?? options.title}`;
   const section = element(document, "section", undefined, "chart-panel");
   section.append(element(document, "h3", options.title));
   const rows = options.points.map(point => [point.label, periodTimes(document, point.start, point.end),
-    numericText(document, observation(point.value, options.unit, point.lowerBound)), tokenList(document, point.tokens, options.subsets), point.note ?? ""]);
+    numericText(document, observation(point.value, options.unit, point.lowerBound)), tokenList(document, point.tokens, options.subsets), evidenceText(document, point.note ?? "")]);
   const tooltipRows = options.points.map((point, i) => [point.label, (rows[i]![1] as HTMLElement).textContent,
     observation(point.value, options.unit, point.lowerBound), tokenObservation(point.tokens, options.subsets), point.note ?? ""]);
   const compact = options.points.length < 3;
@@ -54,9 +56,10 @@ export function chartWithTable(document: Document, options: { title: string; poi
   const label = element(document, "p", undefined, "chart-summary");
   const extreme = (value: number) => observation(value, options.unit, valid.some(point => point.value === value && point.lowerBound));
   const range = options.points.length === 1 ? options.points[0]!.label : `${options.points[0]?.label} to ${options.points.at(-1)?.label}`;
-  label.textContent = valid.length ? `${range} · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum` : "No recorded values in this period";
+  let summaryText = valid.length ? `${range} · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum` : "No recorded values in this period";
   const gapLabel = `Gap: counter minus ${options.gapBasis ?? "published"}`;
-  if (options.unit === "gap-aic") label.textContent = `${gapLabel} · ${label.textContent}`;
+  if (options.unit === "gap-aic") summaryText = `${gapLabel} · ${summaryText}`;
+  label.append(numericText(document, summaryText));
   svg.setAttribute("aria-label", `${options.title} · ${label.textContent}`);
   const region = tableRegion(document, renderTable(document, { caption: options.unit === "gap-aic" ? `${options.title} · ${gapLabel}` : options.title, columns: ["Observation", "UTC period", options.unit === "gap-aic" ? gapLabel : "Value", "Tokens (subsets not additive)", "Evidence"], rows }));
   region.hidden = true;
@@ -67,10 +70,10 @@ export function chartWithTable(document: Document, options: { title: string; poi
     chartButton.setAttribute("aria-pressed", String(!table));
     tableButton.setAttribute("aria-pressed", String(table));
   };
-  const chartButton = action(document, "Chart", () => select(false));
-  const tableButton = action(document, "Table", () => select(true));
+  const chartButton = action(document, "Chart", () => { select(false); selectRepresentation(document, chartId, "chart"); });
+  const tableButton = action(document, "Table", () => { select(true); selectRepresentation(document, chartId, "table"); });
   chartButton.setAttribute("aria-controls", graphic.id); tableButton.setAttribute("aria-controls", region.id);
   const group = element(document, "div", undefined, "view-actions"); group.setAttribute("role", "group"); group.setAttribute("aria-label", "Chart representation"); group.append(chartButton, tableButton);
-  select(false);
+  select(representation(document, chartId) === "table");
   section.append(group, graphic, region); return section;
 }

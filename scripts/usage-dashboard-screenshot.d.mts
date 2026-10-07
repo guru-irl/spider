@@ -1,9 +1,14 @@
 export const DEFAULT_VERIFY_TIMEOUT_MS: number;
+export const DEFAULT_CLI_TIMEOUT_MS: number;
 export const BROWSER_TEST_TIMEOUT_MS: number;
 export type CapturePage = {
   readonly pid: number;
   readonly blockedRequests: number;
   evaluate(expression: string): Promise<unknown>;
+  /** Real keyboard input, not DOM focus simulation. */
+  pressKey(key: "Tab"): Promise<void>;
+  /** A basename under out, never a caller-selected path. */
+  screenshot(name: string, fullPage?: boolean): Promise<string>;
 };
 export type DashboardRoute = {
   /** UTF-8 text, intact binary bytes, or already base64-encoded bytes. */

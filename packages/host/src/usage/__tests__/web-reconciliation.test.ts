@@ -31,7 +31,7 @@ it("Reconciliation displays matched endpoints and signed gap", async () => {
     expect(requests[0]!.pathname).toBe("/api/reconciliation"); expect(requests[0]!.searchParams.has("filters")).toBe(false); expect(requests[0]!.searchParams.get("bucket")).toBe("day");
     expect(root.textContent).toContain("Selected filters do not apply");
     const published = rows(root, "Published comparison")[0]!;
-    expect(published).toEqual(["1970-01-01T00:00:00.000Z to 1970-01-02T00:00:00.000Z", "1970-01-01T01:00:00.000Z to 1970-01-01T02:00:00.000Z", "Partial coverage", "10 AIC counter", "~12 AIC published estimate", "-2 AIC", "~1.20 ratio", "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable"]);
+    expect(published).toEqual(["1 Jan 1970 to 2 Jan 1970, 00:00 UTC", "1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC", "Partial coverage", "10 AIC counter", "~12 AIC published estimate", "-2 AIC", "~1.20 ratio", "prompt 60 · output 40 · total 100"]);
     expect(rows(root, "Calibrated comparison")[0]!.slice(2, 5)).toEqual(["~8 AIC calibrated", "+2 AIC", "~0.76 ratio"]);
     const coverage = rows(root, "Snapshot coverage")[0]!; expect(coverage).toContain("~4.17%"); expect(coverage).toContain("1 h covered"); expect(coverage).toContain("1 observed reset anchor"); expect(coverage.join(" ")).toContain("Account change: 1");
     for (const word of ["No snapshot pair", "Unobserved reset", "Clock ordering anomaly", "Account change", "Missing anchor", "Counter decreased", "Invalid counter"]) expect(root.textContent).toContain(word);
@@ -123,7 +123,7 @@ it("Reconciliation uses day/month bucket labels and end-snapshot labels, while t
     expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1970-01", "1970-01"]);
     button(root, "Snapshot pairs").click(); await settle();
     expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1970-01-01T02:00:00.000Z", "1970-01-02T02:00:00.000Z"]);
-    expect(rows(root, "Published comparison")[0]![1]).toBe("1970-01-01T01:00:00.000Z to 1970-01-01T02:00:00.000Z");
+    expect(rows(root, "Published comparison")[0]![1]).toBe("1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC");
     source.periods.rows = [source.periods.rows[0]!]; button(root, "Refresh").click(); await settle();
     expect(rows(chart(), "Published gap · Gap: counter minus published")[0]![0]).toBe("1970-01-01T02:00:00.000Z");
   } finally { view.dispose(); }

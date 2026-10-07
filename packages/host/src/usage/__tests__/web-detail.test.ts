@@ -121,7 +121,7 @@ describe("web Detail", () => {
     const last = new URL(f.requests.at(-1)!, "http://127.0.0.1"); expect(last.pathname).toBe("/api/detail"); expect(last.searchParams.has("cursor")).toBe(false);
     expect(f.requests).toHaveLength(3); view.dispose();
   });
-  it("Detail shows only recorded latency and subsets and keeps hostile labels inert", async () => {
+  it("Detail shows recorded latency, compact tokens and inert hostile attribution", async () => {
     // Break caught: hiding recorded zero latency/subsets, inventing absent measures, or interpreting attribution labels as markup.
     const { mountDetail } = await import("../web/detail.js");
     const hostile = '<img src=x onerror="alert(1)"><script>bad()</script>';
@@ -134,7 +134,7 @@ describe("web Detail", () => {
     data.links = { rows: [{ kind: "run", id: "hostile-child", relationship: "child", label: hostile, ongoing: false }], nextCursor: null };
     const f = fixture(() => data); const view = await mountDetail(f.ctx); await settle();
     const calls = panel(f.root, "Calls"), rows = tableRows(calls, "Recorded calls");
-    expect(rows[0]![4]!.split("; ")).toContain("cache write 1h 0"); expect(rows[0]![4]).toContain("reasoning 5");
+    expect(rows[0]![4]).toBe("prompt 60 · output 40 · total 100");
     expect(rows[1]![4]).not.toMatch(/cache write 1h|reasoning/); expect(rows[0]!.at(-1)).toBe("0 ms"); expect(rows[1]!.at(-1)).toBe("Not recorded");
     for (const text of [hostile, "fixture-request", "build", "fixture-purpose", "fixture-provider", "fixture-api", "high", "~/fixture-repo"]) expect(rows[0]![6]).toContain(text);
     expect(rows[0]![5]).toContain("Aggregate report; per-call transcript detail unavailable");
@@ -646,11 +646,11 @@ describe("Task 13 Detail alignment", () => {
     expect(elements(status, "time")[0]?.textContent).toBe("3 Jan 1970, 00:00 UTC");
     expect(elements(f.root, "time").some(n => n.getAttribute("datetime") === "1970-01-08T00:00:00.000Z")).toBe(true);
     for (const table of [calls, selected]) {
-      expect(elements(table, "dl").filter(n => n.className === "token-list")).toHaveLength(1);
+      expect(elements(table, "dl").filter(n => n.className === "token-list")).toHaveLength(table === calls ? 0 : 1);
+      if (table === calls) expect(table.textContent).toContain("prompt 60 · output 40 · total 100");
       const numeric = elements(table, "span").filter(n => n.className === "numeric"); expect(numeric.some(n => n.textContent === "560")).toBe(true);
       expect(numeric.every(n => /^[~+\-]?\d[\d,.]*\+?$/.test(n.textContent))).toBe(true);
     }
-    expect(f.root.textContent).toContain("cal means calibrated"); expect(f.root.textContent).toContain("? means calibration unavailable"); expect(f.root.textContent).toContain("est means published estimate with calibration off.");
     expect(elements(f.root, "svg").filter(n => n.getAttribute("role") === "img").every(n => n.getAttribute("height") === "96")).toBe(true); view.dispose();
   });
   it("wake keeps both pages, retained chart/table DOM and focus while refreshing observations", async () => {
@@ -720,7 +720,7 @@ describe("Detail alignment fix round", () => {
       for (const caption of ["Selected usage", "Recorded calls"]) {
         const table = elements(f.root, "table").find(t => elements(t, "caption")[0]?.textContent === caption)!;
         const cells = elements(table, "tbody")[0]!.children[0]!.children;
-        expect(elements(cells[caption === "Selected usage" ? 2 : 3]!, "span").filter(n => n.className === "numeric").map(n => n.textContent)).toEqual(["~1,000"]);
+        expect(elements(cells[caption === "Selected usage" ? 2 : 3]!, "span").filter(n => n.className === "numeric").map(n => n.textContent)).toEqual(["1,000"]);
         if (caption === "Recorded calls") {
           expect(elements(cells[7]!, "span").filter(n => n.className === "numeric").map(n => n.textContent)).toEqual(["0"]);
           expect(cells[7]!.textContent).toContain("0 ms");

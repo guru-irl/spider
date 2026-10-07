@@ -1,7 +1,7 @@
 import type { ReconciliationData, ReconciliationRow } from "../query-reconciliation.js";
 import type { ViewContext, MountedView } from "./views.js";
 import { element } from "./dom.js";
-import { formatAicDisplay, formatEstimatedAic, tokenObservation } from "./format.js";
+import { formatAicDisplay, formatEstimatedAic, tokenCell } from "./format.js";
 import { analysisEvidence, analysisNumber, analysisParams, analysisPercent, analysisTable, mountAnalysis, counted, analysisProse, signedGap, gapChart } from "./analysis-shared.js";
 
 const statuses: Record<ReconciliationRow["status"], string> = {
@@ -23,12 +23,12 @@ function renderReconciliation(ctx: ViewContext, data: ReconciliationData, bucket
   root.append(analysisTable(ctx, "Published comparison", ["UTC bucket", "Matched endpoints UTC", "Status", "Account counter", "Published estimate", "Signed published gap", "Published ratio", "Tokens (subsets not additive)"], rows.map(row => [
     span(row.bucketStart, row.bucketEnd), span(row.counterStart, row.counterEnd), statuses[row.status],
     row.counterAic === null ? "unavailable" : `${analysisNumber(row.counterAic)} AIC counter`,
-    row.computed === null ? "AIC unavailable" : formatEstimatedAic(row.computed.aicDisplay.publishedAic, row.computed.unpricedCalls), gap(row.gap), ratio(row.ratio, row.ratioReason), tokenObservation(row.computed?.tokens ?? null),
+    row.computed === null ? "AIC unavailable" : formatEstimatedAic(row.computed.aicDisplay.publishedAic, row.computed.unpricedCalls), gap(row.gap), ratio(row.ratio, row.ratioReason), tokenCell(document, row.computed?.tokens ?? null),
   ])));
   root.append(analysisTable(ctx, "Calibrated comparison", ["UTC bucket", "Matched endpoints UTC", "Calibrated AIC (pair fits)", "Signed calibrated gap", "Calibrated ratio", "Calibration evidence", "Tokens (subsets not additive)"], rows.map(row => {
     const display = row.computed ? formatAicDisplay(row.computed.aicDisplay, row.computed.unpricedCalls, row.calibration) : null;
     return [span(row.bucketStart, row.bucketEnd), span(row.counterStart, row.counterEnd), calibrated(row.calibratedAic, row.computed?.unpricedCalls ?? 0, row.computed?.aicDisplay.basis), gap(row.calibratedGap), ratio(row.calibratedRatio, row.ratioReason),
-      `Period-end calibration: ${row.calibration.status}. ${display?.legend ?? "No computed comparison."} Bucket calibrated amounts sum each pair's fit, not a single bucket factor.`, tokenObservation(row.computed?.tokens ?? null)];
+      `Period-end calibration: ${row.calibration.status}. ${display?.legend ?? "No computed comparison."} Bucket calibrated amounts sum each pair's fit, not a single bucket factor.`, tokenCell(document, row.computed?.tokens ?? null)];
   })));
   root.append(analysisTable(ctx, "Snapshot coverage", ["UTC bucket", "Status", "Coverage", "Covered time", "Reset evidence", "Excluded pairs", "Usage evidence"], rows.map(row => [
     span(row.bucketStart, row.bucketEnd), statuses[row.status], analysisPercent(row.coverage), `${analysisNumber(row.coveredMs / 3600000)} h covered`, `${counted(row.resetAnchors, "observed reset anchor")}`,

@@ -1,6 +1,7 @@
 import type { Period } from "../dashboard-contract.js";
 import { action, element, liveMessage } from "./dom.js";
 import { canRetry, DashboardClientError, errorCopy } from "./client.js";
+import { utcTime } from "./format.js";
 
 export interface AnalysisPager {
   readonly region: HTMLElement;
@@ -34,7 +35,7 @@ export function createPager(document: Document, options: { title: string; param:
   const region = element(document, "section"), heading = element(document, "h2", options.title);
   heading.setAttribute("tabindex", "-1");
   const content = element(document, "div", undefined, "overview-evidence"), status = liveMessage(document);
-  const stamp = element(document, "p", "", "muted numeric"), controls = element(document, "div", undefined, "view-actions");
+  const stamp = element(document, "p", "", "muted"), controls = element(document, "div", undefined, "view-actions");
   let cursor: string | undefined, pinned: Period | undefined, nextCursor: string | null = null;
   const previous: (string | undefined)[] = [];
   let loading = false, recoveryNotice = false, retryable = false, preserveFocus = false;
@@ -96,7 +97,7 @@ export function createPager(document: Document, options: { title: string; param:
       updateControls();
     },
     complete(at: number, announce: boolean): void {
-      loading = false; stamp.textContent = `${recoveryNotice && !announce ? "Page link no longer valid. Showing page 1. " : ""}Updated ${new Date(at).toISOString()}`;
+      loading = false; stamp.replaceChildren(element(document, "span", `${recoveryNotice && !announce ? "Page link no longer valid. Showing page 1. " : ""}Updated `), utcTime(document, at));
       if (announce && !recoveryNotice) status.textContent = "Usage updated.";
       recoveryNotice = false;
       if (!failed || !retryable) { if (document.activeElement === retry) heading.focus(); retry.hidden = true; }

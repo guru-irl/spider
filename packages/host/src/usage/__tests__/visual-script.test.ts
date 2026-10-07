@@ -23,7 +23,7 @@ function root() {
   return result;
 }
 function cli(env: NodeJS.ProcessEnv, args: string[]) {
-  return spawnSync(process.execPath, [script, ...args], { cwd: checkout, env: { ...process.env, SPIDER_USAGE_SCREENSHOT_SCRATCH: root(), ...env }, encoding: "utf8", timeout: implementation.BROWSER_TEST_TIMEOUT_MS });
+  return spawnSync(process.execPath, [script, ...args], { cwd: checkout, env: { ...process.env, SPIDER_USAGE_SCREENSHOT_SCRATCH: root(), ...env }, encoding: "utf8", timeout: implementation.DEFAULT_CLI_TIMEOUT_MS + 10000 });
 }
 
 // Removing either skip branch would start a browser/Vitest or turn a skip into an error.
@@ -100,7 +100,7 @@ test("CLI runs the installed visual test and propagates its result", async conte
   const invalid = cli({ CI: "" }, ["--unknown", out]);
   expect(invalid.status).toBe(1);
   expect(invalid.stderr).toContain("Usage:");
-}, implementation.BROWSER_TEST_TIMEOUT_MS);
+}, implementation.DEFAULT_CLI_TIMEOUT_MS + 10000);
 
 // Removing these flags or replacing HOME can open macOS keychain dialogs.
 // This test starts a Node fixture, never Edge, and inspects the actual spawn boundary.

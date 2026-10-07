@@ -4,9 +4,16 @@ import { fileURLToPath } from "node:url";
 import { openCdpBrowser, errorDetail, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_STARTUP_TIMEOUT_MS, DEFAULT_CLOSE_TIMEOUT_MS, CLOSE_GRACE_MS } from "./usage-dashboard-cdp.mjs";
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 30_000;
+// The CLI runs a batch of views and sizes, not a single capture.
+
 // Startup, route load, verification and bounded close, plus command/scheduling
 // headroom. Real-browser tests must outlive the helper's own error deadlines.
 export const BROWSER_TEST_TIMEOUT_MS = DEFAULT_STARTUP_TIMEOUT_MS + DEFAULT_COMMAND_TIMEOUT_MS + DEFAULT_VERIFY_TIMEOUT_MS + DEFAULT_CLOSE_TIMEOUT_MS + CLOSE_GRACE_MS + 15_000;
+// Derive the batch budget from the visual tests, including any newly added tests.
+const visualTests = readFileSync(new URL("../packages/host/src/usage/__tests__/dashboard-visual.test.ts", import.meta.url), "utf8");
+const visualBudget = [...visualTests.matchAll(/}, implementation\.BROWSER_TEST_TIMEOUT_MS(?: \* (\d+))?\);/g)]
+  .reduce((total, match) => total + Number(match[1] ?? 1), 0);
+export const DEFAULT_CLI_TIMEOUT_MS = BROWSER_TEST_TIMEOUT_MS * visualBudget + 30_000;
 import { spawn, execFileSync } from "node:child_process";
 
 const checkout = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -110,28 +117,40 @@ export async function captureDashboard({ html, routes, viewport = { width: 1440,
       if (reply.exceptionDetails) throw new Error(`page-evaluation-failed: Runtime.evaluate: ${errorDetail(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text)}`);
       return reply.result.value;
     };
+    const screenshot = async (name, wholePage = false) => {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.png$/.test(name)) throw new Error("invalid-screenshot-name");
+      const capture = { format: "png", fromSurface: true, captureBeyondViewport: wholePage };
+      if (wholePage) {
+        const { cssContentSize } = await send("Page.getLayoutMetrics");
+        capture.clip = { x: cssContentSize.x, y: cssContentSize.y, width: cssContentSize.width, height: cssContentSize.height, scale: 1 };
+      }
+      const image = await send("Page.captureScreenshot", capture);
+      mkdirSync(out, { recursive: true });
+      const path = join(out, name);
+      writeFileSync(path, Buffer.from(image.data, "base64"), { mode: 0o600 });
+      return path;
+    };
+    const pressKey = async key => {
+      if (key !== "Tab") throw new Error("unsupported-capture-key");
+      const params = { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 };
+      await send("Input.dispatchKeyEvent", { ...params, type: "rawKeyDown" });
+      await send("Input.dispatchKeyEvent", { ...params, type: "keyUp" });
+      await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    };
     const runVerification = async callback => {
       if (!callback) return;
       let timer;
       try {
         await Promise.race([
           interrupted, interceptionFailed,
-          callback({ pid: cdp.pid, evaluate, get blockedRequests() { return blockedRequests; } }),
+          callback({ pid: cdp.pid, evaluate, screenshot, pressKey, get blockedRequests() { return blockedRequests; } }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("capture-timeout")), verifyTimeoutMs); }),
         ]);
       } finally { clearTimeout(timer); }
     };
     await runVerification(verify);
-    const capture = { format: "png", fromSurface: true, captureBeyondViewport: fullPage };
-    if (fullPage) {
-      const { cssContentSize } = await send("Page.getLayoutMetrics");
-      capture.clip = { x: cssContentSize.x, y: cssContentSize.y, width: cssContentSize.width, height: cssContentSize.height, scale: 1 };
-    }
-    const screenshot = await send("Page.captureScreenshot", capture);
+    const png = await screenshot("overview.png", fullPage);
     await runVerification(verifyAfterCapture);
-    mkdirSync(out, { recursive: true });
-    const png = join(out, "overview.png");
-    writeFileSync(png, Buffer.from(screenshot.data, "base64"), { mode: 0o600 });
     return png;
   };
   try { return await Promise.race([run(), interrupted, interceptionFailed]); }
@@ -179,7 +198,7 @@ export function closeOwnedBrowserProfiles(root) {
 async function main() {
   const args = process.argv.slice(2);
   let out = defaultScratch;
-  let timeoutMs = 90_000;
+  let timeoutMs = DEFAULT_CLI_TIMEOUT_MS;
   for (let index = 0; index < args.length; index += 2) {
     const value = args[index + 1];
     if (args[index] === "--out" && value && !value.startsWith("--")) out = resolve(value);

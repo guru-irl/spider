@@ -4,7 +4,7 @@ import type { DetailCall, DetailData, DetailLink } from "../query-detail.js";
 import type { MountedView, ViewContext } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
 import { DashboardClientError, canRetry, errorCopy } from "./client.js";
-import { formatAicDisplay, formatTokens, tokenList, numericText, datedText, utcTime } from "./format.js";
+import { formatAicDisplay, formatTokens, tokenCell, numericText, datedText, evidenceText, utcTime } from "./format.js";
 import { chartWithTable } from "./charts.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { detailRoute } from "./detail-navigation.js";
@@ -15,7 +15,7 @@ function evidence(measure: UsageMeasure): string {
 }
 function measureCells(document: Document, measure: UsageMeasure, calibration: CalibrationResult): HTMLElement[] {
   const aic = formatAicDisplay(measure.aicDisplay, measure.unpricedCalls, calibration);
-  return [numericText(document, aic.primary), numericText(document, aic.secondary), tokenList(document, measure.tokens, "recorded")];
+  return [numericText(document, aic.primary), numericText(document, aic.secondary), tokenCell(document, measure.tokens, "recorded")];
 }
 function accountingText(measure: UsageMeasure): string {
   return `${evidence(measure)} · ${measure.aicDisplay.basis === "back-applied" ? "calibrated, back-applied" : measure.aicDisplay.basis}`;
@@ -24,14 +24,14 @@ const prose = (document: Document, text: string) => element(document, "div", tex
 function proseAction(document: Document, label: string, onClick: () => void): HTMLButtonElement {
   const button = action(document, label, onClick); button.className += " detail-prose"; return button;
 }
-function renderTimeline(ctx: ViewContext, data: DetailData): HTMLElement {
+function renderTimeline(ctx: ViewContext & { kind: "session" | "run" }, data: DetailData): HTMLElement {
   const section = element(ctx.document, "section"); section.append(element(ctx.document, "h2", "Call timeline"), element(ctx.document, "p", "All selected calls in this slice, independent of the calls page.", "muted"));
   if (!data.timeline.length) { section.append(element(ctx.document, "p", "No recorded calls in this period")); return section; }
   const charts = element(ctx.document, "div", undefined, "small-multiples");
   for (const basis of ["calibrated", "back-applied", "published"] as const) {
     const points = data.timeline.filter(point => point.measure.aicDisplay.basis === basis);
     if (points.length) charts.append(chartWithTable(ctx.document, {
-      title: `Timeline AIC · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`,
+      view: ctx.kind, section: `timeline:aic:${basis}`, title: `Timeline AIC · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`,
       unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic", subsets: "recorded",
       points: points.map(point => {
         const display = formatAicDisplay(point.measure.aicDisplay, point.measure.unpricedCalls, data.calibration);
@@ -43,7 +43,7 @@ function renderTimeline(ctx: ViewContext, data: DetailData): HTMLElement {
   for (const [token, name] of [["input", "input"], ["cacheRead", "cache read"], ["cacheWrite", "cache write"], ["prompt", "prompt"], ["output", "output"], ["cacheWrite1h", "cache write 1h"], ["reasoning", "reasoning"]] as const) {
     const subset = token === "cacheWrite1h" || token === "reasoning";
     if (!subset || data.timeline.some(point => point.measure.tokens[token] !== null)) charts.append(chartWithTable(ctx.document, {
-      title: `Timeline ${name} tokens${subset ? " (subset)" : ""}`, unit: "tokens", subsets: "recorded",
+      view: ctx.kind, section: `timeline:tokens:${token}`, title: `Timeline ${name} tokens${subset ? " (subset)" : ""}`, unit: "tokens", subsets: "recorded",
       points: data.timeline.map(point => ({ ...point, value: point.measure.tokens[token], tokens: point.measure.tokens, note: evidence(point.measure) }))
     }));
   }
@@ -55,7 +55,7 @@ function renderSelected(ctx: ViewContext, data: DetailData): HTMLElement {
   const pricing = data.totals.unpricedCalls ? data.totals.aicDisplay.primaryAic === null
     ? "No priced AIC is recorded; unpriced usage is not zero." : "AIC is a lower bound; unpriced calls are not included in the amount."
     : data.totals.aicDisplay.primaryAic === null ? "No priced AIC is recorded." : "AIC is approximate; tokens are recorded.";
-  const accounting = prose(document, ""); accounting.append(numericText(document, `${accountingText(data.totals)} · ${data.accounting.message} · ${pricing}`));
+  const accounting = prose(document, ""); accounting.append(evidenceText(document, `${accountingText(data.totals)} · ${data.accounting.message} · ${pricing}`));
   if (data.accounting.coveringRunId !== null) accounting.append(action(document, `Covering run · ${data.accounting.coveringRunId}`, () => ctx.navigate(detailRoute(ctx, "run", data.accounting.coveringRunId!))));
   section.append(tableRegion(document, renderTable(document, { caption: "Selected usage", columns: ["Observation", "Primary AIC (approximate)", "Published estimate", "Tokens (subsets not additive)", "Accounting evidence"], rows: [[prose(document, `Selected ${data.kind}`), ...cells.slice(0, 3), accounting]] })),
     element(document, "p", "Prompt tokens = input + cache read + cache write. Total tokens = prompt + output. Subsets are not additive totals.", "muted"),
@@ -69,25 +69,32 @@ function renderSelected(ctx: ViewContext, data: DetailData): HTMLElement {
 }
 function calibrationEvidence(document: Document, data: DetailData): HTMLElement {
   const legend = element(document, "p", undefined, "calibration-evidence");
-  legend.append(datedText(document, formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend));
-  if (data.totals.aicDisplay.primaryAic !== null) legend.append(element(document, "span", " · cal means calibrated; ? means calibration unavailable; est means published estimate with calibration off."));
+  legend.append(evidenceText(document, formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend));
   return legend;
 }
 function renderCalls(ctx: ViewContext, rows: readonly DetailCall[], calibration: CalibrationResult): HTMLElement {
   const latencyRecorded = rows.some(row => row.latencyMs !== null);
   return tableRegion(ctx.document, renderTable(ctx.document, { caption: "Recorded calls", columns: ["Call", "UTC time", "Primary AIC (approximate)", "Published estimate", "Tokens (subsets not additive)", "Evidence", "Attribution", ...(latencyRecorded ? ["Recorded latency"] : [])],
     rows: rows.map(row => {
-      const attribution = prose(ctx.document, "");
+      const attribution = element(ctx.document, "span", undefined, "detail-prose attribution-summary");
+      const parts: string[] = [];
       for (const [label, value] of [["Project", row.project?.label], ["Repo", row.repo?.label], ["Actor", row.actor], ["Role", row.role], ["Agent", row.agent], ["Run name", row.runName], ["Phase", row.phase], ["Purpose", row.auxPurpose], ["Provider", row.provider], ["Model", row.model], ["Requested model", row.requestedModel], ["Thinking", row.thinking], ["API", row.api]] as const) {
-        if (value !== null && value !== undefined) attribution.append(element(ctx.document, "p", `${label}: ${value}`));
+        if (value !== null && value !== undefined) parts.push(`${label}: ${value}`);
       }
+      attribution.append(element(ctx.document, "span", parts.join(" · ")));
       for (const [label, kind, id] of [["Session", "session", row.sessionId], ["Run", "run", row.runId], ["Parent run", "run", row.parentRunId]] as const) {
-        if (id !== null) attribution.append(action(ctx.document, `${label} · ${id}`, () => ctx.navigate(detailRoute(ctx, kind, id))));
+        if (id !== null) {
+          if (attribution.textContent) attribution.append(element(ctx.document, "span", " · "));
+          const link = action(ctx.document, `${label} · ${id}`, () => ctx.navigate(detailRoute(ctx, kind, id)));
+          // Native focus can leave a partially visible inline link clipped.
+          link.addEventListener("focus", () => link.scrollIntoView({ block: "nearest", inline: "nearest" }));
+          attribution.append(link);
+        }
       }
       const cells = measureCells(ctx.document, row.measure, calibration); let accounting = accountingText(row.measure);
       if (row.aggregate) accounting += " · Aggregate report; per-call transcript detail unavailable";
       if (row.measure.unpricedCalls) accounting += row.measure.aicDisplay.primaryAic === null ? " · No priced AIC is recorded; unpriced usage is not zero." : " · AIC is a lower bound; unpriced calls are not included in the amount.";
-      const note = prose(ctx.document, ""); note.append(numericText(ctx.document, accounting));
+      const note = prose(ctx.document, ""); note.append(evidenceText(ctx.document, accounting));
       return [row.id, utcTime(ctx.document, row.ts), ...cells, note, attribution, ...(latencyRecorded ? [row.latencyMs === null ? "Not recorded" : numericText(ctx.document, `${formatTokens(row.latencyMs)} ms`)] : [])];
     }) }));
 }

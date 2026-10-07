@@ -117,8 +117,8 @@ it.each(lifecycleCases)("$name rejects late responses after refresh, abort and d
   const view = await mount({ ...f.ctx, client }); await settle();
   try {
     expect(requests).toHaveLength(1); button(f.root, "Refresh").click(); expect(requests[0]!.signal.aborted).toBe(true);
-    requests[1]!.resolve(2000); await settle(); expect(f.root.textContent).toContain("Updated 1970-01-01T00:00:02.000Z");
-    requests[0]!.resolve(1000); await settle(); expect(f.root.textContent).not.toContain("Updated 1970-01-01T00:00:01.000Z");
+    requests[1]!.resolve(2000); await settle(); expect(f.root.textContent).toContain("Updated 1 Jan 1970, 00:00:02 UTC");
+    requests[0]!.resolve(1000); await settle(); expect(f.root.textContent).not.toContain("Updated 1 Jan 1970, 00:00:01 UTC");
     button(f.root, "Refresh").click(); f.controller.abort(); expect(requests[2]!.signal.aborted).toBe(true);
     requests[2]!.resolve(3000); await settle(); expect(f.root.children).toHaveLength(0);
   } finally { view.dispose(); }
@@ -133,7 +133,7 @@ it.each(lifecycleCases)("$name errors stay fixed and Retry is bounded to one req
   const view = await mount({ ...f.ctx, client }); await settle();
   try {
     expect(f.root.textContent).toContain("Could not load usage. Retry."); expect(f.root.textContent).not.toContain("private synthetic failure"); expect(requests).toBe(1);
-    const retry = button(f.root, "Retry"); expect(retry.hidden).toBe(false); retry.focus(); retry.click(); await settle(); expect(retry.hidden).toBe(true); expect(f.doc.activeElement?.tagName).toBe("H2"); expect(f.doc.activeElement?.getAttribute("tabindex")).toBe("-1"); expect(requests).toBe(2); expect(f.root.textContent).toContain("Updated 1970-01-03T00:00:00.000Z");
+    const retry = button(f.root, "Retry"); expect(retry.hidden).toBe(false); retry.focus(); retry.click(); await settle(); expect(retry.hidden).toBe(true); expect(f.doc.activeElement?.tagName).toBe("H2"); expect(f.doc.activeElement?.getAttribute("tabindex")).toBe("-1"); expect(requests).toBe(2); expect(f.root.textContent).toContain("Updated 3 Jan 1970, 00:00 UTC");
   } finally { view.dispose(); }
 });
 it("analytical mounts plug into the existing dashboard registry", async () => {
@@ -166,7 +166,7 @@ it("Cache separates selected, warmer, split and back-applied evidence", async ()
   try {
     expect(f.root.textContent).toContain("No pending ingestion recorded");
     expect(f.root.textContent).toContain("over 1 day"); expect(f.root.textContent).toContain("1 unpriced call"); expect(f.root.textContent).toContain("trailing 7-day ratio");
-    expect(elements(f.root, "span").some(n => n.className === "numeric" && n.textContent === "~33.33%")).toBe(true);
+    expect(elements(f.root, "span").some(n => n.className === "numeric" && n.textContent === "33.33")).toBe(true);
     const selected = rows(f.root, "Selected usage and warmer");
     expect(selected[0]![4]).toContain("Pending data"); expect(selected[1]![4]).not.toContain("Pending data");
     expect(selected[1]![1]).toBe("9 AIC calibrated, back-applied"); expect(selected[1]![4]).toContain("1 call;");

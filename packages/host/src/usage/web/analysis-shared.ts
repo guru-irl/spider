@@ -2,7 +2,7 @@ import type { UsageMeasure } from "../dashboard-contract.js";
 import type { ViewContext, MountedView } from "./views.js";
 import { action, element, updateEvidence } from "./dom.js";
 import { renderTable, tableRegion } from "./tables.js";
-import { formatTokens } from "./format.js";
+import { formatTokens, datedText, numericText, evidenceText } from "./format.js";
 import { canRetry, DashboardClientError } from "./client.js";
 import { createPager } from "./pager.js";
 import { chartWithTable, type ChartPoint } from "./charts.js";
@@ -16,7 +16,7 @@ export function analysisEvidence(measure: UsageMeasure): string {
     measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean).join(" · ");
 }
 export function analysisTable(ctx: ViewContext, caption: string, columns: readonly string[], rows: readonly (readonly (string | HTMLElement)[])[]): HTMLElement {
-  return tableRegion(ctx.document, renderTable(ctx.document, { caption, columns, rows }));
+  return tableRegion(ctx.document, renderTable(ctx.document, { caption, columns, rows: rows.map(row => row.map(value => typeof value === "string" ? datedText(ctx.document, value, text => numericText(ctx.document, text)) : value)) }));
 }
 export function analysisParams(ctx: ViewContext, filters = true): URLSearchParams {
   const params = new URLSearchParams({ limit: "50" });
@@ -26,7 +26,7 @@ export function analysisParams(ctx: ViewContext, filters = true): URLSearchParam
 /** Text-only prose with numeric runs in the dashboard's number face. */
 export function analysisProse(ctx: ViewContext, text: string, className = "muted"): HTMLElement {
   const p = element(ctx.document, "p", undefined, className);
-  for (const part of text.split(/(\b7-day\b|[~+\-x]?\d[\d.,:%+\-TZ/]*)/)) p.append(element(ctx.document, "span", part, /\d/.test(part) && part !== "7-day" ? "numeric" : undefined));
+  p.append(evidenceText(ctx.document, text));
   return p;
 }
 export function signedGap(value: number | null): string {
@@ -36,7 +36,7 @@ export function signedGap(value: number | null): string {
 }
 /** Native signed whole-AIC gaps; geometry uses unrounded DTO values. */
 export function gapChart(ctx: ViewContext, title: string, points: readonly ChartPoint[], gapBasis: "published" | "calibrated" | "back-applied" = "published"): HTMLElement {
-  return chartWithTable(ctx.document, { title, points, unit: "gap-aic", gapBasis });
+  return chartWithTable(ctx.document, { view: "reconciliation", section: `gap:${gapBasis}`, title, points, unit: "gap-aic", gapBasis });
 }
 type Pager<T> = { title: string; param: string; next(data: T): string | null };
 /** Shared request fencing and visible/active timer; keyset state belongs to pager.ts. */

@@ -63,7 +63,9 @@ describe("web theme", () => {
       expect(rule(selector)).toContain("background: var(--raised)"); expect(rule(selector)).toContain("color: var(--text-secondary)");
     }
     for (const block of blocks(css).filter(block => /:hover|:focus-visible/.test(block.selector) && /\.action|button/.test(block.selector))) {
-      expect(block.selector).toContain(":not(:disabled)"); expect(block.selector).toContain(':not([aria-disabled="true"])');
+      if (block.selector === '.action[aria-disabled="true"]:focus-visible') {
+        expect(block.body).toContain("text-decoration: underline 2px"); expect(block.body).not.toMatch(/background|color|cursor|outline|border|shadow/);
+      } else { expect(block.selector).toContain(":not(:disabled)"); expect(block.selector).toContain(':not([aria-disabled="true"])'); }
     }
     expect(rule(".chart-zero-line")).toContain("stroke: var(--text-secondary)");
   });

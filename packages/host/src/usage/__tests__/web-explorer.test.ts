@@ -110,7 +110,7 @@ describe("web Explorer", () => {
     const f = fixture(() => ({ ...data(), totals: m, rows: [{ key: ["unpriced"], labels: ["Unpriced model"], measure: m }] }));
     const view = await mount(f.ctx); await settle();
     expect(elements(f.root, "circle")).toHaveLength(0);
-    expect(elements(f.root, "p").find(n => n.className === "numeric chart-summary")!.textContent).toBe("No recorded values in this period");
+    expect(elements(f.root, "p").find(n => n.className === "chart-summary")!.textContent).toBe("No recorded values in this period");
     expect(tableRows(f.root, "Pivot rows · published")[0]!.slice(1, 3)).toEqual(["unpriced AIC", "unpriced AIC"]);
     view.dispose();
   });
@@ -214,7 +214,7 @@ describe("web Explorer", () => {
     expect(request.params.get("filters")).toBe('[{"field":"actor","value":"opaque-parent","kind":"id"}]');
     const rows = tableRows(f.root, "Pivot rows · calibrated");
     expect(rows[0]).toEqual(["Unknown", "No value", hostile, "560+ AIC cal", "~1,000+ AIC published estimate",
-      "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable",
+      "prompt 60 · output 40 · total 100",
       "1 call; 1 unpriced; 1 aggregate · Possible overlap · Pending data"]);
     const chart = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H3" && child.textContent === "Pivot rows · calibrated"))!;
     expect(elements(chart, "circle")).toHaveLength(1);
@@ -744,7 +744,7 @@ describe("Explorer alignment", () => {
     expect(f.doc.activeElement).toBe(chart); expect(region.hidden).toBe(true); expect(graphic.hidden).toBe(false);
     expect(chart.getAttribute("aria-pressed")).toBe("true"); expect(table.getAttribute("aria-pressed")).toBe("false");
     const caption = elements(graphic, "p")[0]!;
-    expect(caption.className).toBe("numeric chart-summary");
+    expect(caption.className).toBe("chart-summary");
     expect(caption.textContent).toBe("Low to High plus · 100+ AIC calibrated minimum · 560+ AIC calibrated maximum");
     const svg = elements(graphic, "svg")[0]!;
     expect(caption.id).not.toBe("");
@@ -764,7 +764,7 @@ describe("Explorer alignment", () => {
     } };
     const view = await mount(f.ctx); await settle();
     expect(elements(f.root, "circle")).toHaveLength(0);
-    expect(elements(f.root, "p").find(n => n.className === "numeric chart-summary")!.textContent).toBe("No recorded values in this period");
+    expect(elements(f.root, "p").find(n => n.className === "chart-summary")!.textContent).toBe("No recorded values in this period");
     view.dispose();
   });
   it("uses the shared empty-row copy", async () => {
@@ -800,7 +800,7 @@ describe("Explorer final round", () => {
       measure: { ...measure(), aicDisplay: { primaryAic: value, publishedAic: value, basis } },
     })) }));
     const view = await mount(f.ctx); await settle();
-    const caption = elements(f.root, "p").find(n => n.className === "numeric chart-summary")!;
+    const caption = elements(f.root, "p").find(n => n.className === "chart-summary")!;
     const svg = elements(f.root, "svg")[0]!;
     expect(caption.textContent).toBe(want); expect(caption.textContent).not.toContain("+");
     expect(caption.id).not.toBe(""); expect(svg.getAttribute("aria-describedby")).toBe(caption.id);

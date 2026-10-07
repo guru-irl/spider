@@ -68,7 +68,9 @@ describe("Detail consumer theme", () => {
     const focus = rule('.action[aria-pressed]:focus-visible:not(:disabled):not([aria-disabled="true"])');
     expect(focus).toContain("text-decoration: underline 2px"); expect(focus).toContain("text-underline-offset: 3px"); expect(focus).not.toMatch(/background|color|outline|border|shadow/);
     for (const block of blocks(css).filter(b => /:hover|:focus-visible/.test(b.selector) && /\.action|button/.test(b.selector))) {
-      expect(block.selector).toContain(":not(:disabled)"); expect(block.selector).toContain(':not([aria-disabled="true"])');
+      if (block.selector === '.action[aria-disabled="true"]:focus-visible') {
+        expect(block.body).toContain("text-decoration: underline 2px"); expect(block.body).not.toMatch(/background|color|cursor|outline|border|shadow/);
+      } else { expect(block.selector).toContain(":not(:disabled)"); expect(block.selector).toContain(':not([aria-disabled="true"])'); }
     }
   });
 });

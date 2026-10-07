@@ -2,7 +2,7 @@ import type { ContextData } from "../dashboard-contract.js";
 import type { MountedView, ViewContext, ViewRoute } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
 import { DashboardClientError, canRetry, errorCopy } from "./client.js";
-import { supportedDetailId } from "../dashboard-keys.js";
+import { supportedDetailId } from "./detail-id.js";
 import { utcTime } from "./format.js";
 import { detailRoute } from "./detail-navigation.js";
 

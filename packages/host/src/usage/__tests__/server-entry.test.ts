@@ -1,3 +1,4 @@
+import { USAGE_HTTP_DRAIN_MS, USAGE_PARTICIPANT_STOP_MS, USAGE_REPLACEMENT_GRACE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it } from "vitest";
 import { mkdir, mkdtemp, readdir, rm, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -41,9 +42,9 @@ it("startup rejects stale guards and corrupt root records", async () => {
     expect(code, corrupt).toBe(1);
     await expect(readFile(f.options.lockFile)).rejects.toThrow();
     expect(JSON.parse(await readFile(`${f.options.lockFile}.guard`, "utf8"))).toEqual(guard);
-    expect(await readFile(join(f.privateDir, "crash.log"), "utf8")).toBe("usage-server-startup-invalid\n");
+    expect(await readFile(join(f.privateDir, "crash.log"), "utf8")).toMatch(/^usage-server-startup-invalid \d+\n$/);
   }
-}, 15000);
+});
 
 it("idle and signals stop optional participant", async () => {
   // Losing the idle close callback, idempotent close or bounded participant stop leaves a lease/process behind.
@@ -56,16 +57,16 @@ it("idle and signals stop optional participant", async () => {
     const lock = JSON.parse(await readFile(f.options.lockFile, "utf8")); f.pids.add(lock.pid);
     const stoppingAt = Date.now();
     if (mode !== "idle") { process.kill(lock.pid, mode === "hung" ? "SIGTERM" : mode as NodeJS.Signals); }
-    await h.waitFor(async () => { try { return await readFile(join(f.root, "participant-stopped"), "utf8"); } catch { return undefined; } }, 3000);
+    await h.waitFor(async () => { try { return await readFile(join(f.root, "participant-stopped"), "utf8"); } catch { return undefined; } }, USAGE_REPLACEMENT_GRACE_MS + 3000);
     expect(await readFile(join(f.root, "participant-stopped"), "utf8")).toBe("1");
-    await h.waitFor(async () => { try { await readFile(join(f.root, "fixture-lease")); return false; } catch { return true; } }, 1000);
+    await h.waitFor(async () => { try { await readFile(join(f.root, "fixture-lease")); return false; } catch { return true; } }, USAGE_REPLACEMENT_GRACE_MS + 3000);
     await expect(readFile(join(f.root, "fixture-lease"))).rejects.toThrow();
-    await h.waitFor(async () => { try { await readFile(f.options.lockFile); return false; } catch { return true; } }, 3000);
-    await h.waitFor(async () => { try { await h.reply(lock.port, "/api/status"); return false; } catch { return true; } }, 3000);
-    await h.waitFor(async () => { try { process.kill(lock.pid, 0); return false; } catch { return true; } }, 1000);
-    expect(Date.now() - stoppingAt).toBeLessThan(3000);
+    await h.waitFor(async () => { try { await readFile(f.options.lockFile); return false; } catch { return true; } }, USAGE_REPLACEMENT_GRACE_MS + 3000);
+    await h.waitFor(async () => { try { await h.reply(lock.port, "/api/status"); return false; } catch { return true; } }, USAGE_REPLACEMENT_GRACE_MS + 3000);
+    await h.waitFor(async () => { try { process.kill(lock.pid, 0); return false; } catch { return true; } }, USAGE_REPLACEMENT_GRACE_MS + 3000);
+    expect(Date.now() - stoppingAt).toBeLessThan(USAGE_HTTP_DRAIN_MS + USAGE_PARTICIPANT_STOP_MS + 3000);
   }
-}, 20000);
+});
 
 it("import and worker entry are inert", async () => {
   // Losing the direct-main or main-thread check would let a shim import or ingest worker bind HTTP.

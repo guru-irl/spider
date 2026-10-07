@@ -5,6 +5,8 @@ import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import { parsePage, parseSlice, validateParams } from "./dashboard-selection.js";
 import { equalCredential, hasMintBearer, hasSafeBrowserMetadata, isBrowserMint, parseUsageTarget, usageSecurityHeaders, validateTransport } from "./server-security.js";
 
+import { USAGE_HTTP_DRAIN_MS } from "./server-lifecycle.js";
+
 const errors = {
   unauthorized: [401, "Unauthorized"], forbidden: [403, "Forbidden"], "invalid-query": [400, "Invalid query"],
   "ledger-changed": [409, "Ledger changed"], "ledger-unavailable": [503, "Ledger unavailable"],
@@ -261,7 +263,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
     clearTimeout(idleTimer);
     clearInterval(sweepTimer);
     await new Promise<void>((resolve, reject) => {
-      const force = setTimeout(() => server.closeAllConnections(), 2000);
+      const force = setTimeout(() => server.closeAllConnections(), USAGE_HTTP_DRAIN_MS);
       force.unref();
       server.close(error => { clearTimeout(force); if (error) reject(error); else resolve(); });
       server.closeIdleConnections();

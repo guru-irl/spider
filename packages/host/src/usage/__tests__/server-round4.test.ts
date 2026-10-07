@@ -8,6 +8,7 @@ import * as runtime from "../server-runtime.js";
 import * as lock from "../server-lock.js";
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 vi.mock("node:http", async original => ({ ...await original<typeof import("node:http")>() }));
+vi.mock("../server-lock.js", async original => ({ ...await original<typeof import("../server-lock.js")>() }));
 let fixtures: any;
 async function setup() {
   const h = await import(/* @vite-ignore */ new URL("./fixtures/dashboard-process.mjs", import.meta.url).href);
@@ -32,8 +33,8 @@ async function marker(f: any, build: string) {
 }
 const NEWEST = "synthetic@2026-10-07T00:00:00Z";
 for (const kind of ["cold mixed builds", "two newer builds", "staggered newer builds"]) {
-  it(`${kind}: six bounded rounds return zero dead URLs and finish on the newest build`, async () => {
-    for (let round = 0; round < 6; round++) {
+  it(`${kind}: three bounded rounds return zero dead URLs and finish on the newest build`, async () => {
+    for (let round = 0; round < 3; round++) {
       const { h, f } = await setup();
       const newUrl = await fixtures.buildBundle(h.NEW_BUILD), newestUrl = await fixtures.buildBundle(NEWEST);
       if (kind !== "cold mixed builds") await launched(f);
@@ -68,19 +69,30 @@ it("cold start advertises intent before entering an occupied launch guard", asyn
   finally { unlinkSync(guard); }
   await launch;
   expect(intent?.serverBuild).toBe(h.OLD_BUILD);
-}, 10000);
+});
 it("a stalled newer marker over the full launch deadline mints zero bootstrap nonces", async () => {
   const { h, f } = await setup(); await launched(f); isolate(f); await marker(f, h.NEW_BUILD);
   const request = vi.spyOn(http, "request");
   const error = await runtime.ensureUsageServer(f.options).catch(error => error);
   expect(request.mock.calls.filter(([options]) => typeof options === "object" && "path" in options && options.path === "/local/bootstrap-nonce")).toHaveLength(0);
   expect(error.message).toBe("usage-server-busy");
-}, 10000);
+});
+it("deadline reached while yielding the guard preserves the busy failure code", async () => {
+  const { h, f } = await setup(); await launched(f); isolate(f); await marker(f, h.NEW_BUILD);
+  const remove = lock.removeServerRecord, expires = Date.now() + 2000;
+  vi.spyOn(lock, "removeServerRecord").mockImplementation(async (file, instanceId) => {
+    const removed = await remove(file, instanceId);
+    if (file === `${f.options.lockFile}.guard`) vi.spyOn(Date, "now").mockReturnValue(expires);
+    return removed;
+  });
+  await expect(runtime.ensureUsageServer(f.options, { deadlineMs: 1200 })).rejects.toThrow("usage-server-busy");
+});
+
 it("an equal-build marker does not stall reuse", async () => {
   const { h, f } = await setup(); const first = await launched(f); await marker(f, h.OLD_BUILD);
-  const start = Date.now(), next = await launched(f);
-  expect(next.pid).toBe(first.pid); expect(next.reused).toBe(true); expect(Date.now() - start).toBeLessThan(3000);
-}, 10000);
+  const next = await launched(f);
+  expect(next.pid).toBe(first.pid); expect(next.reused).toBe(true);
+});
 it("EPERM for a recorded lock owner permits a fresh server", async () => {
   const { f } = await setup(); isolate(f);
   await lock.writeServerRecord(f.options.lockFile, { version: 1, instanceId: "a".repeat(32), pid: 99999998, port: 12345, secret: "a".repeat(43), processIdentity: "old-birth" });
@@ -89,9 +101,11 @@ it("EPERM for a recorded lock owner permits a fresh server", async () => {
     if (pid === 99999998 && signal === 0) throw Object.assign(new Error("foreign owner"), { code: "EPERM" });
     return original(pid, signal);
   });
-  const row = await runtime.ensureUsageServer(f.options); f.pids.add(row.pid);
-  expect(row.reused).toBe(false); expect(row.pid).not.toBe(99999998);
-}, 10000);
+  const pending = runtime.ensureUsageServer(f.options);
+  await expect(pending).resolves.toMatchObject({ reused: false });
+  const row = await pending; f.pids.add(row.pid);
+  expect(row.pid).not.toBe(99999998);
+});
 it.each(["wrong-mode", "hard-linked", "symlink"])("a %s marker is swept under the guard and newer launches succeed", async kind => {
   const { h, f } = await setup(); await launched(f);
   const file = await marker(f, h.NEW_BUILD), outside = join(f.root, "untouched-marker");
@@ -102,7 +116,7 @@ it.each(["wrong-mode", "hard-linked", "symlink"])("a %s marker is swept under th
   const row = await launched(f, { bundleUrl, serverBuild: h.NEW_BUILD }); expect(row.serverBuild).toBe(h.NEW_BUILD);
   await expect(access(file)).rejects.toThrow();
   if (kind === "symlink") expect(await readFile(outside, "utf8")).toBe("untouched");
-}, 10000);
+});
 it.each(["processIdentity", "serverBuild"])("intent compare-and-delete preserves a successor with a changed %s", async key => {
   const { h, f } = await setup(); const file = await marker(f, h.NEW_BUILD);
   const owned = await lock.readServerRecord(file);

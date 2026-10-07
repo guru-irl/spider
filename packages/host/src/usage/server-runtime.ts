@@ -1,13 +1,14 @@
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { constants, closeSync, fstatSync, ftruncateSync, openSync, readSync, writeSync } from "node:fs";
+import { constants, closeSync, fstatSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { dirname, extname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LaunchOptions } from "./dashboard-contract.js";
-import { assertPrivateServerDir, ensurePrivateServerDir, reclaimStaleServerRecord, readServerRecord, readUsageServerLock, removeServerRecord, writeServerRecord, sweepServerRecordTemps, publishServerIntent, removeServerIntent, type UsageServerLock } from "./server-lock.js";
+import { USAGE_LAUNCH_DEADLINE_MS, USAGE_REPLACEMENT_GRACE_MS, USAGE_STARTUP_WINDOW_MS, USAGE_PROCESS_CHECK_TIMEOUT_MS } from "./server-lifecycle.js";
+import { assertPrivateServerDir, ensurePrivateServerDir, reclaimStaleServerRecord, readServerRecord, readUsageServerLock, removeServerRecord, writeServerRecord, sweepServerRecordTemps, publishServerIntent, removeServerIntent, assertServerRecordOwner, type UsageServerLock } from "./server-lock.js";
 
 /** The caller supplies resolved global calibration explicitly, never HTTP or an implicit server default. */
 export type UsageServerLaunchOptions = LaunchOptions & { calibrationMode: "auto" | "off"; calibrationConfigFile?: string };
@@ -19,9 +20,14 @@ export async function usageProcessIdentity(pid: number, deadline: number = Infin
       const stat = await readFile(`/proc/${pid}/stat`, "utf8");
       return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
     }
-    const result = await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "lstart="], { timeout: Math.max(1, Math.min(400, deadline - Date.now())), maxBuffer: 1024 });
-    return result.stdout.trim() || undefined;
+    const result = await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "lstart="], { env: { LC_ALL: "C", TZ: "UTC" }, timeout: Math.max(1, Math.min(USAGE_PROCESS_CHECK_TIMEOUT_MS, deadline - Date.now())), maxBuffer: 1024 });
+    const start = result.stdout.trim();
+    return start ? `ps-utc:${start}` : undefined;
   } catch { return undefined; }
+}
+/** Old ps lstart records omitted the locale and zone. They cannot prove PID reuse. */
+export function legacyUsageProcessIdentity(identity: unknown): boolean {
+  return process.platform !== "linux" && typeof identity === "string" && !identity.startsWith("ps-utc:");
 }
 export function nativeUsageBundle(bundleUrl: string | URL): string {
   const url = bundleUrl instanceof URL ? bundleUrl : /^[a-z][a-z\d+.-]*:/i.test(bundleUrl) ? new URL(bundleUrl) : pathToFileURL(bundleUrl);
@@ -70,7 +76,8 @@ async function authenticatedOwner(lock: UsageServerLock, deadline: number): Prom
 }
 import { usageServerCrashCodes } from "./server-crash-codes.js";
 export { usageServerCrashCodes } from "./server-crash-codes.js";
-function readCrashFd(fd: number): string[] {
+export type UsageServerCrashFailure = { code: string; mtimeMs: number };
+function readCrashFd(fd: number): UsageServerCrashFailure[] {
   const info = fstatSync(fd);
   if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600) throw new Error("usage-server-record-invalid");
   const bytes = Buffer.alloc(Math.min(8192, info.size));
@@ -78,9 +85,20 @@ function readCrashFd(fd: number): string[] {
   const length = readSync(fd, bytes, 0, bytes.length, offset);
   const rows = bytes.subarray(0, length).toString("utf8").split("\n");
   if (offset) rows.shift(); // Never interpret a partial code at the truncation boundary.
-  return rows.filter(row => usageServerCrashCodes.has(row));
+  return rows.flatMap(row => {
+    // Legacy code-only rows have no recorded time. Retain their mtime estimate,
+    // then freeze it when rewriting the bounded log rather than refreshing it.
+    if (usageServerCrashCodes.has(row)) return [{ code: row, mtimeMs: Math.floor(info.mtimeMs) }];
+    const parts = /^([a-z-]+) (\d{1,16})$/.exec(row);
+    const timestamp = Number(parts?.[2]);
+    return parts && usageServerCrashCodes.has(parts[1]!) && timestamp >= 0 && timestamp <= Date.now() + 5000
+      ? [{ code: parts[1]!, mtimeMs: timestamp }] : [];
+  });
 }
-export type UsageServerCrashDiagnostics = { codes: readonly string[]; mtimeMs: number };
+export type UsageServerCrashDiagnostics = { codes: readonly string[]; failures: readonly UsageServerCrashFailure[]; mtimeMs: number };
+function crashRows(failures: readonly UsageServerCrashFailure[]): string {
+  return failures.map(({ code, mtimeMs }) => `${code} ${mtimeMs}\n`).join("");
+}
 export async function readUsageServerCrashDiagnostics(dir: string): Promise<UsageServerCrashDiagnostics | undefined> {
   let fd: number | undefined;
   try {
@@ -91,8 +109,8 @@ export async function readUsageServerCrashDiagnostics(dir: string): Promise<Usag
       assertPrivateServerDir(dir);
     }
     fd = openSync(join(dir, "crash.log"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    const codes = readCrashFd(fd);
-    return { codes, mtimeMs: fstatSync(fd).mtimeMs };
+    const failures = readCrashFd(fd);
+    return { codes: failures.map(row => row.code), failures, mtimeMs: fstatSync(fd).mtimeMs };
   } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
 }
 /** Compatibility reader for consumers that only need the bounded code list. */
@@ -101,7 +119,7 @@ export async function readUsageServerCrashCodes(dir: string): Promise<readonly s
 }
 export async function writeUsageServerCrashCode(dir: string, code: string, until: number = Date.now() + 5000): Promise<void> {
   if (!usageServerCrashCodes.has(code)) return;
-  let fd: number | undefined, acquired = false;
+  let fd: number | undefined, temporary: string | undefined, acquired = false;
   const instanceId = randomBytes(16).toString("hex");
   let guard = join(dir, "crash.guard");
   const processIdentity = await usageProcessIdentity(process.pid, until);
@@ -124,17 +142,25 @@ export async function writeUsageServerCrashCode(dir: string, code: string, until
         await new Promise(resolve => setTimeout(resolve, Math.max(1, Math.min(10, until - Date.now()))));
       }
     }
-    fd = openSync(join(dir, "crash.log"), constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-    readCrashFd(fd); // Check the existing file before appending one whole record.
-    writeSync(fd, Buffer.from(code + "\n"));
-    if (fstatSync(fd).size > 8192) {
-      const codes = readCrashFd(fd);
-      while (Buffer.byteLength(codes.join("\n") + "\n") > 8192) codes.shift();
-      // Cap enforcement shares the append lock. No concurrent writer can lose its row.
-      ftruncateSync(fd, 0); writeSync(fd, Buffer.from(codes.join("\n") + "\n"));
-    }
+    const log = join(dir, "crash.log");
+    let failures: UsageServerCrashFailure[] = [];
+    try {
+      fd = openSync(log, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      failures = readCrashFd(fd); // Validate before replacing whole code-only timestamp rows.
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    failures.push({ code, mtimeMs: Date.now() });
+    while (Buffer.byteLength(crashRows(failures)) > 8192) failures.shift();
+    // Cap enforcement and legacy conversion share the append guard. Never refresh
+    // an older row's time just because a different code is written today.
+    temporary = `${log}.${randomBytes(16).toString("hex")}`;
+    writeFileSync(temporary, crashRows(failures), { flag: "wx", mode: 0o600 });
+    renameSync(temporary, log);
   } catch { /* Diagnostics never follow links or expose exception text. */ }
-  finally { if (fd !== undefined) closeSync(fd); if (acquired) await removeServerRecord(guard, instanceId); }
+  finally {
+    if (fd !== undefined) closeSync(fd);
+    if (temporary) try { unlinkSync(temporary); } catch { /* Renamed or already gone. */ }
+    if (acquired) await removeServerRecord(guard, instanceId);
+  }
 }
 
 /** Bun binaries and SEA cannot run a Node child script; probe the actual executable too. */
@@ -164,7 +190,7 @@ async function probeUsageNode(deadline: number): Promise<boolean> {
       if (child.pid) try { process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
       resolve(ok);
     };
-    const timer = setTimeout(() => finish(false), Math.max(1, Math.min(400, deadline - Date.now())));
+    const timer = setTimeout(() => finish(false), Math.max(1, Math.min(USAGE_PROCESS_CHECK_TIMEOUT_MS, deadline - Date.now())));
     child.stdout?.on("data", bytes => { output += bytes.toString(); if (output.length > 32) finish(false); });
     child.once("error", () => finish(false)); child.once("close", code => finish(code === 0 && output === "spider-node"));
   });
@@ -182,8 +208,10 @@ function newerBuild(launcher: unknown, server: unknown): boolean {
   return next !== undefined && loaded !== undefined && next > loaded;
 }
 let invalidBuildReported = false;
-export async function ensureUsageServer(options: UsageServerLaunchOptions): Promise<UsageServerLaunch> {
-  const until = Date.now() + 5000;
+export async function ensureUsageServer(options: UsageServerLaunchOptions, policy: { deadlineMs?: number } = {}): Promise<UsageServerLaunch> {
+  const deadlineMs = policy.deadlineMs ?? USAGE_LAUNCH_DEADLINE_MS;
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) throw new Error("usage-server-startup-invalid");
+  const until = Date.now() + deadlineMs;
   try { return await ensureServer(options, until); }
   catch (error) {
     const message = error instanceof Error ? error.message : "";
@@ -218,18 +246,29 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
       if (marker.pid === process.pid && marker.processIdentity === processIdentity) return marker;
       try {
         process.kill(marker.pid as number, 0);
-        if (await usageProcessIdentity(marker.pid as number, until) === marker.processIdentity) return marker;
+        if (legacyUsageProcessIdentity(marker.processIdentity)) return marker;
+        const current = await usageProcessIdentity(marker.pid as number, until);
+        // A timed-out birth lookup is unknown, not proof that this live publisher died.
+        if (!current || current === marker.processIdentity) return marker;
       } catch { /* Expired, dead or foreign-user intent is inert. */ }
     }
     // This function is called only under the launch guard. Fence cleanup by publisher.
     if (typeof marker.instanceId === "string") await removeServerIntent(intentFile, marker);
     return undefined;
   };
+  let createdAt = 0, acquired = false, succeeded = false;
+  const ownership = () => ({ file: guard, instanceId, createdAt });
+  const refreshGuard = async () => {
+    const nextCreatedAt = Date.now();
+    await writeServerRecord(guard, { version: 1, instanceId, pid: process.pid, processIdentity: processIdentity ?? null, createdAt: nextCreatedAt }, false, ownership());
+    createdAt = nextCreatedAt;
+  };
   const ownerAlive = async (lock: UsageServerLock): Promise<boolean> => {
+    if (acquired) await refreshGuard();
     try { process.kill(lock.pid, 0); }
     catch (error) { if (["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; return true; }
     const current = await usageProcessIdentity(lock.pid, until);
-    return !current || !lock.processIdentity || current === lock.processIdentity;
+    return !current || !lock.processIdentity || legacyUsageProcessIdentity(lock.processIdentity) || current === lock.processIdentity;
   };
   // null means yield the guard to a pending newer launcher, not permission to spawn.
   const reuse = async (): Promise<UsageServerLaunch | null | undefined> => {
@@ -237,6 +276,8 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
     try { lock = await readUsageServerLock(options.lockFile); }
     catch { await reclaimStaleServerRecord(options.lockFile, pid => usageProcessIdentity(pid, until)); return undefined; }
     if (!lock) { await reclaimStaleServerRecord(options.lockFile, pid => usageProcessIdentity(pid, until)); return undefined; }
+    if (legacyUsageProcessIdentity(lock.processIdentity) &&
+      await reclaimStaleServerRecord(options.lockFile, pid => usageProcessIdentity(pid, until))) return undefined;
     let loaded = await authenticatedOwner(lock, until);
     while (!loaded) {
       // A slow main thread is not a dead owner. Only a proven death or birth mismatch permits spawn.
@@ -258,15 +299,26 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
         if (await ownerAlive(lock)) throw new Error("usage-server-busy");
         return undefined;
       }
-      const fallbackAt = Math.min(until, Date.now() + 3500);
-      while (Date.now() < fallbackAt && await usageProcessIdentity(lock.pid, until) === lock.processIdentity) {
-        await new Promise(resolve => setTimeout(resolve, Math.min(100, fallbackAt - Date.now())));
+      // Never shorten graceful close to fit a spent launch budget. A later launcher
+      // can finish replacement, but this one must not kill before the close budget.
+      const fallbackAt = Date.now() + USAGE_REPLACEMENT_GRACE_MS;
+      // Replacement owns its close budget. Do not spend the child's startup window
+      // or force the final birth check to time out before a full graceful drain.
+      until = Math.max(until, fallbackAt + USAGE_PROCESS_CHECK_TIMEOUT_MS);
+      while (Date.now() < fallbackAt) {
+        await refreshGuard();
+        if (await usageProcessIdentity(lock.pid, until) !== lock.processIdentity) break;
+        await new Promise(resolve => setTimeout(resolve, Math.max(1, Math.min(100, fallbackAt - Date.now()))));
       }
+      await refreshGuard();
       if (await usageProcessIdentity(lock.pid, until) === lock.processIdentity) {
+        assertServerRecordOwner(ownership());
         try { process.kill(-lock.pid, "SIGKILL"); } catch { /* Already exited. */ }
       }
       while (Date.now() < until && await ownerAlive(lock)) await pause();
       if (await ownerAlive(lock)) throw new Error("usage-server-busy");
+      // Only a confirmed replacement exit earns a fresh bounded startup budget.
+      until = Math.max(until, Date.now() + USAGE_STARTUP_WINDOW_MS);
       return undefined;
     }
     const marker = await liveIntent();
@@ -276,7 +328,6 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
     if (latestIntent && newerBuild(latestIntent.serverBuild, options.serverBuild)) return null;
     return { pid: lock.pid, port: lock.port!, bootstrapUrl, reused: true, ...loaded };
   };
-  let createdAt = 0, acquired = false, succeeded = false;
   let child: ReturnType<typeof spawn> | undefined;
   try {
     // Publish even on cold starts. A fixed bounded admission window lets concurrent
@@ -311,7 +362,7 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
         }
         break;
       } catch (error) {
-        if (acquired) throw error;
+        if (acquired || error instanceof Error && error.message === "usage-server-busy") throw error;
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw new Error("usage-server-startup-invalid");
         await reclaimStaleServerRecord(guard, pid => usageProcessIdentity(pid, until));
         await new Promise(resolve => setTimeout(resolve, Math.max(1, Math.min(100, until - Date.now()))));
@@ -319,9 +370,12 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
     }
     if (!acquired || Date.now() >= until) throw new Error("usage-server-busy");
     await reclaimStaleServerRecord(startup, pid => usageProcessIdentity(pid, until));
+    // Re-arm the guard/secret window after replacement, not at guard acquisition.
+    await refreshGuard();
     await writeServerRecord(startup, { version: 1, instanceId, secret, createdAt,
       options: { bundleUrl: bundle, roots: options.roots, lockFile: options.lockFile, serverBuild: options.serverBuild,
-        calibrationMode: options.calibrationMode, calibrationConfigFile: options.calibrationConfigFile } });
+        calibrationMode: options.calibrationMode, calibrationConfigFile: options.calibrationConfigFile } }, false, ownership());
+    assertServerRecordOwner(ownership());
     child = spawn(process.execPath, [bundle, "--spider-usage-server", startup], { detached: true, stdio: "ignore", cwd: dir, env: usageServerEnv() });
     let stopped = false;
     const failed = new Promise<never>((_, reject) => {
@@ -364,9 +418,13 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
     // final nonblocking acquisition after a yield deadline. Never delete a successor.
     if (!acquired) {
       try {
-        await writeServerRecord(guard, { version: 1, instanceId, pid: process.pid, processIdentity: processIdentity ?? null, createdAt: Date.now() }, true);
+        createdAt = Date.now();
+        await writeServerRecord(guard, { version: 1, instanceId, pid: process.pid, processIdentity: processIdentity ?? null, createdAt }, true);
         acquired = true;
       } catch { /* A guard holder will sweep an expired/dead intent. */ }
+    }
+    if (acquired) {
+      try { assertServerRecordOwner(ownership()); } catch { acquired = false; }
     }
     if (acquired) {
       await removeServerIntent(intentFile, ownIntent);

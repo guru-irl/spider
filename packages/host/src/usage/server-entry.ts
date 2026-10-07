@@ -12,6 +12,8 @@ import type { DashboardReader, IngestHandle } from "./dashboard-contract.js";
 import { usageProcessIdentity, writeUsageServerCrashCode, type UsageServerLaunchOptions } from "./server-runtime.js";
 import { ensurePrivateServerDir, readServerRecord, removeOwnedUsageServerLock, removeServerRecord, validInstance, validSecret, writeServerRecord } from "./server-lock.js";
 
+import { USAGE_PARTICIPANT_STOP_MS, USAGE_STARTUP_WINDOW_MS } from "./server-lifecycle.js";
+
 export function isUsageServerMain(moduleUrl: string | URL, argv: readonly string[] = process.argv, mainThread: boolean = isMainThread): boolean {
   try {
     const url = moduleUrl instanceof URL ? moduleUrl : /^[a-z][a-z\d+.-]*:/i.test(moduleUrl) ? new URL(moduleUrl) : pathToFileURL(moduleUrl);
@@ -34,7 +36,7 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
   const now = Date.now();
   if (!validInstance(options.instanceId) || record?.version !== 1 || guard?.version !== 1 || record.instanceId !== options.instanceId ||
     guard.instanceId !== options.instanceId || !validSecret(record.secret) || !Number.isSafeInteger(record.createdAt) ||
-    guard.createdAt !== record.createdAt || now < (record.createdAt as number) || now >= (record.createdAt as number) + 5000 ||
+    guard.createdAt !== record.createdAt || now < (record.createdAt as number) || now >= (record.createdAt as number) + USAGE_STARTUP_WINDOW_MS ||
     !Number.isSafeInteger(guard.pid) || (guard.pid as number) <= 0) throw new Error("usage-server-startup-invalid");
   const secret = record.secret;
   if (!await removeServerRecord(join(dir, "startup.json"), options.instanceId)) throw new Error("usage-server-startup-invalid");
@@ -50,7 +52,7 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
     if (!participant) return false;
     let timedOut = false, timer: ReturnType<typeof setTimeout> | undefined;
     try { await Promise.race([participant.stop(), new Promise<void>(resolve => {
-      timer = setTimeout(() => { timedOut = true; resolve(); }, 2000);
+      timer = setTimeout(() => { timedOut = true; resolve(); }, USAGE_PARTICIPANT_STOP_MS);
     })]); } finally { clearTimeout(timer); }
     return timedOut;
   }
@@ -90,8 +92,9 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
     const processIdentity = await usageProcessIdentity(process.pid);
     const latestGuard = await readServerRecord(`${options.lockFile}.guard`);
     if (!processIdentity || latestGuard?.instanceId !== options.instanceId || latestGuard.createdAt !== record.createdAt ||
-      Date.now() >= (record.createdAt as number) + 5000) throw new Error("usage-server-startup-invalid");
-    await writeServerRecord(options.lockFile, { version: 1, instanceId: options.instanceId, secret, pid: process.pid, port: server.port, processIdentity, serverBuild });
+      Date.now() >= (record.createdAt as number) + USAGE_STARTUP_WINDOW_MS) throw new Error("usage-server-startup-invalid");
+    await writeServerRecord(options.lockFile, { version: 1, instanceId: options.instanceId, secret, pid: process.pid, port: server.port, processIdentity, serverBuild },
+      false, { file: `${options.lockFile}.guard`, instanceId: options.instanceId, createdAt: record.createdAt as number });
   } catch {
     await server.close();
     throw new Error("usage-server-startup-invalid");
@@ -104,7 +107,7 @@ export async function runUsageServerEntry(moduleUrl: string | URL, hooks: { star
     const record = await readServerRecord(file);
     const options = record?.options as UsageServerLaunchOptions | undefined;
     if (!record || record.version !== 1 || !validInstance(record.instanceId) || !validSecret(record.secret) || !options ||
-      !Number.isSafeInteger(record.createdAt) || Date.now() < (record.createdAt as number) || Date.now() >= (record.createdAt as number) + 5000 ||
+      !Number.isSafeInteger(record.createdAt) || Date.now() < (record.createdAt as number) || Date.now() >= (record.createdAt as number) + USAGE_STARTUP_WINDOW_MS ||
       !isAbsolute(options.lockFile) || file !== join(dirname(options.lockFile), "startup.json") ||
       !["auto", "off"].includes(options.calibrationMode) || typeof options.serverBuild !== "string" || options.serverBuild.length > 160 ||
       (options.calibrationConfigFile !== undefined && (typeof options.calibrationConfigFile !== "string" || !isAbsolute(options.calibrationConfigFile) || options.calibrationConfigFile.length > 4096)) ||

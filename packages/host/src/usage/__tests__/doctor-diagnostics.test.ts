@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { SourceErrorRow } from "../dashboard-contract.js";
 import { usageServerCrashCodes as doctorCrashCodes, usageDoctorLines } from "../doctor.js";
 import { usageServerCrashCodes as serverCrashCodes } from "../server-runtime.js";
@@ -111,4 +111,35 @@ it("doctor shows only the last three distinct recent codes and expires after sev
 it.each(["\u001b[31m/private/name.jsonl\u001b[0m", "%1B%5B31m%2Fprivate%2Fname.jsonl%1B%5B0m",
   "\u001b]8;;https://private/path\u0007/private/name.jsonl\u001b]8;;\u0007"])("source labels strip whole terminal sequences: %s", value => {
   expect(sourceErrorLabel(value, "Unknown source")).toBe("name.jsonl");
+});
+
+// File mtime must not refresh old rows when a different code is appended today.
+it("mounted doctor keeps each real crash write's time and expires old codes", async () => {
+  const { paths } = await import("@spider/db-core");
+  const { join } = await import("node:path");
+  const { rm, readFile } = await import("node:fs/promises");
+  const { registerUsage } = await import("../mount.js");
+  const { writeUsageServerCrashCode, readUsageServerCrashCodes } = await import("../server-runtime.js");
+  const dir = join(paths.globalRoot, "usage-server");
+  const pi = { on: () => () => {} } as any;
+  const mounted = registerUsage(pi, "file:///synthetic/bundle.mjs");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const now = Date.now();
+    vi.setSystemTime(now - 8 * 86400000);
+    await writeUsageServerCrashCode(dir, "usage-server-spawn-failed");
+    vi.setSystemTime(now - 2 * 3600000);
+    await writeUsageServerCrashCode(dir, "usage-server-busy");
+    vi.setSystemTime(now);
+    await writeUsageServerCrashCode(dir, "usage-server-crashed");
+    const lines = (await mounted.doctor()).lines.filter(line => line.includes("dashboard server failure"));
+    expect(lines).toEqual([
+      "- Last dashboard server failure: usage-server-crashed, 0 seconds ago",
+      "- Last dashboard server failure: usage-server-busy, 2 hours ago",
+    ]);
+    expect(await readUsageServerCrashCodes(dir)).toEqual(["usage-server-spawn-failed", "usage-server-busy", "usage-server-crashed"]);
+    expect(await readFile(join(dir, "crash.log"), "utf8")).not.toContain("synthetic");
+    vi.setSystemTime(now + 7 * 86400000 + 1);
+    expect((await mounted.doctor()).lines.filter(line => line.includes("dashboard server failure"))).toEqual([]);
+  } finally { vi.useRealTimers(); await rm(dir, { recursive: true, force: true }); }
 });

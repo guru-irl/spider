@@ -9,7 +9,7 @@ import { afterAll, beforeAll, afterEach, beforeEach, expect, it, vi } from "vite
 import * as runtimeModule from "../runtime.js";
 import { startUsageServerIngest } from "../server-ingest.js";
 import { UsageRuntime, type UsageWorker } from "../runtime.js";
-import { bootUsageWorker, type UsageWorkerDependencies } from "../worker-entry.js";
+import { bootUsageWorker, SNAPSHOT_MS, CYCLE_MS, DASHBOARD_BACKOFF_MS, type UsageWorkerDependencies } from "../worker-entry.js";
 import * as leaseModule from "../lease.js";
 import { UsageLeaseError } from "../lease.js";
 import { openUsageLedger } from "../ledger.js";
@@ -24,9 +24,14 @@ import type { UsageWorkerCommand, UsageWorkerEvent } from "../protocol.js";
 class Port extends EventEmitter {
   events: UsageWorkerEvent[] = [];
   closed = false;
-  postMessage(event: UsageWorkerEvent) { this.events.push(event); }
+  firstOwnerAt: number | undefined;
+  postMessage(event: UsageWorkerEvent) {
+    this.events.push(event);
+    if (event.type === "snapshot" && event.ingestRole === "owner" && event.backfill === "complete") this.firstOwnerAt ??= Date.now();
+  }
   close() { this.closed = true; }
 }
+const WAIT = { timeout: 15_000, interval: 10 };
 const at = Date.parse("2026-10-04T12:00:00Z");
 let root: string;
 let ports: Port[];
@@ -54,7 +59,7 @@ afterEach(async () => {
     for (const port of ports) port.emit("message", { type: "stop" });
     const stops = runtimes.map(runtime => runtime.stop());
     await vi.advanceTimersByTimeAsync(2000); await Promise.all(stops);
-    await vi.waitFor(() => expect(ports.every(port => port.closed)).toBe(true));
+    await vi.waitFor(() => expect(ports.every(port => port.closed)).toBe(true), WAIT);
   } finally {
     for (const child of children) {
       if (child.exitCode === null && child.signalCode === null) {
@@ -124,7 +129,7 @@ it("server never holds ingest across passes", async () => {
     if (outcome !== "success") expect(port.events).toContainEqual({ type: "error", code: "usage-ingest-failed" });
     port.emit("message", { type: "refresh" });
     port.emit("message", { type: "configure", poll: true });
-    await vi.advanceTimersByTimeAsync(9999);
+    await vi.advanceTimersByTimeAsync(DASHBOARD_BACKOFF_MS - 1);
     expect(passes).toBe(1); expect(inspect().owner).toBeNull();
     port.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
   }
@@ -155,9 +160,8 @@ async function handback(poll: boolean) {
   } }) + "\n");
   const discovery = { sources: [{ path, project: null, repo: null, run: null }], runs: [], errors: [] };
   let imports = 0, active = 0, peak = 0;
-  const importTimes: number[] = [];
   const ingest = async (...args: Parameters<typeof ingestOnce>) => {
-    imports++; importTimes.push(Date.now()); active++; peak = Math.max(peak, active);
+    imports++; active++; peak = Math.max(peak, active);
     if (imports === 1) await blocked;
     try { return await ingestOnce(...args); } finally { active--; }
   };
@@ -175,10 +179,10 @@ async function handback(poll: boolean) {
   expect(snapshots(pi.port).at(-1)?.ingestRole).toBe("follower");
   expect(fetch).not.toHaveBeenCalled(); expect(inspect("counter").owner).toBeNull();
   release();
-  await vi.waitFor(() => expect(server.snapshot().ingestRole).toBe("standby"));
+  await vi.waitFor(() => expect(server.snapshot().ingestRole).toBe("standby"), WAIT);
   await vi.advanceTimersByTimeAsync(3000);
-  await vi.waitFor(() => expect(snapshots(pi.port).at(-1)?.ingestRole).toBe("owner"));
-  return { pi, server, fetch, completedAt: completedAt!, ownerAt: importTimes[1], imports, peak };
+  await vi.waitFor(() => expect(snapshots(pi.port).at(-1)?.ingestRole).toBe("owner"), WAIT);
+  return { pi, server, fetch, completedAt: completedAt!, ownerAt: pi.port.firstOwnerAt!, imports, peak };
 }
 
 // Omitting runtime's dashboard start flag leaves the server sticky and pi following.
@@ -186,7 +190,7 @@ it("running pi reacquires within one pass plus three seconds", async () => {
   const { pi, server, completedAt, ownerAt, imports, peak } = await handback(false);
   expect(snapshots(pi.port).at(-1)?.ingestRole).toBe("owner");
   expect(inspect().owner).toBe(pi.start.owner);
-  expect(ownerAt - completedAt).toBeLessThanOrEqual(3000);
+  expect(ownerAt - completedAt).toBeLessThanOrEqual(SNAPSHOT_MS + WAIT.interval);
   expect(imports).toBe(2); expect(peak).toBe(1);
   expect(snapshots(pi.port).at(-1)?.health.calls).toBe(1);
   expect(server.snapshot().ingestRole).toBe("standby");
@@ -198,9 +202,9 @@ it("handback restores pi counter polling", async () => {
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(server.snapshot().counter?.availability).toBe("disabled");
   const ledger = openUsageLedger(pi.start.roots.ledgerFile);
-  try { await vi.waitFor(() => expect(ledger.latestCounter()?.creditsUsed).toBe(10)); } finally { ledger.close(); }
+  try { await vi.waitFor(() => expect(ledger.latestCounter()?.creditsUsed).toBe(10), WAIT); } finally { ledger.close(); }
   pi.port.emit("message", { type: "refresh" });
-  await vi.waitFor(() => expect(snapshots(pi.port).at(-1)).toMatchObject({ ingestRole: "owner", counter: { role: "owner", availability: "available", latest: { creditsUsed: 10 } } }));
+  await vi.waitFor(() => expect(snapshots(pi.port).at(-1)).toMatchObject({ ingestRole: "owner", counter: { role: "owner", availability: "available", latest: { creditsUsed: 10 } } }), WAIT);
 });
 
 // Using the ten-second ownership backoff as discovery cadence imports too often.
@@ -224,8 +228,8 @@ it("unattended ingestion keeps minute cadence", async () => {
   }
   await vi.advanceTimersByTimeAsync(4000);
   expect(starts).toHaveLength(2);
-  expect(starts[1] - completedAt).toBeGreaterThanOrEqual(60000);
-  expect(starts[1] - completedAt).toBeLessThanOrEqual(63000);
+  expect(starts[1] - completedAt).toBeGreaterThanOrEqual(CYCLE_MS);
+  expect(starts[1] - completedAt).toBeLessThanOrEqual(CYCLE_MS + SNAPSHOT_MS);
   expect(inspect().owner).toBeNull();
 });
 
@@ -285,7 +289,7 @@ it("participant handle reports standby and closes its worker once", async () => 
   const handle = startUsageServerIngest({ bundleUrl: "file:///fixture/worker.mjs", roots: command().roots,
     getCalibrationMode: () => "auto", onSnapshot: state => changes.push(state) });
   await vi.advanceTimersByTimeAsync(1);
-  await vi.waitFor(() => expect(handle.snapshot()).toMatchObject({ role: "standby", backfill: "complete", lastIngestAt: at + 1, errorCode: null }));
+  await vi.waitFor(() => expect(handle.snapshot()).toMatchObject({ role: "standby", backfill: "complete", lastIngestAt: at + 1, errorCode: null }), WAIT);
   expect(changes.at(-1)).toMatchObject({ role: "standby" });
   expect(inspect().owner).toBeNull(); expect(inspect("counter").owner).toBeNull();
   const snapshot = handle.snapshot(); snapshot.role = "owner";
@@ -364,7 +368,7 @@ it.each([-3600000, 3600000])("wall-clock step %i preserves ten second and minute
   await vi.advanceTimersByTimeAsync(0);
   vi.setSystemTime(Date.now() + step);
   server.port.emit("message", { type: "refresh" });
-  await vi.advanceTimersByTimeAsync(9999);
+  await vi.advanceTimersByTimeAsync(DASHBOARD_BACKOFF_MS - 1);
   expect(server.port.events.at(-1)).toEqual({ type: "standby" });
   expect(passes).toBe(1);
   await vi.advanceTimersByTimeAsync(50000);
@@ -459,7 +463,7 @@ it("standby publishes standby role on a read-only connection after the ten secon
   const count = snapshots(server.port).length;
   server.port.emit("message", { type: "refresh" });
   server.port.emit("message", { type: "configure", poll: true, calibration: "off" });
-  await vi.advanceTimersByTimeAsync(9999);
+  await vi.advanceTimersByTimeAsync(DASHBOARD_BACKOFF_MS - 1);
   expect(snapshots(server.port)).toHaveLength(count);
   await vi.advanceTimersByTimeAsync(1);
   expect(snapshots(server.port).at(-1)).toMatchObject({ ingestRole: "standby", calibration: { status: "off" } });
@@ -479,19 +483,23 @@ it("server calibration getter follows reloads and off reaches the shared DTO", a
   await vi.advanceTimersByTimeAsync(1);
   const dto = () => { const ledger = openUsageLedger(command().roots.ledgerFile); try { return ledger.getPublishedSnapshot()?.calibration; } finally { ledger.close(); } };
   expect(dto()).toMatchObject({ status: "off", factor: null });
-  mode = "auto"; await vi.advanceTimersByTimeAsync(63000);
+  mode = "auto"; await vi.advanceTimersByTimeAsync(CYCLE_MS + SNAPSHOT_MS);
   expect(dto()?.status).not.toBe("off");
-  mode = "off"; await vi.advanceTimersByTimeAsync(63000);
+  mode = "off"; await vi.advanceTimersByTimeAsync(CYCLE_MS + SNAPSHOT_MS);
   expect(dto()).toMatchObject({ status: "off", factor: null });
   const stopped = handle.stop(); await vi.advanceTimersByTimeAsync(0); await stopped;
 });
 
 it("forced stop of a stuck server pass lets pi acquire within three seconds", async () => {
+  let owned!: () => void;
+  const ownerReady = new Promise<void>(resolve => { owned = resolve; });
   const runtime = new UsageRuntime({ bundleUrl: new URL(`file://${fixtureBundle}`), roots: command().roots, child: false, dashboardMode: true,
+    onSnapshot: snapshot => { if (snapshot.ingestRole === "owner") owned(); },
     workerFactory: (entry, options) => new Worker(entry, { ...options, workerData: { ...options.workerData, fixtureStuck: true } }) });
   runtimes.push(runtime); runtime.start(false, "off");
   await vi.advanceTimersByTimeAsync(0);
-  await vi.waitFor(() => expect(runtime.snapshot().ingestRole).toBe("owner"));
+  await ownerReady;
+  expect(runtime.snapshot().ingestRole).toBe("owner");
   const pi = await boot(false, {}, false);
   const stopped = runtime.stop(); await vi.advanceTimersByTimeAsync(2000); await stopped;
   await vi.advanceTimersByTimeAsync(3000);

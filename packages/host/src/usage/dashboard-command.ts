@@ -19,18 +19,15 @@ export function registerUsageDashboardCommand(pi: ExtensionAPI, bundleUrl: strin
       const timer = setTimeout(clearFallback, 60_000);
       timer.unref?.();
       clearWidget = () => { clearTimeout(timer); ctx.ui.setWidget(widgetKey, undefined); };
-      ctx.ui.notify("Opening the usage dashboard", "info");
-    } else {
-      process.stdout.write(`Open manually${timedOut ? " if needed" : ""}: ${url}\n`);
-      ctx.ui.notify(timedOut ? "Usage dashboard browser is opening. The URL is printed as a manual fallback" :
-        "Usage dashboard usage-browser-failed. The URL is printed as a manual fallback", timedOut ? "info" : "error");
+      ctx.ui.notify("Open the usage dashboard using the link below", timedOut ? "info" : "error");
     }
   }
   pi.registerCommand("usage", {
     description: "Open the local usage dashboard",
     handler: async (args, ctx) => {
-      if (process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode !== "tui") {
-        ctx.ui.notify("Run /usage in a parent interactive session", "warning");
+      if (process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI) {
+        if (!ctx.hasUI) process.stderr.write("/usage works only in an interactive session\n");
+        else ctx.ui.notify("Run /usage in a parent interactive session", "warning");
         return;
       }
       if (args.trim()) { ctx.ui.notify("Run /usage without arguments", "warning"); return; }

@@ -170,6 +170,6 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
     const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
     return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
-      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.codes.map(code => ({ code, mtimeMs: crash.mtimeMs })) ?? []), now: Date.now() });
+      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now() });
   } };
 }

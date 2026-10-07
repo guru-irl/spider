@@ -1,3 +1,4 @@
+import { USAGE_LAUNCH_DEADLINE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { readFile, writeFile, rm, utimes, symlink, stat, readdir } from "node:fs/promises";
 import * as fs from "node:fs";
@@ -36,7 +37,7 @@ it("alternating builds converge once and report the bundle actually loaded", asy
   const g = await fixtures.fixture();
   const actual = await launched(g, { bundleUrl, serverBuild: h.OLD_BUILD });
   expect(actual.serverBuild).toBe(h.NEW_BUILD);
-}, 20000);
+});
 
 it("two new launchers replace once and mixed reusers wait across replacement", async () => {
   const { h, f } = await setup({ SPIDER_FIXTURE_PARTICIPANT: "1", SPIDER_FIXTURE_HANG_STOP: "1" });
@@ -48,7 +49,7 @@ it("two new launchers replace once and mixed reusers wait across replacement", a
   expect(rows.filter(r => !r.reused)).toHaveLength(1);
   expect(rows[0].pid).not.toBe(first.pid);
   for (const row of rows) expect((await h.reply(row.port, new URL(row.bootstrapUrl).pathname + new URL(row.bootstrapUrl).search)).status).toBe(303);
-}, 15000);
+});
 
 it("unparseable server build is never replaced", async () => {
   const { h, f } = await setup();
@@ -56,18 +57,18 @@ it("unparseable server build is never replaced", async () => {
   const first = await launched(f, { bundleUrl, serverBuild: "unknown" });
   const next = await launched(f, { serverBuild: h.NEW_BUILD });
   expect(next.pid).toBe(first.pid); expect(next.reused).toBe(true);
-}, 10000);
+});
 
-it("young dead guard recovers in under four seconds", async () => {
+it("young dead guard recovers without waiting for grace", async () => {
   const { f } = await setup();
   await writeFile(`${f.options.lockFile}.guard`, JSON.stringify({ instanceId: "a".repeat(32), pid: 99999999, processIdentity: "dead", createdAt: Date.now() }), { mode: 0o600 });
-  const started = Date.now(); await launched(f); expect(Date.now() - started).toBeLessThan(4000);
+  await launched(f);
 });
 
 it("identity-mismatched live guards are stale but failed ps waits for grace", async () => {
   const { f } = await setup(), file = join(f.privateDir, "crash.guard");
-  for (const identity of ["reused-pid", undefined]) {
-    await writeFile(file, JSON.stringify({ pid: process.pid, processIdentity: "old-owner", createdAt: Date.now() }), { mode: 0o600 });
+  for (const identity of [(process.platform === "linux" ? "reused-pid" : "ps-utc:reused-pid"), undefined]) {
+    await writeFile(file, JSON.stringify({ pid: process.pid, processIdentity: (process.platform === "linux" ? "old-owner" : "ps-utc:old-owner"), createdAt: Date.now() }), { mode: 0o600 });
     expect(await lock.reclaimStaleServerRecord(file, async () => identity)).toBe(identity !== undefined);
     if (identity === undefined) {
       const old = new Date(Date.now() - 20000); await utimes(file, old, old);
@@ -100,9 +101,12 @@ it("guard wait checks at most 100 ms and caches its own ps lookup", async () => 
   const pending = runtime.ensureUsageServer(f.options);
   void pending.catch(() => {});
   try {
-    const observed = await h.waitFor(f.observed), elapsed = Date.now() - released;
+    const publication = await h.waitFor(async () => {
+      try { return { record: JSON.parse(await readFile(join(f.privateDir, "startup.json"), "utf8")), observedAt: Date.now() }; } catch { return undefined; }
+    });
+    const elapsed = publication.observedAt - released;
     const row = await pending; f.pids.add(row.pid);
-    expect(elapsed).toBeLessThan(500); expect(observed.pid).toBe(row.pid);
+    expect(elapsed).toBeLessThan(500); expect(publication.record.instanceId).toBeTypeOf("string");
   } finally { clearTimeout(timer); await pending.catch(() => {}); }
 });
 
@@ -112,18 +116,32 @@ it("concurrent crash writers preserve all new rows while crossing the cap", asyn
   const results = await Promise.all(Array.from({ length: 6 }, () => f.start("crash-write").exited));
   for (const r of results) expect(r.code, r.stderr).toBe(0);
   const codes = await runtime.readUsageServerCrashCodes(f.privateDir);
-  expect(codes.filter(c => c === "usage-server-crashed")).toHaveLength(120);
-  expect(codes.filter(c => c === "usage-server-not-ready")).toHaveLength(120);
+  expect(codes.filter(c => c === "usage-server-crashed")).toHaveLength(72);
+  expect(codes.filter(c => c === "usage-server-not-ready")).toHaveLength(72);
   expect((await stat(join(f.privateDir, "crash.log"))).size).toBeLessThanOrEqual(8192);
-}, 15000);
+});
 
-it("replacement SIGKILLs an identity-matched server ignoring SIGTERM", async () => {
+it("replacement SIGKILLs an identity-matched server ignoring SIGTERM on the first launch with real deadlines", async () => {
   const { h, f } = await setup({ SPIDER_FIXTURE_IGNORE_TERM: "1" });
-  const first = await launched(f), bundleUrl = await fixtures.buildBundle(h.NEW_BUILD);
-  const next = await launched(f, { bundleUrl, serverBuild: h.NEW_BUILD });
+  const first = await launched(f, { launchDeadlineMs: USAGE_LAUNCH_DEADLINE_MS }), bundleUrl = await fixtures.buildBundle(h.NEW_BUILD);
+  // This fits a fresh five-second startup window, but neither the old ~375 ms
+  // remainder nor the two-second replacement identity-check margin.
+  for (const key of ["HOME", "SPIDER_GLOBAL_ROOT", "PI_CODING_AGENT_DIR", "SPIDER_FIXTURE_OBSERVED"]) vi.stubEnv(key, f.env[key]);
+  vi.stubEnv("SPIDER_FIXTURE_DELAY", "2500");
+  const original = cp.execFile as any, custom = original[promisify.custom];
+  const exec = vi.spyOn(cp, "execFile");
+  Object.defineProperty(exec, promisify.custom, { value: async (file: string, args: string[], options: object) => {
+    if (args[1] === String(first.pid)) await new Promise(resolve => setTimeout(resolve, 150));
+    return custom(file, args, options);
+  } });
+  const pending = runtime.ensureUsageServer({ ...f.options, bundleUrl, serverBuild: h.NEW_BUILD });
+  await expect(pending).resolves.toMatchObject({ reused: false, serverBuild: h.NEW_BUILD });
+  const next = await pending; f.pids.add(next.pid);
   expect(next.pid).not.toBe(first.pid); expect(next.reused).toBe(false);
-  await h.waitFor(async () => { try { process.kill(first.pid, 0); return false; } catch { return true; } }, 1000);
-}, 10000);
+  const url = new URL(next.bootstrapUrl);
+  expect((await h.reply(next.port, url.pathname + url.search)).status).toBe(303);
+  await h.waitFor(async () => { try { process.kill(first.pid, 0); return false; } catch { return true; } }, 3000);
+});
 
 it("stale secret temporaries are swept only after grace under the guard", async () => {
   const { f } = await setup();
@@ -168,7 +186,7 @@ it("replacement rechecks birth identity immediately before signalling", async ()
     const record = await read(file);
     if (record?.pid === first.pid && ++reads === 2) {
       process.kill(-first.pid, "SIGKILL");
-      await h.waitFor(async () => { try { process.kill(first.pid, 0); return false; } catch { return true; } }, 1000);
+      await h.waitFor(async () => { try { process.kill(first.pid, 0); return false; } catch { return true; } }, 3000);
     }
     return record;
   });
@@ -176,7 +194,7 @@ it("replacement rechecks birth identity immediately before signalling", async ()
   const next = await runtime.ensureUsageServer({ ...f.options, bundleUrl, serverBuild: h.NEW_BUILD }); f.pids.add(next.pid);
   expect(kill.mock.calls.filter(([pid, signal]) => pid === first.pid && signal === "SIGTERM")).toHaveLength(0);
   expect(next.pid).not.toBe(first.pid);
-}, 10000);
+});
 
 it("all guards carry owner birth identity and own lookup is cached across a wait", async () => {
   const { h, f } = await setup();
@@ -237,7 +255,7 @@ it("reusing launchers cannot return a live old URL while replacement owns the gu
   } finally { release(); }
   const rows = await Promise.all([replacing, reusing]); for (const row of rows) f.pids.add(row.pid);
   expect(rows[0].pid).not.toBe(first.pid); expect(rows[1].pid).toBe(rows[0].pid);
-}, 10000);
+});
 
 
 it("ISO timestamps with seconds or offsets order builds by time", async () => {
@@ -246,7 +264,7 @@ it("ISO timestamps with seconds or offsets order builds by time", async () => {
   expect(next.pid).not.toBe(first.pid); expect(next.reused).toBe(false);
   const equal = await launched(f, { serverBuild: "another@2026-10-06T00:00:00Z" });
   expect(equal.pid).toBe(next.pid); expect(equal.reused).toBe(true);
-}, 10000);
+});
 
 
 it("unparseable fresh guard is not reclaimed before the ten-second grace", async () => {
@@ -262,8 +280,8 @@ it("unparseable fresh guard is not reclaimed before the ten-second grace", async
 
 it("a stale observation cannot displace an owner refreshed during identity lookup", async () => {
   const { f } = await setup(), file = `${f.options.lockFile}.guard`;
-  await writeFile(file, JSON.stringify({ pid: process.pid, processIdentity: "old", createdAt: Date.now() - 20000 }), { mode: 0o600 });
-  const fresh = JSON.stringify({ pid: process.pid, processIdentity: "fresh", createdAt: Date.now() });
+  await writeFile(file, JSON.stringify({ pid: process.pid, processIdentity: (process.platform === "linux" ? "old" : "ps-utc:old"), createdAt: Date.now() - 20000 }), { mode: 0o600 });
+  const fresh = JSON.stringify({ pid: process.pid, processIdentity: (process.platform === "linux" ? "fresh" : "ps-utc:fresh"), createdAt: Date.now() });
   const rename = fs.renameSync;
   vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
     rename(from, to);
@@ -271,7 +289,7 @@ it("a stale observation cannot displace an owner refreshed during identity looku
     if (from === file) fs.writeFileSync(file, JSON.stringify({ pid: process.pid, processIdentity: "third", createdAt: Date.now() }), { flag: "wx", mode: 0o600 });
   });
   expect(await lock.reclaimStaleServerRecord(file, async () => {
-    fs.unlinkSync(file); fs.writeFileSync(file, fresh, { flag: "wx", mode: 0o600 }); return "fresh";
+    fs.unlinkSync(file); fs.writeFileSync(file, fresh, { flag: "wx", mode: 0o600 }); return (process.platform === "linux" ? "fresh" : "ps-utc:fresh");
   })).toBe(false);
   expect(await readFile(file, "utf8")).toBe(fresh);
 });

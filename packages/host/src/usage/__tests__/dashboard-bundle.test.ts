@@ -304,6 +304,6 @@ it("source launcher forwards the distinct loaded bundle identity exactly", async
   const { registerUsageDashboardCommand } = await import("../dashboard-command.js");
   let handler: any;
   registerUsageDashboardCommand({ on() {}, registerCommand(_name: string, definition: any) { handler = definition.handler; } } as never, "file:///synthetic/extension.js");
-  await handler("", { mode: "tui", ui: { notify() {}, setWidget() {} } });
+  await handler("", { mode: "tui", hasUI: true, ui: { notify() {}, setWidget() {} } });
   expect(launch.mock.calls[0][0].serverBuild).toBe("def5678@2026-10-05T04:05:06.000Z");
 });

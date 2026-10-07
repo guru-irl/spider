@@ -16,11 +16,11 @@ export type UsageWorkerDependencies = {
   fetch?: typeof globalThis.fetch;
 };
 const TTL_MS = 120000;
-const CYCLE_MS = 60000;
+export const CYCLE_MS = 60000;
 const BATCH_SOURCES = 8;
 const BATCH_BYTES = 4 * 1024 * 1024;
-const SNAPSHOT_MS = 3000;
-const DASHBOARD_BACKOFF_MS = 10000;
+export const SNAPSHOT_MS = 3000;
+export const DASHBOARD_BACKOFF_MS = 10000;
 
 /** Boot only from the marked worker seam, never from extension registration. */
 export async function bootUsageWorker(

@@ -132,34 +132,17 @@ it("mount and dashboard command resolve identical roots", async () => {
   expect(JSON.stringify(h.notify.mock.calls)).not.toContain("synthetic-private-path");
 });
 
-for (const outcome of ["timeout", "nonzero", "ENOENT"] as const) it(`opener ${outcome} prints a manual fallback without using a deleted session cwd`, async () => {
+// A no-op UI must still warn without writing into print/JSON/RPC stdout.
+it.each(["print", "json", "rpc", "tui"])("no-UI %s usage is visible on stderr without launching or writing stdout", async mode => {
   const { registerUsageDashboardCommand } = await import("../dashboard-command.js");
   const h = harness();
-  const deleted = join(paths.globalRoot, "deleted-session"); mkdirSync(deleted, { recursive: true }); rmSync(deleted, { recursive: true });
-  const dir = join(paths.globalRoot, "usage-server"); mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const url = "http://127.0.0.1:2345/bootstrap?nonce=synthetic-fallback";
-  launch.mockResolvedValue({ bootstrapUrl: url, serverBuild: "fixture", rateVersions: [] });
-  h.exec.mockImplementation(async (_command, _args, options) => {
-    // pi.exec defaults to the session cwd. A deleted cwd must not reach spawn.
-    const { statSync } = await import("node:fs");
-    statSync((options as { cwd?: string })?.cwd ?? deleted);
-    if (outcome === "ENOENT") throw Object.assign(new Error("private opener output"), { code: "ENOENT" });
-    return { code: 1, stdout: "private output", stderr: "private output", killed: outcome === "timeout" };
-  });
-  const printed = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   registerUsageDashboardCommand(h.pi, "file:///synthetic/extension.js");
-  await h.commands.get("usage")!("", { ...h.ctx, hasUI: false, cwd: deleted });
-  expect(h.exec).toHaveBeenCalledWith(process.platform === "darwin" ? "open" : "xdg-open", [url], { timeout: 5000, cwd: dir });
-  expect(printed.mock.calls.map(call => String(call[0])).join("")).toContain(url);
-  expect(h.setWidget).not.toHaveBeenCalled();
-  const notifications = JSON.stringify(h.notify.mock.calls);
-  expect(notifications).not.toContain(url); expect(notifications).not.toContain("private");
-  if (outcome === "timeout") {
-    expect(notifications).toContain("browser is opening"); expect(notifications).not.toContain("usage-browser-failed");
-    expect(h.notify).toHaveBeenCalledWith(expect.any(String), "info");
-  } else {
-    expect(notifications).toContain("usage-browser-failed"); expect(h.notify).toHaveBeenCalledWith(expect.any(String), "error");
-  }
+  await h.commands.get("usage")!("", { ...h.ctx, mode, hasUI: false, ui: { ...h.ctx.ui, notify: () => {} } } as ExtensionCommandContext);
+  expect(launch).not.toHaveBeenCalled(); expect(h.exec).not.toHaveBeenCalled();
+  expect(stdout).not.toHaveBeenCalled();
+  expect(stderr).toHaveBeenCalledWith("/usage works only in an interactive session\n");
 });
 
 for (const outcome of ["timeout", "nonzero", "ENOENT"] as const) it(`TUI opener ${outcome} shows a temporary widget, never stdout`, async () => {
@@ -179,7 +162,8 @@ for (const outcome of ["timeout", "nonzero", "ENOENT"] as const) it(`TUI opener 
   expect(h.setWidget).toHaveBeenCalledWith("spider-usage-url", [
     `Open the usage dashboard: ${url}`, "This link works once and expires in 60 s",
   ]);
-  expect(h.notify).toHaveBeenCalledWith("Opening the usage dashboard", "info");
+  expect(h.notify).toHaveBeenCalledWith("Open the usage dashboard using the link below", outcome === "timeout" ? "info" : "error");
+  expect(JSON.stringify(h.notify.mock.calls)).not.toContain("Opening");
   expect(JSON.stringify(h.notify.mock.calls)).not.toMatch(/nonce=|private/);
   await vi.advanceTimersByTimeAsync(59999);
   expect(h.setWidget).toHaveBeenCalledTimes(1);

@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, utimes } from "node:fs/promises";
 import { dirname as dirnameFixture, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { fstatSync, writeFileSync } from "node:fs";
+import { fstatSync, writeFileSync, watch } from "node:fs";
 import { request } from "node:http";
 import { isUsageServerMain, runUsageServerEntry } from "../../server-entry.js";
 import { ensureUsageServer, writeUsageServerCrashCode } from "../../server-runtime.js";
@@ -25,6 +25,7 @@ export async function reply(port, path, headers = {}) {
     }); req.on("error", reject); req.on("timeout", () => req.destroy(new Error("fixture-http-timeout"))); req.end();
   });
 }
+export const FIXTURE_LAUNCH_DEADLINE_MS = 15000;
 export const OLD_BUILD = "synthetic@2026-10-05T00:00:00.000Z";
 export const NEW_BUILD = "synthetic@2026-10-06T00:00:00.000Z";
 export async function processFixtures() {
@@ -49,7 +50,7 @@ export async function processFixtures() {
     const launcherCwd = join(root, "launcher-cwd"); await mkdir(launcherCwd);
     const options = { bundleUrl: built, roots: { registryDb: join(root, "registry.db"), sessionsDir: join(root, "sessions"),
       ledgerFile: join(root, "usage.db"), authPath: join(root, "auth.json"), leaseDir: join(root, "leases") },
-      lockFile: join(privateDir, "lock.json"), serverBuild: OLD_BUILD, calibrationMode: "off" };
+      lockFile: join(privateDir, "lock.json"), serverBuild: OLD_BUILD, calibrationMode: "off", launchDeadlineMs: FIXTURE_LAUNCH_DEADLINE_MS };
     const env = { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent"),
       SPIDER_FIXTURE_OBSERVED: join(root, "observed.json"), ...extraEnv };
     for (const key of ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_DB_PATH", "PI_SPIDER_SESSION_ID"]) delete env[key];
@@ -87,7 +88,12 @@ export async function processFixtures() {
     children.clear(); pids.clear();
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
   }
-  return { built, buildBundle: id => buildBundle(join(buildRoot, id.replace(/[^a-zA-Z0-9]/g, "_")), id), fixture, cleanup, dispose: async () => { await cleanup(); await rm(buildRoot, { recursive: true, force: true }); } };
+  const builds = new Map([[OLD_BUILD, Promise.resolve(built)]]);
+  const memoizedBuild = id => {
+    if (!builds.has(id)) builds.set(id, buildBundle(join(buildRoot, id.replace(/[^a-zA-Z0-9]/g, "_")), id));
+    return builds.get(id);
+  };
+  return { built, buildBundle: memoizedBuild, fixture, cleanup, dispose: async () => { await cleanup(); await rm(buildRoot, { recursive: true, force: true }); } };
 }
 
 if (isUsageServerMain(import.meta.url)) {
@@ -112,6 +118,8 @@ if (isUsageServerMain(import.meta.url)) {
         return { snapshot: () => ({ role: "standby", lastIngestAt: null, backfill: "pending", errorCode: null }),
           stop: async () => { stops++; await writeFile(stopped, String(stops)); await rm(lease, { force: true });
             if (process.env.SPIDER_FIXTURE_HANG_STOP) await new Promise(() => {});
+            if (process.env.SPIDER_FIXTURE_STOP_DELAY) await new Promise(resolve => setTimeout(resolve, Number(process.env.SPIDER_FIXTURE_STOP_DELAY)));
+            await writeFile(join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "participant-stop-finished"), "1");
             clearInterval(keepAlive);
           } };
       } });
@@ -138,13 +146,26 @@ if (isUsageServerMain(import.meta.url)) {
   await writeFile(join(dirnameFixture(process.argv[3]), "publication-done"), "1");
 } else if (process.argv[2] === "crash-write") {
   const options = JSON.parse(await readFile(process.argv[3], "utf8"));
-  for (let i = 0; i < 40; i++) await writeUsageServerCrashCode(dirnameFixture(options.lockFile), i % 2 ? "usage-server-crashed" : "usage-server-not-ready");
-} else if (["launch", "launch-hold", "launch-exit-before"].includes(process.argv[2])) {
+  for (let i = 0; i < 24; i++) await writeUsageServerCrashCode(dirnameFixture(options.lockFile), i % 2 ? "usage-server-crashed" : "usage-server-not-ready");
+} else if (["launch", "launch-hold", "launch-exit-before", "launch-aged-guard"].includes(process.argv[2])) {
   if (process.argv[2] === "launch-exit-before") {
     void waitFor(async () => { try { return JSON.parse(await readFile(process.env.SPIDER_FIXTURE_OBSERVED, "utf8")); } catch { return undefined; } }).then(() => process.exit(0));
   }
   const options = JSON.parse(await readFile(process.argv[3], "utf8"));
-  const running = await ensureUsageServer(options);
-  process.stdout.write(JSON.stringify(running) + "\n");
+  let guardWaitMs, guardWatcher;
+  if (process.argv[2] === "launch-aged-guard") {
+    const old = new Date(Date.now() - 9000);
+    await utimes(`${options.lockFile}.guard`, old, old);
+    const agedAt = Date.now();
+    guardWatcher = watch(`${options.lockFile}.guard`, event => {
+      if (event === "rename") guardWaitMs ??= Date.now() - agedAt;
+    });
+  }
+  const startedAt = Date.now();
+  let running;
+  try { running = await ensureUsageServer(options, { deadlineMs: options.launchDeadlineMs }); }
+  catch (error) { process.stderr.write(`fixtureLaunchElapsedMs=${Date.now() - startedAt}\n`); throw error; }
+  finally { guardWatcher?.close(); }
+  process.stdout.write(JSON.stringify({ ...running, launchElapsedMs: Date.now() - startedAt, guardWaitMs }) + "\n");
   if (process.argv[2] === "launch-hold") setInterval(() => {}, 1000);
 }

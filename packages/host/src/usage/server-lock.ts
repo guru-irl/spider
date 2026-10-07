@@ -1,7 +1,10 @@
 import { constants, chmodSync, closeSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { randomBytes } from "node:crypto";
-import { usageProcessIdentity } from "./server-runtime.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { legacyUsageProcessIdentity, usageProcessIdentity } from "./server-runtime.js";
+import { USAGE_LEGACY_FENCE_MS, USAGE_PROCESS_CHECK_TIMEOUT_MS } from "./server-lifecycle.js";
 export const SERVER_RECORD_GRACE_MS = 10_000;
 
 export type UsageServerLock = { version: 1; instanceId: string; pid: number; port: number | null; secret: string; processIdentity?: string; serverBuild?: string };
@@ -45,7 +48,13 @@ export async function readUsageServerLock(file: string): Promise<UsageServerLock
     !(record.port === null || Number.isInteger(record.port) && (record.port as number) > 0 && (record.port as number) <= 65535)) return undefined;
   return record as UsageServerLock;
 }
-export async function writeServerRecord(file: string, record: object, exclusive = false): Promise<void> {
+export type ServerRecordOwner = { file: string; instanceId: string; createdAt: number };
+export function assertServerRecordOwner(owner: ServerRecordOwner): void {
+  let current: Record<string, unknown> | undefined;
+  try { current = readRecord(owner.file); } catch { /* Lost or unsafe ownership is busy. */ }
+  if (current?.instanceId !== owner.instanceId || current.createdAt !== owner.createdAt) throw new Error("usage-server-busy");
+}
+export async function writeServerRecord(file: string, record: object, exclusive = false, owner?: ServerRecordOwner): Promise<void> {
   await ensurePrivateServerDir(dirname(file));
   const bytes = JSON.stringify(record);
   if (Buffer.byteLength(bytes) > 16_384) throw invalid();
@@ -56,6 +65,8 @@ export async function writeServerRecord(file: string, record: object, exclusive 
   const temporary = `${file}.${randomBytes(16).toString("hex")}`;
   try {
     writeFileSync(temporary, bytes, { flag: "wx", mode: 0o600 });
+    // No asynchronous gap between the ownership check and publication.
+    if (owner) assertServerRecordOwner(owner);
     if (exclusive) linkSync(temporary, file); else renameSync(temporary, file);
   } finally { try { unlinkSync(temporary); } catch (error) { if (!missing(error)) throw error; } }
 }
@@ -82,10 +93,25 @@ export async function reclaimStaleServerRecord(file: string, identity: (pid: num
       try { process.kill(pid, 0); }
       catch (error) { if (["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) confirmedStale = true; else return false; }
       if (!confirmedStale) {
-        const current = await identity(pid);
-        if (current && typeof record?.processIdentity === "string") {
-          if (current === record.processIdentity) return false;
+        if (legacyUsageProcessIdentity(record?.processIdentity)) {
+          if (Date.now() - ageFrom < USAGE_LEGACY_FENCE_MS) return false;
+          if (!file.endsWith(".guard")) {
+            // A legacy birth string cannot authenticate a PID, but an active old
+            // dashboard may outlive its idle window. Do not spawn beside it.
+            let command: string;
+            try {
+              command = (await promisify(execFile)("/bin/ps", ["-p", String(pid), "-o", "command="],
+                { timeout: USAGE_PROCESS_CHECK_TIMEOUT_MS, maxBuffer: 16_384 })).stdout;
+            } catch { return false; } // Unknown command line remains fenced.
+            if (/(?:^|\s)--spider-usage-server(?:\s|$)/.test(command)) return false;
+          }
           confirmedStale = true;
+        } else {
+          const current = await identity(pid);
+          if (current && typeof record?.processIdentity === "string") {
+            if (current === record.processIdentity) return false;
+            confirmedStale = true;
+          }
         }
       }
     }
@@ -109,7 +135,7 @@ export async function reclaimStaleServerRecord(file: string, identity: (pid: num
 export async function sweepServerRecordTemps(dir: string): Promise<void> {
   assertPrivateServerDir(dir);
   for (const name of readdirSync(dir)) {
-    if (!/^(?:lock\.json|startup\.json|replace-intent\.json)\.[a-f0-9]{32}$/.test(name)) continue;
+    if (!/^(?:lock\.json|startup\.json|replace-intent\.json|crash\.log)\.[a-f0-9]{32}$/.test(name)) continue;
     const file = `${dir}/${name}`;
     if (Date.now() - lstatSync(file).mtimeMs < SERVER_RECORD_GRACE_MS) continue;
     if (name.startsWith("replace-intent.json.")) {

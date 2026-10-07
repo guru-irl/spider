@@ -128,7 +128,7 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
       if (missing) value.setAttribute("aria-label", "No value (missing)");
       selection.append(value); slice.append(selection);
     });
-    const periodLabel = element(document, "p", undefined, "period-label"); periodLabel.append(periodTimes(document, period.start, period.end));
+    const periodLabel = element(document, "p", undefined, "period-label"); periodLabel.append(periodTimes(document, period.start, period.end, true));
     header.replaceChildren(periodLabel, slice, aicKey(document));
     content.replaceChildren();
     const mount = mounts[route.view];
@@ -143,7 +143,7 @@ export function startDashboard(options: DashboardOptions = {}): MountedView {
         const end = clock(), date = new Date(end);
         period = { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end };
         const label = header.firstElementChild;
-        if (label) label.replaceChildren(periodTimes(document, period.start, period.end));
+        if (label) label.replaceChildren(periodTimes(document, period.start, period.end, true));
       }
       return period;
     }, get filters() { return filters; }, signal: controller.signal, navigate, requestStarted, idleMs() { return clock() - lastActivity; }, clearFilters() { navigate({ ...route, period: rollingMonth ? undefined : period, filters: [] }, true); } }).then(mounted => {

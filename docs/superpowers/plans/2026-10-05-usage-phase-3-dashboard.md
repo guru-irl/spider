@@ -11,7 +11,7 @@ Assets are strings in `dist/extension.js`; one calibration service feeds views, 
 **Tech Stack:** TypeScript, Node, db-core/better-sqlite3, Vite, DOM/SVG and Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-10-04-usage-dashboard-design.md`.
-Review/resolutions: `.spider/scratch/usage-ui/{PLAN-REVIEW-opus.md,PLAN-NOTES.md}`.
+Approved review resolutions are recorded in the Decisions section below.
 D11 supersedes the spec's published-estimate-only display rule.
 
 ## Global Constraints
@@ -152,6 +152,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 - Try `local()` first; failed `fonts.load()` permits Google CSS, then system fallback. Loading is nonblocking.
 - Keyboard access, semantic tables, SVG titles and `aria-live` are required; never steal focus.
 - Exact actions: Refresh, Table view, Chart view, Next page, Previous page, Add filter, Clear filters, Retry.
+  Superseded: shipped chart toggles are labelled Table and Chart.
 - Refresh queries every 60 s only while visible and active within 5 min. On shutdown show `Run /usage again`; bound retry/abort/disposal.
 - Plain DOM throws on unsupported operations and proves no layout behavior. Synthetic CDP-pipe screenshots use `SPIDER_USAGE_BROWSER`; CI/missing browser gives SKIP/77.
 
@@ -476,6 +477,7 @@ Graceful stop retries any pending lease release once and reports whether release
 
 **Files:**
 - Create: `packages/host/src/usage/{api-routes.ts,dashboard-command.ts,web/assets.ts}` and `scripts/usage-dashboard-assets.mjs`.
+  Superseded: `web/assets.ts` is replaced by the build-time `virtual:spider-usage-dashboard` module.
 - Create: `packages/host/src/usage/__tests__/{dashboard-command.test.ts,dashboard-assets.test.ts,dashboard-bundle.test.ts}`.
 - Modify: `packages/host/src/usage/{server-entry.ts,web/browser.d.ts}`, `packages/host/src/extension.ts` and `vite.config.mjs`.
 - Test: `packages/host/src/usage/__tests__/dashboard-command.test.ts`.
@@ -541,6 +543,7 @@ Graceful stop retries any pending lease release once and reports whether release
 - [x] `CI and missing browser skip explicitly`: Emit SKIP/77 and a regular-suite skip reason.
 - [x] `capture errors fail and close owned processes`: Return nonzero on errors and close all fixtures.
 - [ ] `real Overview chart toggles to table`: Capture 1440x1000 PNG and verify toggle/parity.
+  Superseded: `packaged Overview renders chart and table at 390px and 1272px with non-blank dark screenshots` verifies toggle/parity at 390x844 and 1272x900.
 
 ## Task 6: Explorer queries
 
@@ -572,9 +575,9 @@ Graceful stop retries any pending lease release once and reports whether release
 - `queryDetail(ctx, query: DetailQuery): DetailData`.
 - `queryDetailLinks(ctx, query: DetailQuery): DetailData["links"]`. Produce `DETAIL_ROUTES`; reporting session differs from child transcript.
 
-- [ ] `timeline covers all selected calls`: Page exactly 450 calls, 200 per page, with at most 200 full-timeline buckets; preserve AIC and token totals.
-- [ ] `covered run explains report representation`: Explain coverage, not priced zero.
-- [ ] `session links use migrated index and correct identity`: Page nested/ongoing/deduplicated links using the v2 session index.
+- [x] `timeline covers all selected calls`: Page exactly 450 calls, 200 per page, with at most 200 full-timeline buckets; preserve AIC and token totals.
+- [x] `covered run explains report representation`: Explain coverage, not priced zero.
+- [x] `session links use migrated index and correct identity`: Page nested/ongoing/deduplicated links using the v2 session index.
 
 ## Task 8: Cache/Reconciliation/Rates queries
 
@@ -596,7 +599,7 @@ Graceful stop retries any pending lease release once and reports whether release
 
 - [x] `hit rate weights selected prompt tokens`: Weight cache read by prompt tokens; zero denominator is null. Keep warmer use separate and token weights unchanged.
 - [x] `fork-copy reads do not defeat no-read observation`: Ignore copied/suppressed reads; count native selected lifetime reads.
-- [x] `reconciliation pairs actual compatible anchors`: Computed 12 and counter 10 give published gap -2 and ratio 1.2; use actual snapshot-pair spans; calibrated totals use each pair's endpoint fit. Only endpoints before the earliest accepted fit may use that fit with basis `back-applied`, as authorized by PLAN-NOTES; later gaps use published.
+- [x] `reconciliation pairs actual compatible anchors`: Computed 12 and counter 10 give published gap -2 and ratio 1.2; use actual snapshot-pair spans; calibrated totals use each pair's endpoint fit. Only endpoints before the earliest accepted fit may use that fit with basis `back-applied`, as authorized by D11; later gaps use published.
 - [x] `reset account and clock boundaries are explicit`: Reset/account/clock/zero remain explicit or null in both comparisons.
 - [x] `rates preserve stored amounts and provenance`: Metadata changes do not reprice calls; factor history uses bounded Task 1a results/status gaps.
 
@@ -609,8 +612,8 @@ Graceful stop retries any pending lease release once and reports whether release
 **Interfaces:**
 - `mountExplorer(ctx: ViewContext): Promise<MountedView>`.
 
-- [ ] `typeahead debounces twenty characters`: 20 fast keys yield one request after 300 ms; cancellation rejects stale results.
-- [ ] `pivot cells drill into exact tuples`: Keyboard null/Unknown drill-in preserves slice and chart/table AIC/token parity.
+- [x] `typeahead debounces twenty characters`: 20 fast keys yield one request after 300 ms; cancellation rejects stale results.
+- [x] `pivot cells drill into exact tuples`: Keyboard null/Unknown drill-in preserves slice and chart/table AIC/token parity.
 
 ## Task 10: Detail and Context views
 
@@ -636,9 +639,9 @@ Graceful stop retries any pending lease release once and reports whether release
 - `mountReconciliation(ctx: ViewContext): Promise<MountedView>`.
 - `mountRates(ctx: ViewContext): Promise<MountedView>`.
 
-- [ ] `Cache describes session observations not item reuse`: Show provisional session evidence/D2, not item claims; pair primary component AIC with tokens.
-- [ ] `Reconciliation displays matched endpoints and signed gap`: Show published gap -2 and ratio 1.2 for computed 12/counter 10, plus calibrated comparison; never plot null as zero.
-- [ ] `Rates renders changing metadata without constants`: Render dynamic tiers, aliases, dates and unpriced evidence, with daily factor parity. Off mode preserves published amounts.
+- [x] `Cache describes session observations not item reuse`: Show provisional session evidence/D2, not item claims; pair primary component AIC with tokens.
+- [x] `Reconciliation displays matched endpoints and signed gap`: Show published gap -2 and ratio 1.2 for computed 12/counter 10, plus calibrated comparison; never plot null as zero.
+- [x] `Rates renders changing metadata without constants`: Render dynamic tiers, aliases, dates and unpriced evidence, with daily factor parity. Off mode preserves published amounts.
 
 ## Task 12: API, small query plans and local benchmark
 
@@ -654,10 +657,10 @@ Graceful stop retries any pending lease release once and reports whether release
 - `seedPlanLedger(file: string, rows: number): { periods: readonly Period[]; sessionId: string; runId: string; expected: Record<string, number> }`.
 - Seed 10,000 rows; locally benchmark 1,000,000 across 24 months. Count calibration misses/hits separately.
 
-- [ ] `all routes preserve wire and read-only boundary`: Check D6 headers, auth, HEAD, errors, caps and shared AIC DTOs; allow no writes or account identity.
-- [ ] `small fixture plans enforce range access`: Require range/session/metadata indexes, calibration miss/hit counts and one-pass history; no call scan.
-- [ ] `range-predicate and hint mutants are meaningful`: Fail the plan oracle, not a missing-index exception.
-- [ ] `million row timing is local opt in only`: CI/unset gives SKIP/77; failures are never samples.
+- [x] `all routes preserve wire and read-only boundary`: Check D6 headers, auth, HEAD, errors, caps and shared AIC DTOs; allow no writes or account identity.
+- [x] `small fixture plans enforce range access`: Require range/session/metadata indexes, calibration miss/hit counts and one-pass history; no call scan.
+- [x] `range-predicate and hint mutants are meaningful`: Fail the plan oracle, not a missing-index exception.
+- [x] `million row timing is local opt in only`: CI/unset gives SKIP/77; failures are never samples.
 
 ## Task 13: Integration, guide and visual acceptance
 

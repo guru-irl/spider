@@ -1,16 +1,16 @@
 import type { Period, OverviewData, OverviewBreakdown, UsageMeasure, CalibrationResult, TokenTotals, AicDisplay, DashboardStatus, Page, SourceErrorRow } from "../dashboard-contract.js";
 import type { ViewContext, MountedView } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
-import { formatAicDisplay, formatCount, formatEstimatedAic, formatTokens, readableKey, tokenList, numericText, evidenceText, utcTime, periodTimes } from "./format.js";
+import { formatCallEvidence, calibrationText, formatAicDisplay, formatCount, formatEstimatedAic, formatTokens, readableKey, tokenList, numericText, evidenceText, utcTime, periodTimes, formatRatio, signedGap } from "./format.js";
 import { chartWithTable, type ChartPoint } from "./charts.js";
 import { renderTable, tableRegion } from "./tables.js";
-import { canRetry, errorCopy, DashboardClientError } from "./client.js";
+import { shouldStopPolling, canRetry, errorCopy, DashboardClientError } from "./client.js";
 
 function qualifiers(measure: Pick<UsageMeasure, "possibleOverlap" | "possibleUndercount" | "pendingData">): string[] {
   return [measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean);
 }
 function evidence(measure: UsageMeasure): string {
-  return [`${formatCount(measure.calls, "call")}; ${formatTokens(measure.unpricedCalls)} unpriced; ${formatTokens(measure.aggregateCalls)} aggregate`, ...qualifiers(measure)].join(" · ");
+  return formatCallEvidence(measure);
 }
 function displayRow(document: Document, label: string, measure: { aicDisplay: AicDisplay; tokens: TokenTotals }, calibration: CalibrationResult, unpriced: number, note: string | HTMLElement): (string | HTMLElement)[] {
   const aic = formatAicDisplay(measure.aicDisplay, unpriced, calibration);
@@ -29,11 +29,11 @@ function charts(ctx: ViewContext, data: OverviewData): HTMLElement {
     for (const basis of ["calibrated", "back-applied", "published"] as const) {
       const selected = rows.filter(row => row.measure.aicDisplay.basis === basis);
       if (!selected.length) continue;
-      const points: ChartPoint[] = selected.map(row => ({ start: row.start, end: row.end, label: row.label,
+      const points: ChartPoint[] = selected.map(row => ({ start: row.start, end: row.end, label: row.label, labelDate: "day",
         value: row.measure.aicDisplay.primaryAic, tokens: row.measure.tokens, lowerBound: row.measure.unpricedCalls > 0,
         note: `${formatAicDisplay(row.measure.aicDisplay, row.measure.unpricedCalls, data.calibration).primary} · published estimate ${formatEstimatedAic(row.measure.aicDisplay.publishedAic, row.measure.unpricedCalls).replace(/ published estimate$/, "")} · ${basis === "back-applied" ? "calibrated, back-applied" : basis} · ${evidence(row.measure)}` }));
       root.append(chartWithTable(ctx.document, { view: "overview", section: `${section}:${basis}`, title: `${title} · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`, points,
-        unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic" }));
+        calibrationStatus: data.calibration.status, unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic" }));
     }
   };
   draw("daily-total", "Daily total", data.daily.rows);
@@ -41,7 +41,7 @@ function charts(ctx: ViewContext, data: OverviewData): HTMLElement {
     for (const row of data[dimension]) {
       const days = data.daily.rows.flatMap(day => {
         const match = day[dimension].find(item => item.label === row.label && item.isOther === row.isOther);
-        return match ? [{ start: day.start, end: day.end, label: day.label, measure: match.measure }] : [];
+        return match ? [{ start: day.start, end: day.end, label: day.label, labelDate: "day", measure: match.measure }] : [];
       });
       draw(`${dimension}:${JSON.stringify([row.label, row.isOther])}`, `Daily ${dimension === "actors" ? "actor" : "role"} · ${breakdownLabel(row)}`, days);
     }
@@ -51,9 +51,8 @@ function charts(ctx: ViewContext, data: OverviewData): HTMLElement {
 function renderOverview(ctx: ViewContext, data: OverviewData): HTMLElement {
   const root = element(ctx.document, "div", undefined, "overview-evidence");
   root.append(element(ctx.document, "p", "AIC is approximate; tokens are recorded.", "muted"));
-  const legend = formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend;
   const calibrationEvidence = element(ctx.document, "p", undefined, "calibration-evidence");
-  calibrationEvidence.append(evidenceText(ctx.document, legend)); root.append(calibrationEvidence);
+  calibrationEvidence.append(calibrationText(ctx.document, data.calibration, data.totals.aicDisplay.basis)); root.append(calibrationEvidence);
   root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Selected usage", columns,
     rows: [displayRow(ctx.document, "Selected period", data.totals, data.calibration, data.totals.unpricedCalls, evidence(data.totals))] })));
   root.append(element(ctx.document, "p", "The counter is account-wide and includes other clients. Billing lags and integer quantization limit comparison. Calibration does not prove exact billing or completeness.", "muted"));
@@ -64,14 +63,14 @@ function renderOverview(ctx: ViewContext, data: OverviewData): HTMLElement {
   root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Account comparison", columns, rows: comparisonRows })));
   const counterComparison = element(ctx.document, "p");
   counterComparison.append(numericText(ctx.document, comparison.counterAic === null ? "Current account comparison unavailable for this period."
-    : `${formatTokens(comparison.counterAic)} AIC counter · published gap ${comparison.gap === null ? "unavailable" : `~${formatTokens(comparison.gap)} AIC`} · published ratio ${comparison.ratio === null ? "unavailable" : `~${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(comparison.ratio)}`}`));
+    : `${formatTokens(comparison.counterAic)} AIC counter · published gap ${signedGap(comparison.gap)} · published ${formatRatio(comparison.ratio)}`));
   root.append(counterComparison);
   root.append(breakdown(ctx, "Actors", data.actors, data.calibration), breakdown(ctx, "Roles", data.roles, data.calibration));
   const projected = data.pace.projected;
   root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Month pace", columns, rows: projected ? [displayRow(ctx.document, "Linear month-end projection", projected, data.calibration,
     data.totals.unpricedCalls, ["Linear pace, not a forecast", ...qualifiers(projected)].join(" · "))] : [] })));
   root.append(element(ctx.document, "p", projected ? `Counter month-end pace: ${data.pace.counterAic === null ? "unavailable" : `~${formatTokens(data.pace.counterAic)} AIC`}` : "Month pace unavailable for this period.", "muted"));
-  root.append(charts(ctx, data));
+  root.append(element(ctx.document, "h2", "Daily observations"), charts(ctx, data));
   return root;
 }
 function mountHealth(ctx: ViewContext, parent: HTMLElement): { refresh(reset?: boolean, preserveFocus?: boolean): void; dispose(): void; hasFocus(): boolean; suspend(): void } {
@@ -175,7 +174,7 @@ export async function mountOverview(ctx: ViewContext): Promise<MountedView> {
     } catch (error) {
       if (disposed || ctx.signal.aborted || current !== sequence) return;
       clear.hidden = !(error instanceof DashboardClientError && error.code === "unknown-filter-id");
-      message.textContent = errorCopy(error, ctx); shutdown = message.textContent === "Run /usage again" || !canRetry(error); retry.hidden = !canRetry(error);
+      message.textContent = errorCopy(error, ctx); shutdown = shouldStopPolling(error); retry.hidden = !canRetry(error);
     } finally { if (current === sequence) loading = false; }
   }
   const activity = () => { lastActivity = Date.now(); };

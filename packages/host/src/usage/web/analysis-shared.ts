@@ -2,8 +2,8 @@ import type { UsageMeasure } from "../dashboard-contract.js";
 import type { ViewContext, MountedView } from "./views.js";
 import { action, element, updateEvidence } from "./dom.js";
 import { renderTable, tableRegion } from "./tables.js";
-import { formatTokens, datedText, numericText, evidenceText } from "./format.js";
-import { canRetry, DashboardClientError } from "./client.js";
+import { formatCallEvidence, formatTokens, numericText, evidenceText } from "./format.js";
+import { shouldStopPolling } from "./client.js";
 import { createPager } from "./pager.js";
 import { chartWithTable, type ChartPoint } from "./charts.js";
 
@@ -12,11 +12,10 @@ export const analysisNumber = (value: number | null): string => value === null ?
 export const analysisPercent = (value: number | null): string => value === null ? "unavailable" : `~${decimal.format(value * 100)}%`;
 export const counted = (count: number, noun: string): string => `${formatTokens(count)} ${noun}${count === 1 ? "" : "s"}`;
 export function analysisEvidence(measure: UsageMeasure): string {
-  return [`${counted(measure.calls, "call")}; ${formatTokens(measure.unpricedCalls)} unpriced; ${formatTokens(measure.aggregateCalls)} aggregate`,
-    measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean).join(" · ");
+  return formatCallEvidence(measure);
 }
 export function analysisTable(ctx: ViewContext, caption: string, columns: readonly string[], rows: readonly (readonly (string | HTMLElement)[])[]): HTMLElement {
-  return tableRegion(ctx.document, renderTable(ctx.document, { caption, columns, rows: rows.map(row => row.map(value => typeof value === "string" ? datedText(ctx.document, value, text => numericText(ctx.document, text)) : value)) }));
+  return tableRegion(ctx.document, renderTable(ctx.document, { caption, columns, rows: rows.map(row => row.map(value => typeof value === "string" ? numericText(ctx.document, value) : value)) }));
 }
 export function analysisParams(ctx: ViewContext, filters = true): URLSearchParams {
   const params = new URLSearchParams({ limit: "50" });
@@ -24,16 +23,12 @@ export function analysisParams(ctx: ViewContext, filters = true): URLSearchParam
   return params;
 }
 /** Text-only prose with numeric runs in the dashboard's number face. */
-export function analysisProse(ctx: ViewContext, text: string, className = "muted"): HTMLElement {
+export function analysisProse(ctx: ViewContext, text: string | HTMLElement, className = "muted"): HTMLElement {
   const p = element(ctx.document, "p", undefined, className);
-  p.append(evidenceText(ctx.document, text));
+  p.append(typeof text === "string" ? evidenceText(ctx.document, text) : text);
   return p;
 }
-export function signedGap(value: number | null): string {
-  if (value === null) return "unavailable";
-  const rounded = Math.round(Math.abs(value)) * Math.sign(value);
-  return `${rounded > 0 ? "+" : ""}${formatTokens(Object.is(rounded, -0) ? 0 : rounded)} AIC`;
-}
+export { signedGap } from "./format.js";
 /** Native signed whole-AIC gaps; geometry uses unrounded DTO values. */
 export function gapChart(ctx: ViewContext, title: string, points: readonly ChartPoint[], gapBasis: "published" | "calibrated" | "back-applied" = "published"): HTMLElement {
   return chartWithTable(ctx.document, { view: "reconciliation", section: `gap:${gapBasis}`, title, points, unit: "gap-aic", gapBasis });
@@ -109,7 +104,7 @@ export async function mountAnalysis<T>(ctx: ViewContext, options: {
         pages[target]!.pager.notice(`${prefix}Page link no longer valid. Showing page 1.`, announce);
         void refresh(announce, initiator); return;
       }
-      shutdown = !canRetry(error) || (error instanceof DashboardClientError && ["server-unavailable", "unauthorized"].includes(error.code));
+      shutdown = shouldStopPolling(error);
       pages.forEach((page, i) => { if (i === target) page.pager.fail(error, announce); else page.pager.cancel(!announce && included[i] ? error : undefined); });
     } finally {
       if (current === sequence) {

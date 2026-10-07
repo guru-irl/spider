@@ -72,7 +72,7 @@ describe("web Overview", () => {
     const view = await mountOverview(f.ctx);
     try {
       await settle();
-      expect.soft(tableRows(f.root, "Selected usage")[0]![4]).toBe(`${count} ${count === 1 ? "call" : "calls"}; 0 unpriced; 0 aggregate`);
+      expect.soft(tableRows(f.root, "Selected usage")[0]![4]).toBe(`${count} ${count === 1 ? "call" : "calls"} · 0 unpriced · 0 aggregate`);
       expect.soft(f.root.textContent).toContain(`Backfill: complete · ${count} of ${count} ${count === 1 ? "source" : "sources"}`);
       expect.soft(f.root.textContent).toContain(count ? `${count} source ${count === 1 ? "diagnostic" : "diagnostics"} on this page` : "No source diagnostics recorded.");
     } finally { view.dispose(); }
@@ -144,7 +144,7 @@ describe("web Overview", () => {
       expect.soft(context!.id).toBe("session-fixture"); expect(context!.period.end).toBe(Date.parse("2030-01-31T23:59:30.000Z"));
       await vi.advanceTimersByTimeAsync(60000);
       expect(context!.period).toEqual({ start: Date.parse("2030-02-01T00:00:00.000Z"), end: Date.parse("2030-02-01T00:00:30.000Z") });
-      expect(elements(f.root, "p").find(node => node.className === "period-label")!.textContent).toBe("1 Feb 2030 to 1 Feb 2030, 00:00:30 UTC");
+      expect(elements(f.root, "p").find(node => node.className === "period-label")!.textContent).toBe("1 Feb 2030, 00:00 UTC to 1 Feb 2030, 00:00:30 UTC");
       context!.navigate({ view: "session", id: "new-session" }); await settle(); expect(context!.id).toBe("new-session");
       const request = new URL(f.requests.filter(path => path.startsWith("/api/overview")).at(-1)!, "http://fixture");
       expect(request.searchParams.get("end")).toBe(String(Date.parse("2030-02-01T00:00:30.000Z"))); app.dispose();
@@ -201,7 +201,7 @@ describe("web Overview", () => {
   it("empty breakdowns explain their missing rows", async () => {
     const { mountOverview } = await import("../web/overview.js"), data = overview(); data.actors = []; data.roles = [];
     const f = fixture(data), view = await mountOverview(f.ctx); await settle();
-    expect(tableRows(f.root, "Actors")).toEqual([["No rows for this period"]]); expect(tableRows(f.root, "Roles")).toEqual([["No rows for this period"]]); view.dispose();
+    expect(tableRows(f.root, "Actors")).toEqual([["No rows recorded"]]); expect(tableRows(f.root, "Roles")).toEqual([["No rows recorded"]]); view.dispose();
   });
   it("app-level Retry focuses the heading of the newly mounted view", async () => {
     const { startDashboard } = await import("../web/app.js"), { mountOverview } = await import("../web/overview.js"); let first = true;
@@ -343,10 +343,10 @@ describe("web Overview", () => {
     const f = fixture(data); const view = await mountOverview(f.ctx); await settle();
     const totalChart = (basis: string) => elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H3" && child.textContent === `Daily total · ${basis}`))!;
     expect(elements(totalChart("calibrated"), "title")[1]!.textContent).toContain("560+ AIC cal");
-    expect(tableRows(totalChart("calibrated"), "Daily total · calibrated")[0]![2]).toBe("560+ AIC calibrated");
-    expect(elements(totalChart("calibrated"), "p")[0]!.textContent).toContain("560+ AIC calibrated maximum");
+    expect(tableRows(totalChart("calibrated"), "Daily total · calibrated")[0]![2]).toBe("560+ AIC cal");
+    expect(elements(totalChart("calibrated"), "p")[0]!.textContent).toContain("560+ AIC cal maximum");
     expect(elements(totalChart("calibrated, back-applied"), "title")[1]!.textContent).toContain("calibrated, back-applied");
-    expect(tableRows(totalChart("calibrated, back-applied"), "Daily total · calibrated, back-applied")[0]![2]).toBe("560 AIC calibrated, back-applied");
+    expect(tableRows(totalChart("calibrated, back-applied"), "Daily total · calibrated, back-applied")[0]![2]).toBe("560 AIC cal (back-applied)");
     expect(elements(totalChart("published"), "circle")).toHaveLength(0);
     expect(elements(totalChart("published"), "title")[1]!.textContent).toContain("unpriced AIC");
     view.dispose();
@@ -456,7 +456,7 @@ describe("web Overview", () => {
     const module = await import("../web/overview.js").catch(() => null);
     expect(module, "Overview mount is available").not.toBeNull();
     const f = fixture(); const view = await module!.mountOverview(f.ctx); await settle();
-    expect(tableRows(f.root, "Actors")[0]).toEqual(["parent", "560 AIC cal", "~1,000 AIC published estimate", "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable", "1 call; 0 unpriced; 0 aggregate"]);
+    expect(tableRows(f.root, "Actors")[0]).toEqual(["parent", "560 AIC cal", "~1,000 AIC published estimate", "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable", "1 call · 0 unpriced · 0 aggregate"]);
     expect(tableRows(f.root, "Roles").map(row => row[0])).toEqual(["Other", "Other (remaining roles)"]);
     expect(tableRows(f.root, "Month pace")[0]!.slice(0, 3)).toEqual(["Linear month-end projection", "1,120 AIC cal", "~2,000 AIC published estimate"]);
     expect(tableRows(f.root, "Month pace")[0]![3]).toContain("total 200");
@@ -465,7 +465,7 @@ describe("web Overview", () => {
     expect(f.root.textContent).not.toMatch(/insights|what-if|alerts/i);
     expect(f.root.textContent).toContain("counter is account-wide");
     const chart = elements(f.root, "section").find(node => elements(node, "h3")[0]?.textContent === "Daily actor · parent · calibrated");
-    expect(chart).toBeDefined(); expect(elements(chart!, "title")[1]!.textContent).toContain("560 AIC calibrated");
+    expect(chart).toBeDefined(); expect(elements(chart!, "title")[1]!.textContent).toContain("560 AIC cal");
     expect(elements(chart!, "title")[1]!.textContent).toContain("published estimate ~1,000 AIC");
     expect(elements(chart!, "title")[1]!.textContent).toContain("total 100");
     button(chart!, "Table").click(); expect(elements(chart!, "table")[0]!.parentElement!.hidden).toBe(false);

@@ -149,3 +149,6 @@ p { overflow-wrap: anywhere; }
 .token-summary { white-space: nowrap; }
 .wide-table td:has(.token-summary) { max-width: none; }
 .wide-table td[data-label="Calibration evidence"] { min-width: 24rem; max-width: 26rem; }
+
+/* Keep manual success announcements audible without duplicating the Updated stamp. */
+.live-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

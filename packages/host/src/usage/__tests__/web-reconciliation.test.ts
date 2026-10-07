@@ -31,8 +31,8 @@ it("Reconciliation displays matched endpoints and signed gap", async () => {
     expect(requests[0]!.pathname).toBe("/api/reconciliation"); expect(requests[0]!.searchParams.has("filters")).toBe(false); expect(requests[0]!.searchParams.get("bucket")).toBe("day");
     expect(root.textContent).toContain("Selected filters do not apply");
     const published = rows(root, "Published comparison")[0]!;
-    expect(published).toEqual(["1 Jan 1970 to 2 Jan 1970, 00:00 UTC", "1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC", "Partial coverage", "10 AIC counter", "~12 AIC published estimate", "-2 AIC", "~1.20 ratio", "prompt 60 · output 40 · total 100"]);
-    expect(rows(root, "Calibrated comparison")[0]!.slice(2, 5)).toEqual(["~8 AIC calibrated", "+2 AIC", "~0.76 ratio"]);
+    expect(published).toEqual(["1 Jan 1970", "1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC", "Partial coverage", "10 AIC counter", "~12 AIC published estimate", "-2 AIC", "~1.2 ratio", "prompt 60 · output 40 · total 100"]);
+    expect(rows(root, "Calibrated comparison")[0]!.slice(2, 5)).toEqual(["8 AIC cal", "+2 AIC", "~0.76 ratio"]);
     const coverage = rows(root, "Snapshot coverage")[0]!; expect(coverage).toContain("~4.17%"); expect(coverage).toContain("1 h covered"); expect(coverage).toContain("1 observed reset anchor"); expect(coverage.join(" ")).toContain("Account change: 1");
     for (const word of ["No snapshot pair", "Unobserved reset", "Clock ordering anomaly", "Account change", "Missing anchor", "Counter decreased", "Invalid counter"]) expect(root.textContent).toContain(word);
     expect(root.textContent).toContain("whole AIC (1 AIC)"); expect(root.textContent).toContain("Billing lag"); expect(root.textContent).toContain("3 to 5 minutes"); expect(root.textContent).toContain("not prorated");
@@ -41,10 +41,16 @@ it("Reconciliation displays matched endpoints and signed gap", async () => {
     const calibratedChart = elements(root, "section").find(n => n.children.some(c => c.tagName === "H3" && c.textContent === "Calibrated gap"))!;
     expect(elements(calibratedChart, "circle")).toHaveLength(1);
     expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![2]).toBe("+2 AIC");
-    expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![1]).toBe("1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC");
+    expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![1]).toBe("1 Jan 1970");
     expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![4]).toContain("~0.76 ratio");
     expect(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")).toHaveLength(1);
     expect(rows(gaps, "Published gap · Gap: counter minus published")[0]![2]).toBe("-2 AIC");
+    // Breaks: prefixing formatRatio with a second ratio label, in tables or tooltips.
+    const publishedEvidence = "Partial coverage · coverage ~4.17% · matched 1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC · signed gap -2 AIC · ~1.2 ratio · 1 call · 0 unpriced · 0 aggregate";
+    const calibratedEvidence = "Partial coverage · coverage ~4.17% · matched 1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC · signed gap +2 AIC · ~0.76 ratio · 1 call · 0 unpriced · 0 aggregate";
+    expect.soft(rows(gaps, "Published gap · Gap: counter minus published")[0]![4]).toBe(publishedEvidence);
+    expect.soft(rows(calibratedChart, "Calibrated gap · Gap: counter minus calibrated")[0]![4]).toBe(calibratedEvidence);
+    expect.soft(elements(gaps, "title")[1]!.textContent).toBe("1 Jan 1970 · 1 Jan 1970 · -2 AIC · input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable · " + publishedEvidence);
     expect(button(root, "Daily buckets").getAttribute("aria-pressed")).toBe("true");
     expect(elements(root, "script")).toHaveLength(0); expect(root.textContent).toContain("<script>evil()</script>");
     button(root, "Next page").click(); await settle(); expect(requests.at(-1)!.searchParams.get("cursor")).toBe("pair-next");
@@ -66,7 +72,7 @@ it("Reconciliation distinguishes pair-fit nulls and signed whole-AIC gaps", asyn
     const chart = elements(root, "section").find(n => n.children.some(c => c.tagName === "H3" && c.textContent === "Calibrated gap"))!;
     expect(elements(chart, "circle")).toHaveLength(1); expect(rows(chart, "Calibrated gap · Gap: counter minus calibrated").map(r => r[2])).toEqual(["unavailable", "+2 AIC"]);
     expect(rows(root, "Published comparison").map(r => r[5])).toEqual(["0 AIC", "-2 AIC"]);
-    const calibrated = rows(root, "Calibrated comparison"); expect(calibrated[0]![2]).toBe("unavailable"); expect(calibrated[1]!.slice(2, 5)).toEqual(["~8 AIC calibrated", "+2 AIC", "~0.76 ratio"]);
+    const calibrated = rows(root, "Calibrated comparison"); expect(calibrated[0]![2]).toBe("unavailable"); expect(calibrated[1]!.slice(2, 5)).toEqual(["8 AIC cal", "+2 AIC", "~0.76 ratio"]);
     expect(elements(root, "th").some(n => n.textContent === "Primary AIC (approximate)")).toBe(false);
     const caption = elements(chart, "p").find(n => n.className.split(" ").includes("chart-summary"))!;
     expect(caption.textContent).toContain("Gap: counter minus calibrated"); expect(caption.textContent).toContain("+2 AIC minimum");
@@ -84,7 +90,7 @@ it("Reconciliation distinguishes pair-fit nulls and signed whole-AIC gaps", asyn
   const source = data(); source.periods.rows[0]!.computed!.unpricedCalls = 1;
   const client = createDashboardClient(async () => new Response(JSON.stringify({ apiVersion: 1, revision: "fixture:0", period, generatedAt: 0, data: source })));
   const view = await mountReconciliation({ document: doc.asDocument(), root: root as unknown as HTMLElement, client, period, filters: [], signal: new AbortController().signal, navigate() {} }); await settle();
-  try { expect(rows(root, "Calibrated comparison")[0]![2]).toBe("~8+ AIC calibrated"); }
+  try { expect(rows(root, "Calibrated comparison")[0]![2]).toBe("8+ AIC cal"); }
   finally { view.dispose(); }
 });
 
@@ -117,15 +123,15 @@ it("Reconciliation uses day/month bucket labels and end-snapshot labels, while t
   const chart = () => elements(root, "section").find(n => n.children.some(c => c.tagName === "H3" && c.textContent === "Published gap"))!;
   const summary = () => elements(chart(), "p").find(p => p.className.split(" ").includes("chart-summary"))!.textContent;
   try {
-    expect(summary()).toContain("1970-01-01 to 1970-01-02 ·");
-    expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1970-01-01", "1970-01-02"]);
+    expect(summary()).toContain("1 Jan 1970 to 2 Jan 1970 ·");
+    expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1 Jan 1970", "2 Jan 1970"]);
     button(root, "Monthly buckets").click(); await settle();
-    expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1970-01", "1970-01"]);
+    expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["Jan 1970", "Jan 1970"]);
     button(root, "Snapshot pairs").click(); await settle();
-    expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1970-01-01T02:00:00.000Z", "1970-01-02T02:00:00.000Z"]);
+    expect(rows(chart(), "Published gap · Gap: counter minus published").map(r => r[0])).toEqual(["1 Jan 1970, 02:00 UTC", "2 Jan 1970, 02:00 UTC"]);
     expect(rows(root, "Published comparison")[0]![1]).toBe("1 Jan 1970, 01:00 UTC to 1 Jan 1970, 02:00 UTC");
     source.periods.rows = [source.periods.rows[0]!]; button(root, "Refresh").click(); await settle();
-    expect(rows(chart(), "Published gap · Gap: counter minus published")[0]![0]).toBe("1970-01-01T02:00:00.000Z");
+    expect(rows(chart(), "Published gap · Gap: counter minus published")[0]![0]).toBe("1 Jan 1970, 02:00 UTC");
   } finally { view.dispose(); }
 });
 
@@ -150,7 +156,7 @@ it.each(["calibrated", "back-applied", "mixed"] as const)("Reconciliation splits
       expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toContain(`Gap: counter minus ${basis}`);
     }
     expect(captions.filter(c => c.startsWith("Calibrated gap"))).toHaveLength(wants.length);
-    expect(rows(root, "Calibrated comparison").map(r => r[2])).toEqual(wants.map(b => b === "calibrated" ? "~8 AIC calibrated" : "~8 AIC calibrated, back-applied"));
+    expect(rows(root, "Calibrated comparison").map(r => r[2])).toEqual(wants.map(b => b === "calibrated" ? "8 AIC cal" : "8 AIC cal (back-applied)"));
   } finally { view.dispose(); }
 });
 it("snapshot gaps without matched endpoints use the row's end time", async () => {
@@ -161,7 +167,7 @@ it("snapshot gaps without matched endpoints use the row's end time", async () =>
   const view = await mountReconciliation({ document: doc.asDocument(), root: root as unknown as HTMLElement, client, period, filters: [], signal: new AbortController().signal, navigate() {} }); await settle();
   try {
     button(root, "Snapshot pairs").click(); await settle();
-    expect(rows(root, "Published gap · Gap: counter minus published")[0]![0]).toBe("1970-01-01T02:00:00.000Z");
+    expect(rows(root, "Published gap · Gap: counter minus published")[0]![0]).toBe("1 Jan 1970, 02:00 UTC");
   } finally { view.dispose(); }
 });
 
@@ -182,7 +188,7 @@ it("early history without a calibration window labels E16 back-applied query amo
     const { mountReconciliation } = await import("../web/reconciliation.js"), doc = new PlainDocument(), root = doc.createElement("main"); doc.body.append(root);
     const client = createDashboardClient(async () => new Response(JSON.stringify({ apiVersion: 1, revision: "fixture:0", period: selected, generatedAt: 0, data: source })));
     view = await mountReconciliation({ document: doc.asDocument(), root: root as unknown as HTMLElement, client, period: selected, filters: [], signal: new AbortController().signal, navigate() {} }); await settle();
-    expect(rows(root, "Calibrated comparison")[0]![2]).toBe("~500 AIC calibrated, back-applied");
+    expect(rows(root, "Calibrated comparison")[0]![2]).toBe("500 AIC cal (back-applied)");
     expect(rows(root, "Calibrated gap · calibrated, back-applied · Gap: counter minus back-applied")[0]![2]).toBe("0 AIC");
   } finally { view?.dispose(); reader.close(); fixture.close(); }
 });

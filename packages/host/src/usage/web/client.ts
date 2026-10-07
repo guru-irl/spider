@@ -2,23 +2,25 @@ import type { ApiEnvelope, ApiErrorCode } from "../dashboard-contract.js";
 export interface DashboardClient {
   get<T>(path: string, params: URLSearchParams, signal: AbortSignal): Promise<ApiEnvelope<T>>;
 }
-// The identity codes are added by the parallel Explorer contract work.
-export type DashboardApiErrorCode = ApiErrorCode | "unknown-filter-id" | "identity-unavailable";
 export class DashboardClientError extends Error {
-  constructor(readonly code: DashboardApiErrorCode | "server-unavailable" | "timeout") { super(code); }
+  constructor(readonly code: ApiErrorCode | "server-unavailable" | "timeout") { super(code); }
 }
 export function canRetry(error: unknown): boolean {
   return !(error instanceof DashboardClientError && ["unknown-filter-id", "identity-unavailable", "invalid-query", "ledger-changed"].includes(error.code));
 }
+/** Stop automatic refresh independently of the displayed recovery copy. */
+export function shouldStopPolling(error: unknown): boolean {
+  return !canRetry(error) || (error instanceof DashboardClientError && ["server-unavailable", "unauthorized"].includes(error.code));
+}
 const paths = new Set(["/api/status", "/api/overview", "/api/source-errors", "/api/context", "/api/explorer", "/api/filter-values", "/api/detail", "/api/detail-links", "/api/cache", "/api/reconciliation", "/api/rates"]);
-const codes = new Set<DashboardApiErrorCode>(["unknown-filter-id", "identity-unavailable", "invalid-query", "ledger-changed", "ledger-unavailable", "unsupported-schema", "busy", "not-found", "unauthorized", "forbidden", "method-not-allowed", "response-limit", "rate-limited", "internal"]);
+const codes = new Set<ApiErrorCode>(["unknown-filter-id", "identity-unavailable", "invalid-query", "ledger-changed", "ledger-unavailable", "unsupported-schema", "busy", "not-found", "unauthorized", "forbidden", "method-not-allowed", "response-limit", "rate-limited", "internal"]);
 export function errorCopy(error: unknown, actions?: { clearFilters?: () => void }): string {
   const code = error instanceof DashboardClientError ? error.code : "internal";
   if (code === "server-unavailable" || code === "unauthorized") return "Run /usage again";
   if (code === "unknown-filter-id") return actions?.clearFilters
     ? "Selected filter is no longer available. Clear filters to continue."
     : "Selected filter is no longer available. Remove the unknown filter from the address to continue.";
-  if (code === "identity-unavailable") return "Usage identity unavailable. Run /usage again.";
+  if (code === "identity-unavailable") return "Usage identity unavailable. Remove the ledger's explorer-salt file if it is unusable and wait five seconds, then refresh. Opaque filter bookmarks must be rebuilt.";
   if (code === "invalid-query") return "Invalid usage query or cursor. Refresh to start a new page.";
   if (code === "ledger-changed") return "Usage changed. Refresh to start a new page.";
   if (code === "ledger-unavailable") return "Usage ledger unavailable. Retry after ingestion starts.";

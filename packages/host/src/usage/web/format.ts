@@ -1,10 +1,15 @@
-import type { TokenTotals, AicDisplay, CalibrationResult } from "../dashboard-contract.js";
+import type { TokenTotals, AicDisplay, CalibrationResult, UsageMeasure } from "../dashboard-contract.js";
 import { element } from "./dom.js";
 const decimal = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const integer = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const countPlural = new Intl.PluralRules("en-US", { maximumFractionDigits: 0 });
 export function formatCount(value: number, singular: string): string {
   return `${formatTokens(value)} ${countPlural.select(value) === "one" ? singular : `${singular}s`}`;
+}
+/** Every view shares call counts, qualifiers and a single separator. */
+export function formatCallEvidence(measure: UsageMeasure): string {
+  return [formatCount(measure.calls, "call"), `${formatTokens(measure.unpricedCalls)} unpriced`, `${formatTokens(measure.aggregateCalls)} aggregate`,
+    measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean).join(" · ");
 }
 const keyLabels: Readonly<Record<string, string>> = {
   "trailing-7d-ratio": "trailing 7-day ratio",
@@ -25,13 +30,23 @@ export function formatEstimatedAic(value: number | null, unpricedCalls: number):
   if (value === null) return unpricedCalls > 0 ? "unpriced AIC" : "AIC unavailable";
   return `~${formatTokens(value)}${unpricedCalls > 0 ? "+" : ""} AIC published estimate`;
 }
+/** Primary amounts share the same basis tags in tables, chart captions and tooltips. */
+export function formatAicAmount(value: number | null, unpricedCalls: number, basis: AicDisplay["basis"], status: CalibrationResult["status"]): string {
+  if (value === null || !Number.isFinite(value)) return unpricedCalls > 0 ? "unpriced AIC" : "AIC unavailable";
+  const tag = basis === "back-applied" ? "cal (back-applied)" : basis === "calibrated" ? "cal" : status === "off" ? "est" : "?";
+  return `${basis === "published" ? "~" : ""}${formatTokens(value)}${unpricedCalls > 0 ? "+" : ""} AIC ${tag}`;
+}
+export function formatRatio(value: number | null): string {
+  return value === null || !Number.isFinite(value) ? "unavailable" : `~${decimal.format(value)} ratio`;
+}
+export function signedGap(value: number | null, lowerBound = false): string {
+  if (value === null || !Number.isFinite(value)) return "unavailable";
+  const rounded = Math.round(Math.abs(value)) * Math.sign(value);
+  return `${rounded > 0 ? "+" : ""}${formatTokens(rounded === 0 ? 0 : rounded)}${lowerBound ? "+" : ""} AIC`;
+}
 export function formatAicDisplay(display: AicDisplay, unpricedCalls: number, calibration: CalibrationResult): { primary: string; secondary: string; legend: string } {
-  const calibrated = display.basis !== "published";
-  const label = display.basis === "back-applied" ? "calibrated, back-applied" : "calibrated";
-  const value = display.primaryAic;
-  const primary = value === null ? (unpricedCalls > 0 ? "unpriced AIC" : "AIC unavailable")
-    : `${calibrated ? "" : "~"}${formatTokens(value)}${unpricedCalls > 0 ? "+" : ""} AIC ${calibrated ? display.basis === "back-applied" ? label : "cal" : calibration.status === "off" ? "est" : "?"}`;
-  return { primary, secondary: formatEstimatedAic(display.publishedAic, unpricedCalls), legend: formatCalibration(calibration, display.basis) };
+  return { primary: formatAicAmount(display.primaryAic, unpricedCalls, display.basis, calibration.status),
+    secondary: formatEstimatedAic(display.publishedAic, unpricedCalls), legend: formatCalibration(calibration, display.basis) };
 }
 /** Factor wording is shared by daily columns and calibration summaries. */
 export function formatCalibrationFactor(calibration: CalibrationResult): string {
@@ -43,19 +58,32 @@ export function formatCalibrationEvidence(calibration: CalibrationResult): strin
   return `${decimal.format(calibration.coveredHours)} h covered · computed ~${formatTokens(calibration.computedAic)} AIC · counter delta ${formatTokens(calibration.counterDelta)} AIC · ${formatCount(calibration.unpricedCalls, "unpriced call")} · ${readableKey(calibration.method)}`;
 }
 /** Shared calibration wording for legends, Rates summaries and daily evidence. */
-export function formatCalibration(calibration: CalibrationResult, basis: AicDisplay["basis"] = calibration.status === "calibrated" ? "calibrated" : "published"): string {
+function calibrationParts(calibration: CalibrationResult, basis: AicDisplay["basis"] = calibration.status === "calibrated" ? "calibrated" : "published"): { summary: string; window: string; hasWindow: boolean; evidence: string } {
   const calibrated = basis !== "published";
   const label = basis === "back-applied" ? "calibrated, back-applied" : "calibrated";
   const hasWindow = calibration.windowStart !== null && calibration.windowEnd !== null;
-  const window = hasWindow ? `${new Date(calibration.windowStart!).toISOString()} to ${new Date(calibration.windowEnd!).toISOString()} UTC` : "UTC window unavailable";
+  const window = hasWindow ? formatPeriod(calibration.windowStart!, calibration.windowEnd!) : "UTC window unavailable";
   const days = hasWindow ? decimal.format((calibration.windowEnd! - calibration.windowStart!) / 86400000) : "unavailable";
   const summary = calibrated
     ? `${label} x${calibration.factor === null ? "unavailable" : decimal.format(calibration.factor)} over ${days} ${days === "1" ? "day" : "days"}`
     : calibration.status === "off" ? "Calibration off. Published estimate."
-    : calibration.status === "calibrated" ? "Published estimate. Row is not calibrated."
-    : `Calibration unavailable (${calibration.status}). Published estimate.${calibration.status === "implausible" ? ` ${formatCalibrationFactor(calibration)}` : ""}`;
+    : calibration.status === "calibrated" ? "Published estimate; row is not calibrated"
+    : `Calibration unavailable (${calibration.status}). Published estimate${calibration.status === "implausible" ? ` ${formatCalibrationFactor(calibration)}` : ""}`;
   const evidence = `${window} · ${formatCalibrationEvidence(calibration)}`;
+  return { summary, window, hasWindow, evidence };
+}
+export function formatCalibration(calibration: CalibrationResult, basis?: AicDisplay["basis"]): string {
+  const { summary, evidence } = calibrationParts(calibration, basis);
   return calibration.status === "off" ? summary : `${summary} · ${evidence}`;
+}
+/** Semantic date nodes come from the DTO bounds, never a text matcher. */
+export function calibrationText(document: Document, calibration: CalibrationResult, basis?: AicDisplay["basis"], prefix = ""): HTMLElement {
+  const { summary, hasWindow } = calibrationParts(calibration, basis), root = element(document, "span");
+  root.append(numericText(document, `${prefix}${summary}`));
+  if (calibration.status !== "off") root.append(element(document, "span", " · "),
+    hasWindow ? periodTimes(document, calibration.windowStart!, calibration.windowEnd!) : element(document, "span", "UTC window unavailable"),
+    numericText(document, ` · ${formatCalibrationEvidence(calibration)}`));
+  return root;
 }
 
 function tokenEntries(tokens: TokenTotals, subsets: "listed" | "recorded"): readonly (readonly [string, number | null])[] {
@@ -93,9 +121,9 @@ export function numericText(document: Document, text: string): HTMLElement {
   }
   root.append(element(document, "span", text.slice(offset))); return root;
 }
-/** One fragment policy for numeric legend/prose values and readable UTC windows. */
+/** Free text is never interpreted as a date. Date DTO fields are formatted at their source. */
 export function evidenceText(document: Document, text: string): HTMLElement {
-  return datedText(document, text, fragment => numericText(document, fragment));
+  return numericText(document, text);
 }
 export function tokenSummary(document: Document, tokens: TokenTotals | null): HTMLElement {
   if (!tokens) return element(document, "span", "tokens unavailable");
@@ -121,25 +149,38 @@ export function formatUtcTimestamp(value: number, dateOnly = false, milliseconds
   const time = (milliseconds ? utcMillisecond : date.getUTCSeconds() ? utcSecond : utcMinute).format(date);
   return `${utcDate.format(date)}, ${time} UTC`;
 }
+const utcMonth = new Intl.DateTimeFormat("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+function utcMonthTime(document: Document, value: number): HTMLElement {
+  const time = element(document, "time", utcMonth.format(value)); time.setAttribute("datetime", new Date(value).toISOString()); return time;
+}
 export function utcTime(document: Document, value: number, dateOnly = false, milliseconds = false): HTMLElement {
   const time = element(document, "time", formatUtcTimestamp(value, dateOnly, milliseconds));
   time.setAttribute("datetime", new Date(value).toISOString()); return time;
 }
-export function periodTimes(document: Document, start: number, end: number): HTMLElement {
-  const period = element(document, "span");
+function periodLabels(start: number, end: number, dayBucket: boolean): { first: string; last: string; oneDay: boolean; visibleEnd: number } {
   const milliseconds = start !== end && formatUtcTimestamp(start) === formatUtcTimestamp(end);
-  period.append(utcTime(document, start, !milliseconds && start % 86400000 === 0, milliseconds), element(document, "span", " to "), utcTime(document, end, false, milliseconds)); return period;
+  const inclusive = dayBucket && end > start && start % 86400000 === 0 && end % 86400000 === 0;
+  const visibleEnd = inclusive ? end - 86400000 : end;
+  return { first: formatUtcTimestamp(start, inclusive, milliseconds), last: formatUtcTimestamp(visibleEnd, inclusive, milliseconds), oneDay: inclusive && end - start === 86400000, visibleEnd };
 }
-/** Convert embedded ISO evidence into readable, machine-readable time elements. */
-export function datedText(document: Document, text: string, fragment: (value: string) => HTMLElement = (value: string) => element(document, "span", value)): HTMLElement {
-  const root = element(document, "span");
-  const pattern = /(\d{4}-\d{2}-\d{2}T[\d:.]+Z)(?: to (\d{4}-\d{2}-\d{2}T[\d:.]+Z))?(?: UTC)?/g;
-  let offset = 0;
-  for (const match of text.matchAll(pattern)) {
-    const start = Date.parse(match[1]!), end = match[2] ? Date.parse(match[2]) : undefined;
-    if (!Number.isFinite(start) || (end !== undefined && !Number.isFinite(end))) continue;
-    root.append(fragment(text.slice(offset, match.index)), end !== undefined ? periodTimes(document, start, end) : utcTime(document, start));
-    offset = match.index! + match[0].length;
+/** Snapshot and evidence endpoints retain their instants; only day buckets opt into inclusive dates. */
+export function formatPeriod(start: number, end: number, dayBucket = false): string {
+  const { first, last, oneDay } = periodLabels(start, end, dayBucket);
+  return oneDay ? first : `${first} to ${last}`;
+}
+export function periodTimes(document: Document, start: number, end: number, dayBucket = false): HTMLElement {
+  const period = element(document, "span"), { first, last, oneDay, visibleEnd } = periodLabels(start, end, dayBucket);
+  period.setAttribute("data-start", new Date(start).toISOString()); period.setAttribute("data-end", new Date(end).toISOString());
+  const startTime = utcTime(document, start); startTime.textContent = first; period.append(startTime);
+  if (!oneDay) {
+    const endTime = utcTime(document, visibleEnd); endTime.textContent = last;
+    period.append(element(document, "span", " to "), endTime);
   }
-  root.append(fragment(text.slice(offset))); return root;
+  return period;
+}
+/** Only call for a known date DTO field, never for arbitrary labels or prose. */
+export function dateField(document: Document, value: string): HTMLElement {
+  // Reject Date.parse's permissive interpretations (for example, "Day 2").
+  const timestamp = /^\d{4}-\d{2}(?:-\d{2}(?:T[\d:.]+Z)?)?$/.test(value) ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp) ? value.length === 7 ? utcMonthTime(document, timestamp) : utcTime(document, timestamp, value.length === 10) : element(document, "span", value);
 }

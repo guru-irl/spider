@@ -215,7 +215,7 @@ describe("web Explorer", () => {
     const rows = tableRows(f.root, "Pivot rows · calibrated");
     expect(rows[0]).toEqual(["Unknown", "No value", hostile, "560+ AIC cal", "~1,000+ AIC published estimate",
       "prompt 60 · output 40 · total 100",
-      "1 call; 1 unpriced; 1 aggregate · Possible overlap · Pending data"]);
+      "1 call · 1 unpriced · 1 aggregate · Possible overlap · Pending data"]);
     const chart = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H3" && child.textContent === "Pivot rows · calibrated"))!;
     expect(elements(chart, "circle")).toHaveLength(1);
     const title = elements(chart, "title")[1]!.textContent;
@@ -419,10 +419,10 @@ describe("Explorer fix round", () => {
   it("renders back-applied primaries, friendly dimensions, singular counts and named regions", async () => {
     const m = { ...measure(), aicDisplay: { ...measure().aicDisplay, basis: "back-applied" as const } };
     const f = fixture(() => ({ ...data(), groupBy: ["requestedModel"], totals: m, rows: [{ key: ["model-id"], labels: ["Model"], measure: m }] })); const view = await mount(f.ctx); await settle();
-    expect(tableRows(f.root, "Pivot rows · calibrated, back-applied")[0]![1]).toBe("560 AIC calibrated, back-applied");
+    expect(tableRows(f.root, "Pivot rows · calibrated, back-applied")[0]![1]).toBe("560 AIC cal (back-applied)");
     expect(elements(f.root, "th").some(n => n.textContent === "Requested model")).toBe(true);
     expect(elements(f.root, "option").some(n => n.textContent === "Auxiliary purpose")).toBe(true);
-    expect(f.root.textContent).toContain("1 pivot row on this page"); expect(f.root.textContent).toContain("1 call;");
+    expect(f.root.textContent).toContain("1 pivot row on this page"); expect(f.root.textContent).toContain("1 call ·");
     const regions = descendants(f.root).filter(n => n.getAttribute("role") === "region");
     expect(new Set(regions.map(n => n.getAttribute("aria-labelledby"))).size).toBe(regions.length); view.dispose();
   });
@@ -433,7 +433,7 @@ describe("Explorer saved filters", () => {
     const f = fixture(r => r.path === "/api/filter-values" ? { rows: [{ id: "opaque-parent", label: "Parent actor" }], nextCursor: null } : data());
     const view = await mount(f.ctx); await settle();
     expect(field(f.root, "Active filters").textContent).toContain("Actor = Parent actor");
-    field(f.root, "Remove filter actor").click(); expect(f.routes.at(-1)).toEqual({ view: "explorer", filters: [] }); view.dispose();
+    field(f.root, "Remove filter Actor").click(); expect(f.routes.at(-1)).toEqual({ view: "explorer", filters: [] }); view.dispose();
   });
   it("removes only invalid saved ids and preserves valid filters without an impossible Retry", async () => {
     const respond = (r: Request) => {
@@ -515,7 +515,7 @@ describe("Explorer explicit missing selections", () => {
     expect(f.requests[0]!.params.get("filters")).toBe('[{"field":"model","kind":"missing"},{"field":"actor","value":"opaque-parent","kind":"id"}]');
     expect(field(f.root, "Active filters").textContent).toContain("Model = No value");
     button(f.root, "No value").click(); expect(f.routes.at(-1)!.filters).toHaveLength(2);
-    field(f.root, "Remove filter model").click();
+    field(f.root, "Remove filter Model").click();
     expect(f.routes.at(-1)!.filters).toEqual([{ field: "actor", value: "opaque-parent", kind: "id" }]); view.dispose();
   });
   it("migrates an old bookmarked raw-null selection to the missing wire shape", async () => {
@@ -573,7 +573,7 @@ describe("Explorer fix round 2", () => {
     const missingHeader = field(header, "No value (missing)"); expect(missingHeader.className).toContain("missing-value");
     const pills = field(f.root, "Active filters"); expect(pills.textContent).toContain("Model = No value"); expect(pills.textContent).toContain("Model = Unknown");
     expect(field(pills, "No value (missing)").className).toContain("missing-value");
-    const remove = field(pills, "Remove filter model"); expect(remove.textContent).toBe("Remove"); expect(remove.className).toContain("filter-remove");
+    const remove = field(pills, "Remove filter Model"); expect(remove.textContent).toBe("Remove"); expect(remove.className).toContain("filter-remove");
     expect(tableRows(f.root, "Pivot rows · calibrated").map(r => r[0])).toEqual(["No value", "Unknown"]);
     expect(button(f.root, "No value").getAttribute("aria-label")).toBe("Drill into model: No value");
     const pivotLabel = elements(f.root, "text").find(n => n.textContent === "No value")!;
@@ -653,7 +653,7 @@ describe("Explorer fix round 2", () => {
   it("does not navigate from detached controls after disposal", async () => {
     // Break caught: removing navigate's disposed guard.
     const f = fixture(); const view = await mount(f.ctx); await settle(); const clear = button(f.root, "Clear filters"), cell = button(f.root, "Model");
-    view.dispose(); clear.click(); cell.click(); field(f.root, "Remove filter actor").click(); expect(f.routes).toHaveLength(0);
+    view.dispose(); clear.click(); cell.click(); field(f.root, "Remove filter Actor").click(); expect(f.routes).toHaveLength(0);
   });
   it("drops malformed saved filters with a removal notice, not an impossible Refresh", async () => {
     // Break caught: passing malformed bookmarks to the server and asking the user to refresh them.
@@ -745,7 +745,7 @@ describe("Explorer alignment", () => {
     expect(chart.getAttribute("aria-pressed")).toBe("true"); expect(table.getAttribute("aria-pressed")).toBe("false");
     const caption = elements(graphic, "p")[0]!;
     expect(caption.className).toBe("chart-summary");
-    expect(caption.textContent).toBe("Low to High plus · 100+ AIC calibrated minimum · 560+ AIC calibrated maximum");
+    expect(caption.textContent).toBe("Low to High plus · 100+ AIC cal minimum · 560+ AIC cal maximum");
     const svg = elements(graphic, "svg")[0]!;
     expect(caption.id).not.toBe("");
     expect(svg.getAttribute("aria-describedby")).toBe(caption.id);
@@ -769,7 +769,7 @@ describe("Explorer alignment", () => {
   });
   it("uses the shared empty-row copy", async () => {
     const f = fixture(() => ({ ...data(), rows: [] })); const view = await mount(f.ctx); await settle();
-    expect(f.root.textContent).toContain("No rows for this period");
+    expect(f.root.textContent).toContain("No rows recorded");
     expect(f.root.textContent).not.toContain("No recorded usage in this slice");
     view.dispose();
   });
@@ -790,9 +790,9 @@ describe("Explorer alignment", () => {
 
 describe("Explorer final round", () => {
   it.each([
-    ["calibrated", "Low to High · 100 AIC calibrated minimum · 560 AIC calibrated maximum"],
-    ["back-applied", "Low to High · 100 AIC calibrated, back-applied minimum · 560 AIC calibrated, back-applied maximum"],
-    ["published", "Low to High · ~100 AIC published estimate minimum · ~560 AIC published estimate maximum"],
+    ["calibrated", "Low to High · 100 AIC cal minimum · 560 AIC cal maximum"],
+    ["back-applied", "Low to High · 100 AIC cal (back-applied) minimum · 560 AIC cal (back-applied) maximum"],
+    ["published", "Low to High · ~100 AIC ? minimum · ~560 AIC ? maximum"],
   ] as const)("captions priced extrema with their basis and no false lower bounds (%s)", async (basis, want) => {
     // Breaks caught: unconditional +, losing back-applied/published qualifiers, or empty description ids.
     const f = fixture(() => ({ ...data(), rows: [100, 560].map((value, i) => ({

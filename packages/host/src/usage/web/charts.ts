@@ -1,31 +1,27 @@
 import { representation, selectRepresentation } from "./representation.js";
-import type { TokenTotals } from "../dashboard-contract.js";
+import type { TokenTotals, CalibrationResult } from "../dashboard-contract.js";
 import { action, element } from "./dom.js";
-import { formatCount, formatTokens, tokenObservation, tokenList, periodTimes, numericText, evidenceText } from "./format.js";
+import { formatCount, tokenObservation, tokenList, periodTimes, numericText, evidenceText, dateField, formatAicAmount, formatRatio, signedGap } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
 export type ChartUnit = "estimated-aic" | "calibrated-aic" | "back-applied-aic" | "gap-aic" | "tokens" | "percent" | "ratio";
-export type ChartPoint = { start: number; end: number; label: string; value: number | null; tokens: TokenTotals | null; lowerBound?: boolean; note?: string };
+export type ChartPoint = { start: number; end: number; label: string; labelDate?: "day" | "month" | "timestamp"; value: number | null; tokens: TokenTotals | null; lowerBound?: boolean; note?: string | HTMLElement };
 const decimal = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
-function observation(value: number | null, unit: ChartUnit, lowerBound = false): string {
+function observation(value: number | null, unit: ChartUnit, lowerBound = false, status: CalibrationResult["status"] = "uncalibrated"): string {
   if (value === null || !Number.isFinite(value)) return "unavailable";
-  if (unit === "gap-aic") {
-    const rounded = Math.round(Math.abs(value)) * Math.sign(value);
-    return `${rounded > 0 ? "+" : ""}${formatTokens(rounded === 0 ? 0 : rounded)}${lowerBound ? "+" : ""} AIC`;
-  }
+  if (unit === "gap-aic") return signedGap(value, lowerBound);
   if (unit === "tokens") return formatCount(value, "token");
   if (unit === "percent") return `~${decimal.format(value)}%`;
-  if (unit === "ratio") return `~${decimal.format(value)} ratio`;
-  if (unit === "back-applied-aic") return `${formatTokens(value)}${lowerBound ? "+" : ""} AIC calibrated, back-applied`;
-  return unit === "calibrated-aic" ? `${formatTokens(value)}${lowerBound ? "+" : ""} AIC calibrated` : `~${formatTokens(value)}${lowerBound ? "+" : ""} AIC published estimate`;
+  if (unit === "ratio") return formatRatio(value);
+  return formatAicAmount(value, lowerBound ? 1 : 0, unit === "back-applied-aic" ? "back-applied" : unit === "calibrated-aic" ? "calibrated" : "published", status);
 }
-export function chartWithTable(document: Document, options: { id?: string; view?: string; section?: string; title: string; points: readonly ChartPoint[]; unit: ChartUnit; gapBasis?: "published" | "calibrated" | "back-applied"; subsets?: "listed" | "recorded" }): HTMLElement {
+export function chartWithTable(document: Document, options: { id?: string; view?: string; section?: string; title: string; points: readonly ChartPoint[]; unit: ChartUnit; calibrationStatus?: CalibrationResult["status"]; gapBasis?: "published" | "calibrated" | "back-applied"; subsets?: "listed" | "recorded" }): HTMLElement {
   const chartId = options.id ?? `chart:${options.view ?? "standalone"}:${options.section ?? options.title}`;
   const section = element(document, "section", undefined, "chart-panel");
   section.append(element(document, "h3", options.title));
-  const rows = options.points.map(point => [point.label, periodTimes(document, point.start, point.end),
-    numericText(document, observation(point.value, options.unit, point.lowerBound)), tokenList(document, point.tokens, options.subsets), evidenceText(document, point.note ?? "")]);
-  const tooltipRows = options.points.map((point, i) => [point.label, (rows[i]![1] as HTMLElement).textContent,
-    observation(point.value, options.unit, point.lowerBound), tokenObservation(point.tokens, options.subsets), point.note ?? ""]);
+  const rows = options.points.map(point => [point.labelDate ? dateField(document, point.label) : element(document, "span", point.label), periodTimes(document, point.start, point.end, point.labelDate === "day" || point.labelDate === "month"),
+    numericText(document, observation(point.value, options.unit, point.lowerBound, options.calibrationStatus)), tokenList(document, point.tokens, options.subsets), typeof point.note === "object" ? point.note : evidenceText(document, point.note ?? "")]);
+  const tooltipRows = options.points.map((point, i) => [(rows[i]![0] as HTMLElement).textContent, (rows[i]![1] as HTMLElement).textContent,
+    observation(point.value, options.unit, point.lowerBound, options.calibrationStatus), tokenObservation(point.tokens, options.subsets), (rows[i]![4] as HTMLElement).textContent]);
   const compact = options.points.length < 3;
   const svgNode = <K extends keyof SVGElementTagNameMap>(tag: K) => document.createElementNS("http://www.w3.org/2000/svg", tag);
   const svg = svgNode("svg"); svg.setAttribute("width", "100%"); svg.setAttribute("height", compact ? "96" : "160"); svg.setAttribute("role", "img");
@@ -54,12 +50,11 @@ export function chartWithTable(document: Document, options: { id?: string; view?
     svg.append(group);
   });
   const label = element(document, "p", undefined, "chart-summary");
-  const extreme = (value: number) => observation(value, options.unit, valid.some(point => point.value === value && point.lowerBound));
-  const range = options.points.length === 1 ? options.points[0]!.label : `${options.points[0]?.label} to ${options.points.at(-1)?.label}`;
-  let summaryText = valid.length ? `${range} · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum` : "No recorded values in this period";
+  const extreme = (value: number) => observation(value, options.unit, valid.some(point => point.value === value && point.lowerBound), options.calibrationStatus);
   const gapLabel = `Gap: counter minus ${options.gapBasis ?? "published"}`;
-  if (options.unit === "gap-aic") summaryText = `${gapLabel} · ${summaryText}`;
-  label.append(numericText(document, summaryText));
+  if (options.unit === "gap-aic") label.append(element(document, "span", `${gapLabel} · `));
+  if (valid.length) label.append(periodTimes(document, start, end, options.points.every(point => point.labelDate === "day" || point.labelDate === "month")), numericText(document, ` · ${extreme(Math.min(...valid.map(point => point.value!)))} minimum · ${extreme(Math.max(...valid.map(point => point.value!)))} maximum`));
+  else label.append(element(document, "span", "No recorded values in this period"));
   svg.setAttribute("aria-label", `${options.title} · ${label.textContent}`);
   const region = tableRegion(document, renderTable(document, { caption: options.unit === "gap-aic" ? `${options.title} · ${gapLabel}` : options.title, columns: ["Observation", "UTC period", options.unit === "gap-aic" ? gapLabel : "Value", "Tokens (subsets not additive)", "Evidence"], rows }));
   region.hidden = true;

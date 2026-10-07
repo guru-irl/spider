@@ -1,4 +1,4 @@
-const fontCss = "https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600&family=Cascadia+Code:wght@400;500&display=swap";
+const fontCss = "https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600;700&family=Cascadia+Code:wght@400;700&display=swap";
 const loaded = new WeakSet<Document>();
 export type FontMeasurer = (font: string, text: string) => number;
 export async function loadFonts(document: Document, signal?: AbortSignal, measure?: FontMeasurer): Promise<void> {

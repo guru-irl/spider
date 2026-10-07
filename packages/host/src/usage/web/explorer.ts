@@ -3,7 +3,7 @@ import type { ExplorerData, ExplorerRow } from "../query-explorer.js";
 import type { ViewContext, MountedView, ViewMount } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
 import { DashboardClientError, errorCopy, canRetry } from "./client.js";
-import { formatAicDisplay, formatTokens, tokenObservation, tokenList, tokenCell, datedText, numericText } from "./format.js";
+import { formatCallEvidence, calibrationText, formatAicDisplay, formatAicAmount, formatTokens, tokenObservation, tokenList, tokenCell, numericText } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { representation, selectRepresentation } from "./representation.js";
 import { analysisProse } from "./analysis-shared.js";
@@ -42,8 +42,7 @@ function sliceParams(period: Period, filters: readonly ExplorerFilter[]): URLSea
   return new URLSearchParams({ start: String(period.start), end: String(period.end), filters: JSON.stringify(filters) });
 }
 function evidence(measure: UsageMeasure): string {
-  return [`${formatTokens(measure.calls)} ${measure.calls === 1 ? "call" : "calls"}; ${formatTokens(measure.unpricedCalls)} unpriced; ${formatTokens(measure.aggregateCalls)} aggregate`,
-    measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean).join(" · ");
+  return formatCallEvidence(measure);
 }
 function rowLabel(row: ExplorerRow, i: number): string { return row.labels[i] ?? "No value"; }
 function tupleFilters(data: ExplorerData, row: ExplorerRow): ExplorerFilter[] | undefined {
@@ -58,11 +57,11 @@ function renderPivot(ctx: ViewContext, data: ExplorerData, drill: (row: Explorer
     const aic = formatAicDisplay(measure.aicDisplay, measure.unpricedCalls, data.calibration);
     return [aic.primary, aic.secondary, tokenObservation(measure.tokens), evidence(measure)];
   };
-  const tableValues = (measure: UsageMeasure): (string | HTMLElement)[] => values(measure).map((value, i) => i === 2 ? tokenCell(document, measure.tokens) : datedText(document, value, text => numericText(document, text)));
+  const tableValues = (measure: UsageMeasure): (string | HTMLElement)[] => values(measure).map((value, i) => i === 2 ? tokenCell(document, measure.tokens) : numericText(document, value));
   root.append(element(document, "p", "AIC is approximate; tokens are recorded. Pivot cells select the complete tuple, not its labels.", "muted"),
-    analysisProse(ctx, formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend, "calibration-evidence"),
+    analysisProse(ctx, calibrationText(document, data.calibration, data.totals.aicDisplay.basis), "calibration-evidence"),
     tableRegion(document, renderTable(document, { caption: "Selected usage", columns, rows: [tableValues(data.totals)] })));
-  if (!data.rows.length) root.append(element(document, "p", "No rows for this period"));
+  if (!data.rows.length) root.append(element(document, "p", "No rows recorded"));
   const panels = element(document, "div", undefined, "small-multiples");
   for (const basis of ["calibrated", "back-applied", "published"] as const) {
     const rows = data.rows.filter(row => row.measure.aicDisplay.basis === basis); if (!rows.length) continue;
@@ -94,8 +93,7 @@ function renderPivot(ctx: ViewContext, data: ExplorerData, drill: (row: Explorer
     const summary = element(document, "p", undefined, "chart-summary");
     const extreme = (value: number): string => {
       const lowerBound = priced.some(row => row.measure.aicDisplay.primaryAic === value && row.measure.unpricedCalls > 0);
-      const amount = `${formatTokens(value)}${lowerBound ? "+" : ""} AIC`;
-      return basis === "published" ? `~${amount} published estimate` : `${amount} ${basis === "back-applied" ? "calibrated, back-applied" : "calibrated"}`;
+      return formatAicAmount(value, lowerBound ? 1 : 0, basis, data.calibration.status);
     };
     const summaryText = priced.length
       ? `${rows[0]!.labels.map((_, i) => rowLabel(rows[0]!, i)).join(" · ")} to ${rows.at(-1)!.labels.map((_, i) => rowLabel(rows.at(-1)!, i)).join(" · ")} · ${extreme(Math.min(...priced.map(row => row.measure.aicDisplay.primaryAic!)))} minimum · ${extreme(Math.max(...priced.map(row => row.measure.aicDisplay.primaryAic!)))} maximum`
@@ -179,7 +177,7 @@ export async function mountExplorer(ctx: ViewContext): Promise<MountedView> {
       if (filter.kind === "missing") { value.className = "missing-value"; value.setAttribute("aria-label", "No value (missing)"); }
       name.append(value);
       const remove = action(document, "Remove", () => navigate(filters.filter(candidate => filterKey(candidate) !== filterKey(filter))));
-      remove.className = "action filter-remove"; remove.setAttribute("aria-label", `Remove filter ${filter.field}`);
+      remove.className = "action filter-remove"; remove.setAttribute("aria-label", `Remove filter ${dimensionLabels[filter.field]}`);
       pill.append(name, remove);
       pills.push(pill);
     }

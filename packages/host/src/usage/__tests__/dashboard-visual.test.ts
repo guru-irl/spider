@@ -61,19 +61,23 @@ test("real browser all-view acceptance has no overflow", async context => {
               else expect(await page.evaluate("Array.from(document.querySelectorAll('table')).find(t=>t.caption.textContent==='Daily calibration evidence').querySelector('tbody tr').textContent.includes(" + JSON.stringify(state === "unavailable" ? "uncalibrated" : "calibrated") + ")")).toBe(true);
               expect(await page.evaluate(dataCells)).toContain("synthetic-v3");
             }
+            expect(await page.evaluate(`(() => { const levels=Array.from(document.querySelectorAll('main h1,main h2,main h3,main h4,main h5,main h6'), n=>Number(n.tagName[1])); return levels[0]===1 && levels.every((level,i)=>i===0 || level<=levels[i-1]+1); })()`), `${state}/${width}/${view} heading order`).toBe(true);
+            if (view === "cache") {
+              expect(await page.evaluate(`(() => { const t=Array.from(document.querySelectorAll('table')).find(t=>t.caption.textContent==='Daily cache write split'); return Array.from(t.querySelectorAll('tbody tr'),r=>{const c=r.querySelector('td .cell-value'),time=c.querySelector('time');return [c.textContent,time?.dateTime];}); })()`)).toEqual([["1 Jan 2026", "2026-01-01T00:00:00.000Z"], ["1 Jan 2026 · warmer (subset)", "2026-01-01T00:00:00.000Z"], ["2 Jan 2026", "2026-01-02T00:00:00.000Z"], ["2 Jan 2026 · warmer (subset)", "2026-01-02T00:00:00.000Z"]]);
+            }
             if (view === "reconciliation") {
               const comparisons = await page.evaluate(`['Published comparison','Calibrated comparison'].map(c => Array.from(document.querySelectorAll('table')).find(t=>t.caption.textContent===c).querySelector('tbody tr')).map(r=>Array.from(r.querySelectorAll('.cell-value'),c=>c.textContent))`) as string[][];
               expect(comparisons[0]![3]).toBe("20 AIC counter"); expect(comparisons[0]![4]).toBe("~4 AIC published estimate");
-              expect(comparisons[1]![2]).toBe(state === "off" || state === "unavailable" ? "unavailable" : state === "back-applied" ? "~8 AIC calibrated, back-applied" : "~8 AIC calibrated");
+              expect(comparisons[1]![2]).toBe(state === "off" || state === "unavailable" ? "unavailable" : state === "back-applied" ? "8 AIC cal (back-applied)" : "8 AIC cal");
             }
             if (!["context", "reconciliation"].includes(view)) {
               const cells = await page.evaluate(dataCells) as string[];
-              expect(cells).toContain(state === "off" ? "~10 AIC est" : state === "unavailable" ? "~10 AIC ?" : state === "back-applied" ? "20 AIC calibrated, back-applied" : "20 AIC cal");
+              expect(cells).toContain(state === "off" ? "~10 AIC est" : state === "unavailable" ? "~10 AIC ?" : state === "back-applied" ? "20 AIC cal (back-applied)" : "20 AIC cal");
             }
             if (state === "off" || state === "unavailable") expect(await page.evaluate(dataCells)).not.toEqual(expect.arrayContaining([expect.stringMatching(/\d[\d,+]* AIC cal(?:\b|ibrated)/)]));
             // Full evidence must be identical, including the alternative chart tables.
             await page.evaluate("Array.from(document.querySelectorAll('[aria-label=\"Chart representation\"] button')).filter(b => b.textContent === 'Table').forEach(b => b.click())");
-            expect(await page.evaluate(`Array.from(document.querySelectorAll('.cell-value,.calibration-evidence,.muted')).filter(n => n.getClientRects().length && /\\d{4}-\\d{2}-\\d{2}T[\\d:.]+Z/.test(n.textContent)).map(n => n.textContent)`), `${state}/${width}/${view} raw ISO evidence`).toEqual([]);
+            expect(await page.evaluate(`Array.from(document.querySelectorAll('time')).filter(n => n.getClientRects().length && /\\b\\d{4}-\\d{2}(?:-\\d{2}(?:T[\\d:.]+Z)?)?\\b/.test(n.textContent)).map(n => n.textContent)`), `${state}/${width}/${view} raw ISO evidence`).toEqual([]);
             if (view !== "context") expect(await page.evaluate("document.querySelector('main table .token-list dt, main table .token-summary') !== null")).toBe(true);
             const evidence = await page.evaluate("Array.from(document.querySelectorAll('main table'), t => [t.caption.textContent, Array.from(t.querySelectorAll('tbody tr'), r => Array.from(r.cells, c => c.querySelector('.cell-value')?.textContent ?? c.textContent))])");
             const key = `${state}/${view}`;
@@ -130,8 +134,8 @@ test("packaged Overview renders chart and table at 390px and 1272px with non-bla
             return t.getAttribute('role') === 'table' && getComputedStyle(thead).display !== 'none' && getComputedStyle(thead).visibility !== 'hidden' &&
               Array.from(t.querySelectorAll('tbody tr')).every(row => Array.from(row.cells).every((cell, i) => cell.hasAttribute('colspan') || (cell.getAttribute('role') === 'cell' && cell.getAttribute('headers') === heads[i]?.id && document.getElementById(cell.getAttribute('headers')) === heads[i])));
           })`)).toBe(true);
-          expect(await page.evaluate("document.querySelector('.period-label').textContent")).toBe("1 Jan 2026 to 3 Jan 2026, 00:00 UTC");
-          expect(await page.evaluate("Array.from(document.querySelectorAll('.period-label time'), node => node.dateTime)")).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-03T00:00:00.000Z"]);
+          expect(await page.evaluate("document.querySelector('.period-label').textContent")).toBe("1 Jan 2026 to 2 Jan 2026");
+          expect(await page.evaluate("Array.from(document.querySelectorAll('.period-label time'), node => node.dateTime)")).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
           expect(await page.evaluate("Array.from(document.querySelectorAll('.data-table td')).every(cell => !getComputedStyle(cell).fontFamily.includes('Usage Code'))")).toBe(true);
           expect(await page.evaluate("Array.from(document.querySelectorAll('.numeric')).every(node => getComputedStyle(node).fontFamily.includes('Usage Code'))")).toBe(true);
           expect(await page.evaluate("document.querySelector('.data-table .token-list').querySelectorAll('dt').length")).toBe(8);
@@ -143,8 +147,8 @@ test("packaged Overview renders chart and table at 390px and 1272px with non-bla
           }
           expect(await page.evaluate("Array.from(document.querySelectorAll('[role=group][aria-label=\"Chart representation\"]'), group => Array.from(group.querySelectorAll('button'), button => button.textContent))")).toEqual([["Chart", "Table"], ["Chart", "Table"]]);
           expect(await page.evaluate("Array.from(document.querySelectorAll('.chart-summary'), node => node.textContent)")).toEqual([
-            "Day 2 · 12 AIC calibrated minimum · 12 AIC calibrated maximum",
-            "Day 1 · 8 AIC calibrated, back-applied minimum · 8 AIC calibrated, back-applied maximum",
+            "2 Jan 2026 · 12 AIC cal minimum · 12 AIC cal maximum",
+            "1 Jan 2026 · 8 AIC cal (back-applied) minimum · 8 AIC cal (back-applied) maximum",
           ]);
           expect(await page.evaluate("Array.from(document.querySelectorAll('.notice'), node => node.textContent)")).toEqual([
             "Updated 3 Jan 2026, 00:00 UTC", "Health updated", "No source diagnostics recorded.",
@@ -304,3 +308,39 @@ test("Edge Detail Recorded calls stay compact at 1272px",async context=>{
  for(const {heights} of measurements){expect(heights.length).toBeGreaterThan(0);for(const height of heights)expect(height).toBeLessThan(150);}
  }finally{run.clean();}
 }, implementation.BROWSER_TEST_TIMEOUT_MS * 2);
+
+
+test("Edge tall table mouse clicks keep scrollY while Tab reveals the caption at 390px", async context => {
+  // Breaks: scrolling the caption on pointer focus, or removing keyboard caption reveal.
+  const reason = implementation.screenshotSkipReason(); if (reason) { context.skip(reason); return; }
+  const run = visualRun(), fixture = allViewPage(await createDashboardBrowserPage(true), "calibrated");
+  const cache = JSON.parse(fixture.routes["/api/cache"]!.body as string);
+  cache.data.daily.rows.push({ ...cache.data.daily.rows[0], label: "2026-01-03" });
+  fixture.routes["/api/cache"]!.body = JSON.stringify(cache);
+  try {
+    await implementation.captureDashboard({ html: fixture.html, routes: fixture.routes, out: join(run.temp, "pointer"), scratchDir: run.temp,
+      viewport: { width: 390, height: 844 }, verify: async page => {
+        expect(await page.evaluate(fixture.ready)).toBe(true);
+        await page.evaluate("location.hash='#view=cache'");
+        expect(await page.evaluate(`new Promise(resolve => { const end=performance.now()+5000; const check=()=>{
+          if(document.querySelector('h1')?.textContent==='Cache' && __usageCompleted===__usageFetches) requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)));
+          else if(performance.now()>end) resolve(false); else requestAnimationFrame(check); }; check(); })`)).toBe(true);
+        const before = await page.evaluate(`new Promise(resolve => {
+          window.tallRegion=Array.from(document.querySelectorAll('.table-region')).find(n=>n.querySelector('caption').textContent==='Daily cache write split');
+          document.body.tabIndex=-1; document.body.focus(); document.body.removeAttribute('tabindex');
+          scrollTo(0,tallRegion.querySelector('caption').getBoundingClientRect().top+scrollY+400);
+          requestAnimationFrame(()=>requestAnimationFrame(()=>resolve({y:scrollY,height:tallRegion.getBoundingClientRect().height,captionTop:tallRegion.querySelector('caption').getBoundingClientRect().top})));
+        })`) as { y: number; height: number; captionTop: number };
+        expect(before.height).toBeGreaterThan(844); expect(before.captionTop).toBeLessThan(0);
+        const target = await page.evaluate(`(() => {const r=Array.from(tallRegion.querySelectorAll('.cell-value')).map(n=>n.getBoundingClientRect()).find(r=>r.top>100&&r.bottom<700);return {x:r.left+10,y:r.top+10};})()`) as { x: number; y: number };
+        await page.click(target.x, target.y);
+        expect(await page.evaluate("document.activeElement===tallRegion && !tallRegion.matches(':focus-visible')")).toBe(true);
+        expect.soft(await page.evaluate("scrollY")).toBe(before.y);
+        // An immediately preceding tab stop ensures this is native Tab focus, not focus().
+        await page.evaluate("window.beforeTable=document.createElement('button'); beforeTable.textContent='Before table'; tallRegion.before(beforeTable); beforeTable.focus({preventScroll:true}); scrollTo(0,"+before.y+")");
+        await page.pressKey("Tab");
+        expect(await page.evaluate("document.activeElement===tallRegion && tallRegion.matches(':focus-visible')")).toBe(true);
+        expect(await page.evaluate("(() => {const r=tallRegion.querySelector('caption').getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight;})()")).toBe(true);
+      } });
+  } finally { run.clean(); }
+}, implementation.BROWSER_TEST_TIMEOUT_MS);

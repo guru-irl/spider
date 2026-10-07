@@ -37,14 +37,13 @@ it("analysis pagers use readable Updated timestamps with exact datetime values",
   expect(elements(pager.region, "p").filter(n => n.className.includes("numeric"))).toHaveLength(0);
 });
 
-it("analysis prose and tables render readable semantic UTC evidence", async () => {
-  // Breaks: raw ISO text or monospaced timestamp fragments, unlike Overview/Detail.
+it("analysis prose and string table cells never interpret free text as dates", async () => {
+  // Breaks: interpreting a free-text observation as a typed date field.
   const f = await fixture(1), text = "2026-01-01T00:00:00.000Z to 2026-01-03T00:00:00.000Z UTC · x0.5 · trailing 7-day ratio";
   const prose = analysisProse(f.ctx, text), table = analysisTable(f.ctx, "Evidence", ["Window"], [[text]]);
   for (const node of [prose, table]) {
-    expect(node.textContent).toContain("1 Jan 2026 to 3 Jan 2026, 00:00 UTC");
-    expect(node.textContent).not.toContain("2026-01-01T");
-    expect(elements(node, "time").map(n => n.getAttribute("datetime"))).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-03T00:00:00.000Z"]);
+    expect(node.textContent).toContain(text);
+    expect(elements(node, "time")).toHaveLength(0);
     expect(elements(node, "span").filter(n => n.className === "numeric").some(n => n.textContent.includes("2026-"))).toBe(false);
   }
 });

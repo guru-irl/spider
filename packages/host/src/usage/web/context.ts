@@ -1,7 +1,7 @@
 import type { ContextData } from "../dashboard-contract.js";
 import type { MountedView, ViewContext, ViewRoute } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
-import { DashboardClientError, canRetry, errorCopy } from "./client.js";
+import { DashboardClientError, shouldStopPolling, canRetry, errorCopy } from "./client.js";
 import { supportedDetailId } from "./detail-id.js";
 import { utcTime } from "./format.js";
 import { detailRoute } from "./detail-navigation.js";
@@ -37,7 +37,7 @@ export async function mountContext(ctx: ViewContext): Promise<MountedView> {
         const placeholder = element(document, "section"); placeholder.append(element(document, "h2", heading), element(document, "p", availability.message)); evidence.push(placeholder);
       }
       updateEvidence(content, ...evidence); message.replaceChildren(element(document, "span", "Updated "), utcTime(document, response.generatedAt)); if (document.activeElement === retry) heading.focus(); retry.hidden = true;
-    } catch (error) { if (!disposed && !ctx.signal.aborted && current === sequence) { message.textContent = errorCopy(error, ctx); shutdown = message.textContent === "Run /usage again" || !canRetry(error); retry.hidden = !canRetry(error); clear.hidden = !(error instanceof DashboardClientError && error.code === "unknown-filter-id" && ctx.clearFilters); } }
+    } catch (error) { if (!disposed && !ctx.signal.aborted && current === sequence) { message.textContent = errorCopy(error, ctx); shutdown = shouldStopPolling(error); retry.hidden = !canRetry(error); clear.hidden = !(error instanceof DashboardClientError && error.code === "unknown-filter-id" && ctx.clearFilters); } }
     finally { if (current === sequence) loading = false; }
   }
   const activity = () => { lastActivity = Date.now(); };

@@ -3,15 +3,14 @@ import type { CalibrationResult, UsageMeasure } from "../dashboard-contract.js";
 import type { DetailCall, DetailData, DetailLink } from "../query-detail.js";
 import type { MountedView, ViewContext } from "./views.js";
 import { action, element, liveMessage, updateEvidence } from "./dom.js";
-import { DashboardClientError, canRetry, errorCopy } from "./client.js";
-import { formatAicDisplay, formatTokens, tokenCell, numericText, datedText, evidenceText, utcTime } from "./format.js";
+import { DashboardClientError, shouldStopPolling, canRetry, errorCopy } from "./client.js";
+import { formatCallEvidence, calibrationText, formatAicDisplay, formatCount, formatTokens, tokenCell, numericText, evidenceText, utcTime } from "./format.js";
 import { chartWithTable } from "./charts.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { detailRoute } from "./detail-navigation.js";
 
 function evidence(measure: UsageMeasure): string {
-  return [`${formatTokens(measure.calls)} calls`, `${formatTokens(measure.unpricedCalls)} unpriced`, `${formatTokens(measure.aggregateCalls)} aggregate`,
-    measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean).join(" · ");
+  return formatCallEvidence(measure);
 }
 function measureCells(document: Document, measure: UsageMeasure, calibration: CalibrationResult): HTMLElement[] {
   const aic = formatAicDisplay(measure.aicDisplay, measure.unpricedCalls, calibration);
@@ -32,10 +31,10 @@ function renderTimeline(ctx: ViewContext & { kind: "session" | "run" }, data: De
     const points = data.timeline.filter(point => point.measure.aicDisplay.basis === basis);
     if (points.length) charts.append(chartWithTable(ctx.document, {
       view: ctx.kind, section: `timeline:aic:${basis}`, title: `Timeline AIC · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`,
-      unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic", subsets: "recorded",
+      calibrationStatus: data.calibration.status, unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic", subsets: "recorded",
       points: points.map(point => {
         const display = formatAicDisplay(point.measure.aicDisplay, point.measure.unpricedCalls, data.calibration);
-        return { ...point, value: point.measure.aicDisplay.primaryAic, tokens: point.measure.tokens, lowerBound: point.measure.unpricedCalls > 0,
+        return { ...point, labelDate: "day", value: point.measure.aicDisplay.primaryAic, tokens: point.measure.tokens, lowerBound: point.measure.unpricedCalls > 0,
           note: `${display.primary} · ${display.secondary} · ${basis === "back-applied" ? "calibrated, back-applied" : basis} · ${evidence(point.measure)}` };
       })
     }));
@@ -44,7 +43,7 @@ function renderTimeline(ctx: ViewContext & { kind: "session" | "run" }, data: De
     const subset = token === "cacheWrite1h" || token === "reasoning";
     if (!subset || data.timeline.some(point => point.measure.tokens[token] !== null)) charts.append(chartWithTable(ctx.document, {
       view: ctx.kind, section: `timeline:tokens:${token}`, title: `Timeline ${name} tokens${subset ? " (subset)" : ""}`, unit: "tokens", subsets: "recorded",
-      points: data.timeline.map(point => ({ ...point, value: point.measure.tokens[token], tokens: point.measure.tokens, note: evidence(point.measure) }))
+      points: data.timeline.map(point => ({ ...point, labelDate: "day", value: point.measure.tokens[token], tokens: point.measure.tokens, note: evidence(point.measure) }))
     }));
   }
   section.append(charts); return section;
@@ -69,7 +68,7 @@ function renderSelected(ctx: ViewContext, data: DetailData): HTMLElement {
 }
 function calibrationEvidence(document: Document, data: DetailData): HTMLElement {
   const legend = element(document, "p", undefined, "calibration-evidence");
-  legend.append(evidenceText(document, formatAicDisplay(data.totals.aicDisplay, data.totals.unpricedCalls, data.calibration).legend));
+  legend.append(calibrationText(document, data.calibration, data.totals.aicDisplay.basis));
   return legend;
 }
 function renderCalls(ctx: ViewContext, rows: readonly DetailCall[], calibration: CalibrationResult): HTMLElement {
@@ -154,7 +153,7 @@ export async function mountDetail(ctx: ViewContext & { kind: "session" | "run"; 
     status.textContent = errorCopy(error, ctx); retryButton.hidden = !canRetry(error);
     const clearButton = source === "links" ? linkClear : clear;
     clearButton.hidden = !(error instanceof DashboardClientError && error.code === "unknown-filter-id" && ctx.clearFilters);
-    const terminal = status.textContent === "Run /usage again" || !canRetry(error);
+    const terminal = shouldStopPolling(error);
     if (source === "links") { linksPaused = terminal; linksFailed = true; } else paused = terminal;
     if (error instanceof DashboardClientError && error.code === "ledger-changed") {
       paused = linksPaused = true; retry.hidden = linkRetry.hidden = true;

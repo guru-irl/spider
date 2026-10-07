@@ -7,6 +7,8 @@ export type CapturePage = {
   evaluate(expression: string): Promise<unknown>;
   /** Real keyboard input, not DOM focus simulation. */
   pressKey(key: "Tab"): Promise<void>;
+  /** Real pointer input at viewport CSS coordinates. */
+  click(x: number, y: number): Promise<void>;
   /** A basename under out, never a caller-selected path. */
   screenshot(name: string, fullPage?: boolean): Promise<string>;
 };

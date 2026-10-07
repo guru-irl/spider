@@ -71,7 +71,7 @@ describe("web primitives", () => {
       { start: 3000, end: 4000, label: "Invalid", value: Infinity, tokens: null },
     ] });
     expect(elements(chart, "tr").slice(1).map(row => cellText(row.children[2]!))).toEqual(["+12+ AIC", "-3+ AIC", "unavailable", "unavailable"]);
-    expect(elements(chart, "p")[0]!.textContent).toBe("Gap: counter minus published · One to Invalid · -3+ AIC minimum · +12+ AIC maximum");
+    expect(elements(chart, "p")[0]!.textContent).toBe("Gap: counter minus published · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:04 UTC · -3+ AIC minimum · +12+ AIC maximum");
     expect(elements(chart, "circle")).toHaveLength(2);
     const empty = chartWithTable(new PlainDocument().asDocument(), { title: "Gap", unit: "gap-aic", points: [] });
     expect(elements(empty, "p")[0]!.textContent).toBe("Gap: counter minus published · No recorded values in this period");
@@ -124,7 +124,7 @@ describe("web primitives", () => {
   });
   it.each([
     ["unknown-filter-id", 400, "Selected filter is no longer available. Remove the unknown filter from the address to continue."],
-    ["identity-unavailable", 503, "Usage identity unavailable. Run /usage again."],
+    ["identity-unavailable", 503, "Usage identity unavailable. Remove the ledger's explorer-salt file if it is unusable and wait five seconds, then refresh. Opaque filter bookmarks must be rebuilt."],
     ["invalid-query", 400, "Invalid usage query or cursor. Refresh to start a new page."],
     ["ledger-changed", 409, "Usage changed. Refresh to start a new page."],
   ] as const)("fixed API code %s reaches the view with a non-Retry notice", async (code, status, notice) => {
@@ -145,7 +145,7 @@ describe("web primitives", () => {
     expect(elements(chart, "circle")).toHaveLength(0);
     expect(elements(chart, "p")[0]!.textContent).toBe("No recorded values in this period");
     const negative = chartWithTable(doc.asDocument(), { title: "Gap", unit: "estimated-aic", points: [{ start: 0, end: 1000, label: "One", value: -3, tokens: null }] });
-    expect(elements(negative, "p")[0]!.textContent).toContain("~-3 AIC published estimate maximum");
+    expect(elements(negative, "p")[0]!.textContent).toContain("~-3 AIC ? maximum");
   });
   it("AIC formatting preserves basis evidence and lower bounds", async () => {
     // Break caught: treating unavailable as zero, omitting lower bounds or applying an implausible factor.
@@ -155,10 +155,10 @@ describe("web primitives", () => {
     const cal = module.formatAicDisplay({ primaryAic: 560, publishedAic: 1000, basis: "calibrated" }, 2, fit);
     expect(cal.primary).toBe("560+ AIC cal"); expect(cal.secondary).toBe("~1,000+ AIC published estimate");
     expect(cal.legend).toContain("calibrated x0.56 over 7 days");
-    expect(cal.legend).toContain("1970-01-01T00:00:00.000Z to 1970-01-08T00:00:00.000Z UTC");
+    expect(cal.legend).toContain("1 Jan 1970, 00:00 UTC to 8 Jan 1970, 00:00 UTC");
     expect(cal.legend).toContain("24 h covered"); expect(cal.legend).toContain("2 unpriced calls");
     const back = module.formatAicDisplay({ primaryAic: 560, publishedAic: 1000, basis: "back-applied" }, 0, fit);
-    expect(back.primary).toBe("560 AIC calibrated, back-applied");
+    expect(back.primary).toBe("560 AIC cal (back-applied)");
     expect(back.legend).toContain("calibrated, back-applied x0.56");
     for (const [status, marker] of [["uncalibrated", "?"], ["implausible", "?"], ["off", "est"]] as const) {
       const result = module.formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, { ...fit, status, factor: status === "implausible" ? 2 : null });
@@ -188,7 +188,7 @@ describe("web primitives", () => {
   it("published rows retain their own legend under a calibrated response", async () => {
     const { formatAicDisplay } = await import("../web/format.js");
     const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
-    expect(formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, fit).legend).toContain("Published estimate. Row is not calibrated.");
+    expect(formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, fit).legend).toContain("Published estimate; row is not calibrated");
   });
   it("implausible calibration reports its clamped unapplied diagnostic", async () => {
     const { formatAicDisplay } = await import("../web/format.js");
@@ -215,7 +215,7 @@ describe("web primitives", () => {
     const links = elements(offline.head, "link"); expect(links).toHaveLength(1);
     expect(links[0]!.getAttribute("rel")).toBe("stylesheet");
     expect(links[0]!.getAttribute("referrerpolicy")).toBe("no-referrer");
-    expect(links[0]!.getAttribute("href")).toBe("https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600&family=Cascadia+Code:wght@400;500&display=swap");
+    expect(links[0]!.getAttribute("href")).toBe("https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600;700&family=Cascadia+Code:wght@400;700&display=swap");
     expect(elements(offline.head, "script")).toHaveLength(0);
     // Aborting prevents a late conditional link; offline rendering remains ordinary text.
     finish.forEach(resolve => resolve([])); await pending;
@@ -265,9 +265,9 @@ describe("web primitives", () => {
       { start: 0, end: 1000, label: "One", value: 4, tokens: null, lowerBound: true },
       { start: 1000, end: 2000, label: "Two", value: 2, tokens: null },
     ] });
-    expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toBe("Daily AIC · One to Two · 2 AIC calibrated minimum · 4+ AIC calibrated maximum");
-    expect(cellText(elements(chart, "td")[2]!)).toBe("4+ AIC calibrated");
-    expect(elements(chart, "p")[0]!.textContent).toContain("4+ AIC calibrated maximum");
+    expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toBe("Daily AIC · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:02 UTC · 2 AIC cal minimum · 4+ AIC cal maximum");
+    expect(cellText(elements(chart, "td")[2]!)).toBe("4+ AIC cal");
+    expect(elements(chart, "p")[0]!.textContent).toContain("4+ AIC cal maximum");
     const table = elements(chart, "table")[0]!, region = table.parentElement!, caption = elements(table, "caption")[0]!;
     expect(region.getAttribute("aria-labelledby")).toBe(caption.id); expect(caption.id).not.toBe("");
     const toggle = button(chart, "Table");
@@ -279,8 +279,8 @@ describe("web primitives", () => {
   it("chart values and maximum retain lower-bound markers", async () => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "AIC", unit: "estimated-aic", points: [{ start: 0, end: 1000, label: "One", value: 4, tokens: null, lowerBound: true }] });
-    expect(cellText(elements(chart, "td")[2]!)).toBe("~4+ AIC published estimate");
-    expect(elements(chart, "p")[0]!.textContent).toContain("~4+ AIC published estimate maximum");
+    expect(cellText(elements(chart, "td")[2]!)).toBe("~4+ AIC ?");
+    expect(elements(chart, "p")[0]!.textContent).toContain("~4+ AIC ? maximum");
   });
   it("Chart and Table pills select one representation without dropping focus", async () => {
     const { chartWithTable } = await import("../web/charts.js");
@@ -301,13 +301,13 @@ describe("web primitives", () => {
   it("back-applied value cells preserve their calibration basis", async () => {
     const { chartWithTable } = await import("../web/charts.js");
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Back applied", unit: "back-applied-aic", points: [{ start: 0, end: 1000, label: "One", value: 560, tokens, lowerBound: true }] });
-    expect(cellText(elements(chart, "td")[2]!)).toBe("560+ AIC calibrated, back-applied");
-    expect(elements(chart, "p")[0]!.textContent).toContain("560+ AIC calibrated, back-applied maximum");
+    expect(cellText(elements(chart, "td")[2]!)).toBe("560+ AIC cal (back-applied)");
+    expect(elements(chart, "p")[0]!.textContent).toContain("560+ AIC cal (back-applied) maximum");
   });
-  it("empty tables explain that this period has no rows", async () => {
+  it("empty tables explain that no rows are recorded", async () => {
     const { renderTable } = await import("../web/tables.js");
     const table = renderTable(new PlainDocument().asDocument(), { caption: "Roles", columns: ["Role", "Value"], rows: [] });
-    expect(cellText(elements(table, "td")[0]!)).toBe("No rows for this period");
+    expect(cellText(elements(table, "td")[0]!)).toBe("No rows recorded");
     expect(elements(table, "td")[0]!.getAttribute("colspan")).toBe("2");
   });
   it("table regions are named after their captions", async () => {
@@ -326,7 +326,7 @@ describe("web primitives", () => {
     expect.soft(tokenObservation(tokens, subsets)).toBe(expected);
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Tokens", unit: "tokens", subsets, points: [{ start: 0, end: 1000, label: "One", value: 100, tokens }, { start: 1000, end: 2000, label: "Two", value: 100, tokens: { ...tokens, cacheWrite1h: 0, reasoning: 2 } }] });
     expect.soft(cellText(elements(chart, "td")[3]!)).toBe(expected);
-    expect.soft(elements(chart, "title")[1]!.textContent).toBe(`One · 1 Jan 1970 to 1 Jan 1970, 00:00:01 UTC · 100 tokens · ${expected} · `);
+    expect.soft(elements(chart, "title")[1]!.textContent).toBe(`One · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 100 tokens · ${expected} · `);
     expect(cellText(elements(chart, "td")[8]!)).toBe("input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h 0; reasoning 2");
     expect(tokenObservation(null, subsets)).toBe("tokens unavailable");
   });
@@ -365,7 +365,8 @@ describe("web primitives", () => {
     expect(cellText(elements(chart, "td")[0]!)).toBe(hostile);
     expect(elements(chart, "h3")[0]!.textContent).toBe(hostile);
     expect(elements(chart, "title")[0]!.textContent).toBe(hostile);
-    expect(elements(chart, "p")[0]!.textContent).toBe(`${hostile} · 100 tokens minimum · 100 tokens maximum`);
+    expect(elements(chart, "td")[0]!.textContent).toContain(hostile);
+    expect(elements(chart, "p")[0]!.textContent).toBe("1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 100 tokens minimum · 100 tokens maximum");
     for (const node of descendants(chart as never)) for (const name of node.attributes.keys()) expect(name).not.toMatch(/^(style|on)/i);
   });
   it("chart table has identical observations", async () => {
@@ -379,7 +380,7 @@ describe("web primitives", () => {
     ] });
     const titles = elements(chart, "title").slice(1).map(node => node.textContent);
     expect(titles).toEqual([
-      "One · 1 Jan 1970 to 1 Jan 1970, 00:00:01 UTC · 0 AIC calibrated · input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable · published estimate ~0 AIC",
+      "One · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 0 AIC cal · input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable · published estimate ~0 AIC",
       "Two · 1 Jan 1970, 00:00:01 UTC to 1 Jan 1970, 00:00:02 UTC · unavailable · tokens unavailable · unpriced",
     ]);
     expect(elements(chart, "tr").slice(1).map(row => row.children.map(cell => cellText(cell)).join(" · "))).toEqual(titles);

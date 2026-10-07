@@ -25,7 +25,7 @@ export function allViewPage(base: DashboardBrowserPage, state: typeof acceptance
     return Object.fromEntries(Object.entries(object).map(([key, child]) => [key, remap(child)]));
   };
   source.data = remap(source.data) as OverviewData;
-  const totals = measure(source.data.totals), daily = source.data.daily.rows.map(row => ({ ...row, measure: measure(row.measure) }));
+  const totals = measure(source.data.totals), daily = source.data.daily.rows.map(row => ({ ...row, label: new Date(row.start).toISOString().slice(0, 10), measure: measure(row.measure) }));
   const unavailable = { status: "unavailable", phase: 2, reason: "not-built", message: "Not available yet (Phase 2)" } as const;
   const context: ContextData = { contextFillPercent: null, contextFillMessage: "Context fill unavailable: historical window not recorded", composition: unavailable, carry: unavailable, itemReuse: unavailable };
   const split = { cacheWrite5m: 0, cacheWrite1h: 0, knownTokens: 0, knownCalls: 0, unknownTokens: 0, unknownCalls: 0 };

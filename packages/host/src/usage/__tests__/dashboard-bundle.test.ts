@@ -33,6 +33,9 @@ const require = createRequire(import.meta.url);
 const { extensionShim } = require("../../../../../scripts/extension-shim.mjs");
 const pids = new Set<number>(), roots: string[] = [];
 let built: string, buildRoot: string;
+// Dependency cloning has a separate margin beyond a build on a loaded host.
+const BUILD_TIMEOUT_MS = 300_000;
+const BUILD_SETUP_TIMEOUT_MS = BUILD_TIMEOUT_MS + 60_000;
 function fixture() {
   const root = mkdtempSync(join(buildRoot, "packaged-usage-")); roots.push(root);
   mkdirSync(join(root, "packaged", "dist"), { recursive: true });
@@ -115,8 +118,8 @@ beforeAll(async () => {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module", exports: "./index.js" }));
     writeFileSync(join(dir, "index.js"), 'throw new Error("fixture-workspace-import-forbidden");');
   }
-  if (!process.env.SPIDER_USAGE_TEST_BUNDLE) await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", join(buildRoot, "dist")], { timeout: 60000, killSignal: "SIGKILL", maxBuffer: 10 * 1024 * 1024 });
-}, 90000);
+  if (!process.env.SPIDER_USAGE_TEST_BUNDLE) await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", join(buildRoot, "dist")], { timeout: BUILD_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 10 * 1024 * 1024 });
+}, BUILD_SETUP_TIMEOUT_MS);
 afterEach(async () => {
   vi.restoreAllMocks();
   for (const root of roots) {
@@ -193,7 +196,7 @@ it("packaged slice works without source checkout", async () => {
     // The SVG namespace identifies DOM nodes, not a network resource.
     const resourceHtml = html.body.replaceAll("http://www.w3.org/2000/svg", "");
     const externalUrls = [...new Set(resourceHtml.match(/https?:\/\/[^\s"'`<>\\)]+/g) ?? [])];
-    expect(externalUrls).toEqual(["https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600&family=Cascadia+Code:wght@400;500&display=swap"]);
+    expect(externalUrls).toEqual(["https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600;700&family=Cascadia+Code:wght@400;700&display=swap"]);
     expect(styles[0]![1]).not.toMatch(/url\(/i);
     const status = await until(async () => {
       const reply = await localUsageRequest(lock.port, "/api/status", headers); const dto = JSON.parse(reply.body).data;

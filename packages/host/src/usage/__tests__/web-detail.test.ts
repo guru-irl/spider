@@ -68,11 +68,11 @@ describe("web Detail", () => {
       expect(rows[0]![2]).toBe(`${value} tokens`); expect(rows[1]![2]).toBe("unavailable"); expect(elements(chart, "circle")).toHaveLength(1);
     }
     const backApplied = panel(timeline, "Timeline AIC · calibrated, back-applied");
-    const value = `${formatTokens(data.timeline[0]!.measure.aicDisplay.primaryAic!)}+ AIC calibrated, back-applied`;
+    const value = `${formatTokens(data.timeline[0]!.measure.aicDisplay.primaryAic!)}+ AIC cal (back-applied)`;
     expect(tableRows(backApplied, "Timeline AIC · calibrated, back-applied")[0]![2]).toBe(value);
     expect(tableRows(backApplied, "Timeline AIC · calibrated, back-applied")[0]![4]).toContain(formatAicDisplay(data.timeline[0]!.measure.aicDisplay, 1, fit).primary);
     const caption = elements(backApplied, "p").find(n => n.className.split(" ").includes("chart-summary"))!;
-    expect(caption.textContent).toBe(`first interval · ${value} minimum · ${value} maximum`);
+    expect(caption.textContent).toBe(`1 Jan 1970 · ${value} minimum · ${value} maximum`);
     expect(elements(backApplied, "svg")[0]!.getAttribute("aria-label")).toBe(`Timeline AIC · calibrated, back-applied · ${caption.textContent}`);
     expect(elements(panel(timeline, "Timeline AIC · calibrated, back-applied"), "title")[1]!.textContent).toContain("calibrated, back-applied");
     expect(new URL(f.requests[0]!, "http://127.0.0.1").searchParams.get("kind")).toBe("session");
@@ -212,7 +212,7 @@ describe("web Detail", () => {
     toggle.focus(); toggle.click();
     expect(f.doc.activeElement).toBe(toggle);
     const observation = tableRows(aic, "Timeline AIC · calibrated")[0]!;
-    expect(observation.slice(0, 3)).toEqual(["first interval", "1 Jan 1970 to 2 Jan 1970, 00:00 UTC", `${formatTokens(first.timeline[0]!.measure.aicDisplay.primaryAic!)} AIC calibrated`]);
+    expect(observation.slice(0, 3)).toEqual(["first interval", "1 Jan 1970", `${formatTokens(first.timeline[0]!.measure.aicDisplay.primaryAic!)} AIC cal`]);
     expect(observation[4]).toContain(formatAicDisplay(first.timeline[0]!.measure.aicDisplay, 0, fit).primary);
     expect(observation[4]).toContain(formatAicDisplay(first.timeline[0]!.measure.aicDisplay, 0, fit).secondary);
     expect(elements(aic, "title")[1]!.textContent).toContain("prompt 60; total 100");
@@ -255,7 +255,7 @@ describe("Detail fix round", () => {
     expect(toggle.getAttribute("aria-controls")).toBe(elements(chart, "div").find(n => n.getAttribute("role") === "region")!.id);
     const graphic = elements(chart, "svg")[0]!, caption = elements(chart, "p").find(n => n.className.split(" ").includes("chart-summary"))!;
     expect(caption.tagName).toBe("P"); expect(caption.className).not.toContain("numeric");
-    expect(caption.textContent).toContain(`${formatTokens(data.timeline[0]!.measure.aicDisplay.primaryAic!)}+ AIC calibrated maximum`);
+    expect(caption.textContent).toContain(`${formatTokens(data.timeline[0]!.measure.aicDisplay.primaryAic!)}+ AIC cal maximum`);
     expect(graphic.getAttribute("aria-describedby")).toBe(caption.id);
     expect(graphic.getAttribute("aria-label")).toBe(`Timeline AIC · calibrated · ${caption.textContent}`);
     expect(elements(chart, "text")).toHaveLength(0);
@@ -545,7 +545,7 @@ describe("Detail alignment", () => {
     for (const [caption, columns] of [["Recorded calls", 7], ["Relationships", 3]] as const) {
       const table = elements(f.root, "table").find(n => elements(n, "caption")[0]?.textContent === caption)!;
       const rows = elements(table, "tbody")[0]!.children; expect(rows).toHaveLength(1);
-      expect(rows[0]!.children).toHaveLength(1); expect(rows[0]!.children[0]!.textContent).toBe("No rows for this period");
+      expect(rows[0]!.children).toHaveLength(1); expect(rows[0]!.children[0]!.textContent).toBe("No rows recorded");
       expect(rows[0]!.children[0]!.getAttribute("colspan")).toBe(String(columns));
     }
     for (const control of elements(f.root, "button")) expect(control.className).toContain("action");

@@ -3,7 +3,7 @@ import { PlainDocument, elements, settle, button, cellText } from "./fixtures/pl
 import { startDashboard } from "../web/app.js";
 import { chartWithTable } from "../web/charts.js";
 import { renderTable } from "../web/tables.js";
-import { tokenList, periodTimes, formatUtcTimestamp, datedText } from "../web/format.js";
+import { tokenList, periodTimes, formatUtcTimestamp, evidenceText } from "../web/format.js";
 import * as dom from "../web/dom.js";
 
 const period = { start: Date.UTC(2026, 9, 1), end: Date.UTC(2026, 9, 6, 22, 13) };
@@ -120,20 +120,20 @@ describe("Task 13 shared presentation", () => {
     const app = startDashboard({ document: doc.asDocument(), initialRoute: { view: "context", period } });
     try {
       const label = elements(doc.body, "p").find(node => node.className === "period-label")!;
-      expect(label.textContent).toBe("1 Oct 2026 to 6 Oct 2026, 22:13 UTC");
+      expect(label.textContent).toBe("1 Oct 2026, 00:00 UTC to 6 Oct 2026, 22:13 UTC");
       expect(elements(label, "time").map(node => node.getAttribute("datetime"))).toEqual(["2026-10-01T00:00:00.000Z", "2026-10-06T22:13:00.000Z"]);
     } finally { app.dispose(); }
   });
   it("invalid timestamp-looking labels remain text without exceptions", () => {
     const text = "Synthetic-2026-99-99T99:99:99.000Z";
-    const node = datedText(new PlainDocument().asDocument(), text);
+    const node = evidenceText(new PlainDocument().asDocument(), text);
     expect(node.textContent).toBe(text); expect(elements(node, "time")).toHaveLength(0);
   });
-  it("chart evidence uses shared readable UTC dates", () => {
+  it("chart free-text evidence preserves timestamp-looking text", () => {
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Daily", unit: "tokens", points: [{ ...period, label: "Day", value: 100, tokens, note: "Window 2026-10-01T00:00:00.000Z to 2026-10-06T22:13:00.000Z UTC" }] });
     const evidence = elements(chart, "td")[4]!;
-    expect(evidence.textContent).toContain("Window 1 Oct 2026 to 6 Oct 2026, 22:13 UTC");
-    expect(elements(evidence, "time").map(n => n.getAttribute("datetime"))).toEqual(["2026-10-01T00:00:00.000Z", "2026-10-06T22:13:00.000Z"]);
+    expect(evidence.textContent).toContain("Window 2026-10-01T00:00:00.000Z to 2026-10-06T22:13:00.000Z UTC");
+    expect(elements(evidence, "time")).toHaveLength(0);
   });
   it("shared tables carry column labels without changing observations", () => {
     // Break caught: unlabeled values when the shared responsive table stacks.
@@ -147,7 +147,7 @@ describe("Task 13 shared presentation", () => {
     const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Daily", unit: "tokens", points: Array.from({ length: count }, (_, i) => ({ start: i * 1000, end: (i + 1) * 1000, label: `Day ${i + 1}`, value: 100, tokens })) });
     expect(elements(chart, "svg")[0]!.getAttribute("height")).toBe(count < 3 ? "96" : "160");
     expect(elements(chart, "circle")).toHaveLength(count);
-    if (count === 1) expect(elements(chart, "p")[0]!.textContent).toBe("Day 1 · 100 tokens minimum · 100 tokens maximum");
+    if (count === 1) expect(elements(chart, "p")[0]!.textContent).toBe("1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 100 tokens minimum · 100 tokens maximum");
   });
   it("chart tables keep token labels in a compact list and UTC periods in time elements", () => {
     // Break caught: collapsing the token categories into a dense prose cell.

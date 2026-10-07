@@ -100,7 +100,7 @@ it("Cache chart evidence preserves primary lower bounds and missing hit rates", 
   try {
     const usage = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H3" && child.textContent === "Daily usage · calibrated"))!;
     expect(elements(usage, "title")[1]!.textContent).toContain("50+ AIC cal");
-    expect(rows(usage, "Daily usage · calibrated")[0]![2]).toBe("50+ AIC calibrated");
+    expect(rows(usage, "Daily usage · calibrated")[0]![2]).toBe("50+ AIC cal");
     const hits = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H3" && child.textContent === "Daily cache hit rate"))!;
     expect(elements(hits, "circle")).toHaveLength(0); button(hits, "Table").click(); expect(rows(hits, "Daily cache hit rate")[0]![2]).toBe("unavailable");
     expect(f.root.textContent).toContain("Cache hit rate: unavailable");
@@ -169,11 +169,11 @@ it("Cache separates selected, warmer, split and back-applied evidence", async ()
     expect(elements(f.root, "span").some(n => n.className === "numeric" && n.textContent === "33.33")).toBe(true);
     const selected = rows(f.root, "Selected usage and warmer");
     expect(selected[0]![4]).toContain("Pending data"); expect(selected[1]![4]).not.toContain("Pending data");
-    expect(selected[1]![1]).toBe("9 AIC calibrated, back-applied"); expect(selected[1]![4]).toContain("1 call;");
-    expect(rows(f.root, "Warmer token components")[0]).toEqual(["Input", "1 AIC calibrated, back-applied", "~2 AIC published estimate", "2 tokens"]);
+    expect(selected[1]![1]).toBe("9 AIC cal (back-applied)"); expect(selected[1]![4]).toContain("1 call ·");
+    expect(rows(f.root, "Warmer token components")[0]).toEqual(["Input", "1 AIC cal (back-applied)", "~2 AIC published estimate", "2 tokens"]);
     expect(rows(f.root, "Daily cache write split").map(r => r.slice(1, 3))).toEqual([["11 tokens", "7 tokens"], ["1 token", "2 tokens"]]);
     const warmer = elements(f.root, "section").find(n => n.children.some(c => c.tagName === "H3" && c.textContent === "Daily warmer · calibrated, back-applied"))!;
-    expect(warmer).toBeDefined(); expect(rows(warmer, "Daily warmer · calibrated, back-applied")[0]![2]).toBe("9 AIC calibrated, back-applied");
+    expect(warmer).toBeDefined(); expect(rows(warmer, "Daily warmer · calibrated, back-applied")[0]![2]).toBe("9 AIC cal (back-applied)");
     expect(elements(warmer, "circle")).toHaveLength(1);
     const previous = elements(f.root, "button").filter(n => n.textContent === "Previous page");
     expect(previous.every(n => n.getAttribute("aria-disabled") === "true")).toBe(true);
@@ -356,7 +356,7 @@ it.each(lifecycleCases)("$name empty tables use only the shared empty message", 
     expect(f.root.textContent).not.toContain("No unpriced model evidence on this page.");
     expect(f.root.textContent).not.toContain("No daily calibration evidence on this page.");
     const captions = entry.name === "Cache" ? ["Sessions with writes and no recorded reads", "Daily cache write split"] : entry.name === "Reconciliation" ? ["Published comparison", "Calibrated comparison", "Snapshot coverage"] : ["Unpriced evidence", "Daily calibration evidence"];
-    for (const caption of captions) expect(rows(f.root, caption)).toEqual([["No rows for this period"]]);
+    for (const caption of captions) expect(rows(f.root, caption)).toEqual([["No rows recorded"]]);
   } finally { view.dispose(); }
 });
 
@@ -381,5 +381,19 @@ it.each(lifecycleCases)("$name successful wake refresh hides Retry and focuses i
     const retry = button(f.root, "Retry"); expect(retry.hidden).toBe(false); retry.focus();
     view.suspend!(true); view.resume!(); fail = false; view.refresh!(); await settle();
     expect(retry.hidden).toBe(true); expect(f.doc.activeElement).toBe(elements(retry.parentElement!.parentElement!, "h2")[0]);
+  } finally { view.dispose(); }
+});
+
+
+it("Cache UTC day cells render readable dates with machine values", async () => {
+  // Breaks: rendering the raw ISO day instead of the typed date field.
+  const { mountCache } = await import("../web/cache.js"), f = fixture();
+  f.source.daily.rows[0]!.label = "1970-01-01";
+  const view = await mountCache(f.ctx); await settle();
+  try {
+    const table = elements(f.root, "table").find(t => elements(t, "caption")[0]?.textContent === "Daily cache write split")!;
+    const day = elements(table, "td").find(t => t.getAttribute("data-label") === "UTC day")!;
+    expect(day.children.find(n => n.className === "cell-value")!.textContent).toBe("1 Jan 1970");
+    expect(elements(day, "time").map(t => [t.textContent, t.getAttribute("datetime")])).toEqual([["1 Jan 1970", "1970-01-01T00:00:00.000Z"]]);
   } finally { view.dispose(); }
 });

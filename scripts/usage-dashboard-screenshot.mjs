@@ -137,13 +137,18 @@ export async function captureDashboard({ html, routes, viewport = { width: 1440,
       await send("Input.dispatchKeyEvent", { ...params, type: "keyUp" });
       await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     };
+    const click = async (x, y) => {
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+      await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+    };
     const runVerification = async callback => {
       if (!callback) return;
       let timer;
       try {
         await Promise.race([
           interrupted, interceptionFailed,
-          callback({ pid: cdp.pid, evaluate, screenshot, pressKey, get blockedRequests() { return blockedRequests; } }),
+          callback({ pid: cdp.pid, evaluate, screenshot, pressKey, click, get blockedRequests() { return blockedRequests; } }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("capture-timeout")), verifyTimeoutMs); }),
         ]);
       } finally { clearTimeout(timer); }

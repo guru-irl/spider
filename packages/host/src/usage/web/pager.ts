@@ -84,10 +84,11 @@ export function createPager(document: Document, options: { title: string; param:
       return true;
     },
     notice(message: string, announce: boolean): void {
-      recoveryNotice = true;
+      recoveryNotice = true; status.className = "notice";
       if (announce) status.textContent = message;
     },
     busy(announce: boolean, clearStatus = false, retainFocus = false): void {
+      if (announce || clearStatus) status.className = "notice";
       loading = true; preserveFocus = retainFocus;
       if (!preserveFocus && (document.activeElement === retry || document.activeElement === clearFilters)) heading.focus();
       if (!preserveFocus || document.activeElement !== clearFilters) clearFilters.hidden = true;
@@ -98,14 +99,14 @@ export function createPager(document: Document, options: { title: string; param:
     },
     complete(at: number, announce: boolean): void {
       loading = false; stamp.replaceChildren(element(document, "span", `${recoveryNotice && !announce ? "Page link no longer valid. Showing page 1. " : ""}Updated `), utcTime(document, at));
-      if (announce && !recoveryNotice) status.textContent = "Usage updated.";
+      if (announce && !recoveryNotice) { status.textContent = "Usage updated."; status.className = "notice live-only"; }
       recoveryNotice = false;
       if (!failed || !retryable) { if (document.activeElement === retry) heading.focus(); retry.hidden = true; }
       else retry.hidden = false;
       updateControls();
     },
     fail(error: unknown, announce: boolean): void {
-      failed = position(); restore(committed);
+      status.className = "notice"; failed = position(); restore(committed);
       loading = false;
       if (announce) status.textContent = errorCopy(error, options);
       else { status.textContent = ""; stamp.textContent = errorCopy(error, options); }

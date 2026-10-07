@@ -27,7 +27,7 @@ export function renderTable(document: Document, options: { caption: string; colu
     body.append(line);
   }
   if (!options.rows.length) {
-    const line = element(document, "tr"), cell = element(document, "td", "No rows for this period");
+    const line = element(document, "tr"), cell = element(document, "td", "No rows recorded");
     line.setAttribute("role", "row"); cell.setAttribute("role", "cell");
     cell.setAttribute("colspan", String(options.columns.length)); line.append(cell); body.append(line);
   }
@@ -42,5 +42,7 @@ export function tableRegion(document: Document, table: HTMLTableElement): HTMLEl
     region.className += " wide-table-region";
     const cue = element(document, "p", "Scroll horizontally to see all columns", "scroll-cue"); cue.id = `${caption.id}-scroll-cue`; region.setAttribute("aria-describedby", cue.id); region.append(cue);
   }
+  // Tall tables can be centered by native Tab scrolling, hiding their focus indicator.
+  region.addEventListener("focus", () => { if (region.matches(":focus-visible")) caption.scrollIntoView?.({ block: "nearest" }); });
   return region;
 }

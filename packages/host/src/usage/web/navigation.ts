@@ -16,6 +16,7 @@ export function hashRoute(hash: string): ViewRoute {
     if (!hash || hash.length > 16384) return fallback;
     // URLSearchParams tolerates malformed escapes; reject them before parsing.
     decodeURIComponent(hash.slice(1));
+    // Accept mode= from incoming links; the dashboard never writes it.
     const params = new URLSearchParams(hash.slice(1)), view = params.get("view"), mode = params.get("mode") ?? "chart";
     if (!views.includes(view as ViewRoute["view"]) || !["chart", "table"].includes(mode)) return fallback;
     if ([...params.keys()].some((key, i, keys) => keys.indexOf(key) !== i || !["view", "mode", "id", "start", "end", "filters"].includes(key))) return fallback;

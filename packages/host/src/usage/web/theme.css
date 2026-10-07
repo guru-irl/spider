@@ -120,8 +120,8 @@ p { overflow-wrap: anywhere; }
 .health-panel > div:first-of-type { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: .3rem 1rem; }
 .health-panel p { margin: .4rem 0; }
 @media (max-width: 720px) {
-  .usage-shell { grid-template-columns: minmax(0, 1fr); }
-  .usage-rail { flex-direction: row; flex-wrap: wrap; padding: 1rem; gap: .35rem; }
+  .usage-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  .usage-rail { flex-direction: row; flex-wrap: wrap; align-content: flex-start; padding: 1rem; gap: .35rem; }
   .rail-title { width: 100%; margin: 0 0 .4rem; }
   .usage-main { padding: 1.5rem 1rem 3rem; }
   .period-header { margin-bottom: 1.5rem; }

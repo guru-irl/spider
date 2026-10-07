@@ -26,7 +26,7 @@ export function screenshotSkipReason(env = process.env) {
   return null;
 }
 
-export async function captureDashboard({ html, routes, viewport = { width: 1440, height: 1000 }, out = defaultScratch, scratchDir = defaultScratch, browser = process.env.SPIDER_USAGE_BROWSER, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS, startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS, verifyTimeoutMs = DEFAULT_VERIFY_TIMEOUT_MS, installSignalHandlers = false, verify }) {
+export async function captureDashboard({ html, routes, viewport = { width: 1440, height: 1000 }, fullPage = false, out = defaultScratch, scratchDir = defaultScratch, browser = process.env.SPIDER_USAGE_BROWSER, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS, startupTimeoutMs = DEFAULT_STARTUP_TIMEOUT_MS, verifyTimeoutMs = DEFAULT_VERIFY_TIMEOUT_MS, installSignalHandlers = false, verify, verifyAfterCapture }) {
   if (!browser) throw new Error("browser-required");
   for (const [path, route] of Object.entries(routes ?? {})) {
     const body = route?.body;
@@ -110,17 +110,25 @@ export async function captureDashboard({ html, routes, viewport = { width: 1440,
       if (reply.exceptionDetails) throw new Error(`page-evaluation-failed: Runtime.evaluate: ${errorDetail(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text)}`);
       return reply.result.value;
     };
-    if (verify) {
+    const runVerification = async callback => {
+      if (!callback) return;
       let timer;
       try {
         await Promise.race([
           interrupted, interceptionFailed,
-          verify({ pid: cdp.pid, evaluate, get blockedRequests() { return blockedRequests; } }),
+          callback({ pid: cdp.pid, evaluate, get blockedRequests() { return blockedRequests; } }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("capture-timeout")), verifyTimeoutMs); }),
         ]);
       } finally { clearTimeout(timer); }
+    };
+    await runVerification(verify);
+    const capture = { format: "png", fromSurface: true, captureBeyondViewport: fullPage };
+    if (fullPage) {
+      const { cssContentSize } = await send("Page.getLayoutMetrics");
+      capture.clip = { x: cssContentSize.x, y: cssContentSize.y, width: cssContentSize.width, height: cssContentSize.height, scale: 1 };
     }
-    const screenshot = await send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
+    const screenshot = await send("Page.captureScreenshot", capture);
+    await runVerification(verifyAfterCapture);
     mkdirSync(out, { recursive: true });
     const png = join(out, "overview.png");
     writeFileSync(png, Buffer.from(screenshot.data, "base64"), { mode: 0o600 });

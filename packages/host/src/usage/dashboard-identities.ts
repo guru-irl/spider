@@ -5,8 +5,10 @@ import { homedir } from "node:os";
 import { sep, posix, win32 } from "node:path";
 import { DashboardQueryError, type Dimension, type DashboardQueryContext, type Period, type Filter } from "./dashboard-contract.js";
 
+import { supportedDetailId } from "./dashboard-keys.js";
+
 export const opaqueId = (value: unknown): value is string => typeof value === "string" && /^v1_[A-Za-z0-9_-]{43}$/.test(value);
-export const supportedDetailId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value);
+export { supportedDetailId } from "./dashboard-keys.js";
 const detailDimension = (field: Dimension) => field === "session" || field === "run";
 export const identityColumns: Readonly<Record<Dimension, string>> = DIMENSION_COLUMNS;
 function normalizedHome(): string {

@@ -27,8 +27,8 @@ export function chartWithTable(document: Document, options: { title: string; poi
   const compact = options.points.length < 3;
   const svgNode = <K extends keyof SVGElementTagNameMap>(tag: K) => document.createElementNS("http://www.w3.org/2000/svg", tag);
   const svg = svgNode("svg"); svg.setAttribute("width", "100%"); svg.setAttribute("height", compact ? "96" : "160"); svg.setAttribute("role", "img");
-  // Only the glyph-free plot scales. Text stays in the outer CSS-pixel viewport.
-  const plot = svgNode("svg"); plot.setAttribute("viewBox", "0 0 600 160"); plot.setAttribute("width", "100%"); plot.setAttribute("height", compact ? "76" : "140"); plot.setAttribute("aria-hidden", "true");
+  // Only the baseline plot scales. Point glyphs and text use CSS pixels.
+  const plot = svgNode("svg"); plot.setAttribute("viewBox", "0 0 600 160"); plot.setAttribute("width", "100%"); plot.setAttribute("height", compact ? "76" : "140"); plot.setAttribute("aria-hidden", "true"); plot.setAttribute("preserveAspectRatio", "none");
   svg.setAttribute("aria-label", options.title); svg.setAttribute("class", compact ? "observation-chart compact-chart" : "observation-chart");
   const title = svgNode("title"); title.textContent = options.title; svg.append(title);
   const valid = options.points.filter(point => point.value !== null && Number.isFinite(point.value));
@@ -37,20 +37,20 @@ export function chartWithTable(document: Document, options: { title: string; poi
   if (options.unit === "gap-aic") {
     const zero = svgNode("line"), y = String(125 - ((0 - minimum) / span) * 100);
     zero.setAttribute("x1", "24"); zero.setAttribute("x2", "574"); zero.setAttribute("y1", y); zero.setAttribute("y2", y);
-    zero.setAttribute("class", "chart-zero-line"); plot.append(zero);
+    zero.setAttribute("class", "chart-zero-line"); zero.setAttribute("vector-effect", "non-scaling-stroke"); plot.append(zero);
   }
   const start = Math.min(...options.points.map(point => point.start)), end = Math.max(...options.points.map(point => point.end));
+  svg.append(plot);
   options.points.forEach((point, i) => {
     const group = svgNode("g"), tooltip = svgNode("title"); tooltip.textContent = tooltipRows[i]!.join(" · "); group.append(tooltip);
     if (point.value !== null && Number.isFinite(point.value)) {
       const dot = svgNode("circle");
-      dot.setAttribute("cx", String(24 + ((point.start - start) / (end - start || 1)) * 550));
-      dot.setAttribute("cy", String(125 - ((point.value - minimum) / span) * 100)); dot.setAttribute("r", "3");
+      dot.setAttribute("cx", `${(24 + ((point.start - start) / (end - start || 1)) * 550) / 6}%`);
+      dot.setAttribute("cy", String((125 - ((point.value - minimum) / span) * 100) * (compact ? 76 : 140) / 160)); dot.setAttribute("r", "3.5");
       dot.setAttribute("class", "chart-dot"); group.append(dot);
     }
-    plot.append(group);
+    svg.append(group);
   });
-  svg.append(plot);
   const label = element(document, "p", undefined, "chart-summary");
   const extreme = (value: number) => observation(value, options.unit, valid.some(point => point.value === value && point.lowerBound));
   const range = options.points.length === 1 ? options.points[0]!.label : `${options.points[0]?.label} to ${options.points.at(-1)?.label}`;

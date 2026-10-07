@@ -1,0 +1,2 @@
+.detail-prose { font-family: var(--text-face); font-variant-numeric: normal; }
+.detail-calls .detail-prose p { margin: 0; }

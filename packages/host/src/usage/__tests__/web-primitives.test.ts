@@ -12,10 +12,10 @@ describe("web primitives", () => {
     expect(errorCopy(error, { clearFilters() {} })).toBe("Selected filter is no longer available. Clear filters to continue.");
   });
   it.each([
-    [[12, -3, 0], ["+12 AIC", "-3 AIC", "0 AIC"], [25, 125, 105], 105],
-    [[12, 3], ["+12 AIC", "+3 AIC"], [25, 100], 125],
-    [[-12, -3], ["-12 AIC", "-3 AIC"], [125, 50], 25],
-    [[0, 0], ["0 AIC", "0 AIC"], [125, 125], 125],
+    [[12, -3, 0], ["+12 AIC", "-3 AIC", "0 AIC"], [21.875, 109.375, 91.875], 105],
+    [[12, 3], ["+12 AIC", "+3 AIC"], [11.875, 47.5], 125],
+    [[-12, -3], ["-12 AIC", "-3 AIC"], [59.375, 23.75], 25],
+    [[0, 0], ["0 AIC", "0 AIC"], [59.375, 59.375], 125],
     [[12.4, -3.1, 0.1, -0.1], ["+12 AIC", "-3 AIC", "0 AIC", "0 AIC"], null, null],
   ] as const)("signed gap observations %j share whole AIC and a zero line", async (values, cells, positions, zero) => {
     const { chartWithTable } = await import("../web/charts.js");
@@ -28,6 +28,10 @@ describe("web primitives", () => {
     expect(elements(chart, "th")[2]!.textContent).toBe("Gap: counter minus published");
     const line = elements(chart, "line")[0]!;
     expect(line).toBeDefined(); expect(line.getAttribute("class")).toBe("chart-zero-line");
+    // Breaks: default meet squeezes the baseline while CSS-pixel dots span the chart.
+    expect(elements(chart, "svg")[1]!.getAttribute("preserveAspectRatio")).toBe("none");
+    // Breaks: the compact plot scales the zero-line stroke below one CSS pixel.
+    expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
     expect(line.getAttribute("x1")).toBe("24"); expect(line.getAttribute("x2")).toBe("574");
     if (zero !== null) {
       expect(Number(line.getAttribute("y1"))).toBe(zero); expect(line.getAttribute("y2")).toBe(line.getAttribute("y1"));
@@ -335,7 +339,7 @@ describe("web primitives", () => {
     expect(elements(svg, "text")).toHaveLength(0); expect(svg.getAttribute("aria-describedby")).toBe(label.id); expect(label.id).not.toBe("");
     expect(svg.getAttribute("width")).toBe("100%"); expect(svg.getAttribute("height")).toBe("96");
     const plot = elements(chart, "svg")[1]!;
-    expect(plot.getAttribute("viewBox")).toBe("0 0 600 160"); expect(elements(plot, "circle")).toHaveLength(1); expect(elements(plot, "text")).toHaveLength(0);
+    expect(plot.getAttribute("viewBox")).toBe("0 0 600 160"); expect(elements(plot, "circle")).toHaveLength(0); expect(elements(svg, "circle")).toHaveLength(1); expect(elements(plot, "text")).toHaveLength(0);
   });
   it("hostile labels remain text", async () => {
     // Break caught: interpreting labels as markup or allowing an API request to leave the loopback origin.
@@ -410,4 +414,20 @@ it("updateEvidence keeps reordered row buttons but adopts each new row action", 
   updateEvidence(parent as unknown as HTMLElement, render(["first", "second"])); const retained = elements(parent, "button");
   updateEvidence(parent as unknown as HTMLElement, render(["second", "first"]));
   expect(elements(parent, "button")).toEqual(retained); retained[0]!.click(); retained[1]!.click(); expect(chosen).toEqual(["second", "first"]);
+});
+
+
+it("chart markers use the unscaled CSS viewport and never connect nulls or gaps", async () => {
+  // Breaks: scalable plot circles shrink below 3.5 CSS px radius or lines invent intervening observations.
+  const { chartWithTable } = await import("../web/charts.js"), doc = new PlainDocument();
+  const chart = chartWithTable(doc.asDocument(), { title: "Sparse observations", unit: "tokens", points: [
+    { start: 0, end: 1000, label: "first", value: 10, tokens: null },
+    { start: 1000, end: 2000, label: "unknown", value: null, tokens: null },
+    { start: 9000, end: 10000, label: "after a gap", value: 20, tokens: null },
+  ] });
+  const dots = elements(chart,"circle"); expect(dots).toHaveLength(2);
+  expect(dots.map(n=>n.getAttribute("r"))).toEqual(["3.5","3.5"]);
+  for(const dot of dots) { let parent=dot.parentElement; while(parent&&parent.tagName.toLowerCase()!=="svg")parent=parent.parentElement; expect(parent?.getAttribute("viewBox")).toBeNull(); }
+  expect(elements(chart,"line")).toHaveLength(0);expect(elements(chart,"path")).toHaveLength(0);expect(elements(chart,"polyline")).toHaveLength(0);
+  expect(elements(chart,"tr").slice(1).map(row=>cellText(row.children[2]!))).toEqual(["10 tokens","unavailable","20 tokens"]);
 });

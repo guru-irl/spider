@@ -21,6 +21,8 @@ export type CaptureOptions = {
   routes?: Record<string, DashboardRoute>;
   /** CSS-pixel capture dimensions, default 1440 by 1000. */
   viewport?: { width: number; height: number };
+  /** Capture the full CSS layout via DevTools, keeping the viewport unchanged. Default false. */
+  fullPage?: boolean;
   out?: string;
   /** Caller-owned scratch, independent of screenshot output. */
   scratchDir?: string;
@@ -36,6 +38,8 @@ export type CaptureOptions = {
   /** Bounds the overall verification callback, independently of commands. */
   verifyTimeoutMs?: number;
   verify?: (page: CapturePage) => Promise<void>;
+  /** Verify live page state after capture, before closing the browser. Uses verifyTimeoutMs. */
+  verifyAfterCapture?: (page: CapturePage) => Promise<void>;
 };
 export function screenshotSkipReason(env?: NodeJS.ProcessEnv): string | null;
 export function captureDashboard(options: CaptureOptions): Promise<string>;

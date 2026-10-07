@@ -83,7 +83,7 @@ function renderPivot(ctx: ViewContext, data: ExplorerData, drill: (row: Explorer
       const value = row.measure.aicDisplay.primaryAic;
       if (value !== null && Number.isFinite(value)) {
         const dot = svgNode("circle"); dot.setAttribute("cx", `${55 + value / (maximum || 1) * 40}%`);
-        dot.setAttribute("cy", String(i * 28 + 20)); dot.setAttribute("r", "3"); dot.setAttribute("class", "chart-dot"); group.append(dot);
+        dot.setAttribute("cy", String(i * 28 + 20)); dot.setAttribute("r", "3.5"); dot.setAttribute("class", "chart-dot"); group.append(dot);
       }
       svg.append(group);
     });

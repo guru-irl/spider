@@ -8,6 +8,7 @@ import { networkInterfaces, userInfo } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { createUnresponsivePipeBrowser } from "./fixtures/dashboard-browser-fixture.js";
+import { pixels } from "./fixtures/png-pixels.js";
 import * as implementation from "../../../../../scripts/usage-dashboard-screenshot.mjs";
 
 const checkout = fileURLToPath(new URL("../../../../../", import.meta.url));
@@ -94,7 +95,7 @@ test("CLI runs the installed visual test and propagates its result", async conte
   for (const width of [390, 1272]) {
     const bytes = readFileSync(join(out, String(width), "overview.png"));
     expect(bytes.readUInt32BE(16)).toBe(width);
-    expect(bytes.readUInt32BE(20)).toBe(width === 390 ? 3600 : 2000);
+    expect(bytes.readUInt32BE(20)).toBe(width === 390 ? 3600 : 2400);
   }
   const invalid = cli({ CI: "" }, ["--unknown", out]);
   expect(invalid.status).toBe(1);
@@ -235,3 +236,27 @@ for (const routeMode of [false, true]) {
     }
   }, implementation.BROWSER_TEST_TIMEOUT_MS);
 }
+
+
+// Breaks: full-page capture ignores layout extent, or changes the CSS viewport.
+test.skipIf(Boolean(implementation.screenshotSkipReason())).each([false, true])("fullPage=%s captures layout without resizing the 390x844 viewport", async fullPage => {
+  const dir = root(); let pid = 0; let afterCapture = false;
+  const png = await implementation.captureDashboard({
+    html: '<style>html,body{margin:0}.top{height:100vh;background:#f00}.middle{height:478px;background:#0f0}.bottom{height:478px;background:#00f}</style><div class=top></div><div class=middle></div><div class=bottom></div>',
+    viewport: { width: 390, height: 844 }, fullPage, out: dir, scratchDir: dir,
+    verify: async page => { pid = page.pid; expect(await page.evaluate("[innerWidth,innerHeight,document.documentElement.scrollHeight]")).toEqual([390,844,1800]); },
+    verifyAfterCapture: async page => {
+      afterCapture = true;
+      expect(await page.evaluate("[innerWidth,innerHeight]")).toEqual([390,844]);
+    },
+  });
+  const bytes = readFileSync(png); expect(bytes.readUInt32BE(16)).toBe(390); expect(bytes.readUInt32BE(20)).toBe(fullPage ? 1800 : 844);
+  expect(afterCapture).toBe(true);
+  const image = pixels(bytes);
+  expect(image.rgb(5,5)).toEqual([255,0,0]); expect(image.rgb(5,843)).toEqual([255,0,0]);
+  if (fullPage) {
+    expect(image.rgb(5,1000)).toEqual([0,255,0]);
+    expect(image.rgb(5,1795)).toEqual([0,0,255]);
+  }
+  expect(() => process.kill(pid, 0)).toThrow(); expect(readdirSync(dir).filter(n => n.startsWith("browser-"))).toEqual([]);
+}, implementation.BROWSER_TEST_TIMEOUT_MS);

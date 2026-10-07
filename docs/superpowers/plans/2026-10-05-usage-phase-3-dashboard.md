@@ -622,8 +622,8 @@ Graceful stop retries any pending lease release once and reports whether release
 - `mountDetail(ctx: ViewContext & { kind: "session" | "run"; id: string }): Promise<MountedView>`.
 - `mountContext(ctx: ViewContext): Promise<MountedView>`. Show latency/subsets only when recorded.
 
-- [ ] `timeline is independent of call pagination`: Next call page leaves timeline observations/basis unchanged.
-- [ ] `historical fill and composition remain unavailable`: Keep exact D2 copy and no fake zero; Context links to Overview and Session/Run for tokens and primary AIC. Detail keeps aggregate, covered and unpriced explanations beside those measures.
+- [x] `timeline is independent of call pagination`: Next call page leaves timeline observations/basis unchanged.
+- [x] `historical fill and composition remain unavailable`: Keep exact D2 copy and no fake zero; Context links to Overview and Session/Run for tokens and primary AIC. Detail keeps aggregate, covered and unpriced explanations beside those measures.
 
 ## Task 11: Analytical views
 

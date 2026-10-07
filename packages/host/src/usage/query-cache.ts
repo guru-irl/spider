@@ -1,5 +1,6 @@
+import type { InternalCalibrationService } from "./calibration.js";
 import { dashboardKey, dashboardLabel } from "./dashboard-identities.js";
-import type { AicDisplay, CalibrationResult, DashboardQueryContext, Page, Slice, UsageMeasure } from "./dashboard-contract.js";
+import type { AicDisplay, CalibrationResult, CalibrationService, DashboardQueryContext, Page, Slice, UsageMeasure } from "./dashboard-contract.js";
 import { toAicDisplay } from "./aic-display.js";
 import { storedSelection, countedUsageSql } from "./schema.js";
 import { compileSlice, DAY_MS, decodeCursor, encodeCursor, invalidQuery, measureSelectionProjection, measureColumns, measureFromRow, safeTimestamp, validatePage, type MeasureRow } from "./dashboard-selection.js";
@@ -10,7 +11,9 @@ export type AnalysisFit = { calibration: CalibrationResult; basis: AicDisplay["b
 export function analysisFits(ctx: DashboardQueryContext, ends: readonly number[]): AnalysisFit[] {
   const points = ends.map(end => Math.max(0, Math.min(end, ctx.now()) - 1));
   const unique = [...new Set(points)];
-  const fits = ctx.calibration.atMany(unique, ctx.calibrationMode);
+  let fits: readonly CalibrationResult[];
+  if (unique.length <= 200) fits = ctx.calibration.atMany(unique, ctx.calibrationMode);
+  else fits = historyFits(ctx, unique);
   let earliest: CalibrationResult | undefined;
   const byEnd = new Map(unique.map((end, i) => {
     let calibration = fits[i]!, basis: AicDisplay["basis"] = calibration.status === "calibrated" ? "calibrated" : "published";
@@ -21,6 +24,28 @@ export function analysisFits(ctx: DashboardQueryContext, ends: readonly number[]
     return [end, { calibration, basis }] as const;
   }));
   return points.map(point => byEnd.get(point)!);
+}
+function hasHistory(service: CalibrationService): service is InternalCalibrationService {
+  return "windows" in service && typeof service.windows === "function";
+}
+/** Internal endpoint lookup. History fits can be shared; callers must treat them as read-only. */
+export function historyFits(ctx: DashboardQueryContext, unique: readonly number[]): readonly CalibrationResult[] {
+  if (!unique.length) return [];
+  if (!hasHistory(ctx.calibration)) {
+    const fits: CalibrationResult[] = [];
+    for (let i = 0; i < unique.length; i += 200) fits.push(...ctx.calibration.atMany(unique.slice(i, i + 200), ctx.calibrationMode));
+    return fits;
+  }
+  const sorted = [...unique].sort((a, b) => a - b);
+  const windows = ctx.calibration.windows({ start: sorted[0]!, end: sorted.at(-1)! }, ctx.calibrationMode);
+  const byPoint = new Map<number, CalibrationResult>();
+  let cursor = 0;
+  for (const point of sorted) {
+    while (cursor + 1 < windows.length && windows[cursor + 1]!.from <= point) cursor++;
+    byPoint.set(point, windows[cursor]!.calibration);
+  }
+  const fits = unique.map(point => byPoint.get(point)!);
+  return fits;
 }
 export function analysisMeasure(ctx: DashboardQueryContext, row: MeasureRow, fit: AnalysisFit): UsageMeasure {
   const measure = measureFromRow(ctx, row, fit.calibration);

@@ -11,22 +11,71 @@ const counter = (day: number, creditsUsed: number, extra = {}) => f.ledger.inser
 const call = (id: string, day: number, aic: number) => dashboardCall(id, { ts: START + day * DAY,
   price: { status: "priced", aic, components: { input: aic, cacheRead: 0, cacheWrite: 0, output: 0 }, rateVersion: "fixture", tier: "fixture", confidence: "estimated" } });
 
-// The old per-200-anchor batches make query count grow with history length.
-it("earliest no-fit discovery uses constant queries for 2, 30 and 365 days", () => {
-  const queryCounts: number[] = [];
-  for (const days of [2, 30, 365]) {
-    seedCalibrationHistory(f, days, false);
-    const service = createCalibrationService(f.db, { revision: () => "fixture-scaled" });
-    const prepare = vi.spyOn(f.db, "prepare");
-    const fit = service.earliest("auto");
-    const queries = prepare.mock.calls.map(([sql]) => sql);
-    prepare.mockRestore();
-    expect(fit).toMatchObject({ status: "uncalibrated", factor: null });
-    expect(queries.filter(sql => sql.includes("calls_period_read"))).toHaveLength(1);
-    expect(queries.length).toBeLessThanOrEqual(3);
-    queryCounts.push(queries.length);
-  }
-  expect(queryCounts).toEqual([3, 3, 3]);
+// Kills whole-history materialization: absence may require all history, but
+// neither snapshot reads nor interval binds may grow with ledger age.
+it("earliest no-fit discovery bounds snapshot pages and interval binds", () => {
+  seedCalibrationHistory(f, 30, false);
+  const prepare = f.db.prepare.bind(f.db);
+  const pageSizes: number[] = [], bindSizes: number[] = [];
+  vi.spyOn(f.db, "prepare").mockImplementation(sql => {
+    const statement = prepare(sql);
+    if (sql.includes("AS credits") && sql.includes("ORDER BY ts,rowid")) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...args) => {
+        const rows = all(...args); pageSizes.push(rows.length); return rows;
+      });
+    }
+    if (sql.includes("calls_period_read")) {
+      for (const method of ["all", "iterate"] as const) {
+        const read = statement[method].bind(statement);
+        vi.spyOn(statement, method).mockImplementation((...args: unknown[]) => {
+          bindSizes.push(JSON.parse(args[0] as string).length);
+          return read(...args) as never;
+        });
+      }
+    }
+    return statement;
+  });
+  expect(service.earliest("auto").status).toBe("uncalibrated");
+  expect(pageSizes.reduce((a, b) => a + b, 0)).toBe(30 * 144 + 1);
+  expect(Math.max(...pageSizes)).toBeLessThanOrEqual(512);
+  expect(Math.max(...bindSizes)).toBeLessThanOrEqual(512);
+});
+
+it("earliest stops call aggregation in the first chunk containing a fit", () => {
+  seedCalibrationHistory(f, 365, true);
+  const prepare = f.db.prepare.bind(f.db);
+  let snapshots = 0;
+  vi.spyOn(f.db, "prepare").mockImplementation(sql => {
+    const statement = prepare(sql);
+    if (sql.includes("AS credits") && sql.includes("ORDER BY ts,rowid")) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, "all").mockImplementation((...args) => {
+        const rows = all(...args); snapshots += rows.length; return rows;
+      });
+    }
+    return statement;
+  });
+  expect(service.earliest("auto")).toMatchObject({ status: "calibrated", windowEnd: START + DAY });
+  expect(snapshots).toBeLessThanOrEqual(512);
+});
+
+it("earliest survives newer snapshot generations but invalidates earlier duplicates and call revisions", () => {
+  f.ledger.apply(dashboardBatch([call("first", 0, 1000)])); counter(0, 0); counter(1, 500);
+  const prepare = vi.spyOn(f.db, "prepare");
+  const passes = () => prepare.mock.calls.filter(([sql]) => sql.includes("calls_period_read")).length;
+  const first = service.earliest("auto"); expect(first.factor).toBe(0.5); expect(passes()).toBe(1);
+  counter(2, 600);
+  service.at(START + 2 * DAY, "auto"); // warming another generation must not erase earliest
+  const warmed = passes();
+  expect(service.earliest("auto")).toEqual(first); expect(passes()).toBe(warmed);
+  counter(3, -1); // later invalid data also cannot change the earlier window
+  expect(service.earliest("auto")).toEqual(first); expect(passes()).toBe(warmed);
+  counter(1, 250); // a duplicate at the fit endpoint CAN change it
+  expect(service.earliest("auto").factor).toBe(0.25); expect(passes()).toBe(warmed + 1);
+  f.db.prepare("UPDATE calls SET aic=2000").run(); revision = "fixture-2";
+  service.at(START + 2 * DAY, "auto");
+  expect(service.earliest("auto").factor).toBe(0.125);
 });
 
 it("earliest slides whole pairs, dropping too-old and reset evidence before a later fit", () => {

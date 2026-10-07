@@ -167,6 +167,11 @@ it("calibration sparse history bounds its evidence passes", () => {
           plans.push(...(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map(x => x.detail));
           return all(...args);
         });
+        const iterate = statement.iterate.bind(statement);
+        vi.spyOn(statement, "iterate").mockImplementation((...args) => {
+          plans.push(...(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as { detail: string }[]).map(x => x.detail));
+          return iterate(...args);
+        });
       }
       return statement;
     });
@@ -253,8 +258,12 @@ it("calls pass reads only the span covered by snapshot pairs", () => {
   vi.spyOn(db, "prepare").mockImplementation(sql => {
     const statement = prepare(sql);
     if (sql.includes("calls_period_read")) {
-      const all = statement.all.bind(statement);
-      vi.spyOn(statement, "all").mockImplementation((...args) => { bounds.push(args); return all(...args); });
+      const iterate = statement.iterate.bind(statement);
+      vi.spyOn(statement, "iterate").mockImplementation((...args) => {
+        const intervals = JSON.parse(String(args[0])) as [number, number, number][];
+        bounds.push(...intervals.map(([, start, end]) => [start, end]));
+        return iterate(...args);
+      });
     }
     return statement;
   });

@@ -24,7 +24,7 @@ test("rates preserve stored amounts and provenance", () => {
   const captured: { sql: string; args: unknown[] }[] = [], prepare = ctx.db.prepare.bind(ctx.db);
   const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(sql => {
     const statement = prepare(sql);
-    for (const method of ["all", "get"] as const) { const run = statement[method].bind(statement); vi.spyOn(statement, method).mockImplementation((...args: unknown[]) => { captured.push({ sql, args }); return run(...args); }); }
+    for (const method of ["all", "get", "iterate"] as const) { const run = statement[method].bind(statement); vi.spyOn(statement, method).mockImplementation((...args: unknown[]) => { captured.push({ sql, args }); return run(...args); }); }
     return statement;
   });
   const first = queryRates(ctx, slice, { limit: 50 });
@@ -84,7 +84,7 @@ test("analysis routes reject invalid input before SQL and use bounded range plan
     const captured: { sql: string; args: unknown[] }[] = [];
     const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(sql => {
       const statement = prepare(sql);
-      for (const method of ["all", "get"] as const) { const run = statement[method].bind(statement); vi.spyOn(statement, method).mockImplementation((...args: unknown[]) => { captured.push({ sql, args }); return run(...args); }); }
+      for (const method of ["all", "get", "iterate"] as const) { const run = statement[method].bind(statement); vi.spyOn(statement, method).mockImplementation((...args: unknown[]) => { captured.push({ sql, args }); return run(...args); }); }
       return statement;
     });
     const result = route.handle(ctx, new URLSearchParams({ start: String(M), end: String(M + 31 * D), limit: "200" })); spy.mockRestore();

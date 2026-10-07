@@ -130,7 +130,7 @@ it("readMeasure, ledger period/health and both calibration readers use stored se
   };
   overview(DASHBOARD_MONTH + 3 * DASHBOARD_DAY, ctx => {
     assertStored(() => readMeasure(ctx, { start: DASHBOARD_MONTH, end: ctx.now(), filters: [] }), sql => sql.includes("FROM calls c"));
-    assertStored(() => ctx.calibration.at(ctx.now() - 1, "auto"), sql => sql.includes("GROUP BY ts ORDER BY ts"));
+    assertStored(() => ctx.calibration.at(ctx.now() - 1, "auto"), sql => sql.includes("AS calibration_totals"));
     assertStored(() => ctx.calibration.earliest("auto"), sql => sql.includes("interval_calls AS MATERIALIZED"));
   });
   queries.length = 0;

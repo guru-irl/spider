@@ -224,4 +224,5 @@ it("200000 seeded cross-platform labels leak no home-prefix segments or redacted
   expect(leaks).toBe(0);
   // The separate adversarial tokenizer test pins bounded runtime. Shared-host
   // fuzzer timing is evidence, not a scheduling-sensitive correctness assertion.
-}, 30000);
+  // About 10 s on a developer machine; CI runners are several times slower.
+}, 180_000);

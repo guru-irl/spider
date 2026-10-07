@@ -44,9 +44,9 @@
 
 ## Dashboard
 
-- Run `/usage` in a parent pi session to open the local dashboard in your browser. The command starts or reuses a detached server bound only to `127.0.0.1` on a random port. It serves a read-only view of the local ledger.
+- Run `/usage` in an interactive parent pi session to open the local dashboard in your browser. Child sessions and print, JSON or RPC modes refuse it without opening a browser. The command starts or reuses a detached server bound only to `127.0.0.1` on a random port. It serves a read-only view of the local ledger.
 - Overview: period totals, daily AIC and token observations, actor and role breakdowns, ingest health and source diagnostics.
-- Explorer: filter recorded usage and group it by up to three dimensions, with chart and table evidence.
+- Explorer: filter recorded usage and group it by up to three dimensions, with chart and table evidence. Pages grouped by day hold at most 32 distinct days; continue paging for the rest.
 - Session: selected session totals, call timeline, recorded calls and related runs.
 - Run: selected run totals, call timeline, accounting selection and related sessions or runs.
 - Context: explicit placeholders for composition, carry cost and item reuse, with links to recorded usage evidence.
@@ -59,6 +59,7 @@
 - AIC is approximate. Prompt tokens are input plus cache read plus cache write; total tokens add output. Recorded reasoning and one-hour cache writes are subsets, not extra totals. Unpriced usage stays unavailable, not zero; mixed pricing is a lower bound marked `+`.
 - `usage.calibration=auto` fits the trailing seven days of compatible account counter evidence. It needs at least 24 covered hours and 500 published AIC. Reset, account and clock boundaries are excluded. Insufficient or implausible evidence falls back to the published estimate. Calibration does not prove complete attribution or exact billing.
 - The primary AIC basis is calibrated when possible, or published otherwise. Historical periods before the earliest usable fit use `cal (back-applied)` on amounts and `calibrated, back-applied` in evidence. Rates shows each day's own evidence window and factor; Reconciliation retains all three amounts when available.
+- Daily rows use each day's own trailing fit, in Overview, Cache and Explorer alike, so daily calibrated values need not add up to the period total.
 - The key uses `cal` for calibrated, `?` for calibration unavailable and `est` for published estimates with calibration off. AIC remains approximate in every mode. Tokens are unaffected by calibration.
 - To use published estimates only: `/spider config set usage.calibration off --global`. Restore automatic calibration with `/spider config unset usage.calibration --global`. Reloading configuration does not open a browser or reset tokens.
 - The counter is account-wide and can include other clients and machines. It moves in whole AIC, with typical billing lag of 3 to 5 minutes. Short gaps and ratios are not a bill.

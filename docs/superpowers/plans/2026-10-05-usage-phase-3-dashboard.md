@@ -134,6 +134,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 - Index-drop EXPLAIN runs on the same writable fixture connection inside rollback. A missing-index exception alone is not evidence.
 - Local opt-in measures 1M rows/24 months, refuses CI with SKIP/77, and reports ten warmed sequential samples/p95 for the month and measured 366-day case.
 - Include cold/warm calibration costs and ambient host load; run no concurrent work of our own. Report overages; failed commands are never samples.
+- Known deviations, accepted at Task 12 and pinned by tests (follow-up): calibration call passes per request are 11 cold and 0 warm for Overview and Cache, 13 cold and 0 warm for Rates, and 11 cold and 10 warm for Reconciliation, above the one-pass rule; `earliest()` keeps the legacy dynamic overlap selection; the report-overlap exemption allows only an indexed SEARCH on `calls_run_detail` by run-id equality inside `report_runs`; year-window routes (366 days) have no promised budget.
 
 ### D9. Diagnostics and cache
 

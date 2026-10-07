@@ -113,8 +113,8 @@ test("cache project labels use normalized home or redacted suffixes", () => {
   const result = reader.snapshot(ctx => queryCache(ctx, slice, { limit: 50 }));
   expect(result.sessionsWithWritesNoReads.rows[0]!.sessionId).toBe("home.session_:x-0");
   expect(result.sessionsWithWritesNoReads.rows[2]!.sessionId).toBe("x".repeat(128));
-  expect(result.sessionsWithWritesNoReads.rows.map(row => row.projectLabel)).toEqual(["~/team/project", "…/team/project", "…/team/project", "…/team/project"]);
-  expect(dashboardLabel("model", "note=[/private/team/project],file:/private/team/project")).toBe("note=[…/team/project],file:…/team/project");
+  expect(result.sessionsWithWritesNoReads.rows.map(row => row.projectLabel)).toEqual(["~/team/project", "…/team/project", "…/team/project", "../team/project"]);
+  expect(dashboardLabel("model", "note=[/private/team/project],file:/private/team/project")).toBe("note=[…/team/project");
   expect(dashboardLabel("model", "path=C:\\private\\team\\project")).toBe("path=…/team/project");
   expect(dashboardLabel("model", "\\\\server\\share\\team\\project")).toBe("…/team/project");
 });

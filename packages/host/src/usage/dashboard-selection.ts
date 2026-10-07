@@ -25,7 +25,7 @@ function utcDay(value: string): number {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !safeTimestamp(ts) || new Date(ts).toISOString().slice(0, 10) !== value) invalidQuery();
   return ts;
 }
-function validateSlice(slice: Slice): void {
+export function validateSlice(slice: Slice): void {
   if (!safeTimestamp(slice.start) || !safeTimestamp(slice.end) || slice.end < slice.start || slice.end - slice.start > 366 * DAY_MS) invalidQuery();
   if (!Array.isArray(slice.filters) || slice.filters.length > 16) invalidQuery();
   for (const filter of slice.filters) {
@@ -133,8 +133,10 @@ export function measureFromRow(ctx: DashboardQueryContext, row: MeasureRow, cali
     pendingData: Boolean(row.pendingData), estimated: Boolean(row.possibleOverlap || row.possibleUndercount),
   };
 }
-export function readMeasure(ctx: DashboardQueryContext, slice: Slice, scope?: { sessionId?: string; runId?: string },
-  calibration?: CalibrationResult): UsageMeasure {
+/** Resolve one period-end fit and reuse its projector across totals, buckets and rows. */
+export function resolveMeasure(ctx: DashboardQueryContext, slice: Slice, calibration?: CalibrationResult): {
+  calibration: CalibrationResult; measure: (row: MeasureRow) => UsageMeasure;
+} {
   let basis: AicDisplay["basis"] | undefined;
   if (!calibration) {
     const end = Math.max(0, Math.min(slice.end, ctx.now()) - 1);
@@ -144,12 +146,20 @@ export function readMeasure(ctx: DashboardQueryContext, slice: Slice, scope?: { 
       if (earliest.status === "calibrated" && earliest.windowEnd !== null && end < earliest.windowEnd) { calibration = earliest; basis = "back-applied"; }
     }
   }
+  const fit = calibration;
+  return { calibration: fit, measure: row => {
+    const result = measureFromRow(ctx, row, fit);
+    if (basis) result.aicDisplay.basis = basis;
+    return result;
+  } };
+}
+export function readMeasure(ctx: DashboardQueryContext, slice: Slice, scope?: { sessionId?: string; runId?: string },
+  calibration?: CalibrationResult): UsageMeasure {
+  const resolved = resolveMeasure(ctx, slice, calibration);
   const compiled = compileSlice(slice, scope, ctx);
   const row = ctx.db.prepare(`SELECT ${measureColumns} FROM (${countedUsageSql(compiled.sql, "c.*", scope?.sessionId ? "calls_session_read" : "calls_period_read", storedSelection(ctx.db))})`)
     .get(...compiled.params) as MeasureRow;
-  const result = measureFromRow(ctx, row, calibration);
-  if (basis) result.aicDisplay.basis = basis;
-  return result;
+  return resolved.measure(row);
 }
 
 export function validatePage(page: { limit: number; cursor?: string }, maximum = 200): void {

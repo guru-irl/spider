@@ -144,7 +144,7 @@ it.each(["off", "auto"] as const)("Task 7 responses are byte identical on unmigr
   expect(session.calibration.status).toBe(mode === "off" ? "off" : "calibrated");
   if (mode === "auto") expect(session.calibration.factor).toBe(0.5);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(3);
+  expect(db.pragma("user_version")).toBe(4);
   const after = read(mode, responses);
   // Compare the entire DTO on every calls and links page, including timeline,
   // accounting, calibration, context, redacted labels, opaque ids and cursors.

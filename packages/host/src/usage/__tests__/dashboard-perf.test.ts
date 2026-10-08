@@ -32,7 +32,7 @@ test("query capture includes each raw iterator execution but not unused prepares
 test("small fixture plans enforce range access", async () => {
   const fixture = createDashboardFixture(false); closers.push(fixture.close);
   const seed = seedPlanLedger(fixture.file, 10_000);
-  expect(fixture.db.pragma("user_version")).toBe(3);
+  expect(fixture.db.pragma("user_version")).toBe(4);
   expect(fixture.db.prepare("SELECT count(*) AS n FROM calls").get()).toEqual({ n: 10_000 });
   expect(seed.periods).toHaveLength(2);
   expect(seed.periods[0]!.end).toBe(DASHBOARD_NOW);

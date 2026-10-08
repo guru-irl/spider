@@ -69,6 +69,15 @@ export type RunMeta = {
   parentRunId: string | null; agent: string | null; role: string | null; name: string | null;
   model: string | null; thinking: string | null; phase: string | null;
   startedAt: number | null; endedAt: number | null;
+  status?: "queued" | "running" | "paused" | "done" | "failed" | "cancelled" | null;
+};
+/** Private store inputs. Public dashboard responses must redact these fields. */
+export type SessionMeta = {
+  id: string; ownerSessionId: string | null; name: string; nameSource: "name" | "first-user" | "id";
+  project: string | null; firstActivity: number | null; lastActivity: number | null; nameOrder: number;
+};
+export type MetadataCheckpoint = {
+  path: string; generation: number; offset: number; size: number; complete: boolean;
 };
 export type SourceContext = { header: Record<string, unknown> | null; entries: { byteOffset: number; json: unknown }[]; tailHash: string };
 export type PendingReport = { path: string; runId: string; generation: number; firstSeen: number; calls: CallRow[]; partial?: boolean };
@@ -90,6 +99,8 @@ export type CoverageEvidence = "transcript" | "runs-db" | "unknown";
 export type CoverageEdge = { reportRunId: string; includedRunId: string; evidence: CoverageEvidence };
 export type ImportBatch = {
   calls: readonly CallRow[]; runs: readonly RunMeta[]; states: readonly ImportState[];
+  sessions?: readonly SessionMeta[];
+  metadataCheckpoints?: readonly MetadataCheckpoint[];
   /** Worker ingest-lease fence, sampled under the same IMMEDIATE write lock. */
   commitGuard?: () => boolean;
   publishedSnapshot?: Extract<UsageWorkerEvent, { type: "snapshot" }>;
@@ -127,6 +138,8 @@ export interface UsageLedger {
   dataVersion(): number;
   getImportState(path: string): ImportState | undefined;
   getRuns(): readonly RunMeta[];
+  getSessions(): readonly SessionMeta[];
+  getMetadataCheckpoint(path: string): MetadataCheckpoint | undefined;
   /** With roots, load only their persisted ancestry plus the last linear node.
    * An empty roots array reads header/checkpoints only. Omitted roots is a diagnostic full read. */
   getSourceContext(path: string, roots?: readonly string[]): SourceContext | undefined;
@@ -287,6 +300,8 @@ export function openUsageLedgerReadOnly(file: string): UsageLedger | undefined {
 }
 
 function createLedger(db: Db): UsageLedger {
+  // Followers may still read a shipped v1-v3 file before its writer upgrades it.
+  const hasMetadata = Number(db.pragma("user_version")) >= 4;
   const calibration = createCalibrationService(db, { revision: () => {
     const row = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get() as { value: string } | undefined;
     if (!row || !/^\d+$/.test(row.value)) throw new Error("usage-revision-unavailable");
@@ -345,24 +360,50 @@ function createLedger(db: Db): UsageLedger {
     WHERE import_state.source_error_code IS NOT excluded.source_error_code
       OR import_state.source_error_paths IS NOT excluded.source_error_paths`);
   const putRun = db.prepare(`INSERT INTO runs_meta
-    (id, db_path, project, repo, session_id, parent_run_id, agent, role, name, model, thinking, phase, started_at, ended_at)
-    VALUES (@id, @dbPath, @project, @repo, @sessionId, @parentRunId, @agent, @role, @name, @model, @thinking, @phase, @startedAt, @endedAt)
+    (id, db_path, project, repo, session_id, parent_run_id, agent, role, name, model, thinking, phase, started_at, ended_at${hasMetadata ? ", status" : ""})
+    VALUES (@id, @dbPath, @project, @repo, @sessionId, @parentRunId, @agent, @role, @name, @model, @thinking, @phase, @startedAt, @endedAt${hasMetadata ? ", @status" : ""})
     ON CONFLICT(db_path,id) DO UPDATE SET project=excluded.project, repo=excluded.repo, session_id=excluded.session_id,
     parent_run_id=excluded.parent_run_id, agent=excluded.agent, role=excluded.role, name=excluded.name, model=excluded.model,
     thinking=excluded.thinking, phase=excluded.phase, started_at=excluded.started_at, ended_at=excluded.ended_at
+    ${hasMetadata ? ", status=CASE WHEN @hasStatus THEN excluded.status ELSE runs_meta.status END" : ""}
     WHERE (runs_meta.project, runs_meta.repo, runs_meta.session_id, runs_meta.parent_run_id,
       runs_meta.agent, runs_meta.role, runs_meta.name, runs_meta.model, runs_meta.thinking,
       runs_meta.phase, runs_meta.started_at, runs_meta.ended_at) IS NOT
       (excluded.project, excluded.repo, excluded.session_id, excluded.parent_run_id,
       excluded.agent, excluded.role, excluded.name, excluded.model, excluded.thinking,
-      excluded.phase, excluded.started_at, excluded.ended_at)`);
+      excluded.phase, excluded.started_at, excluded.ended_at)
+    ${hasMetadata ? "OR (@hasStatus AND runs_meta.status IS NOT excluded.status)" : ""}`);
+  // Normalize each incoming span before merging. Missing bounds use the known
+  // endpoint, reversed bounds are sorted, and empty ownership cannot erase evidence.
+  const putSession = hasMetadata ? db.prepare(`INSERT INTO sessions
+    (id,owner_session_id,name,name_source,project,first_activity,last_activity,name_order)
+    VALUES (@id,@ownerSessionId,@name,@nameSource,@project,
+      MIN(COALESCE(@firstActivity,@lastActivity),COALESCE(@lastActivity,@firstActivity)),
+      MAX(COALESCE(@firstActivity,@lastActivity),COALESCE(@lastActivity,@firstActivity)),@nameOrder)
+    ON CONFLICT(id) DO UPDATE SET owner_session_id=COALESCE(NULLIF(excluded.owner_session_id,''),sessions.owner_session_id),
+      project=COALESCE(NULLIF(excluded.project,''),sessions.project),
+      name=CASE WHEN excluded.name_order >= sessions.name_order THEN excluded.name ELSE sessions.name END,
+      name_source=CASE WHEN excluded.name_order >= sessions.name_order THEN excluded.name_source ELSE sessions.name_source END,
+      name_order=MAX(sessions.name_order,excluded.name_order),
+      first_activity=CASE WHEN sessions.first_activity IS NULL THEN excluded.first_activity
+        WHEN excluded.first_activity IS NULL THEN sessions.first_activity ELSE MIN(sessions.first_activity,excluded.first_activity) END,
+      last_activity=CASE WHEN sessions.last_activity IS NULL THEN excluded.last_activity
+        WHEN excluded.last_activity IS NULL THEN sessions.last_activity ELSE MAX(sessions.last_activity,excluded.last_activity) END`) : undefined;
+  const getSessions = hasMetadata ? db.prepare(`SELECT id,owner_session_id AS ownerSessionId,name,name_source AS nameSource,
+    project,first_activity AS firstActivity,last_activity AS lastActivity,name_order AS nameOrder FROM sessions ORDER BY id`) : undefined;
+  const putMetadataCheckpoint = hasMetadata ? db.prepare(`INSERT INTO session_metadata_import(path,generation,offset,size,complete)
+    VALUES (@path,@generation,@offset,@size,@complete) ON CONFLICT(path) DO UPDATE SET
+      generation=excluded.generation,offset=excluded.offset,size=excluded.size,complete=excluded.complete
+    WHERE (session_metadata_import.generation,session_metadata_import.offset,session_metadata_import.size,session_metadata_import.complete)
+      IS NOT (excluded.generation,excluded.offset,excluded.size,excluded.complete)`) : undefined;
+  const getMetadataCheckpoint = hasMetadata ? db.prepare("SELECT path,generation,offset,size,complete FROM session_metadata_import WHERE path=?") : undefined;
   const putCoverageEdge = db.prepare(`INSERT INTO coverage_edges (report_run_id, included_run_id, evidence)
     VALUES (@reportRunId, @includedRunId, @evidence) ON CONFLICT(report_run_id, included_run_id)
     DO UPDATE SET evidence=excluded.evidence WHERE coverage_edges.evidence IS NOT excluded.evidence`);
   const removeCoverageEdge = db.prepare("DELETE FROM coverage_edges WHERE report_run_id=? AND included_run_id=?");
   const getRuns = db.prepare(`SELECT id, db_path AS dbPath, project, repo, session_id AS sessionId,
     parent_run_id AS parentRunId, agent, role, name, model, thinking, phase,
-    started_at AS startedAt, ended_at AS endedAt FROM runs_meta ORDER BY db_path,id`);
+    started_at AS startedAt, ended_at AS endedAt${hasMetadata ? ", status" : ""} FROM runs_meta ORDER BY db_path,id`);
   const insertCounter = db.prepare(`INSERT INTO counter_snapshots (ts, account_login, credits_used, entitlement, remaining, reset_date, raw)
     VALUES (@ts, @accountLogin, @creditsUsed, @entitlement, @remaining, @resetDate, @raw)`);
   const latestCounter = db.prepare(`SELECT ts, account_login AS accountLogin, credits_used AS creditsUsed,
@@ -442,7 +483,9 @@ function createLedger(db: Db): UsageLedger {
           resetIncomplete.run(source.path);
           resetEntries.run(source.path);
         }
-        for (const run of batch.runs) putRun.run(run);
+        for (const run of batch.runs) putRun.run({ ...run, status: run.status ?? null, hasStatus: Number(run.status !== undefined) });
+        for (const session of batch.sessions ?? []) putSession!.run(session);
+        for (const checkpoint of batch.metadataCheckpoints ?? []) putMetadataCheckpoint!.run({ ...checkpoint, complete: Number(checkpoint.complete) });
         for (const call of batch.calls) insertCall.run(callValues(call));
         for (const edge of batch.removeCoverageEdges ?? []) removeCoverageEdge.run(edge.reportRunId, edge.includedRunId);
         for (const edge of batch.coverageEdges ?? []) putCoverageEdge.run(edge);
@@ -520,6 +563,11 @@ function createLedger(db: Db): UsageLedger {
     getImportState(path) { return getState.get(path) as ImportState | undefined; },
     getRuns() {
       return getRuns.all() as RunMeta[];
+    },
+    getSessions() { return (getSessions?.all() ?? []) as SessionMeta[]; },
+    getMetadataCheckpoint(path) {
+      const row = getMetadataCheckpoint?.get(path) as (Omit<MetadataCheckpoint, "complete"> & { complete: number }) | undefined;
+      return row ? { ...row, complete: Boolean(row.complete) } : undefined;
     },
     insertCounter(snapshot) {
       insertCounter.run({

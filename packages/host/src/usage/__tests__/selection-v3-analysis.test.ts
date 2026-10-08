@@ -68,7 +68,7 @@ it.each(["off", "auto"] as const)("Task 8 responses are byte identical on unmigr
   expect(before.rates.unpricedModels.nextCursor).not.toBeNull();
   expect(before.reconciliation.periods.rows[0]!.computed!.calls).toBeGreaterThan(0);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(3);
+  expect(db.pragma("user_version")).toBe(4);
   const after = read(mode, responses);
   // Task 8 has no Overview cube rounding. Counts and all AIC fields are exact.
   expect(after).toEqual(before);

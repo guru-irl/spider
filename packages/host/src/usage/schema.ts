@@ -1,7 +1,7 @@
 import type { Db } from "@spider/db-core";
 
 // Shipped v1 SQL/layout remain immutable; later versions are additive.
-export const USAGE_SCHEMA_VERSION = 3;
+export const USAGE_SCHEMA_VERSION = 4;
 export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
 
 // Call content and attribution are revision-keyed reader inputs. Legacy counted /

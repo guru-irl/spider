@@ -1,29 +1,8 @@
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import type { Db } from "@spider/db-core";
 import type { DashboardQueryContext, Page, SourceErrorRow } from "./dashboard-contract.js";
 import { decodeCursor, encodeCursor, invalidQuery, validatePage } from "./dashboard-selection.js";
-
-/** Labels are presentation only and must never be used as filesystem inputs. */
-export function sourceErrorLabel(value: string | null, fallback: string): string {
-  if (!value) return fallback;
-  let decoded = value;
-  try {
-    for (let i = 0; i < 4; i++) {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) break;
-      decoded = next;
-    }
-  } catch { return fallback; }
-  if (/%[0-9a-f]{2}/i.test(decoded)) return fallback;
-  const name = stripTerminalSequences(decoded).split(/[\\/]/).filter(Boolean).at(-1)?.split("#")[0]?.replace(/[\u0000-\u001f\u007f]/g, "");
-  return name && name !== "." && name !== ".." ? [...name].slice(0, 160).join("") : fallback;
-}
-export function sourceErrorCode(value: string): string {
-  if (value === "unknown-aux-purpose" || value.startsWith("unknown-aux-purpose:")) return "unknown-aux-purpose";
-  return ["parse-errors", "missing-source", "missing-db", "not-file", "source-changed", "invalid-project", "invalid-run-id",
-    "invalid-run-event", "legacy-run-events", "runs-db-recreated:facts-retained", "ENOENT", "EACCES", "EPERM", "EIO",
-    "SQLITE_BUSY", "SQLITE_CORRUPT", "discovery-failed", "ingest-failed"].includes(value) ? value : "source-error";
-}
+import { sourceErrorLabel, sourceErrorCode } from "./source-error-diagnostics.js";
+export { sourceErrorLabel, sourceErrorCode, readSourceErrorDiagnostics } from "./source-error-diagnostics.js";
 type ErrorRecord = { key: number; kind: number; path: string; project: string | null; code: string; count: number; lastCheckedAt: number };
 function readErrors(db: Db, limit: number, after: readonly [number, number]): ErrorRecord[] {
   const sources = db.prepare(`SELECT rowid AS key, path, parse_errors AS parseErrors, source_error_code AS sourceError,
@@ -64,9 +43,4 @@ export function querySourceErrors(ctx: DashboardQueryContext, page: { limit: num
   const last = selected.at(-1);
   return { rows: selected.map(publicRow), nextCursor: rows.length > page.limit && last
     ? encodeCursor("source-errors", `${ctx.instanceId}:source-errors`, query, [last.key, last.kind]) : null };
-}
-export function readSourceErrorDiagnostics(db: Db, limit: number): { rows: readonly SourceErrorRow[]; truncated: boolean } {
-  validatePage({ limit });
-  const rows = readErrors(db, limit, [0, -1]);
-  return { rows: rows.slice(0, limit).map(publicRow), truncated: rows.length > limit };
 }

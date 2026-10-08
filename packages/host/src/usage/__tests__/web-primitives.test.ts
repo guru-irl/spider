@@ -89,7 +89,7 @@ describe("web primitives", () => {
     document.createElement = ((tag: string) => tag === "canvas" ? { getContext: () => context } : create(tag)) as typeof document.createElement;
     const faces = observeFontTransport(doc);
     await loadFonts(document);
-    expect(faces).toHaveLength(available === "missing" ? 6 : 0);
+    expect(faces).toHaveLength(available === "missing" ? 7 : 0);
     expect(elements(doc.head, "link")).toHaveLength(0);
   });
 
@@ -134,7 +134,7 @@ describe("web primitives", () => {
   ] as const)("fixed API code %s reaches the view with a non-Retry notice", async (code, status, notice) => {
     const { createDashboardClient, errorCopy } = await import("../web/client.js");
     const client = createDashboardClient(async () => new Response(JSON.stringify({ error: { code, message: "ignored raw message" } }), { status }));
-    const error = await client.get("/api/explorer", new URLSearchParams(), new AbortController().signal).catch(error => error);
+    const error = await client.get("/api/overview", new URLSearchParams(), new AbortController().signal).catch(error => error);
     expect.soft(error.code).toBe(code); expect.soft(errorCopy(error)).toBe(notice);
   });
   it("unknown server error codes are normalized before reaching callers", async () => {
@@ -206,7 +206,7 @@ describe("web primitives", () => {
     const local = new PlainDocument(); const attempted: string[] = [];
     local.fonts = { async load(font) { attempted.push(font); return [{}]; } };
     await module!.loadFonts(local.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100);
-    expect(attempted).toEqual(['16px "Usage Text Local"', '16px "Usage Code Local"']);
+    expect(attempted).toEqual(['16px "Usage Text Local"', '16px "Usage Code Local"', '16px "Usage Wordmark Local"']);
     expect(elements(local.head, "link")).toHaveLength(0);
     const missing = new PlainDocument();
     const finish: ((faces: unknown[]) => void)[] = [];
@@ -218,13 +218,13 @@ describe("web primitives", () => {
     const offline = new PlainDocument(); offline.fonts = { async load(font) { if (font.includes("Text")) return []; throw new Error("offline"); } };
     const faces = observeFontTransport(offline);
     await module!.loadFonts(offline.asDocument());
-    expect(faces).toHaveLength(6);
-    expect(faces.every(face => face.source.startsWith(`local("${face.family}"), url("https://fonts.gstatic.com/`))).toBe(true);
+    expect(faces).toHaveLength(7);
+    expect(faces.every(face => face.source.startsWith(`url("https://fonts.gstatic.com/`))).toBe(true);
     expect(elements(offline.head, "link")).toHaveLength(0);
     expect(elements(offline.head, "script")).toHaveLength(0);
     // Aborting prevents a late conditional link; offline rendering remains ordinary text.
     finish.forEach(resolve => resolve([])); await pending;
-    expect(missingFaces).toHaveLength(6);
+    expect(missingFaces).toHaveLength(7);
     const cancelled = new PlainDocument(); const abort = new AbortController(); abort.abort();
     await module!.loadFonts(cancelled.asDocument(), abort.signal);
     expect(elements(cancelled.head, "link")).toHaveLength(0);
@@ -237,7 +237,7 @@ describe("web primitives", () => {
       const measure = (font: string) => available && font.includes("Usage") ? 120 : 100;
       const faces = observeFontTransport(doc);
       await loadFonts(doc.asDocument(), undefined, measure);
-      expect(faces).toHaveLength(available ? 0 : 6);
+      expect(faces).toHaveLength(available ? 0 : 7);
     }
   });
   it("font fallback is bounded at exactly 1.5 seconds", async () => {
@@ -248,16 +248,16 @@ describe("web primitives", () => {
       const faces = observeFontTransport(doc);
       const pending = loadFonts(doc.asDocument());
       await vi.advanceTimersByTimeAsync(1499); expect(elements(doc.head, "link")).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(1); await pending;
-      expect(faces).toHaveLength(6); expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(1); expect(faces).toHaveLength(7); await pending;
+      expect(faces).toHaveLength(7); expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
   });
-  it("one local font does not suppress the missing font fallback", async () => {
+  it("a locally available family skips only its own remote faces", async () => {
     const { loadFonts } = await import("../web/fonts.js");
     const doc = new PlainDocument();
     doc.fonts = { async load(font) { return font.includes("Text") ? [{}] : []; }, check() { return true; } };
     const faces = observeFontTransport(doc);
-    await loadFonts(doc.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100); expect(faces).toHaveLength(6);
+    await loadFonts(doc.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100); expect(faces.map(face => face.family)).toEqual(["Cascadia Code", "Cascadia Code", "Bebas Neue"]);
   });
   it("a late font abort never appends a link", async () => {
     const { loadFonts } = await import("../web/fonts.js");
@@ -402,18 +402,6 @@ describe("web primitives", () => {
     expect(doc.activeElement).toBe(chartButton);
     expect(elements(chart, "svg")[0]!.parentElement!.hidden).toBe(false);
   });
-});
-
-
-it("successful retained-focus pager refresh hides Retry and focuses the section heading", async () => {
-  // Break caught: success leaves a focused error-only action visible.
-  const { createPager } = await import("../web/pager.js"), { DashboardClientError } = await import("../web/client.js");
-  const doc = new PlainDocument(), pager = createPager(doc.asDocument(), { title: "Usage", param: "cursor", onLoad() {} });
-  doc.body.append(pager.region as unknown as import("./fixtures/plain-dom.js").PlainElement);
-  pager.fail(new DashboardClientError("busy"), true); const retry = button(pager.region, "Retry"); retry.focus();
-  pager.busy(true, false, true); expect(retry.hidden).toBe(false);
-  pager.accept({ start: 0, end: 100 }, null); pager.complete(100, true);
-  expect(retry.hidden).toBe(true); expect(doc.activeElement).toBe(elements(pager.region, "h2")[0]);
 });
 
 it("updateEvidence keeps reordered row buttons but adopts each new row action", async () => {

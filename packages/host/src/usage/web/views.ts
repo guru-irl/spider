@@ -1,3 +1,4 @@
+export type { DashboardPage, DashboardPageContext, DashboardPageMount, DashboardRouteV4 } from "../dashboard-v4-contract.js";
 import type { Period, Filter } from "../dashboard-contract.js";
 import type { DashboardClient } from "./client.js";
 export type ViewRoute = { view: "overview" | "explorer" | "session" | "run" | "context" | "cache" | "reconciliation" | "rates"; id?: string; period?: Period; filters?: readonly Filter[]; mode?: "chart" | "table" };

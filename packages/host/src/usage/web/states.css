@@ -1,3 +1,5 @@
 #states-root { padding: 2rem; display: grid; gap: 2rem; }
 #states-root > section { min-width: 0; }
 #states-root .usage-shell { min-height: 20rem; }
+
+#states-root[data-mode=page] { display: block; padding: 0; }

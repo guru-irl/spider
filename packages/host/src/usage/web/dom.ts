@@ -45,3 +45,18 @@ export function updateEvidence(parent: HTMLElement, ...incoming: HTMLElement[]):
   }
   reconcile(parent, incoming);
 }
+
+export function sectionState(root: HTMLElement, state: "loading" | "empty" | "error", message: string, retry?: () => void): void {
+  const document = root.ownerDocument;
+  root.setAttribute("aria-busy", String(state === "loading"));
+  const notice = liveMessage(document); notice.textContent = message; notice.setAttribute("data-state", state);
+  root.replaceChildren(notice);
+  if (state === "error" && retry) root.append(action(document, "Retry", retry));
+}
+
+/** Shared fact grammar: a text label and a machine-value chip. */
+export function chip(document: Document, label: string, value: string): HTMLElement {
+  const node = element(document, "span", undefined, "stat-chip");
+  node.append(element(document, "span", label), element(document, "strong", value, "mono"));
+  return node;
+}

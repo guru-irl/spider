@@ -36,7 +36,7 @@
     "build": "vite build && npm run build:dashboard && node scripts/assert-bundle.mjs",
     "build:dashboard": "vite build --config vite.dashboard.config.mjs",
     "dev:dashboard": "vite --config vite.dashboard.config.mjs",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/usage-dashboard-playwright.mjs",
     "prepare": "npm run build",
     "bundle": "vite build",
     "dev": "vite build --watch",

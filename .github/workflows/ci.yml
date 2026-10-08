@@ -26,7 +26,7 @@ jobs:
     # the exact byte sequence: docs/release-process.md.
     name: typecheck · test · build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -60,3 +60,24 @@ jobs:
       # published artifact's shape an explicit, named gate.
       - name: Verify bundle shape
         run: node scripts/assert-bundle.mjs
+
+      - name: Installed Chrome smoke
+        timeout-minutes: 15
+        run: |
+          command -v google-chrome
+          google-chrome --version
+          mkdir -p "$PWD/.spider/scratch/playwright/tmp" "$PWD/.spider/scratch/playwright/npm-cache" "$PWD/.spider/scratch/playwright/npm-logs"
+          export TMPDIR="$PWD/.spider/scratch/playwright/tmp"
+          export npm_config_cache="$PWD/.spider/scratch/playwright/npm-cache"
+          export npm_config_logs_dir="$PWD/.spider/scratch/playwright/npm-logs"
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npx --no-install playwright test
+
+      - name: Browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures
+          path: |
+            playwright-results/
+            playwright-report/
+          if-no-files-found: ignore

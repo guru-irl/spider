@@ -20,3 +20,7 @@ dist/
 .pi-subagents/
 .scratch/
 coverage/
+
+# Installed-browser test artifacts
+playwright-results/
+playwright-report/

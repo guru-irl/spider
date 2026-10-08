@@ -77,14 +77,16 @@ it("development and e2e refuse production dashboard output", async () => {
   }
 });
 it("states catalogue renders page-specific component examples and terminal errors without a second auto-start", async () => {
-  const { PlainDocument, elements } = await import("./fixtures/plain-dom.js");
+  const { PlainDocument, elements, settle } = await import("./fixtures/plain-dom.js");
   const { fixtureStateCases } = await import("./fixtures/redesign-contract.js");
   const doc = new PlainDocument(), root = doc.createElement("div"); root.id = "states-root"; doc.body.append(root);
-  vi.stubGlobal("document", doc.asDocument()); vi.stubGlobal("fetch", () => new Promise(() => {}));
+  const fetch = vi.fn(async () => new Response(JSON.stringify(fixtureStateCases())));
+  vi.stubGlobal("document", doc.asDocument()); vi.stubGlobal("fetch", fetch);
   const states = await import("../web/states.js");
+  await settle(); expect(fetch).toHaveBeenCalledOnce(); expect(fetch).toHaveBeenCalledWith("/api/fixture-states");
   states.renderFixtureStates(doc.asDocument(), root as unknown as HTMLElement, fixtureStateCases());
-  expect(elements(root, "h2").length).toBe(fixtureStateCases().length);
-  expect(root.textContent).toContain("Session not found");
+  expect(root.children.map(section => section.firstElementChild!.textContent)).toEqual(fixtureStateCases().filter(c => c.page === "overview").map(c => c.name));
+  expect(root.textContent).toContain("Could not load usage. Retry.");
   expect(elements(root, "svg").length).toBeGreaterThan(0);
   expect(elements(root, "table").length).toBeGreaterThan(0);
   expect(elements(root, "main")).toHaveLength(0);

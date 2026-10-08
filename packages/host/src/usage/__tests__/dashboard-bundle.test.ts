@@ -184,7 +184,7 @@ it("packaged slice works without source checkout", async () => {
     const jsPath = /src="([^"]+\.js)"/.exec(html.body)![1]!;
     const cssPath = /href="([^"]+\.css)"/.exec(html.body)![1]!;
     const js = await localUsageRequest(lock.port, jsPath, headers), css = await localUsageRequest(lock.port, cssPath, headers);
-    expect(js.status).toBe(200); expect(css.status).toBe(200); expect(js.body).toContain("usage-shell"); expect(css.body).toContain("#282a36");
+    expect(js.status).toBe(200); expect(css.status).toBe(200); expect(js.body).toContain("usage-shell"); expect(css.body).toContain("#16120f");
     expect((await localUsageRequest(lock.port, jsPath)).status).toBe(401);
     expect(html.headers["content-security-policy"]).toBe([
       "default-src 'none'", "script-src 'self'", "style-src 'self'", "style-src-attr 'none'", "font-src https://fonts.gstatic.com",

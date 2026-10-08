@@ -21,6 +21,7 @@ export default defineConfig({
         "**/*.d.ts",
         "**/dist/**",
         "**/node_modules/**",
+        "packages/host/src/usage/e2e/**",
       ],
       reporter: ["text", "text-summary", "html", "json-summary"],
       reportsDirectory: "./coverage",

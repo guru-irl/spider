@@ -90,6 +90,59 @@ function ownerFrom(data: Ownership, sessionId: string | null, runId: string | nu
 export function resolveOwner(ctx: DashboardQueryContext, sessionId: string | null, runId: string | null): string | null {
   return ownerFrom(ownership(ctx, sessionId === null ? [] : [sessionId]), sessionId, runId);
 }
+/** Request-local Session ownership. Prime all missing transcript identities in
+ * bounded batches before any per-row resolver walk. Native-human evidence uses
+ * EXISTS so an unrelated long human transcript costs one indexed hit, not a scan.
+ * Keep the legacy revision cache and its callers unchanged. */
+export function sessionOwnerResolver(ctx: DashboardQueryContext, candidates: readonly string[]): (sessionId: string | null, runId: string | null) => string | null {
+  const sessions = new Map((ctx.db.prepare("SELECT id,owner_session_id AS owner,name,project,last_activity AS lastActive FROM sessions").all() as Session[]).map(row => [row.id, row]));
+  const runs = new Map<string, Run[]>();
+  for (const row of ctx.db.prepare("SELECT id,session_id AS session,parent_run_id AS parent,role FROM runs_meta").all() as Run[]) {
+    const list = runs.get(row.id) ?? []; list.push(row); runs.set(row.id, list);
+  }
+  const data: Ownership = { sessions, runs, humans: new Set(), childRuns: new Map(), loaded: new Set() };
+  const ids = [...new Set([...candidates, ...sessions.keys(), ...[...sessions.values()].flatMap(s => s.owner === null ? [] : [s.owner]), ...[...runs.values()].flatMap(rows => rows.flatMap(r => r.session === null ? [] : [r.session]))])]
+    .filter(id => !sessions.has(id) || sessions.get(id)!.owner === null);
+  const canonical = storedSelection(ctx.db) ? "c.selection_shadowed = 0" : `NOT EXISTS (SELECT 1 FROM calls prior WHERE prior.fingerprint=c.fingerprint
+    AND (prior.copied,prior.source_file,prior.entry_id,prior.id)<(c.copied,c.source_file,c.entry_id,c.id))`;
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200);
+    const evidence = ctx.db.prepare(`SELECT value AS id,EXISTS(SELECT 1 FROM calls c INDEXED BY calls_session_read
+      WHERE c.session_id=value AND c.run_id IS NULL AND c.copied=0 AND c.source_kind='transcript'
+        AND c.actor IN ('parent','compaction','aux','warmer') AND ${canonical}) AS own FROM json_each(?)`).all(JSON.stringify(chunk)) as { id: string; own: number }[];
+    for (const row of evidence) if (row.own || sessions.get(row.id)?.owner === null) data.humans.add(row.id);
+    const missing = evidence.filter(row => !row.own).map(row => row.id);
+    if (!missing.length) continue;
+    const children = ctx.db.prepare(`SELECT DISTINCT session_id AS session,run_id AS run FROM calls INDEXED BY calls_session_read
+      WHERE session_id IN (SELECT value FROM json_each(?)) AND run_id IS NOT NULL AND copied=0 AND source_kind='transcript'`).all(JSON.stringify(missing)) as { session: string; run: string }[];
+    for (const row of children) {
+      const children = data.childRuns.get(row.session) ?? new Set<string>(); children.add(row.run); data.childRuns.set(row.session, children);
+      data.humans.delete(row.session);
+    }
+  }
+  return (sessionId, runId) => ownerFrom(data, sessionId, runId);
+}
+
+export type SessionUsageScope = { ownerId: string | null; sql: string; bindings: { sessions: string; runs: string }; owns(row: { sessionId: string | null; runId: string | null }): boolean };
+/** Canonical selection stays global in meaning, but only the connected coverage
+ * component of the candidate runs is read. Ancestors outside this Session still
+ * suppress covered detail; unrelated reports and calls are never materialized. */
+export function sessionCandidatesSql(ctx: DashboardQueryContext, columns: string, unattributed: boolean, byId = false): string {
+  const raw = byId ? `SELECT ${columns} FROM calls c WHERE c.id IN (SELECT value FROM json_each(@ids))`
+    : `SELECT ${columns} FROM calls c INDEXED BY calls_session_read WHERE c.session_id IN (SELECT value FROM json_each(@sessions))
+      UNION ALL SELECT ${columns} FROM calls c INDEXED BY calls_run_detail WHERE c.run_id IN (SELECT value FROM json_each(@runs))
+        AND (c.session_id IS NULL OR c.session_id NOT IN (SELECT value FROM json_each(@sessions)))
+      ${unattributed ? `UNION ALL SELECT ${columns} FROM calls c INDEXED BY calls_session_read WHERE c.session_id IS NULL AND c.run_id IS NULL` : ""}`;
+  const selection = selectionCtes.replace("WHERE r.is_report = 1", "WHERE r.run_id IN (SELECT id FROM relevant_runs) AND r.is_report = 1")
+    .replace("SELECT parent, child FROM usage_run_edges", "SELECT parent, child FROM usage_run_edges WHERE parent IN (SELECT id FROM relevant_runs)");
+  return `WITH RECURSIVE raw_session_candidates AS MATERIALIZED (${raw}),
+    relevant_runs(id) AS (SELECT DISTINCT run_id FROM raw_session_candidates WHERE run_id IS NOT NULL
+      UNION SELECT e.report_run_id FROM relevant_runs r JOIN coverage_edges e ON e.included_run_id=r.id WHERE e.evidence IN ('transcript','runs-db')
+      UNION SELECT e.included_run_id FROM relevant_runs r JOIN coverage_edges e ON e.report_run_id=r.id WHERE e.evidence IN ('transcript','runs-db')),
+    ${selection}, session_candidates AS MATERIALIZED (
+      SELECT c.* FROM raw_session_candidates c WHERE ${selectedPredicate("c", storedSelection(ctx.db))})`;
+}
+
 const nullableSum = (values: readonly (number | null)[]): number | null => {
   const known = values.filter((v): v is number => v !== null); return known.length ? known.reduce((a,b) => a+b, 0) : null;
 };
@@ -149,6 +202,7 @@ export function readCorrectedTotal(ctx: DashboardQueryContext, period: Period): 
   const correction = factors(ctx, endpoints);
   return nullableSum(rows.map((row, i) => row.credits === null ? null : row.credits * correction.get(endpoints[i]!)!));
 }
+export { factors as readCorrectionFactors };
 type Aggregate = { bucketKey:number; endpoint:number; sessionId:string|null; runId:string|null; actor:string; role:string|null; model:string|null; lastActive:number;
   credits:number|null; calls:number; unpricedCalls:number; input:number; cacheRead:number; cacheWrite:number; output:number; cacheWrite1h:number|null; reasoning:number|null };
 const projection = ["ts","session_id","run_id","actor","role","model","aic","input","cache_read","cache_write","output","cache_write_1h","reasoning","price_status"].map(c=>`c.${c}`).join(",");
@@ -209,6 +263,52 @@ export function readUsageCube(ctx:DashboardQueryContext, query:RangeQuery, scope
   const total=sumValues(rows.map(r=>r.value)), selectedTotal=sumValues(rows.filter(r=>!selected.size || selected.has(r.bucketKey)).map(r=>r.value));
   const cube={total,selectedTotal,buckets,rows};cubeContexts.set(cube,{ctx,selected,activity,ownership:data,unit:query.unit});return cube;
 }
+const sessionCubeStyles = new WeakMap<UsageCube, ReadonlyMap<string, ModelStyle>>();
+/** UTC-day aggregates over identity-indexed candidates, without lifetime local
+ * buckets or an all-ledger model-style ranking. Only Session uses this entry. */
+export function readSessionUsageCube(ctx: DashboardQueryContext, span: Period, scope: SessionUsageScope): UsageCube {
+  const rows = (ctx.db.prepare(`${scope.sql} SELECT (CAST(c.ts/${DAY_MS} AS INTEGER)+1)*${DAY_MS} AS endpoint,
+    c.session_id AS sessionId,c.run_id AS runId,c.actor,c.role,c.model,MAX(c.ts) AS lastActive,
+    SUM(c.aic) AS credits,COUNT(*) AS calls,SUM(c.price_status='unpriced') AS unpricedCalls,
+    SUM(c.input) AS input,SUM(c.cache_read) AS cacheRead,SUM(c.cache_write) AS cacheWrite,SUM(c.output) AS output,
+    SUM(c.cache_write_1h) AS cacheWrite1h,SUM(c.reasoning) AS reasoning
+    FROM session_candidates c GROUP BY endpoint,c.session_id,c.run_id,c.actor,c.role,c.model`).all(scope.bindings) as Aggregate[]).filter(scope.owns);
+  const correction = factors(ctx, rows.map(row => Math.min(span.end, row.endpoint)));
+  const metadata = new Map<string, (string | null)[]>();
+  for (const row of ctx.db.prepare("SELECT id,role FROM runs_meta WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(rows.flatMap(row => row.runId === null ? [] : [row.runId]))])) as { id: string; role: string | null }[]) {
+    const roles = metadata.get(row.id) ?? []; roles.push(row.role); metadata.set(row.id, roles);
+  }
+  const projected = rows.map(row => {
+    const roles = row.runId === null ? [] : metadata.get(row.runId) ?? [];
+    return { bucketKey: row.endpoint - DAY_MS, sessionId: scope.ownerId, runId: row.runId,
+      role: flowRole(row.actor, row.role ?? (new Set(roles).size === 1 ? roles[0]! : null)),
+      model: dashboardLabel("model", row.model) ?? "Unknown model", value: valueFrom(row, correction.get(Math.min(span.end, row.endpoint))!) };
+  });
+  const total = sumValues(projected.map(row => row.value));
+  const cube: UsageCube = { total, selectedTotal: total, buckets: [], rows: projected };
+  // Reuse an already-published daily style map when present. A cold Session uses
+  // the shared stable-id fallback rather than scanning all historical calls.
+  const cached = styleCache.get(ctx.db), styles = new Map<string, ModelStyle>();
+  for (const row of projected) {
+    let hash = 0; for (const c of row.model) hash = (hash * 31 + c.charCodeAt(0)) >>> 0;
+    styles.set(row.model, (cached?.day === Math.floor(ctx.now() / DAY_MS) ? cached.styles.get(row.model) : undefined) ?? style(4 + hash % 100));
+  }
+  sessionCubeStyles.set(cube, styles);
+  return cube;
+}
+export function sessionModelStyles(cube: UsageCube): ReadonlyMap<string, ModelStyle> { return sessionCubeStyles.get(cube) ?? new Map(); }
+/** Scoped component reads keep canonical report selection indexed too. */
+export function readSessionCorrectedComponents(ctx: DashboardQueryContext, span: Period, callIds: readonly string[]): ReadonlyMap<string, { cacheWriteCredits: number | null }> {
+  const result = new Map<string, { cacheWriteCredits: number | null }>(), unique = [...new Set(callIds)];
+  const columns = "c.id,c.ts,c.session_id,c.run_id,c.is_report,c.selection_shadowed,c.fingerprint,c.copied,c.source_file,c.entry_id,c.aic_cache_write";
+  for (let i = 0; i < unique.length; i += 200) {
+    const sql = sessionCandidatesSql(ctx, columns, false, true);
+    const rows = ctx.db.prepare(`${sql} SELECT id,ts,aic_cache_write FROM session_candidates`).all({ ids: JSON.stringify(unique.slice(i, i + 200)) }) as { id: string; ts: number; aic_cache_write: number | null }[];
+    const ends = rows.map(row => Math.min(span.end, (Math.floor(row.ts / DAY_MS) + 1) * DAY_MS)), correction = factors(ctx, ends);
+    rows.forEach((row, j) => result.set(row.id, { cacheWriteCredits: row.aic_cache_write === null ? null : row.aic_cache_write * correction.get(ends[j]!)! }));
+  }
+  return result;
+}
 export function readCorrectedComponents(ctx:DashboardQueryContext, callIds:readonly string[]):ReadonlyMap<string,{cacheWriteCredits:number|null}> {
   const result=new Map<string,{cacheWriteCredits:number|null}>(), unique=[...new Set(callIds)];
   for(let i=0;i<unique.length;i+=200) {
@@ -236,7 +336,7 @@ const share=(v:number,total:number)=>total>0 ? v/total:0;
 const flowOrder:FlowRole[]=["own","workers","reviewers","scouts","other-runs","compaction","background"];
 export function modelRows(cube:UsageCube):readonly ModelRow[] {
   const context=cubeContexts.get(cube), rows=selectedRows(cube), unit=context?.unit??"credits", total=weight(cube.selectedTotal,unit);
-  const styles=context ? modelStyles(context.ctx):new Map<string,ModelStyle>();
+  const styles=sessionCubeStyles.get(cube) ?? (context ? modelStyles(context.ctx):new Map<string,ModelStyle>());
   return [...new Set(rows.map(r=>r.model))].map(id=>{
     const parts=rows.filter(r=>r.model===id),value=sumValues(parts.map(r=>r.value));
     const main=flowOrder.map(role=>({role,value:sumValues(parts.filter(r=>r.role===role).map(r=>r.value))})).sort((a,b)=>weight(b.value,unit)-weight(a.value,unit))[0]!;

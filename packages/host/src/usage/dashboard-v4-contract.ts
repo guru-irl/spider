@@ -64,6 +64,8 @@ export type IdleGap = { start: number; end: number; cacheWriteCredits: number | 
 export type SessionData = {
   id: string; name: string; project: string | null; span: Period | null; total: Value;
   stats: { runs: number; ownCalls: number; compaction: number; idleGaps: number };
+  /** Overflow details use adjacent bins or unavailable-identity summaries. Stats and totals stay exact. */
+  detailsBinned?: boolean;
   runs: readonly SessionRun[]; ownCallBins: readonly OwnCallBin[];
   compaction: readonly { ts: number; value: Value }[]; idleGaps: readonly IdleGap[];
   activePeriods: readonly Period[]; models: readonly ModelRow[]; flow: FlowData;

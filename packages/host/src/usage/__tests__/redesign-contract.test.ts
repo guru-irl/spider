@@ -72,7 +72,7 @@ function sessions(data: SessionsData): void {
   }
 }
 
-// These tests catch missing/nullability-breaking DTO fields, private output and shared fixture state.
+// These tests pin DTO fields and fixture-exercised nullability, private output and shared fixture state.
 describe("usage dashboard v4 contract", () => {
   it("five routes have complete finite fixture DTOs", () => {
     const status = statusFixture() satisfies StatusData;
@@ -98,6 +98,14 @@ describe("usage dashboard v4 contract", () => {
     keys(session, "id name project span total stats runs ownCallBins compaction idleGaps activePeriods models flow");
     keys(session.stats, "runs ownCalls compaction idleGaps");
     keys(session.span!, "start end"); measure(session.total); models(session.models); flow(session.flow);
+    const legacyRun = session.runs.find(run => run.id === "run-legacy-review");
+    expect(legacyRun).toBeDefined();
+    expect(legacyRun!.status).toBeNull();
+    expect(session.stats.runs).toBe(session.runs.length);
+    expect(list.rows[0]!.runs).toBe(session.runs.length);
+    expect(list.summary.runs).toBe(session.runs.length);
+    expect(session.runs.reduce((sum, run) => sum + (run.value.credits ?? 0), 0)).toBe(4);
+    expect(session.runs.reduce((sum, run) => sum + run.value.calls, 0)).toBe(2);
     for (const run of session.runs) {
       keys(run, "id name role model thinking start end durationMs status value style"); measure(run.value);
       expect(["completed", "cancelled", "failed", "running", null]).toContain(run.status);
@@ -134,6 +142,7 @@ describe("usage dashboard v4 contract", () => {
       keys(body.period, "start end"); safeFinite(body);
       expect(Buffer.byteLength(JSON.stringify(body))).toBeLessThanOrEqual(RESPONSE_CAPS_V4[path as keyof typeof RESPONSE_CAPS_V4]);
     }
+    expect(Object.isFrozen(RESPONSE_CAPS_V4)).toBe(true);
     expect(RESPONSE_CAPS_V4).toEqual({
       "/api/status": 8192, "/api/overview": 1048576, "/api/sessions": 524288,
       "/api/session/<id>": 2097152, "/api/calibration": 1048576,
@@ -160,6 +169,12 @@ describe("usage dashboard v4 contract", () => {
     const overridden = statusFixture(supplied);
     supplied.rateVersions.push("changed");
     expect(overridden.rateVersions).toEqual(["synthetic-rate"]);
+    const suppliedRows = [...sessionsFixture().rows];
+    const overriddenSessions = sessionsFixture({ rows: suppliedRows });
+    suppliedRows[0]!.value.tokens.input = 999;
+    suppliedRows.push({ ...suppliedRows[0]!, id: "changed" });
+    expect(overriddenSessions.rows).toHaveLength(1);
+    expect(overriddenSessions.rows[0]!.value.tokens.input).toBe(600);
     const data = sessionFixture(); const period = { start: 1, end: 2 };
     const wrapped = envelope(data, period);
     data.total.tokens.input = 999; period.start = 999;
@@ -176,7 +191,7 @@ describe("usage dashboard v4 contract", () => {
         expect(cases.some(state => state.page === page && state.scenario === scenario)).toBe(true);
       }
     }
-    for (const scenario of ["no-budget", "counter-unavailable", "over-pace"] as const) {
+    for (const scenario of ["no-budget", "counter-unavailable", "no-budget-or-allowance", "over-pace"] as const) {
       expect(cases.some(state => state.page === "overview" && state.scenario === scenario)).toBe(true);
     }
     expect(cases.some(state => state.page === "calibration" && state.scenario === "counter-unavailable")).toBe(true);
@@ -204,6 +219,16 @@ describe("usage dashboard v4 contract", () => {
           expect(data.pace.counterAvailable).toBe(false); expect(data.pace.allowance).toBeNull();
           expect(data.pace.usedSource).toBe("pi"); expect(data.pace.rateSource).toBe("pi");
           expect(data.pace.used).toBeGreaterThan(0);
+        }
+        if (state.scenario === "no-budget-or-allowance") {
+          expect(data.pace.budget).toBeNull(); expect(data.pace.allowance).toBeNull();
+          expect(data.pace.scale).toBeNull(); expect(data.pace.remaining).toBeNull();
+          expect(data.pace.evenPace).toBeNull(); expect(data.pace.overAtPace).toBeNull();
+          expect(data.pace.counterAvailable).toBe(false);
+          expect(data.pace.usedSource).toBe("pi"); expect(data.pace.rateSource).toBe("pi");
+          expect(data.pace.used).toBe(10); expect(data.pace.projected).toBe(30);
+          expect(data.pace.daysLeft).toBe(16); expect(data.pace.ratePerDay).toBe(1.25);
+          expect(data.pace.overPace).toBe(false); expect(data.pace.overBudget).toBe(false);
         }
         if (state.scenario === "over-pace") {
           expect(data.pace.overPace).toBe(true); expect(data.pace.overBudget).toBe(true);
@@ -254,18 +279,20 @@ describe("usage dashboard v4 contract", () => {
     expect(unknown.responses["/api/session/unknown-session"]).toEqual({ status: 404, body });
   });
 
-  it("reader hooks and browser lifecycle remain optional and type-only", () => {
-    // Type-level assignments protect existing reader/launcher callers and the shared page lifecycle.
+  it("reader hooks and browser lifecycle remain optional (typecheck-only guard)", () => {
+    // This guard requires npm run -s typecheck; a Vitest pass alone provides no type coverage.
+    // Assign both empty and populated options to pin optionality and the value types.
     const queryHooks = { monthlyBudget: () => 100, viewerSessionId: "session-garden" } satisfies
       Pick<DashboardQueryContext, "monthlyBudget" | "viewerSessionId">;
-    const readerHooks = {} satisfies Pick<ReaderOptions, "monthlyBudget">;
-    const launchHooks = {} satisfies Pick<LaunchOptions, "openerSessionId">;
+    const readerHooks = { monthlyBudget: () => 100 } satisfies Pick<ReaderOptions, "monthlyBudget">;
+    const launchHooks = { openerSessionId: "session-garden" } satisfies Pick<LaunchOptions, "openerSessionId">;
+    const optionalReaderHooks = {} satisfies Pick<ReaderOptions, "monthlyBudget">;
+    const optionalLaunchHooks = {} satisfies Pick<LaunchOptions, "openerSessionId">;
     const mount: DashboardPageMount = ctx => {
       const route: DashboardPageContext["route"] = { page: "session", id: "session-garden", unit: "tokens", tz: "UTC" };
       ctx.navigate(route, { replace: true });
       return { async refresh() {}, dispose() {} };
     };
-    expect(queryHooks.monthlyBudget()).toBe(100);
-    expect(readerHooks).toEqual({}); expect(launchHooks).toEqual({}); expect(typeof mount).toBe("function");
+    void [queryHooks, readerHooks, launchHooks, optionalReaderHooks, optionalLaunchHooks, mount];
   });
 });

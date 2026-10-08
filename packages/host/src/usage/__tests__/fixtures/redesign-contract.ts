@@ -60,13 +60,13 @@ export function statusFixture(overrides: Partial<StatusData> = {}): StatusData {
 export function sessionsFixture(overrides: Partial<SessionsData> = {}): SessionsData {
   return structuredClone({
     rows: [{ id: SESSION_ID, name: "Garden tools", project: "garden", lastActive: END,
-      value: value(10, 6), runs: 2, roles: [
+      value: value(10, 6), runs: 3, roles: [
         { role: "own", value: value(2, 2), share: 0.2, runs: 0 },
         { role: "workers", value: value(3, 1), share: 0.3, runs: 1 },
-        { role: "reviewers", value: value(1, 1), share: 0.1, runs: 1 },
+        { role: "reviewers", value: value(1, 1), share: 0.1, runs: 2 },
         { role: "others", value: value(4, 2), share: 0.4, runs: 0 },
       ] }],
-    total: 1, offset: 0, limit: 10, nextOffset: null, summary: { runs: 2, top3Share: 1 }, ...overrides,
+    total: 1, offset: 0, limit: 10, nextOffset: null, summary: { runs: 3, top3Share: 1 }, ...overrides,
   } satisfies SessionsData);
 }
 export function overviewFixture(overrides: Partial<OverviewDataV4> = {}): OverviewDataV4 {
@@ -91,7 +91,7 @@ export function overviewFixture(overrides: Partial<OverviewDataV4> = {}): Overvi
 export function sessionFixture(overrides: Partial<SessionData> = {}): SessionData {
   return structuredClone({
     id: SESSION_ID, name: "Garden tools", project: "garden", span: { start: FIRST, end: END },
-    total: value(10, 6), stats: { runs: 2, ownCalls: 2, compaction: 1, idleGaps: 1 },
+    total: value(10, 6), stats: { runs: 3, ownCalls: 2, compaction: 1, idleGaps: 1 },
     runs: [
       { id: "run-build", name: "Build garden tools", role: "worker", model: "model-maple", thinking: "high",
         start: WORKER, end: WORKER + 20 * 60_000, durationMs: 20 * 60_000, status: "completed",
@@ -99,6 +99,9 @@ export function sessionFixture(overrides: Partial<SessionData> = {}): SessionDat
       { id: "run-review", name: "Review garden tools", role: "reviewer", model: "model-cedar", thinking: "high",
         start: REVIEWER, end: END, durationMs: 20 * 60_000, status: "completed",
         value: value(1, 1), style: { color: "#f8785c", shape: "circle" } },
+      // Legacy metadata has no terminal status or recorded calls. Do not guess a status.
+      { id: "run-legacy-review", name: "Legacy garden review", role: "reviewer", model: null, thinking: null,
+        start: null, end: null, durationMs: null, status: null, value: value(0, 0), style: null },
     ],
     ownCallBins: [{ start: FIRST, end: FIRST + 11 * 60_000, value: value(2, 2) }],
     compaction: [{ ts: REVIEWER - 30 * 60_000, value: value(2, 1) }],
@@ -132,7 +135,7 @@ export function envelope<T>(data: T, period: Period = { start: FROM, end: NOW })
 }
 
 export type FixtureScenario = "default" | "no-data" | "no-budget" | "counter-unavailable"
-  | "over-pace" | "stale" | "unknown-session" | "error";
+  | "no-budget-or-allowance" | "over-pace" | "stale" | "unknown-session" | "error";
 export type FixtureStateCase = {
   name: string; page: DashboardRouteV4["page"]; scenario: FixtureScenario;
   responses: Readonly<Record<string, { status: number; body: ApiEnvelope<unknown> | ApiErrorBody | SessionNotFound }>>;
@@ -166,7 +169,7 @@ function stateCase(page: FixtureStateCase["page"], scenario: FixtureScenario): F
     overview.pace = { ...overview.pace, budget: null, scale: overview.pace.allowance,
       remaining: 80, evenPace: null, overPace: false, overBudget: false, overAtPace: null };
   }
-  if (scenario === "counter-unavailable") {
+  if (scenario === "counter-unavailable" || scenario === "no-budget-or-allowance") {
     status.latestCounterAt = null;
     overview.pace = { ...overview.pace, used: 10, allowance: null, remaining: 90, projected: 30,
       ratePerDay: 1.25, usedSource: "pi", rateSource: "pi", counterAvailable: false };
@@ -175,6 +178,10 @@ function stateCase(page: FixtureStateCase["page"], scenario: FixtureScenario): F
     calibration.daily = calibration.daily.map(day => ({ ...day, counterDelta: null }));
     calibration.intervals = [];
     calibration.gaps.daysWithoutCounter = calibration.daily.map(day => day.day);
+  }
+  if (scenario === "no-budget-or-allowance") {
+    overview.pace = { ...overview.pace, budget: null, scale: null, remaining: null,
+      evenPace: null, overPace: false, overBudget: false, overAtPace: null };
   }
   if (scenario === "over-pace") {
     overview.pace = { ...overview.pace, used: 110, remaining: 0, projected: 140,
@@ -207,6 +214,7 @@ export function fixtureStateCases(): readonly FixtureStateCase[] {
   return [
     stateCase("overview", "default"), stateCase("overview", "no-data"),
     stateCase("overview", "no-budget"), stateCase("overview", "counter-unavailable"),
+    stateCase("overview", "no-budget-or-allowance"),
     stateCase("overview", "over-pace"), stateCase("overview", "stale"), stateCase("overview", "error"),
     stateCase("session", "default"), stateCase("session", "no-data"),
     stateCase("session", "stale"), stateCase("session", "unknown-session"), stateCase("session", "error"),

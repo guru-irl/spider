@@ -157,7 +157,7 @@ it("a successful metadata retry clears its stable diagnostic without touching so
  ledger.apply(batch({calls:captured!.calls.map(c=>({...c,id:"retry-call",entryId:"retry-call"})),runs:[bad]}));
  const errors=ledger.getSourceErrors();expect(errors.some(e=>e.code==="metadata-invalid")).toBe(true);
  expect(errors.some(e=>e.path===good.dbPath && e.code==="EACCES")).toBe(true);
- ledger.apply(batch({runs:[good]}));
+ ledger.apply(batch({calls:captured!.calls.map(c=>({...c,id:"retry-success-call",entryId:"retry-success-call"})),runs:[good]}));
  expect(ledger.getSourceErrors().some(e=>e.code==="metadata-invalid")).toBe(false);
  expect(ledger.getSourceErrors().some(e=>e.path===good.dbPath && e.code==="EACCES")).toBe(true);
 });

@@ -30,7 +30,7 @@ it("matched correction summary uses accepted spans rather than absolute used or 
     call("matched-b", S + 2 * D + 1, 300), call("after", S + 4 * D, 7000)]));
   snapshot(S + D, 1000); snapshot(S + 2 * D, 1150); snapshot(S + 3 * D, 1300);
   const data = queryCalibration(context());
-  expect(data.correction).toEqual({ factor: 0.5, publishedEstimate: 600, accountCounter: 300, coveredHours: 48, status: "calibrated" });
+  expect(data.correction).toEqual({ factor: 0.5, publishedEstimate: 600, accountCounter: 300, coveredHours: 48, status: "back-applied" });
   expect(data.intervals).toEqual([
     { start: S + 2 * D, end: S + 3 * D, publishedEstimate: 300, counterDelta: 150, ratio: 0.5 },
     { start: S + D, end: S + 2 * D, publishedEstimate: 300, counterDelta: 150, ratio: 0.5 },
@@ -158,7 +158,7 @@ it("unpriced and missing-model compaction diagnostics use canonical selected cal
   const missing = call("missing", S + 1, 0, { actor: "compaction", model: null, responseId: "missing-response", price: { status: "unpriced", reason: "missing-attribution" } });
   f.ledger.apply(dashboardBatch([missing, { ...missing, id: "copy", entryId: "copy", sourceFile: "synthetic/copy", copied: true },
     call("unknown", S + 2, 0, { model: "unknown", price: { status: "unpriced", reason: "unknown-model" } }),
-    call("priced-compaction", S + 3, 2, { actor: "compaction" }), call("old", S - 1, 0, { model: null, actor: "compaction", price: { status: "unpriced", reason: "missing-attribution" } }),
+    call("priced-compaction", S + 3, 2, { actor: "compaction" }), call("future", now + 1, 0, { model:null,actor:"compaction",price:{status:"unpriced",reason:"missing-attribution"} }), call("old", S - 1, 0, { model: null, actor: "compaction", price: { status: "unpriced", reason: "missing-attribution" } }),
   ]));
   const data = queryCalibration(context());
   expect(data.gaps).toMatchObject({ unpricedCalls: 2, compactionWithoutModel: 1 });
@@ -175,16 +175,16 @@ it("published-only and unavailable correction keep complete nullable shape", () 
   expect(queryCalibration({ ...context(), calibrationMode: "off" }).correction.factor).toBeNull();
 });
 
-it("back-applies the earliest real fit at a past-dated half-open endpoint", () => {
+it("back-applied describes evidence days before the earliest fit, not an anchor instant", () => {
   const end = now - D, start = end - D;
   f.ledger.apply(dashboardBatch([call("evidence", start + 1, 600)]));
   snapshot(start, 10); snapshot(end, 310);
-  const ctx = context(undefined, end);
+  const ctx = context(undefined, end + 3600000);
   expect(ctx.calibration.at(end - 1, "auto").status).toBe("uncalibrated");
   expect(ctx.calibration.earliest("auto")).toMatchObject({ factor: 0.5, windowEnd: end });
   expect(queryCalibration(ctx).correction).toEqual({ factor: 0.5, status: "back-applied", publishedEstimate: 600, accountCounter: 300, coveredHours: 24 });
-  // Once the clock passes the anchor, the same real evidence is a direct fit.
-  expect(queryCalibration(context(undefined, end + 1)).correction.status).toBe("calibrated");
+  // Any later clock still shows earlier evidence days that were back-applied.
+  expect(queryCalibration(context(undefined, end + 12*3600000)).correction.status).toBe("back-applied");
 });
 
 it("the correction header uses the same now-minus-one endpoint as corrected credits", () => {
@@ -192,7 +192,7 @@ it("the correction header uses the same now-minus-one endpoint as corrected cred
   snapshot(now - 2 * D, 10); snapshot(now - D, 310); snapshot(now, 1210);
   const ctx = context();
   expect(ctx.calibration.at(now, "auto").factor).toBe(1);
-  expect(queryCalibration(ctx).correction).toMatchObject({ factor: 0.5, status: "calibrated" });
+  expect(queryCalibration(ctx).correction).toMatchObject({ factor: 0.5, status: "back-applied" });
 });
 
 it("last accepted unavailable factors follow engine evidence without changing matched sums", () => {
@@ -277,4 +277,14 @@ it("latest counter reset selects calibration evidence after a reset, including d
   const data = queryCalibration(context());
   expect(data.daily[0]?.day).toBe(S);
   expect(data.daily.at(-1)?.day).toBe(S + 4 * D);
+});
+
+it("a period with its own trailing fits is calibrated and published/off status takes precedence",()=>{
+ f.ledger.apply(dashboardBatch([call("prior-a",S-3*D+1,600),call("prior-b",S-2*D+1,600)]));
+ snapshot(S-3*D,10);snapshot(S-2*D,310);snapshot(S-D,610);snapshot(S+D,610);
+ const ctx=context();
+ expect(queryCalibration(ctx).correction.status).toBe("calibrated");
+ expect(queryCalibration({...ctx,calibrationMode:"off"}).correction.status).toBe("published-only");
+ const status=ctx.status();ctx.status=()=>({...status,counter:{...status.counter,availability:"unavailable"}});
+ expect(queryCalibration({...ctx,calibrationMode:"off"}).correction.status).toBe("counter-unavailable");
 });

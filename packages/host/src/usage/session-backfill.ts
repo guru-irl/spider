@@ -25,7 +25,7 @@ export async function backfillSessionMetadata(ledger: UsageLedger, discovery: Di
     const committed = ledger.apply({ calls: [], runs: [], states: [], resetSources: [], detailedRunIds: [], restoreAggregateRunIds: [], at,
       sessions: result.session ? [result.session] : [], metadataCheckpoints: result.errors.some(e => e.code !== "metadata-parse-error") ? [] : [result.checkpoint],
       resetSessionMetadata: replaced ? [{ path: source.path, sessionId: typeof oldId === "string" ? oldId : result.session?.id ?? null }] : [],
-      sourceErrors: result.errors, commitGuard: () => !signal.aborted && guard() });
+      sourceErrors: result.errors.filter(error => error.code !== "metadata-parse-error"), commitGuard: () => !signal.aborted && guard() });
     if (!committed) { forgetSessionMetadata(source.path); return { complete: false, sourcesRead, bytesRead }; }
     if (!result.caughtUp || result.errors.some(e => e.code !== "metadata-parse-error")) complete = false;
   }

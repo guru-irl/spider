@@ -21,7 +21,7 @@ export function sourceErrorLabel(value: string | null, fallback: string): string
 export function sourceErrorCode(value: string): string {
   if (value === "unknown-aux-purpose" || value.startsWith("unknown-aux-purpose:")) return "unknown-aux-purpose";
   return ["parse-errors", "missing-source", "missing-db", "not-file", "source-changed", "invalid-project", "invalid-run-id",
-    "invalid-run-event", "legacy-run-events", "runs-db-recreated:facts-retained", "ENOENT", "EACCES", "EPERM", "EIO",
+    "invalid-run-event", "legacy-run-events", "metadata-missing-source", "metadata-source-changed", "metadata-read-error", "metadata-invalid", "runs-db-recreated:facts-retained", "ENOENT", "EACCES", "EPERM", "EIO",
     "SQLITE_BUSY", "SQLITE_CORRUPT", "discovery-failed", "ingest-failed"].includes(value) ? value : "source-error";
 }
 /** Keep the legacy diagnostic order and lookahead without importing a retired route. */

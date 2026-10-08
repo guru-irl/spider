@@ -57,10 +57,5 @@ export function resolveRange(params: URLSearchParams, now: number, month?: Perio
     const date = new Date(now); from = month?.start ?? Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
   } else from = Math.max(0, now - ({ "24h": 1, "7d": 7, "30d": 30 }[range]) * DAY_MS);
   if (!safeTimestamp(from) || !safeTimestamp(to) || to < from || to - from > 93 * DAY_MS) invalidQuery();
-  const raw = params.get("buckets");
-  if (raw && (raw.length > 8192 || !/^\d+(?:,\d+)*$/.test(raw))) invalidQuery();
-  const requested = new Set((raw ? raw.split(",") : []).map(Number));
-  const buckets = timeBuckets({ start: from, end: to }, tz, to - from <= 2 * DAY_MS ? "hour" : "day")
-    .filter(bucket => requested.has(bucket.key)).map(bucket => bucket.key);
-  return { range, from, to, tz, unit, buckets };
+  return { range, from, to, tz, unit, buckets: [] };
 }

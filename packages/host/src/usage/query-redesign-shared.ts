@@ -1,5 +1,6 @@
 import type { CalibrationResult, DashboardQueryContext, Period } from "./dashboard-contract.js";
 import type { Bucket, FlowData, FlowRole, ModelRow, ModelStyle, RangeQuery, Role, SessionRow, Value } from "./dashboard-v4-contract.js";
+import { shortSessionName } from "./session-name.js";
 import { dashboardLabel, supportedDetailId } from "./dashboard-identities.js";
 import { DAY_MS, invalidQuery, safeTimestamp } from "./dashboard-selection.js";
 import { countedUsageSql, selectedPredicate, selectionCtes, storedSelection } from "./schema.js";
@@ -87,9 +88,6 @@ function ownerFrom(data: Ownership, sessionId: string | null, runId: string | nu
   }
   return sessionId === null ? null : walk("s", sessionId, new Set());
 }
-export function resolveOwner(ctx: DashboardQueryContext, sessionId: string | null, runId: string | null): string | null {
-  return ownerFrom(ownership(ctx, sessionId === null ? [] : [sessionId]), sessionId, runId);
-}
 /** Request-local Session ownership. Prime all missing transcript identities in
  * bounded batches before any per-row resolver walk. Native-human evidence uses
  * EXISTS so an unrelated long human transcript costs one indexed hit, not a scan.
@@ -155,7 +153,7 @@ export function sumValues(values: readonly Value[]): Value {
 }
 
 /** Fit each UTC piece independently. No batch crosses the engine's endpoint/span caps. */
-function factors(ctx: DashboardQueryContext, ends: readonly number[]): Map<number, number> {
+export function readCorrectionDays(ctx: DashboardQueryContext, ends: readonly number[]): Map<number, { factor: number; basis: "published-only" | "back-applied" | "calibrated" }> {
   const points = [...new Set(ends.map(end=>Math.max(0,Math.min(end,ctx.now())-1)))].sort((a,b)=>a-b);
   const fits = new Map<number,CalibrationResult>();
   const batch = (keys: readonly number[]) => {
@@ -178,16 +176,20 @@ function factors(ctx: DashboardQueryContext, ends: readonly number[]): Map<numbe
   if(earliest?.status==="calibrated" && earliest.windowEnd!==null) accepted.push([earliest.windowEnd,earliest]);
   accepted.sort(([a],[b])=>a-b);
   let cursor=0, last: CalibrationResult | null=null;
-  const result = new Map<number,number>();
+  const result = new Map<number,{ factor: number; basis: "published-only" | "back-applied" | "calibrated" }>();
   for(const point of points) {
     while(cursor<accepted.length && accepted[cursor]![0]<=point) last=accepted[cursor++]![1];
     const fit=fits.get(point)!;
     let factor=fit.status==="calibrated" ? fit.factor : null;
-    if(factor===null && earliest?.status==="calibrated" && earliest.windowEnd!==null && point<earliest.windowEnd) factor=earliest.factor;
+    let basis: "published-only" | "back-applied" | "calibrated" = factor === null ? "published-only" : "calibrated";
+    if(factor===null && earliest?.status==="calibrated" && earliest.windowEnd!==null && point<earliest.windowEnd) { factor=earliest.factor; basis="back-applied"; }
     if(factor===null && unavailable) factor=last?.factor ?? null;
-    result.set(point,factor ?? 1);
+    result.set(point,{ factor: factor ?? 1, basis });
   }
   return new Map(ends.map(end=>[end,result.get(Math.max(0,Math.min(end,ctx.now())-1))! ]));
+}
+function factors(ctx: DashboardQueryContext, ends: readonly number[]): Map<number, number> {
+  return new Map([...readCorrectionDays(ctx, ends)].map(([end, day]) => [end, day.factor]));
 }
 /** Total-only UTC-day projection for the footer. No session, role or model
  * resolution is needed; the correction rule is the same as the full cube. */
@@ -198,7 +200,7 @@ export function readCorrectedTotal(ctx: DashboardQueryContext, period: Period): 
     FROM calls c INDEXED BY calls_period_read
     WHERE c.ts>=? AND c.ts<? AND ${selectedPredicate("c", storedSelection(ctx.db))} GROUP BY day`)
     .all(DAY_MS, period.start, period.end) as { day: number; credits: number | null }[];
-  const endpoints = rows.map(row => Math.min(period.end, (row.day + 1) * DAY_MS));
+  const endpoints = rows.map(row => (row.day + 1) * DAY_MS);
   const correction = factors(ctx, endpoints);
   return nullableSum(rows.map((row, i) => row.credits === null ? null : row.credits * correction.get(endpoints[i]!)!));
 }
@@ -219,6 +221,7 @@ function flowRole(actor:string, role:string|null):FlowRole {
 }
 type CubeContext = { ctx:DashboardQueryContext; selected:Set<number>; activity:Map<string|null,Map<number,number>>; ownership:Ownership; unit:RangeQuery["unit"] };
 const cubeContexts = new WeakMap<UsageCube,CubeContext>();
+// Optional scope is retained as the differential reference for indexed Session queries.
 export function readUsageCube(ctx:DashboardQueryContext, query:RangeQuery, scope?:{sessionId:string}):UsageCube {
   if(!safeTimestamp(query.from) || !safeTimestamp(query.to) || query.to<query.from || (!scope && query.to-query.from>93*DAY_MS)) invalidQuery();
   const tz=normalizeTimeZone(query.tz), size=query.to-query.from<=2*DAY_MS ? "hour":"day";
@@ -230,7 +233,7 @@ export function readUsageCube(ctx:DashboardQueryContext, query:RangeQuery, scope
     const pieces:{key:number;start:number;end:number;endpoint:number}[]=[];
     for(const bucket of boundaries) {
       let at=Math.max(start,bucket.start), stop=Math.min(end,bucket.end);
-      while(at<stop) {const next=Math.min(stop,(Math.floor(at/DAY_MS)+1)*DAY_MS);pieces.push({key:bucket.key,start:at,end:next,endpoint:Math.min(query.to,(Math.floor(at/DAY_MS)+1)*DAY_MS)});at=next;}
+      while(at<stop) {const next=Math.min(stop,(Math.floor(at/DAY_MS)+1)*DAY_MS);pieces.push({key:bucket.key,start:at,end:next,endpoint:(Math.floor(at/DAY_MS)+1)*DAY_MS});at=next;}
     }
     const grouped=ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql("c.ts>=? AND c.ts<?",projection,"calls_period_read",storedSelection(ctx.db))}),
       pieces AS MATERIALIZED (SELECT json_extract(value,'$.key') AS bucketKey,json_extract(value,'$.start') AS start,
@@ -273,7 +276,7 @@ export function readSessionUsageCube(ctx: DashboardQueryContext, span: Period, s
     SUM(c.input) AS input,SUM(c.cache_read) AS cacheRead,SUM(c.cache_write) AS cacheWrite,SUM(c.output) AS output,
     SUM(c.cache_write_1h) AS cacheWrite1h,SUM(c.reasoning) AS reasoning
     FROM session_candidates c GROUP BY endpoint,c.session_id,c.run_id,c.actor,c.role,c.model`).all(scope.bindings) as Aggregate[]).filter(scope.owns);
-  const correction = factors(ctx, rows.map(row => Math.min(span.end, row.endpoint)));
+  const correction = factors(ctx, rows.map(row => row.endpoint));
   const metadata = new Map<string, (string | null)[]>();
   for (const row of ctx.db.prepare("SELECT id,role FROM runs_meta WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(rows.flatMap(row => row.runId === null ? [] : [row.runId]))])) as { id: string; role: string | null }[]) {
     const roles = metadata.get(row.id) ?? []; roles.push(row.role); metadata.set(row.id, roles);
@@ -282,7 +285,7 @@ export function readSessionUsageCube(ctx: DashboardQueryContext, span: Period, s
     const roles = row.runId === null ? [] : metadata.get(row.runId) ?? [];
     return { bucketKey: row.endpoint - DAY_MS, sessionId: scope.ownerId, runId: row.runId,
       role: flowRole(row.actor, row.role ?? (new Set(roles).size === 1 ? roles[0]! : null)),
-      model: dashboardLabel("model", row.model) ?? "Unknown model", value: valueFrom(row, correction.get(Math.min(span.end, row.endpoint))!) };
+      model: dashboardLabel("model", row.model) ?? "Unknown model", value: valueFrom(row, correction.get(row.endpoint)!) };
   });
   const total = sumValues(projected.map(row => row.value));
   const cube: UsageCube = { total, selectedTotal: total, buckets: [], rows: projected };
@@ -304,11 +307,12 @@ export function readSessionCorrectedComponents(ctx: DashboardQueryContext, span:
   for (let i = 0; i < unique.length; i += 200) {
     const sql = sessionCandidatesSql(ctx, columns, false, true);
     const rows = ctx.db.prepare(`${sql} SELECT id,ts,aic_cache_write FROM session_candidates`).all({ ids: JSON.stringify(unique.slice(i, i + 200)) }) as { id: string; ts: number; aic_cache_write: number | null }[];
-    const ends = rows.map(row => Math.min(span.end, (Math.floor(row.ts / DAY_MS) + 1) * DAY_MS)), correction = factors(ctx, ends);
+    const ends = rows.map(row => (Math.floor(row.ts / DAY_MS) + 1) * DAY_MS), correction = factors(ctx, ends);
     rows.forEach((row, j) => result.set(row.id, { cacheWriteCredits: row.aic_cache_write === null ? null : row.aic_cache_write * correction.get(ends[j]!)! }));
   }
   return result;
 }
+// Global component projection is retained as the differential reference for indexed Session reads.
 export function readCorrectedComponents(ctx:DashboardQueryContext, callIds:readonly string[]):ReadonlyMap<string,{cacheWriteCredits:number|null}> {
   const result=new Map<string,{cacheWriteCredits:number|null}>(), unique=[...new Set(callIds)];
   for(let i=0;i<unique.length;i+=200) {
@@ -363,7 +367,7 @@ export function sessionRows(cube:UsageCube):readonly SessionRow[] {
       return {role,value:v,share:share(weight(v,unit),weight(value,unit)),runs:new Set(subset.flatMap(r=>r.runId===null?[]:[r.runId])).size};
     });
     return {id:id===null?UNATTRIBUTED_SESSION_ID:id===UNATTRIBUTED_SESSION_ID||!supportedDetailId(id)?null:id,
-      name:id===null?"Unattributed runs":dashboardLabel("runName",metadata?.name??id)!,project:dashboardLabel("project",metadata?.project??null),
+      name:id===null?"Unattributed runs":dashboardLabel("runName",metadata?.name??shortSessionName(id))!,project:dashboardLabel("project",metadata?.project??null),
       lastActive:Math.max(0,...[...context?.activity.get(id)??[]].filter(([key])=>!context?.selected.size || context.selected.has(key)).map(([,at])=>at)),value,roles,runs};
   }).sort((a,b)=>weight(b.value,unit)-weight(a.value,unit)||a.name.localeCompare(b.name));
 }

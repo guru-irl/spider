@@ -35,8 +35,8 @@ function canonical(snapshots:readonly CounterSnapshot[]):CounterSnapshot[] {
   }
   return [...byTime.values()].sort((a,b)=>a.ts-b.ts);
 }
-/** Pace uses the first and last actual readings in the window. Hour-wide
- * edge tolerances cover polling latency without inventing render-time readings.
+/** Pace uses the first and last actual readings in the window. The first
+ * reading must arrive within one day of its start, with at least one day of data.
  * Account switches, invalid observations and long gaps break the chain. */
 export function counterRate(snapshots: readonly CounterSnapshot[], window: Period): number | null {
   if (!safeTimestamp(window.start) || !safeTimestamp(window.end) || window.end <= window.start) return null;
@@ -58,7 +58,7 @@ export function counterRate(snapshots: readonly CounterSnapshot[], window: Perio
     rows = rows.slice(previousReset + 1);
   }
   const first = rows[0];
-  if (!first || rows.length < 2 || first.ts > coverageStart + 3600000 || latest.ts < window.end - 3600000) return null;
+  if (!first || rows.length < 2 || first.ts > coverageStart + DAY_MS) return null;
   const span = latest.ts - first.ts;
   if (span < DAY_MS) return null;
   for (let i = 0; i < rows.length; i++) {

@@ -63,8 +63,10 @@ export type OwnCallBin = Period & { value: Value };
 export type IdleGap = { start: number; end: number; cacheWriteCredits: number | null };
 export type SessionData = {
   id: string; name: string; project: string | null; span: Period | null; total: Value;
-  stats: { runs: number; ownCalls: number; compaction: number; idleGaps: number };
-  /** Overflow details use adjacent bins or unavailable-identity summaries. Stats and totals stay exact. */
+  stats: { runs: number; ownCalls: number; compaction: number; idleGaps: number;
+    /** Shortest gaps omitted on overflow, never synthetic idle spans. Raw idleGaps includes these. */
+    omittedIdleGaps?: { count: number; cacheWriteCredits: number | null } };
+  /** Overflow details use adjacent active/compaction bins, omitted gaps or run/model summaries. Stats and totals stay exact. */
   detailsBinned?: boolean;
   runs: readonly SessionRun[]; ownCallBins: readonly OwnCallBin[];
   compaction: readonly { ts: number; value: Value }[]; idleGaps: readonly IdleGap[];

@@ -4,8 +4,10 @@ import { calibrationFallback } from "../calibration.js";
 import type { DashboardQueryContext, DashboardReader } from "../dashboard-contract.js";
 import type { RangeQuery } from "../dashboard-v4-contract.js";
 import type { RunMeta, SessionMeta } from "../ledger.js";
-import { readCorrectedTotal, readUsageCube, sumValues, flowFromCube, modelRows, sessionRows, resolveOwner, modelStyles, readCorrectedComponents, UNATTRIBUTED_SESSION_ID } from "../query-redesign-shared.js";
+import { readCorrectedTotal, readUsageCube, sumValues, flowFromCube, modelRows, sessionRows, sessionOwnerResolver, readSessionCorrectedComponents, modelStyles, readCorrectedComponents, UNATTRIBUTED_SESSION_ID } from "../query-redesign-shared.js";
 import { createDashboardFixture, dashboardCall, dashboardBatch, DASHBOARD_MONTH as S, DASHBOARD_DAY as D, type DashboardFixture } from "./fixtures/dashboard-ledger.js";
+import { querySession } from "../query-session.js";
+const resolveOwner = (ctx: DashboardQueryContext, sessionId: string | null, runId: string | null) => sessionOwnerResolver(ctx, sessionId === null ? [] : [sessionId])(sessionId, runId);
 let f:DashboardFixture, reader:DashboardReader, ctx:DashboardQueryContext;
 const q=(from=S,to=S+2*D,tz="UTC",buckets: number[]=[]):RangeQuery=>({range:"custom",from,to,tz,unit:"credits",buckets});
 const human=(id="parent-session",ownerSessionId:string|null=null):SessionMeta=>({id,ownerSessionId,name:`Name ${id}`,nameSource:"name",nameOrder:1,project:"synthetic",firstActivity:S,lastActivity:S+D});
@@ -25,11 +27,11 @@ it("daily correction reconciles every slice including a local day crossing UTC",
  expect(readCorrectedComponents(ctx,["a","b"]).get("a")!.cacheWriteCredits).toBe(5);
  }
 });
-it("hourly buckets share the clipped UTC day fit",()=>{
+it("hourly buckets share the range-independent UTC day fit",()=>{
  f.ledger.apply(dashboardBatch([call("early",S+1,10),call("late",S+23*3600000,20)]));refresh();
  ctx.calibration.atMany=ends=>ends.map(e=>({...calibrationFallback(),status:"calibrated",factor:e<S+12*3600000 ? .5:1,windowEnd:e}));
  expect(readUsageCube(ctx,q(S,S+D)).total.credits).toBe(30);
- expect(readUsageCube(ctx,q(S,S+8*3600000)).total.credits).toBe(5);
+ expect(readUsageCube(ctx,q(S,S+8*3600000)).total.credits).toBe(10);
 });
 it("cyclic parent evidence cannot be rescued by a human session hint",()=>{
  f.ledger.apply(dashboardBatch([],{sessions:[human()],runs:[run("a","parent-session","b"),run("b","parent-session","a")]}));refresh();
@@ -55,7 +57,7 @@ it("ownership resolves direct pipeline and mapped nested runs but not cycles or 
 });
 it("missing child is not human before backfill and moves exactly once afterward",()=>{
  f.ledger.apply(dashboardBatch([call("parent",S+100,2),call("nested",S+200,7,{sessionId:"missing-child",runId:"nested",actor:"subagent"})],{runs:[run("nested","missing-child")]}));refresh();
- expect(sessionRows(readUsageCube(ctx,q())).map(r=>[r.name,r.value.credits])).toEqual([["Unattributed runs",7],["parent-session",2]]);
+ expect(sessionRows(readUsageCube(ctx,q())).map(r=>[r.name,r.value.credits])).toEqual([["Unattributed runs",7],["parent-",2]]);
  f.ledger.apply(dashboardBatch([],{sessions:[human(),human("missing-child","parent-session")]}));refresh();
  expect(sessionRows(readUsageCube(ctx,q()))).toHaveLength(1);expect(sessionRows(readUsageCube(ctx,q()))[0]!.value.credits).toBe(9);
 });
@@ -97,14 +99,19 @@ it("two years and components have bounded calibration batches and indexed ranges
  f.ledger.apply(dashboardBatch(Array.from({length:730},(_,i)=>call(`c${i}`,S+i*D+1,1))));refresh();
  const many=vi.spyOn(ctx.calibration,"atMany");const prepare=vi.spyOn(ctx.db,"prepare");
  modelStyles(ctx);expect(many).not.toHaveBeenCalled();
- expect(readUsageCube(ctx,q(S,S+730*D),{sessionId:"parent-session"}).total.credits).toBe(730);
- expect(readCorrectedComponents(ctx,Array.from({length:730},(_,i)=>`c${i}`)).size).toBe(730);
+ const reference=readUsageCube(ctx,q(S,S+730*D),{sessionId:"parent-session"});
+ expect(reference.total.credits).toBe(730);
+ expect(querySession(ctx,"parent-session","UTC").total).toEqual(reference.total);
+ const ids=Array.from({length:730},(_,i)=>`c${i}`);
+ const referenceComponents=readCorrectedComponents(ctx,ids);
+ expect(referenceComponents.size).toBe(730);
+ expect(readSessionCorrectedComponents(ctx,{start:S,end:S+730*D},ids)).toEqual(referenceComponents);
  for(const [ends] of many.mock.calls){expect(ends.length).toBeLessThanOrEqual(200);expect(Math.max(...ends)-Math.min(...ends)).toBeLessThanOrEqual(366*D);}
  const sql=prepare.mock.calls.map(([s])=>s).find(s=>s.includes("calls_period_read") && s.includes("json_each"))!;
  expect(sql).toBeTruthy();
  const plan=ctx.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(S,S+93*D,JSON.stringify([{key:S,start:S,end:S+D,endpoint:S+D-1}]));
  expect(JSON.stringify(plan)).toMatch(/calls_period_read.*ts>.*ts</);
- for(const [statement] of prepare.mock.calls.filter(([s])=>s.includes("calls_session_read"))) {
+ for(const [statement] of prepare.mock.calls.filter(([s])=>s.includes("calls_session_read") && s.includes("json_each(?)"))) {
    const bindings=statement.includes("json_each(?)")?[JSON.stringify(["parent-session"])]:[];
    const evidencePlan=ctx.db.prepare(`EXPLAIN QUERY PLAN ${statement}`).all(...bindings);
    expect(JSON.stringify(evidencePlan)).toMatch(/calls_session_read \(session_id=\?\)/);

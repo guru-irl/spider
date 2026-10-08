@@ -125,3 +125,45 @@ it("project cache retains 4096 distinct directories without re-running git", asy
  for(let i=0;i<4096;i++)expect(await resolve(`/synthetic/cache-${i}`,null)).toBe("main-project");
  expect(await resolve("/synthetic/cache-0",null)).toBe("main-project");expect(gitReads.count).toBe(4096);
 });
+
+it("an active session across upgrade leaves its opening name to prefix backfill", async () => {
+ const s=source();write(s,[header,{type:"message",message:{role:"user",content:"Original opening prompt"}},call("one")]);
+ const d=discovery([s]);await ingestOnce(ledger,d,at,signal());
+ ledger.apply({calls:[],runs:[],states:[],resetSources:[],resetSessionMetadata:[{path:s.path,sessionId:"session"}],sourceErrors:[],detailedRunIds:[],restoreAggregateRunIds:[],at});
+ appendFileSync(s.path,JSON.stringify({type:"message",message:{role:"user",content:"Later prompt after upgrade"}})+"\n");
+ await ingestOnce(ledger,d,at+1,signal());
+ expect(ledger.getSessions()[0]).toMatchObject({nameSource:"id",nameOrder:0});
+ expect((await backfillSessionMetadata(ledger,d,at+2,signal(),()=>true,65536)).complete).toBe(true);
+ expect(ledger.getSessions()[0]).toMatchObject({name:"Original opening prompt",nameSource:"first-user"});
+});
+it("metadata parse errors are counted only by billing", async () => {
+ const s=source();write(s,[header,call("one")]);appendFileSync(s.path,"not-json\n");const d=discovery([s]);
+ await ingestOnce(ledger,d,at,signal());
+ expect(ledger.health()).toMatchObject({parseErrors:1,sourceErrors:0});
+ await backfillSessionMetadata(ledger,d,at,signal(),()=>true,65536);
+ expect(ledger.health()).toMatchObject({parseErrors:1,sourceErrors:0});
+ expect(ledger.getSourceErrorDiagnostics(20).rows.map(r=>[r.code,r.count])).toEqual([["parse-errors",1]]);
+});
+it("metadata read errors are separately keyed and preserve a billing source error", async () => {
+ const s=source();write(s,[header,call("one")]);const d=discovery([s]);await ingestOnce(ledger,d,at,signal());
+ ledger.apply({calls:[],runs:[],states:[],resetSources:[],sourceErrors:[{path:s.path,code:"EACCES"}],detailedRunIds:[],restoreAggregateRunIds:[],at});
+ rmSync(s.path);await backfillSessionMetadata(ledger,d,at,signal(),()=>true,65536);
+ expect(ledger.getSourceErrors().map(e=>e.code).sort()).toEqual(["EACCES","metadata-missing-source"]);
+ expect(ledger.getSourceErrorDiagnostics(20).rows.map(r=>r.code).sort()).toEqual(["EACCES","metadata-missing-source"]);
+});
+
+it("billing can capture the first user once the metadata checkpoint covers its resume offset", async () => {
+ const s=source();write(s,[header,call("one")]);const d=discovery([s]);
+ await ingestOnce(ledger,d,at,signal());await backfillSessionMetadata(ledger,d,at,signal(),()=>true,65536);
+ appendFileSync(s.path,JSON.stringify({type:"message",message:{role:"user",content:"First prompt after prefix"}})+"\n");
+ await ingestOnce(ledger,d,at+1,signal());
+ expect(ledger.getSessions()[0]).toMatchObject({name:"First prompt after prefix",nameSource:"first-user"});
+});
+it("successful metadata source recovery clears only its separate diagnostic", async () => {
+ const s=source();write(s,[header,call("one")]);const d=discovery([s]);await ingestOnce(ledger,d,at,signal());
+ ledger.apply({calls:[],runs:[],states:[],resetSources:[],sourceErrors:[{path:s.path,code:"EACCES"}],detailedRunIds:[],restoreAggregateRunIds:[],at});
+ rmSync(s.path);await backfillSessionMetadata(ledger,d,at,signal(),()=>true,65536);
+ expect(ledger.getSourceErrors().some(e=>e.code==="metadata-missing-source")).toBe(true);
+ write(s,[header,call("one")]);await backfillSessionMetadata(ledger,d,at+1,signal(),()=>true,65536);
+ expect(ledger.getSourceErrors()).toEqual([{path:s.path,code:"EACCES"}]);
+});

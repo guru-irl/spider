@@ -133,7 +133,9 @@ async function readTranscript(
     const oldId = context?.header?.id;
     const saved = reset || typeof oldId !== "string" ? null : sessions.get(oldId) ?? null;
     let capture: SessionMetadataCapture | undefined;
-    try { capture = new SessionMetadataCapture(source, saved, reset ? null : context?.header ?? null); } catch { /* optional metadata never blocks billing */ }
+    const metadataCheckpoint = ledger.getMetadataCheckpoint(source.path);
+    const coversPrefix = resume === 0 || !!metadataCheckpoint && metadataCheckpoint.generation === previous?.generation && metadataCheckpoint.offset >= resume;
+    try { capture = new SessionMetadataCapture(source, saved, reset ? null : context?.header ?? null, { firstUserSeen: !coversPrefix }); } catch { /* optional metadata never blocks billing */ }
     const lines: Line[] = [];
     let readOffset = resume, committed = resume;
     let line = new UsageJsonLine(), metadataLine = new UsageJsonLine(true);

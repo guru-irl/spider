@@ -365,6 +365,8 @@ function createLedger(db: Db): UsageLedger {
     last_ingest_at=MAX(import_state.last_ingest_at, excluded.last_ingest_at)
     WHERE import_state.source_error_code IS NOT excluded.source_error_code
       OR import_state.source_error_paths IS NOT excluded.source_error_paths`);
+  const clearMetadataError = db.prepare("DELETE FROM import_state WHERE path=? AND source_error_code='metadata-invalid'");
+  const clearMetadataSourceError = db.prepare("DELETE FROM import_state WHERE path=? AND source_error_code IN ('metadata-missing-source','metadata-source-changed','metadata-read-error')");
   const putRun = db.prepare(`INSERT INTO runs_meta
     (id, db_path, project, repo, session_id, parent_run_id, agent, role, name, model, thinking, phase, started_at, ended_at${hasMetadata ? ", status" : ""})
     VALUES (@id, @dbPath, @project, @repo, @sessionId, @parentRunId, @agent, @role, @name, @model, @thinking, @phase, @startedAt, @endedAt${hasMetadata ? ", @status" : ""})
@@ -499,7 +501,6 @@ function createLedger(db: Db): UsageLedger {
         // savepoints. Metadata-only batches remain strict and transactional.
         // Diagnostic keys identify the write, not a source path, and successful
         // retries (including strict batches) clear only their own fallback row.
-        const clearMetadataError = db.prepare("DELETE FROM import_state WHERE path=? AND source_error_code='metadata-invalid'");
         const optionalMetadata = (write: () => void, path: string) => {
           if (!batch.calls.length) { write(); clearMetadataError.run(path); return; }
           db.exec("SAVEPOINT usage_optional_metadata");
@@ -519,7 +520,10 @@ function createLedger(db: Db): UsageLedger {
             [session.firstActivity, session.lastActivity].some(v => v !== null && (!Number.isFinite(v) || Math.abs(v) > 8.64e15))) throw new Error("invalid metadata");
           putSession?.run(session);
         }, `metadata:session:${session.id}`);
-        for (const checkpoint of batch.metadataCheckpoints ?? []) optionalMetadata(() => putMetadataCheckpoint?.run({ ...checkpoint, complete: Number(checkpoint.complete) }), `metadata:checkpoint:${checkpoint.path}`);
+        for (const checkpoint of batch.metadataCheckpoints ?? []) optionalMetadata(() => {
+          putMetadataCheckpoint?.run({ ...checkpoint, complete: Number(checkpoint.complete) });
+          clearMetadataSourceError.run(`metadata:source:${checkpoint.path}`);
+        }, `metadata:checkpoint:${checkpoint.path}`);
         for (const call of batch.calls) insertCall.run(callValues(call));
         for (const edge of batch.removeCoverageEdges ?? []) removeCoverageEdge.run(edge.reportRunId, edge.includedRunId);
         for (const edge of batch.coverageEdges ?? []) putCoverageEdge.run(edge);
@@ -551,7 +555,11 @@ function createLedger(db: Db): UsageLedger {
         for (const item of batch.pendingReports ?? []) putPending.run({ ...item, calls: JSON.stringify({ calls: item.calls, partial: item.partial }) });
         for (const item of batch.completeReports ?? []) removeIncomplete.run(item.path, item.runId);
         for (const item of batch.incompleteReports ?? []) putIncomplete.run(item.path, item.runId);
-        for (const error of batch.sourceErrors) putError.run({ ...error, checkedPaths: error.checkedPaths ? JSON.stringify(error.checkedPaths) : null, at: batch.at });
+        for (const error of batch.sourceErrors) {
+          if (error.code === "metadata-parse-error") continue; // Billing owns malformed-line counts.
+          putError.run({ ...error, path: error.code.startsWith("metadata-") ? `metadata:source:${error.path}` : error.path,
+            checkedPaths: error.checkedPaths ? JSON.stringify(error.checkedPaths) : null, at: batch.at });
+        }
         return true;
       }).immediate();
     },

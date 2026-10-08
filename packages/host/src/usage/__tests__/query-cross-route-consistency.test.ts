@@ -1,8 +1,9 @@
 import { afterEach, expect, it } from "vitest";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { queryOverviewV4, querySessions } from "../query-overview-v4.js";
+import { calibrationFallback } from "../calibration.js";
 import { querySession } from "../query-session.js";
-import { sumValues } from "../query-redesign-shared.js";
+import { readCorrectedTotal, sumValues } from "../query-redesign-shared.js";
 import { customRange } from "./fixtures/redesign-range.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH as M, DASHBOARD_DAY as D } from "./fixtures/dashboard-ledger.js";
 const closers: (() => void)[] = [];
@@ -39,4 +40,45 @@ it.each(["off", "auto"] as const)("Overview, Sessions and lifetime slices reconc
     expect(querySessions(ctx, { ...range, sort: "credits", offset: 0, limit: 200 }).rows.find(row => row.id === "human-a")!.value.calls).toBe(3);
     expect(selected.total).toEqual(all.total); expect(selected.pace).toEqual(all.pace);
   });
+});
+
+it("drifting daily fits give the same calls identical credits on both pages and range ends", () => {
+ const f=createDashboardFixture(false);closers.push(f.close);
+ const priced=(id:string,ts:number,aic:number,actor:"parent"|"compaction"="parent")=>dashboardCall(id,{ts,sessionId:"human",actor,
+  price:{status:"priced",aic,components:{input:0,cacheRead:0,cacheWrite:aic,output:0},rateVersion:"synthetic",tier:"base",confidence:"estimated"}});
+ f.ledger.apply(dashboardBatch([priced("first",M+D+3600000,10),priced("last",M+D+7200000,20),priced("compact",M+D+7200001,30)]));
+ const reader=openDashboardReader(f.file,{instanceId:"drift",serverBuild:"fixture",now:()=>M+D+12*3600000,calibrationMode:()=>"auto"})!;closers.push(()=>reader.close());
+ { const ctx=reader.snapshot(ctx=>ctx);
+  // Intra-day counter drift makes an endpoint at the last call visibly different.
+  ctx.calibration.atMany=points=>points.map(point=>({...calibrationFallback(),status:"calibrated",factor:(point-M-D)/D,windowStart:M,windowEnd:point}));
+  const preset=queryOverviewV4(ctx,{range:"24h",from:0,to:0,tz:"UTC",unit:"credits",buckets:[]});
+  const custom=queryOverviewV4(ctx,customRange(M+D,M+D+3*3600000));
+  const session=querySession(ctx,"human","UTC");
+  expect(preset.sessions.rows[0].value.credits).toBeCloseTo(30,5);
+  expect(session.total.credits).toBe(preset.sessions.rows[0].value.credits);
+  expect(custom.sessions.rows[0].value.credits).toBe(preset.sessions.rows[0].value.credits);
+  expect(readCorrectedTotal(ctx,{start:M+D,end:M+D+3*3600000})).toBe(preset.sessions.rows[0].value.credits);
+  expect(sumValues([...session.ownCallBins.map(b=>b.value),...session.compaction.map(e=>e.value)]).credits).toBe(session.total.credits);
+  expect(session.idleGaps[0].cacheWriteCredits).toBeCloseTo(10,5);
+ }
+});
+it("stored owner-null child stays off both human pages and retains unattributed credits", () => {
+ const f=createDashboardFixture(false);closers.push(f.close);
+ f.ledger.apply(dashboardBatch([dashboardCall("orphan",{ts:M+D,sessionId:"child",actor:"subagent",runId:"missing-run"})],{
+  sessions:[{id:"child",ownerSessionId:null,name:"Child",nameSource:"id",nameOrder:0,project:null,firstActivity:null,lastActivity:null}]}));
+ const reader=openDashboardReader(f.file,{instanceId:"owner",serverBuild:"fixture",now:()=>M+7*D,calibrationMode:()=>"off"})!;closers.push(()=>reader.close());
+ { const ctx=reader.snapshot(ctx=>ctx);
+  const overview=queryOverviewV4(ctx,customRange(M,M+7*D));
+  expect(overview.sessions.rows.map(r=>r.id)).toEqual(["unattributed-runs"]);
+  expect(()=>querySession(ctx,"child","UTC")).toThrowError(expect.objectContaining({code:"not-found"}));
+  const unattributed=querySession(ctx,"unattributed-runs","UTC");
+  expect(unattributed.total).toEqual(overview.sessions.rows[0].value);
+  expect(unattributed.total).toMatchObject({calls:1,credits:1});
+ }
+});
+it("metadata-free sessions use the same seven-character fallback on both pages", () => {
+ const f=createDashboardFixture(false);closers.push(f.close);const id="1234567890-abcdef";
+ f.ledger.apply(dashboardBatch([dashboardCall("fallback",{ts:M+D,sessionId:id})]));
+ const reader=openDashboardReader(f.file,{instanceId:"fallback",serverBuild:"fixture",now:()=>M+7*D,calibrationMode:()=>"off"})!;closers.push(()=>reader.close());
+ { const ctx=reader.snapshot(ctx=>ctx);expect(queryOverviewV4(ctx,customRange(M,M+7*D)).sessions.rows[0].name).toBe("1234567");expect(querySession(ctx,id,"UTC").name).toBe("1234567");}
 });

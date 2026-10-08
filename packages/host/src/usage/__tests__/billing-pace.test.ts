@@ -34,11 +34,11 @@ it("short month-to-date window uses the actual elapsed duration",()=>{
 it("counter rate ignores readings outside the window rather than interpolating",()=>{
  const snapshots=[snap("2026-10-20",0),...polls(ts("2026-10-23")+600000,ts("2026-10-29")-600000),snap("2026-10-30",1000)];
  expect(counterRate(snapshots,{start:ts("2026-10-23"),end:ts("2026-10-29")})).toBeCloseTo(10,10);
- expect(counterRate(snapshots,{start:ts("2026-10-19"),end:ts("2026-10-29")})).toBeNull();
- expect(counterRate(snapshots,{start:ts("2026-10-23"),end:ts("2026-10-31")})).toBeNull();
+ expect(counterRate(snapshots,{start:ts("2026-10-18"),end:ts("2026-10-29")})).toBeNull();
+ expect(counterRate(snapshots,{start:ts("2026-10-23"),end:ts("2026-10-31")})).toBeCloseTo((1000-snapshots[1].creditsUsed)/((ts("2026-10-30")-snapshots[1].ts)/D),10);
 });
 it.each([
- [snap("2026-10-24",40),snap("2026-10-30",100)],
+ [snap("2026-10-24T00:00:00.001Z",40),snap("2026-10-30",100)],
  [snap("2026-10-23",120),snap("2026-10-30",100)],
  [snap("2026-10-23",30),snap("2026-10-30",100,{accountLogin:"other"})],
  [snap("2026-10-23",30,{accountLogin:undefined}),snap("2026-10-30",100,{accountLogin:undefined})],
@@ -86,11 +86,12 @@ it("recent ten-minute polls cover the seven-day window using their actual span",
  const pace=computePace({...base,snapshots:rows});
  expect(pace.rateSource).toBe("counter");expect(pace.ratePerDay).toBeCloseTo(10,10);expect(pace.projected).toBeCloseTo(120,10);
 });
-it("counter coverage tolerates one hour at each edge but not beyond",()=>{
+it("part-day counter coverage starts within one day and uses its actual span",()=>{
  const window={start:base.now-7*D,end:base.now};
- expect(counterRate(polls(window.start+3600000,window.end-3600000),window)).toBeCloseTo(10,10);
- expect(counterRate(polls(window.start+3600001,window.end-600000),window)).toBeNull();
- expect(counterRate(polls(window.start+600000,window.end-3600001),window)).toBeNull();
+ expect(counterRate(polls(window.start+D,window.end-12*3600000),window)).toBeCloseTo(10,10);
+ expect(counterRate(polls(window.start+D+1,window.end-600000),window)).toBeNull();
+ expect(counterRate(polls(window.start+12*3600000,window.start+36*3600000),window)).toBeCloseTo(10,10);
+ expect(counterRate(polls(window.start+12*3600000,window.start+36*3600000-600000),window)).toBeNull();
 });
 it("a reset in the window uses only the post-reset day-long chain",()=>{
  const now=ts("2026-11-03"), start=now-7*D;

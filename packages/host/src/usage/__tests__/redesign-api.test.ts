@@ -159,10 +159,12 @@ it.each(Object.entries(RESPONSE_CAPS_V4))("enforces UTF-8 envelope cap for %s in
   const reader = openDashboardReader(f.file, { instanceId: "caps", now: () => NOW, serverBuild: "fixture", calibrationMode: () => "auto" })!;
   const route = DASHBOARD_ROUTES.find(route => route.path === template)!;
   seed();
-  const payload = "é".repeat(Math.floor(cap / 2));
+  let payload = "é".repeat(Math.floor(((template === "/api/session/<id>" ? 2 * 1024 * 1024 : cap) - Math.min(16384, cap / 2)) / 2));
   const routes: readonly DashboardRoute[] = DASHBOARD_ROUTES.map(r => r === route ? { ...r, handle: (ctx, params, id) => ({ ...r.handle(ctx, params, id) as object, padding: payload }) } : r);
   const server = await start({ reader, routes }), Cookie = await server.cookie();
   const path = template.replace("<id>", H);
+  const accepted = await reply(server.port, path, { Cookie }); expect(accepted.status).toBe(200);
+  payload = "é".repeat(Math.floor(cap / 2));
   const response = await reply(server.port, path, { Cookie }); expect(response.status).toBe(413);
   expect(JSON.parse(response.body)).toEqual({ apiVersion: 1, error: { code: "response-limit", message: "Response limit" } });
 });

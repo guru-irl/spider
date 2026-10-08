@@ -31,8 +31,7 @@ function parseRange(params: URLSearchParams, now: number, month: ReturnType<type
   }
   if (!Array.isArray(requested) || requested.some(key => !Number.isSafeInteger(key)) ||
     new Set(requested).size !== requested.length) invalidQuery();
-  // Task 5's parser accepts legacy comma-separated keys. Resolve only its range
-  // grammar here; v4 has a strict JSON selection grammar instead.
+  // Resolve range bounds separately from v4's strict JSON selection grammar.
   const rangeParams = new URLSearchParams(params); rangeParams.delete("buckets");
   const range = resolveRange(rangeParams, now, month), size = bucketSize(range);
   for (const key of requested as number[]) {

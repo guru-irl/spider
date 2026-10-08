@@ -1,5 +1,6 @@
 import { DashboardQueryError, type DashboardQueryContext, type DashboardRoute, type Period } from "./dashboard-contract.js";
 import { RESPONSE_CAPS_V4, type OwnCallBin, type SessionData, type SessionRun, type Value } from "./dashboard-v4-contract.js";
+import { shortSessionName } from "./session-name.js";
 import { dashboardLabel, supportedDetailId } from "./dashboard-identities.js";
 import { DAY_MS, invalidQuery, safeTimestamp, validateParams } from "./dashboard-selection.js";
 import { flowFromCube, modelRows, readSessionCorrectedComponents, readCorrectionFactors, readSessionUsageCube, sessionCandidatesSql, sessionModelStyles, sessionOwnerResolver, sumValues, UNATTRIBUTED_SESSION_ID } from "./query-redesign-shared.js";
@@ -35,7 +36,7 @@ function scopeFor(ctx: DashboardQueryContext, id: string): Scope {
     if (result === undefined) { result = matches(resolveOwner(sessionId, runId)); owners.set(key, result); }
     return result;
   };
-  return { ownerId: unattributed ? null : id, session: unattributed ? { id, name: "Unattributed runs", project: null } : sessions.find(s => s.id === id) ?? { id, name: id, project: null },
+  return { ownerId: unattributed ? null : id, session: unattributed ? { id, name: "Unattributed runs", project: null } : sessions.find(s => s.id === id) ?? { id, name: shortSessionName(id), project: null },
     runs: runs.filter(row => matches(resolveOwner(row.sessionId, row.id))), bindings: { sessions: JSON.stringify(sessionIds), runs: JSON.stringify(runIds) }, owns, sql };
 }
 
@@ -58,10 +59,10 @@ const measures = `SUM(c.aic) AS credits,COUNT(*) AS calls,SUM(c.price_status='un
   SUM(c.input) AS input,SUM(c.cache_read) AS cacheRead,SUM(c.cache_write) AS cacheWrite,SUM(c.output) AS output,
   SUM(c.cache_write_1h) AS cacheWrite1h,SUM(c.reasoning) AS reasoning`;
 function correctedValues(ctx: DashboardQueryContext, span: Period, rows: readonly Aggregate[]): Value[] {
-  const correction = readCorrectionFactors(ctx, rows.map(row => Math.min(span.end, row.endpoint)));
+  const correction = readCorrectionFactors(ctx, rows.map(row => row.endpoint));
   return rows.map(row => {
     const prompt = row.input + row.cacheRead + row.cacheWrite;
-    return { credits: row.credits === null ? null : row.credits * correction.get(Math.min(span.end, row.endpoint))!, calls: row.calls, unpricedCalls: row.unpricedCalls,
+    return { credits: row.credits === null ? null : row.credits * correction.get(row.endpoint)!, calls: row.calls, unpricedCalls: row.unpricedCalls,
       tokens: { input: row.input, cacheRead: row.cacheRead, cacheWrite: row.cacheWrite, output: row.output, cacheWrite1h: row.cacheWrite1h, reasoning: row.reasoning, prompt, total: prompt + row.output } };
   });
 }
@@ -125,32 +126,62 @@ function pairs<T>(items: readonly T[], combine: (a: T, b: T) => T): T[] {
   return result;
 }
 const knownSum = (a: number | null, b: number | null) => a === null && b === null ? null : (a ?? 0) + (b ?? 0);
-/** Reserve transport overhead too. Only overflow responses are coarsened; the
- * flag distinguishes bins (which can include intervening activity) from exact
- * gaps/periods. Raw counts and corrected totals remain unchanged; overflow model groups
- * are reflected in both Models and Flow so they still reconcile. */
+/** Reserve transport overhead. Omitted idle gaps retain exact counts and cache
+ * write totals, and each remaining gap still describes a real idle interval.
+ * Low-cost runs are merged one pair at a time, preserving expensive identities. */
 function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionData {
-  const bytes = () => Buffer.byteLength(JSON.stringify({ apiVersion: 1, revision: ctx.revision, generatedAt: ctx.now(),
-    period: data.span ?? { start: ctx.now(), end: ctx.now() }, data }));
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  const envelopeBytes = () => bytes({ apiVersion: 1, revision: ctx.revision, generatedAt: ctx.now(),
+    period: data.span ?? { start: ctx.now(), end: ctx.now() }, data });
   const cap = RESPONSE_CAPS_V4["/api/session/<id>"] - 1024;
-  while (bytes() > cap) {
+  let wireBytes = envelopeBytes();
+  if (wireBytes <= cap) return data;
+  data.detailsBinned = true;
+  wireBytes = envelopeBytes();
+  const dropped = new Set<SessionData["idleGaps"][number]>();
+  // Pop shortest first, retaining the longer gaps most useful for navigation.
+  const gaps = [...data.idleGaps].sort((a, b) => (b.end - b.start) - (a.end - a.start) || b.start - a.start);
+  let remainingGaps = data.idleGaps.length;
+  let gapBytes = bytes(data.idleGaps), runBytes = bytes(data.runs);
+  let ownBytes = bytes([data.ownCallBins, data.activePeriods]), compactionBytes = bytes(data.compaction), modelBytes = bytes([data.models, data.flow]);
+  const runCost = (a: SessionRun, b: SessionRun) => (a.value.credits ?? 0) - (b.value.credits ?? 0)
+    || a.value.tokens.total - b.value.tokens.total || (a.id ?? "").localeCompare(b.id ?? "");
+  let runs: SessionRun[] | null = null;
+  const syncGaps = () => { if (dropped.size) data.idleGaps = data.idleGaps.filter(gap => !dropped.has(gap)); };
+  const recompute = () => {
+    syncGaps(); wireBytes = envelopeBytes(); gapBytes = bytes(data.idleGaps); runBytes = bytes(data.runs);
+    ownBytes = bytes([data.ownCallBins, data.activePeriods]); compactionBytes = bytes(data.compaction); modelBytes = bytes([data.models, data.flow]);
+  };
+  while (wireBytes > cap) {
     const choices = [
-      { size: data.idleGaps.length > 1 ? Buffer.byteLength(JSON.stringify(data.idleGaps)) : 0, merge: () => {
-        data.idleGaps = pairs(data.idleGaps, (a, b) => ({ start: a.start, end: b.end, cacheWriteCredits: knownSum(a.cacheWriteCredits, b.cacheWriteCredits) }));
+      { size: gaps.length ? gapBytes : 0, merge: () => {
+        const gap = gaps.pop()!, oldStats = bytes(data.stats), remaining = remainingGaps--;
+        const removedBytes = bytes(gap) + (remaining > 1 ? 1 : 0);
+        dropped.add(gap); gapBytes -= removedBytes;
+        const prior = data.stats.omittedIdleGaps;
+        data.stats.omittedIdleGaps = { count: (prior?.count ?? 0) + 1, cacheWriteCredits: knownSum(prior?.cacheWriteCredits ?? null, gap.cacheWriteCredits) };
+        wireBytes += bytes(data.stats) - oldStats - removedBytes;
       } },
-      { size: data.ownCallBins.length > 1 ? Buffer.byteLength(JSON.stringify([data.ownCallBins, data.activePeriods])) : 0, merge: () => {
+      { size: data.ownCallBins.length > 1 ? ownBytes : 0, merge: () => {
         data.ownCallBins = pairs(data.ownCallBins, (a, b) => ({ start: a.start, end: b.end, value: sumValues([a.value, b.value]) }));
-        data.activePeriods = data.ownCallBins.map(({ start, end }) => ({ start, end }));
+        data.activePeriods = data.ownCallBins.map(({ start, end }) => ({ start, end })); recompute();
       } },
-      { size: data.compaction.length > 1 ? Buffer.byteLength(JSON.stringify(data.compaction)) : 0, merge: () => {
-        data.compaction = pairs(data.compaction, (a, b) => ({ ts: a.ts, value: sumValues([a.value, b.value]) }));
+      { size: data.compaction.length > 1 ? compactionBytes : 0, merge: () => {
+        data.compaction = pairs(data.compaction, (a, b) => ({ ts: a.ts, value: sumValues([a.value, b.value]) })); recompute();
       } },
-      { size: data.runs.length > 1 ? Buffer.byteLength(JSON.stringify(data.runs)) : 0, merge: () => {
-        const summaries = data.runs.map(row => ({ id: null, name: "Combined runs", role: "other", model: null, thinking: null,
-          start: null, end: null, durationMs: null, status: null, value: row.value, style: null } satisfies SessionRun));
-        data.runs = pairs(summaries, (a, b) => ({ ...a, value: sumValues([a.value, b.value]) }));
+      { size: data.runs.length > 1 ? runBytes : 0, merge: () => {
+        runs ??= [...data.runs].sort(runCost);
+        const a = runs.shift()!, b = runs.shift()!;
+        const combined: SessionRun = { id: null, name: "Combined runs", role: "other", model: null, thinking: null,
+          start: null, end: null, durationMs: null, status: null, value: sumValues([a.value, b.value]), style: null };
+        // Sorted reinsertion lets a growing summary compete with other cheap runs.
+        let lo = 0, hi = runs.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (runCost(runs[mid]!, combined) <= 0) lo = mid + 1; else hi = mid; }
+        runs.splice(lo, 0, combined); data.runs = runs;
+        const removedBytes = bytes(a) + bytes(b) + 1 - bytes(combined);
+        runBytes -= removedBytes; wireBytes -= removedBytes;
       } },
-      { size: data.models.length > 1 ? Buffer.byteLength(JSON.stringify([data.models, data.flow])) : 0, merge: () => {
+      { size: data.models.length > 1 ? modelBytes : 0, merge: () => {
         const mapping = new Map<string, string>();
         const models: SessionData["models"][number][] = [];
         for (let i = 0; i < data.models.length; i += 2) {
@@ -163,13 +194,13 @@ function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionDa
           const model = mapping.get(edge.model)!, key = JSON.stringify([edge.role, model]), previous = edges.get(key);
           edges.set(key, previous ? { ...previous, value: sumValues([previous.value, edge.value]), share: previous.share + edge.share } : { ...edge, model });
         }
-        data.models = models; data.flow = { total: data.total, models, edges: [...edges.values()] };
+        data.models = models; data.flow = { total: data.total, models, edges: [...edges.values()] }; recompute();
       } },
     ].sort((a, b) => b.size - a.size);
-    if (!choices[0]!.size) throw new DashboardQueryError("invalid-query"); // Only bounded header/scalar fields remain.
+    if (!choices[0]!.size) throw new DashboardQueryError("invalid-query");
     choices[0]!.merge();
-    data.detailsBinned = true;
   }
+  syncGaps();
   return data;
 }
 

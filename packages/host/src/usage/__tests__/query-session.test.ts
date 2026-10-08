@@ -114,9 +114,9 @@ it("isolated threshold fixture returns only 5 minutes plus 1 ms and 30 minutes p
   expect(querySession(ctx, H, "UTC").idleGaps.map(g => g.end - g.start)).toEqual([300001, 1800001]);
 });
 
-it("next canonical own-call cache write uses its total's daily correction, including the clipped last day", () => {
+it("next canonical own-call cache write uses its total's daily correction, without clipping the last day", () => {
   seed([call("a", S + D - 400000, 10), call("b", S + D + 1, 20), call("c", S + D + 400002, 30)]);
-  ctx.calibration.atMany = ends => ends.map(end => ({ ...calibrationFallback(), status: "calibrated", factor: end < S + D ? 0.5 : end < S + D + 500000 ? 0.25 : 1, windowEnd: end }));
+  ctx.calibration.atMany = ends => ends.map(end => ({ ...calibrationFallback(), status: "calibrated", factor: end < S + D ? 0.5 : end < S + 2 * D ? 0.25 : 1, windowEnd: end }));
   const data = querySession(ctx, H, "UTC");
   expect(data.total.credits).toBe(17.5);
   expect(sumValues(data.ownCallBins.map(b => b.value)).credits).toBe(17.5);
@@ -335,7 +335,7 @@ it("Session timezone changes no server grouping or SQL work", () => {
 });
 
 it("50000 idle gaps are binned under the full envelope cap with honest raw stats", async () => {
-  seed(Array.from({ length: 50001 }, (_, i) => call(`gap-${i}`, S + i * 6 * M, 1)));
+  seed(Array.from({ length: 50001 }, (_, i) => call(`gap-${i}`, S + Math.floor(i/2)*13*M+(i%2)*6*M, 1)));
   const response = await reply(H);
   const data = (JSON.parse(response.body) as ApiEnvelope<SessionData>).data;
   expect(response.status).toBe(200);
@@ -343,9 +343,11 @@ it("50000 idle gaps are binned under the full envelope cap with honest raw stats
   expect(data).toHaveProperty("detailsBinned", true);
   expect(data.stats).toMatchObject({ ownCalls: 50001, idleGaps: 50000 });
   expect(data.idleGaps.length).toBeLessThan(50000);
-  expect(data.idleGaps[0]!.start).toBe(S);
-  expect(data.idleGaps.at(-1)!.end).toBe(S + 50000 * 6 * M);
-  expect(data.idleGaps.reduce((n, gap) => n + (gap.cacheWriteCredits ?? 0), 0)).toBe(50000);
+  expect(data.idleGaps.every(gap=>[6*M,7*M].includes(gap.end-gap.start))).toBe(true);
+  expect(data.idleGaps.filter(gap=>gap.end-gap.start===7*M)).toHaveLength(25000);
+  expect(data.stats.omittedIdleGaps?.count).toBe(50000-data.idleGaps.length);
+  expect(data.stats.omittedIdleGaps!.count).toBeGreaterThan(0);
+  expect(data.idleGaps.reduce((n, gap) => n + (gap.cacheWriteCredits ?? 0), 0)+(data.stats.omittedIdleGaps?.cacheWriteCredits??0)).toBe(50000);
   expect(sumValues(data.ownCallBins.map(bin => bin.value))).toMatchObject({ calls: 50001, credits: 50001 });
   process.stdout.write(`BINNED_GAPS raw=50000 wire=${data.idleGaps.length} bytes=${Buffer.byteLength(response.body)}\n`);
 }, 120_000);
@@ -364,7 +366,7 @@ it("cap-level active periods retain exact own totals when adjacent transit bins 
 }, 120_000);
 
 it("a run-heavy response uses overflow summaries without changing raw run count or header", async () => {
-  seed([], Array.from({ length: 8000 }, (_, i) => run(`run-${i}`, { name: "Synthetic run ".repeat(6) })));
+  seed([call("valuable",S,100000,{actor:"subagent",runId:"run-7999",sessionId:"child"})], Array.from({ length: 8000 }, (_, i) => run(`run-${i}`, { name: "Synthetic run ".repeat(6) })),[human(),human("child",H)]);
   const response = await reply(H);
   const data = (JSON.parse(response.body) as ApiEnvelope<SessionData>).data;
   expect(response.status).toBe(200);
@@ -372,7 +374,9 @@ it("a run-heavy response uses overflow summaries without changing raw run count 
   expect(data).toHaveProperty("detailsBinned", true);
   expect(data.stats.runs).toBe(8000);
   expect(data.runs.length).toBeLessThan(8000);
-  expect(data.runs.every(row => row.id === null && row.model === null && row.status === null)).toBe(true);
+  expect(data.runs.some(row=>row.id===null && row.model===null && row.status===null)).toBe(true);
+  expect(data.runs.find(row=>row.id==="run-7999")?.value.credits).toBe(100000);
+  expect(data.runs.filter(row=>row.id!==null).length).toBeGreaterThan(1000);
   expect(sumValues(data.runs.map(row => row.value))).toEqual(data.total);
 }, 120_000);
 

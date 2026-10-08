@@ -32,13 +32,13 @@ it("daily factors reconcile every replacement rollup instead of applying one per
     expect(cube.rows.every(row => row.role === "background")).toBe(true);
   });
 });
-it("past partial-day correction excludes the snapshot after the selected end", () => {
+it("past partial-day correction shares the full UTC-day fit", () => {
   f.ledger.apply(dashboardBatch([priced("first", M + D / 2, 1000), priced("partial", M + 1.25 * D, 1000)]));
   counter(M, 0); counter(M + D, 500); counter(M + 1.75 * D, 1500);
   reader.snapshot(ctx => {
     expect(ctx.calibration.at(M + 2 * D - 1, "auto").factor).toBe(0.75);
     const cube = readUsageCube(ctx, customRange(M + D, M + 1.5 * D));
-    expect(cube.total).toMatchObject({ credits: 500, calls: 1 });
+    expect(cube.total).toMatchObject({ credits: 750, calls: 1 });
     expect(cube.buckets).toHaveLength(12);
     expect(sumValues(cube.buckets.map(row => row.total))).toEqual(cube.total);
   });

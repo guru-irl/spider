@@ -63,7 +63,7 @@ it("caller calibration reload reaches initial and retry readers", async () => {
     for (const contents of ["{}", '{"usage.calibration":"invalid"}', "broken", null]) {
       if (contents === null) await rm(configFile); else await writeFile(configFile, contents);
       const auto = await h.reply(running.port, "/api/calibration", headers);
-      expect(auto.status).toBe(200); expect(JSON.parse(auto.body).data.correction, contents ?? "missing").toMatchObject({ status: "calibrated", factor: 0.5 });
+      expect(auto.status).toBe(200); expect(JSON.parse(auto.body).data.correction, contents ?? "missing").toMatchObject({ status: "back-applied", factor: 0.5 });
     }
   }
 });

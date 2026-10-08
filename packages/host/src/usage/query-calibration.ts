@@ -9,6 +9,7 @@ import { queryStatusV4, readIngestionStatus } from "./ingestion-status.js";
 import { readSourceErrorDiagnostics } from "./source-error-diagnostics.js";
 import { DAY_MS, validateParams } from "./dashboard-selection.js";
 import { dashboardLabel } from "./dashboard-identities.js";
+import { readCorrectionDays } from "./query-redesign-shared.js";
 import { countedUsageSql, storedSelection } from "./schema.js";
 
 function evidencePeriod(ctx: DashboardQueryContext): Period {
@@ -38,17 +39,21 @@ function lastAccepted(ctx: DashboardQueryContext): CalibrationResult | null {
     before = rows.at(-1)!.ts;
   }
 }
-function correctionBasis(ctx: DashboardQueryContext): Pick<CalibrationData["correction"], "factor" | "status"> {
+function correctionBasis(ctx: DashboardQueryContext, period: Period): Pick<CalibrationData["correction"], "factor" | "status"> {
   const unavailable = ctx.status().counter.availability === "unavailable";
   if (ctx.calibrationMode === "off") return { factor: null, status: unavailable ? "counter-unavailable" : "published-only" };
   // The shared credit projector evaluates the half-open endpoint at now - 1.
   const point = Math.max(0, ctx.now() - 1);
   const fit = ctx.calibration.at(point, ctx.calibrationMode);
-  if (accepted(fit)) return { factor: fit.factor, status: unavailable ? "counter-unavailable" : "calibrated" };
   const earliest = ctx.calibration.earliest(ctx.calibrationMode);
-  const backApplied = accepted(earliest) && earliest.windowEnd !== null && point < earliest.windowEnd;
-  if (unavailable) return { factor: (lastAccepted(ctx) ?? (accepted(earliest) ? earliest : null))?.factor ?? null, status: "counter-unavailable" };
-  return backApplied ? { factor: earliest.factor, status: "back-applied" } : { factor: null, status: "published-only" };
+  if (unavailable) return { factor: (accepted(fit) ? fit : lastAccepted(ctx) ?? (accepted(earliest) ? earliest : null))?.factor ?? null, status: "counter-unavailable" };
+  const ends: number[] = [];
+  for (let day = Math.floor(period.start / DAY_MS) * DAY_MS; day < period.end; day += DAY_MS) ends.push(day + DAY_MS);
+  const days = [...readCorrectionDays(ctx, ends).values()];
+  const status = !days.length || days.some(day => day.basis === "published-only") ? "published-only"
+    : days.some(day => day.basis === "back-applied") ? "back-applied" : "calibrated";
+  const factor = accepted(fit) ? fit.factor : accepted(earliest) && earliest.windowEnd !== null && point < earliest.windowEnd ? earliest.factor : null;
+  return { factor, status };
 }
 const sumKnown = (values: readonly (number | null)[]): number | null => {
   const known = values.filter((value): value is number => value !== null);
@@ -105,7 +110,7 @@ export function queryCalibration(ctx: DashboardQueryContext): CalibrationData {
     GROUP BY model,reason ORDER BY calls DESC,model,reason`).all(period.start, period.end) as
     { model: string | null; reason: string; calls: number }[];
   return {
-    correction: { ...correctionBasis(ctx), publishedEstimate: sumKnown(intervals.map(row => row.publishedEstimate)),
+    correction: { ...correctionBasis(ctx, period), publishedEstimate: sumKnown(intervals.map(row => row.publishedEstimate)),
       accountCounter: sumKnown(intervals.map(row => row.counterDelta)), coveredHours: intervals.reduce((sum, row) => sum + (row.end - row.start) / 3600000, 0) },
     daily, intervals, rates: publishedRates(ctx),
     unpricedModels: unpriced.map(row => ({ model: dashboardLabel("model", row.model), reason: row.reason, calls: row.calls })),

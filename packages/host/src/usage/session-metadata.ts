@@ -7,6 +7,7 @@ import type { MetadataCheckpoint, SessionMeta } from "./ledger.js";
 import { UsageJsonLine } from "./jsonl-projection.js";
 import { dashboardLabel } from "./dashboard-identities.js";
 import { parseTranscript } from "./parse.js";
+import { shortSessionName } from "./session-name.js";
 const execute = promisify(execFile);
 const projects = new Map<string, Promise<string>>();
 const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -52,10 +53,10 @@ export class SessionMetadataCapture {
   header: Record<string, unknown> | null;
   private firstUserSeen: boolean;
   private changed = false;
-  constructor(private source: SourceInfo, previous: SessionMeta | null = null, header: Record<string, unknown> | null = null) {
+  constructor(private source: SourceInfo, previous: SessionMeta | null = null, header: Record<string, unknown> | null = null, private options: { firstUserSeen?: boolean } = {}) {
     this.session = previous ? { ...previous } : null;
     this.header = header;
-    this.firstUserSeen = (previous?.nameOrder ?? 0) > 0;
+    this.firstUserSeen = options.firstUserSeen === true || (previous?.nameOrder ?? 0) > 0;
     if (header) this.consume(header, 0);
     this.changed = false;
   }
@@ -76,9 +77,9 @@ export class SessionMetadataCapture {
       this.header = { type: "session", id: entry.id, cwd: entry.cwd, timestamp: entry.timestamp, parentSession: entry.parentSession };
       if (this.session?.id !== entry.id) {
         this.session = { id: String(entry.id), ownerSessionId: this.source.run?.sessionId ?? null,
-          name: redactSessionName(String(entry.id).slice(0, 7)), nameSource: "id", project: null,
+          name: redactSessionName(shortSessionName(String(entry.id))), nameSource: "id", project: null,
           firstActivity: null, lastActivity: null, nameOrder: 0 };
-        this.firstUserSeen = false;
+        this.firstUserSeen = this.options.firstUserSeen === true;
       } else if (this.session && this.source.run?.sessionId) this.session.ownerSessionId = this.source.run.sessionId;
       return;
     }

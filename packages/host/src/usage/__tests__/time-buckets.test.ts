@@ -23,10 +23,10 @@ it("aligned keys are not clipped and invalid zones become UTC",()=>{
   expect(normalizeTimeZone("Not/AZone")).toBe("UTC");
   expect(timeBuckets({start:H+123,end:2*H+456},"UTC","hour")).toEqual([{key:H,start:H+123,end:2*H},{key:2*H,start:2*H,end:2*H+456}]);
 });
-it("range presets ignore bounds and sanitize effective selection",()=>{
+it("range presets ignore bounds and leave selection to the route parser",()=>{
   const now=ts("2026-10-08T12:30:00Z");
   const q=resolveRange(new URLSearchParams(`range=24h&from=bad&to=bad&tz=Not/AZone&buckets=${now},${now-H-1800000},1&unit=tokens`),now);
-  expect(q).toMatchObject({range:"24h",from:now-D,to:now,tz:"UTC",unit:"tokens",buckets:[now-H-1800000]});
+  expect(q).toMatchObject({range:"24h",from:now-D,to:now,tz:"UTC",unit:"tokens",buckets:[]});
   expect(resolveRange(new URLSearchParams(),now).from).toBe(now-7*D);
 });
 it("custom range rejects missing, nonnumeric, reversed and over-93-day bounds",()=>{

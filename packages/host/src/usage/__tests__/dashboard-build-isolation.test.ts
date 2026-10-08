@@ -63,9 +63,10 @@ it("dev and e2e states never ship and e2e output must be owned scratch", async (
 });
 it("production refuses redirected dashboard output", async () => {
   const config = (mode: string, outDir: string) => resolveConfig({ configFile: resolve("vite.dashboard.config.mjs"), mode, build: { outDir } }, "build");
-  for (const output of [resolve("dist"), join(scratch(), "output"), resolve("dist/dashboard/nested")]) {
+  for (const output of [resolve("dist"), resolve(".spider/scratch"), resolve("dist/dashboard/nested")]) {
     await expect(config("production", output)).rejects.toThrow(/production.*dist\/dashboard/);
   }
+  await expect(config("production", join(scratch(), "output"))).resolves.toBeDefined();
 });
 it("development and e2e refuse production dashboard output", async () => {
   const config = (mode: string, outDir: string) => resolveConfig({ configFile: resolve("vite.dashboard.config.mjs"), mode, build: { outDir } }, "build");

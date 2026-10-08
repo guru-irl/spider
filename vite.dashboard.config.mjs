@@ -14,12 +14,13 @@ export default defineConfig(({ mode }) => ({
     configResolved(config) {
       if (config.command !== "build") return;
       const output = resolve(root, config.build.outDir);
+      const path = relative(scratch, output);
+      const ownedScratch = isAbsolute(config.build.outDir) && !!path && path !== ".." && !path.startsWith("../") && !isAbsolute(path);
       if (mode === "production") {
-        if (output !== resolve(checkout, "dist/dashboard")) throw new Error("dashboard production output must be dist/dashboard");
+        if (output !== resolve(checkout, "dist/dashboard") && !ownedScratch) throw new Error("dashboard production output must be dist/dashboard or an absolute directory under owned scratch");
         return;
       }
-      const path = relative(scratch, output);
-      if (!isAbsolute(config.build.outDir) || !path || path === ".." || path.startsWith("../") || isAbsolute(path)) {
+      if (!ownedScratch) {
         throw new Error("dashboard non-production builds require an explicit absolute output directory under owned scratch");
       }
     },

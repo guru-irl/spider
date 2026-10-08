@@ -101,13 +101,20 @@ From top to bottom:
    numbers around it.
    - The fill is credits used this billing month. The figure (for example `118.4k`) is written
      inside the fill in bold Cascadia Code, or just after the fill end when it does not fit.
-   - The month (for example `OCT`) sits in small muted text at the unfilled end.
+   - The billing month (for example `OCT`) sits in small muted text at the unfilled end. For a
+     billing period that does not start on the 1st, it reads `to 14 NOV` (the day before the
+     reset).
    - A "you are here" ring marks the fill end. The projected month end is a hatched extension.
    - No even-pace tick.
    - Hover or focus anywhere on the bar highlights the ring and opens a popover anchored at the
      ring with a small table: month and year, used, budget, even pace, projected month end,
      allowance, remaining, days left. The bar is focusable; Escape closes the popover.
    - The bar's scale is the budget when one is set, otherwise the allowance.
+   - Past the scale, the fill and the hatch stop at the bar's end and the bar uses the danger
+     colour. When used itself is past the scale, the in-bar figure reads `<used> · <n> over`.
+     There is no limit tick.
+   - With neither a budget nor an allowance, the bar shows the used figure without a
+     proportional fill, and the popover lists used, projected and days left.
 2. **Controls.** Range presets as an outlined pill group: 24 h, 7 days (default), 30 days, This
    month, Custom (date and time inputs, local time, at most 93 days). The Credits | Tokens switch
    sits on the right.
@@ -134,8 +141,8 @@ From top to bottom:
    - Chip row: Sessions, Subagent runs, Top 3 share.
    - Sortable by credits, last active and runs. The first 10 rows show; "Show all N" expands.
    - Row click or Enter opens the session page.
-5. **Where it went.** A flow chart from roles (own calls, workers, reviewers, scouts, compaction,
-   background) to models, using the full box width. Each node shows its value and share below
+5. **Where it went.** A flow chart from roles (own calls, workers, reviewers, scouts, other runs,
+   compaction, background; roles with no usage are left out) to models, using the full box width. Each node shows its value and share below
    it. Chart | Table.
 
 ## 7. Session
@@ -163,6 +170,8 @@ Overview had. The unit carries over.
 - **Runs table:** start, name, role, model, thinking, credits, tokens, duration, status pill
   (completed, cancelled, failed, running). Sortable; first 20 rows then "Show all".
 - **Models table:** model, calls, credits, tokens, share.
+- A session without subagent runs shows the baseline only. A known session with no calls shows
+  its header and one line saying no calls were recorded.
 - No pace bar on this page.
 
 ## 8. Calibration & data
@@ -191,7 +200,7 @@ Times on this page are UTC, because the counter is.
 | State | Behaviour |
 |---|---|
 | No data yet | Each section shows one short line in its body instead of an empty chart. The pace bar still shows the allowance when the counter is known. |
-| No budget set | The bar scales to the allowance. The popover omits budget and even pace and shows how to set one (`spider control config set usage.monthlyBudget <credits>`). |
+| No budget set | The bar scales to the allowance. The popover omits budget and even pace and shows how to set one (`/spider config set usage.monthlyBudget <credits> --global`). |
 | Counter unavailable | Used comes from pi's corrected estimate; the popover says the counter is unavailable. Credits use the last known factor, or published rates when none exists. The Calibration page shows the status. |
 | Over pace or over budget | The projection and ring use the danger colour; the popover adds `<n> over at this pace`. |
 | Stale data | The freshness dot turns grey after 5 minutes without an ingest; its tooltip and label give the last update time. |
@@ -210,19 +219,22 @@ Times on this page are UTC, because the counter is.
   started, when that is shorter) times the days left. The rate comes from counter deltas when
   snapshots cover the window, otherwise from pi's corrected daily totals.
 - **Even pace:** budget times the elapsed share of the billing month.
-- **Session:** a top-level pi session. Its credits include its own calls, its compaction, its
-  background calls (spider's auxiliary model calls and cache-warmer calls), and every subagent run
-  it launched, directly or through pipelines. Runs whose session is unknown roll up into one row
-  named "Unattributed runs".
+- **Session:** a top-level pi session: one with its own transcript and no owning run. Its credits
+  include its own calls, its compaction, its background calls (spider's auxiliary model calls and
+  cache-warmer calls), and every subagent run it launched, directly or through pipelines. Calls
+  from subagent transcripts whose owning session cannot be resolved roll up into one row named
+  "Unattributed runs" (a fixed reserved id), never into a session row of their own.
 - **Role buckets:** own calls (the session's own model calls); workers and reviewers (subagent
-  runs with those roles); others (scouts and any other subagent role, compaction, background). The
-  flow chart splits others into scouts, compaction and background.
+  runs with those roles); others (scouts, any other subagent role, compaction, background). The
+  flow chart splits others into scouts, other runs, compaction and background.
 - **Session name:** the latest `/name` value; otherwise the first line of the first user message,
   trimmed to 80 characters and passed through the existing redaction; otherwise the short id.
-- **Project:** the repository of the session's working directory. Worktrees resolve to their main
-  repository when git can tell (cached per directory), otherwise the folder name. Only the name is
-  shown, never a path.
-- **Run status:** done, failed or cancelled from spider's run records; no end time means running.
+- **Project:** the repository of the session's working directory: git's main worktree when git
+  can resolve it (cached per directory), otherwise the registered repository the ledger recorded,
+  otherwise the folder name. Only the name is shown, never a path.
+- **Run status:** spider's run statuses are queued, running, paused, done, failed and cancelled.
+  Done shows as completed; queued, running and paused show as running. An unknown value is stored
+  as null and never blocks ingestion.
 - **Idle gap:** more than 5 minutes between consecutive own calls in a session.
 - **Time zone:** Overview and Session bucket and label in the browser's time zone (sent to the API
   as an IANA name; UTC when invalid). Calibration uses UTC.
@@ -243,8 +255,15 @@ Removed: `/api/context`, `/api/source-errors`, `/api/explorer`, `/api/filter-val
 `/api/cache`, `/api/detail-links`, `/api/detail`, `/api/rates`, `/api/reconciliation` (their data
 moves into the routes above).
 
-Queries reuse canonical call selection (no double counting of raw rows) and the existing daily
-calibration rule. CI asserts index use with EXPLAIN QUERY PLAN rather than wall-clock times.
+- Bucket keys are the aligned local hour or day starts. The server keeps only the selected keys
+  that fall inside the current range and echoes the effective selection; the page rewrites its
+  URL to match, so a rolling preset never turns a selection into an error. `range=custom`
+  requires `from` and `to`; presets ignore them.
+- Every route declares a response cap. The Session route bins own calls per active period
+  instead of listing each call, so a session that ran for months stays within its cap.
+- A session id the page cannot parse shows "Session not found" without a request.
+- Queries reuse canonical call selection (no double counting of raw rows) and the existing daily
+  calibration rule. CI asserts index use with EXPLAIN QUERY PLAN rather than wall-clock times.
 
 ## 12. Ledger schema v4
 
@@ -257,13 +276,14 @@ calibration rule. CI asserts index use with EXPLAIN QUERY PLAN rather than wall-
 ## 13. Settings
 
 - `usage.monthlyBudget`: optional, credits per billing month, a positive number; unset by default.
-  Settable in the spider config screen and with `spider control config`.
+  Global only, like the other usage keys. Settable in the spider config screen and with
+  `/spider config set usage.monthlyBudget <credits> --global`.
 
 ## 14. Footer
 
-The footer drops the basis markers and the `AIC` label:
-`1.2k credits · CH92.1% · month 24% · ↑… ↓… · R… W…`.
-`month` is used against the budget when one is set, otherwise against the allowance.
+The footer keeps its context item first and drops the basis markers and the `AIC` label:
+`45.2%/200k · 1.2k credits · CH92.1% · month 24% · ↑… ↓… · R… W…`.
+`month` is a whole percent of the budget when one is set, otherwise of the allowance.
 
 ## 15. Removed
 

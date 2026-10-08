@@ -70,7 +70,7 @@ jobs:
           export TMPDIR="$PWD/.spider/scratch/playwright/tmp"
           export npm_config_cache="$PWD/.spider/scratch/playwright/npm-cache"
           export npm_config_logs_dir="$PWD/.spider/scratch/playwright/npm-logs"
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npx --no-install playwright test
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npm run -s test:e2e
 
       - name: Browser failure artifacts
         if: failure()

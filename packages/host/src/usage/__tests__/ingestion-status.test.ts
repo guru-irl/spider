@@ -109,3 +109,14 @@ it("preserves bounded redacted source diagnostics independently of retired route
   expect(sourceErrorCode("ENOENT")).toBe("ENOENT");
   expect(JSON.stringify(result)).not.toContain("private");
 });
+
+
+it("diagnostic-only import rows count as errors but not tracked files", () => {
+  f.ledger.apply(dashboardBatch([], { at: now, states: [
+    { path: "synthetic/tracked.jsonl", inode: "inode", size: 0, offset: 0, mtimeMs: now, parseErrors: 1, generation: 0, prefixHash: "hash" },
+  ], sourceErrors: [
+    { path: "metadata:session:broken", code: "metadata-invalid" },
+    { path: "synthetic/missing.jsonl", code: "ENOENT" },
+  ] }));
+  expect(readIngestionStatus(context())).toMatchObject({ filesTracked: 1, errors: 3 });
+});

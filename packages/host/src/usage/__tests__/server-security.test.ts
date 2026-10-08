@@ -134,7 +134,7 @@ describe("usage HTTP security", () => {
   test("Host rebinding fails before reader access", async () => {
     const server = await start();
     const cookie = await login(server);
-    const reads = [vi.spyOn(server.options.reader!, "snapshot"), vi.spyOn(server.options.reader!, "status"), vi.spyOn(server.options.reader!, "revision")];
+    const reads = [vi.spyOn(server.options.reader!, "snapshot"), vi.spyOn(server.options.reader!, "revision")];
     for (const host of ["attacker.invalid", "attacker.invalid:" + server.port, "localhost:" + server.port, "LOCALHOST:" + server.port,
       "LocalHost:" + server.port, "127.0.0.1", `127.0.0.1:${server.port + 1}`, `127.0.0.1.:${server.port}`,
       `127.0.0.1:0${server.port}`, `127.0.0.1:+${server.port}`, `[::1]:${server.port}`, `127.1:${server.port}`,

@@ -12,6 +12,7 @@ import { createDashboardClient } from "../web/client.js";
 import { RESPONSE_CAPS_V4, type SessionData } from "../dashboard-v4-contract.js";
 import type { ApiEnvelope, DashboardRoute, HttpOptions } from "../dashboard-contract.js";
 import type { CallRow, RunMeta, SessionMeta } from "../ledger.js";
+import { USAGE_LEASE_SCHEMA } from "../schema.js";
 import { USAGE_MIGRATIONS, migrateUsageLedger } from "../migrate.js";
 import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_NOW as NOW, DASHBOARD_MONTH as S, DASHBOARD_DAY as D, type DashboardFixture } from "./fixtures/dashboard-ledger.js";
@@ -173,6 +174,7 @@ it.each([1, 2, 3])("reopens a read-only v%s reader after another connection upgr
   const file = join(f.root, `v${version}.db`), db = openDb(file); closers.push(() => db.close());
   for (const migration of USAGE_MIGRATIONS.filter(m => m.version <= version)) db.exec(migration.sql);
   db.pragma(`user_version=${version}`);
+  db.exec(USAGE_LEASE_SCHEMA);
   db.prepare("INSERT OR IGNORE INTO ledger_metadata(key,value) VALUES ('call-selection-revision','0')").run();
   const server = await start({}, undefined, file), Cookie = await server.cookie();
   const oldDb = server.reader!.snapshot(ctx => ctx.db);
@@ -209,3 +211,34 @@ it("six-month whole-session envelope retains 50000 own calls, 300 runs and all c
   expect(Buffer.byteLength(response.body)).toBeLessThanOrEqual(2 * 1024 * 1024);
   process.stdout.write(`HTTP_LONG_SESSION calls=50000 runs=300 gaps=10249 bins=250 bytes=${Buffer.byteLength(response.body)} cap=2097152\n`);
 }, 120000);
+
+
+it("percent-decoded colon session ids reach the real whole-session route", async () => {
+  const id = "session:with:colon";
+  f.ledger.apply(dashboardBatch([dashboardCall("colon-call", { sessionId: id, ts: S })], { sessions: [human(id)] }));
+  const server = await start(), Cookie = await server.cookie();
+  const response = data(await reply(server.port, `/api/session/${encodeURIComponent(id)}?tz=UTC`, { Cookie }));
+  expect(response.data).toMatchObject({ id, name: `Name ${id}`, total: { calls: 1, credits: 1 } });
+  for (const path of ["/api/session/bad%ZZ", "/api/session/%E0%A4%A", "/api/session/bad%253Aid", "/api/session/a%2Fb", "/api/session/a%5Cb"]) {
+    const invalid = await reply(server.port, path, { Cookie });
+    expect(invalid.status).toBe(400); expect(JSON.parse(invalid.body).error.code).toBe("invalid-query");
+  }
+});
+
+it.each([1, 2, 3])("pre-v%s missing redesign tables are unavailable, not internal or migrated by the reader", async version => {
+  const file = join(f.root, `waiting-v${version}.db`), db = openDb(file); closers.push(() => db.close());
+  for (const migration of USAGE_MIGRATIONS.filter(m => m.version <= version)) db.exec(migration.sql);
+  db.pragma(`user_version=${version}`);
+  db.exec(USAGE_LEASE_SCHEMA);
+  db.prepare("INSERT OR IGNORE INTO ledger_metadata(key,value) VALUES ('call-selection-revision','0')").run();
+  const server = await start({}, undefined, file), Cookie = await server.cookie();
+  expect(data(await reply(server.port, "/api/status", { Cookie })).data.collector).toBe("none");
+  for (const path of ["/api/overview", "/api/sessions", "/api/session/pending"]) {
+    const response = await reply(server.port, path, { Cookie });
+    expect(response.status, response.body).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ apiVersion: 1, error: { code: "ledger-unavailable", message: "Ledger unavailable" } });
+  }
+  expect(db.pragma("user_version")).toBe(version);
+  migrateUsageLedger(db);
+  expect(data(await reply(server.port, "/api/overview", { Cookie })).data.sessions.total).toBe(0);
+});

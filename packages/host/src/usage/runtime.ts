@@ -117,7 +117,7 @@ export class UsageRuntime {
       this.refreshPending = false;
       const diagnostics = validSourceDiagnostics(event.sourceErrorDiagnostics) ? event.sourceErrorDiagnostics : undefined;
       this.current = { ...(diagnostics ? { sourceErrorDiagnostics: { rows: diagnostics.rows.slice(0, 20),
-        truncated: diagnostics.truncated } } : {}), metadataBackfill: event.metadataBackfill, monthUsed: event.monthUsed, monthPeriod: event.monthPeriod, collector: event.collector, calibration: event.calibration, health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
+        truncated: diagnostics.truncated } } : {}), metadataBackfill: event.metadataBackfill, metadataProgress: event.metadataProgress, monthUsed: event.monthUsed, monthPeriod: event.monthPeriod, collector: event.collector, calibration: event.calibration, health: event.health, counter: event.counter, backfill: event.backfill, reconciliation: event.reconciliation, progress: event.progress, ingestRole: event.ingestRole, errorCode: null };
       this.notify();
     } else if (event?.type === "standby") {
       this.refreshPending = false;

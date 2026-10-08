@@ -241,3 +241,26 @@ it.each(["usage-dashboard-missing", "usage-dashboard-invalid"])("%s gives path-f
   expect(h.notify.mock.calls[0][0]).toContain("Rebuild or reinstall spider");
   expect(h.notify.mock.calls[0][0]).not.toMatch(/synthetic|file:/);
 });
+
+
+it.each(["s".repeat(129), "custom/session!", ""])("unsupported opener %s still opens usage without an identity hint", async openerSessionId => {
+  const h = harness();
+  const ctx = { ...h.ctx, sessionManager: { getSessionId: () => openerSessionId } } as unknown as ExtensionCommandContext;
+  const { registerUsageDashboardCommand } = await import("../dashboard-command.js");
+  const real = await vi.importActual<typeof import("../server-runtime.js")>("../server-runtime.js");
+  const instanceId = randomBytes(16).toString("hex"), secret = randomBytes(32).toString("base64url");
+  const server = await startUsageHttpServer({ instanceId, secret, serverBuild: "fixture", reader: undefined,
+    routes: OVERVIEW_ROUTES, dashboardDir: createFixtureDashboard() });
+  closeServers.push(server.close);
+  const dir = join(paths.globalRoot, "usage-server"); mkdirSync(dir, { mode: 0o700 });
+  await writeServerRecord(join(dir, "lock.json"), { version: 1, instanceId, secret, pid: process.pid, port: server.port,
+    processIdentity: (await real.usageProcessIdentity(process.pid))!, serverBuild: "fixture" });
+  launch.mockImplementation(real.ensureUsageServer);
+  registerUsageDashboardCommand(h.pi, "file:///synthetic/extension.js");
+  await h.commands.get("usage")!("", ctx);
+  expect(h.exec).toHaveBeenCalledOnce();
+  expect(launch.mock.calls[0][0].openerSessionId).toBeUndefined();
+  const url = new URL(h.exec.mock.calls[0]![1][0]);
+  expect((await real.localUsageRequest(server.port, url.pathname + url.search)).status).toBe(303);
+  expect(h.notify).toHaveBeenCalledWith(expect.stringContaining("Usage dashboard opened"), "info");
+});

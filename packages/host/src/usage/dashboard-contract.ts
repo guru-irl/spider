@@ -86,7 +86,6 @@ export type DashboardCounter = {
 };
 export type DashboardStatus = {
   serverBuild: string; schemaVersion: number; rateVersions: readonly string[];
-  calls: number; sources: number; parseErrors: number; sourceErrors: number;
   ingest: DashboardIngestState & { ageMs: number | null; stale: boolean };
   counter: DashboardCounter;
 };
@@ -96,17 +95,15 @@ export type DashboardQueryContext = {
   rates: readonly RateVersion[]; status: () => DashboardStatus;
   calibration: CalibrationService; calibrationMode: "auto" | "off";
   monthlyBudget?(): number | undefined; viewerSessionId?: string;
+  participantActive?(): boolean;
 };
 export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams, id?: string): unknown;
   /** Focused routes validate in their handlers and cap the complete UTF-8 envelope in bytes. */
   responseCap?: number;
   responsePeriod?(ctx: DashboardQueryContext, query: URLSearchParams, data: unknown): Period;
-  /** Pure validation/window resolution, including authenticated cursor windows, for the HTTP envelope. */
-  resolvePeriod?(query: URLSearchParams, now: number): Period;
 };
 export interface DashboardReader {
   revision(): string;
-  status(): DashboardStatus;
   snapshot<T>(read: (ctx: DashboardQueryContext) => T): T;
   close(): void;
 }
@@ -114,6 +111,7 @@ export type ReaderOptions = {
   instanceId: string; now: () => number; serverBuild: string; rates?: readonly RateVersion[];
   ingestStatus?: () => DashboardIngestState; calibrationMode: () => "auto" | "off";
   monthlyBudget?(): number | undefined;
+  participantActive?(): boolean;
 };
 export type HttpOptions = {
   instanceId: string; serverBuild: string; reader: DashboardReader | undefined;
@@ -123,7 +121,7 @@ export type HttpOptions = {
 };
 export type LaunchOptions = { bundleUrl: string | URL; roots: UsageRoots; lockFile: string; serverBuild: string; openerSessionId?: string };
 export type IngestOptions = { bundleUrl: string | URL; roots: UsageRoots; onSnapshot?: (state: DashboardIngestState) => void };
-export type IngestHandle = { snapshot(): DashboardIngestState; stop(): Promise<void> };
+export type IngestHandle = { snapshot(): DashboardIngestState; participantActive?(): boolean; stop(): Promise<void> };
 
 /** Fixed, path-free wire codes; callers must never serialize SQLite error text. */
 export class DashboardQueryError extends Error {

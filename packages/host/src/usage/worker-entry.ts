@@ -56,6 +56,8 @@ export async function bootUsageWorker(
   let backfill: BackfillState = "pending";
   let metadataBackfill: BackfillState = "pending", monthDirty = true;
   let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
+  let metadataProgress = { sourcesCompleted: 0, sourcesTotal: 0 };
+  let monthCounterKey: string | undefined;
   let cachedSnapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
   let version = -1, lastPublish = -Infinity;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -156,7 +158,12 @@ export async function bootUsageWorker(
     }
     const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
-    const monthPeriod = billingPeriod(now(), ledger.latestCounter());
+    const latestCounter = ledger.latestCounter();
+    const counterKey = JSON.stringify(latestCounter ? { ts: latestCounter.ts, creditsUsed: latestCounter.creditsUsed,
+      accountLogin: latestCounter.accountLogin, resetDate: latestCounter.resetDate,
+      entitlement: latestCounter.entitlement, remaining: latestCounter.remaining } : null);
+    if (counterKey !== monthCounterKey) { monthDirty = true; monthCounterKey = counterKey; }
+    const monthPeriod = billingPeriod(now(), latestCounter);
     const sameMonth = cachedSnapshot?.monthPeriod?.start === monthPeriod.start && cachedSnapshot.monthPeriod.end === monthPeriod.end;
     let monthUsed = sameMonth ? cachedSnapshot?.monthUsed ?? null : null;
     if (monthDirty || !sameMonth) {
@@ -167,7 +174,7 @@ export async function bootUsageWorker(
       } catch { monthUsed = null; /* Footer data must never fail ingestion. */ }
       monthDirty = false;
     }
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", metadataBackfill, monthUsed, monthPeriod, collector: { kind: command.dashboardMode ? "dashboard" : "pi", sessionId: command.dashboardMode ? null : command.sessionId ?? null, owner: command.owner }, sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", metadataBackfill, metadataProgress: { ...metadataProgress }, monthUsed, monthPeriod, collector: { kind: command.dashboardMode ? "dashboard" : "pi", sessionId: command.dashboardMode ? null : command.sessionId ?? null, owner: command.owner }, sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }
@@ -256,7 +263,17 @@ export async function bootUsageWorker(
     if (!guard()) return;
     const metadata = await backfillSessionMetadata(ledger!, discovery, now(), controller.signal, guard, METADATA_BACKFILL_BYTES_PER_PASS);
     if (!guard()) return;
-    metadataBackfill = metadata.complete ? "complete" : "running";
+    // A failed source was attempted, not pending work. Keep its diagnostic and
+    // retry next pass, but let status reach caught up once every source finished.
+    const metadataErrors = new Set(ledger!.getSourceErrors().filter(error =>
+      ["metadata-missing-source", "metadata-read-error", "metadata-source-changed"].includes(error.code)).map(error => error.path));
+    metadataProgress = { sourcesTotal: discovery.sources.length, sourcesCompleted: metadata.complete ? discovery.sources.length
+      : discovery.sources.filter(source => {
+        const checkpoint = ledger!.getMetadataCheckpoint(source.path), imported = ledger!.getImportState(source.path);
+        return metadataErrors.has(source.path) || !!(checkpoint?.complete && imported &&
+          checkpoint.generation === imported.generation && checkpoint.size === imported.size);
+      }).length };
+    metadataBackfill = metadataProgress.sourcesCompleted === metadataProgress.sourcesTotal ? "complete" : "running";
     // Billing import completion is independent of the bounded metadata pass.
     backfill = "complete";
     ledger!.apply(stateBatch(backfill)); publish();
@@ -320,7 +337,12 @@ export async function bootUsageWorker(
     if (message?.type === "stop") { void stop(); return; }
     if (stopped) return;
     if (message?.type === "refresh") request();
-    else if (message?.type === "configure") { poll = !command.dashboardMode && message.poll; calibrationMode = message.calibration ?? calibrationMode; poller?.setEnabled(poll); request(); }
+    else if (message?.type === "configure") {
+      poll = !command.dashboardMode && message.poll;
+      if (message.calibration !== undefined && message.calibration !== calibrationMode) monthDirty = true;
+      calibrationMode = message.calibration ?? calibrationMode;
+      poller?.setEnabled(poll); request();
+    }
   }
   port.on("message", onMessage);
   heartbeat = setInterval(() => {

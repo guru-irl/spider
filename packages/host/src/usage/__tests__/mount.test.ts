@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { mountUsage } from "../mount.js";
+import { paths } from "@spider/db-core";
+import { UsageRuntime as RealUsageRuntime } from "../runtime.js";
+import { mountUsage, registerUsage } from "../mount.js";
 import type { UsageRuntime } from "../runtime.js";
 import type { UsageRuntimeSnapshot } from "../protocol.js";
 import { calibrationFallback } from "../calibration.js";
@@ -189,4 +191,22 @@ it("live budget changes and worker corrected fallback refresh month without repr
 it("omits the month item when the worker published a previous billing period",()=>{
  const f=fixture();f.month(48,1);mount(f);mounted!.configure({...config,monthlyBudget:200});
  expect(f.render()[1]).not.toContain("month");
+});
+
+
+it("session registration passes the pi identity to the runtime that owns the worker", async () => {
+  const f = fixture("print"), id = "fixture-pi-session";
+  f.ctx.sessionManager.getSessionId = () => id;
+  vi.spyOn(paths, "projectRoot").mockReturnValue(paths.globalRoot);
+  let captured: string | null | undefined;
+  vi.spyOn(RealUsageRuntime.prototype, "start").mockImplementation(function(this: RealUsageRuntime) {
+    captured = (this as unknown as { options: { sessionId?: string | null } }).options.sessionId;
+  });
+  const callbacks = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const pi = { ...f.pi, on: (name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) => { callbacks.set(name, callback); } } as unknown as ExtensionAPI;
+  registerUsage(pi, "file:///fixture/worker.mjs");
+  try {
+    await callbacks.get("session_start")!({}, f.ctx);
+    expect(captured).toBe(id);
+  } finally { await callbacks.get("session_shutdown")!({}, f.ctx); }
 });

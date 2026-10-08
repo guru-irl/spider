@@ -9,7 +9,7 @@ function collector(ctx: DashboardQueryContext): Collector {
   // Inspection is read-only and retains TTL and dead-PID rules. A follower's
   // process role is not evidence of who currently holds the shared lease.
   const lease = createUsageLeaseStore(ctx.db, () => {}).inspect("ingest", ctx.now());
-  if (lease.role !== "follower" || !lease.owner) return "none";
+  if (lease.role !== "follower" || !lease.owner) return ctx.participantActive?.() ? "dashboard-server" : "none";
   const row = ctx.db.prepare("SELECT value FROM ledger_metadata WHERE key='worker-snapshot'").get() as { value: string } | undefined;
   if (!row || row.value.length > 1024 * 1024) return "none";
   let snapshot: unknown;
@@ -31,7 +31,7 @@ function lastIngestAt(ctx: DashboardQueryContext): number | null {
 }
 export function readIngestionStatus(ctx: DashboardQueryContext): CalibrationData["ingestion"] {
   const now = ctx.now(), start = Math.floor(now / DAY_MS) * DAY_MS;
-  const totals = ctx.db.prepare(`SELECT COUNT(*) AS filesTracked,COALESCE(SUM(parse_errors),0)+COUNT(source_error_code) AS errors FROM import_state`)
+  const totals = ctx.db.prepare(`SELECT COUNT(inode) AS filesTracked,COALESCE(SUM(parse_errors),0)+COUNT(source_error_code) AS errors FROM import_state`)
     .get() as { filesTracked: number; errors: number };
   const today = ctx.db.prepare(`SELECT COUNT(*) AS calls FROM (${countedUsageSql("c.ts>=? AND c.ts<?",
     "c.run_id,c.is_report,c.source_file", "calls_period_read", storedSelection(ctx.db))})`).get(start, Math.min(now + 1, start + DAY_MS)) as { calls: number };

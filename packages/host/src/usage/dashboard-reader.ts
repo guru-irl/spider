@@ -21,10 +21,12 @@ export function readDashboardCounter(db: Db, now: number): DashboardCounter {
     availability: counterSnapshotIsFresh({ ts: row.ts, creditsUsed: row.creditsUsed, raw: {} }, now, row.nextPollAt) ? "available" : "stale" };
 }
 
-function sqliteQueryError(error: unknown): DashboardQueryError | undefined {
+function sqliteQueryError(error: unknown, schemaVersion?: number): DashboardQueryError | undefined {
   if (error instanceof DashboardQueryError) return error;
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code !== "string") return undefined;
+  if (code === "SQLITE_ERROR" && schemaVersion !== undefined && schemaVersion < 4 &&
+    error instanceof Error && /^no such table: (?:sessions|session_metadata_import)\b/.test(error.message)) return new DashboardQueryError("ledger-unavailable");
   if (/^SQLITE_(NOTADB|CORRUPT)(_|$)/.test(code)) return new DashboardQueryError("unsupported-schema");
   if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) return new DashboardQueryError("busy");
   if (/^SQLITE_(CANTOPEN|IOERR)(_|$)/.test(code)) return new DashboardQueryError("ledger-unavailable");
@@ -64,7 +66,7 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
     const rates = options.rates ?? COPILOT_RATE_VERSIONS;
     const readStatus = (now: number): DashboardStatus => {
       const metadata = db.prepare("SELECT key,value FROM ledger_metadata WHERE key IN ('worker-snapshot','backfill-state')").all() as { key: string; value: string }[];
-      let published: { health?: { sources?: number; parseErrors?: number; sourceErrors?: number; lastIngestAt?: number }; backfill?: DashboardIngestState["backfill"]; ingestRole?: DashboardIngestState["role"] } = {};
+      let published: { health?: { lastIngestAt?: number }; backfill?: DashboardIngestState["backfill"]; ingestRole?: DashboardIngestState["role"] } = {};
       try { published = JSON.parse(metadata.find(row => row.key === "worker-snapshot")?.value ?? "{}"); } catch { /* unavailable publication */ }
       if (!published || typeof published !== "object") published = {};
       const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -80,19 +82,16 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
         errorCode: supplied?.errorCode ? codes.includes(supplied.errorCode) ? supplied.errorCode : "usage-ingest-failed" : null,
         ...(supplied?.progress ? { progress: { sourcesCompleted: count(supplied.progress.sourcesCompleted), sourcesTotal: count(supplied.progress.sourcesTotal) } } : {}),
       };
-      const totals = db.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get() as { calls: number };
-      return { serverBuild: options.serverBuild, schemaVersion: db.pragma("user_version") as number, rateVersions: rates.map(rate => rate.id), calls: totals.calls,
-        sources: count(published.health?.sources), parseErrors: count(published.health?.parseErrors), sourceErrors: count(published.health?.sourceErrors),
+      return { serverBuild: options.serverBuild, schemaVersion: db.pragma("user_version") as number, rateVersions: rates.map(rate => rate.id),
         ingest: { ...ingest, ageMs: lastIngestAt === null ? null : Math.max(0, now - lastIngestAt),
           stale: lastIngestAt === null || now < lastIngestAt || now - lastIngestAt > 120000 },
         counter: readDashboardCounter(db, now) };
     };
     const mapped = <T>(read: () => T): T => {
-      try { return read(); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("internal"); }
+      try { return read(); } catch (error) { throw sqliteQueryError(error, schemaVersion) ?? new DashboardQueryError("internal"); }
     };
     const reader: DashboardReader = {
       revision: () => mapped(() => upgradedReader()?.revision() ?? revision()),
-      status() { return mapped(() => upgradedReader()?.status() ?? (db.raw.inTransaction ? readStatus(options.now()) : db.raw.transaction(() => readStatus(options.now())).deferred())); },
       snapshot<T>(read: (ctx: DashboardQueryContext) => T): T {
         return mapped(() => {
           const upgraded = upgradedReader();
@@ -102,7 +101,7 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
           if (calibrationMode !== "auto" && calibrationMode !== "off") throw new TypeError("calibrationMode must return auto or off");
           return db.raw.transaction(() => read({ db, instanceId, revision: revision(), now: () => now, rates,
           calibration,
-          calibrationMode, monthlyBudget: options.monthlyBudget, status: () => readStatus(now) })).deferred();
+          calibrationMode, monthlyBudget: options.monthlyBudget, participantActive: options.participantActive, status: () => readStatus(now) })).deferred();
         });
       },
       close() { if (replacement) replacement.close(); else db.close(); },

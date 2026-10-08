@@ -6,6 +6,7 @@ import { readLayer } from "../control.js";
 import { readUsageConfig } from "./config.js";
 import { resolveUsageRoots } from "./mount.js";
 import { ensureUsageServer } from "./server-runtime.js";
+import { supportedDetailId } from "./dashboard-keys.js";
 
 /** Only an explicit parent TUI command opens a browser. Registration and reload are inert. */
 export function registerUsageDashboardCommand(pi: ExtensionAPI, bundleUrl: string | URL): void {
@@ -36,9 +37,10 @@ export function registerUsageDashboardCommand(pi: ExtensionAPI, bundleUrl: strin
         const calibrationConfigFile = join(paths.globalRoot, "config.json");
         const calibrationMode = readUsageConfig(readLayer(calibrationConfigFile).config, {}).value.calibration;
         // Do not cache this result: reuse must mint a new, single-use bootstrap nonce.
+        const sessionId = ctx.sessionManager?.getSessionId?.();
         const server = await ensureUsageServer({ bundleUrl, roots: resolveUsageRoots(),
           lockFile: join(paths.globalRoot, "usage-server", "lock.json"), calibrationMode, calibrationConfigFile,
-          serverBuild: `${LOADED_BUILD.sha}@${LOADED_BUILD.builtAt}`, openerSessionId: ctx.sessionManager?.getSessionId?.() });
+          serverBuild: `${LOADED_BUILD.sha}@${LOADED_BUILD.builtAt}`, openerSessionId: sessionId && supportedDetailId(sessionId) ? sessionId : undefined });
         const opener = process.platform === "darwin" ? "open" : "xdg-open";
         try {
           const opened = await pi.exec(opener, [server.bootstrapUrl], { timeout: 5000, cwd: join(paths.globalRoot, "usage-server") });

@@ -455,3 +455,61 @@ it("a month failure after new calls clears the previous total and preserves comp
  await vi.waitFor(()=>expect(snapshots(p).at(-1)?.health.calls).toBe(2));
  expect(snapshots(p).at(-1)).toMatchObject({monthUsed:null,backfill:"complete"});expect(p.events.filter(e=>e.type==="error")).toEqual([]);
 });
+
+
+it("footer month recomputes when calibration mode changes without new calls", async () => {
+  const c = command(), ledger = openUsageLedger(c.roots.ledgerFile);
+  ledger.apply(dashboardBatch([dashboardCall("mode-fit", { ts: at - 86400000,
+    price: { status: "priced", aic: 1000, components: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, rateVersion: "fixture", tier: "base", confidence: "estimated" } })]));
+  ledger.insertCounter({ ts: at - 86400000, creditsUsed: 0, raw: {} });
+  ledger.insertCounter({ ts: at, creditsUsed: 500, raw: {} }); ledger.close();
+  const p = port();
+  await bootUsageWorker(p as unknown as MessagePort, { ...c, calibration: "auto" }, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBe(500);
+  p.emit("message", { type: "configure", poll: false, calibration: "off" });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.calibration?.status).toBe("off"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBe(1000);
+  p.emit("message", { type: "configure", poll: false, calibration: "auto" });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.calibration?.status).toBe("calibrated"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBe(500);
+  expect(snapshots(p).at(-1)?.health.calls).toBe(1);
+});
+
+it.each([false, true])("footer month recomputes when the latest counter changes within the same period, duplicate timestamp=%s", async duplicateTimestamp => {
+  const c = command(), ledger = openUsageLedger(c.roots.ledgerFile);
+  ledger.apply(dashboardBatch([dashboardCall("counter-fit", { ts: at - 3600000,
+    price: { status: "priced", aic: 1000, components: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, rateVersion: "fixture", tier: "base", confidence: "estimated" } })]));
+  ledger.insertCounter({ ts: at - 2 * 86400000, creditsUsed: 0, raw: {} });
+  ledger.insertCounter({ ts: at - 1, creditsUsed: 500, raw: {} });
+  let clock = at;
+  const p = port();
+  try {
+    await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+    await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+    expect(snapshots(p).at(-1)?.monthUsed).toBe(500);
+    clock += 60000;
+    ledger.insertCounter({ ts: duplicateTimestamp ? at - 1 : clock - 1, creditsUsed: 750, raw: {} });
+    const before = snapshots(p).length; p.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(before));
+    expect(snapshots(p).at(-1)?.monthUsed).toBe(750);
+    expect(snapshots(p).at(-1)?.health.calls).toBe(1);
+  } finally { ledger.close(); }
+});
+
+
+it("persistent non-parse metadata errors finish status progress while keeping the diagnostic", async () => {
+  const c = command(), p = port(), missing = join(root, "missing-session.jsonl");
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at,
+    discover: async () => ({ sources: [{ path: missing, project: null, repo: null, run: null }], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
+  const check = openUsageLedger(c.roots.ledgerFile);
+  try {
+    expect(check.getSourceErrors()).toContainEqual({ path: missing, code: "metadata-missing-source" });
+    const before = snapshots(p).length; p.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(before));
+    expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
+    expect(check.getSourceErrors()).toContainEqual({ path: missing, code: "metadata-missing-source" });
+  } finally { check.close(); }
+});

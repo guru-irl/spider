@@ -19,12 +19,12 @@ export type UsageProgress = { sourcesCompleted: number; sourcesTotal: number };
 /** At most 20 redacted D9 rows. Older workers may omit this field. */
 export type SourceErrorDiagnostics = { rows: readonly SourceErrorRow[]; truncated: boolean };
 export type UsageWorkerEvent =
-  | { type: "snapshot"; metadataBackfill?: BackfillState; monthUsed?: number | null; monthPeriod?: Period; collector?: UsageCollector; sourceErrorDiagnostics?: SourceErrorDiagnostics; calibration?: CalibrationResult; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" | "standby" }
+  | { type: "snapshot"; metadataBackfill?: BackfillState; metadataProgress?: UsageProgress; monthUsed?: number | null; monthPeriod?: Period; collector?: UsageCollector; sourceErrorDiagnostics?: SourceErrorDiagnostics; calibration?: CalibrationResult; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" | "standby" }
   | { type: "error"; code: string }
   | { type: "standby" }
   | { type: "stopped"; released?: boolean };
 export type UsageRuntimeSnapshot = {
-  metadataBackfill?: BackfillState;
+  metadataBackfill?: BackfillState; metadataProgress?: UsageProgress;
   monthUsed?: number | null; monthPeriod?: Period;
   collector?: UsageCollector;
   sourceErrorDiagnostics?: SourceErrorDiagnostics;

@@ -217,7 +217,11 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
     if (route) {
       const maximum = RESPONSE_CAPS_V4[route.path as keyof typeof RESPONSE_CAPS_V4] ?? route.responseCap ?? 1024 * 1024;
       try {
-        if (dynamicId && !supportedDetailId(dynamicId)) throw new DashboardQueryError("invalid-query");
+        let sessionId: string | undefined;
+        if (dynamicId) {
+          try { sessionId = decodeURIComponent(dynamicId); } catch { throw new DashboardQueryError("invalid-query"); }
+          if (!supportedDetailId(sessionId)) throw new DashboardQueryError("invalid-query");
+        }
         if (target.pathname === "/api/status") validateParams(target.searchParams, []);
         if (!reader && options.retryOpenReader && now() - lastOpenAt >= 5000) {
           lastOpenAt = now();
@@ -233,9 +237,9 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
           const ctx = { ...snapshot, viewerSessionId: session.openerSessionId };
           const timestamp = ctx.now();
           const date = new Date(timestamp);
-          const data = route.handle(ctx, target.searchParams, dynamicId);
+          const data = route.handle(ctx, target.searchParams, sessionId);
           return { apiVersion: 1, revision: ctx.revision, generatedAt: timestamp,
-            period: route.responsePeriod?.(ctx, target.searchParams, data) ?? route.resolvePeriod?.(target.searchParams, timestamp) ?? { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp },
+            period: route.responsePeriod?.(ctx, target.searchParams, data) ?? { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp },
             data };
         });
         if (send(res, JSON.stringify(envelope), maximum) && target.pathname !== "/api/status") activity();

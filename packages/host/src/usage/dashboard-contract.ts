@@ -122,6 +122,7 @@ export type DashboardQueryContext = {
   db: Db; instanceId: string; revision: string; composition: CompositionProvider; now: () => number;
   rates: readonly RateVersion[]; status: () => DashboardStatus;
   calibration: CalibrationService; calibrationMode: "auto" | "off";
+  monthlyBudget?(): number | undefined; viewerSessionId?: string;
 };
 export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams): unknown;
   /** Pure validation/window resolution, including authenticated cursor windows, for the HTTP envelope. */
@@ -136,6 +137,7 @@ export interface DashboardReader {
 export type ReaderOptions = {
   instanceId: string; now: () => number; serverBuild: string; rates?: readonly RateVersion[];
   ingestStatus?: () => DashboardIngestState; calibrationMode: () => "auto" | "off";
+  monthlyBudget?(): number | undefined;
 };
 export type HttpOptions = {
   instanceId: string; serverBuild: string; reader: DashboardReader | undefined;
@@ -143,7 +145,7 @@ export type HttpOptions = {
   retryOpenReader?: () => DashboardReader | undefined; ingestStatus?: () => DashboardIngestState;
   onClose?: () => Promise<void>; now?: () => number; idleMs?: number;
 };
-export type LaunchOptions = { bundleUrl: string | URL; roots: UsageRoots; lockFile: string; serverBuild: string };
+export type LaunchOptions = { bundleUrl: string | URL; roots: UsageRoots; lockFile: string; serverBuild: string; openerSessionId?: string };
 export type IngestOptions = { bundleUrl: string | URL; roots: UsageRoots; onSnapshot?: (state: DashboardIngestState) => void };
 export type IngestHandle = { snapshot(): DashboardIngestState; stop(): Promise<void> };
 

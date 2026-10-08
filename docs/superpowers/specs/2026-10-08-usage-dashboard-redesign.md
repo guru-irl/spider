@@ -3,7 +3,7 @@
 - Date: 2026-10-08
 - Status: approved by the user after static mock round 7 (with one change: the even-pace tick is
   removed from the pace bar)
-- Replaces: the web UI, its API routes and the footer text from
+- Replaces: the web UI, its build, its API routes, its browser tests and the footer text from
   `2026-10-04-usage-dashboard-design.md`. The ledger, ingestion, counter polling, calibration
   maths, redaction, and the server's lifecycle and security stay as specified there.
 - Product truth: `packages/host/PRODUCT.md`. Visual direction contract: the Impeccable surface
@@ -265,7 +265,22 @@ moves into the routes above).
 - Queries reuse canonical call selection (no double counting of raw rows) and the existing daily
   calibration rule. CI asserts index use with EXPLAIN QUERY PLAN rather than wall-clock times.
 
-## 12. Ledger schema v4
+## 12. Build and serving
+
+- The page has its own Vite build: `vite.dashboard.config.mjs`, with the entry
+  `packages/host/src/usage/web/index.html`, writes `dist/dashboard/` (the HTML plus hashed
+  script and style files). The extension build no longer builds or embeds the page.
+- `npm run build` runs the extension build, then the dashboard build, then the bundle check.
+  Neither build deletes the other's output. `dist/` holds `extension.js` and `dashboard/` only.
+- Browser code may import only files inside `web/` (type-only imports excepted), as today.
+- The server reads the dashboard files once when it starts and serves `/` and exact
+  `/assets/<file>` paths from memory, behind the existing cookie. The CSP allows scripts and
+  styles from the server itself only, with no inline code; Google Fonts stay allowed for fonts.
+- Missing dashboard files give a clear error in `/usage` and `/doctor`.
+- `npm run dev:dashboard` serves the page with fixture data for UI work, including a states page
+  that renders every component in every state. The states page never ships.
+
+## 13. Ledger schema v4
 
 - `runs_meta` gains the run status.
 - A sessions table holds, per session: name and its source, project, first and last activity.
@@ -273,30 +288,37 @@ moves into the routes above).
   `session_info` entries and first messages, and spider's run records for statuses.
 - The upgrade is one-way, like v3. Deploys back up the ledger first.
 
-## 13. Settings
+## 14. Settings
 
 - `usage.monthlyBudget`: optional, credits per billing month, a positive number; unset by default.
   Global only, like the other usage keys. Settable in the spider config screen and with
   `/spider config set usage.monthlyBudget <credits> --global`.
 
-## 14. Footer
+## 15. Footer
 
 The footer keeps its context item first and drops the basis markers and the `AIC` label:
 `45.2%/200k · 1.2k credits · CH92.1% · month 24% · ↑… ↓… · R… W…`.
 `month` is a whole percent of the budget when one is set, otherwise of the allowance.
 
-## 15. Removed
+## 16. Removed
 
 The Explorer, Cache, Run and Context views, the old Detail, Rates and Reconciliation views, the
-rail, the routes listed in section 11, and their tests. The `dimension_values` table stays.
+rail, the routes listed in section 11, and their tests. The nested page build
+(`scripts/usage-dashboard-assets.mjs` and its virtual module) and the hand-built browser harness
+(`scripts/usage-dashboard-cdp.mjs`, `scripts/usage-dashboard-screenshot.mjs`) with their tests.
+The `dimension_values` table stays.
 
-## 16. Testing and verification
+## 17. Testing and verification
 
 - Test-driven per task: unit tests for rollups, role buckets, session names, projects, run status,
   idle gaps, pace and projection, time zones and bucket sizes; API contract tests including the
   404 body; DOM tests for each page and state; keyboard paths for the route, the day selection and
   the pace popover; redaction tests for session names.
-- The opt-in Edge visual tests are rewritten for the three pages and the states in section 9.
+- Browser tests use Playwright (`@playwright/test` 1.63.0, the one new dev dependency). They
+  drive the installed Edge locally and the runner's Chrome in CI, never downloaded browsers, and
+  they run in CI. They cover each page's interactions, keyboard paths and the states in
+  section 9, and save screenshots of every page and state for review. There are no committed
+  pixel baselines; assertions check behaviour and layout.
 - Contrast checks for the palette pairs used for text.
 - A real-data check on a backup copy of the ledger, reporting aggregates only.
 - The Impeccable finish: one detector run on the built page, a fresh finish review with desktop

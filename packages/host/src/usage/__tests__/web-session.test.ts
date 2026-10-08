@@ -232,3 +232,35 @@ it("Session route rounds mirrored ticks upward to nice steps", () => {
   const ticks = descendants(route as never).filter(n => n.tagName === "text" && n.getAttribute("text-anchor") === "end" && n.getAttribute("data-time-tick") === null);
   expect(ticks.map(n => n.textContent)).toEqual(["1", "1", "2", "2", "3", "3", "0"]);
 });
+
+it("run names are the sole pin controls and arrows move between names", async () => {
+  const s = setup(), page = mountSession(s.ctx); await page.refresh();
+  const rows = descendants(s.doc.body).filter(n => n.hasAttribute("data-run-row"));
+  expect(rows.every(n => !n.hasAttribute("tabindex"))).toBe(true);
+  const names = rows.map(row => elements(row, "button")[0]!);
+  names[0]!.focus(); key(names[0]!, "ArrowDown"); expect(s.doc.activeElement).toBe(names[1]);
+  key(names[1]!, "ArrowUp"); expect(s.doc.activeElement).toBe(names[0]);
+  names[0]!.click(); expect(rows[0]!.getAttribute("aria-selected")).toBe("true");
+  await page.refresh(); expect(s.doc.activeElement?.getAttribute("data-run-name")).toBe("run-build"); page.dispose();
+});
+it.each([null, 0.1 + 0.2])("binned detail discloses omitted idle gaps (%s) once without inventing a route gap", async credits => {
+  const d = sessionFixture(); d.detailsBinned = true; d.stats.omittedIdleGaps = { count: 23, cacheWriteCredits: credits };
+  const s = setup(d), page = mountSession(s.ctx); await page.refresh();
+  const notices = descendants(s.doc.body).filter(n => n.className === "session-detail-note");
+  expect(notices).toHaveLength(1); expect(notices[0]!.textContent).toContain("Some short idle gaps or small runs are combined.");
+  expect(notices[0]!.textContent).toContain("23 idle gaps");
+  if (credits !== null) expect(notices[0]!.textContent).toContain("0.3 next-call cache-write credits");
+  else expect(notices[0]!.textContent).not.toContain("cache-write credits");
+  const table = elements(s.doc.body, "table").find(n => n.textContent.includes("Session route data"))!;
+  expect(elements(table, "tr").filter(n => n.children[1] && cellText(n.children[1]) === "Idle gap")).toHaveLength(d.idleGaps.length);
+  expect(descendants(s.doc.body).filter(n => n.getAttribute("data-event") === "idle")).toHaveLength(d.idleGaps.length); page.dispose();
+});
+it("binned small runs without omitted gaps have a single plain disclosure", async () => {
+  const s = setup(sessionFixture({ detailsBinned: true })), page = mountSession(s.ctx); await page.refresh();
+  expect(descendants(s.doc.body).filter(n => n.className === "session-detail-note").map(n => n.textContent)).toEqual(["Some short idle gaps or small runs are combined."]); page.dispose();
+});
+it("gallery includes the actual binned detail disclosure", async () => {
+  const doc = new SessionDocument(); await mountSessionStates(doc.body as unknown as HTMLElement, fixtureStateCases());
+  expect(doc.body.textContent).toContain("Combined session details");
+  expect(doc.body.textContent).toContain("23 idle gaps");
+});

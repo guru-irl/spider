@@ -28,25 +28,31 @@ test("pace hover/focus anchors to ring, clamps on resize and Escape keeps focus"
   await expect(popover).toContainText("Even pace"); await trigger.press("Escape"); await expect(popover).toBeHidden(); await expect(trigger).toBeFocused();
   await trigger.hover(); await expect(popover).toBeVisible(); await expect(page.locator(".even-pace-tick, .pace-limit")).toHaveCount(0); await page.screenshot({ path: resolve(".spider/scratch/playwright/shots/overview-pace.png") }); expect(errors()).toEqual([]);
 });
-for (const automatic of [false, true]) test(`Sessions sort survives ${automatic ? "automatic" : "manual"} refresh while expansion resets`, async ({ page }) => {
+for (const automatic of [false, true]) test(`Sessions sort survives ${automatic ? "automatic" : "manual"} refresh with expansion retained`, async ({ page }) => {
   await page.clock.install();
   const routes = await installFixtureRoutes(page), d = overviewFixture(), row = d.sessions.rows[0]!;
-  d.sessions.total = 12; d.sessions.nextOffset = 1;
+  const all = Array.from({ length: 12 }, (_, i) => ({ ...structuredClone(row), id: `sorted-${i}`, name: `runs first page ${i}` }));
+  d.sessions = sessionsFixture({ rows: all.slice(0, 10), total: 12, nextOffset: 10 });
   routes.replace("/api/overview", { status: 200, body: envelope(d) });
   await page.route("**/api/sessions?**", async route => {
     const p = new URL(route.request().url()).searchParams;
-    await route.fulfill({ json: envelope(sessionsFixture({ total: 12, nextOffset: p.get("limit") === "100" ? null : 1, rows: [{ ...row, id: "sorted", name: `${p.get("sort")} first page` }] })) });
+    const offset = Number(p.get("offset")), limit = Number(p.get("limit"));
+    await route.fulfill({ json: envelope(sessionsFixture({ total: 12, offset, nextOffset: offset + limit < 12 ? offset + limit : null, rows: all.slice(offset, offset + limit) })) });
   });
   await page.goto(url); const runs = page.locator('[data-focus="session-sort-runs"]');
-  await runs.click(); await expect(page.locator("tr[data-session]")).toContainText(["runs first page"]);
+  await runs.click(); await expect(page.locator("tr[data-session]").first()).toContainText("runs first page");
   await page.getByRole("button", { name: "Show all 12", exact: true }).click(); await expect(page.getByRole("button", { name: "Show all 12", exact: true })).toHaveCount(0);
+  await expect(page.locator("tr[data-session]")).toHaveCount(12);
+  if (automatic) { await page.locator(".pace-trigger").hover(); await expect(page.locator(".pace-popover")).toBeVisible(); }
   {
     const request = page.waitForRequest(r => r.url().includes("/api/sessions?"), { timeout: 5000 });
     if (automatic) await page.clock.fastForward(60000); else await page.getByRole("button", { name: "Refresh", exact: true }).click();
     const params = new URL((await request).url()).searchParams;
-    expect(params.get("sort")).toBe("runs"); expect(params.get("offset")).toBe("0"); expect(params.get("limit")).toBe("10");
-    await expect(runs).toHaveAttribute("aria-pressed", "true"); await expect(page.locator("tr[data-session]")).toContainText(["runs first page"]);
-    await expect(page.getByRole("button", { name: "Show all 12", exact: true })).toBeVisible();
+    expect(params.get("sort")).toBe("runs"); expect(params.get("offset")).toBe("0"); expect(params.get("limit")).toBe("100");
+    await expect(runs).toHaveAttribute("aria-pressed", "true"); await expect(page.locator("tr[data-session]").first()).toContainText("runs first page");
+    await expect(page.getByRole("button", { name: "Show all 12", exact: true })).toHaveCount(0);
+    await expect(page.locator("tr[data-session]")).toHaveCount(12);
+    if (automatic) await expect(page.locator(".pace-popover")).toBeVisible();
   }
   expect(routes.unexpected).toEqual([]);
 });
@@ -122,10 +128,10 @@ test("sessions expands using frozen bounds, sorts and navigates by click or Ente
   const routes = await installFixtureRoutes(page); const data = overviewFixture(), row = data.sessions.rows[0]!;
   data.sessions = sessionsFixture({ total: 12, nextOffset: 10, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `session-${i}`, name: `Garden ${i}` })) });
   routes.replace("/api/overview", { status: 200, body: envelope(data) }); routes.replace("/api/sessions", { status: 200, body: envelope(sessionsFixture({ total: 12, offset: 10, rows: [{ ...row, id: "session-10" }, { ...row, id: "session-11" }] })) });
-  await page.goto(url); await expect(page.locator("tr[data-session]")).toHaveCount(10); await page.getByRole("button", { name: "Show all 12", exact: true }).click(); await expect(page.locator("tr[data-session]")).toHaveCount(12); await expect(page.locator('tr[data-session="session-10"]')).toBeFocused();
+  await page.goto(url); await expect(page.locator("tr[data-session]")).toHaveCount(10); await page.getByRole("button", { name: "Show all 12", exact: true }).click(); await expect(page.locator("tr[data-session]")).toHaveCount(12); await expect(page.locator('tr[data-session="session-10"] button')).toBeFocused();
   const request = routes.requests.find(r => r.path === "/api/sessions")!; expect(request.params.get("range")).toBe("custom"); expect(request.params.get("from")).toBe("1901836800000"); expect(request.params.get("to")).toBe("1902441600000");
   const segment = page.locator('.role-segment').first(); await segment.focus(); await expect(page.locator('.role-tooltip').first()).toBeVisible(); await expect(page.locator('.role-tooltip').first()).toContainText("tokens");
-  await page.locator('tr[data-session="session-0"]').press("Enter"); await expect(page).toHaveURL(/#\/session\/session-0/);
+  await page.locator('tr[data-session="session-0"] button').press("Enter"); await expect(page).toHaveURL(/#\/session\/session-0/);
   await page.getByRole("button", { name: "Overview", exact: true }).click(); await page.locator('tr[data-session="session-1"]').click(); await expect(page).toHaveURL(/#\/session\/session-1/);
   await page.getByRole("button", { name: "Overview", exact: true }).click(); routes.replace("/api/sessions", { status: 200, body: envelope(sessionsFixture({ total: 12, rows: [{ ...row, id: "session-9", name: "Last active result" }] })) });
   await page.getByRole("button", { name: "Last active", exact: true }).click(); await expect(page.locator("tr[data-session]")).toContainText(["Last active result"]); expect(routes.requests.at(-1)!.params.get("sort")).toBe("last-active");
@@ -159,9 +165,9 @@ test("daily table selection, session controls and focus survive refresh", async 
   await daily.getByRole("button", { name: "Fri 12 APR", exact: true }).click(); await expect(page.locator(".selection-chip")).toContainText("Selected 1 day");
   await page.getByRole("button", { name: "Refresh", exact: true }).click(); await expect(daily.locator("table")).toBeVisible(); await expect(page).toHaveURL(/buckets=%5B1902182400000%5D/); await expect(page.locator(".selection-chip")).toContainText("Selected 1 day");
   await page.locator('[data-panel="sessions"]').getByRole("button", { name: "Table", exact: true }).click();
-  const row = page.locator('tr[data-session-table="session-garden"]'); await row.focus();
-  // Keep row focus during a page refresh, not just the Chart/Table control focus.
-  await page.evaluate(() => document.querySelector<HTMLButtonElement>('.refresh')!.click()); await expect(row).toBeFocused();
+  const row = page.locator('tr[data-session-table="session-garden"]');
+  await expect(row).not.toHaveAttribute("tabindex");
+  // Keep name focus during a page refresh, not just Chart/Table control focus.
   const name = row.getByRole("button", { name: "Garden tools", exact: true }); await name.focus(); await page.evaluate(() => document.querySelector<HTMLButtonElement>('.refresh')!.click()); await expect(name).toBeFocused();
   await page.getByRole("heading", { name: "Sessions", exact: true }).click(); await expect(page.locator(".selection-chip")).toHaveCount(0);
 });

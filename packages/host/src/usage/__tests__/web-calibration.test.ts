@@ -97,8 +97,8 @@ describe("Calibration & data", () => {
   it.each([
     [8, ["0", "5", "10", "15"], "8"],
     [58000, ["0", "20k", "40k", "60k"], "58,000"],
-    [0.58, ["0", "0.2", "0.4", "0.6"], "0.58"],
-    [0.00058, ["0", "0.0002", "0.0004", "0.0006"], "0.00058"],
+    [0.58, ["0", "0.2", "0.4", "0.6"], "1"],
+    [0.00058, ["0", "0.0002", "0.0004", "0.0006"], "0"],
     [0, ["0", "0.5", "1", "1.5"], "0"],
   ] as const)("uses readable, rounded credit ticks at max %s", async (max, ticks, tableValue) => {
     const data = calibrationFixture(); data.daily = [{ day: Date.UTC(2030, 3, 12), publishedEstimate: max, counterDelta: 0 }];
@@ -119,7 +119,7 @@ describe("Calibration & data", () => {
     const data = calibrationFixture(); data.rates = [data.rates[0]!, { ...data.rates[0]!, tier: "long", abovePromptTokens: 200000, input: 0, cacheRead: null }];
     data.unpricedModels = [{ model: null, calls: 2, reason: "Model unavailable" }, { model: "model-unlisted", calls: 3, reason: "No published rate" }];
     const s = setup(data); await s.page.refresh(); const rates = rows(s.root, "rates-table");
-    expect(rates).toHaveLength(2); expect(values(rates[1]!)).toEqual(["model-cedar", "long", "200,000", "0", "unavailable", "2.5", "8", "2030-04-01"]);
+    expect(rates).toHaveLength(2); expect(values(rates[1]!)).toEqual(["model-cedar", "long", "200,000", "0", "unavailable", "3", "8", "2030-04-01"]);
     expect(find(s.root, "rates-section").textContent).toContain("per 1M tokens");
     expect(find(s.root, "unpriced-models").textContent).toContain("3 calls"); expect(find(s.root, "unpriced-models").textContent).toContain("No published rate");
     s.page.dispose();
@@ -195,4 +195,23 @@ it("coverage includes the whole response window, including days without observat
   const s = setup(); await s.page.refresh(); const stats = find(s.root, "correction-stats");
   expect(stats.children[3]!.textContent).toBe("Hours covered48of 168 hours");
   expect(stats.children[4]!.textContent).toBe("StatusCalibratedTrailing 7 days"); s.page.dispose();
+});
+
+it("rounds calibration factors, ratios and credit amounts in stats, cells and tooltips", async () => {
+  const data = calibrationFixture();
+  data.correction = { ...data.correction, factor: 3 / 7, publishedEstimate: 1234.6, accountCounter: 0.1 + 0.2 };
+  data.daily = [{ day: Date.UTC(2030, 3, 13), publishedEstimate: 0.1 + 0.2, counterDelta: 1234.6 }];
+  data.intervals = [{ start: 1, end: 2, counterDelta: 0.1 + 0.2, publishedEstimate: 1234.6, ratio: 1.3207547169811322 }];
+  data.rates = [{ ...data.rates[0]!, input: 0.1 + 0.2, cacheWrite: 1234.6 }];
+  const s = setup(data); await s.page.refresh();
+  const stats = find(s.root, "correction-stats");
+  expect(stats.children[0]!.children[1]!.textContent).toBe("0.43");
+  expect(stats.children[1]!.children[1]!.textContent).toBe("1,235");
+  expect(stats.children[2]!.children[1]!.textContent).toBe("0");
+  expect(values(rows(s.root, "daily-table")[0]!)).toEqual(["Sat 13 APR UTC", "0", "1,235"]);
+  expect(values(rows(s.root, "intervals-table")[0]!).slice(2)).toEqual(["0", "1,235", "1.321"]);
+  const tips = descendants(s.root).filter(n => n.getAttribute("data-series") !== null).map(n => elements(n, "title")[0]!.textContent);
+  expect(tips).toEqual(["Sat 13 APR UTC · Published estimate: 0 credits", "Sat 13 APR UTC · Account counter: 1,235 credits"]);
+  expect(values(rows(s.root, "rates-table")[0]!).slice(3, 6)).toEqual(["0", "0", "1,235"]);
+  s.page.dispose();
 });

@@ -76,3 +76,13 @@ it("rounds fractional popover figures to grouped credits, one decimal below ten"
   const rows = elements(s.popover, "tbody")[0]!.children;
   expect(rows.map(row => row.children[1]!.children[1]!.textContent)).toEqual(["1,235", "5,000", "47", "2,346", "9.9", "8.1"]); disposePace(s.root);
 });
+
+it.each([null, 0])("does not warn about an over amount of %s", overAtPace => {
+  const s = setup({ overAtPace });
+  expect(s.nodes.filter(n => n.className === "pace-danger-note")).toHaveLength(0);
+  disposePace(s.root);
+});
+it("projection alone turns a no-budget allowance bar red", () => {
+  const s = setup({ budget: null, evenPace: null, used: 40, allowance: 100, scale: 100, projected: 120, overPace: false, overBudget: false, overAtPace: 20 });
+  expect(s.root.getAttribute("data-danger")).toBe("true"); disposePace(s.root);
+});

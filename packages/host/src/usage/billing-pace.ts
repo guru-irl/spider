@@ -88,5 +88,5 @@ export function computePace(input:{now:number;snapshots:readonly CounterSnapshot
   const evenPace=budget===null ? null:budget*(elapsed/(period.end-period.start));
   return {period,used,budget,allowance,scale,remaining:used===null || scale===null ? null:Math.max(0,scale-used),evenPace,projected,daysLeft,ratePerDay,
     usedSource,rateSource,counterAvailable:!!observed,overPace:used!==null && evenPace!==null && used>evenPace,
-    overBudget:used!==null && scale!==null && used>scale,overAtPace:projected===null || scale===null ? null:Math.max(0,projected-scale)};
+    overBudget:used!==null && scale!==null && used>scale,overAtPace:projected===null || scale===null || projected<=scale ? null:projected-scale};
 }

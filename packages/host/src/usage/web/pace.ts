@@ -8,7 +8,7 @@ const number = (n: number | null) => n === null ? "unavailable" : new Intl.Numbe
 const exact = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { maximumFractionDigits: n < 10 ? 1 : 0 }).format(n);
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 export function disposePace(root: HTMLElement): void { cleanups.get(root)?.(); cleanups.delete(root); }
-export function renderPace(document: Document, pace: Pace, _now: number): HTMLElement {
+export function renderPace(document: Document, pace: Pace, _now: number, initiallyOpen = false): HTMLElement {
   const root = element(document, "div", undefined, "month-pace");
   root.setAttribute("data-danger", String(pace.overPace || pace.overBudget || (pace.scale !== null && (pace.projected ?? 0) > pace.scale)));
   const id = `pace-details-${++sequence}`, patternId = `pace-hatch-${sequence}`;
@@ -51,7 +51,7 @@ export function renderPace(document: Document, pace: Pace, _now: number): HTMLEl
   } else rows.push(["Projected month end", exact(pace.projected)]);
   rows.push(["Days left", exact(pace.daysLeft)]);
   popover.append(renderTable(document, { caption: "Billing month pace in credits", columns: ["Measure", "Credits / days"], rows }));
-  if (pace.overAtPace !== null) popover.append(element(document, "p", `${exact(pace.overAtPace)} over at this pace`, "pace-danger-note"));
+  if (pace.overAtPace !== null && pace.overAtPace > 0) popover.append(element(document, "p", `${exact(pace.overAtPace)} over at this pace`, "pace-danger-note"));
   popover.append(element(document, "p", pace.usedSource === "counter" ? "Account-wide use, including use outside pi." : pace.counterAvailable ? "Used comes from pi's credits." : "Counter unavailable. Used comes from pi's credits.", "pace-detail-note"));
   if (pace.rateSource === "pi") popover.append(element(document, "p", "Projection uses pi's daily credits.", "pace-detail-note"));
   if (pace.budget === null) popover.append(element(document, "p", "/spider config set usage.monthlyBudget <credits> --global", "pace-budget-hint"));
@@ -81,6 +81,7 @@ export function renderPace(document: Document, pace: Pace, _now: number): HTMLEl
   document.addEventListener("click", clickAway); document.defaultView?.addEventListener("resize", position);
   const observer = document.defaultView && typeof ResizeObserver !== "undefined" ? new ResizeObserver(position) : undefined; observer?.observe(root);
   void document.fonts?.ready?.then(position);
+  if (initiallyOpen) show();
   cleanups.set(root, () => { disposed = true; observer?.disconnect(); document.removeEventListener("click", clickAway); document.defaultView?.removeEventListener("resize", position); });
   return root;
 }

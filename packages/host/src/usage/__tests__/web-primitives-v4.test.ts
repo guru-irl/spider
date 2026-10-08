@@ -39,12 +39,21 @@ it("unknown-session catalogue mounts its typed 404 identity", async () => {
   await renderStateExamples(doc.body as unknown as HTMLElement, { session: ctx => { if (ctx.route.page === "session") ids.push(ctx.route.id); return { refresh: async () => {}, dispose() {} }; } }, fixtureStateCases().filter(c => c.page === "session" && c.scenario === "unknown-session"));
   expect(ids).toEqual(["unknown-session"]);
 });
-it("fonts load local text code and wordmark before direct remote files", async () => {
-  const doc = new PlainDocument(), local: string[] = [], remote: string[] = [];
-  doc.fonts = { load: async font => { local.push(font); return []; } };
-  Object.assign(doc.fonts, { add() {} });
-  vi.stubGlobal("FontFace", class { constructor(family: string, source: string) { remote.push(family + source); } load() { return Promise.reject(new Error("offline")); } });
-  try { await loadFonts(doc.asDocument(), undefined, () => 10); expect(local).toEqual(['400 16px "Usage Text Local"', '500 16px "Usage Text Local"', '600 16px "Usage Text Local"', '700 16px "Usage Text Local"', '400 16px "Usage Code Local"', '700 16px "Usage Code Local"', '400 16px "Usage Wordmark Local"']); expect(remote.filter(r => r.startsWith("Fira Sans"))).toHaveLength(4); expect(remote.filter(r => r.startsWith("Cascadia Code"))).toHaveLength(2); expect(remote.filter(r => r.startsWith("Bebas Neue"))).toHaveLength(1); expect(remote.join(" ")).toContain("Fira Sans"); expect(remote.join(" ")).toContain("Cascadia Code"); expect(remote.join(" ")).toContain("Bebas Neue"); expect(remote.every(r => r.includes("https://fonts.gstatic.com/") && r.includes(".woff2") && !r.includes("Google Sans") && !r.includes("googleapis"))).toBe(true); } finally { vi.unstubAllGlobals(); }
+it("remote font faces preserve native weight matching and rendering never waits for network", async () => {
+  const doc = new PlainDocument(), remote: {family: string; source: string; weight: string}[] = [];
+  doc.fonts = { load: async () => [] }; Object.assign(doc.fonts, { add() {} });
+  vi.stubGlobal("FontFace", class {
+    constructor(family: string, source: string, descriptors: {weight: string}) { remote.push({ family, source, weight: descriptors.weight }); }
+    load() { return new Promise(() => {}); }
+  });
+  try {
+    await loadFonts(doc.asDocument(), undefined, () => 10);
+    expect(remote.map(r => [r.family, r.weight])).toEqual([
+      ["Usage Text Remote", "400"], ["Usage Text Remote", "500"], ["Usage Text Remote", "600"], ["Usage Text Remote", "700"],
+      ["Usage Code Remote", "400"], ["Usage Code Remote", "700"], ["Usage Wordmark Remote", "400"],
+    ]);
+    expect(remote.every(r => /^url\("https:\/\/fonts\.gstatic\.com\/.+\.woff2"\)$/.test(r.source))).toBe(true);
+  } finally { vi.unstubAllGlobals(); }
 });
 it("formats credits and tokens without basis markers and local or UTC dates", () => {
   const value = overviewFixture().total;
@@ -101,4 +110,23 @@ it("flow nodes span the chart and the viewport fits its last label", () => {
   const stations = elements(svg, "rect"); expect(stations.every(n => n.getAttribute("x") === "120")).toBe(true);
   const modelLabels = elements(svg, "text").filter(n => n.textContent.startsWith("model-"));
   expect(modelLabels.every(n => n.getAttribute("text-anchor") === "start" && n.getAttribute("x") === "1010")).toBe(true);
+});
+
+it("flow omits stations and table rows for roles with no usage", () => {
+  const doc = new PlainDocument(), flow = overviewFixture().flow, value = structuredClone(flow.total);
+  value.credits = 0; value.calls = 0; value.tokens.total = 0;
+  flow.edges = [...flow.edges, { role: "scouts", model: flow.models[0]!.id, value, share: 0 }];
+  const node = renderFlow(doc.asDocument(), flow, "credits", "zero-flow");
+  expect(elements(node, "text").some(n => n.textContent === "Scouts")).toBe(false);
+  expect(elements(node, "tbody")[0]!.children.some(n => n.textContent.includes("Scouts"))).toBe(false);
+});
+
+it("installed families are detected by native width even when fonts.load returns no CSS faces", async () => {
+  const doc = new PlainDocument(); doc.fonts = { load: async () => [] };
+  const faces: string[] = []; Object.assign(doc.fonts, { add(face: { family: string }) { faces.push(face.family); } });
+  vi.stubGlobal("FontFace", class { constructor(readonly family: string) {} load() { return Promise.resolve(this); } });
+  try {
+    await loadFonts(doc.asDocument(), undefined, font => /Fira Sans|Cascadia Code|Bebas Neue/.test(font) ? 120 : 100);
+    expect(faces).toEqual([]);
+  } finally { vi.unstubAllGlobals(); }
 });

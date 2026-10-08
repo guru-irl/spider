@@ -24,3 +24,7 @@ coverage/
 # Installed-browser test artifacts
 playwright-results/
 playwright-report/
+
+# Local design-tool interviews and review evidence
+**/.impeccable/questions/
+**/.impeccable/review/

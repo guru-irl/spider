@@ -146,7 +146,7 @@ for (const width of widths) test(`states gallery every component and state ${wid
     for (const bar of await example.locator(".correction-bar").all()) {
       const day = await bar.getAttribute("data-day"), series = await bar.getAttribute("data-series"), value = await bar.getAttribute("data-value");
       const row = example.locator(".daily-table tbody tr").filter({ has: page.locator(`time[datetime="${new Date(Number(day)).toISOString()}"]`) });
-      await expect(row.locator("td .cell-value").nth(series === "published" ? 1 : 2)).toHaveText(new Intl.NumberFormat("en-US", { maximumFractionDigits: 20 }).format(Number(value)));
+      await expect(row.locator("td .cell-value").nth(series === "published" ? 1 : 2)).toHaveText(new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Number(value)));
     }
     for (const run of await example.locator(".run-route").all()) {
       const id = await run.getAttribute("data-run-id"); const row = example.locator(`[data-run-row="${id}"]`);
@@ -213,7 +213,6 @@ test("blocked-font fallback keeps every production page usable", async ({ page }
 
 test("section boxes reject bordered rounded descendants, not just sections", async ({ page }) => {
   await installFixtureRoutes(page); await page.goto("/#/"); await expect(page.locator(".overview-page")).toBeVisible();
-  // MUTATION_PROBE
   expect(await layoutFailures(page)).toEqual([]);
 });
 
@@ -259,7 +258,7 @@ test("wordmark and web glyph ink centres agree within one pixel", async ({ page 
   const fixture = process.env.SPIDER_PLAYWRIGHT_WORDMARK_FONT;
   if (fixture) await page.route("https://fonts.gstatic.com/s/bebasneue/**", async route => route.fulfill({ body: await readFile(fixture), contentType: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" } }));
   await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto("/#/"); await expect(page.locator(".overview-page")).toBeVisible();
-  if (fixture) await expect.poll(() => page.evaluate(() => [...document.fonts].some(f => (["Bebas Neue", "Usage Wordmark Local"].includes(f.family.replace(/['"]/g, ""))) && f.status === "loaded"))).toBe(true);
+  if (fixture) await expect.poll(() => page.evaluate(() => [...document.fonts].some(f => (["Bebas Neue", "Usage Wordmark Remote"].includes(f.family.replace(/['"]/g, ""))) && f.status === "loaded"))).toBe(true);
   await settle(page); await layout(page);
   const png = await page.screenshot({ clip: { x: 0, y: 0, width: 1440, height: 88 } });
   const mark = inkRows(png, (await page.locator(".web-mark").boundingBox())!), word = inkRows(png, (await page.locator(".wordmark").boundingBox())!);

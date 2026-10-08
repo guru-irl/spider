@@ -4,86 +4,14 @@ import { getEventListeners } from "node:events";
 import { PlainDocument, button, elements, descendants, cellText } from "./fixtures/plain-dom.js";
 
 afterEach(() => vi.unstubAllGlobals());
-const tokens = { input: 10, cacheRead: 20, cacheWrite: 30, output: 40, prompt: 60, total: 100, reasoning: null, cacheWrite1h: null };
 
 describe("web primitives", () => {
-  it("unknown filter copy offers only the action supplied by the view", async () => {
-    const { errorCopy, DashboardClientError } = await import("../web/client.js");
-    const error = new DashboardClientError("unknown-filter-id");
-    expect(errorCopy(error)).toBe("Selected filter is no longer available. Remove the unknown filter from the address to continue.");
-    expect(errorCopy(error, { clearFilters() {} })).toBe("Selected filter is no longer available. Clear filters to continue.");
-  });
-  it.each([
-    [[12, -3, 0], ["+12 AIC", "-3 AIC", "0 AIC"], [21.875, 109.375, 91.875], 105],
-    [[12, 3], ["+12 AIC", "+3 AIC"], [11.875, 47.5], 125],
-    [[-12, -3], ["-12 AIC", "-3 AIC"], [59.375, 23.75], 25],
-    [[0, 0], ["0 AIC", "0 AIC"], [59.375, 59.375], 125],
-    [[12.4, -3.1, 0.1, -0.1], ["+12 AIC", "-3 AIC", "0 AIC", "0 AIC"], null, null],
-  ] as const)("signed gap observations %j share whole AIC and a zero line", async (values, cells, positions, zero) => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Account gap", unit: "gap-aic", points: values.map((value, i) => ({ start: i * 1000, end: (i + 1) * 1000, label: String(i), value, tokens: null })) });
-    expect(elements(chart, "tr").slice(1).map(row => cellText(row.children[2]!))).toEqual(cells);
-    const summary = elements(chart, "p")[0]!;
-    expect(summary.textContent).toContain("Gap: counter minus published");
-    expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toContain(summary.textContent);
-    expect(elements(chart, "caption")[0]!.textContent).toContain("Gap: counter minus published");
-    expect(elements(chart, "th")[2]!.textContent).toBe("Gap: counter minus published");
-    const line = elements(chart, "line")[0]!;
-    expect(line).toBeDefined(); expect(line.getAttribute("class")).toBe("chart-zero-line");
-    // Breaks: default meet squeezes the baseline while CSS-pixel dots span the chart.
-    expect(elements(chart, "svg")[1]!.getAttribute("preserveAspectRatio")).toBe("none");
-    // Breaks: the compact plot scales the zero-line stroke below one CSS pixel.
-    expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
-    expect(line.getAttribute("x1")).toBe("24"); expect(line.getAttribute("x2")).toBe("574");
-    if (zero !== null) {
-      expect(Number(line.getAttribute("y1"))).toBe(zero); expect(line.getAttribute("y2")).toBe(line.getAttribute("y1"));
-      expect(elements(chart, "circle").map(dot => Number(dot.getAttribute("cy")))).toEqual(positions);
-    }
-  });
-  it.each([
-    [undefined, "Gap: counter minus published"],
-    ["published", "Gap: counter minus published"],
-    ["calibrated", "Gap: counter minus calibrated"],
-    ["back-applied", "Gap: counter minus back-applied"],
-  ] as const)("gap basis %s names every representation", async (gapBasis, wording) => {
-    const { chartWithTable } = await import("../web/charts.js");
-    for (const points of [[], [{ start: 0, end: 1000, label: "One", value: 12, tokens: null }]]) {
-      const options = { title: "Account gap", unit: "gap-aic" as const, points, ...(gapBasis === undefined ? {} : { gapBasis }) };
-      const chart = chartWithTable(new PlainDocument().asDocument(), options);
-      const summary = elements(chart, "p")[0]!;
-      expect.soft(summary.textContent).toContain(wording);
-      expect.soft(elements(chart, "svg")[0]!.getAttribute("aria-label")).toBe(`Account gap · ${summary.textContent}`);
-      expect.soft(elements(chart, "caption")[0]!.textContent).toBe(`Account gap · ${wording}`);
-      expect.soft(elements(chart, "th")[2]!.textContent).toBe(wording);
-    }
-  });
-  it.each([[0, "0 tokens"], [1, "1 token"], [2, "2 tokens"]] as const)("token count %s pluralizes in table, tooltip and summary", async (value, wording) => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Tokens", unit: "tokens", points: [{ start: 0, end: 1000, label: "One", value, tokens: null }] });
-    expect.soft(cellText(elements(chart, "td")[2]!)).toBe(wording);
-    expect.soft(elements(chart, "title")[1]!.textContent).toContain(` · ${wording} · `);
-    expect.soft(elements(chart, "p")[0]!.textContent).toContain(`${wording} minimum · ${wording} maximum`);
-  });
-  it("gap lower bounds and missing values remain explicit", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Gap", unit: "gap-aic", points: [
-      { start: 0, end: 1000, label: "One", value: 12, tokens: null, lowerBound: true },
-      { start: 1000, end: 2000, label: "Two", value: -3, tokens: null, lowerBound: true },
-      { start: 2000, end: 3000, label: "Missing", value: null, tokens: null },
-      { start: 3000, end: 4000, label: "Invalid", value: Infinity, tokens: null },
-    ] });
-    expect(elements(chart, "tr").slice(1).map(row => cellText(row.children[2]!))).toEqual(["+12+ AIC", "-3+ AIC", "unavailable", "unavailable"]);
-    expect(elements(chart, "p")[0]!.textContent).toBe("Gap: counter minus published · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:04 UTC · -3+ AIC minimum · +12+ AIC maximum");
-    expect(elements(chart, "circle")).toHaveLength(2);
-    const empty = chartWithTable(new PlainDocument().asDocument(), { title: "Gap", unit: "gap-aic", points: [] });
-    expect(elements(empty, "p")[0]!.textContent).toBe("Gap: counter minus published · No recorded values in this period");
-  });
   it.each(["both", "sans-serif-only", "missing"])("canvas measurer sets each candidate font (%s)", async available => {
     const { loadFonts } = await import("../web/fonts.js"), doc = new PlainDocument();
     doc.fonts = { async load() { return [{}]; } };
     const create = doc.createElement.bind(doc);
     const context = { font: "10px sans-serif", measureText(_text: string) {
-      return { width: this.font.includes("Usage") && available !== "missing" && (available === "both" || this.font.endsWith("sans-serif")) ? 120 : 100 };
+      return { width: /Fira Sans|Cascadia Code|Bebas Neue/.test(this.font) && available !== "missing" && (available === "both" || this.font.endsWith("sans-serif")) ? 120 : 100 };
     } };
     const document = doc.asDocument();
     document.createElement = ((tag: string) => tag === "canvas" ? { getContext: () => context } : create(tag)) as typeof document.createElement;
@@ -127,10 +55,9 @@ describe("web primitives", () => {
     }
   });
   it.each([
-    ["unknown-filter-id", 400, "Selected filter is no longer available. Remove the unknown filter from the address to continue."],
-    ["identity-unavailable", 503, "Usage identity unavailable. Remove the ledger's explorer-salt file if it is unusable and wait five seconds, then refresh. Opaque filter bookmarks must be rebuilt."],
-    ["invalid-query", 400, "Invalid usage query or cursor. Refresh to start a new page."],
-    ["ledger-changed", 409, "Usage changed. Refresh to start a new page."],
+    ["identity-unavailable", 503, "Usage identity unavailable. Remove the ledger's salt file if it is unusable, wait five seconds, then refresh."],
+    ["invalid-query", 400, "Invalid usage query. Refresh to continue."],
+    ["ledger-changed", 409, "Usage changed. Refresh to continue."],
   ] as const)("fixed API code %s reaches the view with a non-Retry notice", async (code, status, notice) => {
     const { createDashboardClient, errorCopy } = await import("../web/client.js");
     const client = createDashboardClient(async () => new Response(JSON.stringify({ error: { code, message: "ignored raw message" } }), { status }));
@@ -142,82 +69,25 @@ describe("web primitives", () => {
     const client = createDashboardClient(async () => new Response(JSON.stringify({ error: { code: '<img onerror="alert(1)">', message: "private" } }), { status: 500 }));
     await expect(client.get("/api/overview", new URLSearchParams(), new AbortController().signal)).rejects.toMatchObject({ code: "internal" });
   });
-  it("null charts never invent a zero maximum", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const doc = new PlainDocument();
-    const chart = chartWithTable(doc.asDocument(), { title: "Gap", unit: "estimated-aic", points: [{ start: 0, end: 1000, label: "Unknown", value: null, tokens: null }] });
-    expect(elements(chart, "circle")).toHaveLength(0);
-    expect(elements(chart, "p")[0]!.textContent).toBe("No recorded values in this period");
-    const negative = chartWithTable(doc.asDocument(), { title: "Gap", unit: "estimated-aic", points: [{ start: 0, end: 1000, label: "One", value: -3, tokens: null }] });
-    expect(elements(negative, "p")[0]!.textContent).toContain("~-3 AIC ? maximum");
-  });
-  it("AIC formatting preserves basis evidence and lower bounds", async () => {
-    // Break caught: treating unavailable as zero, omitting lower bounds or applying an implausible factor.
-    const module = await import("../web/format.js");
-    expect(module).toHaveProperty("formatAicDisplay");
-    const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 2, method: "trailing-7d-ratio" as const };
-    const cal = module.formatAicDisplay({ primaryAic: 560, publishedAic: 1000, basis: "calibrated" }, 2, fit);
-    expect(cal.primary).toBe("560+ AIC cal"); expect(cal.secondary).toBe("~1,000+ AIC published estimate");
-    expect(cal.legend).toContain("calibrated x0.56 over 7 days");
-    expect(cal.legend).toContain("1 Jan 1970, 00:00 UTC to 8 Jan 1970, 00:00 UTC");
-    expect(cal.legend).toContain("24 h covered"); expect(cal.legend).toContain("2 unpriced calls");
-    const back = module.formatAicDisplay({ primaryAic: 560, publishedAic: 1000, basis: "back-applied" }, 0, fit);
-    expect(back.primary).toBe("560 AIC cal (back-applied)");
-    expect(back.legend).toContain("calibrated, back-applied x0.56");
-    for (const [status, marker] of [["uncalibrated", "?"], ["implausible", "?"], ["off", "est"]] as const) {
-      const result = module.formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, { ...fit, status, factor: status === "implausible" ? 2 : null });
-      expect(result.primary).toBe(`~1,000 AIC ${marker}`); expect(result.legend).toContain(status);
-    }
-    expect(module.formatEstimatedAic(null, 3)).toBe("unpriced AIC");
-    expect(module.formatEstimatedAic(null, 0)).toBe("AIC unavailable");
-    expect(module.formatEstimatedAic(0, 0)).toBe("~0 AIC published estimate");
-  });
-  it.each([
-    [0, "0 days", 0, "0 unpriced calls"],
-    [1, "1 day", 1, "1 unpriced call"],
-    [2, "2 days", 2, "2 unpriced calls"],
-    [1.5, "1.5 days", 1, "1 unpriced call"],
-    [1.004, "1 day", 1, "1 unpriced call"],
-  ] as const)("calibration duration %s and count %s use readable legend copy", async (days, duration, calls, count) => {
-    const { formatAicDisplay } = await import("../web/format.js");
-    const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: days * 86400000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: calls, method: "trailing-7d-ratio" as const };
-    for (const basis of ["published", "calibrated", "back-applied"] as const) {
-      const legend = formatAicDisplay({ primaryAic: 560, publishedAic: 1000, basis }, calls, fit).legend;
-      if (basis !== "published") expect.soft(legend).toContain(`over ${duration}`);
-      expect.soft(legend).toContain(count);
-      expect.soft(legend).toContain("trailing 7-day ratio");
-      expect.soft(legend).not.toContain("trailing-7d-ratio");
-    }
-  });
-  it("published rows retain their own legend under a calibrated response", async () => {
-    const { formatAicDisplay } = await import("../web/format.js");
-    const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
-    expect(formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, fit).legend).toContain("Published estimate; row is not calibrated");
-  });
-  it("implausible calibration reports its clamped unapplied diagnostic", async () => {
-    const { formatAicDisplay } = await import("../web/format.js");
-    const fit = { status: "implausible" as const, factor: 2, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 3000, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
-    expect(formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, fit).legend).toContain("Diagnostic x2.00 (clamped, not applied)");
-  });
   it("fonts load locally before direct file transport", async () => {
     // Break caught: unconditional network links, blocking rendering, or non-stylesheet font fallback.
     const module = await import("../web/fonts.js").catch(() => null);
     expect(module, "font loader is available").not.toBeNull();
     const local = new PlainDocument(); const attempted: string[] = [];
     local.fonts = { async load(font) { attempted.push(font); return [{}]; } };
-    await module!.loadFonts(local.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100);
-    expect(attempted).toEqual(['400 16px "Usage Text Local"', '500 16px "Usage Text Local"', '600 16px "Usage Text Local"', '700 16px "Usage Text Local"', '400 16px "Usage Code Local"', '700 16px "Usage Code Local"', '400 16px "Usage Wordmark Local"']);
+    await module!.loadFonts(local.asDocument(), undefined, font => /Fira Sans|Cascadia Code|Bebas Neue/.test(font) ? 120 : 100);
+    expect(attempted).toEqual(['400 16px "Fira Sans"', '500 16px "Fira Sans"', '600 16px "Fira Sans"', '700 16px "Fira Sans"', '400 16px "Cascadia Code"', '700 16px "Cascadia Code"', '400 16px "Bebas Neue"']);
     expect(elements(local.head, "link")).toHaveLength(0);
     const missing = new PlainDocument();
     const finish: ((faces: unknown[]) => void)[] = [];
     missing.fonts = { load() { return new Promise(resolve => { finish.push(resolve); }); } };
     const missingFaces = observeFontTransport(missing);
-    const pending = module!.loadFonts(missing.asDocument());
+    const pending = module!.loadFonts(missing.asDocument(), undefined, () => 100);
     expect(elements(missing.head, "link")).toHaveLength(0);
     // Use a separate failing loader to cover empty and rejected local faces.
     const offline = new PlainDocument(); offline.fonts = { async load(font) { if (font.includes("Text")) return []; throw new Error("offline"); } };
     const faces = observeFontTransport(offline);
-    await module!.loadFonts(offline.asDocument());
+    await module!.loadFonts(offline.asDocument(), undefined, () => 100);
     expect(faces).toHaveLength(7);
     expect(faces.every(face => face.source.startsWith(`url("https://fonts.gstatic.com/`))).toBe(true);
     expect(elements(offline.head, "link")).toHaveLength(0);
@@ -234,7 +104,7 @@ describe("web primitives", () => {
     for (const available of [true, false]) {
       const doc = new PlainDocument();
       doc.fonts = { async load() { return [{}]; }, check() { throw new Error("check cannot detect a local font"); } };
-      const measure = (font: string) => available && font.includes("Usage") ? 120 : 100;
+      const measure = (font: string) => available && /Fira Sans|Cascadia Code|Bebas Neue/.test(font) ? 120 : 100;
       const faces = observeFontTransport(doc);
       await loadFonts(doc.asDocument(), undefined, measure);
       expect(faces).toHaveLength(available ? 0 : 7);
@@ -255,9 +125,9 @@ describe("web primitives", () => {
   it("a locally available family skips only its own remote faces", async () => {
     const { loadFonts } = await import("../web/fonts.js");
     const doc = new PlainDocument();
-    doc.fonts = { async load(font) { return font.includes("Text") ? [{}] : []; }, check() { return true; } };
+    doc.fonts = { async load(font) { return font.includes("Fira Sans") ? [{}] : []; }, check() { return true; } };
     const faces = observeFontTransport(doc);
-    await loadFonts(doc.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100); expect(faces.map(face => face.family)).toEqual(["Cascadia Code", "Cascadia Code", "Bebas Neue"]);
+    await loadFonts(doc.asDocument(), undefined, font => font.includes("Fira Sans") ? 120 : 100); expect(faces.map(face => face.family)).toEqual(["Usage Code Remote", "Usage Code Remote", "Usage Wordmark Remote"]);
   });
   it("a late font abort never appends a link", async () => {
     const { loadFonts } = await import("../web/fonts.js");
@@ -266,52 +136,6 @@ describe("web primitives", () => {
     const pending = loadFonts(doc.asDocument(), abort.signal);
     abort.abort(); finishes.forEach(resolve => resolve([])); await pending;
     expect(elements(doc.head, "link")).toHaveLength(0);
-  });
-  it("SVG summaries name the range and extremes and table regions have specific names", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const doc = new PlainDocument();
-    const chart = chartWithTable(doc.asDocument(), { title: "Daily AIC", unit: "calibrated-aic", points: [
-      { start: 0, end: 1000, label: "One", value: 4, tokens: null, lowerBound: true },
-      { start: 1000, end: 2000, label: "Two", value: 2, tokens: null },
-    ] });
-    expect(elements(chart, "svg")[0]!.getAttribute("aria-label")).toBe("Daily AIC · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:02 UTC · 2 AIC cal minimum · 4+ AIC cal maximum");
-    expect(cellText(elements(chart, "td")[2]!)).toBe("4+ AIC cal");
-    expect(elements(chart, "p")[0]!.textContent).toContain("4+ AIC cal maximum");
-    const table = elements(chart, "table")[0]!, region = table.parentElement!, caption = elements(table, "caption")[0]!;
-    expect(region.getAttribute("aria-labelledby")).toBe(caption.id); expect(caption.id).not.toBe("");
-    const toggle = button(chart, "Table");
-    expect(toggle.getAttribute("aria-controls")).toBe(region.id); expect(region.id).not.toBe("");
-    toggle.click(); expect(toggle.textContent).toBe("Table"); expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    const empty = chartWithTable(doc.asDocument(), { title: "Empty", unit: "tokens", points: [] });
-    expect(elements(empty, "svg")[0]!.getAttribute("aria-label")).toBe("Empty · No recorded values in this period");
-  });
-  it("chart values and maximum retain lower-bound markers", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "AIC", unit: "estimated-aic", points: [{ start: 0, end: 1000, label: "One", value: 4, tokens: null, lowerBound: true }] });
-    expect(cellText(elements(chart, "td")[2]!)).toBe("~4+ AIC ?");
-    expect(elements(chart, "p")[0]!.textContent).toContain("~4+ AIC ? maximum");
-  });
-  it("Chart and Table pills select one representation without dropping focus", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const doc = new PlainDocument(), chart = chartWithTable(doc.asDocument(), { title: "Daily", unit: "tokens", points: [] });
-    const graphic = elements(chart, "svg")[0]!.parentElement!, region = elements(chart, "table")[0]!.parentElement!;
-    const chartButton = button(chart, "Chart"), tableButton = button(chart, "Table");
-    expect(chartButton.parentElement).toBe(tableButton.parentElement);
-    expect(chartButton.parentElement!.getAttribute("role")).toBe("group");
-    expect(chartButton.parentElement!.getAttribute("aria-label")).toBe("Chart representation");
-    expect(chartButton.getAttribute("aria-pressed")).toBe("true"); expect(tableButton.getAttribute("aria-pressed")).toBe("false");
-    tableButton.focus(); tableButton.click(); tableButton.click();
-    expect(region.hidden).toBe(false); expect(graphic.hidden).toBe(true); expect(doc.activeElement).toBe(tableButton);
-    expect(tableButton.getAttribute("aria-pressed")).toBe("true"); expect(chartButton.getAttribute("aria-pressed")).toBe("false");
-    chartButton.focus(); chartButton.click();
-    expect(graphic.hidden).toBe(false); expect(region.hidden).toBe(true); expect(doc.activeElement).toBe(chartButton);
-    expect(chartButton.getAttribute("aria-controls")).toBe(graphic.id); expect(graphic.id).not.toBe("");
-  });
-  it("back-applied value cells preserve their calibration basis", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Back applied", unit: "back-applied-aic", points: [{ start: 0, end: 1000, label: "One", value: 560, tokens, lowerBound: true }] });
-    expect(cellText(elements(chart, "td")[2]!)).toBe("560+ AIC cal (back-applied)");
-    expect(elements(chart, "p")[0]!.textContent).toContain("560+ AIC cal (back-applied) maximum");
   });
   it("empty tables explain that no rows are recorded", async () => {
     const { renderTable } = await import("../web/tables.js");
@@ -336,27 +160,6 @@ describe("web primitives", () => {
     }
     expect(elements(regions[0]!, "caption")[0]!.id).not.toBe(elements(regions[1]!, "caption")[0]!.id);
   });
-  it.each(["listed", "recorded"] as const)("%s token subsets have identical chart and table observations", async subsets => {
-    const { tokenObservation } = await import("../web/format.js"), { chartWithTable } = await import("../web/charts.js");
-    const expected = "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100" + (subsets === "listed" ? "; cache write 1h unavailable; reasoning unavailable" : "");
-    expect.soft(tokenObservation(tokens, subsets)).toBe(expected);
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Tokens", unit: "tokens", subsets, points: [{ start: 0, end: 1000, label: "One", value: 100, tokens }, { start: 1000, end: 2000, label: "Two", value: 100, tokens: { ...tokens, cacheWrite1h: 0, reasoning: 2 } }] });
-    expect.soft(cellText(elements(chart, "td")[3]!)).toBe(expected);
-    expect.soft(elements(chart, "title")[1]!.textContent).toBe(`One · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 100 tokens · ${expected} · `);
-    expect(cellText(elements(chart, "td")[8]!)).toBe("input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h 0; reasoning 2");
-    expect(tokenObservation(null, subsets)).toBe("tokens unavailable");
-  });
-  it("chart text lives outside the scaled plot at a readable CSS pixel size", async () => {
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: "Narrow", unit: "tokens", points: [{ start: 0, end: 1000, label: "One", value: 100, tokens }] });
-    const svg = elements(chart, "svg")[0]!, label = elements(chart, "p")[0]!;
-    expect(svg.getAttribute("viewBox")).toBeNull(); expect(label.parentElement).toBe(svg.parentElement); expect(label.namespaceURI).toBeNull();
-    expect(label.className.split(" ")).toContain("chart-summary");
-    expect(elements(svg, "text")).toHaveLength(0); expect(svg.getAttribute("aria-describedby")).toBe(label.id); expect(label.id).not.toBe("");
-    expect(svg.getAttribute("width")).toBe("100%"); expect(svg.getAttribute("height")).toBe("96");
-    const plot = elements(chart, "svg")[1]!;
-    expect(plot.getAttribute("viewBox")).toBe("0 0 600 160"); expect(elements(plot, "circle")).toHaveLength(0); expect(elements(svg, "circle")).toHaveLength(1); expect(elements(plot, "text")).toHaveLength(0);
-  });
   it("hostile labels remain text", async () => {
     // Break caught: interpreting labels as markup or allowing an API request to leave the loopback origin.
     const module = await import("../web/client.js").catch(() => null);
@@ -375,39 +178,13 @@ describe("web primitives", () => {
     expect(calls).toEqual([]);
     const response = await client.get<string>("/api/overview", new URLSearchParams({ filters: JSON.stringify([{ field: "role", value: hostile }]) }), signal);
     expect(calls[0]).toBe('/api/overview?filters=%5B%7B%22field%22%3A%22role%22%2C%22value%22%3A%22%3Cimg+src%3Dx+onerror%3Dalert%281%29%3E%3Cstyle%3Ebody%7Bdisplay%3Anone%7D%3C%2Fstyle%3E%22%7D%5D');
-    const { chartWithTable } = await import("../web/charts.js");
-    const chart = chartWithTable(new PlainDocument().asDocument(), { title: response.data, unit: "tokens", points: [{ start: 0, end: 1000, label: hostile, value: 100, tokens }] });
+    const { chartPair } = await import("../web/charts.js"), { renderTable } = await import("../web/tables.js");
+    const doc = new PlainDocument();
+    const chart = chartPair(doc.asDocument(), { id: "hostile", title: response.data, svg: doc.createElementNS("http://www.w3.org/2000/svg", "svg") as unknown as SVGElement, table: renderTable(doc.asDocument(), { caption: hostile, columns: ["Session"], rows: [[hostile]] }) });
     expect(elements(chart, "img")).toHaveLength(0); expect(elements(chart, "style")).toHaveLength(0);
     expect(cellText(elements(chart, "td")[0]!)).toBe(hostile);
-    expect(elements(chart, "h3")[0]!.textContent).toBe(hostile);
-    expect(elements(chart, "title")[0]!.textContent).toBe(hostile);
-    expect(elements(chart, "td")[0]!.textContent).toContain(hostile);
-    expect(elements(chart, "p")[0]!.textContent).toBe("1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 100 tokens minimum · 100 tokens maximum");
+    expect(elements(chart, "h2")[0]!.textContent).toBe(hostile);
     for (const node of descendants(chart as never)) for (const name of node.attributes.keys()) expect(name).not.toMatch(/^(style|on)/i);
-  });
-  it("chart table has identical observations", async () => {
-    // Break caught: dropping nulls/tokens/basis in either representation or replacing the focused toggle.
-    const module = await import("../web/charts.js").catch(() => null);
-    expect(module, "chart primitive is available").not.toBeNull();
-    const doc = new PlainDocument();
-    const chart = module!.chartWithTable(doc.asDocument(), { title: "Daily AIC", unit: "calibrated-aic", points: [
-      { start: 0, end: 1000, label: "One", value: 0, tokens, note: "published estimate ~0 AIC" },
-      { start: 1000, end: 2000, label: "Two", value: null, tokens: null, note: "unpriced" },
-    ] });
-    const titles = elements(chart, "title").slice(1).map(node => node.textContent);
-    expect(titles).toEqual([
-      "One · 1 Jan 1970, 00:00 UTC to 1 Jan 1970, 00:00:01 UTC · 0 AIC cal · input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable · published estimate ~0 AIC",
-      "Two · 1 Jan 1970, 00:00:01 UTC to 1 Jan 1970, 00:00:02 UTC · unavailable · tokens unavailable · unpriced",
-    ]);
-    expect(elements(chart, "tr").slice(1).map(row => row.children.map(cell => cellText(cell)).join(" · "))).toEqual(titles);
-    expect(elements(chart, "circle")).toHaveLength(1); // null is never plotted as zero
-    const toggle = button(chart, "Table"); toggle.focus(); toggle.click();
-    expect(elements(chart, "table")[0]!.parentElement!.hidden).toBe(false);
-    expect(elements(chart, "svg")[0]!.parentElement!.hidden).toBe(true);
-    expect(doc.activeElement).toBe(toggle);
-    expect(toggle.textContent).toBe("Table"); const chartButton = button(chart, "Chart"); chartButton.focus(); chartButton.click();
-    expect(doc.activeElement).toBe(chartButton);
-    expect(elements(chart, "svg")[0]!.parentElement!.hidden).toBe(false);
   });
 });
 
@@ -421,26 +198,10 @@ it("updateEvidence keeps reordered row buttons but adopts each new row action", 
   expect(elements(parent, "button")).toEqual(retained); retained[0]!.click(); retained[1]!.click(); expect(chosen).toEqual(["second", "first"]);
 });
 
-
-it("chart markers use the unscaled CSS viewport and never connect nulls or gaps", async () => {
-  // Breaks: scalable plot circles shrink below 3.5 CSS px radius or lines invent intervening observations.
-  const { chartWithTable } = await import("../web/charts.js"), doc = new PlainDocument();
-  const chart = chartWithTable(doc.asDocument(), { title: "Sparse observations", unit: "tokens", points: [
-    { start: 0, end: 1000, label: "first", value: 10, tokens: null },
-    { start: 1000, end: 2000, label: "unknown", value: null, tokens: null },
-    { start: 9000, end: 10000, label: "after a gap", value: 20, tokens: null },
-  ] });
-  const dots = elements(chart,"circle"); expect(dots).toHaveLength(2);
-  expect(dots.map(n=>n.getAttribute("r"))).toEqual(["3.5","3.5"]);
-  for(const dot of dots) { let parent=dot.parentElement; while(parent&&parent.tagName.toLowerCase()!=="svg")parent=parent.parentElement; expect(parent?.getAttribute("viewBox")).toBeNull(); }
-  expect(elements(chart,"line")).toHaveLength(0);expect(elements(chart,"path")).toHaveLength(0);expect(elements(chart,"polyline")).toHaveLength(0);
-  expect(elements(chart,"tr").slice(1).map(row=>cellText(row.children[2]!))).toEqual(["10 tokens","unavailable","20 tokens"]);
-});
-
 it("a missing local bold weight requests only that remote weight", async () => {
   const { loadFonts } = await import("../web/fonts.js"); const doc = new PlainDocument();
   doc.fonts = { async load(font) { if (font.startsWith('700 ') && font.includes('Code')) throw new Error('local bold missing'); return [{}]; } };
   const faces = observeFontTransport(doc);
-  await loadFonts(doc.asDocument(), undefined, font => font.includes('Usage') ? 120 : 100);
-  expect(faces.map(face => `${face.family}:${face.weight}`)).toEqual(["Cascadia Code:700"]);
+  await loadFonts(doc.asDocument(), undefined, font => /Fira Sans|Cascadia Code|Bebas Neue/.test(font) ? 120 : 100);
+  expect(faces.map(face => `${face.family}:${face.weight}`)).toEqual(["Usage Code Remote:700"]);
 });

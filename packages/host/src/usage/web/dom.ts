@@ -12,11 +12,6 @@ export function action(document: Document, label: string, run: () => void): HTML
   node.addEventListener("click", () => actions.get(node)?.());
   return node;
 }
-export function liveMessage(document: Document): HTMLElement {
-  const node = element(document, "p", "", "notice");
-  node.setAttribute("role", "status"); node.setAttribute("aria-live", "polite");
-  return node;
-}
 
 /** Patch evidence without detaching retained controls or scroll regions. Chart
  * representation is user state, not server data. Other actions adopt new rows. */
@@ -49,7 +44,7 @@ export function updateEvidence(parent: HTMLElement, ...incoming: HTMLElement[]):
 export function sectionState(root: HTMLElement, state: "loading" | "empty" | "error", message: string, retry?: () => void): void {
   const document = root.ownerDocument;
   root.setAttribute("aria-busy", String(state === "loading"));
-  const notice = liveMessage(document); notice.textContent = message; notice.setAttribute("data-state", state);
+  const notice = element(document, "p", message, "notice"); notice.setAttribute("role", "status"); notice.setAttribute("aria-live", "polite"); notice.setAttribute("data-state", state);
   root.replaceChildren(notice);
   if (state === "error" && retry) root.append(action(document, "Retry", retry));
 }

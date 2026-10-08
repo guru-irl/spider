@@ -27,8 +27,8 @@ a human reviews the draft and publishes it by hand (repo Releases page, or
         ▼
 that "published" event triggers publish.yml: verify the release's tag ==
 package.json version at that ref, typecheck, test, build, verify the version
-is not already on npm, then `npm publish`; gated by the `npm-publish`
-environment's required reviewers, if that environment has been configured
+is not already on npm, then `npm publish` (gated by the `npm-publish`
+environment's required reviewers, if that environment has been configured)
 (see below; if it has not, this step runs unattended)
 ```
 
@@ -43,13 +43,13 @@ excepted. `release.yml` authenticates its `gh release create` step with
 `github.token`, i.e. `GITHUB_TOKEN`. If that step published the release
 directly, the "release published" event it raised would never trigger
 `publish.yml`, and the only working path to npm would be a manual
-`workflow_dispatch`; with `publish.yml`'s header comment ("Runs once a GitHub
+`workflow_dispatch`. That would leave `publish.yml`'s header comment ("Runs once a GitHub
 Release is PUBLISHED") describing an automation that could not happen.
 
 Creating a **draft** instead sidesteps this entirely: a draft release does not
 raise a "published" event, so nothing is expected to fire yet. The event that
 actually triggers `publish.yml` is a human (or a PAT-authenticated `gh`)
-publishing that draft; and because that action does not originate from
+publishing that draft. Because that action does not originate from
 `GITHUB_TOKEN`, GitHub Actions treats it as a normal event and does start
 `publish.yml`. This is why the manual "publish the draft" step below is not
 optional busywork; it is the only step that can make the automated chain fire
@@ -110,7 +110,7 @@ gate real, before the first release:
    matching `v*`) for defense in depth.
 
 If you want publishes to go out unattended instead, remove the
-`environment: npm-publish` line from `publish.yml`; but then say so here.
+`environment: npm-publish` line from `publish.yml` and document that choice here.
 
 ### 2. The required status check for branch protection (protects `main`)
 

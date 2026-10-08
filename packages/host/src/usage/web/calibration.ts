@@ -7,7 +7,10 @@ import { formatUtcTime } from "./format.js";
 import { canRetry, errorCopy, shouldStopPolling } from "./client.js";
 import "./calibration.css";
 
-const numbers = new Intl.NumberFormat("en-US", { maximumFractionDigits: 20 });
+const numbers = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+const factor = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const ratio = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+const precision = (n: number | null, formatter: Intl.NumberFormat) => n === null || !Number.isFinite(n) ? "unavailable" : formatter.format(n);
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 const short = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
 const amount = (n: number | null) => n === null || !Number.isFinite(n) ? "unavailable" : numbers.format(n);
@@ -84,7 +87,7 @@ function correction(document: Document, data: CalibrationData, empty: boolean, r
   const windowHours = Math.max(0, period.end - period.start) / 3_600_000;
   const windowDays = windowHours / 24;
   const windowLabel = c.status === "counter-unavailable" || c.status === "published-only" ? "Published estimate only" : `Trailing ${headline(windowDays)} ${windowDays === 1 ? "day" : "days"}`;
-  stats.append(fact(document, "Correction factor", amount(c.factor), "Published × factor"), fact(document, "Published estimate", headline(c.publishedEstimate), "credits · matched intervals"), fact(document, "Account counter", headline(c.accountCounter), "credits · same intervals"), fact(document, "Hours covered", headline(c.coveredHours), `of ${headline(windowHours)} hours`), fact(document, "Status", pill, windowLabel));
+  stats.append(fact(document, "Correction factor", precision(c.factor, factor), "Published × factor"), fact(document, "Published estimate", amount(c.publishedEstimate), "credits · matched intervals"), fact(document, "Account counter", amount(c.accountCounter), "credits · same intervals"), fact(document, "Hours covered", headline(c.coveredHours), `of ${headline(windowHours)} hours`), fact(document, "Status", pill, windowLabel));
   const method = c.status === "counter-unavailable" ? "The account counter is unavailable. Credits use the last accepted factor, or published rates when no factor exists."
     : c.status === "published-only" ? "Credits use published rates without a correction factor."
     : c.status === "back-applied" ? "The earliest accepted factor is applied to earlier usage. Matched counter intervals determine the factor."
@@ -124,7 +127,7 @@ function correction(document: Document, data: CalibrationData, empty: boolean, r
   more.className += " intervals-more";
   more.setAttribute("aria-expanded", String(expansion.limit > 10));
   function paint(target: HTMLElement = holder, control: HTMLButtonElement = more, summary: HTMLElement = note): void {
-    const table = evidenceTable(document, "intervals-table", "Counter snapshot intervals, newest first (UTC)", ["Start · UTC", "End · UTC", "Counter delta", "Published estimate", "Ratio"], intervals.slice(0, expansion.limit).map(i => [stamp(document, i.start), stamp(document, i.end), amount(i.counterDelta), amount(i.publishedEstimate), amount(i.ratio)]));
+    const table = evidenceTable(document, "intervals-table", "Counter snapshot intervals, newest first (UTC)", ["Start · UTC", "End · UTC", "Counter delta", "Published estimate", "Ratio"], intervals.slice(0, expansion.limit).map(i => [stamp(document, i.start), stamp(document, i.end), amount(i.counterDelta), amount(i.publishedEstimate), precision(i.ratio, ratio)]));
     updateEvidence(target, tableRegion(document, table));
     const exhausted = expansion.limit >= intervals.length;
     control.setAttribute("aria-disabled", String(exhausted)); control.textContent = exhausted ? `All ${intervals.length} shown` : "Show more";

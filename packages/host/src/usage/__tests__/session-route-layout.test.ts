@@ -72,3 +72,13 @@ it("running routes end at the session right edge", () => {
   const d = data(); d.runs = [{ ...d.runs[0]!, status: "running", end: null }];
   const a = layoutSessionRoute(d, "credits", 1200); expect(a.branches[0]!.endX).toBe(1172);
 });
+
+it.each([{ minutes: 29, breaks: 0 }, { minutes: 31, breaks: 1 }])("only a trailing idle remnant over thirty minutes collapses ($minutes)", ({ minutes, breaks }) => {
+  const d = data(); d.span = { start: 0, end: (60 + minutes) * minute };
+  d.idleGaps = [{ start: 10 * minute, end: d.span.end, cacheWriteCredits: 0 }];
+  d.activePeriods = [{ start: 0, end: 10 * minute }];
+  d.runs = [{ ...d.runs[0]!, start: 10 * minute, end: 60 * minute }];
+  const layout = layoutSessionRoute(d, "credits", 1200);
+  expect(layout.breaks).toHaveLength(breaks);
+  if (breaks) expect(layout.breaks[0]!.period).toEqual({ start: 60 * minute, end: 91 * minute });
+});

@@ -33,6 +33,9 @@ export function sessionStateCases(cases: readonly FixtureStateCase[]): readonly 
     data.flow = { total: structuredClone(data.total), models: structuredClone(data.models), edges: edges.map(e => ({ ...e, share: (e.value.credits ?? 0) / (data.total.credits || 1) })) };
     if (data.span) data.idleGaps = [{ start: data.span.start + 60000, end: data.span.start + 61 * 60000, cacheWriteCredits: 0.5 }];
   });
+  derive("Combined session details", data => {
+    data.detailsBinned = true; data.stats.omittedIdleGaps = { count: 23, cacheWriteCredits: 0.1 + 0.2 };
+  });
   derive("Own calls only", data => {
     data.runs = []; data.compaction = []; data.idleGaps = [];
     data.stats = { runs: 0, ownCalls: data.total.calls, compaction: 0, idleGaps: 0 };

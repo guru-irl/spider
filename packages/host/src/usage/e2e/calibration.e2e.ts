@@ -66,7 +66,7 @@ test("Calibration rates and ingestion show tiers, zeros, sources, redacted error
   const data = calibrationFixture(); data.rates = [data.rates[0]!, { ...data.rates[0]!, tier: "long", abovePromptTokens: 200000, input: 0, cacheRead: null }];
   data.unpricedModels = [{ model: "model-unlisted", calls: 3, reason: "No published rate" }]; data.gaps.unpricedCalls = 3; data.gaps.compactionWithoutModel = 2; data.ingestion.collector = "another-session";
   fixtures.replace("/api/calibration", { status: 200, body: envelope(data) }); await page.goto(entry);
-  await expect(page.locator(".rates-table tbody tr").nth(1).locator(".cell-value")).toHaveText(["model-cedar", "long", "200,000", "0", "unavailable", "2.5", "8", "2030-04-01"]);
+  await expect(page.locator(".rates-table tbody tr").nth(1).locator(".cell-value")).toHaveText(["model-cedar", "long", "200,000", "0", "unavailable", "3", "8", "2030-04-01"]);
   await expect(page.locator(".rates-section")).toContainText("per 1M tokens"); await expect(page.locator(".unpriced-models")).toContainText("3 calls");
   await expect(page.locator(".ingestion-stats")).toContainText("Another pi session"); await expect(page.locator(".ingestion-stats")).toContainText("Sun 14 APR 23:59 UTC");
   await expect(page.locator(".errors-list")).toContainText("archive/session"); await expect(page.locator(".errors-list")).toContainText("parse-error");

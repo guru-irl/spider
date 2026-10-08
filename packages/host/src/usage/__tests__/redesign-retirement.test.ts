@@ -1,6 +1,6 @@
 import { SessionMetadataCapture } from "../session-metadata.js";
 import { dashboardBatch, dashboardCall } from "./fixtures/dashboard-ledger.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { CONFIG_SCHEMA } from "../../../../ui/src/screens/config-schema.js";
 import { sumValues } from "../query-redesign-shared.js";
 import { defaultOverview } from "../web/navigation.js";
@@ -137,4 +137,10 @@ it("public README usage links describe the replacement dashboard and footer", ()
     for (const name of Object.values(pageNames)) expect(text).toContain(name);
     expect(text).toContain("usage.monthlyBudget"); expect(text).toContain("credits");
   }
+});
+
+it("browser sources contain no dead legacy helpers or retired recovery copy", () => {
+  const source = readdirSync(new URL("../web/", import.meta.url)).filter(name => name.endsWith(".ts")).map(name => readFileSync(new URL(`../web/${name}`, import.meta.url), "utf8")).join("\n");
+  expect(source).not.toMatch(/chartWithTable|ChartUnit|ChartPoint|aicKey|formatCallEvidence|readableKey|formatEstimatedAic|formatAicDisplay|formatCalibrationFactor|formatCalibrationEvidence|formatCalibration\b|calibrationText|tokenSummary|tokenCell|formatUtcTimestamp|utcTime|formatPeriod|liveMessage|ViewRoute|configureRepresentation/);
+  expect(source).not.toMatch(/Selected filter is no longer available|Clear filters to continue|Opaque filter bookmarks|query or cursor|cal means calibrated/);
 });

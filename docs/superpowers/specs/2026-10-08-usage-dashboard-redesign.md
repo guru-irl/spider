@@ -61,8 +61,9 @@ DESIGN.md is written at the finish from the built UI (Impeccable new-work). Unti
 decisions bind:
 
 - Fonts: Cascadia Code for numbers, ids, times and model ids; Fira Sans for all other text;
-  Bebas Neue for the "SPIDER" wordmark only. Load order: `local()`, then Google Fonts, then system
-  fonts.
+  Bebas Neue for the "SPIDER" wordmark only. Stacks list installed family names first, then separately
+  named Google Fonts faces, then named system fallbacks. Remote faces use one face per weight.
+  Page rendering never depends on network access.
 - Mark: the web glyph as a monochrome inline SVG in `currentColor`, beside the wordmark, optically
   centred (within 1 px). Never an emoji.
 - Surfaces: ground `#16120f`, surface `#201a16`, control `#332b24`, ink about `#f3eadb`.

@@ -25,9 +25,9 @@ test("transit keyboard arrows, Tab and Enter activate real routes and rows", asy
   await second.press("ArrowRight"); await expect(page.locator('[data-event="own"]').first()).toBeFocused();
   await page.keyboard.press("End"); await expect(page.locator('[data-event="idle"]').last()).toBeFocused();
   await page.keyboard.press("Home"); await expect(first).toBeFocused();
-  await first.press("Tab"); await expect(page.locator('[data-run-row="run-build"]')).toBeFocused();
-  const row = page.locator('[data-run-row="run-build"]'); await row.focus(); await row.press("Enter"); await expect(row).toHaveAttribute("aria-selected", "true");
-  await row.press("ArrowDown"); await expect(page.locator('[data-run-row="run-review"]')).toBeFocused();
+  await first.press("Tab"); await expect(page.locator('[data-run-name="run-build"]')).toBeFocused();
+  const row = page.locator('[data-run-row="run-build"]'); await row.locator("button").focus(); await row.locator("button").press("Enter"); await expect(row).toHaveAttribute("aria-selected", "true");
+  await row.locator("button").press("ArrowDown"); await expect(page.locator('[data-run-name="run-review"]')).toBeFocused();
 });
 test("runs Show all and sortable columns preserve the route data", async ({ page }) => {
   const routes = await installFixtureRoutes(page), data = sessionFixture();

@@ -127,7 +127,7 @@ describe("Overview v4", () => {
     button(s.root, "Show all 12").click(); await settle(); const r = s.requests.at(-1)!;
     expect(r.path).toBe("/api/sessions"); expect(r.params.get("range")).toBe("custom"); expect(r.params.get("from")).toBe(String(d.range.from)); expect(r.params.get("to")).toBe(String(d.range.to)); expect(r.params.get("offset")).toBe("10");
     expect(s.nodes().filter(n => n.getAttribute("data-session") !== null)).toHaveLength(12);
-    const rowNode = s.nodes().find(n => n.getAttribute("data-session") === "session-0")!; fire(rowNode, "keydown", { key: "Enter", target: rowNode }); expect(s.routes.at(-1)!.route).toMatchObject({ page: "session", id: "session-0" }); s.page.dispose();
+    const rowNode = s.nodes().find(n => n.getAttribute("data-session") === "session-0")!; elements(rowNode, "button")[0]!.click(); expect(s.routes.at(-1)!.route).toMatchObject({ page: "session", id: "session-0" }); s.page.dispose();
   });
   it("drops old expansion when refreshed selection has changed", async () => {
     let finish!: (reply: ApiEnvelope<unknown>) => void;
@@ -192,4 +192,51 @@ it.each(["day", "hour"] as const)("labels Average and Peak in %s buckets with co
   const summary = s.nodes().find(n => n.className === "range-summary summary-chips")!;
   expect(summary.children[1]!.textContent).toBe(`Average16.9k ${bucketSize === "day" ? "a day" : "an hour"}`);
   expect(summary.children[2]!.textContent).toBe(`Peak${bucketSize === "day" ? "Fri 12 APR" : "Fri 12 APR 00:00 UTC+00:00"} · 31.2k`); s.page.dispose();
+});
+
+it("24-hour data has an Hourly credits heading", async () => {
+  const d = overviewFixture(); d.bucketSize = "hour"; d.range.range = "24h";
+  const s = setup(undefined, d); await settle();
+  expect(elements(s.root, "h2").map(n => n.textContent)).toContain("Hourly credits"); s.page.dispose();
+});
+it("clicking toolbar padding preserves the selected buckets", async () => {
+  const d = overviewFixture(); d.range.buckets = [d.buckets[4]!.key];
+  const s = setup(undefined, d); await settle();
+  fire(s.doc, "click", { target: s.nodes().find(n => n.hasAttribute("data-controls"))! }); await settle();
+  expect(s.requests).toHaveLength(1); expect(s.root.textContent).toContain("Selected 1 day"); s.page.dispose();
+});
+it("session name buttons are the only open controls and role focus roves within and between rows", async () => {
+  const d = overviewFixture(), first = d.sessions.rows[0]!;
+  d.sessions.rows = [first, { ...structuredClone(first), id: "second-session", name: "Second session" }];
+  const s = setup(undefined, d); await settle();
+  const rows = s.nodes().filter(n => n.hasAttribute("data-session"));
+  expect(rows.every(n => !n.hasAttribute("tabindex"))).toBe(true);
+  const names = rows.map(n => elements(n, "button")[0]!);
+  names[0]!.focus(); fire(names[0]!, "keydown", { key: "ArrowDown" }); expect(s.doc.activeElement).toBe(names[1]);
+  fire(names[1]!, "keydown", { key: "ArrowUp" }); expect(s.doc.activeElement).toBe(names[0]);
+  const segments = rows.map(n => descendants(n).filter(n => n.className === "role-segment"));
+  expect(segments.map(list => list.filter(n => n.getAttribute("tabindex") === "0").length)).toEqual([1, 1]);
+  fire(segments[0]![0]!, "keydown", { key: "ArrowRight" }); expect(s.doc.activeElement).toBe(segments[0]![1]);
+  expect(segments[0]!.map(n => n.getAttribute("tabindex"))).toEqual(segments[0]!.map((_, i) => i === 1 ? "0" : "-1"));
+  fire(segments[0]![1]!, "keydown", { key: "ArrowDown" }); expect(s.doc.activeElement).toBe(segments[1]![1]);
+  fire(segments[1]![1]!, "keydown", { key: "ArrowUp" }); expect(s.doc.activeElement).toBe(segments[0]![1]);
+  names[0]!.click(); expect(s.routes.at(-1)!.route).toMatchObject({ page: "session", id: first.id }); s.page.dispose();
+});
+it("a preserved sort never flashes credits-ranked rows while its refreshed page is pending", async () => {
+  let release!: (value: ApiEnvelope<unknown>) => void, delayed = false;
+  const d = overviewFixture(), sorted = sessionsFixture({ rows: [{ ...d.sessions.rows[0]!, name: "Sorted result" }] });
+  const s = setup(async path => path === "/api/sessions" ? delayed ? new Promise(resolve => { release = resolve; }) : envelope(sorted) : envelope(d));
+  await settle(); s.nodes().find(n => n.getAttribute("data-focus") === "session-sort-runs")!.click(); await settle();
+  delayed = true; const refresh = s.page.refresh(); await settle();
+  expect(s.nodes().find(n => n.getAttribute("data-panel") === "sessions")!.textContent).toContain("Sorted result");
+  release(envelope(sorted)); await refresh; s.page.dispose();
+});
+
+it("role breakdown keeps a roving stop when refreshed roles shrink", async () => {
+  const d = overviewFixture(), s = setup(undefined, d); await settle();
+  const roles = () => s.nodes().filter(n => n.className === "role-segment");
+  fire(roles()[0]!, "keydown", { key: "End" });
+  d.sessions.rows[0]!.roles = d.sessions.rows[0]!.roles.slice(0, 1);
+  await s.page.refresh();
+  expect(roles()).toHaveLength(1); expect(roles()[0]!.getAttribute("tabindex")).toBe("0"); s.page.dispose();
 });

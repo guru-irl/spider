@@ -29,6 +29,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
   const status = (run: SessionRun) => element(document, "span", run.status ?? "unavailable", `state-pill${run.status === "failed" ? " danger" : ""}`);
   const runCells = (run: SessionRun, interactive: boolean) => {
     const name = interactive ? action(document, run.name, () => pinSessionRun(graphic!, run.id)) : element(document, "span", run.name);
+    if (interactive) name.setAttribute("data-run-name", run.id ?? "");
     const model = element(document, "span", undefined, "run-model mono"); if (run.style) model.append(renderModelMarker(document, run.style)); model.append(element(document, "span", run.model ?? "unavailable"));
     return [run.start === null ? "unavailable" : formatLocalTime(run.start, tz), name, run.role, model, run.thinking ?? "unavailable", formatValue(run.value, "credits"), formatTokens(run.value.tokens.total), formatDuration(run.durationMs), status(run)];
   };
@@ -58,19 +59,18 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     });
     runRows = Array.from(table.querySelector("tbody")!.children) as HTMLTableRowElement[];
     runRows.forEach((row, i) => {
-      const run = visible[i]!; row.setAttribute("data-run-row", run.id ?? ""); row.setAttribute("aria-selected", "false"); row.setAttribute("tabindex", "0");
-      row.addEventListener("click", () => pinSessionRun(graphic!, run.id));
-      row.addEventListener("keydown", event => {
-        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pinSessionRun(graphic!, run.id); }
-        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); runRows[(i + (event.key === "ArrowDown" ? 1 : -1) + runRows.length) % runRows.length]!.focus(); }
+      const run = visible[i]!; row.setAttribute("data-run-row", run.id ?? ""); row.setAttribute("aria-selected", "false");
+      row.addEventListener("click", event => { if (!row.querySelector("button")?.contains(event.target as Node)) pinSessionRun(graphic!, run.id); });
+      row.querySelector("button")!.addEventListener("keydown", event => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); runRows[(i + (event.key === "ArrowDown" ? 1 : -1) + runRows.length) % runRows.length]!.querySelector<HTMLButtonElement>("button")!.focus(); }
       });
     });
     select(pinned); section.append(tableRegion(document, table));
-    if (!expanded && all.length > 20) section.append(action(document, `Show all ${all.length}`, () => { expanded = true; drawRuns(section); runRows[20]?.focus(); }));
+    if (!expanded && all.length > 20) section.append(action(document, `Show all ${all.length}`, () => { expanded = true; drawRuns(section); runRows[20]?.querySelector<HTMLButtonElement>("button")?.focus(); }));
   };
   function render(): void {
     if (!data || disposed || ctx.signal.aborted) return;
-    const focusedRun = document.activeElement?.getAttribute("data-run-id"), focusedRow = document.activeElement?.getAttribute("data-run-row");
+    const focusedRun = document.activeElement?.getAttribute("data-run-id"), focusedRow = document.activeElement?.getAttribute("data-run-name");
     const dismissedCard = (graphic?.firstElementChild?.querySelector("foreignObject")?.firstElementChild as HTMLElement | undefined)?.hidden;
     disposeGraphic(); root.setAttribute("aria-busy", "false");
     const header = element(document, "section", undefined, "session-header"), head = element(document, "div", undefined, "section-head"), units = element(document, "div", undefined, "segmented"); units.setAttribute("role", "group"); units.setAttribute("aria-label", "Unit");
@@ -90,9 +90,14 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
       const stat = element(document, "div", undefined, "header-stat"), number = element(document, "strong", value, "mono"); if (label === "Total") number.setAttribute("data-session-total", ""); stat.append(element(document, "span", label), number, element(document, "small", suffix)); stats.append(stat);
     }
     header.append(stats); root.replaceChildren(back(), header);
+    if (data.detailsBinned) {
+      const omitted = data.stats.omittedIdleGaps;
+      const note = "Some short idle gaps or small runs are combined." + (omitted ? ` ${formatTokens(omitted.count)} idle ${omitted.count === 1 ? "gap" : "gaps"} omitted${omitted.cacheWriteCredits === null ? "" : ` · ${formatValue({ ...data.total, credits: omitted.cacheWriteCredits }, "credits")} next-call cache-write credits`}.` : "");
+      const notice = element(document, "p", note, "session-detail-note"); notice.setAttribute("role", "status"); root.append(notice);
+    }
     if (!data.span) { root.append(element(document, "p", "No calls were recorded.", "notice")); return; }
     const routeSection = element(document, "section", undefined, "session-route-section");
-    graphic = renderSessionRoute(document, data, unit, select, tz, data.runs.length ? () => runRows[0]?.focus() : undefined);
+    graphic = renderSessionRoute(document, data, unit, select, tz, data.runs.length ? () => runRows[0]?.querySelector<HTMLButtonElement>("button")?.focus() : undefined);
     const svg = graphic.firstElementChild as SVGElement;
     const table = renderTable(document, { caption: "Session route data", columns, rows: [
       ...data.runs.map(r => runCells(r, false)),
@@ -124,7 +129,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     if (focusedRun) {
       const target = Array.from(graphic.firstElementChild!.children).find(n => n.getAttribute("data-run-id") === focusedRun) as SVGElement | undefined;
       if (target) { target.focus(); if (dismissedCard && pinned === null) pinSessionRun(graphic, null); } else (root.firstElementChild as HTMLElement).focus();
-    } else if (focusedRow) (runRows.find(row => row.getAttribute("data-run-row") === focusedRow) ?? root.firstElementChild as HTMLElement).focus();
+    } else if (focusedRow) (runRows.find(row => row.getAttribute("data-run-row") === focusedRow)?.querySelector<HTMLButtonElement>("button") ?? root.firstElementChild as HTMLElement).focus();
   }
   async function refresh(): Promise<void> {
     if (disposed || ctx.signal.aborted) return;

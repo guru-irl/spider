@@ -116,3 +116,7 @@ it("reset crossing uses the observed reset boundary when short months overlap",(
  const fresh=polls(ts("2027-01-31")+600000,now-600000,"2027-02-28",20);
  expect(counterRate([...old,...fresh],{start,end:now})).toBeCloseTo(10,10);
 });
+
+it.each([120, 200])("projection within scale %s has no over amount", budget => {
+ const pace=computePace({...base,budget}); expect(pace.projected).toBe(120); expect(pace.overAtPace).toBeNull();
+});

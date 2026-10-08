@@ -3,7 +3,7 @@ import { startDashboard } from "../web/app.js";
 import { hashRoute, routeHash } from "../web/navigation.js";
 import { createDashboardClient, canRetry, DashboardClientError } from "../web/client.js";
 import { PlainDocument, descendants, button, settle } from "./fixtures/plain-dom.js";
-import { envelope, statusFixture } from "./fixtures/redesign-contract.js";
+import { envelope, statusFixture, overviewFixture, sessionsFixture } from "./fixtures/redesign-contract.js";
 import type { DashboardPageContext, DashboardPageMount } from "../dashboard-v4-contract.js";
 const now = Date.UTC(2026, 9, 6, 9, 12);
 function browser(doc: PlainDocument, hash = "#/") {
@@ -115,4 +115,28 @@ it("direct-entry Session Back preserves the initial Tokens unit", () => {
   const mount: DashboardPageMount = ctx => { contexts.push(ctx); return { refresh: async () => {}, dispose() {} }; };
   const app = startDashboard({ document: doc.asDocument(), now: () => now, client: { get: async () => envelope(statusFixture()) as never }, mounts: { overview: mount, session: mount } });
   try { contexts[0]!.back(); expect(contexts.at(-1)!.route).toMatchObject({ page: "overview", query: { unit: "tokens", range: "7d" } }); } finally { app.dispose(); }
+});
+
+it.each(["credits", "runs"] as const)("one sixty-second refresh preserves expanded %s sessions and the pace popover", async sort => {
+  vi.useFakeTimers(); const doc = new PlainDocument(), d = overviewFixture(), row = d.sessions.rows[0]!;
+  const all = Array.from({ length: 12 }, (_, i) => ({ ...structuredClone(row), id: `session-${i}`, name: `Session ${i}` }));
+  d.sessions = sessionsFixture({ rows: all.slice(0, 10), total: 12, nextOffset: 10 });
+  const requests: URLSearchParams[] = [];
+  const app = startDashboard({ document: doc.asDocument(), now: () => now, initialRoute: { page: "overview", query: d.range }, client: { async get<T>(path: string, params: URLSearchParams) {
+    if (path === "/api/sessions") { requests.push(params); const offset = Number(params.get("offset")), limit = Number(params.get("limit")); return envelope(sessionsFixture({ rows: all.slice(offset, offset + limit), total: 12, nextOffset: offset + limit < 12 ? offset + limit : null })) as never; }
+    return envelope(path === "/api/status" ? statusFixture() : d) as never;
+  } } });
+  try {
+    await settle();
+    if (sort === "runs") { descendants(doc.body).find(n => n.getAttribute("data-focus") === "session-sort-runs")!.click(); await settle(); }
+    button(doc.body, "Show all 12").click(); await settle();
+    expect(descendants(doc.body).filter(n => n.hasAttribute("data-session"))).toHaveLength(12);
+    const trigger = descendants(doc.body).find(n => n.className === "pace-trigger")!; trigger.dispatchEvent(new Event("pointerenter"));
+    expect(descendants(doc.body).find(n => n.className === "pace-popover")!.hidden).toBe(false);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(descendants(doc.body).filter(n => n.hasAttribute("data-session"))).toHaveLength(12);
+    expect(requests.at(-1)!.get("offset")).toBe("0"); expect(requests.at(-1)!.get("limit")).toBe("100");
+    expect(requests.at(-1)!.get("sort")).toBe(sort);
+    expect(descendants(doc.body).find(n => n.className === "pace-popover")!.hidden).toBe(false);
+  } finally { app.dispose(); vi.useRealTimers(); }
 });

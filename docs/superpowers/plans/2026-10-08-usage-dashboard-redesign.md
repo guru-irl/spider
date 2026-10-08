@@ -1,6 +1,6 @@
 # Usage Dashboard Redesign Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace the usage dashboard with Overview, whole-session detail, and Calibration & data, backed by attributable, billing-corrected credits and optional monthly pacing budgets.
 
@@ -9,6 +9,13 @@
 **Tech Stack:** TypeScript, better-sqlite3 through the existing DB wrapper, Intl, hand-built SVG, separate Vite 8 extension/browser builds, Vitest and @playwright/test 1.63.0 driving installed Edge locally and installed Chrome in CI.
 
 **Spec:** `docs/superpowers/specs/2026-10-08-usage-dashboard-redesign.md` at 722f6fc: build/serving section 12, schema/settings/footer/removals sections 13-16, Playwright verification section 17. Also read `packages/host/PRODUCT.md`, the direction contract in `packages/host/.impeccable/surfaces/src-usage-web-app-ts.md`, and the approved mock (path given in each task brief). The spec wins where the mock differs, especially no even-pace or limit tick.
+
+## Deviations
+
+- Tasks 4 and 5 were implemented together so metadata ownership and shared queries could use one consistent contract.
+- Task 17 was split into retirement and page wiring. Its browser retirement work was completed with Task 11, and unused composition-provider code was removed.
+- Chip styling was refined to match the approved mock.
+- Whole-branch review fixes rounded Calibration figures, aligned pace semantics, corrected font loading, preserved refresh state, reduced keyboard stops, disclosed combined Session details, and completed the legacy-helper and documentation cleanup.
 
 ## Global Constraints
 
@@ -24,7 +31,7 @@
 - Before npm commands, set `TMPDIR`, `npm_config_cache` and `npm_config_logs_dir` to owned directories under the supplied scratch root. Any test/probe loading spider or pi uses `env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID`. Guard every `cd` with `|| exit 1`. Do not alter real HOME.
 - Playwright is headless. Channel is `SPIDER_PLAYWRIGHT_CHANNEL`, else `chrome` when `CI` is set, else `msedge`. Launch args: `--use-mock-keychain --password-store=basic --no-first-run --no-default-browser-check --disable-sync --disable-features=MediaRouter`. Keep real HOME. Set TMPDIR before launching browsers; local profiles/output stay under `.spider/scratch/playwright/`, CI output under gitignored `playwright-results/`. SIGKILL only owned fixture processes in teardown, and close all browser contexts.
 - Preserve bootstrap cookie/origin checks, CSP, server lifecycle, native worker packaging, counter polling, v1-v3 migration SQL, canonical selection and dimension_values. Keep the package DAG and browser runtime-import boundary. Import pi packages from their roots.
-- Desktop browsers only; dark only; keyboard operable; WCAG AA text contrast; equivalent table for every chart. Fonts load local(), then Google Fonts font files, then system fonts, without requiring network access. Script/style CSP is 'self' only with no inline code or style attributes; use packaged CSS/FontFace sources at fonts.gstatic.com, not a Google Fonts stylesheet link.
+- Desktop browsers only; dark only; keyboard operable; WCAG AA text contrast; equivalent table for every chart. Font stacks list installed families first, then separately named Google Fonts faces, then named system fallbacks, without requiring network access. Script/style CSP is 'self' only with no inline code or style attributes; use packaged CSS/FontFace sources at fonts.gstatic.com, not a Google Fonts stylesheet link.
 - Overview defaults to rolling 7 days, credits. Custom range is local date/time, at most 93 days. Session always uses its entire lifetime. Half-open time bounds use milliseconds; browser IANA zone is sent to the API and invalid zones fall back to UTC. Calibration timestamps/buckets are UTC.
 - Every task brief includes the approved mock (path given in each task brief) and its source facts. Do not reproduce its preview controls, illustrative downstream scaling, nested boxes, extra events table or even-pace tick.
 
@@ -148,18 +155,18 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Fixture builders: `statusFixture(overrides?: Partial<StatusData>): StatusData`, `overviewFixture(overrides?: Partial<OverviewDataV4>): OverviewDataV4`, `sessionsFixture(overrides?: Partial<SessionsData>): SessionsData`, `sessionFixture(overrides?: Partial<SessionData>): SessionData`, `calibrationFixture(overrides?: Partial<CalibrationData>): CalibrationData`, `envelope<T>(data: T, period?: Period): ApiEnvelope<T>`. Builders produce fresh nested objects, not shallow-shared arrays.
 - Fixture-only exports in tests/fixtures/redesign-contract.ts: `FixtureScenario = "default" | "no-data" | "no-budget" | "counter-unavailable" | "over-pace" | "stale" | "unknown-session" | "error"`; `FixtureStateCase = { name: string; page: DashboardRouteV4["page"]; scenario: FixtureScenario; responses: Readonly<Record<string, { status: number; body: ApiEnvelope<unknown> | ApiErrorBody | SessionNotFound }>> }`; `fixtureStateCases(): readonly FixtureStateCase[]`. Include the section 9 cases and default for every page, applying page-specific empty/error/not-found and component states honestly. Consumers transport these as JSON; browser imports of the types are erased, never runtime imports of builders.
 
-- [ ] **Step 1: Write failing contract tests.**
+- [x] **Step 1: Write failing contract tests.**
   - `five routes have complete finite fixture DTOs`: assert `overviewFixture().range.range === "7d"`, `.range.unit === "credits"`, `.sessions.limit === 10`, all five builders satisfy their DTOs with `satisfies`, and no forbidden private field occurs recursively.
   - `fixtures are isolated`: mutate one result's nested arrays and assert a second result is unchanged; fixtureStateCases covers every section 9 state/default, returns fresh response data and has no forbidden private fields.
   - `session 404 is typed`: assert `body satisfies SessionNotFound` and `body.error.message === "Session not found"`.
-- [ ] **Step 2: Run RED.** `node node_modules/vitest/vitest.mjs run packages/host/src/usage/__tests__/redesign-contract.test.ts`; expect missing exports/contracts, not environment errors.
-- [ ] **Step 3: Implement the contracts/builders.**
+- [x] **Step 2: Run RED.** `node node_modules/vitest/vitest.mjs run packages/host/src/usage/__tests__/redesign-contract.test.ts`; expect missing exports/contracts, not environment errors.
+- [x] **Step 3: Implement the contracts/builders.**
   - Use existing tokens/envelope types, plain synthetic model/session names, and small independently invented values.
   - Sessions additionally accept optional unit/buckets although omitted from the spec's route table, because expanded selection must match Overview; defaults are credits/no selection.
   - Share is a fraction in [0,1].
   - Unknown legacy terminal status is null, rendered unavailable rather than guessed.
-- [ ] **Step 4: Run GREEN and typecheck.** Repeat the test command and `npm run -s typecheck`; expect all assertions pass and exit 0.
-- [ ] **Step 5: Fresh reviewer gate.** Check every spec section 11 field against the DTOs, no browser runtime server import, fixture isolation, and no private data. Leave files uncommitted and record the released contract.
+- [x] **Step 4: Run GREEN and typecheck.** Repeat the test command and `npm run -s typecheck`; expect all assertions pass and exit 0.
+- [x] **Step 5: Fresh reviewer gate.** Check every spec section 11 field against the DTOs, no browser runtime server import, fixture isolation, and no private data. Leave files uncommitted and record the released contract.
 
 ### Task 2: Split the dashboard build and serve authenticated packaged assets
 
@@ -220,16 +227,16 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - FontFace loading uses local faces first, direct Google font files second, system fallback last; no inline style/script or remote stylesheet link.
 - Keep the old page/app.ts working, with legacy font families until Task 11.
 
-- [ ] **Step 1: Write failing build/asset tests.**
+- [x] **Step 1: Write failing build/asset tests.**
   - `two independent builds preserve each other` (explicit Vitest test timeout `180_000` ms): build extension/dashboard into owned scratch; assert dist entries exactly extension.js/dashboard, dashboard entries index.html/assets, only hashed JS/CSS, no maps/states/virtual HTML string and total dashboard bytes <=512 * 1024. Run dashboard first then extension and compare asset hashes; run extension watch through its initial write and one source-triggered rebuild and compare them again; dashboard rebuild preserves extension bytes and removes stale dashboard hashes. Watch fixture uses a copied synthetic checkout, never edits a concurrent worker's source.
   - `dev and e2e states never ship`: resolved production config has only index input; dev/e2e add states and return fresh Task 1 envelopes. Resolved dashboard config pins modulePreload polyfill false and assetsInlineLimit 0. Boundary rejects a runtime outside-web import (including symlink escape) but accepts a type-only contract import and HTML/CSS entry plumbing.
   - `asset routes require cookies and exact paths`: bootstrap synthetic server, assert unauthorized asset 401, GET/HEAD types/cache/body behavior, origin 403, exact keys only. Raw `/assets/../extension.js`, encoded dots/slashes, double encoding, nested paths, absolute paths and unknown hashes return 401 without a cookie and 404 after authentication, never the generic parse-failure 400; no request-time filesystem access. Change/delete files after startup and assert cached bytes still served; spy each file read exactly once.
   - `assets fail clearly before startup`: missing HTML/JS/CSS or a referenced file throws the typed missing code; invalid shape/cap throws invalid. Launcher reports the same safe code, /usage actionable notification and /doctor line; no reader/participant or leftover process on failure.
   - `external CSP has no inline permission`: exact directives above, no sha256/unsafe-inline/remote style permission, existing nonce/cookie/transport/native-worker lifecycle stays intact. Bundle guard rejects extra root files, missing/extra dashboard files, maps, states and oversize payloads.
-- [ ] **Step 2: Run RED.** Run the new build-isolation/asset-routes tests and rewritten dashboard-assets/dashboard-bundle/dashboard-entry/server-security tests with Vitest; expect embedded build/inline CSP/absent asset-loader assertions to fail, not native fixture errors.
-- [ ] **Step 3: Implement the separate builds, middleware, loader and safe startup errors.** Extract the small boundary plugin, keep app.ts the HTML entry, replace only the server's HTML transport and font loading, and extend the bundle guard to the exact two-level shape/cap. Preserve old views and routes until their owning tasks; no unsafe inline fallback when files are missing.
-- [ ] **Step 4: Run GREEN.** Repeat all new/rewritten tests plus adapted server/launcher/doctor and worker-bundle tests; `npm run -s typecheck`, then `npm run build`. Expect old app still usable, output isolation including watch verified, exact package shape and no inline CSP hash code. Retain exact counts.
-- [ ] **Step 5: Fresh reviewer gate.** Review output ownership/watch proof, import boundary, cookie-gated exact memory routes, CSP/fonts and typed cross-process startup error. Release package.json, server/entry/security and font files in sequence; leave uncommitted. Old nested-build script/declaration remain dead until Task 17 removes them explicitly.
+- [x] **Step 2: Run RED.** Run the new build-isolation/asset-routes tests and rewritten dashboard-assets/dashboard-bundle/dashboard-entry/server-security tests with Vitest; expect embedded build/inline CSP/absent asset-loader assertions to fail, not native fixture errors.
+- [x] **Step 3: Implement the separate builds, middleware, loader and safe startup errors.** Extract the small boundary plugin, keep app.ts the HTML entry, replace only the server's HTML transport and font loading, and extend the bundle guard to the exact two-level shape/cap. Preserve old views and routes until their owning tasks; no unsafe inline fallback when files are missing.
+- [x] **Step 4: Run GREEN.** Repeat all new/rewritten tests plus adapted server/launcher/doctor and worker-bundle tests; `npm run -s typecheck`, then `npm run build`. Expect old app still usable, output isolation including watch verified, exact package shape and no inline CSP hash code. Retain exact counts.
+- [x] **Step 5: Fresh reviewer gate.** Review output ownership/watch proof, import boundary, cookie-gated exact memory routes, CSP/fonts and typed cross-process startup error. Release package.json, server/entry/security and font files in sequence; leave uncommitted. Old nested-build script/declaration remain dead until Task 17 removes them explicitly.
 
 ### Task 3: Add immutable ledger v4 storage
 
@@ -243,21 +250,21 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Add optional `ImportBatch.sessions`, `.metadataCheckpoints`; add `UsageLedger.getSessions(): readonly SessionMeta[]` and `.getMetadataCheckpoint(path: string): MetadataCheckpoint | undefined`.
 - SQL: `runs_meta.status` nullable with `CHECK (status IN ('queued','running','paused','done','failed','cancelled'))`; `sessions` keyed by id, owner_session_id, name/name_source, project, nullable first_activity/last_activity, name_order; `session_metadata_import` keyed by path with generation/offset/size/complete checks. Index `sessions_owner(owner_session_id,id)`; revision triggers for session/status changes. Metadata fields are private store inputs, public outputs still redact.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `v3 upgrades once without changing selected calls`: assert version 4, identical selected fingerprints/tokens/published credits before/after, retained dimension_values, and unchanged v1-v3 SQL.
   - `status only update invalidates revision`: assert revision increments on status change, not no-op.
   - `fenced metadata batch is atomic`: assert `apply` false leaves runs/sessions/checkpoints unchanged.
   - `metadata preserves later name and span`: older nameOrder cannot replace later name; min/max activity extends span.
   - `durable v4 drift is rejected`: an extra persistent table or altered trigger fails schema assertion.
   Assertions: `expect(version).toBe(4)`; `expect(selectedAfter).toEqual(selectedBefore)`; `expect(ledger.apply(rejectedBatch)).toBe(false)`; `expect(revisionAfterStatus).not.toBe(revisionBeforeStatus)`.
-- [ ] **Step 2: Run RED.** `node node_modules/vitest/vitest.mjs run packages/host/src/usage/__tests__/ledger-v4.test.ts`; expect missing v4 schema/API.
-- [ ] **Step 3: Implement storage and migration.**
+- [x] **Step 2: Run RED.** `node node_modules/vitest/vitest.mjs run packages/host/src/usage/__tests__/ledger-v4.test.ts`; expect missing v4 schema/API.
+- [x] **Step 3: Implement storage and migration.**
   - Append version 4, increment only the version constant, keep the existing layout marker and shipped SQL immutable.
   - Add all new durable objects through schema-v4.ts, not ad hoc writable opens.
   - Legacy status starts null.
   - Upsert the session map without clobbering newer names; preserve lease transactions and existing import state.
-- [ ] **Step 4: Run GREEN.** Run ledger-v4.test.ts, ledger-v3.test.ts, ledger-open.test.ts, ledger-counting.test.ts and ledger-leases.test.ts with Vitest, then `npm run -s typecheck`; expect fixture-only pass, no selection changes.
-- [ ] **Step 5: Fresh reviewer gate.** Review upgrade SQL/layout objects, revision triggers, fence rollback and name precedence. Document backup-before-upgrade and release ledger.ts to Task 4. Leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run ledger-v4.test.ts, ledger-v3.test.ts, ledger-open.test.ts, ledger-counting.test.ts and ledger-leases.test.ts with Vitest, then `npm run -s typecheck`; expect fixture-only pass, no selection changes.
+- [x] **Step 5: Fresh reviewer gate.** Review upgrade SQL/layout objects, revision triggers, fence rollback and name precedence. Document backup-before-upgrade and release ledger.ts to Task 4. Leave uncommitted.
 
 ### Task 4: Capture metadata, run status, ownership and collector identity
 
@@ -272,7 +279,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces `METADATA_BACKFILL_BYTES_PER_PASS = 4 * 1024 * 1024`; the worker supplies it to backfill only after normal ingest in each pass.
 - Publish optional worker collector metadata `{ kind: "pi" | "dashboard"; sessionId: string | null; owner: string }` alongside the fenced worker snapshot. Owner is coordination only, never a public DTO. Pass optional `sessionId` in UsageRuntimeOptions and worker start command. No counter-poller changes.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `latest name wins over first user and id`: named fixture wins, unnamed fixture uses trimmed first line of at most 80 code points, blank/nontext first message uses short id.
   - `name is redacted before storage`: encoded home/drive paths and terminal controls do not persist literally.
   - `huge content retains only a bounded first line`: multi-megabyte tool/assistant/user suffixes do not enter projected source_entries or metadata buffers.
@@ -287,16 +294,16 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `backfill never starves ingest`: with historical bytes beyond the per-pass budget, new live calls ingest first, lastIngestAt advances each pass while backfill.complete is false, and backfill.bytesRead <= `METADATA_BACKFILL_BYTES_PER_PASS`.
   - `deleted cwd preserves registered repo`: git failure for a nonexistent cwd uses the registered repo basename; no repo uses folder basename.
   Assertions: `expect(stored.nameSource).toBe("name")`; `expect([...stored.name].length).toBeLessThanOrEqual(80)`; `expect(billingOffsetAfter).toBe(billingOffsetBefore)`; `expect(secondPass.bytesRead).toBe(0)`.
-- [ ] **Step 2: Run RED.** Run session-metadata.test.ts and session-backfill.test.ts; expect absent metadata behavior.
-- [ ] **Step 3: Implement incremental capture and bounded backfill.**
+- [x] **Step 2: Run RED.** Run session-metadata.test.ts and session-backfill.test.ts; expect absent metadata behavior.
+- [x] **Step 3: Implement incremental capture and bounded backfill.**
   - Capture string session_info.name and only the first non-inherited user text line before compact() discards them; redact before storage. Latest nonempty /name wins. Never retain whole message bodies or use inherited history as the name.
   - Metadata activity uses canonical call timestamps, nullable with no calls; rebuild after replacement. Owned child rows retain ownerSessionId for evidence, not display.
   - Resolve project by cached git main-worktree name, then registered repo basename, then cwd folder basename, including deleted cwd. Do not walk repositories in discovery.
   - Join runStates by `(dbPath,id)`; normalize unknown status to null before comparing/writing RunMeta so the CHECK cannot reject ingest.
   - Each pass runs normal ingest first, then backfill with fixed `METADATA_BACKFILL_BYTES_PER_PASS = 4 * 1024 * 1024`. Sum all bytes read across sources; large lines can resume across passes with bounded projection state.
   - Backfill each source once in fenced resumable chunks; metadata cursor never resets billing cursor. Preserve complete-line checkpoints and sanitize missing-file diagnostics.
-- [ ] **Step 4: Run GREEN.** Run the two new tests plus ingest.test.ts, jsonl-projection.test.ts, discovery.test.ts, runtime.test.ts and worker-entry.test.ts; then `npm run -s typecheck`. Expect unchanged canonical call totals and counter cadence.
-- [ ] **Step 5: Fresh reviewer gate.** Review privacy/buffer bounds, first-user text-block behavior, source-generation recovery, nested owner evidence, status-only updates and lease fencing. Release worker/mount publication files to Task 16; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run the two new tests plus ingest.test.ts, jsonl-projection.test.ts, discovery.test.ts, runtime.test.ts and worker-entry.test.ts; then `npm run -s typecheck`. Expect unchanged canonical call totals and counter cadence.
+- [x] **Step 5: Fresh reviewer gate.** Review privacy/buffer bounds, first-user text-block behavior, source-generation recovery, nested owner evidence, status-only updates and lease fencing. Release worker/mount publication files to Task 16; leave uncommitted.
 
 ### Task 5: Build the shared canonical rollup and time-zone projector
 
@@ -312,7 +319,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces `resolveOwner(ctx: DashboardQueryContext, sessionId: string | null, runId: string | null): string | null`, fixed `UNATTRIBUTED_SESSION_ID = "unattributed-runs"`, and `modelStyles(ctx: DashboardQueryContext): ReadonlyMap<string, ModelStyle>`. The reserved id always resolves only to Unattributed runs, never suffixes; a colliding stored human id keeps its totals but has a null drill-down id.
 - Human display rule (spec section 10): a sessions entry with null owner represents its own non-run transcript; before backfill, require own `actor IN ('parent','compaction','aux','warmer')` calls from a non-run transcript. Never promote a subagent-only id to a human row. Unresolvable ownership, including missing child transcripts with no parent_run_id, maps to the reserved row.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `daily correction reconciles every slice`: two synthetic UTC-day published totals 10 and 20 with factors 0.5 and 1 produce 25 credits in total/buckets/models/sessions/flow, never period-factor 30. An hourly/local-day bucket crossing UTC midnight has the same 25 across its pieces.
   - `token subsets are not added twice`: total equals input + cacheRead + cacheWrite + output.
   - `selection remains globally canonical`: native detail replaces report, copied history and covered descendants do not reappear under selected buckets.
@@ -325,16 +332,16 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `reserved identity is stable`: saved unattributed link and totals remain synthetic after a colliding stored session arrives, with no suffix.
   - `SQL uses bounded indexes`: EXPLAIN includes calls_period_read or calls_session_read with timestamp bounds, not a raw unbounded calls scan.
   Assertions: `expect(cube.total.credits).toBeCloseTo(25, 10)`; `expect(sumValues(cube.buckets.map(b => b.total)).credits).toBeCloseTo(25, 10)`; `expect(new Set(bucketKeys).size).toBe(bucketKeys.length)`; `expect(normalizeTimeZone("Not/AZone")).toBe("UTC")`.
-- [ ] **Step 2: Run RED.** Run time-buckets.test.ts and query-redesign-shared.test.ts; expect missing shared functions.
-- [ ] **Step 3: Implement one reusable aggregation.**
+- [x] **Step 2: Run RED.** Run time-buckets.test.ts and query-redesign-shared.test.ts; expect missing shared functions.
+- [x] **Step 3: Implement one reusable aggregation.**
   - Compute Intl boundaries in JS and bind bounded JSON/json_each to SQL. Hours for duration <=48h, days otherwise; aligned keys never change when the first/last bucket's measure bounds are clipped.
   - Split local buckets at UTC days; fit clipped day-end minus 1 ms with earliest back-application. Every atMany batch, including corrected components, has <=200 endpoints and a span <=366 days. Batch component call ids in bounded SQL sets, not one query per idle gap.
   - Retain the last accepted factor for counter-unavailable fallback without changing acceptance maths. Sum corrected pieces consistently; preserve null prices.
   - Resolve ownership with unique evidence/cycle checks and the human display rule above. Role uses runs_meta when report role is absent. Unknown subagent roles map to `other-runs`, labelled Other runs; omit empty flow nodes per spec sections 6/10.
   - Rank model styles by a cheap all-history uncorrected canonical published-credit aggregate, then model name, using `calls_provider_model_ts`. Cache per ledger and UTC day, not revision; no calibration pass for this catalogue. Use tomato/sky/sage/mustard first, deterministic warm extensions and shape markers.
   - Keep no per-call HMAC or per-row query loop.
-- [ ] **Step 4: Run GREEN.** Run both new files plus selection-v3-differential.test.ts and calibration-differential.test.ts; `npm run -s typecheck`. Expect exact token counts and credit assertions within floating precision, unchanged engine differential results and bounded index plans.
-- [ ] **Step 5: Fresh reviewer gate.** Review correction reconciliation, full-session chunking, role completeness, reserved identity stability, human display evidence, DST algorithm and query plans. Leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run both new files plus selection-v3-differential.test.ts and calibration-differential.test.ts; `npm run -s typecheck`. Expect exact token counts and credit assertions within floating precision, unchanged engine differential results and bounded index plans.
+- [x] **Step 5: Fresh reviewer gate.** Review correction reconciliation, full-session chunking, role completeness, reserved identity stability, human display evidence, DST algorithm and query plans. Leave uncommitted.
 
 ### Task 6: Implement billing period and pace calculations
 
@@ -347,7 +354,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces `billingPeriod(now: number, snapshot: CounterSnapshot | undefined): Period`, `counterRate(snapshots: readonly CounterSnapshot[], window: Period): number | null`, and `computePace(input: { now: number; snapshots: readonly CounterSnapshot[]; budget: number | undefined; correctedMonth: number | null; correctedWindow: number | null }): Pace`.
 - Rates and remaining days use fractional UTC days, not inclusive calendar-date counts. A snapshot's reset is the next UTC reset instant. Subtract one calendar month with day clamping; unusable counter period falls back to the UTC calendar month.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `reset defines billing month`: reset March 31 in a non-leap fixture implies February 28 start, not March 3.
   - `counter takes account-wide used`: in-period used 100, budget 200 -> remaining 100, scale 200; budget absent and entitlement 400 -> scale 400, evenPace null.
   - `seven day projection`: full covered window delta 70 over 7 days -> rate 10, used 100 with 2 days left -> projected 120.
@@ -357,16 +364,16 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `no denominator or counter`: null scale/projected when evidence absent, no NaN/infinity; pi estimate available still supplies used.
   - `danger semantics`: projected > budget means overAtPace, used above elapsed budget means overPace; these flags do not depend on Tokens mode.
   Assertions: `expect(pace.ratePerDay).toBe(10)`; `expect(pace.projected).toBe(120)`; `expect(noBudget.evenPace).toBeNull()`; `expect(unavailable.scale).toBeNull()`.
-- [ ] **Step 2: Run RED.** Run billing-pace.test.ts; expect missing pace exports.
-- [ ] **Step 3: Implement pure pace math.**
+- [x] **Step 2: Run RED.** Run billing-pace.test.ts; expect missing pace exports.
+- [x] **Step 3: Implement pure pace math.**
   - Validate dates/counters and use only same-account/reset monotonic accepted chains.
   - Interpolate bracketing counter endpoints for the rate estimate only; never daily Calibration chart values.
   - When coverage fails use corrected pi window / elapsed days.
   - Used picks a valid in-period snapshot regardless of whether its freshness is stale, otherwise corrected month estimate.
   - Latest valid entitlement supplies allowance.
   - Zero/invalid denominators remain null, not zero-filled. overAtPace is excess over budget, or allowance without a budget.
-- [ ] **Step 4: Run GREEN.** Run billing-pace.test.ts and calibration-periods.test.ts; `npm run -s typecheck`; expect pure fixture calculations and no poller edits.
-- [ ] **Step 5: Fresh reviewer gate.** Review reset boundaries, interpolation disclosure, fallback window and danger flags; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run billing-pace.test.ts and calibration-periods.test.ts; `npm run -s typecheck`; expect pure fixture calculations and no poller edits.
+- [x] **Step 5: Fresh reviewer gate.** Review reset boundaries, interpolation disclosure, fallback window and danger flags; leave uncommitted.
 
 ### Task 7: Implement Overview and paged Sessions queries
 
@@ -380,7 +387,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Grammar: range is 24h/7d/30d/month/custom. `range=custom` requires paired numeric millisecond from/to and <=93 days; presets ignore from/to and derive bounds at the server. Month uses billingPeriod clipped to now. Buckets is a JSON array of unique safe-integer aligned start keys; malformed grammar/values (including unknown parameters) or duplicates return invalid-query, not well-formed aged-out keys.
 - Intersect requested selection with current bucket keys and echo it in `OverviewDataV4.range.buckets`; no selection means full range. Response from/to are resolved bounds, not a preset freeze. Paging uses the same preset/custom grammar; discard stale pages if refreshed bounds/revision differ. Freeze a shared range only by converting it to custom.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `default seven days uses hourly threshold correctly`: default 7d is daily, 24h is hourly, exactly 48h hourly and larger daily.
   - `noncontiguous selection filters downstream only`: selected bucket keys change selectedTotal/models/sessions/flow, while range total/bars and pace stay unchanged; empty selection means full range.
   - `top sessions reconcile roles and notes`: each role split sums to its row, top3Share is over all matching sessions, model source note comes from actual dominant actor/role, unpriced reasons counted once.
@@ -392,14 +399,14 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `custom caps and SQL index use`: 93 days accepted, longer rejected; EXPLAIN bounded indexes.
   - `pace ignores custom historical range`: current billing pace is unaffected by historical or bucket selection.
   Assertions: `expect(data.sessions.limit).toBe(10)`; `expect(selected.pace).toEqual(unselected.pace)`; `expect(selected.total).toEqual(unselected.total)`; `expect(selected.flow.total).toEqual(selected.selectedTotal)`; `expect(firstPage.rows).toEqual(data.sessions.rows)`.
-- [ ] **Step 2: Run RED.** Run query-overview-v4.test.ts and query-sessions.test.ts; expect absent new queries.
-- [ ] **Step 3: Implement focused route queries.**
+- [x] **Step 2: Run RED.** Run query-overview-v4.test.ts and query-sessions.test.ts; expect absent new queries.
+- [x] **Step 3: Implement focused route queries.**
   - Intersect well-formed selection with timeBuckets keys before reading the cube and echo it in range.buckets. Read one cube for that effective range, derive downstream totals, and read the separate billing window for pace.
   - Model note uses a deterministic strongest source with percentage where known; no inferred prompt composition.
   - Use range summary counts for total sessions/runs and top-three share.
   - Validate optional sessions unit/buckets exactly as Overview.
-- [ ] **Step 4: Run GREEN.** Run both new tests; `npm run -s typecheck`; expect consistent routes, no retired generic endpoint dependency.
-- [ ] **Step 5: Fresh reviewer gate.** Review exact parameter validation, selection invariants, stable pagination and bounded plans; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run both new tests; `npm run -s typecheck`; expect consistent routes, no retired generic endpoint dependency.
+- [x] **Step 5: Fresh reviewer gate.** Review exact parameter validation, selection invariants, stable pagination and bounded plans; leave uncommitted.
 
 ### Task 8: Implement whole-session query and transit inputs
 
@@ -413,7 +420,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Compute span at query time via indexed MIN/MAX(ts) over canonical calls for the owner and mapped children, never cached metadata activity. End is MAX(ts)+1 ms; no calls -> span null. Use canonical own-call order `(ts,id)`; >5min gaps are idle, >30min splits active periods.
 - Return one `ownCallBins` aggregate per active period, not per-call ownCalls. Preserve the raw count in stats.ownCalls and compute gaps/next-call cache-write values server-side. Request all next-call ids in one bounded `readCorrectedComponents` operation, then omit those ids from the wire. Each idleGaps entry contains only start, end and cacheWriteCredits; derive duration as end - start, with no per-gap ids or copied periods.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `old session ignores Overview range`: historical fixture returns every lifetime selected call including last call and nested children.
   - `header models flow and runs reconcile`: sum role/model credits equals header, direct-run totals do not recursively duplicate descendant usage. Zero-call runs remain in the runs list if owned, without invented cost/model.
   - `statuses use facts`: done -> completed, failed/cancelled keep their pills; queued/running/paused without end -> running, unknown/null -> null, never guessed completed.
@@ -433,14 +440,14 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `expect(longData.idleGaps.every(g => Object.keys(g).sort().join(",") === "cacheWriteCredits,end,start")).toBe(true)`
   - `expect(data.runs.map(r => r.status)).toEqual(["completed", "cancelled", "failed", "running", "running", "running", null])`
   - `expect(data.idleGaps.map(g => g.end - g.start)).toEqual([300001, 1800001])` for the isolated threshold fixture.
-- [ ] **Step 2: Run RED.** Run query-session.test.ts; expect absent whole-session query.
-- [ ] **Step 3: Implement SessionData and period resolution.**
+- [x] **Step 2: Run RED.** Run query-session.test.ts; expect absent whole-session query.
+- [x] **Step 3: Implement SessionData and period resolution.**
   - Resolve indexed query-time span over owner/mapped children; include every canonical lifetime call, with no Overview filter or generic detail/relationship requests.
   - Attach distinct runs/compaction; compute own sequence, gaps and active periods server-side. Send aggregated ownCallBins and count, never the raw own-call sequence; serialize compact idleGaps with only start/end/cacheWriteCredits, no nextCallId, durationMs or copied period. Separate auxiliary/warmer from own calls.
   - Batch corrected next-call components under Task 5 limits; derive the same shared flow/models.
   - Join status by metadata identity using the mappings above; retain unavailable values. Known no-call sessions return the header/empty state; zero-run sessions retain baseline/own flow only.
-- [ ] **Step 4: Run GREEN.** Run query-session.test.ts and selection-v3-detail.test.ts; `npm run -s typecheck`; expect exact lifetime membership, honest nulls and index-plan assertions.
-- [ ] **Step 5: Fresh reviewer gate.** Review ownership, report-only timeline limits, terminal statuses, threshold boundaries and long-session memory; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run query-session.test.ts and selection-v3-detail.test.ts; `npm run -s typecheck`; expect exact lifetime membership, honest nulls and index-plan assertions.
+- [x] **Step 5: Fresh reviewer gate.** Review ownership, report-only timeline limits, terminal statuses, threshold boundaries and long-session memory; leave uncommitted.
 
 ### Task 9: Implement Calibration & data and Status queries
 
@@ -454,7 +461,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces `readCounterIntervals(ctx: DashboardQueryContext, period: Period): readonly CounterInterval[]`, `readIngestionStatus(ctx: DashboardQueryContext): CalibrationData["ingestion"]`, `queryStatusV4(ctx: DashboardQueryContext): StatusData`, `queryCalibration(ctx: DashboardQueryContext): CalibrationData`, `CALIBRATION_V4_ROUTES: readonly DashboardRoute[]` for exact `/api/status` and `/api/calibration`.
 - Calibration default evidence is the current billing period in UTC; intervals are newest first; response returns the period's full small interval list, web initially shows 10. Account counter delta and published estimate use exactly matching accepted intervals, not the absolute used figure. Rate numbers are published credits per 1M tokens, converted from existing public USD rates at 100 credits/USD. Expose one row per tier with tier name, abovePromptTokens and source date. Stored cache-write 0 displays/prices as 0; only genuinely unavailable values are null.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `matched correction summary is evidence not whole month`: both sums use matching intervals; factor/status follows existing engine.
   - `counter gaps remain null`: no snapshot evidence -> null day, never zero; accepted zero delta remains numeric zero. Cross-midnight intervals are grouped by later UTC endpoint with no invented apportionment, and published comparison uses the same matched spans.
   - `rates and unpriced counts are truthful`: source date and 100 credits/USD conversion correct; a two-tier model yields two rows with exact tier/abovePromptTokens thresholds; stored cacheWrite 0 remains numeric/displayed 0, genuine null stays unavailable, unknown models are not priced at zero.
@@ -464,15 +471,15 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `status has build freshness and unavailable fallback shape`: fields remain present even with no ledger/counter.
   - `snapshot interval query is indexed`: EXPLAIN uses counter_snapshots_ts and bounded call indexes.
   Assertions: `expect(data.daily[0].counterDelta).toBeNull()` for an uncovered day; `expect(data.daily[1].counterDelta).toBe(0)` for an accepted zero pair; `expect(status.collector).toBe("this-session")`; `expect(JSON.stringify(status)).not.toContain(ownerId)`.
-- [ ] **Step 2: Run RED.** Run query-calibration.test.ts and ingestion-status.test.ts; expect absent new query functions.
-- [ ] **Step 3: Implement focused evidence queries.**
+- [x] **Step 2: Run RED.** Run query-calibration.test.ts and ingestion-status.test.ts; expect absent new query functions.
+- [x] **Step 3: Implement focused evidence queries.**
   - Extract accepted-pair/redacted-error behavior into new focused helpers; retain engine maths.
   - Show calibrated/back-applied/published-only/counter-unavailable status from actual evidence.
   - Read live lease state rather than interpreting follower as the collector.
   - Preserve later-endpoint UTC interval grouping and honest missing observations; short UI copy will disclose observed intervals, not imply precise calendar-day billing.
   - Do not read raw counter responses.
-- [ ] **Step 4: Run GREEN.** Run both new tests plus calibration.test.ts and calibration-invalid-anchor.test.ts; `npm run -s typecheck`; expect immutable engine results and no private fields.
-- [ ] **Step 5: Fresh reviewer gate.** Review matched-span comparisons, null gaps, collector expiry, rate units and redaction; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run both new tests plus calibration.test.ts and calibration-invalid-anchor.test.ts; `npm run -s typecheck`; expect immutable engine results and no private fields.
+- [x] **Step 5: Fresh reviewer gate.** Review matched-span comparisons, null gaps, collector expiry, rate units and redaction; leave uncommitted.
 
 ### Task 10: Integrate the five authenticated HTTP routes
 
@@ -486,7 +493,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces exactly the Task 1 HTTP mapping, keeping HEAD behavior and snapshot transactions. Declare explicit `responseCaps` for all five routes using Task 1 `RESPONSE_CAPS_V4`: status 8 KiB, overview 1 MiB, sessions 512 KiB, session 2 MiB, calibration 1 MiB. Dynamic session lookup uses the matched route's template key `/api/session/<id>`, never the raw pathname/default cap; compare UTF-8 envelope bytes directly. Dynamic session matcher accepts exactly one supported id segment. Optional openerSessionId is sent only through the bearer-authenticated local mint request, stored in nonce/cookie context, injected privately as ctx.viewerSessionId and never exposed in URL/JSON/logs. Reused server mints the correct caller context anew.
 - Reader budget callback reads current normalized global usage config from the already supplied calibration config file, never a ledger write. `serverBuild` and rateVersions stay in status for launcher build-reuse validation.
 
-- [ ] **Step 1: Write failing HTTP tests.**
+- [x] **Step 1: Write failing HTTP tests.**
   - `five route envelopes match fixture contracts`: boot isolated fixture server, bootstrap once, assert all responses/types/periods.
   - `session 404 has no generic retry body`: status 404 and exact SessionNotFound; unsupported id -> 400; traversal/extra path segment never matches.
   - `retired routes return not-found`: every spec section 11 removal is 404, not an alias.
@@ -497,14 +504,14 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `full session envelope ignores Overview bounds`: no old start/end preflight applies to session route; span/envelope resolve within the same reader snapshot and known no-call session returns 200 with empty period.
   - `all five caps are enforced`: each matched route uses its explicit cap, including dynamic session and no-ledger status fallback; oversized envelopes return 413 response-limit. Repeat Task 8's six-month/50000-call/300-run fixture with at least 10000 compact idle gaps through the real matcher: HTTP 200, all gaps/runs retained and UTF-8 body <= `RESPONSE_CAPS_V4["/api/session/<id>"]` (2 MiB).
   Assertions: `expect(reply.status).toBe(404)`; `expect(reply.body).toEqual({ apiVersion: 1, error: { code: "not-found", message: "Session not found" } })`; `expect(unauthenticated.status).toBe(401)`; `expect(crossOrigin.status).toBe(403)`.
-- [ ] **Step 2: Run RED.** Run redesign-api.test.ts; expect missing dynamic route/new contract integration.
-- [ ] **Step 3: Wire focused routes and private context.**
+- [x] **Step 2: Run RED.** Run redesign-api.test.ts; expect missing dynamic route/new contract integration.
+- [x] **Step 3: Wire focused routes and private context.**
   - Replace old registration/preflight with focused route validation and explicit byte caps, including dynamic session/fallback status. Do not use retired parseSlice/parsePage.
   - Resolve session envelope span inside the same reader snapshot; null span uses the empty transport period from Task 8. Override only session not-found body; retain generic fixed path-free errors.
   - Validate opener header after bearer/transport gates, bind to credentials, and preserve origin/security parsing.
   - Keep status fallback build validation and reloadable settings.
-- [ ] **Step 4: Run GREEN.** Run redesign-api.test.ts plus server-security.test.ts, server-runtime.test.ts, server-entry.test.ts, dashboard-command.test.ts and server-ingest.test.ts; `npm run -s typecheck`.
-- [ ] **Step 5: Fresh reviewer gate.** Review dynamic matching, session 404, fallback envelopes, nonce caller context, security regression and read-only access. Leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run redesign-api.test.ts plus server-security.test.ts, server-runtime.test.ts, server-entry.test.ts, dashboard-command.test.ts and server-ingest.test.ts; `npm run -s typecheck`.
+- [x] **Step 5: Fresh reviewer gate.** Review dynamic matching, session 404, fallback envelopes, nonce caller context, security regression and read-only access. Leave uncommitted.
 
 ### Task 11: Replace the shell and shared browser primitives
 
@@ -523,31 +530,31 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces `chartPair(document: Document, options: { id: string; title: string; svg: SVGElement; table: HTMLTableElement }): HTMLElement`, `renderFlow(document: Document, flow: FlowData, unit: Unit, id: string): HTMLElement`, `renderModelMarker(document: Document, style: ModelStyle): HTMLElement`, `sectionState(root: HTMLElement, state: "loading" | "empty" | "error", message: string, retry?: () => void): void`. Existing renderTable/tableRegion/element/action/liveMessage survive.
 - Produces `renderStateExamples(root: HTMLElement, mounts: Partial<Record<DashboardRouteV4["page"], DashboardPageMount>>, cases: readonly FixtureStateCase[]): Promise<void>` in web/state-examples.ts; cases use isolated roots, fixture-backed clients and bounded settled loading/empty/error/success renders. Page lanes export `mountOverviewStates`, `mountSessionStates`, `mountCalibrationStates` (each `(root: HTMLElement, cases: readonly FixtureStateCase[]) => Promise<void>`) from separate web/states-overview.ts, states-session.ts, states-calibration.ts, respectively. Each states module also exports `pageMount: DashboardPageMount` and `page: DashboardRouteV4["page"]`. Before Task 17, states.ts uses `import.meta.glob("./states-*.ts", { eager: true })` to discover only existing page modules inside web; `/states.html?page=<page>&scenario=<scenario>` mounts the actual startDashboard with these injectable mounts instead of the gallery (root is not usage-app). This fixture-only entry lets each e2e spec run GREEN before production registration, without duplicated UI or a shared registry edit. Task 17 replaces discovery with explicit final registry imports and moves page specs to index.html; parallel writers only create their own states module.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `only three hash pages and default seven days`: #/ default, #/session/id and #/calibration parse; unknown routes -> Overview; URL range/unit/selected starts reload exactly.
   - `back uses dashboard history or remembered Overview`: direct entry falls back to last range/unit/selection, not an old calendar month.
   - `freshness is five minutes`: at 300000 ms fresh, above grey #9b9690; tooltip/label contain last update.
   - `slow refresh cannot overwrite a new route`: aborted/out-of-order responses do not repaint; hidden tabs stop automatic 60s refresh and dispose aborts all pending work.
   - `each state settles and retries correctly`: empty/errors never leave loading; typed not-found is nonretryable.
   - `unparseable session id stays local`: malformed percent encoding or decoded unsupported id preserves a Session route with invalid sentinel id `""`; Session not found/Back renders with zero requests, not generic Retry or Overview.
-  - `font and CSP boundary`: local text/code/wordmark first, remote Fira Sans/Cascadia Code/Bebas Neue font files from fonts.gstatic.com only if needed, offline renders system fallback; no Google Sans or fonts.googleapis.com stylesheet link under style-src self.
+  - `font and CSP boundary`: installed text/code/wordmark families first, remote Fira Sans/Cascadia Code/Bebas Neue font files from fonts.gstatic.com only if needed, offline renders system fallback; no Google Sans or fonts.googleapis.com stylesheet link under style-src self.
   - `primitives pair equal numbers`: Chart/Table persists per chart and focus survives refresh.
   - `text contrast pairs meet AA`: derive actual text/background pairs from CSS declarations using theme tokens, resolving inheritance, not a hand-written colour list. Assert >=4.5 for normal text, >=3 for large text (>=24px or bold >=18.67px); newly used token pairs must join this check. Model colours are not relied on as body text.
   - `shell has no rail or shipped contract`: only menu/nav/status/refresh, no design metadata.
   Assertions: `expect(hashRoute("#/unknown", now, "UTC").page).toBe("overview")`; `expect(formatLocalTime(fixtureTuesday, "UTC")).toBe("Tue 6 OCT 09:12")`; `expect(root.querySelector(".usage-rail")).toBeNull()`; `expect(lastPaintedRoute).toBe(currentRoute)`.
-- [ ] **Step 2: Run RED.** Run web-shell-v4.test.ts, web-primitives-v4.test.ts and web-contrast.test.ts; expect old shell/fonts/route assertions to fail.
-- [ ] **Step 3: Implement shell/primitives against fixture page mounts.**
+- [x] **Step 2: Run RED.** Run web-shell-v4.test.ts, web-primitives-v4.test.ts and web-contrast.test.ts; expect old shell/fonts/route assertions to fail.
+- [x] **Step 3: Implement shell/primitives against fixture page mounts.**
   - Menu uses ground/bottom border, monochrome currentColor web mark, Bebas Neue SPIDER only, nav pills Overview/Calibration & data, right freshness/refresh.
   - Replace the legacy remote font families through Task 2 FontFace transport without changing CSP. Define the complete tokens above; one rounded 1px-border box per section, never nested. Use stylesheet/SVG attributes, no unsafe HTML or CSP-forbidden style attributes.
   - Dates Fri 2 OCT, times Tue 6 OCT 09:12; repeated hours have offset-bearing accessible labels. API whitelist contains exactly the new routes with validated ids.
   - Default credits; carry unit into Session/remembered Overview. Nav/freshness survive page errors; abort/dispose stale requests.
   - Released signatures/injected mounts unblock pages; Task 17 owns production imports. Retain deprecated helper wrappers until that cleanup.
-- [ ] **Step 4: Run GREEN and classify compatibility failures.**
+- [x] **Step 4: Run GREEN and classify compatibility failures.**
   - Run the three new tests plus web-primitives.test.ts and dashboard-assets.test.ts; adjust obsolete basis assertions only in new primitives tests until Task 17.
   - Also run dashboard-bundle.test.ts, web-theme.test.ts and server-security.test.ts. Record every failure as an expected visual pin (old font/theme only, owned by Task 17) or a regression; fix regressions here, never absorb them into the retirement rewrite.
   - CSP and packaging assertions must stay green throughout. A recorded visual-pin failure is not a passing command.
   - Run `npm run -s typecheck`; expect exit 0, browser-only graph and offline shell.
-- [ ] **Step 5: Fresh reviewer gate.** Review keyboard/navigation/abort behavior, CSS/font/CSP compatibility and contrast. Release stable shared helpers to page lanes; leave uncommitted.
+- [x] **Step 5: Fresh reviewer gate.** Review keyboard/navigation/abort behavior, CSS/font/CSP compatibility and contrast. Release stable shared helpers to page lanes; leave uncommitted.
 
 ### Task 12: Add the installed-browser Playwright harness and CI smoke
 
@@ -601,15 +608,15 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - `actions/upload-artifact@v4` with `if: failure()` uploads playwright-results/playwright-report, not profiles/ledgers.
 - Keep the required job name unchanged; existing CI npm ci is not a worker install instruction.
 
-- [ ] **Step 1: Write failing configuration and browser specs.**
+- [x] **Step 1: Write failing configuration and browser specs.**
   - `installed browser policy`: Vitest config assertions pin suffix/include disjointness, e2e coverage exclusion, root config typecheck inclusion, channel precedence (override/CI/local), exact args, headless, output paths, early TMPDIR in launcher/CI before CLI import, owned port validation and no install/download command. Snapshot process.env before config import; assert import has no env/filesystem side effects, and restore env in finally after channel-precedence tests.
   - `profiles stay in scratch`: assert realpath(os.tmpdir()) is under `.spider/scratch/playwright/tmp/`, then snapshot its profile directories and those in HOME/default system temp (read-only observations, never scratch writes there). Launch through the real config; assert a new `playwright_chromiumdev_profile-*` directory exists on disk under that scratch TMPDIR while the browser is live, and HOME is unchanged. Close browser/context in finally; assert the new profile directory is gone and HOME/default system temp gained no profile. Do not use Browser.getBrowserCommandLine, CDPSession or any custom CDP transport.
   - `shell smoke refreshes fixture status`: load actual shell, assert Overview and Calibration & data nav pills, fresh/stale dot from statusFixture, click refresh and observe a new /api/status request and updated dot/last-update label; assert no browser exceptions. Missing page mounts may show the Task 11 unavailable state until Task 17 integrates pages; do not fake nav/status behavior.
   - `real server bootstrap and one API call`: pin setup's extension and production-dashboard outputs under scratch real-dist, snapshot repo dist hashes before/after setup and teardown and assert unchanged; assert scratch dashboard has no states.html. Real synthetic server, reject unauthenticated page/asset, visit single-use bootstrap, assert HttpOnly SameSite=Strict cookie, loaded page/asset and one successful real /api/status envelope with apiVersion 1 and serverBuild; second bootstrap use fails. Until Task 10 HTTP integration, assert the existing common transport fields, not an invented v4 server response; the final integrated run pins the full Task 1 StatusData shape. No page.route interception in this spec, no live roots/account/model calls.
-- [ ] **Step 2: Run RED.** Run playwright-config.test.ts with Vitest and `npm run test:e2e -- --grep "profiles stay|shell smoke|real server"`; retain missing harness/config assertions, not a skipped or missing-installed-browser run.
-- [ ] **Step 3: Implement config, static fixture transport, isolated real-server setup and CI steps.** Build states to scratch, use Task 1 builders through page.route, set TMPDIR before launch, preserve real HOME, and make startup/teardown bounded. No new browser transport or production API.
-- [ ] **Step 4: Run GREEN.** Repeat configuration test and selected Playwright specs, `npm run -s typecheck`; check workflow/upload/ignore definitions statically. Report executed counts/channel/profile path locally and no surviving fixture process. CI must execute Chrome specs, never an opt-in skip.
-- [ ] **Step 5: Fresh reviewer gate.** Review actual temp-profile proof, fixture-only routing, unmocked real-server coverage, failures/timeouts/artifact policy and Vitest separation. Release read-only harness helpers to Tasks 13-15 and 18; leave uncommitted.
+- [x] **Step 2: Run RED.** Run playwright-config.test.ts with Vitest and `npm run test:e2e -- --grep "profiles stay|shell smoke|real server"`; retain missing harness/config assertions, not a skipped or missing-installed-browser run.
+- [x] **Step 3: Implement config, static fixture transport, isolated real-server setup and CI steps.** Build states to scratch, use Task 1 builders through page.route, set TMPDIR before launch, preserve real HOME, and make startup/teardown bounded. No new browser transport or production API.
+- [x] **Step 4: Run GREEN.** Repeat configuration test and selected Playwright specs, `npm run -s typecheck`; check workflow/upload/ignore definitions statically. Report executed counts/channel/profile path locally and no surviving fixture process. CI must execute Chrome specs, never an opt-in skip.
+- [x] **Step 5: Fresh reviewer gate.** Review actual temp-profile proof, fixture-only routing, unmocked real-server coverage, failures/timeouts/artifact policy and Vitest separation. Release read-only harness helpers to Tasks 13-15 and 18; leave uncommitted.
 
 ### Task 13: Build Overview and its pace interaction
 
@@ -624,7 +631,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Refresh replaces data/resets expansion; discard pages from different bounds/revisions. Range changes clear selection, unit changes preserve it.
 - After response, reconcile effective selection/resolved bounds via `ctx.navigate({ page: "overview", query: data.range }, { replace: true })`; update the URL and remembered state without a request/history loop.
 
-- [ ] **Step 1: Write failing DOM tests and e2e/overview.e2e.ts specs.**
+- [x] **Step 1: Write failing DOM tests and e2e/overview.e2e.ts specs.**
   - `browser Overview interactions and keyboard`: real page fixture mount, ring-anchored pace hover/focus and Escape without blur; Cmd/Ctrl-click, click-away, arrows/modified Enter/Space/Escape selection with exact request buckets and echoed totals/hash; sessions sort/Show all/row click and Enter open; each Chart | Table has equal values and keyboard focus. Intercept responses via Task 12, never live data.
   - `pace is topmost standalone bar without ticks`: no surrounding heading/box/big-number tiles, used on fill or just after short fill, OCT for October calendar period, `to 14 NOV` for a period starting mid-month/resetting 15 November UTC; ring/hatch, no even-pace or limit tick.
   - `pace overflow clamps`: used 120/scale 100 -> fill/ring at end, danger, in-bar `120 · 20 over`; projected 250/scale 100 -> hatch stops at end, not a rescaled bar; null scale/used 80 -> figure 80 without proportional fill, popover used/projected/days left.
@@ -638,8 +645,8 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `server pruning rewrites URL`: aged-out requested key disappears from hash/remembered selection after response, retaining the surviving key/totals; replace history without remount/refetch, and reload uses the pruned URL.
   - `DST fall-back bars are distinct`: America/New_York repeated 01:00 hours have two keys and offset-bearing labels (`UTC-04:00`, `UTC-05:00`); keyboard selects both independently, request/totals retain both.
   Assertions: `expect(request.params.get("buckets")).toBe(JSON.stringify([firstKey, thirdKey]))`; `expect(root.querySelector(".even-pace-tick")).toBeNull()`; `expect(visibleSessionRows).toHaveLength(10)`; `expect(noBudgetPopover.textContent).not.toContain("Even pace")`.
-- [ ] **Step 2: Run RED.** Run web-overview-v4.test.ts/web-pace.test.ts and `npm run test:e2e -- packages/host/src/usage/e2e/overview.e2e.ts`; expect missing page/interaction assertions, not missing-browser skips.
-- [ ] **Step 3: Implement the Overview layout/interactions.**
+- [x] **Step 2: Run RED.** Run web-overview-v4.test.ts/web-pace.test.ts and `npm run test:e2e -- packages/host/src/usage/e2e/overview.e2e.ts`; expect missing page/interaction assertions, not missing-browser skips.
+- [x] **Step 3: Implement the Overview layout/interactions.**
   - Follow approved mock with spec overrides: Daily two-thirds/Models one-third, equal height, Total/Average per bucket/Peak chips, no legend under bars.
   - Stacked SVG and same-number tables; numeric session/run/top3 summaries, full-width flow nodes with value/share; role tooltip carries role/credits/tokens/share/runs.
   - Pace remains credits. Clamp fill, ring and hatch to scale end; past scale use danger, used overflow reads `<used> · <n> over`. No even-pace or limit tick. Null scale shows used without proportional fill and used/projected/days-left popover.
@@ -647,8 +654,8 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - Anchor focusable popover to ring; omit no-budget rows and show the exact global slash hint. Danger ring/hatch/popover follow over-pace/budget flags.
   - Keep distinct offset-labelled repeated-hour bars; reconcile server-pruned selection into URL/remembered state. Ordinary right click never selects; Playwright covers the platform modifier and contextmenu behavior.
   - Never zero-fill all-unpriced values or add basis suffixes.
-- [ ] **Step 4: Run GREEN.** Run both DOM tests, web-contrast.test.ts and the Overview Playwright command; `npm run -s typecheck`. Assert synthetic fixture mounts and no old endpoint requests; retain exact unit/e2e counts separately. Extend Overview states examples (pace, selection, models, sessions, flow, Chart/Table, loading/empty/error).
-- [ ] **Step 5: Fresh reviewer gate.** Review selection/table reconciliation, pace anchoring/overflow states, sorting/paging, keyboard and no explanatory-design copy; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run both DOM tests, web-contrast.test.ts and the Overview Playwright command; `npm run -s typecheck`. Assert synthetic fixture mounts and no old endpoint requests; retain exact unit/e2e counts separately. Extend Overview states examples (pace, selection, models, sessions, flow, Chart/Table, loading/empty/error).
+- [x] **Step 5: Fresh reviewer gate.** Review selection/table reconciliation, pace anchoring/overflow states, sorting/paging, keyboard and no explanatory-design copy; leave uncommitted.
 
 ### Task 14: Build Session and the mirrored transit route
 
@@ -660,7 +667,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces `mountSession(ctx: DashboardPageContext): DashboardPage`, `layoutSessionRoute(data: SessionData, unit: Unit, width: number): RouteLayout`, `renderSessionRoute(document: Document, data: SessionData, unit: Unit, selectRun: (id: string | null) => void): HTMLElement`.
 - `RouteLayout = { branches: readonly { runId: string | null; side: -1 | 1; height: number; startX: number; endX: number }[]; breaks: readonly { period: Period; startX: number; width: number }[]; maxValue: number }`. Fixed collapsed break width is 28px; run side minimizes overlap with deterministic id tie-break; absolute y uses one mirrored linear scale, never log/rank scaling. Branch joints are 45 degrees.
 
-- [ ] **Step 1: Write failing DOM/layout tests and e2e/session.e2e.ts specs.**
+- [x] **Step 1: Write failing DOM/layout tests and e2e/session.e2e.ts specs.**
   - `browser transit and runs keyboard paths`: route hover dims other branches, click pins the real runs-table row, Escape clears with focus retained; Tab/arrows/Enter reach/activate branches and runs rows; sort/Show all preserves data; Chart | Table switches using keyboard with identical lifetime totals, Back restores remembered Overview. Use Task 12 page.route fixtures and assert no stale card after navigation.
   - `header and flow reconcile`: total/run/own/compaction/idle stats, project folder pill, complete span, unit carries, no pace.
   - `branch cost is mirrored linear height`: values 10/20 have heights in ratio 1:2 on equal scale; Tokens uses independent raw counts.
@@ -674,15 +681,15 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `zero runs and zero calls render honestly`: own-only fixture has baseline/empty runs state/own flow; metadata-only fixture keeps header, no span/chart and exactly one no-calls line.
   - `navigation cancels stale lifetime response`: no old session card after id change.
   Assertions: `expect(layout.branches[1].height / layout.branches[0].height).toBeCloseTo(2)`; `expect(layout.breaks[0].width).toBe(28)`; `expect(visibleRunRows).toHaveLength(20)`; `expect(notFoundRoot.textContent).toContain("Session not found")`; `expect(retryButtons).toHaveLength(0)`.
-- [ ] **Step 2: Run RED.** Run web-session.test.ts/session-route-layout.test.ts and `npm run test:e2e -- packages/host/src/usage/e2e/session.e2e.ts`; expect missing page/layout/browser interactions.
-- [ ] **Step 3: Implement Session page and deterministic route.**
+- [x] **Step 2: Run RED.** Run web-session.test.ts/session-route-layout.test.ts and `npm run test:e2e -- packages/host/src/usage/e2e/session.e2e.ts`; expect missing page/layout/browser interactions.
+- [x] **Step 3: Implement Session page and deterministic route.**
   - Use ownCallBins on y=0, coloured model branches, compaction ticks, collapsed idle periods and mirrored linear Credits per run/Tokens per run axis. Fit active periods, not dormant months.
   - No runs -> baseline only/empty runs state/own-calls-only flow. Null span -> header and one line saying no calls were recorded, never fabricated activity.
   - Validate id before client.get; unsupported/undecodable ids render Session not found/Back without a request or Retry.
   - No labels at rest; focused/hovered/pinned card exposes all run fields. Preserve covered/report-only/zero-cost rows with honest unavailable values.
   - Sorting changes table order only; flow reconciles with header.
-- [ ] **Step 4: Run GREEN.** Run both DOM/layout tests, web-contrast.test.ts and the Session Playwright command; `npm run -s typecheck`. Expect stable geometry, deterministic keyboard/pinning, no retired detail calls and separate unit/e2e counts. Extend Session states examples for header/route/run marks/idle breaks/tables/flow, own-only, no-calls, 404 and errors.
-- [ ] **Step 5: Fresh reviewer gate.** Review long idle transforms, branch crossings, linear scale, marks/unknown evidence, row pinning, keyboard and typed 404; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run both DOM/layout tests, web-contrast.test.ts and the Session Playwright command; `npm run -s typecheck`. Expect stable geometry, deterministic keyboard/pinning, no retired detail calls and separate unit/e2e counts. Extend Session states examples for header/route/run marks/idle breaks/tables/flow, own-only, no-calls, 404 and errors.
+- [x] **Step 5: Fresh reviewer gate.** Review long idle transforms, branch crossings, linear scale, marks/unknown evidence, row pinning, keyboard and typed 404; leave uncommitted.
 
 ### Task 15: Build Calibration & data
 
@@ -693,7 +700,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Consumes CalibrationData and Task 11 formatUtcTime/chartPair/renderTable/tableRegion/page context/renderStateExamples; Task 12 fixture route harness. Wait for Tasks 11 and 12. Export Task 11 mountCalibrationStates signature plus `pageMount = mountCalibration`, `page = "calibration"`; use `/states.html?page=calibration&scenario=default` until Task 17 production registration.
 - Produces `mountCalibration(ctx: DashboardPageContext): DashboardPage`; fetch exactly `/api/calibration` with no inherited Overview filters or tz/unit parameters. Calibration rates/correction remain credits; token-rate columns explicitly say per 1M tokens.
 
-- [ ] **Step 1: Write failing DOM tests and e2e/calibration.e2e.ts specs.**
+- [x] **Step 1: Write failing DOM tests and e2e/calibration.e2e.ts specs.**
   - `browser calibration table and keyboard`: navigate by nav pill, switch Chart | Table with keyboard and compare null/zero/credit values, Tab/Enter/Space on Show more expands newest-first intervals from 10, rate tiers/zero/unavailable remain honest, Retry settles without stale navigation. Use Task 12 page.route and actual mounted page.
   - `correction has matched figures and status`: factor, published/account matched totals, hours and all four status pills; <=2 plain explanatory sentences.
   - `honest UTC gaps`: null counter days break SVG line and show unavailable in table; zero accepted delta displays 0, intervals start/end UTC newest-first, first 10 then Show more.
@@ -702,14 +709,14 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `failures end loading`: error Retry refreshes same section/page, abort during route navigation never paints stale content.
   - `no pace or design explanation`: no basis labels outside correction, no inherited preview controls.
   Assertions: `expect(visibleIntervalRows).toHaveLength(10)`; `expect(gapCell.textContent).toBe("unavailable")`; `expect(root.querySelector(".pace-bar")).toBeNull()`; `expect(request.path).toBe("/api/calibration")`.
-- [ ] **Step 2: Run RED.** Run web-calibration.test.ts and `npm run test:e2e -- packages/host/src/usage/e2e/calibration.e2e.ts`; expect missing page/table/keyboard behavior.
-- [ ] **Step 3: Implement the three non-nested sections.**
+- [x] **Step 2: Run RED.** Run web-calibration.test.ts and `npm run test:e2e -- packages/host/src/usage/e2e/calibration.e2e.ts`; expect missing page/table/keyboard behavior.
+- [x] **Step 3: Implement the three non-nested sections.**
   - Correction chart/table and expandable interval table; Rates and unpriced models; Ingestion facts/errors/gaps.
   - Use short UTC interval coverage copy to distinguish observed deltas from exact calendar-day billing.
   - Keep count/reason labels, not explanatory design prose.
   - Match the approved mock (path given in each task brief), but omit nested section boxes and prototype design options.
-- [ ] **Step 4: Run GREEN.** Run web-calibration.test.ts, web-contrast.test.ts and the Calibration Playwright command; `npm run -s typecheck`. Expect equal chart/table values, keyboard Show more, offline content and separate unit/e2e counts. Extend correction/rates/ingestion states examples with every correction status, honest gaps, loading/empty/error and expanded intervals.
-- [ ] **Step 5: Fresh reviewer gate.** Review UTC/matched interval semantics, honest gaps, state settling and concise copy; leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run web-calibration.test.ts, web-contrast.test.ts and the Calibration Playwright command; `npm run -s typecheck`. Expect equal chart/table values, keyboard Show more, offline content and separate unit/e2e counts. Extend correction/rates/ingestion states examples with every correction status, honest gaps, loading/empty/error and expanded intervals.
+- [x] **Step 5: Fresh reviewer gate.** Review UTC/matched interval semantics, honest gaps, state settling and concise copy; leave uncommitted.
 
 ### Task 16: Register optional monthly budget and replace footer copy
 
@@ -723,7 +730,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Produces the exact flat config key `usage.monthlyBudget` and optional `UsageConfig.monthlyBudget?: number` (normalized read returns undefined when unset), USAGE_DEFAULTS entry unset (undefined, never zero), strict-positive finite validator, UI optional-number coercion where blank unsets and positive fraction is valid. Extend ConfigField only as needed with `optional?: boolean` and `exclusiveMin?: number`, respecting unrelated number fields.
 - FooterInput gains `monthlyBudget?: number` and `monthUsed?: number | null`; worker snapshot supplies corrected monthUsed fallback. Pure renderUsageFooter reads no DB/config and takes budget denominator before available entitlement. Server consumes the normalized config through Task 10 callback.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `budget defaults unset and is global only`: global positive value accepted, local diagnosed/ignored, tool rejects local set, unset clears without zero.
   - `strict positive coercion`: 0/negative/NaN/infinity/nonnumeric rejected; blank -> undefined, 0.5 accepted; other existing nonnegative fields unchanged.
   - `footer has credits without basis markers`: synthetic `45.2%/200k · 1.2k credits · CH92.1% · month 24% · ↑… ↓… · R… W…` shape, context item first, with cal/est/?/~ /+ and AIC absent from credit segment.
@@ -732,15 +739,15 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `narrow footer keeps whole items`: existing context/model/thinking priority and terminal-width bounds maintained.
   - `live setting refreshes footer and snapshot`: no model calls, no new poller or DB work on render.
   Assertions: `expect(readUsageConfig({}, {}).value.monthlyBudget).toBeUndefined()`; `expect(coerce(budgetField, "")).toEqual({ ok: true, value: undefined })`; `expect(coerce(budgetField, "0").ok).toBe(false)`; `expect(statsLine).toContain("month 24%")`; `expect(creditSegment).not.toMatch(/AIC|cal|est|[~+?]/)`.
-- [ ] **Step 2: Run RED.** Run the modified config/footer/UI schema tests; expect unsupported key and old footer text.
-- [ ] **Step 3: Implement budget and plain footer.**
+- [x] **Step 2: Run RED.** Run the modified config/footer/UI schema tests; expect unsupported key and old footer text.
+- [x] **Step 3: Implement budget and plain footer.**
   - Register global-only optional positive usage.monthlyBudget in screen/control. Executable examples: `/spider config set usage.monthlyBudget <credits> --global` and `/spider config unset usage.monthlyBudget --global`.
   - Tool form remains `command:"config" op:"set" key:"usage.monthlyBudget" value:<number> scope:"global"`.
   - Preserve context item first, then corrected credits/CH/month/tokens with middle dots. Month is `Math.round(100 * used / denominator)` plus %, budget first/allowance second.
   - Use worker-computed monthUsed for counter fallback and normalized live budget. Footer traversal/render never opens the ledger.
   - Document unset default, positive constraint, live behavior, exact global slash examples and read-only dashboard setting boundary.
-- [ ] **Step 4: Run GREEN.** Run all listed tests plus mount.test.ts; `npm run -s typecheck`. Assert existing FooterAccumulator token counting and lease/poller behavior unchanged.
-- [ ] **Step 5: Fresh reviewer gate.** Review config validation/provenance, blank unset, live callbacks, pure width-safe footer and no-counter month math. Leave uncommitted.
+- [x] **Step 4: Run GREEN.** Run all listed tests plus mount.test.ts; `npm run -s typecheck`. Assert existing FooterAccumulator token counting and lease/poller behavior unchanged.
+- [x] **Step 5: Fresh reviewer gate.** Review config validation/provenance, blank unset, live callbacks, pure width-safe footer and no-counter month math. Leave uncommitted.
 
 ### Task 17: Retire obsolete surfaces, routes and tests; rewrite the guide
 
@@ -763,7 +770,7 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Consumes all new query/page functions, Task 2 split build/asset loader and Task 12 Playwright fixtures/specs. Produces only three production page registrations/five public API routes, final states.ts imports of the three disjoint page-state modules, a basis-free browser graph, revised guide and preserved selection/redaction/security/calibration coverage. E2e fixture-entry injection is removed after real production registrations become available; specs now exercise actual app.ts.
 - Keep dimension-values.ts, dimension_values and immutable schema-v3.ts. Keep dashboard-identities.ts/keys and selected-call helpers. Keep composition-provider.ts only if a surviving reader/ledger consumer requires its internal type; otherwise remove its import and dead file together. Keep numeric/token/time format helpers, chart/table/dom/client/fonts/representation; delete marker/old-discovery-only helpers only when import audit proves them dead.
 
-- [ ] **Step 1: Write failing retirement tests.**
+- [x] **Step 1: Write failing retirement tests.**
   - `bundle contains only new surfaces and no basis markers`: old route/view registration names absent, three new mounts present, direction contract absent.
   - `obsolete endpoints are unreachable`: every removed API returns 404 through authenticated fixture server.
   - `cross route totals match`: Overview selectedTotal, Sessions rows and Session lifetime slice reconcile in synthetic overlapping fixtures through the shared projector.
@@ -771,17 +778,17 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
   - `bundle pins new fonts/theme not security relaxation`: new families/direct fonts.gstatic.com sources and self-only script/style CSP asserted; external HTML references resolve to hashed JS/CSS, no inline code/styles or virtual module, no states in production, exact dist shape/cap and source-free packaging retained.
   - `guide matches controls`: 7d/credits defaults, 93d custom, Session lifetime, budget command and new footer, no retired navigation instructions; contributor note pins `npm run dev:dashboard` for UI work and `npm run build:dashboard` plus a server restart for checks against real data.
   Assertions: `expect(retiredAuthenticatedReplies.every(r => r.status === 404)).toBe(true)`; `expect(stylesheet).toContain("#16120f")`; `expect(fontUrl).not.toContain("Google+Sans")`; `expect(selectedTotal.credits).toBeCloseTo(sumValues(sessionValues).credits!, 10)`.
-- [ ] **Step 2: Run RED.** Run redesign-retirement.test.ts plus updated cross-route/bundle tests; expect retired modules/expectations remain.
-- [ ] **Step 3: Apply the audited removals and docs.**
+- [x] **Step 2: Run RED.** Run redesign-retirement.test.ts plus updated cross-route/bundle tests; expect retired modules/expectations remain.
+- [x] **Step 3: Apply the audited removals and docs.**
   - Redirect reusable interval/error/rate assertions to Task 9 first. Delete the now-dead nested build/virtual declaration/CDP/screenshot harness and tests, audit all remaining imports, and register final page/state mounts without weakening security. Drive interaction specs through production app.ts after this handoff.
   - Rewrite old UX/performance tests for bounded indexed queries, not wall-clock thresholds.
   - Retain security/lifecycle/worker-bundle and all canonical differential/redaction evidence.
   - Guide explains three pages, Chart/Table/keyboard, correction gaps/account-wide pace, positive optional budget with `/spider config set usage.monthlyBudget <credits> --global` and `/spider config unset usage.monthlyBudget --global`, unknown session Back state and context-first whole-percent footer; no real figures/paths or mock absolute location. Add a contributor note: UI work uses `npm run dev:dashboard` (fixture data); checks against real data require `npm run build:dashboard` plus a server restart because extension watch does not rebuild browser assets.
-- [ ] **Step 4: Run GREEN.**
+- [x] **Step 4: Run GREEN.**
   - Run redesign-retirement.test.ts, query-cross-route-consistency.test.ts, dashboard-api.test.ts, dashboard-contract.test.ts, dashboard-bundle.test.ts, worker-bundle.test.ts, dashboard-assets.test.ts and migrated privacy tests; `npm run -s typecheck`, then `npm run build`.
   - Expect the existing assert-bundle guard passes and no retired module import remains.
   - Run `npm run test:e2e` against final app.ts, including smoke/profile/real-server/page specs; expect no browser skips or exceptions and no legacy harness imports. Do not run the full Vitest suite yet.
-- [ ] **Step 5: Fresh reviewer gate.** Review the removal inventory, preserved shared regressions, packaging/CSP and guide accuracy. Leave uncommitted.
+- [x] **Step 5: Fresh reviewer gate.** Review the removal inventory, preserved shared regressions, packaging/CSP and guide accuracy. Leave uncommitted.
 
 ### Task 18: Add Playwright desktop visual and state acceptance
 
@@ -795,15 +802,15 @@ type CalibrationData = { correction: { factor: number | null; publishedEstimate:
 - Computed layout assertions: Daily/Models boxes equal height within 1 px, document and each example have scrollWidth <= clientWidth, mark/wordmark centres within 1 px, pace popover pointer anchored to ring centre within 1 px before/after resize (popover may clamp but pointer stays aligned), no overlapping/clipped menu controls. Contrast derives every rendered text/background pair, compositing inherited/translucent backgrounds and classifying size/weight: >=4.5 normal, >=3 large (>=24px or bold >=18.67px). It is not a hard-coded palette-only check.
 - Save named `page-state-width.png` full-page screenshots via `page.screenshot` and attach to test.info, not toHaveScreenshot pixel comparisons. Wait for bounded font/layout settlement; test blocked-font fallback explicitly. Review captures locally before forwarding; never real-account screenshots.
 
-- [ ] **Step 1: Write failing Playwright acceptance specs.**
+- [x] **Step 1: Write failing Playwright acceptance specs.**
   - `desktop page/state matrix`: section 9 fixtures at every width, all sections settle, no exceptions/horizontal overflow/nested boxes/even-pace tick, equal boxes and centred wordmark assertions above; unknown session has Back with zero Retry/spinner, network/server error Retry succeeds, stale dot is #9b9690.
   - `states page covers every component state`: fixture catalogue names match Task 1 cases, all example roots settle with no overflow, chart/table numbers agree, run marks/pace no-budget/null-scale/overflow states remain honest; production GET /states.html is 404 and its assets never ship.
   - `pace popover stays at ring`: hover/focus then Escape, resize at three widths, pointer/ring alignment above, short label placement and danger/overAtPace/no-budget copy.
   - `computed text contrast and offline fallback`: block remote fonts, assert usable fallback and all actual composited text pairs meet thresholds. Retain per-element failing records locally.
-- [ ] **Step 2: Run RED.** `npm run test:e2e -- packages/host/src/usage/e2e/visual-acceptance.e2e.ts`; keep failing layout/state assertions, not a missing browser or opt-in skip. Run local installed Edge; CI runs installed Chrome using the same config/spec.
-- [ ] **Step 3: Implement the acceptance matrix/assertions and review captures.** Use Task 12 page.route fixtures and final states examples. Compare approved mock with spec overrides. Capture one batched initial matrix and at most one reviewer-directed confirmation round, no per-tweak screenshot loop. No new browser transport, pixel baselines or source-data access.
-- [ ] **Step 4: Run GREEN.** Repeat visual acceptance, all page interaction/smoke/profile/real-server Playwright specs and `npm run -s typecheck`; retain exact executed counts, channel, screenshot inventory and zero leftover fixture PIDs. CI artifacts upload on failure through Task 12 workflow. No skipped browser run counts as success.
-- [ ] **Step 5: Fresh reviewer gate.** Review saved screenshots and computed behavior/layout/contrast records independently. Controller owns visual signoff and releases the synthetic built UI/captures for copied-data checking and Task 20 finish.
+- [x] **Step 2: Run RED.** `npm run test:e2e -- packages/host/src/usage/e2e/visual-acceptance.e2e.ts`; keep failing layout/state assertions, not a missing browser or opt-in skip. Run local installed Edge; CI runs installed Chrome using the same config/spec.
+- [x] **Step 3: Implement the acceptance matrix/assertions and review captures.** Use Task 12 page.route fixtures and final states examples. Compare approved mock with spec overrides. Capture one batched initial matrix and at most one reviewer-directed confirmation round, no per-tweak screenshot loop. No new browser transport, pixel baselines or source-data access.
+- [x] **Step 4: Run GREEN.** Repeat visual acceptance, all page interaction/smoke/profile/real-server Playwright specs and `npm run -s typecheck`; retain exact executed counts, channel, screenshot inventory and zero leftover fixture PIDs. CI artifacts upload on failure through Task 12 workflow. No skipped browser run counts as success.
+- [x] **Step 5: Fresh reviewer gate.** Review saved screenshots and computed behavior/layout/contrast records independently. Controller owns visual signoff and releases the synthetic built UI/captures for copied-data checking and Task 20 finish.
 
 ### Task 19: Check real data only on a supplied backup copy (controller)
 

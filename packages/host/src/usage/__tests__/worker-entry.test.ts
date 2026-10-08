@@ -506,10 +506,10 @@ it("persistent non-parse metadata errors finish status progress while keeping th
   expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
   const check = openUsageLedger(c.roots.ledgerFile);
   try {
-    expect(check.getSourceErrors()).toContainEqual({ path: missing, code: "metadata-missing-source" });
+    expect(check.getSourceErrors()).toContainEqual({ path: `metadata:source:${missing}`, code: "metadata-missing-source" });
     const before = snapshots(p).length; p.emit("message", { type: "refresh" });
     await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(before));
     expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
-    expect(check.getSourceErrors()).toContainEqual({ path: missing, code: "metadata-missing-source" });
+    expect(check.getSourceErrors()).toContainEqual({ path: `metadata:source:${missing}`, code: "metadata-missing-source" });
   } finally { check.close(); }
 });

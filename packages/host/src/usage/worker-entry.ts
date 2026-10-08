@@ -266,7 +266,8 @@ export async function bootUsageWorker(
     // A failed source was attempted, not pending work. Keep its diagnostic and
     // retry next pass, but let status reach caught up once every source finished.
     const metadataErrors = new Set(ledger!.getSourceErrors().filter(error =>
-      ["metadata-missing-source", "metadata-read-error", "metadata-source-changed"].includes(error.code)).map(error => error.path));
+      ["metadata-missing-source", "metadata-read-error", "metadata-source-changed"].includes(error.code))
+      .map(error => error.path.startsWith("metadata:source:") ? error.path.slice("metadata:source:".length) : error.path));
     metadataProgress = { sourcesTotal: discovery.sources.length, sourcesCompleted: metadata.complete ? discovery.sources.length
       : discovery.sources.filter(source => {
         const checkpoint = ledger!.getMetadataCheckpoint(source.path), imported = ledger!.getImportState(source.path);

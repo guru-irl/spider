@@ -175,8 +175,8 @@ it("calibration reload follows pi's config reader for symlink large and unreadab
   const headers = { Cookie: boot.headers["set-cookie"][0].split(";")[0] };
   const mode = async () => JSON.parse((await h.reply(row.port, "/api/calibration", headers)).body).data.correction;
   expect(await mode()).toMatchObject({ status: "published-only", factor: null });
-  await writeFile(target, JSON.stringify({ "usage.calibration": "auto", padding: "x".repeat(70000) })); expect(await mode()).toMatchObject({ status: "calibrated", factor: 0.5 });
-  await rm(config); await fs.promises.mkdir(config); expect(await mode()).toMatchObject({ status: "calibrated", factor: 0.5 });
+  await writeFile(target, JSON.stringify({ "usage.calibration": "auto", padding: "x".repeat(70000) })); expect(await mode()).toMatchObject({ status: "back-applied", factor: 0.5 });
+  await rm(config); await fs.promises.mkdir(config); expect(await mode()).toMatchObject({ status: "back-applied", factor: 0.5 });
 });
 
 

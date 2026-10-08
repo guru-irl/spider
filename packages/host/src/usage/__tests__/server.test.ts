@@ -58,7 +58,7 @@ describe("usage HTTP", () => {
       mode = selected;
       const reply = await get(server.port, "/api/calibration", { Cookie: cookie });
       expect(reply.status).toBe(200);
-      expect(JSON.parse(reply.body).data).toMatchObject({ correction: selected === "off" ? { factor: null, status: "published-only" } : { factor: 0.5, status: "calibrated" } });
+      expect(JSON.parse(reply.body).data).toMatchObject({ correction: selected === "off" ? { factor: null, status: "published-only" } : { factor: 0.5, status: "back-applied" } });
     }
   });
   test("transport query errors fail before snapshots and focused handlers validate their own grammar", async () => {

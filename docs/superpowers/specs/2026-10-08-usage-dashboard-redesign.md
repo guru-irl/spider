@@ -179,7 +179,8 @@ Overview had. The unit carries over.
 1. **Correction.**
    - Stat row: correction factor, published estimate and account counter for the matched
      intervals, hours covered, and a status pill (calibrated, back-applied, published only,
-     counter unavailable).
+     counter unavailable). Back-applied means some day in the evidence period was corrected with
+     the earliest fit applied backwards; calibrated means every day used its own trailing fit.
    - At most two plain sentences on what the factor does.
    - Chart: published estimate against the counter per day, with honest gaps where the counter
      has no data (never zero-filled). Chart | Table.
@@ -217,7 +218,8 @@ Times on this page are UTC, because the counter is.
 - **Allowance:** the latest snapshot's `entitlement`.
 - **Projection:** used plus the average daily rate over the last 7 days (or since the month
   started, when that is shorter) times the days left. The rate comes from counter deltas when
-  snapshots cover the window, otherwise from pi's corrected daily totals.
+  snapshots cover the window (the first reading in the window is within one day of its start and
+  the readings span at least one day), otherwise from pi's corrected daily totals.
 - **Even pace:** budget times the elapsed share of the billing month.
 - **Session:** a top-level pi session: one with its own transcript and no owning run. Its credits
   include its own calls, its compaction, its background calls (spider's auxiliary model calls and

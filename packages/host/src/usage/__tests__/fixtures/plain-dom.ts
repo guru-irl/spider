@@ -64,7 +64,7 @@ export class PlainDocument {
     return new PlainElement(this, tag.toUpperCase());
   }
   createElementNS(ns: string, tag: string): PlainElement {
-    if (ns !== "http://www.w3.org/2000/svg" || !/^(svg|title|circle|line|text|g|path)$/.test(tag)) throw new Error("plain-dom: unsupported namespace element");
+    if (ns !== "http://www.w3.org/2000/svg" || !/^(svg|title|circle|line|text|g|path|rect|defs|pattern|foreignObject)$/.test(tag)) throw new Error("plain-dom: unsupported namespace element");
     return new PlainElement(this, tag, ns);
   }
   getElementById(id: string): PlainElement | null { return descendants(this.body).find(node => node.id === id) ?? null; }

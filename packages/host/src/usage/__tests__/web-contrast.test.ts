@@ -47,12 +47,21 @@ it("actual CSS text/background pairs, including inherited controls, meet AA", ()
   }
   const luminance = (s: string) => { const hex = s.slice(1); const rgb = (hex.length === 3 ? [...hex].map(c => c + c).join("") : hex).match(/../g)!.map(c => parseInt(c, 16) / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4); return rgb[0]! * .2126 + rgb[1]! * .7152 + rgb[2]! * .0722; };
   let count = 0;
-  for (const rule of rules.filter(r => r.declarations.some(d => ["color", "fill"].includes(d.prop)))) {
+  for (const rule of rules.filter(r => r.declarations.some(d => d.prop === "color" || d.prop === "fill" && /(?:^|\s)text[.:\s]|(?:^|\s)text$/.test(r.selector)))) {
     let node: Node | undefined; for (const simple of rule.selector.replace(/>/g, " ").split(/\s+/)) node = { simple, parent: node };
     const actual = paint(node!); const foreground = rule.declarations.some(d => d.prop === "fill") ? actual.fill : actual.color;
     expect(foreground, rule.selector).toMatch(/^#[0-9a-f]{3,6}$/i); expect(actual.background, rule.selector).toMatch(/^#[0-9a-f]{3,6}$/i);
-    const a = luminance(foreground), b = luminance(actual.background); const minimum = actual.size >= 24 || actual.size >= 18.67 && actual.weight >= 700 ? 3 : 4.5;
-    expect((Math.max(a, b) + .05) / (Math.min(a, b) + .05), `${rule.selector} (${foreground} on ${actual.background})`).toBeGreaterThanOrEqual(minimum); count++;
+    // SVG text is painted over shapes, not the inherited HTML background.
+    const backgrounds = rule.selector.includes("text.pace-used")
+      ? rule.selector.includes("[data-after=true]") ? [paint({ simple: "svg.pace-track" }).background]
+        : [paint({ simple: ".pace-fill" }).fill, paint({ simple: ".pace-fill", parent: { simple: ".month-pace[data-danger=true]" } }).fill]
+      : rule.selector.includes("text.segment-share") ? [...tokens].filter(([key]) => key.startsWith("--usage-role-")).map(([, value]) => resolve(value))
+      : [actual.background];
+    const minimum = actual.size >= 24 || actual.size >= 18.67 && actual.weight >= 700 ? 3 : 4.5;
+    for (const background of backgrounds) {
+      const a = luminance(foreground), b = luminance(background);
+      expect((Math.max(a, b) + .05) / (Math.min(a, b) + .05), `${rule.selector} (${foreground} on ${background})`).toBeGreaterThanOrEqual(minimum); count++;
+    }
   }
   expect(count).toBeGreaterThan(10);
 });

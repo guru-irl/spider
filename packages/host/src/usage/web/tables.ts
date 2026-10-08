@@ -40,7 +40,6 @@ export function tableRegion(document: Document, table: HTMLTableElement): HTMLEl
   region.id = `${caption.id}-region`; region.setAttribute("aria-labelledby", caption.id); region.append(table);
   if (table.className.split(" ").includes("wide-table")) {
     region.className += " wide-table-region";
-    const cue = element(document, "p", "Scroll horizontally to see all columns", "scroll-cue"); cue.id = `${caption.id}-scroll-cue`; region.setAttribute("aria-describedby", cue.id); region.append(cue);
   }
   // Tall tables can be centered by native Tab scrolling, hiding their focus indicator.
   region.addEventListener("focus", () => { if (region.matches(":focus-visible")) caption.scrollIntoView?.({ block: "nearest" }); });

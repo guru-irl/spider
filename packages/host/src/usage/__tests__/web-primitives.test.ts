@@ -319,6 +319,13 @@ describe("web primitives", () => {
     expect(cellText(elements(table, "td")[0]!)).toBe("No rows recorded");
     expect(elements(table, "td")[0]!.getAttribute("colspan")).toBe("2");
   });
+  it("wide table regions remain focusable and named without explanatory scroll copy", async () => {
+    const { renderTable, tableRegion } = await import("../web/tables.js"); const doc = new PlainDocument();
+    const table = renderTable(doc.asDocument(), { caption: "Wide observations", columns: ["A", "B", "C", "D", "E", "F", "G"], rows: [["1", "2", "3", "4", "5", "6", "7"]] });
+    const region = tableRegion(doc.asDocument(), table);
+    expect(region.className).toBe("table-region wide-table-region"); expect(region.getAttribute("tabindex")).toBe("0"); expect(region.getAttribute("aria-labelledby")).toBe(elements(table, "caption")[0]!.id);
+    expect(elements(region, "p")).toHaveLength(0); expect(region.getAttribute("aria-describedby")).toBeNull(); expect(elements(region, "table")).toHaveLength(1);
+  });
   it("table regions are named after their captions", async () => {
     const { renderTable, tableRegion } = await import("../web/tables.js");
     const doc = new PlainDocument();

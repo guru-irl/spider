@@ -58,7 +58,9 @@ it("model markers have shape and safe SVG colour, never inline styles", () => {
 it("flow shows actual edge values in a paired table with no invented total", () => {
   const doc = new PlainDocument(), flow = overviewFixture().flow;
   const node = renderFlow(doc.asDocument(), flow, "credits", "flow"); expect(elements(node, "table")).toHaveLength(1); expect(elements(node, "tbody")[0]!.children).toHaveLength(flow.edges.length);
-  expect(elements(node, "svg")[0]!.getAttribute("role")).toBe("group"); for (const path of elements(node, "path")) { expect(path.getAttribute("tabindex")).toBe("0"); expect(path.getAttribute("aria-label")).toBe(elements(path, "title")[0]!.textContent); }
+  expect(elements(node, "svg")[0]!.getAttribute("role")).toBe("group");
+  const links = elements(node, "path").filter(path => path.hasAttribute("stroke-width")); expect(links).toHaveLength(flow.edges.length);
+  for (const path of links) { expect(path.getAttribute("tabindex")).toBe("0"); expect(path.getAttribute("aria-label")).toBe(elements(path, "title")[0]!.textContent); }
   flow.edges.forEach(edge => expect(node.textContent).toContain(formatValue(edge.value, "credits")));
   expect(descendants(node as never).some(n => n.hasAttribute("style"))).toBe(false);
 });

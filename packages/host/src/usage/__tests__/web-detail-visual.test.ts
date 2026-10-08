@@ -94,7 +94,7 @@ test.skipIf(Boolean(screenshotSkipReason())).each(["session", "run"] as const)("
       expect(await page.evaluate(`Array.from(document.querySelectorAll('.table-region')).filter(r=>!r.closest('[hidden]')).every(r=>r.classList.contains('wide-table-region')||r.scrollWidth<=r.clientWidth+1)`)).toBe(true);
       expect(await page.evaluate(`Array.from(document.querySelectorAll('.wide-table td .cell-value')).every(n=>n.clientWidth>=72&&n.scrollWidth<=n.clientWidth+1)`)).toBe(true);
       expect(await page.evaluate(`(()=>{const summary=document.querySelector('.detail-calls .token-summary');return summary.getBoundingClientRect().height<=1.6*parseFloat(getComputedStyle(summary).fontSize);})()`)).toBe(true);
-      expect(await page.evaluate(`(()=>{const r=document.querySelector('.wide-table-region'),cue=r.querySelector('.scroll-cue');return r.tabIndex===0&&r.getAttribute('aria-describedby')===cue.id&&cue.textContent.length>0&&getComputedStyle(cue).position==='sticky';})()`)).toBe(true);
+      expect(await page.evaluate(`(()=>{const r=document.querySelector('.wide-table-region');return r.tabIndex===0&&!r.hasAttribute('aria-describedby')&&!r.querySelector('.scroll-cue');})()`)).toBe(true);
       if(width===390)expect(await page.evaluate("Array.from(document.querySelectorAll('.data-table:not(.wide-table)')).filter(n=>!n.closest('[hidden]')).every(n=>getComputedStyle(n).display==='block')")).toBe(true);
       // Navigate both owned pagers before suspension. The fixture accepts any
       // cursor but the next request count and retained buttons are real DOM.
@@ -107,7 +107,7 @@ test.skipIf(Boolean(screenshotSkipReason())).each(["session", "run"] as const)("
       expect(await page.evaluate(`Array.from(document.querySelectorAll('[aria-label$="pages"]')).every(g=>Array.from(g.querySelectorAll('button')).find(b=>b.textContent==='Previous page').disabled===false)`)).toBe(true);
       expect(await page.evaluate("Array.from(document.querySelectorAll('button')).filter(b=>b.textContent==='Retry'&&!b.hidden).length")).toBe(0);
       expect(await page.evaluate("document.documentElement.scrollWidth<=innerWidth")).toBe(true);
-      expect(await page.evaluate(`(()=>{const r=document.querySelector('.wide-table-region'),cue=r.querySelector('.scroll-cue'),left=cue.getBoundingClientRect().left;r.scrollLeft=r.scrollWidth;const stable=Math.abs(cue.getBoundingClientRect().left-left)<1;r.scrollLeft=0;return stable;})()`)).toBe(true);
+      expect(await page.evaluate(`(()=>{const r=document.querySelector('.wide-table-region');r.scrollLeft=r.scrollWidth;const scrolled=r.scrollLeft===Math.max(0,r.scrollWidth-r.clientWidth);r.scrollLeft=0;return scrolled;})()`)).toBe(true);
       expect(await page.evaluate("(()=>{const last=Array.from(document.querySelector('.detail-view').children).at(-1);last.scrollIntoView({block:'end'});return last.getBoundingClientRect().bottom<=innerHeight+1;})()")).toBe(true);
       await page.evaluate("scrollTo(0,0)");
     }});

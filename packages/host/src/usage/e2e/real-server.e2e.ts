@@ -22,8 +22,8 @@ test("real server bootstrap and one API call", async ({ page, request }) => {
     const cookies = await page.context().cookies(fixture.origin); expect(cookies).toEqual(expect.arrayContaining([expect.objectContaining({ httpOnly: true, sameSite: "Strict" })]));
     const result = await page.evaluate(async () => { const response = await fetch("/api/status"); return { status: response.status, body: await response.json() }; });
     expect(result.status).toBe(200); expect(result.body.apiVersion).toBe(1); expect(result.body.data.serverBuild).toEqual(expect.any(String));
-    // Before Task 10 lands, the common transport is real but the server Status DTO is legacy.
-    if ("lastIngestAt" in result.body.data) expect(Object.keys(result.body.data).sort()).toEqual(["collector", "lastIngestAt", "latestCounterAt", "rateVersions", "serverBuild"]);
+    expect(Object.keys(result.body.data).sort()).toEqual(["collector", "lastIngestAt", "latestCounterAt", "rateVersions", "serverBuild"]);
+    expect(result.body.data).toMatchObject({ collector: "none", latestCounterAt: null, rateVersions: expect.any(Array) });
     expect((await page.request.get(fixture.origin + asset)).status()).toBe(200);
     expect((await request.get(fixture.bootstrapUrl, { maxRedirects: 0 })).status()).toBe(401);
     expect(await hashes(dist)).toEqual(before);

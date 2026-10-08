@@ -10,7 +10,7 @@ vi.mock("../../build-id.js", () => ({ LOADED_BUILD: { sha: "abc1234", builtAt: "
 import { registerSlashCommands } from "../../slash.js";
 import { randomBytes } from "node:crypto";
 import { startUsageHttpServer } from "../server.js";
-import { OVERVIEW_ROUTES } from "../query-overview.js";
+import { DASHBOARD_ROUTES as OVERVIEW_ROUTES } from "../api-routes.js";
 import { UsageRuntime } from "../runtime.js";
 import type { UsageRoots } from "../discovery.js";
 import { writeServerRecord } from "../server-lock.js";

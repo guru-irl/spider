@@ -176,7 +176,7 @@ it("packaged slice works without source checkout", async () => {
     expect(bootstrapUrl.search).not.toContain(lock.secret);
     const bootstrap = await localUsageRequest(lock.port, bootstrapUrl.pathname + bootstrapUrl.search);
     expect(bootstrap.status).toBe(303);
-    const headers = { Cookie: bootstrap.headers["set-cookie"]![0]!.split(";")[0]!, "X-Spider-Usage-Legacy": "1" };
+    const headers = { Cookie: bootstrap.headers["set-cookie"]![0]!.split(";")[0]! };
     const html = await localUsageRequest(lock.port, "/", headers);
     expect(html.status).toBe(200); expect(html.body).toContain('<script type="module"');
     expect(html.body).toContain('<div id="usage-app"></div>');
@@ -185,6 +185,11 @@ it("packaged slice works without source checkout", async () => {
     const cssPath = /href="([^"]+\.css)"/.exec(html.body)![1]!;
     const js = await localUsageRequest(lock.port, jsPath, headers), css = await localUsageRequest(lock.port, cssPath, headers);
     expect(js.status).toBe(200); expect(css.status).toBe(200); expect(js.body).toContain("usage-shell"); expect(css.body).toContain("#16120f");
+    expect(js.body).not.toMatch(/\/api\/(?:context|source-errors|explorer|filter-values|cache|detail-links|detail|rates|reconciliation)\b|AIC|Night Transit Map/);
+    for (const family of ["Fira Sans", "Cascadia Code", "Bebas Neue"]) expect(css.body).toContain(family);
+    expect(js.body).toContain("https://fonts.gstatic.com/");
+    expect(js.body + css.body).not.toMatch(/Google Sans|fonts.googleapis.com/);
+    expect((await localUsageRequest(lock.port, "/states.html", headers)).status).toBe(404);
     expect((await localUsageRequest(lock.port, jsPath)).status).toBe(401);
     expect(html.headers["content-security-policy"]).toBe([
       "default-src 'none'", "script-src 'self'", "style-src 'self'", "style-src-attr 'none'", "font-src https://fonts.gstatic.com",
@@ -192,21 +197,30 @@ it("packaged slice works without source checkout", async () => {
     ].join("; "));
     const status = await until(async () => {
       const reply = await localUsageRequest(lock.port, "/api/status", headers); const dto = JSON.parse(reply.body).data;
-      return reply.status === 200 && dto.calls === 1 && dto.ingest.role === "standby" ? dto : undefined;
+      return reply.status === 200 && dto.lastIngestAt !== null ? dto : undefined;
     });
-    expect(status.ingest.backfill).toBe("complete"); expect(status.counter.ts).toBeNull();
+    expect(status.latestCounterAt).toBeNull(); expect(status.collector).toBe("none");
+    const ingested = new Database(join(f.root, "usage.db"), { readonly: true });
+    try {
+      expect(ingested.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get()).toEqual({ calls: 1 });
+      expect(ingested.prepare("SELECT value FROM ledger_metadata WHERE key='backfill-state'").get()).toEqual({ value: "complete" });
+    } finally { ingested.close(); }
     expect(status.serverBuild).toBe(lock.serverBuild); expect(lock.serverBuild).toMatch(/^[^@]+@\d{4}-\d{2}-\d{2}T/);
     const manifest = require("../../../../../scripts/build-id.mjs").parseBuildId(code);
     expect(lock.serverBuild).toBe(`${manifest.sha}@${manifest.builtAt}`);
     expect(await readUsageServerCrashCodes(join(f.root, "usage-server"))).not.toContain("usage-server-build-invalid");
-    // Match the rolling-month slice and empty filters sent by the real app.
-    const now = Date.now(), date = new Date(now);
-    const overviewParams = new URLSearchParams({ start: String(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)), end: String(now), filters: "[]" });
-    const overviewReply = await localUsageRequest(lock.port, `/api/overview?${overviewParams}`, headers);
+    const overviewParams = new URLSearchParams({ range: "7d", tz: "UTC", unit: "credits" });
+    const overviewReply = await until(async () => {
+      const reply = await localUsageRequest(lock.port, `/api/overview?${overviewParams}`, headers);
+      // Status can report live participant publication before the retry-open
+      // reader is ready. Wait for the data path, not that fallback timestamp.
+      return reply.status === 200 ? reply : undefined;
+    });
     expect({ status: overviewReply.status, length: overviewReply.body.length }).toMatchObject({ status: 200, length: expect.any(Number) });
     expect(overviewReply.body.length, JSON.stringify({ status: overviewReply.status, headers: overviewReply.headers })).toBeGreaterThan(0);
     const overview = JSON.parse(overviewReply.body).data;
-    expect(overview.calibration.status).toBe("off"); expect(overview.totals.tokens.total).toBe(160);
+    expect(overview.range.range).toBe("7d"); expect(overview.total.tokens.total).toBe(160);
+    expect(JSON.parse((await localUsageRequest(lock.port, "/api/calibration", headers)).body).data.correction.factor).toBeNull();
     const db = new Database(join(f.root, "usage.db"), { readonly: true });
     try {
       expect(db.prepare("SELECT COUNT(*) AS n FROM counter_snapshots").get()).toEqual({ n: 0 });
@@ -214,7 +228,8 @@ it("packaged slice works without source checkout", async () => {
     } finally { db.close(); }
     writeFileSync(join(f.root, "config.json"), '{"usage.calibration":"auto"}');
     const auto = JSON.parse((await localUsageRequest(lock.port, "/api/overview", headers)).body).data;
-    expect(auto.calibration.status).toBe("uncalibrated"); expect(auto.totals.tokens.total).toBe(160);
+    expect(auto.total.tokens.total).toBe(160);
+    expect(JSON.parse((await localUsageRequest(lock.port, "/api/calibration", headers)).body).data.correction.status).toBe("counter-unavailable");
     const published = new Database(join(f.root, "usage.db"), { readonly: true });
     try {
       const row = published.prepare("SELECT value FROM ledger_metadata WHERE key = 'worker-snapshot'").get() as { value: string };
@@ -269,7 +284,7 @@ it("non-browser package sources cannot use browser globals", () => {
   // DOM lib declarations are program-wide, so typecheck alone would permit accidental document/window access in Node.
   const files: string[] = [];
   function collect(dir: string) { for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === "__tests__" || join(dir, entry.name) === resolve("packages/host/src/usage/web")) continue;
+    if (entry.name === "__tests__" || join(dir, entry.name) === resolve("packages/host/src/usage/web") || join(dir, entry.name) === resolve("packages/host/src/usage/e2e")) continue;
     const file = join(dir, entry.name);
     if (entry.isDirectory()) collect(file); else if (/\.(?:[cm]?ts|tsx)$/.test(file) && !/\.d\.[cm]?ts$/.test(file)) files.push(file);
   } }

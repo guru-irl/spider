@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { request, type IncomingHttpHeaders } from "node:http";
 import { afterEach, expect, test } from "vitest";
 afterEach(cleanupFixtureDashboards);
-import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../api-routes.js";
+import { DASHBOARD_ROUTES } from "../api-routes.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { startUsageHttpServer } from "../server.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH, DASHBOARD_DAY, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
@@ -34,11 +34,8 @@ test("no-write guard detects a writer on another connection, including non-call 
 });
 
 const routes = [
-  ["status", "", 8], ["source-errors", "", 64], ["overview", "", 512], ["context", "", 8],
-  ["explorer", "", 256], ["filter-values", "?field=model", 64],
-  ["detail", "?kind=session&id=parent-session", 512], ["detail", "?kind=run&id=detailed-run", 512],
-  ["detail-links", "?kind=session&id=parent-session", 64], ["detail-links", "?kind=run&id=detailed-run", 64],
-  ["cache", "", 256], ["reconciliation", "", 256], ["rates", "", 512],
+  ["status", "", 8], ["overview", "", 1024], ["sessions", "", 512],
+  ["session/parent-session", "", 2048], ["calibration", "", 1024],
 ] as const;
 
 // Losing route registration, auth-before-data, fixed errors, bounds, or DTO parity breaks this contract.
@@ -67,25 +64,20 @@ test("all routes preserve wire and read-only boundary", async () => {
   const fingerprint = () => fixture.db.prepare("SELECT count(*) AS n,sum(ts) AS ts,sum(aic) AS aic FROM calls").get();
   const original = fingerprint();
   const seenMeasures: Record<string, number> = {};
-  const bases = new Set<string>();
   const inspect = (value: unknown, name: string): void => {
     if (!value || typeof value !== "object") return;
     const obj = value as Record<string, any>;
     expect(Object.keys(obj)).not.toContain("account_login"); expect(Object.keys(obj)).not.toContain("accountLogin"); expect(Object.keys(obj)).not.toContain("raw");
-    if (obj.calibration) expect(obj.calibration).toMatchObject({ status: expect.stringMatching(/^(calibrated|uncalibrated|implausible|off)$/), method: "trailing-7d-ratio", coveredHours: expect.any(Number), computedAic: expect.any(Number), counterDelta: expect.any(Number), unpricedCalls: expect.any(Number) });
     if (obj.tokens && "unpricedCalls" in obj) {
-      bases.add(obj.aicDisplay.basis);
-      expect(obj.aicDisplay.publishedAic).toBe(obj.aic);
-      expect(obj.aicDisplay.primaryAic).toBe(obj.aic === null ? null : obj.aic * (obj.aicDisplay.basis === "published" ? 1 : 0.5));
-      expect(["published", "calibrated", "back-applied"]).toContain(obj.aicDisplay.basis);
+      expect(obj.credits === null || Number.isFinite(obj.credits) && obj.credits >= 0).toBe(true);
       expect(obj.tokens.prompt).toBe(obj.tokens.input + obj.tokens.cacheRead + obj.tokens.cacheWrite);
       expect(obj.tokens.total).toBe(obj.tokens.prompt + obj.tokens.output);
       seenMeasures[name] = (seenMeasures[name] ?? 0) + 1;
     }
     for (const child of Object.values(obj)) inspect(child, name);
   };
-  planModule.assertRegisteredRoutes(DASHBOARD_ROUTES, routes.map(([name]) => `/api/${name}`));
-  for (const registered of DASHBOARD_ROUTES) for (const [name, query, kib] of routes.filter(([name]) => `/api/${name}` === registered.path)) {
+  planModule.assertRegisteredRoutes(DASHBOARD_ROUTES, routes.map(([name]) => name.startsWith("session/") ? "/api/session/<id>" : `/api/${name}`));
+  for (const registered of DASHBOARD_ROUTES) for (const [name, query, kib] of routes.filter(([name]) => (name.startsWith("session/") ? "/api/session/<id>" : `/api/${name}`) === registered.path)) {
     const path = `/api/${name}${query}`;
     expect((await get(server.port, path)).status, path).toBe(401);
     for (const hostile of [{ Origin: "null" }, { Origin: "https://foreign.invalid" }, { "Sec-Fetch-Site": "cross-site" }, { "X-Forwarded-Host": "foreign.invalid" }, { Host: "foreign.invalid" }] as Record<string, string>[]) {
@@ -115,18 +107,14 @@ test("all routes preserve wire and read-only boundary", async () => {
     const invalid = `${path}${query ? "&" : "?"}unknown=1`;
     const bad = await get(server.port, invalid, { Cookie });
     expect(bad.status, invalid).toBe(400); expect(JSON.parse(bad.body)).toEqual({ apiVersion: 1, error: { code: "invalid-query", message: "Invalid query" } });
-    const pageable = ["source-errors", "explorer", "filter-values", "detail", "detail-links", "cache", "reconciliation", "rates"].includes(name);
-    const period = !["status", "source-errors"].includes(name);
-    const cursor = pageable || name === "overview";
-    const suffixes = [...(pageable ? ["limit=201"] : []), ...(period ? ["start=0&end=31622400001", "start=0&start=0"] : []), ...(cursor ? [`cursor=${"x".repeat(2049)}`] : [])];
-    if (pageable) expect((await get(server.port, `${path}${query ? "&" : "?"}limit=200`, { Cookie })).status).toBe(200);
-    for (const suffix of suffixes) expect((await get(server.port, `${path}${query ? "&" : "?"}${suffix}`, { Cookie })).status, `${name} ${suffix.slice(0, 50)}`).toBe(400);
+    const suffixes = name === "overview" || name === "sessions" ? ["range=custom&from=0&to=8035200001", "tz=UTC&tz=UTC", "buckets=[1,1]"] : ["tz=UTC&tz=UTC"];
+    if (name === "sessions") { expect((await get(server.port, `${path}?limit=200`, { Cookie })).status).toBe(200); suffixes.push("limit=201"); }
+    for (const suffix of suffixes) expect((await get(server.port, `${path}?${suffix}`, { Cookie })).status, `${name} ${suffix}`).toBe(400);
     const post = await get(server.port, path, { Cookie }, "POST");
     expect(post.status).toBe(405); expect(post.headers.allow).toBe("GET, HEAD");
     expect(JSON.parse(post.body)).toEqual({ apiVersion: 1, error: { code: "method-not-allowed", message: "Method not allowed" } });
   }
-  for (const name of ["overview", "explorer", "detail", "cache", "reconciliation", "rates"]) expect(seenMeasures[name], name).toBeGreaterThan(0);
-  expect(bases).toContain("calibrated"); expect(bases).toContain("back-applied");
+  for (const name of ["overview", "sessions", "session/parent-session"]) expect(seenMeasures[name], name).toBeGreaterThan(0);
   expect(fingerprint()).toEqual(original); expect(reader.revision()).toBe(revision);
   planModule.assertNoWrites(fixture.db, before);
   const unknown = await get(server.port, "/api/does-not-exist", { Cookie });

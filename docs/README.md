@@ -8,7 +8,7 @@ Documentation for the spider pi extension.
 - [Contributing](../CONTRIBUTING.md): development setup, validation, package boundaries, and PR requirements.
 - [Using spider](guide/using-spider.md): skills, execution, indexing, todos, and project setup.
 - [Configuration](guide/configuration.md): layers, defaults, provenance, unset behavior, and role models.
-- [Usage and AI Credits](guide/usage.md): AIC footer, local ledger, read-only counter, dashboard calibration, global switches and doctor diagnostics.
+- [Usage dashboard](guide/usage.md): Overview, Session, and Calibration & data, with credits selected by default, an optional `usage.monthlyBudget`, a local ledger, a read-only counter and doctor diagnostics. The footer shows context percentage/window, session credits, cache-hit rate (`CH`), whole-percent `month`, input/output tokens and cache read/write tokens, separated by middle dots. The `month` item uses the budget when set, otherwise the allowance, and is omitted when neither is available.
 - [Subagents](guide/subagents.md): dispatch, thinking, shutdown, reload survival, escalation, and messaging.
 - [Memory and learning](guide/memory-and-learning.md): review, caps, background models, skill validation, and the review queue.
 

@@ -75,13 +75,6 @@ export type UsageMeasure = {
   /** Data uncertainty: overlap or undercount. False does not mean AIC is exact; all AIC remains approximate. */
   estimated: boolean;
 };
-export type SeriesPoint = Period & { label: string; measure: UsageMeasure };
-export type CompositionAvailability = {
-  status: "unavailable"; phase: 2; reason: "not-built"; message: "Not available yet (Phase 2)";
-};
-export interface CompositionProvider {
-  availability(slice: Slice & { sessionId?: string; runId?: string }): CompositionAvailability;
-}
 export type DashboardIngestState = {
   role: "owner" | "follower" | "inactive" | "standby";
   lastIngestAt: number | null; backfill: BackfillState; progress?: UsageProgress; errorCode: string | null;
@@ -97,29 +90,9 @@ export type DashboardStatus = {
   ingest: DashboardIngestState & { ageMs: number | null; stale: boolean };
   counter: DashboardCounter;
 };
-export type OverviewBreakdown = { label: string | null; isOther: boolean; measure: UsageMeasure };
-export type OverviewDay = SeriesPoint & { actors: readonly OverviewBreakdown[]; roles: readonly OverviewBreakdown[] };
-export type OverviewComparison = Period & {
-  counterAic: number | null; computed: UsageMeasure | null; gap: number | null; ratio: number | null;
-};
-export type OverviewData = {
-  /** Response-level calibration result. Whether a displayed value is back-applied
-   * comes from that value's `aicDisplay.basis`; daily and comparison evidence may differ. */
-  calibration: CalibrationResult;
-  totals: UsageMeasure; actors: readonly OverviewBreakdown[]; roles: readonly OverviewBreakdown[];
-  daily: Page<OverviewDay>; comparison: OverviewComparison;
-  counterObservation: DashboardCounter;
-  pace: { projected: Pick<UsageMeasure, "aicDisplay" | "tokens" | "possibleOverlap" | "possibleUndercount" | "pendingData"> | null;
-    counterAic: number | null; elapsedFraction: number | null };
-};
-export type ContextData = {
-  contextFillPercent: null;
-  contextFillMessage: "Context fill unavailable: historical window not recorded";
-  composition: CompositionAvailability; carry: CompositionAvailability; itemReuse: CompositionAvailability;
-};
 export type SourceErrorRow = { sourceLabel: string; projectLabel: string; code: string; count: number; lastCheckedAt: number };
 export type DashboardQueryContext = {
-  db: Db; instanceId: string; revision: string; composition: CompositionProvider; now: () => number;
+  db: Db; instanceId: string; revision: string; now: () => number;
   rates: readonly RateVersion[]; status: () => DashboardStatus;
   calibration: CalibrationService; calibrationMode: "auto" | "off";
   monthlyBudget?(): number | undefined; viewerSessionId?: string;
@@ -127,8 +100,6 @@ export type DashboardQueryContext = {
 export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams, id?: string): unknown;
   /** Focused routes validate in their handlers and cap the complete UTF-8 envelope in bytes. */
   responseCap?: number;
-  /** Temporary compatibility for the old page's colliding Status/Overview paths. */
-  legacyRoute?: DashboardRoute;
   responsePeriod?(ctx: DashboardQueryContext, query: URLSearchParams, data: unknown): Period;
   /** Pure validation/window resolution, including authenticated cursor windows, for the HTTP envelope. */
   resolvePeriod?(query: URLSearchParams, now: number): Period;

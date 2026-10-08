@@ -269,3 +269,12 @@ it("snapshot and selected-call queries use bounded read indexes and never read r
     expect(sql).not.toMatch(/\braw\b|SELECT \*/i);
   }
 });
+
+it("latest counter reset selects calibration evidence after a reset, including duplicate timestamps", () => {
+  snapshot(S - D, 20, { resetDate: "2026-10-15" });
+  snapshot(S + D, 1, { resetDate: "2026-10-15" });
+  snapshot(S + D, 2, { resetDate: "2026-11-01" });
+  const data = queryCalibration(context());
+  expect(data.daily[0]?.day).toBe(S);
+  expect(data.daily.at(-1)?.day).toBe(S + 4 * D);
+});

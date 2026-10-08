@@ -6,7 +6,7 @@ import { calibrationFallback } from "./calibration.js";
 import { toAicDisplay } from "./aic-display.js";
 import { safeTimestamp } from "./dashboard-selection.js";
 import type { SourceErrorRow } from "./dashboard-contract.js";
-import { sourceErrorCode, sourceErrorLabel } from "./query-source-errors.js";
+import { sourceErrorCode, sourceErrorLabel } from "./source-error-diagnostics.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDashboardAssets, DashboardAssetsError } from "./dashboard-assets.js";
 export async function dashboardAssetsStatus(bundleUrl: string | URL): Promise<"ready" | "usage-dashboard-missing" | "usage-dashboard-invalid"> {

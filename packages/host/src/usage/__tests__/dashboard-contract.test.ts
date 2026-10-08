@@ -109,22 +109,19 @@ it("empty unpriced and priced zero remain distinct", async () => {
   } finally { reader.close(); }
 });
 
-it("phase two availability touches no context tables", async () => {
-  fixture = createDashboardFixture();
+it("replacement wire shapes keep raw token totals and null pricing", async () => {
+  fixture = createDashboardFixture(false);
+  const { dashboardCall, dashboardBatch } = await import("./fixtures/dashboard-ledger.js");
+  fixture.ledger.apply(dashboardBatch([dashboardCall("unpriced-wire", { price: { status: "unpriced", reason: "unknown-model" } })]));
   const { openDashboardReader } = await import("../dashboard-reader.js");
-  const reader = openDashboardReader(fixture.file, { instanceId: "fixture-instance", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture-build" })!;
-  try {
-    reader.snapshot(ctx => {
-      const slice = { start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [], sessionId: "fixture-session", runId: "fixture-run" };
-      const prepare = vi.spyOn(ctx.db, "prepare");
-      expect(ctx.composition.availability(slice)).toEqual({ status: "unavailable", phase: 2, reason: "not-built", message: "Not available yet (Phase 2)" });
-      expect(ctx.composition.availability({ ...slice, sessionId: undefined })).toEqual(ctx.composition.availability(slice));
-      expect(prepare).not.toHaveBeenCalled();
-      prepare.mockRestore();
-    });
-  } finally { reader.close(); }
-  const { phase2CompositionProvider } = await import("../composition-provider.js");
-  expect(phase2CompositionProvider.availability({ start: 0, end: 0, filters: [] }).phase).toBe(2);
+  const { queryOverviewV4 } = await import("../query-overview-v4.js");
+  const { customRange } = await import("./fixtures/redesign-range.js");
+  const reader = openDashboardReader(fixture.file, { instanceId: "wire", serverBuild: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "off" })!;
+  try { reader.snapshot(ctx => {
+    const data = queryOverviewV4(ctx, customRange(DASHBOARD_MONTH, DASHBOARD_NOW));
+    expect(data.total).toEqual({ credits: null, calls: 1, unpricedCalls: 1, tokens: { input: 10, cacheRead: 20, cacheWrite: 30, output: 10, cacheWrite1h: 5, reasoning: 4, prompt: 60, total: 70 } });
+    expect(data).not.toHaveProperty("composition"); expect(data.total).not.toHaveProperty("aicDisplay");
+  }); } finally { reader.close(); }
 });
 
 it("fixture roots follow global root and restore only owned env keys", () => {

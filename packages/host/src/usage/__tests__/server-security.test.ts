@@ -7,7 +7,7 @@ afterEach(cleanupFixtureDashboards);
 import { startUsageHttpServer } from "../server.js";
 import type { HttpOptions } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { OVERVIEW_ROUTES } from "../query-overview.js";
+import { DASHBOARD_ROUTES as OVERVIEW_ROUTES } from "../api-routes.js";
 import { createDashboardFixture, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 
 type Reply = { status: number; headers: import("node:http").IncomingHttpHeaders; body: string };

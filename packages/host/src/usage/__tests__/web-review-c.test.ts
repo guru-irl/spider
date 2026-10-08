@@ -1,18 +1,13 @@
 import { observeFontTransport } from "./fixtures/font-transport.js";
-import { afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { PlainDocument, elements, settle } from "./fixtures/plain-dom.js";
-import { createDashboardBrowserPage } from "./fixtures/dashboard-browser-fixture.js";
-import { allViewPage, acceptanceStates } from "./fixtures/all-view-browser-fixture.js";
 import { DashboardClientError, errorCopy } from "../web/client.js";
 import { formatAicDisplay, periodTimes, evidenceText } from "../web/format.js";
 import { chartWithTable } from "../web/charts.js";
 import { renderTable } from "../web/tables.js";
 import { loadFonts } from "../web/fonts.js";
-import type { ViewRoute } from "../web/views.js";
 
 afterEach(() => vi.unstubAllGlobals());
-let base: Awaited<ReturnType<typeof createDashboardBrowserPage>>;
-beforeAll(async () => { base = await createDashboardBrowserPage(); });
 it("gap chart signs include positive, negative and rounded zero consistently", () => {
   const doc = new PlainDocument();
   const chart = chartWithTable(doc.asDocument(), { title: "Gap", unit: "gap-aic", points: [-2, 16, -0.1].map(value => ({ start: 0, end: 1000, label: "Synthetic", value, tokens: null })) });
@@ -32,10 +27,6 @@ it("midnight-aligned period endpoints use symmetric dates", () => {
   const period = periodTimes(doc.asDocument(), Date.UTC(2026, 0, 1), Date.UTC(2026, 0, 3), true);
   expect(period.textContent).toBe("1 Jan 2026 to 2 Jan 2026");
   expect(elements(period, "time").map(t => t.getAttribute("datetime"))).toEqual(["2026-01-01T00:00:00.000Z", "2026-01-02T00:00:00.000Z"]);
-});
-it("unavailable calibration legend does not place a period before its separator", () => {
-  const dto = JSON.parse(allViewPage(base, "unavailable").routes["/api/overview"]!.body as string).data;
-  expect(formatAicDisplay(dto.totals.aicDisplay, 0, dto.calibration).legend).not.toContain(". ·");
 });
 it("identity recovery names the salt sidecar and failure-cache window", () => {
   const copy = errorCopy(new DashboardClientError("identity-unavailable"));

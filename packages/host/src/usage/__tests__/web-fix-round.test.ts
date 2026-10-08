@@ -1,15 +1,9 @@
-import { readFileSync } from "node:fs";
 import { renderTable } from "../web/tables.js";
 import { expect, it, vi } from "vitest";
 import { PlainDocument, elements, settle, button } from "./fixtures/plain-dom.js";
 import { hashRoute, routeHash } from "../web/navigation.js";
-import { createDashboardBrowserPage } from "./fixtures/dashboard-browser-fixture.js";
-import { allViewPage } from "./fixtures/all-view-browser-fixture.js";
-import { DashboardClientError } from "../web/client.js";
 import { numericText, tokenCell } from "../web/format.js";
 import { chartWithTable } from "../web/charts.js";
-import type { ViewMount } from "../web/views.js";
-import * as screenshot from "../../../../../scripts/usage-dashboard-screenshot.mjs";
 
 function browser(doc: PlainDocument, hash = "") {
   const win = new EventTarget(), location = { hash };
@@ -26,32 +20,12 @@ it.each([
   ...[Array(17).fill({ field: "role", value: "worker" }), [{ field: "role", kind: "wrong", value: "worker" }], [{ field: "role", kind: "missing", value: "worker" }], [{ field: "role", value: "a".repeat(1025) }], { field: "role" }].map(f => "#view=cache&filters=" + encodeURIComponent(JSON.stringify(f))),
   "#view=cache&start=1", "#view=cache&start=1&end=9007199254740992", "#view=cache&start=1&end=8640000000000001",
 ])("each validator rejects a malformed hash with a valid view: %s", hash => expect(hashRoute(hash).page).toBe("overview"));
-it.each(["off", "unavailable"] as const)("%s fixture maps every AIC-bearing field and evidence consistently", async state => {
-  const page = allViewPage(await createDashboardBrowserPage(), state);
-  function inspect(value: unknown): void {
-    if (!value || typeof value !== "object") return;
-    const obj = value as Record<string, unknown>;
-    if ("basis" in obj) { expect(obj.basis).toBe("published"); expect(obj.primaryAic).toBe(obj.publishedAic); }
-    if ("calibratedAic" in obj) expect(obj.calibratedAic).toBeNull();
-    if ("factor" in obj && "status" in obj) { expect(obj.factor).toBeNull(); expect(obj.status).toBe(state === "off" ? "off" : "uncalibrated"); if (state === "off") { expect(obj.windowStart).toBeNull(); expect(obj.windowEnd).toBeNull(); expect(obj.coveredHours).toBe(0); expect(obj.counterDelta).toBe(0); } }
-    Object.values(obj).forEach(inspect);
-  }
-  for (const [path, route] of Object.entries(page.routes)) if (path.startsWith("/api/")) inspect(JSON.parse(route.body as string));
-});
 it("chart choices are independent and retained per stable chart id on rerender in a browser document", () => {
   const doc = new PlainDocument(); browser(doc);
   const chart = (title: string) => chartWithTable(doc.asDocument(), { title, unit: "tokens", points: [] });
   const a = chart("First"), b = chart("Second"); (doc.body as unknown as HTMLElement).append(a, b); button(a, "Table").click();
   const nextA = chart("First"), nextB = chart("Second"); expect(button(nextA, "Table").getAttribute("aria-pressed")).toBe("true"); expect(button(nextB, "Table").getAttribute("aria-pressed")).toBe("false");
 });
-it("CLI batch deadline covers every visual test's declared budget", () => {
-  const source = readFileSync(new URL("./dashboard-visual.test.ts", import.meta.url), "utf8");
-  const budgets = [...source.matchAll(/}, implementation\.BROWSER_TEST_TIMEOUT_MS(?: \* (\d+))?\);/g)].map(match => Number(match[1] ?? 1));
-  expect(budgets.length).toBe((source.match(/^test\(/gm) ?? []).length);
-  expect(budgets.length).toBeGreaterThan(0);
-  expect(screenshot.DEFAULT_CLI_TIMEOUT_MS).toBeGreaterThanOrEqual(screenshot.BROWSER_TEST_TIMEOUT_MS * budgets.reduce((a,b)=>a+b,0));
-});
-
 it("numeric fragments style signed values, not signs, units or identifiers", () => {
   const doc = new PlainDocument();
   const node = numericText(doc.asDocument(), "gap -2 AIC · ~33.33% · x2 · synthetic-v1 · model-5.1 · trailing 7-day ratio");
@@ -63,8 +37,7 @@ it("new route hashes omit the unused mode while accepting legacy hashes", () => 
   expect(hashRoute("#view=cache&mode=table")).toMatchObject({page:"overview"});
 });
 it("token cells follow the receiving table's column count",async()=>{
- const page=allViewPage(await createDashboardBrowserPage(),"calibrated");
- const tokens=JSON.parse(page.routes["/api/overview"]!.body as string).data.totals.tokens;
+ const tokens={input:100,cacheRead:800,cacheWrite:400,output:400,prompt:1300,total:1700,reasoning:null,cacheWrite1h:null};
  const doc=new PlainDocument();
  for(const count of [6,7]) {
   const columns=Array.from({length:count},(_,i)=>String(i));

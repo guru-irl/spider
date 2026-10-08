@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { SourceErrorRow } from "../dashboard-contract.js";
 import { usageServerCrashCodes as doctorCrashCodes, usageDoctorLines } from "../doctor.js";
 import { usageServerCrashCodes as serverCrashCodes } from "../server-runtime.js";
-import { sourceErrorLabel } from "../query-source-errors.js";
+import { sourceErrorLabel } from "../source-error-diagnostics.js";
 import { calibrationFallback } from "../calibration.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 

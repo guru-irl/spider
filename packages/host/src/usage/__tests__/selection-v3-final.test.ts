@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH, DASHBOARD_DAY } from "./fixtures/dashboard-ledger.js";
-import { queryOverview } from "../query-overview.js";
+import { readUsageCube, sumValues } from "../query-redesign-shared.js";
+import { customRange } from "./fixtures/redesign-range.js";
 import { queryOverview as referenceOverview } from "./fixtures/overview-v2-frozen.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { readMeasure } from "../dashboard-selection.js";
@@ -23,63 +24,23 @@ function price(aic: number) {
   return { status: "priced" as const, aic, components: { input: aic, cacheRead: 0, cacheWrite: 0, output: 0 }, rateVersion: "fixture", tier: "fixture", confidence: "estimated" as const };
 }
 
-it("Overview uses MAX undercount across mixed complete and open-run cube cells", () => {
-  const now = DASHBOARD_MONTH + 3 * DASHBOARD_DAY;
+it("shared measure retains mixed complete and open-run undercount", () => {
   fixture.ledger.apply(dashboardBatch([
     dashboardCall("open", { runId: "open", actor: "subagent", role: "worker" }),
-    dashboardCall("complete", { ts: DASHBOARD_MONTH + 2 * DASHBOARD_DAY, actor: "parent", role: "reviewer" }),
+    dashboardCall("complete", { ts: DASHBOARD_MONTH + 2 * DASHBOARD_DAY, actor: "parent" }),
   ], { runs: [{ id: "open", dbPath: "fixture", project: null, repo: null, sessionId: null, parentRunId: null,
     agent: null, role: null, name: null, model: null, thinking: null, phase: null, startedAt: null, endedAt: null }] }));
-  overview(now, ctx => {
-    const result = queryOverview(ctx, { start: DASHBOARD_MONTH, end: now, filters: [] });
-    expect(result.totals.pendingData).toBe(false);
-    expect(result.totals.possibleUndercount).toBe(true);
-    expect(result.actors.find(x => x.label === "subagent")!.measure.possibleUndercount).toBe(true);
-    expect(result.roles.find(x => x.label === "worker")!.measure.possibleUndercount).toBe(true);
-    expect(result.daily.rows[1]!.measure.possibleUndercount).toBe(true);
-    expect(result.actors.find(x => x.label === "parent")!.measure.possibleUndercount).toBe(false);
-    expect(result.daily.rows[2]!.measure.possibleUndercount).toBe(false);
+  overview(DASHBOARD_MONTH + 3 * DASHBOARD_DAY, ctx => {
+    expect(readMeasure(ctx, { start: DASHBOARD_MONTH, end: ctx.now(), filters: [] })).toMatchObject({ pendingData: false, possibleUndercount: true });
+    const cube = readUsageCube(ctx, customRange(DASHBOARD_MONTH, ctx.now()));
+    expect(cube.total.calls).toBe(2); expect(sumValues(cube.rows.map(row => row.value))).toEqual(cube.total);
   });
 });
-
-it.each([0.1234564, 0.1234566, -0.0000001])("Overview preserves unrounded AIC throughout its branches for %s", aic => {
+it.each([0.1234564, 0.1234566])("replacement rollups retain unrounded credits for %s", aic => {
   fixture.ledger.apply(dashboardBatch([dashboardCall("precision", { price: price(aic) })]));
   overview(DASHBOARD_MONTH + 3 * DASHBOARD_DAY, ctx => {
-    const result = queryOverview(ctx, { start: DASHBOARD_MONTH, end: ctx.now(), filters: [] });
-    const measures = [result.totals, ...result.actors.filter(x => x.measure.calls).map(x => x.measure),
-      ...result.roles.map(x => x.measure), ...result.daily.rows.filter(x => x.measure.calls).map(x => x.measure)];
-    for (const measure of measures) {
-      for (const value of [measure.aic, measure.aicComponents.input, measure.aicDisplay.primaryAic, measure.aicDisplay.publishedAic])
-        expect(Object.is(value, aic)).toBe(true);
-    }
-  });
-});
-
-// The copy probe retained only an approximate elapsed fraction (~0.2), not its timestamp.
-it.each([1 / 744, 0.2].flatMap(fraction => ["published", "calibrated", "back-applied"].map(basis => ({ fraction, basis }))))(
-  "pace scales unrounded $basis totals once at elapsed fraction $fraction", ({ fraction, basis }) => {
-  const now = DASHBOARD_MONTH + Math.round(fraction * 31 * DASHBOARD_DAY);
-  fixture.ledger.apply(dashboardBatch([dashboardCall("off-grid", { ts: DASHBOARD_MONTH + 1000, price: price(0.1234564) })]));
-  fixture.ledger.insertCounter({ ts: now - 100, creditsUsed: 0.9876543, raw: {} });
-  overview(now, ctx => {
-    const fallback = ctx.calibration.at(now - 1, "off");
-    const fit = { ...fallback, status: "calibrated" as const, factor: 0.54321987, windowEnd: now + 1000 };
-    ctx = { ...ctx, calibrationMode: basis === "published" ? "off" : "auto", calibration: { ...ctx.calibration,
-      atMany: ends => ends.map(() => basis === "calibrated" ? fit : fallback), earliest: () => fit } };
-    const slice = { start: DASHBOARD_MONTH, end: now, filters: [] };
-    const actual = queryOverview(ctx, slice), reference = referenceOverview(ctx, slice);
-    expect(actual.pace.projected!.aicDisplay.basis).toBe(basis);
-    for (const key of ["primaryAic", "publishedAic"] as const) {
-      const expected = reference.pace.projected!.aicDisplay[key]!;
-      expect(actual.pace.projected!.aicDisplay[key]).toBe(expected);
-      expect(Math.abs(actual.pace.projected!.aicDisplay[key]! - expected)).toBeLessThan(1e-6);
-    }
-    expect(actual.comparison.computed!.aic).toBe(0.1234564);
-    expect(actual.comparison.computed!.aicDisplay.primaryAic).toBe(reference.comparison.computed!.aicDisplay.primaryAic!);
-    expect(actual.comparison.gap).toBe(0.9876543 - 0.1234564);
-    expect(actual.comparison.ratio).toBe(0.1234564 / 0.9876543);
-    for (const key of ["gap", "ratio"] as const)
-      expect(Math.abs(actual.comparison[key]! - reference.comparison[key]!)).toBeLessThan(1e-6);
+    const cube = readUsageCube(ctx, customRange(DASHBOARD_MONTH, ctx.now()));
+    for (const value of [cube.total, ...cube.rows.map(row => row.value), ...cube.buckets.filter(row => row.total.calls).map(row => row.total)]) expect(value.credits).toBe(aic);
   });
 });
 

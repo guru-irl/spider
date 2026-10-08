@@ -1,5 +1,5 @@
 import type { UsageWorkerEvent } from "./protocol.js";
-import { readSourceErrorDiagnostics } from "./query-source-errors.js";
+import { readSourceErrorDiagnostics } from "./source-error-diagnostics.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
 import { createCalibrationService, calibrationFallback } from "./calibration.js";
 import { createHash } from "node:crypto";

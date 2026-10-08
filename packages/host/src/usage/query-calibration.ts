@@ -1,6 +1,6 @@
 import type { CalibrationResult, DashboardQueryContext, DashboardRoute, Period } from "./dashboard-contract.js";
 import type { CalibrationData, RateRowV4 } from "./dashboard-v4-contract.js";
-import type { CounterSnapshot } from "./ledger.js";
+import { latestValidCounter } from "./latest-valid-counter.js";
 import type { RateVersion } from "./types.js";
 import { unpricedReasonSql } from "./unpriced-reasons.js";
 import { billingPeriod } from "./billing-pace.js";
@@ -12,13 +12,7 @@ import { dashboardLabel } from "./dashboard-identities.js";
 import { countedUsageSql, storedSelection } from "./schema.js";
 
 function evidencePeriod(ctx: DashboardQueryContext): Period {
-  const latest = ctx.db.prepare(`SELECT ts,credits_used AS creditsUsed,reset_date AS resetDate FROM counter_snapshots INDEXED BY counter_snapshots_ts
-    WHERE ts<=? AND ts BETWEEN 0 AND 8640000000000000 AND ts=CAST(ts AS INTEGER)
-      AND credits_used BETWEEN 0 AND 1.7976931348623157e308
-      AND (entitlement IS NULL OR entitlement BETWEEN 0 AND 1.7976931348623157e308)
-      AND (remaining IS NULL OR remaining BETWEEN 0 AND 1.7976931348623157e308)
-    ORDER BY ts DESC,rowid DESC LIMIT 1`).get(ctx.now()) as Omit<CounterSnapshot, "raw"> | undefined;
-  const period = billingPeriod(ctx.now(), latest ? { ...latest, raw: {} } : undefined);
+  const period = billingPeriod(ctx.now(), latestValidCounter(ctx.db, ctx.now()));
   return { start: period.start, end: Math.min(period.end, ctx.now()) };
 }
 function accepted(fit: CalibrationResult): boolean {

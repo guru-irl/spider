@@ -630,9 +630,6 @@ export function initializeIds(ctx: DashboardQueryContext): void {
   ctx.db.raw.function("explorer_detail_key", { deterministic: true }, (value: string | null) => value === null ? null : supportedDetailId(value) ? value : "");
   initialized.set(ctx.db, { key, lookups: new Map() });
 }
-export function dashboardKey(ctx: DashboardQueryContext, field: Dimension, value: string | null): string | null {
-  initializeIds(ctx); return initialized.get(ctx.db)!.key(field, value);
-}
 /** Resolve explicit ids, never guess from their shape. A range-indexed DISTINCT
  * cache is scoped to the snapshot revision and period. Uncounted stored values
  * may resolve but still cannot bypass counted selection. No all-time calls scan.

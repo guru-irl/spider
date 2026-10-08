@@ -4,7 +4,6 @@ import { assertUsageSchemaVersion } from "./migrate.js";
 import { counterSnapshotIsFresh } from "./counter.js";
 import { createCalibrationService } from "./calibration.js";
 import { safeTimestamp } from "./dashboard-selection.js";
-import { phase2CompositionProvider } from "./composition-provider.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import { DashboardQueryError, type DashboardReader, type ReaderOptions, type DashboardQueryContext, type DashboardCounter, type DashboardStatus, type DashboardIngestState } from "./dashboard-contract.js";
 
@@ -102,7 +101,6 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
           const calibrationMode = options.calibrationMode();
           if (calibrationMode !== "auto" && calibrationMode !== "off") throw new TypeError("calibrationMode must return auto or off");
           return db.raw.transaction(() => read({ db, instanceId, revision: revision(), now: () => now, rates,
-          composition: phase2CompositionProvider,
           calibration,
           calibrationMode, monthlyBudget: options.monthlyBudget, status: () => readStatus(now) })).deferred();
         });

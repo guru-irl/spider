@@ -1,8 +1,8 @@
+// Test-only adapter for the frozen pre-redesign Overview oracle.
 import type { Db } from "@spider/db-core";
-import type { DashboardQueryContext, Page, SourceErrorRow } from "./dashboard-contract.js";
-import { decodeCursor, encodeCursor, invalidQuery, validatePage } from "./dashboard-selection.js";
-import { sourceErrorLabel, sourceErrorCode } from "./source-error-diagnostics.js";
-export { sourceErrorLabel, sourceErrorCode, readSourceErrorDiagnostics } from "./source-error-diagnostics.js";
+import type { DashboardQueryContext, Page, SourceErrorRow } from "../../dashboard-contract.js";
+import { decodeCursor, encodeCursor, invalidQuery, validatePage } from "../../dashboard-selection.js";
+import { sourceErrorLabel, sourceErrorCode } from "../../source-error-diagnostics.js";
 type ErrorRecord = { key: number; kind: number; path: string; project: string | null; code: string; count: number; lastCheckedAt: number };
 function readErrors(db: Db, limit: number, after: readonly [number, number]): ErrorRecord[] {
   const sources = db.prepare(`SELECT rowid AS key, path, parse_errors AS parseErrors, source_error_code AS sourceError,

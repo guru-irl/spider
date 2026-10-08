@@ -3,7 +3,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 import { countedUsageSql } from "../schema.js";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { queryOverview } from "../query-overview.js";
+import { readMeasure } from "../dashboard-selection.js";
+import { readUsageCube } from "../query-redesign-shared.js";
+import { customRange } from "./fixtures/redesign-range.js";
 
 let fixture: ReturnType<typeof createDashboardFixture>;
 beforeEach(() => { fixture = createDashboardFixture(); });
@@ -54,7 +56,10 @@ it("stored selection is byte identical to dynamic selection through randomized l
         }
         reader.snapshot(ctx => {
           const slice = { start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [] };
-          compareOverview(queryOverview(ctx, slice), referenceOverview(ctx, slice));
+          compareOverview(readMeasure(ctx, slice), referenceOverview(ctx, slice).totals);
+          const cube = readUsageCube(ctx, customRange(slice.start, slice.end));
+          expect(cube.total.calls).toBe(referenceOverview(ctx, slice).totals.calls);
+          expect(cube.total.tokens).toEqual(referenceOverview(ctx, slice).totals.tokens);
           comparisons++;
         });
       };
@@ -71,21 +76,17 @@ it("stored selection is byte identical to dynamic selection through randomized l
   } finally { reader.close(); }
 });
 
-it("Overview selection does not materialize unused raw provenance columns", () => {
-  const reader = openDashboardReader(fixture.file, { instanceId: "synthetic", serverBuild: "synthetic", now: () => DASHBOARD_NOW, calibrationMode: () => "off" })!;
-  const original = fixture.db.prepare.bind(fixture.db);
-  let statement = "";
-  const spy = vi.spyOn(fixture.db, "prepare").mockImplementation(sql => { if (sql.startsWith("WITH counted AS MATERIALIZED")) statement = sql; return original(sql); });
+it("replacement projection does not materialize raw provenance", () => {
+  const reader = openDashboardReader(fixture.file, { instanceId: "projection", serverBuild: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "off" })!;
   try {
-    reader.snapshot(ctx => queryOverview({ ...ctx, db: fixture.db }, { start: DASHBOARD_MONTH, end: DASHBOARD_NOW, filters: [] }));
-    spy.mockRestore();
-    const code = original(`EXPLAIN ${statement}`).all(DASHBOARD_MONTH, DASHBOARD_NOW, DASHBOARD_MONTH, DASHBOARD_NOW) as
-      { opcode: string; p1: number; p2: number }[];
-    const tableRoot = (original("SELECT rootpage FROM sqlite_master WHERE name='calls'").get() as { rootpage: number }).rootpage;
-    const tableCursors = new Set(code.filter(op => op.opcode === "OpenRead" && op.p2 === tableRoot).map(op => op.p1));
-    const rawModelColumn = (original("PRAGMA table_info(calls)").all() as { cid: number; name: string }[]).find(c => c.name === "raw_model")!.cid;
-    expect(code.some(op => op.opcode === "Column" && tableCursors.has(op.p1) && op.p2 === rawModelColumn)).toBe(false);
-  } finally { spy.mockRestore(); reader.close(); }
+    reader.snapshot(ctx => {
+      const statements: string[] = [], prepare = ctx.db.prepare.bind(ctx.db);
+      const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(sql => { statements.push(sql); return prepare(sql); });
+      try { readUsageCube(ctx, customRange(DASHBOARD_MONTH, DASHBOARD_NOW)); } finally { spy.mockRestore(); }
+      expect(statements.filter(sql => sql.includes("FROM calls c")).length).toBeGreaterThan(0);
+      expect(statements.some(sql => /c\.(?:raw_model|entry_id|fingerprint)\b/.test(sql))).toBe(false);
+    });
+  } finally { reader.close(); }
 });
 
 it("v3 bounded selection has no per-call fingerprint or completeness probes", () => {

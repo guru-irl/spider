@@ -6,9 +6,10 @@ import { openDashboardReader } from "../dashboard-reader.js";
 import type { DashboardQueryContext } from "../dashboard-contract.js";
 import { createCalibrationService } from "../calibration.js";
 import { migrateUsageLedger } from "../migrate.js";
-import { queryCache } from "../query-cache.js";
-import { queryRates } from "../query-rates.js";
-import { queryReconciliation } from "../query-reconciliation.js";
+import { readMeasure } from "../dashboard-selection.js";
+import { readUsageCube } from "../query-redesign-shared.js";
+import { readCounterIntervals } from "../counter-intervals.js";
+import { customRange } from "./fixtures/redesign-range.js";
 import { seedSelectionBenchmark } from "./fixtures/selection-v3.js";
 import { DASHBOARD_MONTH as M, DASHBOARD_DAY as D } from "./fixtures/dashboard-ledger.js";
 
@@ -43,68 +44,26 @@ function read<T>(mode: "off" | "auto", run: (ctx: DashboardQueryContext) => T): 
 }
 const slice = { start: M, end: M + 3 * D, filters: [] };
 function responses(ctx: DashboardQueryContext) {
-  const cache = queryCache(ctx, slice, { limit: 1 });
-  const rates = queryRates(ctx, slice, { limit: 1 });
-  const reconciliation = queryReconciliation(ctx, slice, { bucket: "snapshot", limit: 1 });
-  return {
-    cache, cacheNext: queryCache(ctx, slice, { limit: 1, cursor: cache.sessionsWithWritesNoReads.nextCursor! }),
-    rates, ratesNext: queryRates(ctx, slice, { limit: 1, cursor: rates.nextCursor! }),
-    reconciliation, reconciliationNext: queryReconciliation(ctx, slice, { bucket: "snapshot", limit: 1, cursor: reconciliation.periods.nextCursor! }),
-    day: queryReconciliation(ctx, slice, { bucket: "day", limit: 50 }),
-    month: queryReconciliation(ctx, slice, { bucket: "month", limit: 50 }),
-  };
+  return { measure: readMeasure(ctx, slice), warmer: readMeasure(ctx, { ...slice, filters: [{ field: "actor", value: "warmer" }] }), intervals: readCounterIntervals(ctx, slice) };
 }
-
-it.each(["off", "auto"] as const)("Task 8 responses are byte identical on unmigrated v2 and migrated v3 (%s)", mode => {
+it.each(["off", "auto"] as const)("replacement aggregates are identical before and after migration (%s)", mode => {
   expect(db.pragma("user_version")).toBe(2);
   const before = read(mode, responses);
-  expect(before.cache.totals.calls).toBe(75); // Four copied calls and one native shadow.
-  expect(before.cache.totals.possibleUndercount).toBe(true);
-  expect(before.cache.totals.unpricedCalls).toBe(2);
-  expect(before.cache.warmer.calls).toBe(1);
-  expect(before.cache.writeSplit.knownCalls).toBe(1);
-  expect(before.cache.writeSplit.unknownCalls).toBe(74);
-  expect(before.cache.sessionsWithWritesNoReads.nextCursor).not.toBeNull();
-  expect(before.rates.unpricedModels.nextCursor).not.toBeNull();
-  expect(before.reconciliation.periods.rows[0]!.computed!.calls).toBeGreaterThan(0);
-  migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(4);
-  const after = read(mode, responses);
-  // Task 8 has no Overview cube rounding. Counts and all AIC fields are exact.
-  expect(after).toEqual(before);
-  expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+  expect(before.measure.calls).toBe(75); expect(before.measure.unpricedCalls).toBe(2);
+  expect(before.warmer.calls).toBe(1);
+  expect(before.intervals).toHaveLength(3);
+  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(4);
+  expect(read(mode, responses)).toEqual(before);
+  expect(read(mode, ctx => readUsageCube(ctx, customRange(slice.start, slice.end))).total.calls).toBe(75);
 });
-
-const endpoints = [
-  { name: "Cache", occurrences: 3, run: (ctx: DashboardQueryContext) => queryCache(ctx, slice, { limit: 1 }) },
-  { name: "Rates", occurrences: 2, run: (ctx: DashboardQueryContext) => queryRates(ctx, slice, { limit: 1 }) },
-  { name: "Reconciliation", occurrences: 1, run: (ctx: DashboardQueryContext) => queryReconciliation(ctx, slice, { bucket: "day" as const, limit: 50 }) },
-];
-it.each(endpoints)("$name reads stored decisions on v3 and dynamic decisions on v2", endpoint => {
+it.each(["cube", "intervals"] as const)("%s switches from dynamic to stored decisions after migration", endpoint => {
   const capture = () => read("off", ctx => {
-    const sql: string[] = [];
-    const original = ctx.db.prepare.bind(ctx.db);
-    const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(statement => {
-      if (statement.includes("window AS MATERIALIZED")) sql.push(statement);
-      return original(statement);
-    });
-    try { endpoint.run(ctx); } finally { spy.mockRestore(); }
-    return sql.join("\n");
+    const sql: string[] = [], prepare = ctx.db.prepare.bind(ctx.db);
+    const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(statement => { if (statement.includes("window AS MATERIALIZED")) sql.push(statement); return prepare(statement); });
+    try { if (endpoint === "cube") readMeasure(ctx, slice); else readCounterIntervals(ctx, slice); } finally { spy.mockRestore(); }
+    expect(sql.length).toBeGreaterThan(0); return sql.join("\n");
   });
-  const dynamic = capture();
-  expect(dynamic).not.toMatch(/selection_shadowed|selection_undercount/);
-  expect(dynamic.match(/prior\.fingerprint/g)).toHaveLength(2 * endpoint.occurrences);
-  migrateUsageLedger(db);
-  const stored = capture();
-  // This spy kills a dynamic-on-v3 mutant even when its DTO is identical.
-  // Check every selection subquery, including Cache's global session probe
-  // and Rates' narrow stored-rate-version projection.
-  expect(stored.match(/c\.selection_shadowed = 0/g)).toHaveLength(endpoint.occurrences);
-  expect(stored.match(/w\.selection_undercount AS possible_undercount/g)).toHaveLength(endpoint.occurrences);
-  expect(stored).toContain("active.selection_shadowed = 0");
-  expect(stored).not.toMatch(/prior\.fingerprint|FROM incomplete_reports i|WHERE r\.id = w\.run_id/);
-  const windows = [...stored.matchAll(/window AS MATERIALIZED \(SELECT (.*?) FROM calls c /g)].map(match => match[1]!);
-  expect(windows).toHaveLength(endpoint.occurrences);
-  for (const projection of windows) expect(projection).not.toMatch(/c\.\*|c\.role\b|c\.source_kind\b/);
-  if (endpoint.name !== "Cache") for (const projection of windows) expect(projection).not.toMatch(/c\.ts\b|c\.actor\b/);
+  const dynamic = capture(); expect(dynamic).toContain("prior.fingerprint");
+  migrateUsageLedger(db); const stored = capture();
+  expect(stored).toContain("c.selection_shadowed = 0"); expect(stored).not.toContain("prior.fingerprint");
 });

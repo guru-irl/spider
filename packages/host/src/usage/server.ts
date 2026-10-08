@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHmac, randomBytes } from "node:crypto";
-import { DashboardQueryError, type ApiErrorCode, type DashboardStatus, type HttpOptions } from "./dashboard-contract.js";
+import { DashboardQueryError, type ApiErrorCode, type HttpOptions } from "./dashboard-contract.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import { RESPONSE_CAPS_V4, type StatusData } from "./dashboard-v4-contract.js";
 import { supportedDetailId } from "./dashboard-keys.js";
-import { parsePage, parseSlice, validateParams } from "./dashboard-selection.js";
+import { validateParams } from "./dashboard-selection.js";
 import { equalCredential, hasMintBearer, hasSafeBrowserMetadata, isBrowserMint, parseUsageTarget, usageSecurityHeaders, validateTransport } from "./server-security.js";
 
 import { loadDashboardAssets } from "./dashboard-assets.js";
@@ -29,16 +29,6 @@ function fail(res: ServerResponse, code: keyof typeof errors, path?: string, ses
   res.end(res.req.method === "HEAD" ? undefined : body);
 }
 
-// Preflight the frozen foundational routes before even reading the snapshot revision.
-// Query handlers retain their endpoint-specific validation and cursor generation checks.
-const routeParams: Record<string, readonly string[]> = {
-  "/api/status": [], "/api/overview": ["start", "end", "filters", "cursor"],
-  "/api/context": ["start", "end", "filters"], "/api/source-errors": ["limit", "cursor"],
-};
-const legacyResponseCaps: Record<string, number> = {
-  "/api/status": 8, "/api/source-errors": 64, "/api/overview": 512, "/api/explorer": 256, "/api/filter-values": 64,
-  "/api/detail": 512, "/api/detail-links": 64, "/api/context": 8, "/api/cache": 256, "/api/reconciliation": 256, "/api/rates": 512,
-};
 function send(res: ServerResponse, body: string, maximum: number): boolean {
   if (Buffer.byteLength(body) > maximum) { res.setHeader("Content-Type", "application/json; charset=utf-8"); fail(res, "response-limit"); return false; }
   res.setHeader("Content-Length", Buffer.byteLength(body));
@@ -67,27 +57,16 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
   let reader = options.reader;
   let lastOpenAt = -Infinity;
   let unavailableCode: keyof typeof errors = "ledger-unavailable";
-  const fallbackStatus = (): DashboardStatus => {
-    const state = options.ingestStatus?.();
-    const last = state?.lastIngestAt;
-    const lastIngestAt = typeof last === "number" && Number.isSafeInteger(last) && last >= 0 ? last : null;
-    const allowedCodes = ["usage-ingest-failed", "usage-ingest-lease-lost", "usage-ingest-lease-busy", "usage-ledger-unavailable"];
-    return { serverBuild: options.serverBuild, schemaVersion: 0, rateVersions: COPILOT_RATE_VERSIONS.map(rate => rate.id),
-      calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
-      ingest: { role: state?.role ?? "inactive", backfill: state?.backfill ?? "pending", lastIngestAt,
-        errorCode: state?.errorCode ? allowedCodes.includes(state.errorCode) ? state.errorCode : "usage-ingest-failed" : null,
-        ageMs: lastIngestAt === null ? null : Math.max(0, now() - lastIngestAt),
-        stale: lastIngestAt === null || now() < lastIngestAt || now() - lastIngestAt > 120_000 },
-      counter: { ts: null, creditsUsed: null, entitlement: null, remaining: null, resetDate: null, ageMs: null,
-        availability: "unavailable", nextPollAt: null } };
+  const fallbackStatus = (): StatusData => {
+    const last = options.ingestStatus?.().lastIngestAt;
+    return { lastIngestAt: typeof last === "number" && Number.isSafeInteger(last) && last >= 0 ? last : null,
+      collector: "none", latestCounterAt: null, serverBuild: options.serverBuild,
+      rateVersions: COPILOT_RATE_VERSIONS.map(rate => rate.id) };
   };
-  const fallbackStatusV4 = (): StatusData => ({ lastIngestAt: fallbackStatus().ingest.lastIngestAt, collector: "none",
-    latestCounterAt: null, serverBuild: options.serverBuild, rateVersions: COPILOT_RATE_VERSIONS.map(rate => rate.id) });
-  const statusEnvelope = (focused: boolean) => {
-    const timestamp = now();
-    const date = new Date(timestamp);
+  const statusEnvelope = () => {
+    const timestamp = now(), date = new Date(timestamp);
     return { apiVersion: 1, revision: `${options.instanceId}:unavailable`, generatedAt: timestamp,
-      period: { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp }, data: focused ? fallbackStatusV4() : reader?.status() ?? fallbackStatus() };
+      period: { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp }, data: fallbackStatus() };
   };
   const nonces = new Map<string, { value: string; issuedAt: number; openerSessionId?: string }>();
   const sessions = new Map<string, { value: string; lastUsedAt: number; openerSessionId?: string }>();
@@ -232,30 +211,13 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
       res.setHeader("Content-Type", asset.contentType); res.setHeader("Cache-Control", asset.cacheControl);
       res.setHeader("Content-Length", asset.body.length); res.end(req.method === "HEAD" ? undefined : asset.body); activity(); return;
     }
-    // The temporary legacy client marks its colliding status/overview calls.
-    // Legacy Overview links with start/end keep their existing query grammar.
-    const legacy = req.headers["x-spider-usage-legacy"] === "1" ||
-      (target.pathname === "/api/overview" && ["start", "end", "filters", "cursor"].some(key => target.searchParams.has(key)));
     const dynamicId = /^\/api\/session\/([^/]+)$/.exec(target.pathname)?.[1];
-    const registered = options.routes.find(route => route.path === target.pathname) ??
+    const route = options.routes.find(route => route.path === target.pathname) ??
       (dynamicId ? options.routes.find(route => route.path === "/api/session/<id>") : undefined);
-    const route = legacy && registered?.legacyRoute ? registered.legacyRoute : registered;
     if (route) {
-      const focused = route.responseCap !== undefined;
-      const maximum = focused ? RESPONSE_CAPS_V4[route.path as keyof typeof RESPONSE_CAPS_V4] : (legacyResponseCaps[route.path] ?? 1024) * 1024;
+      const maximum = RESPONSE_CAPS_V4[route.path as keyof typeof RESPONSE_CAPS_V4] ?? route.responseCap ?? 1024 * 1024;
       try {
         if (dynamicId && !supportedDetailId(dynamicId)) throw new DashboardQueryError("invalid-query");
-        if (!focused) {
-          const allowed = routeParams[target.pathname];
-          if (allowed) validateParams(target.searchParams, allowed);
-          if (target.searchParams.has("limit") || target.searchParams.has("cursor")) parsePage(target.searchParams);
-          if (target.searchParams.has("start") || target.searchParams.has("end") || target.searchParams.has("filters")) {
-            const sliceParams = new URLSearchParams();
-            for (const key of ["start", "end", "filters"]) if (target.searchParams.has(key)) sliceParams.set(key, target.searchParams.get(key)!);
-            if (route.resolvePeriod) route.resolvePeriod(target.searchParams, now());
-            else parseSlice(sliceParams, now());
-          }
-        }
         if (target.pathname === "/api/status") validateParams(target.searchParams, []);
         if (!reader && options.retryOpenReader && now() - lastOpenAt >= 5000) {
           lastOpenAt = now();
@@ -263,7 +225,7 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
           catch (error) { unavailableCode = error instanceof DashboardQueryError ? error.code : "internal"; }
         }
         if (!reader) {
-          if (target.pathname === "/api/status") send(res, JSON.stringify(statusEnvelope(focused)), maximum);
+          if (target.pathname === "/api/status") send(res, JSON.stringify(statusEnvelope()), maximum);
           else fail(res, unavailableCode);
           return;
         }
@@ -273,8 +235,7 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
           const date = new Date(timestamp);
           const data = route.handle(ctx, target.searchParams, dynamicId);
           return { apiVersion: 1, revision: ctx.revision, generatedAt: timestamp,
-            period: route.responsePeriod?.(ctx, target.searchParams, data) ?? route.resolvePeriod?.(target.searchParams, timestamp) ?? { start: target.searchParams.has("start") ? Number(target.searchParams.get("start")) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1),
-              end: target.searchParams.has("end") ? Number(target.searchParams.get("end")) : timestamp },
+            period: route.responsePeriod?.(ctx, target.searchParams, data) ?? route.resolvePeriod?.(target.searchParams, timestamp) ?? { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp },
             data };
         });
         if (send(res, JSON.stringify(envelope), maximum) && target.pathname !== "/api/status") activity();
@@ -282,7 +243,7 @@ export async function startUsageHttpServerWithAssets(options: HttpOptions, asset
       } catch (error) {
         const code = error instanceof DashboardQueryError && Object.hasOwn(errors, error.code) ? error.code as keyof typeof errors : "internal";
         if (target.pathname === "/api/status" && code === "ledger-unavailable") {
-          try { send(res, JSON.stringify(statusEnvelope(focused)), maximum); } catch { fail(res, "internal"); }
+          try { send(res, JSON.stringify(statusEnvelope()), maximum); } catch { fail(res, "internal"); }
         } else fail(res, code, undefined, route.path === "/api/session/<id>" && code === "not-found");
         return;
       }

@@ -1,6 +1,6 @@
 import { openDb, type Db } from "@spider/db-core";
 import { openUsageLedger } from "../../ledger.js";
-import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../../api-routes.js";
+import { DASHBOARD_ROUTES } from "../../api-routes.js";
 import type { DashboardQueryContext, DashboardRoute, Period, Filter } from "../../dashboard-contract.js";
 import { dashboardBatch, dashboardCall, DASHBOARD_NOW, DASHBOARD_MONTH, DASHBOARD_DAY } from "./dashboard-ledger.js";
 
@@ -63,6 +63,9 @@ export function seedPlanLedger(file: string, rows: number, options: { denseMonth
         meta.run("plan-run-0", "synthetic/runs.db", "plan-session-0", "worker", PLAN_START, now);
       }
     }).immediate();
+    // Real top-level transcripts have non-run own calls. Do not make every
+    // parent/compaction/background observation look like a child transcript.
+    db.exec("UPDATE calls SET run_id=NULL WHERE is_report=0 AND actor IN ('parent','compaction','aux','warmer')");
     const sessionId = dense ? `plan-session-${Math.floor((rows - 128) / 256)}-${(rows - 128) % 4}` : "plan-session-0";
     const runId = dense ? `plan-run-${Math.floor((rows - 128) / 64)}-${(rows - 128) % 4}` : "plan-run-0";
     const total = (column?: string, id?: string) => (db!.prepare(`SELECT count(*) AS n FROM calls WHERE ts>=? AND ts<? ${column ? `AND ${column}=?` : ""}`).get(DASHBOARD_MONTH, now, ...(column ? [id] : [])) as { n: number }).n;
@@ -131,7 +134,10 @@ export function assertRegisteredRoutes(routes: readonly DashboardRoute[], checke
   if (missing.length || extra.length) throw new Error(`missing route checks: ${[...missing, ...extra].join(", ")}`);
 }
 export function assertRoutePlans(request: PlanRequest, queries: readonly CapturedQuery[], plans: readonly PlanRow[]): void {
-  assertCallPlans(plans);
+  // The stable model catalogue deliberately ranks an all-history indexed aggregate.
+  // All billing measures and interval passes must still have bounded access paths.
+  const catalogue = new Set(queries.flatMap((q, i) => q.sql.includes("FROM calls c INDEXED BY calls_provider_model_ts") && q.sql.includes("SUM(c.aic)") && q.sql.includes("GROUP BY c.model") ? [i] : []));
+  assertCallPlans(plans.filter(row => !catalogue.has(row.statement)));
   for (const q of queries) if (/FROM calls prior\b/.test(q.sql) || /window AS MATERIALIZED/.test(q.sql) && !q.sql.includes("selection_shadowed = 0")) throw new Error(`${request.name}: stored selection required`);
   for (const [i, q] of queries.entries()) {
     if (!q.calibration) continue;
@@ -169,6 +175,7 @@ export function assertRoutePlans(request: PlanRequest, queries: readonly Capture
   }
   const own = queries.map((q, i) => ({ q, i })).filter(({ q }) => !q.calibration);
   for (const { q, i } of own) {
+    if (catalogue.has(i)) continue;
     const rows = plans.filter(p => p.statement === i);
     for (const row of rows) if (/USING (?:COVERING )?INDEX calls_period_read\b/.test(row.detail) && !/calls_period_read \(ts>\? AND ts<\?\)/.test(row.detail)) throw new Error(`${request.name}: access path requires both period bounds`);
     // Every window in this statement is checked independently. Another statement,
@@ -177,39 +184,35 @@ export function assertRoutePlans(request: PlanRequest, queries: readonly Capture
       const parent = rows.find(p => p.id === row.parent);
       const window = parent?.detail === "MATERIALIZE window";
       const range = /(?:FROM|JOIN) calls c INDEXED BY calls_period_read/.test(q.sql);
-      if (window && /^SEARCH c\b/.test(row.detail) && range && !(request.name === "cache" && /calls_session_read \(session_id=\?\)/.test(row.detail)) && !/calls_period_read \(ts>\? AND ts<\?\)/.test(row.detail)) throw new Error(`${request.name}: access path requires both period bounds`);
+      if (window && /^SEARCH c\b/.test(row.detail) && range && !/calls_period_read \(ts>\? AND ts<\?\)/.test(row.detail)) throw new Error(`${request.name}: access path requires both period bounds`);
       if (window && /^SEARCH c\b/.test(row.detail) && request.access === "session" && !/calls_session_read \(session_id=\? AND ts>\? AND ts<\?\)/.test(row.detail)) throw new Error(`${request.name}: access path requires session and both bounds`);
     }
     if (request.access === "period" && /FROM calls c INDEXED BY calls_period_read/.test(q.sql) && !rows.some(p => /calls_period_read \(ts>\? AND ts<\?\)/.test(p.detail))) throw new Error(`${request.name}: access path requires period index`);
     if (q.sql.includes("interval_calls AS MATERIALIZED") && !rows.some(p => /SEARCH r USING (?:COVERING )?INDEX calls_period_read \(ts>\? AND ts<\?\)/.test(p.detail))) throw new Error(`${request.name}: access path requires interval range`);
   }
   const routeRows = plans.filter(p => !queries[p.statement]?.calibration);
-  const expected = request.name === "filter-values" && own.length === 0 ? undefined : request.access === "session" ? /calls_session_read \(session_id=\?/ : request.access === "run" ? /calls_run_detail \(run_id=\?/ : request.access === "period" ? /calls_period_read \(ts>\? AND ts<\?\)/ : undefined;
+  const expected = request.access === "session" ? /calls_session_read \(session_id=\?/ : request.access === "run" ? /calls_run_detail \(run_id=\?/ : request.access === "period" ? /calls_period_read \(ts>\? AND ts<\?\)/ : undefined;
   if (expected && !routeRows.some(p => expected.test(p.detail))) throw new Error(`${request.name}: access path missing`);
-  if (request.access === "metadata" && (own.some(({ q }) => /\b(?:FROM|JOIN) calls\b/.test(q.sql)) || !own.some(({ q }) => q.sql.includes("FROM ledger_totals")) || !own.some(({ q }) => q.sql.includes("FROM ledger_metadata")))) throw new Error(`${request.name}: metadata access path required`);
+
 }
-export function planRequests(period: Period, sessionId: string, runId: string, filters?: readonly Filter[]): PlanRequest[] {
-  const base = { start: String(period.start), end: String(period.end) };
-  const entries = [
-    ["status", "status", {}, 4, 8, 100], ["source-errors", "source-errors", {}, 1, 64, 300],
-    ["overview", "overview", {}, 6, 512, 1000], ["explorer", "explorer", {}, 1, 256, 1000],
-    ["filter-values", "filter-values", { field: "model" }, 2, 64, 500],
-    ["detail-session", "detail", { kind: "session", id: sessionId }, 6, 512, 1000],
-    ["detail-run", "detail", { kind: "run", id: runId }, 6, 512, 1500],
-    ["detail-links-session", "detail-links", { kind: "session", id: sessionId }, 2, 64, 300],
-    ["detail-links-run", "detail-links", { kind: "run", id: runId }, 2, 64, 300],
-    ["context", "context", {}, 0, 8, 50], ["cache", "cache", {}, 6, 256, 1500],
-    ["reconciliation", "reconciliation", {}, 4, 256, 1500], ["rates", "rates", {}, 3, 512, 750],
-  ].map(([name, path, extra, cap, kib, budgetMs]) => ({ name: name as string, path: `/api/${path}`, params: new URLSearchParams({ ...(["status", "source-errors"].includes(path as string) ? {} : base), ...(extra as Record<string, string>) }), cap: cap as number, kib: kib as number, budgetMs: budgetMs as number,
-    access: (path === "status" ? "metadata" : path === "context" ? "none" : path === "source-errors" ? "source" : String(name).endsWith("session") ? "session" : String(name).endsWith("run") ? "run" : "period") as PlanRequest["access"] }));
+export function planRequests(period: Period, sessionId: string, _runId: string, _filters?: readonly Filter[]): PlanRequest[] {
+  // Overview's public custom range is capped at 93 days. Whole-session is not.
+  const params = new URLSearchParams({ range: "custom", from: String(Math.max(period.start, period.end - 93 * DASHBOARD_DAY)), to: String(period.end), tz: "UTC" });
+  const entries: PlanRequest[] = [
+    { name: "status", path: "/api/status", params: new URLSearchParams(), cap: 12, kib: 8, budgetMs: 100, access: "metadata" },
+    { name: "overview", path: "/api/overview", params: new URLSearchParams(params), cap: 26, kib: 1024, budgetMs: 1000, access: "period" },
+    { name: "sessions", path: "/api/sessions", params: new URLSearchParams(params), cap: 8, kib: 512, budgetMs: 1000, access: "period" },
+    { name: "session", path: "/api/session/<id>", params: new URLSearchParams({ tz: "UTC", fixtureId: sessionId }), cap: 28, kib: 2048, budgetMs: 1500, access: "session" },
+    { name: "calibration", path: "/api/calibration", params: new URLSearchParams(), cap: 22, kib: 1024, budgetMs: 1500, access: "period" },
+  ];
   assertRegisteredRoutes(DASHBOARD_ROUTES, entries.map(r => r.path));
-  const registered = DASHBOARD_ROUTES.flatMap(route => entries.filter(entry => entry.path === route.path));
-  if (!filters) return registered;
-  const lookupFields = new Set(filters.filter(f => f.kind === "id" && !["session", "run"].includes(f.field)).map(f => f.field));
-  return registered.filter(r => ["overview", "explorer", "filter-values", "cache", "rates"].includes(r.name)).map(request => {
-    const params = new URLSearchParams(request.params); params.set("filters", JSON.stringify(filters));
-    return { ...request, params, cap: request.name === "filter-values" ? request.cap : request.cap + lookupFields.size };
-  });
+  return entries;
+}
+export function executePlanRequest(ctx: DashboardQueryContext, request: PlanRequest): unknown {
+  const route = DASHBOARD_ROUTES.find(route => route.path === request.path)!;
+  const params = new URLSearchParams(request.params), id = params.get("fixtureId") ?? undefined;
+  params.delete("fixtureId");
+  return route.handle(ctx, params, id);
 }
 
 /** The observing writer detects commits from any other connection, on every table. */
@@ -218,45 +221,20 @@ export function assertNoWrites(db: Db, before: number): void {
 }
 
 export function referenceRouteResult(db: Db, request: PlanRequest): Record<string, unknown> {
-  const start = Number(request.params.get("start")), end = Number(request.params.get("end"));
-  const total = (from: number, to: number, column?: string, id?: string) => db.prepare(`SELECT count(*) AS calls,sum(aic) AS aic FROM calls c WHERE ts>=? AND ts<? AND selection_shadowed=0 AND NOT (is_report=1 AND EXISTS (SELECT 1 FROM calls t WHERE t.run_id=c.run_id AND t.is_report=0 AND t.copied=0 AND t.source_kind='transcript')) ${column ? `AND ${column}=?` : ""}`).get(from, to, ...(column ? [id] : [])) as { calls: number; aic: number | null };
-  if (["overview", "explorer", "cache", "rates", "detail-session", "detail-run"].includes(request.name)) {
-    const filters = JSON.parse(request.params.get("filters") ?? "[]") as Filter[];
-    if (filters.some(f => f.field !== "session" || f.kind !== "id") || filters.length > 1) throw new Error("unsupported reference filter");
-    const sessionFilter = filters[0];
-    const column = request.name === "detail-session" || sessionFilter ? "session_id" : request.name === "detail-run" ? "run_id" : undefined;
-    const reference: Record<string, unknown> = { totals: total(start, end, column, sessionFilter?.kind === "id" ? sessionFilter.value : request.params.get("id") ?? undefined) };
-    // The fixture's current-month observation is at end. SQL below is independent of handler CTEs.
-    if (request.name === "overview" && start === Date.UTC(new Date(end).getUTCFullYear(), new Date(end).getUTCMonth(), 1)) reference.comparison = { computed: total(start, end) };
-    return reference;
+  // Independent fixture oracle: all canonical decisions are checked separately
+  // against the frozen dynamic SQL in selection-v3 differential tests.
+  const total = (start: number, end: number, id?: string) => db.prepare(`SELECT COUNT(*) AS calls,
+    SUM(price_status='unpriced') AS unpricedCalls, SUM(input+cache_read+cache_write+output) AS tokens
+    FROM selected_usage_calls WHERE ts>=? AND ts<? ${id ? "AND (session_id=? OR run_id IN (SELECT id FROM runs_meta WHERE session_id=?))" : ""}`)
+    .get(start, end, ...(id ? [id, id] : [])) as { calls: number; unpricedCalls: number; tokens: number | null };
+  if (request.name === "overview" || request.name === "session") {
+    const id = request.params.get("fixtureId") ?? undefined;
+    const value = total(request.name === "session" ? 0 : Number(request.params.get("from")), request.name === "session" ? 8640000000000000 : Number(request.params.get("to")), id);
+    return { total: { calls: value.calls, unpricedCalls: value.unpricedCalls ?? 0, tokens: { total: value.tokens ?? 0 } } };
   }
-  if (request.name === "status") return db.prepare("SELECT count(*) AS calls FROM calls").get() as Record<string, unknown>;
-  if (request.name === "source-errors") return { rows: [] };
-  if (request.name === "context") return { contextFillPercent: null, contextFillMessage: "Context fill unavailable: historical window not recorded" };
-  if (request.name === "filter-values") return { rows: (db.prepare("SELECT DISTINCT model AS label FROM calls WHERE ts>=? AND ts<? ORDER BY model").all(start, end) as { label: string }[]) };
-  if (request.name.startsWith("detail-links")) {
-    const session = request.name.endsWith("session");
-    if (session) return { rows: [
-      ...db.prepare("SELECT DISTINCT id AS label FROM runs_meta WHERE session_id=?").all(request.params.get("id")),
-      ...db.prepare("SELECT DISTINCT run_id AS label FROM calls WHERE session_id=? AND run_id IS NOT NULL AND is_report=0 AND copied=0 AND source_kind='transcript'").all(request.params.get("id")),
-    ] };
-    return { rows: [
-      ...db.prepare("SELECT DISTINCT session_id AS label FROM runs_meta WHERE id=? AND session_id IS NOT NULL").all(request.params.get("id")),
-      ...db.prepare("SELECT DISTINCT session_id AS label FROM calls WHERE run_id=? AND is_report=0 AND copied=0 AND source_kind='transcript' AND session_id IS NOT NULL").all(request.params.get("id")),
-    ] };
-  }
-  if (request.name === "reconciliation") {
-    const rows = [];
-    for (let day = start; day < end && rows.length < 50; day = Math.min(end, (Math.floor(day / DASHBOARD_DAY) + 1) * DASHBOARD_DAY)) {
-      const stop = Math.min(end, (Math.floor(day / DASHBOARD_DAY) + 1) * DASHBOARD_DAY);
-      const snapshots = db.prepare("SELECT ts,reset_date AS reset FROM counter_snapshots WHERE ts>=? AND ts<=? ORDER BY ts").all(day, stop) as { ts: number; reset: string }[];
-      const intervals = snapshots.slice(1).map((later, i) => ({ earlier: snapshots[i]!, later })).filter(pair => pair.earlier.reset === pair.later.reset);
-      const measure = intervals.length ? total(intervals[0]!.earlier.ts, intervals.at(-1)!.later.ts) : null;
-      if (measure && measure.calls === 0) measure.aic = 0;
-      rows.push({ bucketStart: day, computed: measure });
-    }
-    return { periods: { rows } };
-  }
+  if (request.name === "status") return { latestCounterAt: (db.prepare("SELECT MAX(ts) AS ts FROM counter_snapshots").get() as { ts: number | null }).ts };
+  if (request.name === "sessions") return { offset: 0, limit: 10 };
+  if (request.name === "calibration") return { ingestion: { errors: 0 }, errors: [] };
   throw new Error(`missing reference: ${request.name}`);
 }
 /** Compare reference totals before accepting a benchmark sample. No handler SQL is reused. */
@@ -269,10 +247,5 @@ export function assertReferenceResult(name: string, value: unknown, expected: Re
       for (const [key, child] of Object.entries(reference)) compare(actual?.[key], child, `${path}.${key}`);
     } else if (actual !== reference) throw new Error(`${name}: reference mismatch at ${path}: ${actual} != ${reference}`);
   };
-  // Link ordering is relationship-based on the wire, not lexicographic by id.
-  if (name.startsWith("detail-links")) {
-    const labels = (value as { rows: { label: string }[] }).rows.map(r => r.label).sort();
-    const reference = (expected.rows as { label: string }[]).map(r => r.label).sort();
-    compare(labels, reference, "links");
-  } else compare(value, expected, "data");
+  compare(value, expected, "data");
 }

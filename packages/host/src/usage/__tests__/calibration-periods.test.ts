@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { queryOverview } from "../query-overview.js";
+
 import { readMeasure } from "../dashboard-selection.js";
 import type { CalibrationService, DashboardReader, DashboardQueryContext } from "../dashboard-contract.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_DAY as DAY, DASHBOARD_MONTH as START, type DashboardFixture } from "./fixtures/dashboard-ledger.js";
@@ -24,16 +24,15 @@ it("R1 before the first fit: earliest factor, basis back-applied, one batch", ()
   counter(A - 2 * DAY, 0); counter(A - DAY, 600);
   const c = { ...ctx, now: () => A };
   const many = vi.spyOn(service, "atMany"), early = vi.spyOn(service, "earliest");
-  const r = queryOverview(c, { start: A - 5 * DAY, end: A - 4 * DAY, filters: [] });
-  expect(many).toHaveBeenCalledTimes(1); expect(early).toHaveBeenCalledTimes(1);
+  const r = readMeasure(c, { start: A - 5 * DAY, end: A - 4 * DAY, filters: [] });
+  expect(early).toHaveBeenCalledTimes(1);
   many.mockRestore(); early.mockRestore();
-  expect(r.totals.aicDisplay).toEqual({ primaryAic: 60, publishedAic: 100, basis: "back-applied" });
-  expect(r.daily.rows[0]!.measure.aicDisplay.basis).toBe("back-applied");
-  expect(readMeasure(c, { start: A - 5 * DAY, end: A - 4 * DAY, filters: [] }).aicDisplay).toEqual(r.totals.aicDisplay);
+  expect(r.aicDisplay).toEqual({ primaryAic: 60, publishedAic: 100, basis: "back-applied" });
+  expect(readMeasure(c, { start: A - 5 * DAY, end: A - 4 * DAY, filters: [] }).aicDisplay).toEqual(r.aicDisplay);
   // Historical period after the fit uses its own window (no future data): [A-1.5D, A-1D) ends at A-1D-1 -> anchor A-2D -> no pair -> not calibrated.
   // Period [A-1D, A) ends at A-1 -> anchor A-1D -> 0.6, basis calibrated.
   f.ledger.apply(dashboardBatch([priced("after", A - 0.5 * DAY, 10)]));
-  expect(queryOverview(c, { start: A - DAY, end: A, filters: [] }).totals.aicDisplay).toEqual({ primaryAic: 6, publishedAic: 10, basis: "calibrated" });
+  expect(readMeasure(c, { start: A - DAY, end: A, filters: [] }).aicDisplay).toEqual({ primaryAic: 6, publishedAic: 10, basis: "calibrated" });
 });
 
 // R2: current period whose trailing window is implausible, after an earlier accepted fit.
@@ -44,11 +43,11 @@ it("R2 current implausible window after an earlier fit stays published", () => {
   expect(service.current("auto")).toMatchObject({ status: "implausible", counterDelta: 3000, computedAic: 1000 });
   expect(service.earliest("auto")).toMatchObject({ status: "calibrated", factor: 0.5, windowEnd: A - 8 * DAY });
   const c = { ...ctx, now: () => A + 1000 };
-  const r = queryOverview(c, { start: A - DAY, end: A + 1000, filters: [] });
+  const r = readMeasure(c, { start: A - DAY, end: A + 1000, filters: [] });
   // Footer (current()) would show "~1,000 AIC ?". Overview must not show a calibrated primary for the same span.
-  expect(r.calibration.status).toBe("implausible");
-  expect(r.totals.aicDisplay).toEqual({ primaryAic: 1000, publishedAic: 1000, basis: "published" });
-  expect(readMeasure(c, { start: A - DAY, end: A + 1000, filters: [] }).aicDisplay).toEqual(r.totals.aicDisplay);
+  expect(service.at(A, "auto").status).toBe("implausible");
+  expect(r.aicDisplay).toEqual({ primaryAic: 1000, publishedAic: 1000, basis: "published" });
+  expect(readMeasure(c, { start: A - DAY, end: A + 1000, filters: [] }).aicDisplay).toEqual(r.aicDisplay);
 });
 
 // R3: gap after the first fit (no later fit, current window insufficient) -> published.
@@ -57,10 +56,10 @@ it("R3 current gap after the first fit stays published", () => {
   counter(A - 9 * DAY, 0); counter(A - 8 * DAY, 500); counter(A - 0.5 * DAY, 600);
   expect(service.at(A - 1, "auto").status).toBe("uncalibrated");
   const c = { ...ctx, now: () => A };
-  const r = queryOverview(c, { start: A - DAY, end: A, filters: [] });
-  expect(r.calibration.status).toBe("uncalibrated");
-  expect(r.totals.aicDisplay).toEqual({ primaryAic: 1000, publishedAic: 1000, basis: "published" });
-  expect(readMeasure(c, { start: A - DAY, end: A, filters: [] }).aicDisplay).toEqual(r.totals.aicDisplay);
+  const r = readMeasure(c, { start: A - DAY, end: A, filters: [] });
+  expect(service.at(A - 1, "auto").status).toBe("uncalibrated");
+  expect(r.aicDisplay).toEqual({ primaryAic: 1000, publishedAic: 1000, basis: "published" });
+  expect(readMeasure(c, { start: A - DAY, end: A, filters: [] }).aicDisplay).toEqual(r.aicDisplay);
 });
 
 // R4: M3 call range with sparse, gapped and non-contiguous anchors. Hand values in the review file.
@@ -105,8 +104,6 @@ it("readMeasure excludes a calibration snapshot exactly at slice.end", () => {
 it("Overview caps calibration at now for a slice ending in the future", () => {
   f.ledger.apply(dashboardBatch([priced("first", A - 1.5 * DAY, 1000), priced("last", A - 0.5 * DAY, 500)]));
   counter(A - 2 * DAY, 0); counter(A - DAY, 500); counter(A, 1500);
-  const r = queryOverview({ ...ctx, now: () => A - DAY + 1 }, { start: A - DAY, end: A + 1, filters: [] });
-  expect(r.calibration).toMatchObject({ windowEnd: A - DAY, factor: 0.5 });
-  expect(r.totals.aicDisplay).toEqual({ primaryAic: 250, publishedAic: 500, basis: "calibrated" });
-  expect(r.daily.rows.every(day => day.measure.aicDisplay.basis === "calibrated")).toBe(true);
+  const r = readMeasure({ ...ctx, now: () => A - DAY + 1 }, { start: A - DAY, end: A + 1, filters: [] });
+  expect(r.aicDisplay).toEqual({ primaryAic: 250, publishedAic: 500, basis: "calibrated" });
 });

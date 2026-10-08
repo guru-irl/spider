@@ -35,7 +35,7 @@ export function errorCopy(error: unknown, actions?: { clearFilters?: () => void 
   if (code === "busy" || code === "rate-limited" || code === "timeout") return "Usage is temporarily unavailable. Retry.";
   return "Could not load usage. Retry.";
 }
-export function createDashboardClient(fetcher: typeof fetch = globalThis.fetch, legacy = false): DashboardClient {
+export function createDashboardClient(fetcher: typeof fetch = globalThis.fetch): DashboardClient {
   return { async get<T>(path: string, params: URLSearchParams, signal: AbortSignal): Promise<ApiEnvelope<T>> {
     const query = params.toString();
     if (!allowed(path) || query.length > 8192) throw new DashboardClientError("invalid-query");
@@ -44,7 +44,7 @@ export function createDashboardClient(fetcher: typeof fetch = globalThis.fetch, 
     const abort = () => controller.abort(); signal.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 10000);
     try {
-      const response = await fetcher(path + (query ? `?${query}` : ""), { ...(legacy ? { headers: { "X-Spider-Usage-Legacy": "1" } } : {}), method: "GET", credentials: "same-origin", mode: "same-origin", redirect: "error", cache: "no-store", signal: controller.signal });
+      const response = await fetcher(path + (query ? `?${query}` : ""), { method: "GET", credentials: "same-origin", mode: "same-origin", redirect: "error", cache: "no-store", signal: controller.signal });
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
       const body = await response.json();
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");

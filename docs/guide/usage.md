@@ -1,90 +1,100 @@
-# Usage and AI Credits
+# Usage dashboard
 
-## Footer
+Run `/usage` in an interactive parent pi session to open the local dashboard. It shows a read-only view of usage collected on this machine. Child sessions and print, JSON or RPC modes cannot open it.
 
-- The usage footer replaces pi's built-in footer in parent TUI sessions. It shows estimated GitHub Copilot AI Credits (AIC), not pi's dollar figure. One AIC is $0.01.
-- Row 1 shows the working directory, git branch and session name. The model and thinking level keep priority in narrow panes.
-- Row 2 keeps whole items in this order: context percentage/window, session AIC, latest assistant prompt cache hit rate (`CH`), account month percentage, input/output tokens, cache read/write tokens. Lower-priority items disappear first when space is limited.
-- Row 3 shows extension statuses when present.
-- Context usage comes from pi's public context getter and matches pi's footer. No context value yet shows `0.0%`; an explicitly unknown percentage is `?`. The public API does not expose the live auto-compaction switch, so the footer does not show an `(auto)` marker.
-- The token totals match pi's built-in footer: all entries in the current session file, including abandoned branches, tool-result usage, compaction and branch summaries, and asynchronous usage or cache-warming entries. Tree navigation re-reduces that same all-entry history. Compaction does not reset totals.
-- Starting a new session, resuming or switching to another file, or forking into a new file resets the reducer to that file's entries. A fork includes any history pi copied into the new file.
-- Rendering uses cached totals. A one-second UI tick picks up asynchronously appended usage entries without a model call or ledger query. It requests a TUI render only when the displayed footer changes.
-- `~` before AIC means estimated pricing or a run aggregate. A trailing `+` means a partial lower bound with unpriced entries. Unknown models are not priced at zero.
-- Copilot rates are a versioned public snapshot dated 2026-10-04, effective from 2026-10-01. Earlier calls remain in the ledger but are unpriced when no rate applies at their timestamp.
-- Tool results and summaries without billing-model attribution remain unpriced. The active session model is not guessed as their billing model. Non-Copilot calls keep pi cost in the ledger but are unpriced in AIC.
-- `usage.footer=false` restores pi's built-in footer through `setFooter(undefined)`. It does not touch spider's agents widget. The independent `ui.footer` setting controls that widget and run selector from the next session.
-- RPC, JSON, print and child sessions install no terminal usage footer. Parent non-TUI sessions can still run the background ledger worker.
+The dashboard has three pages: Overview, Session, and Calibration & data. It is designed for desktop browsers in dark mode. Local fonts are tried first, and system fonts work offline. Optional font downloads do not send usage data.
 
-## Global configuration
+## Overview
 
-- All five usage keys are global-only. Sets require explicit global scope, including slash commands. Hand-written local values are ignored and diagnosed by config and doctor without failing config health. A local unset removes an ignored local key without changing the global value.
-- `usage.footer`: default `true`. Enable the AIC footer. Changes apply live.
-- `usage.counter.poll`: default `true`. Enable parent-only counter polling. Changes apply live.
-- `usage.calibration`: default `auto`. Use counter-calibrated AIC when there is enough compatible evidence. `off` uses published estimates and disables factor history. Changes apply live.
-- `usage.alerts.sessionCredits`: default `0`. A finite nonnegative threshold reserved for a later phase. Alerts are not implemented.
-- `usage.alerts.runCredits`: default `0`. A finite nonnegative threshold reserved for a later phase. Alerts are not implemented.
-- Global configuration is `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
-- Tool example: `spider control command:"config" op:"set" key:"usage.footer" value:"false" scope:"global"`.
-- Slash example: `/spider config set usage.footer false --global`.
-- Reset to the default: `/spider config unset usage.footer --global`.
-- To remove a hand-written local usage key: `/spider config unset usage.footer --local`. The result says local usage keys are ignored anyway. Omitted scope also selects local cleanup for unset. `/spider config get` shows effective values and diagnostics.
+Overview opens with the last 7 days and Credits selected. Choose 24 h, 7 days, 30 days, This month, or a Custom range. Custom date and time inputs use your browser's time zone and accept up to 93 days. Ranges up to 48 hours use hourly buckets; longer ranges use daily buckets.
 
-## Local ledger and account counter
+- The pace bar shows credits used in the current billing month and the projected month-end amount. Hover or focus it to see used, allowance, remaining credits, days left, and budget details when a budget is set. Escape closes the popover.
+- Daily or hourly usage is stacked by model. The Models panel ranks models by usage and identifies their main source.
+- Sessions ranks top-level pi sessions. Each total includes the session's own calls, its compaction and background work, and its subagent runs. Role segments separate own calls, workers, reviewers and others. Sort by credits, last active or runs, and use Show all to expand the list.
+- Where it went shows roles flowing to models. Empty roles are omitted.
 
-- Usage data stays local in `~/.pi/agent/spider/usage.db`, or `usage.db` under `SPIDER_GLOBAL_ROOT`. It is separate from spider's project and registry databases.
-- Pi history is discovered under `~/.pi/agent/sessions`. Registered run metadata locates child transcripts. There is no recursive whole-disk scan.
-- A worker thread opens the ledger, backfills discovered history, resumes saved byte offsets and refreshes discovery/ingestion every minute. Malformed lines and source errors are counted without interrupting pi.
-- The first backfill takes about a minute on a large history and runs in the background. Pi remains usable while it runs.
-- A parent polls the account counter every ten minutes. A fenced lease makes one parent the poll owner; followers consume published snapshots. Children never poll. Polling and ingestion stay off pi's main thread.
-- The counter is an authenticated read-only GET to GitHub's undocumented Copilot account endpoint. Its fields are optional. A failure or missing credit field records no snapshot, not a zero balance.
-- Authentication reads pi's stored `github-copilot.refresh` credential read-only from `~/.pi/agent/auth.json`. It does not use `gh` credentials, short-lived resolved API keys, refresh auth storage or execute configured key commands.
-- Transcripts, credentials and usage records are not uploaded. The counter GET uses the network; the dashboard can optionally load Google Fonts.
-- The footer's account month percentage is available only with a usable counter snapshot and positive entitlement. An unavailable or stale counter does not prevent the session AIC footer from working.
+The Credits | Tokens switch changes charts and tables. The pace bar always uses credits. Every chart has a Chart | Table control showing the same values.
 
-## Dashboard
+Cmd-click a bucket on macOS, or Ctrl-click elsewhere, to toggle its selection. Selected buckets need not be adjacent. Models, sessions and the flow follow the selection; the range total and monthly pace do not change. Use arrow keys to move between buckets and Cmd/Ctrl+Enter or Space to toggle one. Escape, or a click outside the bars and controls, clears the selection.
 
-- Run `/usage` in an interactive parent pi session to open the local dashboard in your browser. Child sessions and print, JSON or RPC modes refuse it without opening a browser. The command starts or reuses a detached server bound only to `127.0.0.1` on a random port. It serves a read-only view of the local ledger.
-- Overview: period totals, daily AIC and token observations, actor and role breakdowns, ingest health and source diagnostics.
-- Explorer: filter recorded usage and group it by up to three dimensions, with chart and table evidence. Pages grouped by day hold at most 32 distinct days; continue paging for the rest.
-- Session: selected session totals, call timeline, recorded calls and related runs.
-- Run: selected run totals, call timeline, accounting selection and related sessions or runs.
-- Context: explicit placeholders for composition, carry cost and item reuse, with links to recorded usage evidence.
-- Cache: recorded cache reads and writes, hit rates, warmer usage and sessions with writes but no recorded reads.
-- Reconciliation: account-wide counter, published and calibrated amounts over compatible snapshot pairs, with gaps, ratios and coverage.
-- Rates: loaded published rate versions and tiers, stored version provenance, unpriced evidence and daily calibration history. Stored amounts are never repriced.
-- The URL hash retains the view, selected session or run, explicit period and filters. Back, Forward and reload restore that selection. Chart/table choices are independent per chart and stay selected during refresh and view navigation, but reset on reload. Without an explicit period the dashboard follows the current UTC month.
-- `mode=table` in the URL hash opens every chart as a table; `mode=chart` opens every chart as a chart. Chart/table selections are not serialized; new or normalized hashes omit this parameter.
-- Use Tab to reach controls and scrollable tables. Narrow layouts retain the same evidence as desktop layouts; wide tables include a horizontal scroll cue. Refresh runs every minute only while the tab is visible and recently active. After five minutes away, requests stop until activity resumes.
-- AIC is approximate. Prompt tokens are input plus cache read plus cache write; total tokens add output. Recorded reasoning and one-hour cache writes are subsets, not extra totals. Unpriced usage stays unavailable, not zero; mixed pricing is a lower bound marked `+`.
-- `usage.calibration=auto` fits the trailing seven days of compatible account counter evidence. It needs at least 24 covered hours and 500 published AIC. Reset, account and clock boundaries are excluded. Insufficient or implausible evidence falls back to the published estimate. Calibration does not prove complete attribution or exact billing.
-- The primary AIC basis is calibrated when possible, or published otherwise. Historical periods before the earliest usable fit use `cal (back-applied)` on amounts and `calibrated, back-applied` in evidence. Rates shows each day's own evidence window and factor; Reconciliation retains all three amounts when available.
-- Daily rows use each day's own trailing fit, in Overview, Cache and Explorer alike, so daily calibrated values need not add up to the period total.
-- The key uses `cal` for calibrated, `?` for calibration unavailable and `est` for published estimates with calibration off. AIC remains approximate in every mode. Tokens are unaffected by calibration.
-- To use published estimates only: `/spider config set usage.calibration off --global`. Restore automatic calibration with `/spider config unset usage.calibration --global`. Reloading configuration does not open a browser or reset tokens.
-- The counter is account-wide and can include other clients and machines. It moves in whole AIC, with typical billing lag of 3 to 5 minutes. Short gaps and ratios are not a bill.
-- The opener passes a single-use 60-second bootstrap code in argv, visible in local process listings. Another local process can race its use, but the code never reveals the lock secret. The browser consumes it and redirects to a clean URL before loading assets.
-- The session cookie is HttpOnly and SameSite=Strict. Cookies are not port-scoped, so other services on `127.0.0.1` can receive it. Server restarts invalidate sessions; idle sessions expire. If access expires or the server stops, run `/usage` again.
-- Launch is POSIX only. Windows hosts are not supported.
-- If a sandbox denies a process signal with `EPERM`, the owner is treated as dead or stale, so `/usage` starts a fresh server instead of reusing it. `/usage` reports launch failures and points to `/doctor`, which shows the bounded failure code. Transcript source errors can show `EPERM` in Overview and `/doctor`.
-- Public filter ids for project, repository, actor, role, agent, provider, model, requested model, thinking, run name, phase, parent run, auxiliary purpose, API and day use a private per-ledger salt. Safe stored session and run ids are not salted, so their detail bookmarks survive a salt reset.
-- Keep the `<ledger>.explorer-salt` sidecar with its ledger. An unusable salt returns `identity-unavailable`, cached for five seconds. Remove the unusable sidecar and wait for that failure-cache window; the next request recreates it without reopening the ledger. To discard a salt the running server has already loaded, restart the dashboard server.
-- Removing a stray `<ledger>.explorer-salt.<24 hex>` publication temp hardlink preserves saved selections. Resetting the salt invalidates opaque filter-id bookmarks with `unknown-filter-id`. Clear filters and reselect values to rebuild the selection, then save the new URL.
-- Data routes can show an unsupported or unavailable ledger while an older ledger awaits migration by pi's writable usage worker or the dashboard ingest participant. Status remains available; after the worker upgrades the ledger, refresh the dashboard.
-- The v3 ledger upgrade locks out older spider builds. Use a compatible build after upgrading.
-- The one-time migration holds the ledger write lock for a few seconds, growing with ledger size.
-- The dashboard ingest participant releases the write lease after each pass. While it owns ingestion, pi cannot poll the counter. Pi normally resumes within three seconds of handback. The server itself never reads authentication or polls the counter.
-- Discovery uses a one-minute stat refresh rather than a recursive filesystem watcher. Without pi, the dashboard waits at least a minute between ingest passes and releases the lease while waiting. A server with no authenticated activity stops after 30 minutes.
-- Google Fonts is the dashboard's only optional network access. Local fonts are tried first, and system fonts remain usable offline. No usage data is sent with font requests.
+The URL keeps the Overview range, unit and selected buckets. Reload, Back and Forward restore that view. If a rolling range moves past a selected bucket, that bucket is removed from the selection.
 
-## Doctor and limitations
+## Session
 
-- `/doctor` reads the worker's published usage snapshot. It does not open or create the usage ledger on pi's main thread.
-- Usage diagnostics include schema and call/source counts, backfill state and source progress, counter lease role, availability, age, staleness, notices, sanitized errors, parse/source error counts, unpriced models, aggregate counts and rate provenance.
-- No published ledger yet is reported as such. Worker failure keeps the terminal footer working from session entries.
-- Usage health fails only for a failed or crashed worker, unavailable worker-thread runtime, unavailable ledger or failed ledger open/migration, or failed backfill. Recorded parse error counts, current source error counts, dashboard server failures, missing project databases, missing Copilot login, counter HTTP errors, stale or unavailable counters, disabled polling and unavailable comparison are informational.
-- Children report `usage worker: not started (child session)`.
-- The comparison is labelled estimated. Its signed gap is account counter minus computed AIC. Its ratio is computed AIC divided by the counter; a zero or unavailable counter has no ratio.
-- Exact billing reconciliation remains unresolved. The account counter includes other clients and machines, and estimated rates or incomplete attribution can leave a gap. Do not treat the footer or comparison as an exact bill.
-- Diagnostics do not print credentials or raw endpoint bodies.
-- Context composition, carry cost and item reuse are not available yet (Phase 2). Historical context fill is unavailable because the window was not recorded. Insights, what-if pricing and alerts are not implemented.
+Click a session row or press Enter to open it. Session always covers its entire recorded lifetime, including calls outside the range you selected on Overview. The unit carries over.
+
+The header shows the session name, project, span and totals. A transit chart places own calls on a baseline and subagent runs on branches. Long idle stretches collapse into breaks. Run marks distinguish completed, cancelled, failed and running work; unavailable status is not guessed. Hover or focus a branch for its details, click or press Enter to pin it, and press Escape to clear it. The runs and models tables provide the same usage evidence, and the flow reconciles with the session total.
+
+A session without subagent runs shows only its baseline. A known session without calls keeps its header and an empty state. An unknown id shows Session not found with Back, not a retry loop. Back returns through dashboard history or to your remembered Overview.
+
+Session names come from the latest `/name`, otherwise the first line of the first user message written in that session (not one copied from a fork), otherwise a short id. Names are bounded and redacted. Projects are displayed as names, not paths. Runs whose owning session cannot be resolved appear together as Unattributed runs.
+
+## Credits, tokens and pace
+
+Credits use published rates corrected against compatible account-counter evidence. When no factor is available, published rates are used. During a counter outage, credits retain the last accepted factor where available. The correction basis and coverage belong on Calibration & data, not beside every credit figure.
+
+Token totals are input plus cache read plus cache write plus output. Reasoning and one-hour cache writes are subsets, not additional tokens. Unknown pricing stays unavailable rather than becoming zero. A total with unpriced calls does not include a fabricated price for those calls.
+
+The billing month ends at the account counter's reset date in UTC. Without usable counter evidence, it follows the UTC calendar month. Used comes from the account counter when there is a valid observation in the period, otherwise from pi's corrected month-to-date usage. The account counter includes usage outside pi and on other machines.
+
+Projection uses the average daily rate over the last 7 days, or since the billing month began when shorter. It uses compatible counter deltas when they cover that window, otherwise corrected pi usage. Sparse snapshots, account changes and resets can prevent a counter-based rate. These figures help with pacing; they are not an exact bill.
+
+## Monthly budget
+
+`usage.monthlyBudget` is optional and unset by default. It must be a finite positive number of credits per billing month. Set it in spider's global configuration screen or with:
+
+```text
+/spider config set usage.monthlyBudget <credits> --global
+```
+
+Remove it with:
+
+```text
+/spider config unset usage.monthlyBudget --global
+```
+
+Changes apply live. The dashboard does not edit settings. With a budget, the pace bar scales to it and the popover includes even pace and any projected excess. Without a budget, the bar uses the account allowance. With neither a budget nor an allowance, it shows used without inventing a proportional fill.
+
+All usage settings are global-only. `usage.footer` enables the terminal footer, `usage.counter.poll` controls parent-only account polling, and `usage.calibration` selects `auto` or `off`. Changes apply live. To use published rates only:
+
+```text
+/spider config set usage.calibration off --global
+```
+
+Restore automatic correction with `/spider config unset usage.calibration --global`. Session and run alert thresholds are reserved settings; alerts are not implemented.
+
+## Calibration & data
+
+This page explains the numbers and collection health. Times and buckets here are UTC.
+
+- Correction shows the factor, published estimate and account-counter delta for matching accepted intervals, covered hours, and the correction status. Daily counter gaps stay empty rather than being filled with zero. Counter intervals are observed spans, not precisely apportioned calendar-day billing.
+- Rates lists published credits per million tokens for input, cache read, cache write and output, including tiers and source dates. Unpriced models have call counts and reasons.
+- Ingestion shows the collector, last ingest, files tracked, calls today and error count. The collector can be this pi session, another pi session, the dashboard server, or none. Errors use redacted labels. Gaps include unpriced calls, compaction without model attribution and days without counter data.
+
+The freshness dot turns grey after five minutes without an ingest. Visible pages refresh periodically, and you can refresh manually. Network or server errors settle to an error with Retry rather than leaving a spinner. If access expires or the server stops, run `/usage` again.
+
+## Terminal footer
+
+The parent TUI footer keeps context percentage and window first, followed by session credits, the latest assistant prompt cache-hit rate (`CH`), `month`, input/output tokens and cache read/write tokens. Items are separated by middle dots. It shows credits without pricing-basis markers. `month` is a whole percentage of your budget when set, otherwise of the allowance. If neither is available, the `month` item is left out.
+
+The format is `context%/window · credits · CH% · month % · ↑input ↓output · Rread Wwrite`.
+
+The working directory, branch and session name stay on the first row; extension statuses appear when present. Lower-priority usage items disappear first in narrow panes. Token totals follow pi's all-entry session history, including copied fork history, compaction and asynchronously appended usage. Rendering uses cached values rather than opening the ledger. Turning `usage.footer` off restores pi's built-in footer without changing the agents widget.
+
+## Collection, privacy and diagnostics
+
+A background worker discovers pi session history and registered subagent transcripts, resumes saved offsets and records usage in a separate local ledger. Billing and metadata backfills run in bounded passes without blocking pi. Malformed lines and missing sources are recorded as diagnostics. Children never poll the account counter. A fenced lease allows one parent to poll while other sessions consume published snapshots.
+
+Counter polling is an authenticated read-only request using pi's stored Copilot credential. Missing fields or request failures produce no observation, not a zero balance. The dashboard server never polls the account or reads authentication. Its ingestion participant releases the lease between passes.
+
+The server binds only to loopback. A single-use bootstrap code exchanges for an HttpOnly, SameSite=Strict cookie before assets load. Bootstrap codes can be visible to other local processes, and loopback cookies are not port-scoped. Treat other local processes as part of the trust boundary. Restarting the server invalidates browser sessions. Inactive servers stop automatically.
+
+Usage records, transcript bodies and credentials are not uploaded by the dashboard. `/doctor` reads published worker diagnostics, including backfill progress, counter availability, unpriced usage and sanitized errors. A worker failure or unsupported ledger does not disable cached terminal totals.
+
+The ledger v4 upgrade is one-way: earlier spider builds cannot open the ledger after the upgrade. The ledger lives at `~/.pi/agent/spider/usage.db` by default, or `usage.db` under `SPIDER_GLOBAL_ROOT` when set. Back it up before upgrading. An open dashboard on the current build picks up the upgraded ledger on its next refresh. Prompt composition analysis and alerts are not available. POSIX hosts are supported; Windows hosts are not.
+
+## Contributing to the dashboard
+
+For UI work, run `npm run dev:dashboard`. It serves synthetic fixture data and a development-only states page. It does not read your usage ledger or settings.
+
+To check against real data, run `npm run build:dashboard` and restart the dashboard server. The server loads packaged browser assets once at startup, so a rebuild alone does not replace an open server's page. There is no `/usage` stop or restart subcommand. Close the dashboard tabs and wait for the 30-minute idle timeout, then run `/usage`. To stop it now, identify the process listening on the dashboard URL's port and compare its PID with `usage-server/lock.json` under spider's global data directory. Send that confirmed server process SIGTERM with `kill -TERM <pid>`, then run `/usage`. Do not signal an unverified PID from an old lock file. Alternatively, run the full `npm run build`, reload pi, then run `/usage`; the new extension build starts a fresh server. Extension watch does not rebuild browser assets. `npm run build` builds the extension, builds the dashboard and checks the packaged output.

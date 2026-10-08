@@ -77,17 +77,12 @@ it("session not-found is nonretryable, unsupported ids fail and extra segments n
   expect(empty.data.span).toBeNull(); expect(empty.period).toEqual({ start: NOW, end: NOW });
 });
 
-it("legacy dashboard routes remain beside v4 routes until retirement", async () => {
+it("all retired routes return not-found and client uses only focused DTOs", async () => {
   seed(); const server = await start(), Cookie = await server.cookie();
-  for (const path of ["/api/context", "/api/source-errors", "/api/explorer", "/api/filter-values?field=model", "/api/cache", "/api/detail-links?kind=session&id=parent-session", "/api/detail?kind=session&id=parent-session", "/api/rates", "/api/reconciliation"]) {
-    expect((await reply(server.port, path, { Cookie })).status, path).not.toBe(404);
-  }
+  for (const path of ["context", "source-errors", "explorer", "filter-values", "cache", "detail-links", "detail", "rates", "reconciliation"]) expect((await reply(server.port, `/api/${path}`, { Cookie })).status).toBe(404);
   const fetcher = ((path: string, init: RequestInit) => fetch(`http://127.0.0.1:${server.port}${path}`, { ...init, headers: { ...init.headers, Cookie } })) as typeof fetch;
-  const legacyClient = createDashboardClient(fetcher, true), signal = new AbortController().signal;
-  expect((await legacyClient.get("/api/status", new URLSearchParams(), signal)).data).toHaveProperty("ingest");
-  expect((await legacyClient.get("/api/overview", new URLSearchParams(), signal)).data).toHaveProperty("totals");
-  expect((await createDashboardClient(fetcher).get("/api/status", new URLSearchParams(), signal)).data).toHaveProperty("collector");
-  expect(data(await reply(server.port, `/api/overview?start=${S}&end=${NOW}`, { Cookie })).data).toHaveProperty("totals");
+  expect((await createDashboardClient(fetcher).get("/api/status", new URLSearchParams(), new AbortController().signal)).data).toHaveProperty("collector");
+  expect((await reply(server.port, `/api/overview?start=${S}&end=${NOW}`, { Cookie })).status).toBe(400);
 });
 
 it("security, HEAD and cached authenticated assets survive all new paths", async () => {

@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { measureFromRow } from "../dashboard-selection.js";
 import { calibrationFallback } from "../calibration.js";
-import { emptyMeasureRow } from "../query-overview.js";
+import { emptyMeasureRow } from "./fixtures/overview-v2-frozen.js";
 import type { CalibrationResult, DashboardQueryContext } from "../dashboard-contract.js";
 
 it("all AIC displays share calibration fallback", () => {

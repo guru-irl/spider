@@ -1,3 +1,4 @@
+import { seedCalibrationEvidence } from "./fixtures/calibration-evidence.js";
 import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { USAGE_LAUNCH_DEADLINE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
@@ -166,16 +167,16 @@ it("boot rejects old startup before consuming it or starting a participant", asy
 
 it("calibration reload follows pi's config reader for symlink large and unreadable files", async () => {
   const { h, f } = await setup();
-  const { openUsageLedger } = await import("../ledger.js"); openUsageLedger(f.options.roots.ledgerFile).close();
+  seedCalibrationEvidence(f.options.roots.ledgerFile);
   const config = join(f.root, "config.json"), target = join(f.root, "target.json");
   await writeFile(target, JSON.stringify({ "usage.calibration": "off", padding: "x".repeat(70000) })); await symlink(target, config);
   const row = await launched(f, { calibrationConfigFile: config, calibrationMode: "off" });
   const boot = await h.reply(row.port, new URL(row.bootstrapUrl).pathname + new URL(row.bootstrapUrl).search);
-  const headers = { Cookie: boot.headers["set-cookie"][0].split(";")[0], "X-Spider-Usage-Legacy": "1" };
-  const mode = async () => JSON.parse((await h.reply(row.port, "/api/overview", headers)).body).data.calibration.status;
-  expect(await mode()).toBe("off");
-  await writeFile(target, JSON.stringify({ "usage.calibration": "auto", padding: "x".repeat(70000) })); expect(await mode()).toBe("uncalibrated");
-  await rm(config); await fs.promises.mkdir(config); expect(await mode()).toBe("uncalibrated");
+  const headers = { Cookie: boot.headers["set-cookie"][0].split(";")[0] };
+  const mode = async () => JSON.parse((await h.reply(row.port, "/api/calibration", headers)).body).data.correction;
+  expect(await mode()).toMatchObject({ status: "published-only", factor: null });
+  await writeFile(target, JSON.stringify({ "usage.calibration": "auto", padding: "x".repeat(70000) })); expect(await mode()).toMatchObject({ status: "calibrated", factor: 0.5 });
+  await rm(config); await fs.promises.mkdir(config); expect(await mode()).toMatchObject({ status: "calibrated", factor: 0.5 });
 });
 
 

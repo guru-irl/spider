@@ -1,6 +1,7 @@
 // Frozen pre-cube Overview reader, independent dynamic selection reference.
-import type { DashboardQueryContext, OverviewData, OverviewDay, OverviewBreakdown, Slice, TokenTotals, DashboardRoute, ContextData, CalibrationResult, AicDisplay } from "../../dashboard-contract.js";
-import { querySourceErrors } from "../../query-source-errors.js";
+import type { DashboardQueryContext, Slice, TokenTotals, DashboardRoute, CalibrationResult, AicDisplay } from "../../dashboard-contract.js";
+import type { OverviewData, OverviewDay, OverviewBreakdown, ContextData } from "./overview-v2-contract.js";
+import { querySourceErrors } from "./source-errors-legacy.js";
 import { readDashboardCounter } from "../../dashboard-reader.js";
 import { countedUsageSql } from "./selection-v2-frozen.js";
 import { compileSlice, overviewSelectionProjection, measureColumns, measureFromRow, type MeasureRow, DAY_MS, safeTimestamp, invalidQuery,
@@ -127,7 +128,7 @@ export const OVERVIEW_ROUTES: readonly DashboardRoute[] = [
   } },
   { path: "/api/context", handle(ctx, query): ContextData {
     const slice = parseSlice(query, ctx.now());
-    const availability = ctx.composition.availability(slice);
+    const availability = { status: "unavailable", phase: 2, reason: "not-built", message: "Not available yet (Phase 2)" } as const;
     return { contextFillPercent: null,
       contextFillMessage: "Context fill unavailable: historical window not recorded",
       composition: availability, carry: availability, itemReuse: availability };

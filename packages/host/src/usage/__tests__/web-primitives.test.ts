@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { observeFontTransport } from "./fixtures/font-transport.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getEventListeners } from "node:events";
 import { PlainDocument, button, elements, descendants, cellText } from "./fixtures/plain-dom.js";
 
+afterEach(() => vi.unstubAllGlobals());
 const tokens = { input: 10, cacheRead: 20, cacheWrite: 30, output: 40, prompt: 60, total: 100, reasoning: null, cacheWrite1h: null };
 
 describe("web primitives", () => {
@@ -85,8 +87,10 @@ describe("web primitives", () => {
     } };
     const document = doc.asDocument();
     document.createElement = ((tag: string) => tag === "canvas" ? { getContext: () => context } : create(tag)) as typeof document.createElement;
+    const faces = observeFontTransport(doc);
     await loadFonts(document);
-    expect(elements(doc.head, "link")).toHaveLength(available === "missing" ? 1 : 0);
+    expect(faces).toHaveLength(available === "missing" ? 6 : 0);
+    expect(elements(doc.head, "link")).toHaveLength(0);
   });
 
   it("client rejects decoding after cancellation and bounds deadlines", async () => {
@@ -195,7 +199,7 @@ describe("web primitives", () => {
     const fit = { status: "implausible" as const, factor: 2, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 3000, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
     expect(formatAicDisplay({ primaryAic: 1000, publishedAic: 1000, basis: "published" }, 0, fit).legend).toContain("Diagnostic x2.00 (clamped, not applied)");
   });
-  it("fonts load locally before conditional link", async () => {
+  it("fonts load locally before direct file transport", async () => {
     // Break caught: unconditional network links, blocking rendering, or non-stylesheet font fallback.
     const module = await import("../web/fonts.js").catch(() => null);
     expect(module, "font loader is available").not.toBeNull();
@@ -207,18 +211,20 @@ describe("web primitives", () => {
     const missing = new PlainDocument();
     const finish: ((faces: unknown[]) => void)[] = [];
     missing.fonts = { load() { return new Promise(resolve => { finish.push(resolve); }); } };
+    const missingFaces = observeFontTransport(missing);
     const pending = module!.loadFonts(missing.asDocument());
     expect(elements(missing.head, "link")).toHaveLength(0);
     // Use a separate failing loader to cover empty and rejected local faces.
     const offline = new PlainDocument(); offline.fonts = { async load(font) { if (font.includes("Text")) return []; throw new Error("offline"); } };
+    const faces = observeFontTransport(offline);
     await module!.loadFonts(offline.asDocument());
-    const links = elements(offline.head, "link"); expect(links).toHaveLength(1);
-    expect(links[0]!.getAttribute("rel")).toBe("stylesheet");
-    expect(links[0]!.getAttribute("referrerpolicy")).toBe("no-referrer");
-    expect(links[0]!.getAttribute("href")).toBe("https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600;700&family=Cascadia+Code:wght@400;700&display=swap");
+    expect(faces).toHaveLength(6);
+    expect(faces.every(face => face.source.startsWith(`local("${face.family}"), url("https://fonts.gstatic.com/`))).toBe(true);
+    expect(elements(offline.head, "link")).toHaveLength(0);
     expect(elements(offline.head, "script")).toHaveLength(0);
     // Aborting prevents a late conditional link; offline rendering remains ordinary text.
     finish.forEach(resolve => resolve([])); await pending;
+    expect(missingFaces).toHaveLength(6);
     const cancelled = new PlainDocument(); const abort = new AbortController(); abort.abort();
     await module!.loadFonts(cancelled.asDocument(), abort.signal);
     expect(elements(cancelled.head, "link")).toHaveLength(0);
@@ -229,8 +235,9 @@ describe("web primitives", () => {
       const doc = new PlainDocument();
       doc.fonts = { async load() { return [{}]; }, check() { throw new Error("check cannot detect a local font"); } };
       const measure = (font: string) => available && font.includes("Usage") ? 120 : 100;
+      const faces = observeFontTransport(doc);
       await loadFonts(doc.asDocument(), undefined, measure);
-      expect(elements(doc.head, "link")).toHaveLength(available ? 0 : 1);
+      expect(faces).toHaveLength(available ? 0 : 6);
     }
   });
   it("font fallback is bounded at exactly 1.5 seconds", async () => {
@@ -238,17 +245,19 @@ describe("web primitives", () => {
     try {
       const { loadFonts } = await import("../web/fonts.js"), doc = new PlainDocument();
       doc.fonts = { load() { return new Promise(() => {}); } };
+      const faces = observeFontTransport(doc);
       const pending = loadFonts(doc.asDocument());
       await vi.advanceTimersByTimeAsync(1499); expect(elements(doc.head, "link")).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(1); await pending;
-      expect(elements(doc.head, "link")).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
+      expect(faces).toHaveLength(6); expect(vi.getTimerCount()).toBe(0);
     } finally { vi.useRealTimers(); }
   });
   it("one local font does not suppress the missing font fallback", async () => {
     const { loadFonts } = await import("../web/fonts.js");
     const doc = new PlainDocument();
     doc.fonts = { async load(font) { return font.includes("Text") ? [{}] : []; }, check() { return true; } };
-    await loadFonts(doc.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100); expect(elements(doc.head, "link")).toHaveLength(1);
+    const faces = observeFontTransport(doc);
+    await loadFonts(doc.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100); expect(faces).toHaveLength(6);
   });
   it("a late font abort never appends a link", async () => {
     const { loadFonts } = await import("../web/fonts.js");

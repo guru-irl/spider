@@ -5,6 +5,7 @@ import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import { parsePage, parseSlice, validateParams } from "./dashboard-selection.js";
 import { equalCredential, hasMintBearer, hasSafeBrowserMetadata, isBrowserMint, parseUsageTarget, usageSecurityHeaders, validateTransport } from "./server-security.js";
 
+import { loadDashboardAssets } from "./dashboard-assets.js";
 import { USAGE_HTTP_DRAIN_MS } from "./server-lifecycle.js";
 
 const errors = {
@@ -50,6 +51,12 @@ function send(res: ServerResponse, body: string, maximum: number): boolean {
  * collisions, not exposure to another service on the same loopback hostname.
  */
 export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid: number; port: number; close(): Promise<void> }> {
+  const assets = await loadDashboardAssets(options.dashboardDir);
+  return startUsageHttpServerWithAssets(options, assets);
+}
+
+/** Boot loads assets before starting any reader or participant. */
+export async function startUsageHttpServerWithAssets(options: HttpOptions, assets: Awaited<ReturnType<typeof loadDashboardAssets>>): Promise<{ pid: number; port: number; close(): Promise<void> }> {
   const now = options.now ?? Date.now;
   // A random instance secret binds lookups even if options.instanceId and clocks are reused.
   const instanceKey = randomBytes(32);
@@ -83,7 +90,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
   let authenticatedRequests: number[] = [];
   let unauthenticatedRequests: number[] = [];
   let crossSiteRequests: number[] = [];
-  const securityHeaders = usageSecurityHeaders(options.html);
+  const securityHeaders = usageSecurityHeaders();
   const idleMs = options.idleMs ?? 1_800_000;
   const sweepCredentials = () => {
     const timestamp = now();
@@ -115,6 +122,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
     connectionsCheckingInterval: 1000, maxHeaderSize: 16_384 }, (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     for (const [name, value] of Object.entries(securityHeaders)) res.setHeader(name, value);
+    const rawAsset = req.url?.startsWith("/assets/") === true;
     const target = parseUsageTarget(req.url);
     const credentialRoute = target?.pathname === "/bootstrap" || target?.pathname === "/local/bootstrap-nonce";
     const session = credentialRoute ? undefined : requireSession(req);
@@ -132,6 +140,21 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
       unauthenticatedRequests = unauthenticatedRequests.filter(timestamp => timestamp > now() - 60_000);
       if (unauthenticatedRequests.length >= 120) { fail(res, "rate-limited"); return; }
       unauthenticatedRequests.push(now());
+    }
+    // Asset targets are never URL-normalized, decoded or joined to filesystem paths.
+    // Authenticate even malformed asset paths before disclosing the exact-map result.
+    if (rawAsset) {
+      if (!validateTransport(req, port, "/assets/")) { fail(res, "forbidden"); return; }
+      if (!session) { fail(res, "unauthorized"); return; }
+      if (req.method !== "GET" && req.method !== "HEAD") { fail(res, "method-not-allowed"); return; }
+      authenticatedRequests = authenticatedRequests.filter(timestamp => timestamp > now() - 60_000);
+      if (authenticatedRequests.length >= 600) { fail(res, "rate-limited"); return; }
+      authenticatedRequests.push(now());
+      session.lastUsedAt = now();
+      const asset = assets.get(req.url!);
+      if (!asset) { fail(res, "not-found"); return; }
+      res.setHeader("Content-Type", asset.contentType); res.setHeader("Cache-Control", asset.cacheControl);
+      res.setHeader("Content-Length", asset.body.length); res.end(req.method === "HEAD" ? undefined : asset.body); activity(); return;
     }
     if (!target) { fail(res, "invalid-query"); return; }
     if (!validateTransport(req, port, target.pathname)) { fail(res, "forbidden"); return; }
@@ -198,7 +221,9 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
     session.lastUsedAt = now();
     if (target.pathname === "/") {
       if (target.search) { fail(res, "invalid-query"); return; }
-      res.setHeader("Content-Type", "text/html; charset=utf-8"); if (send(res, options.html, 512 * 1024)) activity(); return;
+      const asset = assets.get("/")!;
+      res.setHeader("Content-Type", asset.contentType); res.setHeader("Cache-Control", asset.cacheControl);
+      res.setHeader("Content-Length", asset.body.length); res.end(req.method === "HEAD" ? undefined : asset.body); activity(); return;
     }
     const route = options.routes.find(route => route.path === target.pathname);
     if (route) {

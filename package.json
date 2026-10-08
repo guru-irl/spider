@@ -33,7 +33,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "vite build && node scripts/assert-bundle.mjs",
+    "build": "vite build && npm run build:dashboard && node scripts/assert-bundle.mjs",
+    "build:dashboard": "vite build --config vite.dashboard.config.mjs",
+    "dev:dashboard": "vite --config vite.dashboard.config.mjs",
+    "test:e2e": "playwright test",
     "prepare": "npm run build",
     "bundle": "vite build",
     "dev": "vite build --watch",

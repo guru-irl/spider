@@ -1,8 +1,8 @@
+import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
 import { isUsageServerMain, runUsageServerEntry } from "./usage/server-entry.js";
 import { startUsageServerIngest } from "./usage/server-ingest.js";
-import { writeUsageServerCrashCode } from "./usage/server-runtime.js";
 export { runUsageServerEntry } from "./usage/server-entry.js";
 export { UsageRuntime } from "./usage/runtime.js";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
@@ -87,13 +87,9 @@ if (!isMainThread && workerData?.spiderUsageWorker === 1 && parentPort) {
 }
 
 if (isUsageServerMain(import.meta.url)) {
-  // The virtual module becomes a string inside extension.js. Ordinary imports,
-  // pi's shim and ingest workers never evaluate a browser entry or start HTTP.
-  void import("virtual:spider-usage-dashboard").then(({ DASHBOARD_HTML }) =>
-    runUsageServerEntry(import.meta.url, { html: DASHBOARD_HTML, startParticipant: startUsageServerIngest }),
-  ).catch(async () => {
-    await writeUsageServerCrashCode(process.cwd(), "usage-server-startup-invalid");
-    process.exitCode = 1;
+  // Resolve packaged assets from this running bundle, never cwd or startup records.
+  void runUsageServerEntry(import.meta.url, {
+    dashboardDir: fileURLToPath(new URL("./dashboard/", import.meta.url)), startParticipant: startUsageServerIngest,
   });
 }
 

@@ -38,7 +38,8 @@ npm run build
 - Setup assigns fixture-only `SPIDER_GLOBAL_ROOT`, `PI_CODING_AGENT_DIR`, and `SPIDER_TEST_FIXTURE_CHECKOUT`. Do not override them to real user data.
 - Fixtures create databases and config under checkout scratch; close handles and terminate fixture processes in teardown.
 - Vitest uses fork workers for native SQLite safety. `npm run test:watch` runs watch mode.
-- The build runs `scripts/assert-bundle.mjs`: one `dist/extension.js`, a valid build marker, external native and pi modules, and a natively importable default function.
+- `npm run build` builds the extension first, builds the dashboard second, then runs `scripts/assert-bundle.mjs`. The output is `dist/extension.js` plus `dist/dashboard/index.html` and hashed JavaScript and CSS files in `dist/dashboard/assets/`. The guard checks that layout, the dashboard size and external-only scripts and styles, a valid build marker, external native and pi modules, and a natively importable default function. Source maps and the development states page are not packaged.
+- `npm run bundle` builds only the extension. `npm run dev` watches only the extension, so rebuild dashboard edits with `npm run build:dashboard`. Use `npm run dev:dashboard` for the browser development server with synthetic fixture APIs. Development and e2e dashboard builds require an explicit absolute output directory under `.spider/scratch/`; production dashboard builds can write only to `dist/dashboard/`.
 - No database opens or optional model initialization belongs at bundle top level.
 - For interactive rendering changes, follow [UI testing](docs/dev-ui-testing.md) and [Output guidelines](docs/output-ui-guidelines.md).
 

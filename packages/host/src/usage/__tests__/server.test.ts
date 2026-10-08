@@ -1,7 +1,9 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { DashboardQueryError, type ApiErrorCode, type HttpOptions } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { OVERVIEW_ROUTES } from "../query-overview.js";
@@ -21,7 +23,7 @@ async function start(overrides: Partial<HttpOptions> = {}, calibrationMode: () =
   const secret = randomBytes(32).toString("hex");
   const options: HttpOptions = { instanceId: "fixture-instance", serverBuild: "fixture-build", secret,
     reader: Object.hasOwn(overrides, "reader") ? overrides.reader : openDashboardReader(fixture.file, { instanceId: "fixture-instance", serverBuild: "fixture-build", now: () => DASHBOARD_NOW, calibrationMode }),
-    routes: OVERVIEW_ROUTES, html: "<!doctype html><title>Fixture</title><style>body{color:white}</style><script>void 0</script>",
+    routes: OVERVIEW_ROUTES, dashboardDir: createFixtureDashboard(),
     now: () => DASHBOARD_NOW, ...overrides };
   const server: RunningServer = await implementation!.startUsageHttpServer(options);
   closers.push(() => server.close());
@@ -242,9 +244,7 @@ describe("usage HTTP", () => {
     expect(large.status).toBe(413);
     expect(JSON.parse(large.body)).toEqual({ apiVersion: 1, error: { code: "response-limit", message: "Response limit" } });
     expect(Buffer.byteLength(large.body)).toBeLessThan(1024);
-    const largeHtml = await start({ html: "x".repeat(512 * 1024 + 1) });
-    const htmlCookie = await login(largeHtml);
-    expect((await get(largeHtml.port, "/", { Cookie: htmlCookie })).status).toBe(413);
+    await expect(start({ dashboardDir: createFixtureDashboard("x".repeat(512 * 1024 + 1)) })).rejects.toMatchObject({ code: "usage-dashboard-invalid" });
     const largeStatus = await start({ routes: [{ path: "/api/status", handle: () => ({ text: "x".repeat(8192) }) }] });
     const statusCookie = await login(largeStatus);
     expect((await get(largeStatus.port, "/api/status", { Cookie: statusCookie })).status).toBe(413);

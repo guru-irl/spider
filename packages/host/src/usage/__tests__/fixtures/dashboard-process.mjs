@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { fstatSync, writeFileSync, watch } from "node:fs";
 import { request } from "node:http";
 import { isUsageServerMain, runUsageServerEntry } from "../../server-entry.js";
+import { createFixtureDashboard } from "./dashboard-assets.ts";
 import { ensureUsageServer, writeUsageServerCrashCode } from "../../server-runtime.js";
 import { writeServerRecord, removeServerRecord } from "../../server-lock.js";
 
@@ -40,6 +41,7 @@ export async function processFixtures() {
     rollupOptions: { external: id => id.startsWith("node:") || ["better-sqlite3", "sqlite-vec", "vite"].includes(id),
       output: { format: "es", entryFileNames: "bundle.mjs", codeSplitting: false } },
   } });
+  createFixtureDashboard(undefined, join(outDir, "dashboard"));
   return join(outDir, "bundle.mjs");
   }
   await buildBundle(buildRoot, OLD_BUILD);
@@ -48,7 +50,8 @@ export async function processFixtures() {
     const root = await mkdtemp(join(scratch, "dashboard-process-")); roots.push(root);
     const privateDir = join(root, "usage-server"); await mkdir(privateDir, { mode: 0o700 });
     const launcherCwd = join(root, "launcher-cwd"); await mkdir(launcherCwd);
-    const options = { bundleUrl: built, roots: { registryDb: join(root, "registry.db"), sessionsDir: join(root, "sessions"),
+    createFixtureDashboard(undefined, join(root, "dashboard"));
+    const options = { dashboardDir: join(buildRoot, "dashboard"), bundleUrl: built, roots: { registryDb: join(root, "registry.db"), sessionsDir: join(root, "sessions"),
       ledgerFile: join(root, "usage.db"), authPath: join(root, "auth.json"), leaseDir: join(root, "leases") },
       lockFile: join(privateDir, "lock.json"), serverBuild: OLD_BUILD, calibrationMode: "off", launchDeadlineMs: FIXTURE_LAUNCH_DEADLINE_MS };
     const env = { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: join(root, "agent"),
@@ -110,6 +113,7 @@ if (isUsageServerMain(import.meta.url)) {
     const lease = join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "fixture-lease");
     const stopped = join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "participant-stopped");
     await runUsageServerEntry(import.meta.url, {
+      dashboardDir: fileURLToPath(new URL("./dashboard/", import.meta.url)),
       testHook: { idleMs: process.env.SPIDER_FIXTURE_IDLE ? 300 : undefined },
       startParticipant: () => {
         const keepAlive = setInterval(() => {}, 1000);
@@ -123,7 +127,7 @@ if (isUsageServerMain(import.meta.url)) {
             clearInterval(keepAlive);
           } };
       } });
-  } else await runUsageServerEntry(import.meta.url);
+  } else await runUsageServerEntry(import.meta.url, { dashboardDir: fileURLToPath(new URL("./dashboard/", import.meta.url)) });
   if (process.env.SPIDER_FIXTURE_IGNORE_TERM) { process.removeAllListeners("SIGTERM"); process.on("SIGTERM", () => {}); }
   if (process.env.SPIDER_FIXTURE_CRASH) setTimeout(() => { throw new Error("synthetic-token-private-path"); }, 700);
 } else if (process.argv[2] === "observe-publication") {

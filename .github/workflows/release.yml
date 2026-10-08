@@ -77,7 +77,9 @@ jobs:
           npm pack --json --ignore-scripts | node -e "
             let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
               const files=JSON.parse(s)[0].files.map(f=>f.path);
-              const need=['dist/extension.js','README.md','LICENSE'];
+              const need=['dist/extension.js','dist/dashboard/index.html','README.md','LICENSE'];
+              if(!files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(f)) || !files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(f))) throw new Error('dashboard JS/CSS missing');
+              if(files.some(f=>f.startsWith('dist/') && (f.endsWith('.map') || f.includes('states')))) throw new Error('development dashboard files in tarball');
               const missing=need.filter(n=>!files.some(f=>f===n||f.startsWith(n)));
               if(missing.length){console.error('::error::missing from tarball: '+missing.join(', '));process.exit(1);}
               console.log('tarball contains '+files.length+' files, required entries present');

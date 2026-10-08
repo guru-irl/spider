@@ -1,4 +1,6 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { request } from "node:http";
 import { startUsageHttpServer } from "../server.js";
 import { readFileSync, statSync } from "node:fs";
@@ -302,7 +304,7 @@ it("HTTP envelopes and validation use the cursor's frozen Explorer window", asyn
   reader = openDashboardReader(fixture.file, { instanceId: "http-fixture", now: () => now, calibrationMode: () => "off", serverBuild: "b" })!;
   const secret = "synthetic-test-only-secret";
   const server = await startUsageHttpServer({ instanceId: "http-fixture", serverBuild: "b", secret, reader, routes: EXPLORER_ROUTES,
-    html: "<!doctype html><title>Fixture</title>", now: () => now });
+    dashboardDir: createFixtureDashboard(), now: () => now });
   const get = (path: string, headers: Record<string, string> = {}) => new Promise<{ status: number; headers: import("node:http").IncomingHttpHeaders; body: string }>((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port: server.port, path, headers, agent: false }, res => {
       const chunks: Buffer[] = [];

@@ -1,8 +1,10 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { request, Server } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { networkInterfaces } from "node:os";
 import { randomBytes } from "node:crypto";
 import { afterEach, expect, test, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import * as security from "../server-security.js";
 import { startUsageHttpServer } from "../server.js";
 import type { HttpOptions } from "../dashboard-contract.js";
@@ -17,7 +19,7 @@ async function start(overrides: Partial<HttpOptions> = {}) {
   const secret = randomBytes(32).toString("base64url");
   const options: HttpOptions = { instanceId: "security-fix", serverBuild: "fixture", secret,
     reader: openDashboardReader(fixture.file, { instanceId: "security-fix", serverBuild: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto" }),
-    routes: OVERVIEW_ROUTES, html: "<title>fixture</title>", now: () => DASHBOARD_NOW, ...overrides };
+    routes: OVERVIEW_ROUTES, dashboardDir: createFixtureDashboard(), now: () => DASHBOARD_NOW, ...overrides };
   const server = await startUsageHttpServer(options); closers.push(() => server.close());
   return { ...server, secret, options };
 }

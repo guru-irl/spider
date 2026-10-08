@@ -7,7 +7,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { openDashboardReader } from "./dashboard-reader.js";
 import { DASHBOARD_ROUTES } from "./api-routes.js";
 import type { ServerIngestOptions } from "./server-ingest.js";
-import { startUsageHttpServer } from "./server.js";
+import { loadDashboardAssets, DashboardAssetsError } from "./dashboard-assets.js";
+import { startUsageHttpServerWithAssets } from "./server.js";
 import type { DashboardReader, IngestHandle } from "./dashboard-contract.js";
 import { usageProcessIdentity, writeUsageServerCrashCode, type UsageServerLaunchOptions } from "./server-runtime.js";
 import { ensurePrivateServerDir, readServerRecord, removeOwnedUsageServerLock, removeServerRecord, validInstance, validSecret, writeServerRecord } from "./server-lock.js";
@@ -22,13 +23,14 @@ export function isUsageServerMain(moduleUrl: string | URL, argv: readonly string
   } catch { return false; }
 }
 export type UsageServerParticipant = (options: ServerIngestOptions) => IngestHandle;
-export type UsageServerBootOptions = UsageServerLaunchOptions & { instanceId: string; startParticipant?: UsageServerParticipant; html?: string };
+export type UsageServerBootOptions = UsageServerLaunchOptions & { instanceId: string; startParticipant?: UsageServerParticipant; dashboardDir: string };
 export type UsageServerTestHook = { now?: () => number; idleMs?: number };
 function resolvedCalibration(options: UsageServerLaunchOptions): "auto" | "off" {
   if (!options.calibrationConfigFile) return options.calibrationMode;
   return readUsageConfig(readLayer(options.calibrationConfigFile).config, {}).value.calibration;
 }
 export async function bootUsageServer(options: UsageServerBootOptions, testHook: UsageServerTestHook = {}): Promise<void> {
+  const assets = await loadDashboardAssets(options.dashboardDir);
   const serverBuild = `${LOADED_BUILD.sha}@${LOADED_BUILD.builtAt}`;
   const dir = dirname(options.lockFile); await ensurePrivateServerDir(dir);
   const record = await readServerRecord(join(dir, "startup.json"));
@@ -62,8 +64,8 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
     process.exitCode = 1;
     void writeUsageServerCrashCode(dir, "usage-server-crashed").then(close).catch(() => {});
   };
-  const server = await startUsageHttpServer({ instanceId: options.instanceId, serverBuild,
-    secret, reader, retryOpenReader: openReader, ingestStatus, now: testHook.now, idleMs: testHook.idleMs, routes: DASHBOARD_ROUTES, html: options.html ?? "<!doctype html><title>Usage</title><p>Usage dashboard</p>",
+  const server = await startUsageHttpServerWithAssets({ instanceId: options.instanceId, serverBuild,
+    secret, reader, retryOpenReader: openReader, ingestStatus, now: testHook.now, idleMs: testHook.idleMs, routes: DASHBOARD_ROUTES, dashboardDir: options.dashboardDir,
     onClose: async () => {
       process.off("SIGTERM", onSignal); process.off("SIGINT", onSignal);
       process.off("uncaughtException", onFatal); process.off("unhandledRejection", onFatal);
@@ -76,7 +78,7 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
         // then terminate only this standalone process, never a recorded or reused PID.
         if (timedOut && isUsageServerMain(options.bundleUrl)) setImmediate(() => process.exit(process.exitCode ? 1 : 0));
       }
-    } }).catch(async failure => {
+    } }, assets).catch(async failure => {
       let timedOut = false;
       try { timedOut = await stopParticipant(); } finally { reader?.close(); }
       if (timedOut && isUsageServerMain(options.bundleUrl)) {
@@ -100,7 +102,7 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
     throw new Error("usage-server-startup-invalid");
   }
 }
-export async function runUsageServerEntry(moduleUrl: string | URL, hooks: { startParticipant?: UsageServerParticipant; html?: string; testHook?: UsageServerTestHook } = {}): Promise<void> {
+export async function runUsageServerEntry(moduleUrl: string | URL, hooks: { startParticipant?: UsageServerParticipant; dashboardDir: string; testHook?: UsageServerTestHook }): Promise<void> {
   if (!isUsageServerMain(moduleUrl)) return;
   try {
     const file = process.argv[3]!;
@@ -115,9 +117,9 @@ export async function runUsageServerEntry(moduleUrl: string | URL, hooks: { star
       Object.values(options.roots).some(path => typeof path !== "string" || !isAbsolute(path) || path.length > 4096)) throw new Error("usage-server-startup-invalid");
     await bootUsageServer({ bundleUrl: moduleUrl, roots: options.roots, lockFile: options.lockFile,
       serverBuild: options.serverBuild, calibrationMode: options.calibrationMode, calibrationConfigFile: options.calibrationConfigFile,
-      instanceId: record.instanceId, startParticipant: hooks.startParticipant, html: hooks.html }, hooks.testHook);
-  } catch {
-    await writeUsageServerCrashCode(process.cwd(), "usage-server-startup-invalid");
+      instanceId: record.instanceId, startParticipant: hooks.startParticipant, dashboardDir: hooks.dashboardDir }, hooks.testHook);
+  } catch (error) {
+    await writeUsageServerCrashCode(process.cwd(), error instanceof DashboardAssetsError ? error.code : "usage-server-startup-invalid");
     process.exitCode = 1;
   }
 }

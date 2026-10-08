@@ -2,5 +2,6 @@
 export const usageServerCrashCodes: ReadonlySet<string> = new Set([
   "usage-server-crashed", "usage-server-startup-invalid", "usage-server-not-ready", "usage-server-spawn-failed",
   "usage-server-close-failed", "usage-server-unsupported-runtime", "usage-server-unsupported-platform",
+  "usage-dashboard-missing", "usage-dashboard-invalid",
   "usage-server-busy", "usage-server-build-invalid",
 ]);

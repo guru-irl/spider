@@ -1,4 +1,5 @@
-import { beforeAll, expect, it } from "vitest";
+import { observeFontTransport } from "./fixtures/font-transport.js";
+import { afterEach, beforeAll, expect, it, vi } from "vitest";
 import { PlainDocument, elements, settle } from "./fixtures/plain-dom.js";
 import { createDashboardBrowserPage } from "./fixtures/dashboard-browser-fixture.js";
 import { allViewPage, acceptanceStates } from "./fixtures/all-view-browser-fixture.js";
@@ -11,6 +12,7 @@ import { renderTable } from "../web/tables.js";
 import { loadFonts } from "../web/fonts.js";
 import type { ViewRoute } from "../web/views.js";
 
+afterEach(() => vi.unstubAllGlobals());
 let base: Awaited<ReturnType<typeof createDashboardBrowserPage>>;
 beforeAll(async () => { base = await createDashboardBrowserPage(); });
 async function fixture(view: ViewRoute["view"], state: typeof acceptanceStates[number] = "calibrated", filters: ViewRoute["filters"] = [], identifiers = false) {
@@ -137,9 +139,9 @@ it("Explorer remove-filter accessible name uses the human label", async () => {
   finally { app.dispose(); }
 });
 it("optional font request includes every declared local weight", async () => {
-  const doc = new PlainDocument(); await loadFonts(doc.asDocument(), undefined, () => 1);
-  const href = elements(doc.head, "link")[0]!.getAttribute("href")!;
-  expect(href).toContain("Google+Sans+Flex:wght@400;500;600;700"); expect(href).toContain("Cascadia+Code:wght@400;700");
+  const doc = new PlainDocument(), faces = observeFontTransport(doc); await loadFonts(doc.asDocument(), undefined, () => 1);
+  expect(faces.map(face => `${face.family}:${face.weight}`)).toEqual(["Google Sans Flex:400", "Google Sans Flex:500", "Google Sans Flex:600", "Google Sans Flex:700", "Cascadia Code:400", "Cascadia Code:700"]);
+  expect(elements(doc.head, "link")).toHaveLength(0);
 });
 it("period-independent empty tables do not imply a selected time window", () => {
   const doc = new PlainDocument();

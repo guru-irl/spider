@@ -1,8 +1,10 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { openDb } from "@spider/db-core";
 import * as planModule from "./fixtures/dashboard-plan.js";
 import { randomBytes } from "node:crypto";
 import { request, type IncomingHttpHeaders } from "node:http";
 import { afterEach, expect, test } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { DASHBOARD_ROUTES } from "../api-routes.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { startUsageHttpServer } from "../server.js";
@@ -48,7 +50,7 @@ test("all routes preserve wire and read-only boundary", async () => {
     fixture.db.prepare("INSERT INTO counter_snapshots VALUES (?,?,?,?,?,?,?)").run(ts, "synthetic-private-account", credits, 10000, 10000 - credits!, "synthetic-reset", '{"private":"synthetic-private-payload"}');
   const reader = openDashboardReader(fixture.file, { instanceId: "api-fixture", serverBuild: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto" })!;
   const secret = randomBytes(32).toString("hex");
-  const server = await startUsageHttpServer({ instanceId: "api-fixture", serverBuild: "fixture", secret, reader, routes: DASHBOARD_ROUTES, html: "<!doctype html><title>Fixture</title>", now: () => DASHBOARD_NOW });
+  const server = await startUsageHttpServer({ instanceId: "api-fixture", serverBuild: "fixture", secret, reader, routes: DASHBOARD_ROUTES, dashboardDir: createFixtureDashboard(), now: () => DASHBOARD_NOW });
   closers.push(() => server.close());
   const nonce = JSON.parse((await get(server.port, "/local/bootstrap-nonce", { Authorization: `Bearer ${secret}` })).body).data.nonce;
   const bootstrap = await get(server.port, `/bootstrap?nonce=${nonce}`);
@@ -95,7 +97,7 @@ test("all routes preserve wire and read-only boundary", async () => {
     expect(reply.headers["x-content-type-options"]).toBe("nosniff");
     expect(reply.headers["referrer-policy"]).toBe("no-referrer");
     expect(reply.headers["content-security-policy"]).toBe([
-      "default-src 'none'", "script-src 'none'", "style-src 'none' https://fonts.googleapis.com", "style-src-attr 'none'",
+      "default-src 'none'", "script-src 'self'", "style-src 'self'", "style-src-attr 'none'",
       "font-src https://fonts.gstatic.com", "connect-src 'self'", "img-src 'self'", "object-src 'none'", "base-uri 'none'",
       "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'",
     ].join("; "));

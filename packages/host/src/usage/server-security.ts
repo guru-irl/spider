@@ -1,13 +1,11 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
-export function usageSecurityHeaders(html: string): Readonly<Record<string, string>> {
-  const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}\\s*>`, "gi"))]
-    .map(match => `'sha256-${createHash("sha256").update(match[1]!.replace(/\r\n?/g, "\n")).digest("base64")}'`).join(" ") || "'none'";
+export function usageSecurityHeaders(): Readonly<Record<string, string>> {
   return {
     "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
     "Cross-Origin-Resource-Policy": "same-origin", "Cross-Origin-Opener-Policy": "same-origin",
-    "Content-Security-Policy": ["default-src 'none'", `script-src ${hashes("script")}`, `style-src ${hashes("style")} https://fonts.googleapis.com`,
+    "Content-Security-Policy": ["default-src 'none'", "script-src 'self'", "style-src 'self'",
       "style-src-attr 'none'", "font-src https://fonts.gstatic.com", "connect-src 'self'", "img-src 'self'", "object-src 'none'",
       "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'"].join("; "),
   };

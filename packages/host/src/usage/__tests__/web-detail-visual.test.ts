@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { build } from "vite";
 import { captureDashboard, screenshotSkipReason, BROWSER_TEST_TIMEOUT_MS, type DashboardRoute } from "../../../../../scripts/usage-dashboard-screenshot.mjs";
-import { createDashboardBrowserPage } from "./fixtures/dashboard-browser-fixture.js";
+import { createDashboardBrowserPage, externalFixtureAssets } from "./fixtures/dashboard-browser-fixture.js";
 import { usageSecurityHeaders } from "../server-security.js";
 import type { ApiEnvelope, OverviewData } from "../dashboard-contract.js";
 import type { CacheData } from "../query-cache.js";
@@ -64,9 +64,9 @@ async function detailPage(kind: "session" | "run", placeholder = false) {
     window.setInterval=(run,delay)=>{const id=++seq;timers.set(id,{run,due:now+delay,delay});return id;};window.clearTimeout=window.clearInterval=id=>timers.delete(id);
     window.__clock={advance(ms){now+=ms;for(const[id,t]of Array.from(timers))if(t.due<=now&&timers.has(id)){if(t.delay)t.due=now+t.delay;else timers.delete(id);t.run();}}};
     window.__requests=0;window.__completed=0;const transport=window.fetch;window.fetch=(...args)=>{++window.__requests;return transport(...args).then(r=>{++window.__completed;return r;});};`;
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="detail-fixture"></div><script>${clock}${code}</script></body></html>`;
+  const { html, routes: assetRoutes } = externalFixtureAssets(clock + code, css, "detail-fixture");
   const response = (data: unknown): DashboardRoute => ({body:JSON.stringify({...source,data}),contentType:"application/json",ignoreSearch:true});
-  const routes = {...fixture.routes,...analysisRoutes(source),"/":{body:html,contentType:"text/html; charset=utf-8",headers:Object.entries(usageSecurityHeaders(html)).map(([name,value])=>({name,value}))},"/api/detail":response(data),"/api/detail-links":response(data.links)};
+  const routes = {...fixture.routes,...analysisRoutes(source),...assetRoutes,"/api/detail":response(data),"/api/detail-links":response(data.links)};
   return {html,routes};
 }
 const ready = `new Promise(resolve=>{const deadline=performance.now()+3000;const check=()=>{if(document.querySelector('.detail-calls time')&&window.__completed===window.__requests)requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true)));else if(performance.now()>deadline)resolve(false);else requestAnimationFrame(check);};check();})`;

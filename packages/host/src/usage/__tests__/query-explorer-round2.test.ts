@@ -1,4 +1,6 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { createHmac } from "node:crypto";
 import { chmodSync, linkSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
@@ -350,7 +352,7 @@ it("concurrent processes publish one stable salt without errors, flips or leftov
 }, 30000);
 it("identity error codes map to their fixed HTTP statuses and clear messages", async () => {
   const secret = "synthetic-round2-server-secret";
-  const server = await startUsageHttpServer({ instanceId: "round2", serverBuild: "fixture", secret, reader, html: "<!doctype html><title>Fixture</title>",
+  const server = await startUsageHttpServer({ instanceId: "round2", serverBuild: "fixture", secret, reader, dashboardDir: createFixtureDashboard(),
     routes: [{ path: "/api/explorer", handle(_ctx, params) { throw new DashboardQueryError(params.get("code") as "identity-unavailable" | "unknown-filter-id"); } }] });
   const get = (path: string, headers: Record<string, string> = {}) => new Promise<{ status: number; headers: import("node:http").IncomingHttpHeaders; body: string }>((done, reject) => {
     const req = request({ host: "127.0.0.1", port: server.port, path, headers, agent: false }, res => {

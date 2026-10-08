@@ -1,7 +1,9 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { request } from "node:http";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { startUsageHttpServer } from "../server.js";
 import type { HttpOptions } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
@@ -17,7 +19,7 @@ async function start(overrides: Partial<HttpOptions> = {}) {
   const secret = randomBytes(32).toString("hex");
   const options: HttpOptions = { instanceId: "fixture-security", serverBuild: "fixture-build", secret,
     reader: openDashboardReader(fixture.file, { instanceId: "fixture-security", serverBuild: "fixture-build", now: () => DASHBOARD_NOW, calibrationMode: () => "auto" }),
-    routes: OVERVIEW_ROUTES, html: "<!doctype html><title>Fixture</title><style>body{color:white}</style><script>void 0</script>",
+    routes: OVERVIEW_ROUTES, dashboardDir: createFixtureDashboard(),
     now: () => DASHBOARD_NOW, ...overrides };
   const server = await startUsageHttpServer(options);
   closers.push(() => server.close());
@@ -55,12 +57,12 @@ async function login(server: { port: number; secret: string }): Promise<string> 
 }
 
 describe("usage HTTP security", () => {
-  test("CSP hashes HTML-normalized line endings", async () => {
-    const server = await start({ html: "<style>body {\r\n color: white;\r}</style><script>void 0;\r\nvoid 1;\r</script>" });
+  test("CSP allows external local assets only", async () => {
+    const server = await start();
     const reply = await get(server.port, "/", { Cookie: await login(server) });
     const csp = reply.headers["content-security-policy"]!;
-    expect(csp).toContain(`'sha256-${createHash("sha256").update("void 0;\nvoid 1;\n").digest("base64")}'`);
-    expect(csp).toContain(`'sha256-${createHash("sha256").update("body {\n color: white;\n}").digest("base64")}'`);
+    expect(csp).toContain("script-src 'self'"); expect(csp).toContain("style-src 'self'");
+    expect(csp).not.toMatch(/sha256|unsafe-inline|fonts.googleapis.com/);
   });
   test("credential routes reject ambiguous headers and probes", async () => {
     const server = await start();
@@ -81,17 +83,15 @@ describe("usage HTTP security", () => {
     expect(JSON.parse(malformed.body)).toEqual({ apiVersion: 1, error: { code: "invalid-query", message: "Invalid query" } });
     expect(malformed.body).not.toContain("invalid header");
   });
-  test("responses enforce hash CSP and secret-free headers", async () => {
+  test("responses enforce external CSP and secret-free headers", async () => {
     const server = await start();
     const cookie = await login(server);
-    const scriptHash = createHash("sha256").update("void 0").digest("base64");
-    const styleHash = createHash("sha256").update("body{color:white}").digest("base64");
     for (const [path, headers] of [["/", { Cookie: cookie }], ["/api/status", { Cookie: cookie }],
       ["/api/status", {}], ["/absent", { Cookie: cookie }], ["/local/bootstrap-nonce", { Authorization: `Bearer ${server.secret}` }]] as const) {
       const reply = await get(server.port, path, headers);
       const csp = reply.headers["content-security-policy"]!;
-      expect(csp).toContain(`script-src 'sha256-${scriptHash}'`);
-      expect(csp).toContain(`style-src 'sha256-${styleHash}' https://fonts.googleapis.com`);
+      expect(csp).toContain("script-src 'self'");
+      expect(csp).toContain("style-src 'self'");
       for (const directive of ["default-src 'none'", "connect-src 'self'", "img-src 'self'", "font-src https://fonts.gstatic.com",
         "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'", "style-src-attr 'none'"]) expect(csp).toContain(directive);
       expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*/);

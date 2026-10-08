@@ -23,6 +23,16 @@ it("launcher failures expose fixed codes only", async () => {
   await expect(launchIsolated(m, f, { ...f.options, calibrationMode: undefined as any })).rejects.toThrow(/^usage-server-startup-invalid$/);
 });
 
+it("launcher propagates missing packaged assets with a safe code and no ledger startup", async () => {
+  const { module: m } = await helpers(); const f = await fixtures.fixture({ SPIDER_FIXTURE_PARTICIPANT: "1" });
+  const bundle = join(f.root, "missing-assets.mjs"); await writeFile(bundle, await readFile(fixtures.built));
+  await rm(join(f.root, "dashboard"), { recursive: true, force: true });
+  await expect(launchIsolated(m, f, { ...f.options, bundleUrl: bundle })).rejects.toThrow(/^usage-dashboard-missing$/);
+  expect((await m.readUsageServerCrashCodes(f.privateDir)).filter((code: string) => code === "usage-dashboard-missing")).toEqual(["usage-dashboard-missing"]);
+  await expect(access(f.options.roots.ledgerFile)).rejects.toThrow();
+  await expect(access(join(f.root, "fixture-lease"))).rejects.toThrow();
+  await expect(access(f.options.lockFile)).rejects.toThrow();
+});
 it("crash inspection never creates a directory", async () => {
   const { module: m } = await helpers(); const f = await fixtures.fixture();
   const absent = join(f.root, "absent-private-dir");

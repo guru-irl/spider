@@ -1,5 +1,7 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { USAGE_LAUNCH_DEADLINE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { readFile, writeFile, rm, utimes, symlink, stat, readdir } from "node:fs/promises";
 import * as fs from "node:fs";
 import * as cp from "node:child_process";
@@ -158,7 +160,7 @@ it("boot rejects old startup before consuming it or starting a participant", asy
   await writeFile(`${f.options.lockFile}.guard`, JSON.stringify(record), { mode: 0o600 });
   const startup = join(f.privateDir, "startup.json"); await writeFile(startup, JSON.stringify(record), { mode: 0o600 });
   let starts = 0;
-  await expect(bootUsageServer({ ...f.options, instanceId, startParticipant: () => { starts++; throw new Error("unexpected participant"); } })).rejects.toThrow("usage-server-startup-invalid");
+  await expect(bootUsageServer({ ...f.options, instanceId, dashboardDir: createFixtureDashboard(), startParticipant: () => { starts++; throw new Error("unexpected participant"); } })).rejects.toThrow("usage-server-startup-invalid");
   expect(starts).toBe(0); expect(await readFile(startup, "utf8")).toBe(JSON.stringify(record));
 });
 

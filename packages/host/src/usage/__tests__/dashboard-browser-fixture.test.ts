@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
 import { createDashboardBrowserPage } from "./fixtures/dashboard-browser-fixture.js";
 
 // Missing response CSP would let the acceptance test pass with scripts/styles
 // that the packaged server would reject. No builder computes the expectation.
-test("browser fixture serves the packaged mount with matching script and style CSP hashes", async () => {
+test("browser fixture serves the packaged mount with external assets under strict self CSP", async () => {
   const page = await createDashboardBrowserPage();
   const route = page.routes?.["/"];
   expect(route, "packaged page is a synthetic-origin response").toBeDefined();
@@ -13,17 +12,19 @@ test("browser fixture serves the packaged mount with matching script and style C
   expect(csp).toContain("connect-src 'self'");
   expect(csp).toContain("style-src-attr 'none'");
   expect(csp).not.toContain("unsafe-inline");
-  for (const tag of ["script", "style"]) {
-    const text = page.html.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1];
-    expect(text).toBeTruthy();
-    expect(csp).toContain(`'sha256-${createHash("sha256").update(text!).digest("base64")}'`);
+  expect(csp).toContain("script-src 'self'"); expect(csp).toContain("style-src 'self'");
+  expect(csp).not.toMatch(/sha256|fonts.googleapis.com/);
+  expect(page.html).not.toMatch(/<script>|<style>/);
+  for (const [attribute, contentType] of [["src", "text/javascript; charset=utf-8"], ["href", "text/css; charset=utf-8"]]) {
+    const path = page.html.match(new RegExp(`${attribute}="([^"]+)"`))![1]!;
+    expect(page.routes[path]!.contentType).toBe(contentType); expect(String(page.routes[path]!.body).length).toBeGreaterThan(0);
   }
   expect(page.html.match(/id="usage-app"/g)).toHaveLength(1);
 });
 
 test("Overview responses include both calibration bases and all initial API endpoints", async () => {
   const page = await createDashboardBrowserPage();
-  expect(Object.keys(page.routes ?? {}).sort()).toEqual(["/", "/api/overview", "/api/status"]);
+  expect(Object.keys(page.routes ?? {}).sort()).toEqual(["/", "/api/overview", "/api/status", "/assets/fixture-12345678.css", "/assets/fixture-12345678.js"]);
   const overview = JSON.parse(page.routes!["/api/overview"]!.body as string);
   expect(overview).toMatchObject({ apiVersion: 1, revision: "synthetic-v1", generatedAt: 1767398400000,
     period: { start: 1767225600000, end: 1767398400000 },

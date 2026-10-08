@@ -143,3 +143,12 @@ it("mounted doctor keeps each real crash write's time and expires old codes", as
     expect((await mounted.doctor()).lines.filter(line => line.includes("dashboard server failure"))).toEqual([]);
   } finally { vi.useRealTimers(); await rm(dir, { recursive: true, force: true }); }
 });
+
+it("mounted doctor checks packaged assets before any dashboard launch", async () => {
+  const { registerUsage } = await import("../mount.js");
+  const { paths } = await import("@spider/db-core");
+  const { join } = await import("node:path");
+  const result = await registerUsage({ on: () => () => {} } as any, join(paths.globalRoot, "absent/extension.js")).doctor();
+  expect(result.lines.join("\n")).toContain("dashboard-assets: usage-dashboard-missing; rebuild or reinstall spider");
+  expect(result.lines.join("\n")).not.toContain(paths.globalRoot);
+});

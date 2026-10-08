@@ -1,4 +1,7 @@
+import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { createHash, randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { bootUsageServer } from "../server-entry.js";
@@ -39,7 +42,7 @@ const BUILD_SETUP_TIMEOUT_MS = BUILD_TIMEOUT_MS + 60_000;
 function fixture() {
   const root = mkdtempSync(join(buildRoot, "packaged-usage-")); roots.push(root);
   mkdirSync(join(root, "packaged", "dist"), { recursive: true });
-  const bundle = join(root, "packaged", "dist", "extension.js"); cpSync(built, bundle);
+  const bundle = join(root, "packaged", "dist", "extension.js"); cpSync(built, bundle); cpSync(join(dirname(built), "dashboard"), join(dirname(bundle), "dashboard"), { recursive: true });
   mkdirSync(join(root, "agent", "sessions", "synthetic"), { recursive: true });
   writeFileSync(join(root, "config.json"), '{"usage.calibration":"off","usage.counter.poll":true}');
   // Auth is deliberately unusable. Dashboard ingestion must neither read it nor poll.
@@ -92,6 +95,7 @@ beforeAll(async () => {
   const scratch = resolve(".spider/scratch/usage-ui"); mkdirSync(scratch, { recursive: true });
   buildRoot = mkdtempSync(join(scratch, "dashboard-bundle-build-"));
   built = process.env.SPIDER_USAGE_TEST_BUNDLE ?? join(buildRoot, "dist", "extension.js");
+  if (!process.env.SPIDER_USAGE_TEST_BUNDLE) await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--config", prepareDashboardBuild(buildRoot)], { timeout: BUILD_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 10 * 1024 * 1024 });
   // A resolver fence below prevents ancestor node_modules or workspace links from rescuing the artifact.
   const modules = join(buildRoot, "node_modules");
   const pending = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai", "typebox", "better-sqlite3", "sqlite-vec", "turndown"];
@@ -119,6 +123,7 @@ beforeAll(async () => {
     writeFileSync(join(dir, "index.js"), 'throw new Error("fixture-workspace-import-forbidden");');
   }
   if (!process.env.SPIDER_USAGE_TEST_BUNDLE) await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", join(buildRoot, "dist")], { timeout: BUILD_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 10 * 1024 * 1024 });
+
 }, BUILD_SETUP_TIMEOUT_MS);
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -142,7 +147,7 @@ it("packaged slice works without source checkout", async () => {
     ts.forEachChild(node, visit);
   }; visit(parsed);
   expect(imports.some(id => id === "vite" || id === "rolldown" || id.startsWith("virtual:") || id.includes("/usage/web/") || id.startsWith("@spider/"))).toBe(false);
-  expect(readdirSync(process.env.SPIDER_USAGE_TEST_BUNDLE ? resolve("dist") : join(buildRoot, "dist"))).toEqual(["extension.js"]);
+  expect(readdirSync(dirname(built)).sort()).toEqual(["dashboard", "extension.js"]);
   for (const mode of ["native", "shim"]) {
     const f = fixture();
     const launch = await run(process.execPath, [f.launcher, mode, f.bundle, f.shim], { cwd: f.root, env: f.env, timeout: 10000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 });
@@ -173,31 +178,18 @@ it("packaged slice works without source checkout", async () => {
     expect(bootstrap.status).toBe(303);
     const headers = { Cookie: bootstrap.headers["set-cookie"]![0]!.split(";")[0]! };
     const html = await localUsageRequest(lock.port, "/", headers);
-    expect(html.status).toBe(200); expect(html.body, "packaged browser entry is present").toContain("<script>");
-    expect(html.body).toContain("<style>");
-    expect(html.body, "Task 5b theme is embedded").toContain("#282a36");
-    expect(html.body, "Task 5b auto-start entry is embedded").toContain("DOMContentLoaded");
-    expect(html.body).toContain("usage-shell");
-    expect(Buffer.byteLength(html.body)).toBeLessThan(400 * 1024);
-    expect(gzipSync(html.body).byteLength).toBeLessThan(Buffer.byteLength(html.body));
-    const shell = html.body.replace(/<script>[\s\S]*?<\/script>/gi, "");
-    expect(shell.match(/\bid="usage-app"/g) ?? []).toHaveLength(1);
-    expect(shell).toContain('<div id="usage-app"></div>'); expect(shell).not.toMatch(/<\/?main\b/i);
-    const scripts = [...html.body.matchAll(/<script>([\s\S]*?)<\/script>/g)], styles = [...html.body.matchAll(/<style>([\s\S]*?)<\/style>/g)];
-    expect(scripts).toHaveLength(1); expect(styles).toHaveLength(1);
-    const scriptHash = createHash("sha256").update(scripts[0]![1]!).digest("base64");
-    const styleHash = createHash("sha256").update(styles[0]![1]!).digest("base64");
-    // Hashes must cover exactly the served executable text. Only the optional Google Fonts origins are allowed.
+    expect(html.status).toBe(200); expect(html.body).toContain('<script type="module"');
+    expect(html.body).toContain('<div id="usage-app"></div>');
+    expect(html.body).not.toMatch(/<style>|<script>/);
+    const jsPath = /src="([^"]+\.js)"/.exec(html.body)![1]!;
+    const cssPath = /href="([^"]+\.css)"/.exec(html.body)![1]!;
+    const js = await localUsageRequest(lock.port, jsPath, headers), css = await localUsageRequest(lock.port, cssPath, headers);
+    expect(js.status).toBe(200); expect(css.status).toBe(200); expect(js.body).toContain("usage-shell"); expect(css.body).toContain("#282a36");
+    expect((await localUsageRequest(lock.port, jsPath)).status).toBe(401);
     expect(html.headers["content-security-policy"]).toBe([
-      "default-src 'none'", `script-src 'sha256-${scriptHash}'`, `style-src 'sha256-${styleHash}' https://fonts.googleapis.com`,
-      "style-src-attr 'none'", "font-src https://fonts.gstatic.com", "connect-src 'self'", "img-src 'self'", "object-src 'none'",
-      "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'",
+      "default-src 'none'", "script-src 'self'", "style-src 'self'", "style-src-attr 'none'", "font-src https://fonts.gstatic.com",
+      "connect-src 'self'", "img-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'",
     ].join("; "));
-    // The SVG namespace identifies DOM nodes, not a network resource.
-    const resourceHtml = html.body.replaceAll("http://www.w3.org/2000/svg", "");
-    const externalUrls = [...new Set(resourceHtml.match(/https?:\/\/[^\s"'`<>\\)]+/g) ?? [])];
-    expect(externalUrls).toEqual(["https://fonts.googleapis.com/css2?family=Google+Sans+Flex:wght@400;500;600;700&family=Cascadia+Code:wght@400;700&display=swap"]);
-    expect(styles[0]![1]).not.toMatch(/url\(/i);
     const status = await until(async () => {
       const reply = await localUsageRequest(lock.port, "/api/status", headers); const dto = JSON.parse(reply.body).data;
       return reply.status === 200 && dto.calls === 1 && dto.ingest.role === "standby" ? dto : undefined;
@@ -244,13 +236,13 @@ it("boot failure stops participant and supplies live calibration getter", async 
   const dir = join(root, "usage-server"); mkdirSync(dir, { mode: 0o700 });
   const lockFile = join(dir, "lock.json"), instanceId = randomBytes(16).toString("hex"), createdAt = Date.now();
   const configFile = join(root, "config.json"); writeFileSync(configFile, '{"usage.calibration":"off"}');
-  const options = { bundleUrl: new URL("file:///synthetic/extension.js"), lockFile, instanceId,
+  const options = { dashboardDir: createFixtureDashboard(), bundleUrl: new URL("file:///synthetic/extension.js"), lockFile, instanceId,
     serverBuild: "synthetic@2026-10-05T00:00:00.000Z", calibrationMode: "off" as const, calibrationConfigFile: configFile,
     roots: { ledgerFile: join(root, "usage.db"), registryDb: join(root, "registry.db"), leaseDir: join(root, "leases"),
       sessionsDir: join(root, "sessions"), authPath: join(root, "auth.json") } };
   await writeServerRecord(`${lockFile}.guard`, { version: 1, instanceId, createdAt, pid: process.pid });
   await writeServerRecord(join(dir, "startup.json"), { version: 1, instanceId, createdAt, secret: randomBytes(32).toString("base64url"), options });
-  vi.spyOn(httpServer, "startUsageHttpServer").mockRejectedValue(new Error("synthetic-bind-failed"));
+  vi.spyOn(httpServer, "startUsageHttpServerWithAssets").mockRejectedValue(new Error("synthetic-bind-failed"));
   const ledger = createDashboardFixture(false);
   const realOpenReader = dashboardReader.openDashboardReader;
   let closed: ReturnType<typeof vi.spyOn> | undefined;
@@ -306,4 +298,11 @@ it("source launcher forwards the distinct loaded bundle identity exactly", async
   registerUsageDashboardCommand({ on() {}, registerCommand(_name: string, definition: any) { handler = definition.handler; } } as never, "file:///synthetic/extension.js");
   await handler("", { mode: "tui", hasUI: true, ui: { notify() {}, setWidget() {} } });
   expect(launch.mock.calls[0][0].serverBuild).toBe("def5678@2026-10-05T04:05:06.000Z");
+});
+
+it("missing packaged assets fail before participant and reader startup", async () => {
+  const participant = vi.fn(); const reader = vi.spyOn(dashboardReader, "openDashboardReader");
+  await expect(bootUsageServer({ dashboardDir: join(buildRoot, "absent"), bundleUrl: built, roots: {} as never,
+    lockFile: join(buildRoot, "unused/lock.json"), serverBuild: "synthetic", calibrationMode: "off", instanceId: "a".repeat(32), startParticipant: participant })).rejects.toMatchObject({ code: "usage-dashboard-missing" });
+  expect(participant).not.toHaveBeenCalled(); expect(reader).not.toHaveBeenCalled(); expect(existsSync(join(buildRoot, "unused"))).toBe(false);
 });

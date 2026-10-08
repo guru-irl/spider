@@ -1,5 +1,5 @@
 // scripts/assert-bundle.mjs — post-bundle invariants.
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, lstatSync } from "node:fs";
 import { parseBuildId } from "./build-id.mjs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,12 +18,39 @@ if (!existsSync(OUT)) {
 // second file here would ship silently broken. Assert the invariant directly
 // instead of assuming it from codeSplitting's presence in the config.
 const distEntries = readdirSync("dist").sort();
-if (distEntries.length !== 1 || distEntries[0] !== "extension.js") {
+if (distEntries.join() !== "dashboard,extension.js") {
   const found = distEntries.join(", ") || "(empty)";
   console.error(
-    `assert-bundle: expected dist/ to contain exactly one file (extension.js) for a single-file bundle, found: ${found}. ` +
+    `assert-bundle: expected dist/ to contain exactly dashboard/ and extension.js, found: ${found}. ` +
     "If a local dynamic import was added, either inline it or update this assertion and the release/CI packaging gates to account for the extra chunk."
   );
+  process.exit(1);
+}
+
+try {
+  const dashboard = "dist/dashboard";
+  if (!lstatSync(dashboard).isDirectory() || readdirSync(dashboard).sort().join() !== "assets,index.html" || !lstatSync(`${dashboard}/assets`).isDirectory()) throw new Error("invalid dashboard shape");
+  const names = readdirSync(`${dashboard}/assets`);
+  if (!names.some(name => name.endsWith(".js")) || !names.some(name => name.endsWith(".css")) || names.some(name => !/^[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8,}\.(js|css)$/.test(name))) throw new Error("invalid dashboard assets");
+  const files = ["index.html", ...names.map(name => `assets/${name}`)];
+  let total = 0;
+  for (const file of files) {
+    const info = lstatSync(`${dashboard}/${file}`);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("invalid dashboard file");
+    total += info.size;
+  }
+  if (total > 512 * 1024) throw new Error("dashboard exceeds 512 KiB");
+  const html = readFileSync(`${dashboard}/index.html`, "utf8");
+  if (/<style\b|\sstyle\s*=|\son\w+\s*=/i.test(html) || /<script\b(?![^>]*\bsrc\s*=)/i.test(html)) throw new Error("inline dashboard code");
+  if (/\b(?:src|href)\s*=\s*[^"'\s]/i.test(html)) throw new Error("invalid dashboard HTML");
+  const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)];
+  if (scripts.length !== (html.match(/<script\b/gi) ?? []).length || scripts.some(script => script[1].trim())) throw new Error("invalid dashboard HTML");
+  for (const match of html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/gi)) {
+    if (!names.some(name => match[1] === `/assets/${name}`)) throw new Error("missing or invalid dashboard reference");
+  }
+  if (!/<script\b[^>]*\bsrc\s*=\s*["']\/assets\/[A-Za-z0-9_-]+\.js["']/i.test(html) || !/<link\b[^>]*\bhref\s*=\s*["']\/assets\/[A-Za-z0-9_-]+\.css["']/i.test(html)) throw new Error("missing dashboard entries");
+} catch (error) {
+  console.error(`assert-bundle: dashboard missing or invalid (${error instanceof Error ? error.message : "invalid"})`);
   process.exit(1);
 }
 
@@ -61,4 +88,4 @@ try {
   console.error(`assert-bundle: native import failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
-console.log("assert-bundle: OK (single-file bundle, build marker valid, natives external, native import and default export verified)");
+console.log("assert-bundle: OK (single-file extension and packaged dashboard, build marker valid, natives external, native import and default export verified)");

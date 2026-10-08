@@ -74,6 +74,7 @@ async function authenticatedOwner(lock: UsageServerLock, deadline: number): Prom
     return { serverBuild: dto.data.serverBuild, rateVersions: dto.data.rateVersions as string[] };
   } catch { return undefined; }
 }
+import { DashboardAssetsError } from "./dashboard-assets.js";
 import { usageServerCrashCodes } from "./server-crash-codes.js";
 export { usageServerCrashCodes } from "./server-crash-codes.js";
 export type UsageServerCrashFailure = { code: string; mtimeMs: number };
@@ -207,6 +208,7 @@ function newerBuild(launcher: unknown, server: unknown): boolean {
   const next = buildTime(launcher), loaded = buildTime(server);
   return next !== undefined && loaded !== undefined && next > loaded;
 }
+class ChildReportedStartupError extends Error {}
 let invalidBuildReported = false;
 export async function ensureUsageServer(options: UsageServerLaunchOptions, policy: { deadlineMs?: number } = {}): Promise<UsageServerLaunch> {
   const deadlineMs = policy.deadlineMs ?? USAGE_LAUNCH_DEADLINE_MS;
@@ -214,9 +216,9 @@ export async function ensureUsageServer(options: UsageServerLaunchOptions, polic
   const until = Date.now() + deadlineMs;
   try { return await ensureServer(options, until); }
   catch (error) {
-    const message = error instanceof Error ? error.message : "";
+    const message = error instanceof DashboardAssetsError ? error.code : error instanceof Error ? error.message : "";
     const code = usageServerCrashCodes.has(message) ? message : "usage-server-startup-invalid";
-    if (typeof options.lockFile === "string" && isAbsolute(options.lockFile)) await writeUsageServerCrashCode(dirname(options.lockFile), code, until);
+    if (!(error instanceof ChildReportedStartupError) && typeof options.lockFile === "string" && isAbsolute(options.lockFile)) await writeUsageServerCrashCode(dirname(options.lockFile), code, until);
     throw new Error(code);
   }
 }
@@ -380,7 +382,12 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
     let stopped = false;
     const failed = new Promise<never>((_, reject) => {
       child!.once("error", () => { stopped = true; reject(new Error("usage-server-spawn-failed")); });
-      child!.once("exit", () => { stopped = true; reject(new Error("usage-server-not-ready")); });
+      child!.once("exit", () => { stopped = true;
+        void readUsageServerCrashDiagnostics(dir).then(diagnostics => {
+          const code = diagnostics?.failures.findLast(row => row.mtimeMs >= createdAt && row.code.startsWith("usage-dashboard-"))?.code;
+          reject(code ? new ChildReportedStartupError(code) : new Error("usage-server-not-ready"));
+        }, () => reject(new Error("usage-server-not-ready")));
+      });
     });
     child.unref();
     const ready = async (): Promise<UsageServerLaunch | null> => {

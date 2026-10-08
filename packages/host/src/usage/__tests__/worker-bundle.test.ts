@@ -1,3 +1,4 @@
+import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -20,6 +21,7 @@ beforeAll(async () => {
   const options = { timeout: 60_000, killSignal: "SIGKILL" as const, maxBuffer: 10 * 1024 * 1024 };
   // Use the real repo config, but never read or overwrite the checkout's dist.
   await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", outDir], options);
+  await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--config", prepareDashboardBuild(buildRoot)], options);
   // The real post-build gate resolves dist relative to cwd, including its native import.
   await run(process.execPath, [resolve("scripts/assert-bundle.mjs")], { ...options, cwd: buildRoot });
 }, 150_000);

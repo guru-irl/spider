@@ -53,8 +53,11 @@ export function registerUsageDashboardCommand(pi: ExtensionAPI, bundleUrl: strin
         }
         // Never put nonce URLs or subprocess output in a notification or transcript.
         ctx.ui.notify(`Usage dashboard opened (${server.serverBuild}; rates: ${server.rateVersions.join(", ") || "unavailable"})`, "info");
-      } catch {
-        ctx.ui.notify("Usage dashboard could not open. Run /doctor for diagnostics", "error");
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        ctx.ui.notify(code === "usage-dashboard-missing" || code === "usage-dashboard-invalid"
+          ? "Usage dashboard assets are missing or invalid. Rebuild or reinstall spider, then run /usage again"
+          : "Usage dashboard could not open. Run /doctor for diagnostics", "error");
       }
     },
   });

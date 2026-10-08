@@ -1,4 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { build } from "vite";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { DashboardRoute } from "../../../../../../scripts/usage-dashboard-screenshot.mjs";
 import type { ApiEnvelope, DashboardCounter, DashboardStatus, OverviewData, UsageMeasure } from "../../dashboard-contract.js";
@@ -17,8 +19,11 @@ export type DashboardBrowserPage = {
 // Build precisely the packaged app and stylesheet. Only its HTTP responses are
 // synthetic: no real ledger, account data, filesystem paths or server is used.
 export async function createDashboardBrowserPage(fakeClock = false): Promise<DashboardBrowserPage> {
-  const { buildUsageDashboard } = await import(/* @vite-ignore */ new URL("../../../../../../scripts/usage-dashboard-assets.mjs", import.meta.url).href);
-  const built = await buildUsageDashboard();
+  const result = await build({ configFile: false, logLevel: "silent", publicDir: false, build: { write: false, target: "es2022", minify: true, sourcemap: false, cssCodeSplit: false,
+    lib: { entry: fileURLToPath(new URL("../../web/app.ts", import.meta.url)), name: "FixtureDashboard", formats: ["iife"] }, rollupOptions: { output: { codeSplitting: false } } } });
+  const output = (Array.isArray(result) ? result : [result]).flatMap(r => "output" in r ? r.output : []);
+  const code = output.filter(o => o.type === "chunk").map(o => o.code).join("\n");
+  const css = output.flatMap(o => o.type === "asset" && o.fileName.endsWith(".css") ? [String(o.source)] : []).join("\n");
   const start = Date.UTC(2026, 0, 1), middle = Date.UTC(2026, 0, 2), end = Date.UTC(2026, 0, 3);
   const period = { start, end };
   // The real packaged app still starts itself. Only this fixture's clock is
@@ -32,7 +37,7 @@ export async function createDashboardBrowserPage(fakeClock = false): Promise<Das
     window.__usageFetches = 0; window.__usageCompleted = 0;
     const originalFetch = window.fetch; window.fetch = (...args) => { ++window.__usageFetches; return originalFetch(...args).then(response => { ++window.__usageCompleted; return response; }); };
   ` : `Date.now = () => ${end};`;
-  const html = built.html.replace("<script>", `<script>${prelude}`);
+  const { html, routes: assetRoutes } = externalFixtureAssets(prelude + code, css);
   const measure = (primaryAic: number, publishedAic: number, total: number, basis: "calibrated" | "back-applied"): UsageMeasure => ({
     calls: 1, pricedCalls: 1, unpricedCalls: 0, aggregateCalls: 0,
     tokens: { input: total - 200, output: 200, cacheRead: 0, cacheWrite: 0, cacheWrite1h: null, reasoning: null, prompt: total - 200, total },
@@ -68,7 +73,7 @@ export async function createDashboardBrowserPage(fakeClock = false): Promise<Das
     // Overview calls status and overview initially. With zero source/parse
     // errors it does not request /api/source-errors. Unlisted routes fail closed.
     routes: {
-      "/": { body: html, contentType: "text/html; charset=utf-8", headers: Object.entries(usageSecurityHeaders(html)).map(([name, value]) => ({ name, value })) },
+      ...assetRoutes,
       "/api/status": response(status), "/api/overview": response(overview),
     },
     // Never await document.fonts.ready or the optional Google stylesheet.
@@ -96,6 +101,16 @@ export async function createDashboardBrowserPage(fakeClock = false): Promise<Das
       return panel.querySelector('.table-region').hidden && !panel.querySelector('svg').parentElement.hidden && document.activeElement === button && button.getAttribute('aria-pressed') === 'true';
     })`,
   };
+}
+
+export function externalFixtureAssets(code: string, css: string, rootId = "usage-app"): { html: string; routes: Record<string, DashboardRoute> } {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/assets/fixture-12345678.css"></head><body><div id="${rootId}"></div><script src="/assets/fixture-12345678.js"></script></body></html>`;
+  const headers = Object.entries(usageSecurityHeaders()).map(([name, value]) => ({ name, value }));
+  return { html, routes: {
+    "/": { body: html, contentType: "text/html; charset=utf-8", headers },
+    "/assets/fixture-12345678.js": { body: code, contentType: "text/javascript; charset=utf-8", headers },
+    "/assets/fixture-12345678.css": { body: css, contentType: "text/css; charset=utf-8", headers },
+  } };
 }
 
 export function createUnresponsivePipeBrowser(dir: string): { executable: string; pidFile: string; launchFile: string; close(): void } {

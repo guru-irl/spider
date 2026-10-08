@@ -141,7 +141,7 @@ export type ReaderOptions = {
 };
 export type HttpOptions = {
   instanceId: string; serverBuild: string; reader: DashboardReader | undefined;
-  routes: readonly DashboardRoute[]; html: string; secret: string;
+  routes: readonly DashboardRoute[]; dashboardDir: string; secret: string;
   retryOpenReader?: () => DashboardReader | undefined; ingestStatus?: () => DashboardIngestState;
   onClose?: () => Promise<void>; now?: () => number; idleMs?: number;
 };

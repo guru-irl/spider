@@ -46,7 +46,9 @@ export async function bootUsageServer(options: UsageServerBootOptions, testHook:
   const participant = options.startParticipant?.({ bundleUrl: options.bundleUrl, roots: options.roots, getCalibrationMode });
   const ingestStatus = participant ? () => participant.snapshot() : undefined;
   const readerOptions = { instanceId: options.instanceId, now: testHook.now ?? Date.now, serverBuild,
-    ingestStatus, calibrationMode: getCalibrationMode };
+    ingestStatus, calibrationMode: getCalibrationMode,
+    monthlyBudget: () => options.calibrationConfigFile
+      ? readUsageConfig(readLayer(options.calibrationConfigFile).config, {}).value.monthlyBudget : undefined };
   const openReader = () => openDashboardReader(options.roots.ledgerFile, readerOptions);
   let reader: DashboardReader | undefined;
   try { reader = openReader(); } catch { /* identity is usable without a ledger */ }

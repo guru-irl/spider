@@ -67,7 +67,7 @@ export async function loadBenchmarkModules(checkout) {
     const { build } = await import("vite");
     const entry = join(root, "harness.mjs");
     const source = path => JSON.stringify(join(checkout, "packages/host/src/usage", path));
-    writeFileSync(entry, `export { DASHBOARD_ROUTES } from ${source("api-routes.ts")};
+    writeFileSync(entry, `export { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from ${source("api-routes.ts")};
       export { openDashboardReader } from ${source("dashboard-reader.ts")};
       export { seedPlanLedger, planRequests, captureQueries, referenceRouteResult, assertReferenceResult, assertNoWrites, callPassQueries } from ${source("__tests__/fixtures/dashboard-plan.ts")};
       export { openDb } from "@spider/db-core";`);

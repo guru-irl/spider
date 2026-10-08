@@ -73,6 +73,19 @@ it("only usage slash can open browser", async () => {
   expect(JSON.stringify(h.notify.mock.calls)).toContain("synthetic-rate");
 });
 
+it("opener identity is local launcher context, not browser or notification data", async () => {
+  const h = harness(), openerSessionId = "private-command-session";
+  const ctx = { ...h.ctx, sessionManager: { getSessionId: () => openerSessionId } } as unknown as ExtensionCommandContext;
+  const { registerUsageDashboardCommand } = await import("../dashboard-command.js");
+  registerUsageDashboardCommand(h.pi, new URL("file:///synthetic/extension.js"));
+  launch.mockResolvedValue({ bootstrapUrl: "http://127.0.0.1:2345/bootstrap?nonce=synthetic-nonce", serverBuild: "fixture", rateVersions: [] });
+  await h.commands.get("usage")!("", ctx);
+  expect(launch.mock.calls[0][0].openerSessionId).toBe(openerSessionId);
+  expect(h.exec.mock.calls[0][1][0]).not.toContain(openerSessionId);
+  expect(JSON.stringify(h.notify.mock.calls)).not.toContain(openerSessionId);
+  expect(h.sendMessage).not.toHaveBeenCalled();
+});
+
 it("reuse command mints a new nonce", async () => {
   // Extension registration must expose /usage, and caching a launcher result would replay an already-consumed nonce.
   const extension = await import("../../extension.js"); const h = harness();

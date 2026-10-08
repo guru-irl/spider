@@ -38,7 +38,7 @@ export function registerUsageDashboardCommand(pi: ExtensionAPI, bundleUrl: strin
         // Do not cache this result: reuse must mint a new, single-use bootstrap nonce.
         const server = await ensureUsageServer({ bundleUrl, roots: resolveUsageRoots(),
           lockFile: join(paths.globalRoot, "usage-server", "lock.json"), calibrationMode, calibrationConfigFile,
-          serverBuild: `${LOADED_BUILD.sha}@${LOADED_BUILD.builtAt}` });
+          serverBuild: `${LOADED_BUILD.sha}@${LOADED_BUILD.builtAt}`, openerSessionId: ctx.sessionManager?.getSessionId?.() });
         const opener = process.platform === "darwin" ? "open" : "xdg-open";
         try {
           const opened = await pi.exec(opener, [server.bootstrapUrl], { timeout: 5000, cwd: join(paths.globalRoot, "usage-server") });

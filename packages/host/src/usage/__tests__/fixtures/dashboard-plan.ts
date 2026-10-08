@@ -1,6 +1,6 @@
 import { openDb, type Db } from "@spider/db-core";
 import { openUsageLedger } from "../../ledger.js";
-import { DASHBOARD_ROUTES } from "../../api-routes.js";
+import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../../api-routes.js";
 import type { DashboardQueryContext, DashboardRoute, Period, Filter } from "../../dashboard-contract.js";
 import { dashboardBatch, dashboardCall, DASHBOARD_NOW, DASHBOARD_MONTH, DASHBOARD_DAY } from "./dashboard-ledger.js";
 

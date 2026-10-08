@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { request, type IncomingHttpHeaders } from "node:http";
 import { afterEach, expect, test } from "vitest";
 afterEach(cleanupFixtureDashboards);
-import { DASHBOARD_ROUTES } from "../api-routes.js";
+import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../api-routes.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { startUsageHttpServer } from "../server.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH, DASHBOARD_DAY, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";

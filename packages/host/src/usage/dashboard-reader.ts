@@ -41,6 +41,18 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
     if (db.pragma("user_version") === 0) throw new DashboardQueryError("unsupported-schema");
     try { assertUsageSchemaVersion(db); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("unsupported-schema"); }
     db.pragma("query_only=ON");
+    const schemaVersion = db.pragma("user_version") as number;
+    let replacement: DashboardReader | undefined;
+    const upgradedReader = (): DashboardReader | undefined => {
+      if (replacement) return replacement;
+      // Check outside a snapshot transaction. A v1-v3 reader must not retain
+      // schema-dependent statements or selection caches after a writer upgrades.
+      if (db.pragma("user_version") === schemaVersion) return undefined;
+      const next = openDashboardReader(file, options);
+      if (!next) throw new DashboardQueryError("ledger-unavailable");
+      db.close();
+      return replacement = next;
+    };
     // Keep the launcher's owner prefix; a fresh reader generation invalidates old cursors.
     const instanceId = `${options.instanceId}:${randomUUID()}`;
     const revisionStatement = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'");
@@ -80,20 +92,22 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
       try { return read(); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("internal"); }
     };
     const reader: DashboardReader = {
-      revision: () => mapped(revision),
-      status() { return mapped(() => db.raw.inTransaction ? readStatus(options.now()) : db.raw.transaction(() => readStatus(options.now())).deferred()); },
+      revision: () => mapped(() => upgradedReader()?.revision() ?? revision()),
+      status() { return mapped(() => upgradedReader()?.status() ?? (db.raw.inTransaction ? readStatus(options.now()) : db.raw.transaction(() => readStatus(options.now())).deferred())); },
       snapshot<T>(read: (ctx: DashboardQueryContext) => T): T {
         return mapped(() => {
+          const upgraded = upgradedReader();
+          if (upgraded) return upgraded.snapshot(read);
           const now = options.now();
           const calibrationMode = options.calibrationMode();
           if (calibrationMode !== "auto" && calibrationMode !== "off") throw new TypeError("calibrationMode must return auto or off");
           return db.raw.transaction(() => read({ db, instanceId, revision: revision(), now: () => now, rates,
           composition: phase2CompositionProvider,
           calibration,
-          calibrationMode, status: () => readStatus(now) })).deferred();
+          calibrationMode, monthlyBudget: options.monthlyBudget, status: () => readStatus(now) })).deferred();
         });
       },
-      close() { db.close(); },
+      close() { if (replacement) replacement.close(); else db.close(); },
     };
     return reader;
   } catch (error) { opened?.close(); throw sqliteQueryError(error) ?? error; }

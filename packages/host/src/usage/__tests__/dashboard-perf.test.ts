@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { dashboardKey } from "../dashboard-identities.js";
 import type { Filter } from "../dashboard-contract.js";
-import { DASHBOARD_ROUTES } from "../api-routes.js";
+import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../api-routes.js";
 import * as planModule from "./fixtures/dashboard-plan.js";
 import { captureQueries, explainQueries, assertCallPlans, assertRoutePlans, seedPlanLedger, planRequests } from "./fixtures/dashboard-plan.js";
 import { mkdirSync, writeFileSync } from "node:fs";

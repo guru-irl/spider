@@ -53,7 +53,7 @@ it("caller calibration reload reaches initial and retry readers", async () => {
     const launched = await f.start("launch").exited; expect(launched.code, launched.stderr).toBe(0);
     const running = JSON.parse(launched.stdout); f.pids.add(running.pid);
     const bootstrap = await h.reply(running.port, new URL(running.bootstrapUrl).pathname + new URL(running.bootstrapUrl).search);
-    const headers = { Cookie: bootstrap.headers["set-cookie"][0].split(";")[0] };
+    const headers = { Cookie: bootstrap.headers["set-cookie"][0].split(";")[0], "X-Spider-Usage-Legacy": "1" };
     if (initiallyMissing) {
       expect((await h.reply(running.port, "/api/overview", headers)).status).toBe(503);
       openUsageLedger(f.options.roots.ledgerFile).close();
@@ -64,6 +64,35 @@ it("caller calibration reload reaches initial and retry readers", async () => {
       if (contents === null) await rm(configFile); else await writeFile(configFile, contents);
       const auto = await h.reply(running.port, "/api/overview", headers);
       expect(auto.status).toBe(200); expect(JSON.parse(auto.body).data.calibration.status, contents ?? "missing").toBe("uncalibrated");
+    }
+  }
+});
+
+it("global budget reload reaches initial and retry readers without ledger writes", async () => {
+  const { h } = await helpers();
+  const { openUsageLedger } = await import("../ledger.js");
+  for (const initiallyMissing of [false, true]) {
+    const f = await fixtures.fixture(), configFile = join(f.root, "config.json");
+    f.options.calibrationConfigFile = configFile;
+    await writeFile(configFile, JSON.stringify({ "usage.monthlyBudget": 250 }));
+    await writeFile(join(f.root, "launcher-options.json"), JSON.stringify(f.options));
+    if (!initiallyMissing) openUsageLedger(f.options.roots.ledgerFile).close();
+    const launched = await f.start("launch").exited; expect(launched.code, launched.stderr).toBe(0);
+    const running = JSON.parse(launched.stdout); f.pids.add(running.pid);
+    const bootstrap = await h.reply(running.port, new URL(running.bootstrapUrl).pathname + new URL(running.bootstrapUrl).search);
+    const headers = { Cookie: bootstrap.headers["set-cookie"][0].split(";")[0] };
+    if (initiallyMissing) {
+      expect((await h.reply(running.port, "/api/overview", headers)).status).toBe(503);
+      openUsageLedger(f.options.roots.ledgerFile).close();
+    }
+    const first = await h.waitFor(async () => { const r = await h.reply(running.port, "/api/overview", headers); return r.status === 200 ? r : undefined; });
+    expect(JSON.parse(first.body).data.pace.budget).toBe(250);
+    await writeFile(configFile, JSON.stringify({ "usage.monthlyBudget": 500 }));
+    expect(JSON.parse((await h.reply(running.port, "/api/overview", headers)).body).data.pace.budget).toBe(500);
+    for (const contents of ["{}", '{"usage.monthlyBudget":0}', "broken", null]) {
+      if (contents === null) await rm(configFile); else await writeFile(configFile, contents);
+      const response = await h.reply(running.port, "/api/overview", headers);
+      expect(response.status).toBe(200); expect(JSON.parse(response.body).data.pace.budget).toBeNull();
     }
   }
 });
@@ -146,7 +175,7 @@ it("server survives launcher exiting", async () => {
     const bootstrap = await h.reply(lock.port, `/bootstrap?nonce=${nonce}`);
     expect(bootstrap.status).toBe(303);
     const cookie = bootstrap.headers["set-cookie"][0].split(";")[0];
-    const status = await h.reply(lock.port, "/api/status", { Cookie: cookie });
+    const status = await h.reply(lock.port, "/api/status", { Cookie: cookie, "X-Spider-Usage-Legacy": "1" });
     expect(status.status).toBe(200); expect(JSON.parse(status.body).data.serverBuild).toBe("synthetic@2026-10-05T00:00:00.000Z");
     expect(JSON.parse(status.body).data.ingest.role).toBe("inactive");
   }

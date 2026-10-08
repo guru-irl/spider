@@ -157,6 +157,13 @@ export const OVERVIEW_V4_ROUTES: readonly DashboardRoute[] = [
     const now = ctx.now(), snapshots = paceSnapshots(ctx, now);
     const month = computePace({ now, snapshots, budget: undefined, correctedMonth: null, correctedWindow: null }).period;
     return overview(ctx, parseRange(params, now, month), now, snapshots);
+  }, responsePeriod(_ctx, _params, data) {
+    const { from, to } = (data as OverviewDataV4).range;
+    return { start: from, end: to };
   } },
-  { path: "/api/sessions", handle: sessions },
+  { path: "/api/sessions", handle: sessions, responsePeriod(ctx, params) {
+    const now = ctx.now(), month = billingPeriod(now, params.get("range") === "month" ? latestValidCounter(ctx.db, now) : undefined);
+    const { from, to } = parseRange(params, now, month);
+    return { start: from, end: to };
+  } },
 ];

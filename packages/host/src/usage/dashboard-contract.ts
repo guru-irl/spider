@@ -124,7 +124,12 @@ export type DashboardQueryContext = {
   calibration: CalibrationService; calibrationMode: "auto" | "off";
   monthlyBudget?(): number | undefined; viewerSessionId?: string;
 };
-export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams): unknown;
+export type DashboardRoute = { path: string; handle(ctx: DashboardQueryContext, query: URLSearchParams, id?: string): unknown;
+  /** Focused routes validate in their handlers and cap the complete UTF-8 envelope in bytes. */
+  responseCap?: number;
+  /** Temporary compatibility for the old page's colliding Status/Overview paths. */
+  legacyRoute?: DashboardRoute;
+  responsePeriod?(ctx: DashboardQueryContext, query: URLSearchParams, data: unknown): Period;
   /** Pure validation/window resolution, including authenticated cursor windows, for the HTTP envelope. */
   resolvePeriod?(query: URLSearchParams, now: number): Period;
 };

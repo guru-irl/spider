@@ -123,5 +123,5 @@ export function queryCalibration(ctx: DashboardQueryContext): CalibrationData {
 }
 export const CALIBRATION_V4_ROUTES: readonly DashboardRoute[] = [
   { path: "/api/status", handle(ctx, query) { validateParams(query, []); return queryStatusV4(ctx); } },
-  { path: "/api/calibration", handle(ctx, query) { validateParams(query, []); return queryCalibration(ctx); } },
+  { path: "/api/calibration", handle(ctx, query) { validateParams(query, []); return queryCalibration(ctx); }, responsePeriod: evidencePeriod },
 ];

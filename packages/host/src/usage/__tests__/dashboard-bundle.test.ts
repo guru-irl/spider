@@ -176,7 +176,7 @@ it("packaged slice works without source checkout", async () => {
     expect(bootstrapUrl.search).not.toContain(lock.secret);
     const bootstrap = await localUsageRequest(lock.port, bootstrapUrl.pathname + bootstrapUrl.search);
     expect(bootstrap.status).toBe(303);
-    const headers = { Cookie: bootstrap.headers["set-cookie"]![0]!.split(";")[0]! };
+    const headers = { Cookie: bootstrap.headers["set-cookie"]![0]!.split(";")[0]!, "X-Spider-Usage-Legacy": "1" };
     const html = await localUsageRequest(lock.port, "/", headers);
     expect(html.status).toBe(200); expect(html.body).toContain('<script type="module"');
     expect(html.body).toContain('<div id="usage-app"></div>');

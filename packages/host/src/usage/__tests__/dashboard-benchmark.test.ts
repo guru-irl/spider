@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFile
 import { join } from "node:path";
 import * as benchmark from "../../../../../scripts/usage-dashboard-benchmark.mjs";
 import * as plans from "./fixtures/dashboard-plan.js";
-import { DASHBOARD_ROUTES } from "../api-routes.js";
+import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../api-routes.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { createDashboardFixture } from "./fixtures/dashboard-ledger.js";
 

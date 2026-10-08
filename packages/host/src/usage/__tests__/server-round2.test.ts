@@ -171,7 +171,7 @@ it("calibration reload follows pi's config reader for symlink large and unreadab
   await writeFile(target, JSON.stringify({ "usage.calibration": "off", padding: "x".repeat(70000) })); await symlink(target, config);
   const row = await launched(f, { calibrationConfigFile: config, calibrationMode: "off" });
   const boot = await h.reply(row.port, new URL(row.bootstrapUrl).pathname + new URL(row.bootstrapUrl).search);
-  const headers = { Cookie: boot.headers["set-cookie"][0].split(";")[0] };
+  const headers = { Cookie: boot.headers["set-cookie"][0].split(";")[0], "X-Spider-Usage-Legacy": "1" };
   const mode = async () => JSON.parse((await h.reply(row.port, "/api/overview", headers)).body).data.calibration.status;
   expect(await mode()).toBe("off");
   await writeFile(target, JSON.stringify({ "usage.calibration": "auto", padding: "x".repeat(70000) })); expect(await mode()).toBe("uncalibrated");

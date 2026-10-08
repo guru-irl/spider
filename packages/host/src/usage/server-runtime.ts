@@ -7,6 +7,7 @@ import { request } from "node:http";
 import { dirname, extname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LaunchOptions } from "./dashboard-contract.js";
+import { supportedDetailId } from "./dashboard-keys.js";
 import { USAGE_LAUNCH_DEADLINE_MS, USAGE_REPLACEMENT_GRACE_MS, USAGE_STARTUP_WINDOW_MS, USAGE_PROCESS_CHECK_TIMEOUT_MS } from "./server-lifecycle.js";
 import { assertPrivateServerDir, ensurePrivateServerDir, reclaimStaleServerRecord, readServerRecord, readUsageServerLock, removeServerRecord, writeServerRecord, sweepServerRecordTemps, publishServerIntent, removeServerIntent, assertServerRecordOwner, type UsageServerLock } from "./server-lock.js";
 
@@ -51,9 +52,11 @@ export function localUsageRequest(port: number, path: string, headers: Record<st
     req.once("close", () => clearTimeout(timer)); req.once("error", reject); req.end();
   });
 }
-export async function mintUsageBootstrap(lock: UsageServerLock, deadline: number = Infinity): Promise<string> {
+export async function mintUsageBootstrap(lock: UsageServerLock, deadline: number = Infinity, openerSessionId?: string): Promise<string> {
   if (!lock.port) throw new Error("usage-server-not-ready");
-  const reply = await localUsageRequest(lock.port, "/local/bootstrap-nonce", { Authorization: `Bearer ${lock.secret}` }, deadline);
+  if (openerSessionId !== undefined && !supportedDetailId(openerSessionId)) throw new Error("usage-server-startup-invalid");
+  const reply = await localUsageRequest(lock.port, "/local/bootstrap-nonce", { Authorization: `Bearer ${lock.secret}`,
+    ...(openerSessionId === undefined ? {} : { "X-Spider-Opener-Session": openerSessionId }) }, deadline);
   const envelope = JSON.parse(reply.body) as { apiVersion?: number; revision?: string; data?: { nonce?: string } };
   if (reply.status !== 200 || envelope.apiVersion !== 1 || envelope.revision !== `${lock.instanceId}:bootstrap` ||
     !/^[A-Za-z0-9_-]{43}$/.test(envelope.data?.nonce ?? "")) throw new Error("usage-server-not-ready");
@@ -325,7 +328,7 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
     }
     const marker = await liveIntent();
     if (marker && newerBuild(marker.serverBuild, options.serverBuild)) return null;
-    const bootstrapUrl = await mintUsageBootstrap(lock, until);
+    const bootstrapUrl = await mintUsageBootstrap(lock, until, options.openerSessionId);
     const latestIntent = await liveIntent();
     if (latestIntent && newerBuild(latestIntent.serverBuild, options.serverBuild)) return null;
     return { pid: lock.pid, port: lock.port!, bootstrapUrl, reused: true, ...loaded };
@@ -401,7 +404,7 @@ async function ensureServer(options: UsageServerLaunchOptions, until: number): P
           if (loaded) {
             const pending = await liveIntent();
             if (pending && newerBuild(pending.serverBuild, options.serverBuild)) return null;
-            const bootstrapUrl = await mintUsageBootstrap(lock, until);
+            const bootstrapUrl = await mintUsageBootstrap(lock, until, options.openerSessionId);
             const latestIntent = await liveIntent();
             if (latestIntent && newerBuild(latestIntent.serverBuild, options.serverBuild)) return null;
             return { pid: lock.pid, port: lock.port, bootstrapUrl, reused: false, ...loaded };

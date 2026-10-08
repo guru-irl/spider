@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { DASHBOARD_ROUTES } from "../api-routes.js";
+import { LEGACY_DASHBOARD_ROUTES as DASHBOARD_ROUTES } from "../api-routes.js";
 import type { DashboardQueryContext, UsageMeasure } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import type { ExplorerData } from "../query-explorer.js";

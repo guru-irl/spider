@@ -44,7 +44,7 @@ describe("Calibration & data", () => {
     const data = calibrationFixture(); data.correction.factor = 0.54; data.correction.coveredHours = 138 + 2 / 3;
     const s = setup(data); await s.page.refresh();
     const stats = find(s.root, "correction-stats"); expect(stats.textContent).toContain("0.54");
-    expect(stats.children[3]!.textContent).toBe("Hours covered138.7"); s.page.dispose();
+    expect(stats.children[3]!.textContent).toBe("Hours covered138.7of 168 hours"); s.page.dispose();
   });
   it("keeps null counter gaps distinct from zero and preserves exact chart/table numbers", async () => {
     const data = calibrationFixture(); data.daily = [
@@ -58,7 +58,7 @@ describe("Calibration & data", () => {
     expect(values(daily[2]!)).toEqual(["Sun 14 APR UTC", "6", "0"]);
     const counter = descendants(s.root).filter(n => n.getAttribute("data-series") === "counter" && n.getAttribute("data-value") !== null);
     expect(counter.map(n => n.getAttribute("data-value"))).toEqual(["2", "0"]);
-    expect(descendants(s.root).filter(n => n.className === "counter-line")).toHaveLength(2);
+    expect(descendants(s.root).filter(n => n.className === "counter-line")).toHaveLength(0);
     const table = button(s.root, "Table"); table.focus(); table.click();
     expect(table.getAttribute("aria-pressed")).toBe("true"); expect(s.document.activeElement).toBe(table);
     await s.page.refresh(); expect(button(s.root, "Table")).toBe(table); expect(s.document.activeElement).toBe(table);
@@ -70,7 +70,7 @@ describe("Calibration & data", () => {
       { day: Date.UTC(2030, 3, 14), publishedEstimate: 6, counterDelta: 3 },
     ];
     const s = setup(data); await s.page.refresh();
-    expect(descendants(s.root).filter(n => n.className === "counter-line")).toHaveLength(2); s.page.dispose();
+    expect(descendants(s.root).filter(n => n.className === "counter-line")).toHaveLength(0); s.page.dispose();
   });
   it("sorts intervals newest first, starts at ten and keeps Show more focused", async () => {
     const data = calibrationFixture(); data.intervals = Array.from({ length: 23 }, (_, i) => ({ start: Date.UTC(2030, 3, 1, i), end: Date.UTC(2030, 3, 1, i + 1), counterDelta: i, publishedEstimate: i * 2, ratio: i ? 0.5 : null }));
@@ -189,4 +189,10 @@ describe("Calibration & data", () => {
     expect(elements(root, "h1").length).toBeGreaterThan(2); expect(root.textContent).toContain("Counter unavailable"); expect(root.textContent).toContain("Usage is temporarily unavailable. Retry.");
     expect(root.textContent).toContain("Back-applied"); expect(root.textContent).toContain("Published only"); expect(root.textContent).toContain("Showing 12 of 12 intervals");
   });
+});
+
+it("coverage includes the whole response window, including days without observations", async () => {
+  const s = setup(); await s.page.refresh(); const stats = find(s.root, "correction-stats");
+  expect(stats.children[3]!.textContent).toBe("Hours covered48of 168 hours");
+  expect(stats.children[4]!.textContent).toBe("StatusCalibratedTrailing 7 days"); s.page.dispose();
 });

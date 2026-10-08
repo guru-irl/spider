@@ -43,7 +43,7 @@ it("Back at a restored direct Session entry falls back to remembered Overview", 
 });
 it("freshness is fresh at five minutes, stale after and refresh retains focus", async () => {
   const doc = new PlainDocument(); let ts = now - 300000;
-  const app = startDashboard({ document: doc.asDocument(), now: () => now, client: { get: async () => envelope(statusFixture({ lastIngestAt: ts })) as never } });
+  const app = startDashboard({ document: doc.asDocument(), now: () => now, mounts: {}, client: { get: async () => envelope(statusFixture({ lastIngestAt: ts })) as never } });
   try {
     await settle(); const freshness = descendants(doc.body).find(n => n.className === "freshness")!;
     expect(freshness.getAttribute("data-state")).toBe("fresh"); expect(freshness.textContent).toContain("Last update Tue 6 OCT");
@@ -53,7 +53,7 @@ it("freshness is fresh at five minutes, stale after and refresh retains focus", 
 });
 it("out of order status is fenced, hidden tabs pause and disposal aborts", async () => {
   vi.useFakeTimers(); const doc = new PlainDocument(); const pending: { resolve: (v: never) => void; signal: AbortSignal }[] = [];
-  const app = startDashboard({ document: doc.asDocument(), now: () => now, client: { get: (_p, _q, signal) => new Promise(resolve => pending.push({ resolve, signal })) } });
+  const app = startDashboard({ document: doc.asDocument(), now: () => now, mounts: {}, client: { get: (_p, _q, signal) => new Promise(resolve => pending.push({ resolve, signal })) } });
   try {
     const refresh = app.refresh(); pending[1]!.resolve(envelope(statusFixture({ lastIngestAt: now })) as never); await refresh;
     pending[0]!.resolve(envelope(statusFixture({ lastIngestAt: 0 })) as never); await settle();
@@ -86,7 +86,7 @@ it("client allows exactly v4 paths and not-found is not retryable", async () => 
 
 it("Back from a local invalid Session starts status immediately and restores content focus", async () => {
   const doc = new PlainDocument(), paths: string[] = [];
-  const app = startDashboard({ document: doc.asDocument(), initialRoute: { page: "session", id: "", unit: "credits", tz: "UTC" }, client: { get: async path => { paths.push(path); return envelope(statusFixture()) as never; } } });
+  const app = startDashboard({ document: doc.asDocument(), initialRoute: { page: "session", id: "", unit: "credits", tz: "UTC" }, mounts: {}, client: { get: async path => { paths.push(path); return envelope(statusFixture()) as never; } } });
   try { const indicator = descendants(doc.body).find(n => n.className === "freshness-indicator")!; expect(indicator.getAttribute("aria-label")).toBe("Last update unavailable"); await settle(); expect(paths).toEqual([]); const back = button(doc.body, "Back"); back.focus(); back.click(); await settle(); expect(paths).toEqual(["/api/status"]); expect(doc.activeElement).toBe(button(doc.body, "Overview")); expect(descendants(doc.body).find(n => n.className === "freshness")!.getAttribute("data-state")).not.toBe("loading"); } finally { app.dispose(); }
 });
 it("a Session unit change carries into the remembered Overview", () => {
@@ -108,4 +108,11 @@ it("Retry remount transfers removed content focus to the current nav pill", () =
 it("month preset starts at midnight in the requested zone, not the browser zone", () => {
   const route = hashRoute("#/?range=month&tz=Asia%2FKolkata", now, "UTC"); expect(route).toMatchObject({ page: "overview", query: { from: Date.UTC(2026, 8, 30, 18, 30), to: now } });
   expect(hashRoute("#/?range=month&tz=America%2FNew_York", now, "UTC")).toMatchObject({ query: { from: Date.UTC(2026, 9, 1, 4) } });
+});
+
+it("direct-entry Session Back preserves the initial Tokens unit", () => {
+  const doc = new PlainDocument(); browser(doc, "#/session/synthetic?unit=tokens&tz=UTC"); const contexts: DashboardPageContext[] = [];
+  const mount: DashboardPageMount = ctx => { contexts.push(ctx); return { refresh: async () => {}, dispose() {} }; };
+  const app = startDashboard({ document: doc.asDocument(), now: () => now, client: { get: async () => envelope(statusFixture()) as never }, mounts: { overview: mount, session: mount } });
+  try { contexts[0]!.back(); expect(contexts.at(-1)!.route).toMatchObject({ page: "overview", query: { unit: "tokens", range: "7d" } }); } finally { app.dispose(); }
 });

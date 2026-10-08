@@ -217,3 +217,18 @@ it("recoverable error Retry settles and aborted old responses cannot paint", asy
   const stale = setup(); let resolve!: (value: never) => void; stale.ctx.client.get = () => new Promise(r => { resolve = r; });
   const old = mountSession(stale.ctx); stale.controller.abort(); stale.doc.body.textContent = "New page"; resolve(envelope(sessionFixture()) as never); await settle(); expect(stale.doc.body.textContent).toBe("New page"); old.dispose();
 });
+
+it.each(["credits", "tokens"] as const)("header measures use %s and singular counts", async unit => {
+  const s = setup(sessionFixture(), undefined, unit), page = mountSession(s.ctx); await page.refresh();
+  const stats = descendants(s.doc.body).find(n => n.className === "session-stats")!;
+  expect(stats.children[2]!.textContent).toBe(unit === "credits" ? "Own calls2credits" : "Own calls320tokens");
+  expect(stats.children[3]!.textContent).toBe(unit === "credits" ? "Compaction2credits · 1 event" : "Compaction160tokens · 1 event");
+  expect(stats.children[4]!.textContent).toBe("Idle gaps9min · 1 gap");
+  const summary = descendants(s.doc.body).find(n => n.className === "session-route-section")!;
+  expect(summary.textContent).toContain(`${unit === "credits" ? "Credits" : "Tokens"} per run0 to ${unit === "credits" ? "3" : "300"}`); page.dispose();
+});
+it("Session route rounds mirrored ticks upward to nice steps", () => {
+  const s = setup(); const route = renderSessionRoute(s.ctx.document, sessionFixture(), "credits", () => {});
+  const ticks = descendants(route as never).filter(n => n.tagName === "text" && n.getAttribute("text-anchor") === "end" && n.getAttribute("data-time-tick") === null);
+  expect(ticks.map(n => n.textContent)).toEqual(["1", "1", "2", "2", "3", "3", "0"]);
+});

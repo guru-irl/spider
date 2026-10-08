@@ -18,7 +18,7 @@ export function sessionStateCases(cases: readonly FixtureStateCase[]): readonly 
   };
   derive("Session run marks", data => {
     const run = data.runs.find(r => r.start !== null && r.end !== null); if (!run) return;
-    data.runs = (["completed", "cancelled", "failed", "running", null] as const).map((status, i) => ({ ...structuredClone(run), id: `example-mark-${i}`, name: `Route ${i + 1}`, status, start: run.start! + i * 60000, end: status === "running" ? null : run.end })); data.stats.runs = 5;
+    data.runs = (["completed", "cancelled", "failed", "running", null] as const).map((status, i) => ({ ...structuredClone(run), id: `example-mark-${i}`, name: `Route ${i + 1}`, status, start: status === "running" ? data.span!.end - 20 * 60000 : run.start! + i * 20 * 60000, end: status === "running" ? null : run.end! + i * 20 * 60000 })); data.stats.runs = 5;
     const original = run.value, runValue = { ...original, credits: original.credits === null ? null : original.credits * 5,
       tokens: Object.fromEntries(Object.entries(original.tokens).map(([k, v]) => [k, v === null ? null : v * 5])) as typeof original.tokens,
       calls: original.calls * 5, unpricedCalls: original.unpricedCalls * 5 };

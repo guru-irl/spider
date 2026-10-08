@@ -19,7 +19,28 @@ export async function renderStateExamples(root: HTMLElement, mounts: Partial<Rec
     const route: DashboardRouteV4 = example.page === "calibration" ? { page: "calibration" } : example.page === "session" ? { page: "session", id: path?.slice(13) ?? "", unit: "credits", tz: "UTC" } : { page: "overview", query: defaultOverview(Date.now(), "UTC") };
     const app = startDashboard({ document: root.ownerDocument, root: content, history: false, initialRoute: route, mounts, client: fixtureClient(example) });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    try { await Promise.race([app.refresh(), new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); })]); }
-    finally { clearTimeout(timer); app.dispose(); }
+    try {
+      await Promise.race([app.refresh(), new Promise<void>(resolve => { timer = setTimeout(resolve, 5000); })]);
+      clearTimeout(timer); timer = undefined;
+      const window = root.ownerDocument.defaultView;
+      if (window?.requestAnimationFrame) await new Promise<void>(resolve => {
+        timer = setTimeout(resolve, 250);
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+      });
+    }
+    finally {
+      clearTimeout(timer);
+      // Keep the settled visual state, including transient cards, while releasing
+      // all timers/observers. Page disposal normally clears these on navigation.
+      const snapshot = (node: Element): { node: Element; classes: string | null; hidden: HTMLElement["hidden"] | undefined }[] => [
+        { node, classes: node.getAttribute("class"), hidden: (node as HTMLElement).hidden },
+        ...Array.from(node.children).flatMap(snapshot),
+      ];
+      const settled = snapshot(content); app.dispose();
+      for (const { node, classes, hidden } of settled) {
+        if (classes === null) node.removeAttribute("class"); else node.setAttribute("class", classes);
+        if (hidden !== undefined) (node as HTMLElement).hidden = hidden;
+      }
+    }
   }
 }

@@ -9,18 +9,16 @@ export async function loadFonts(document: Document, signal?: AbortSignal, measur
   if (signal?.aborted || loaded.has(document)) return;
   loaded.add(document);
   const width: FontMeasurer = measure ?? ((font, text) => { const context = document.createElement("canvas").getContext("2d"); if (!context) return NaN; context.font = font; return context.measureText(text).width; });
-  await Promise.all(families.map(async spec => {
+  await Promise.all(families.flatMap(spec => spec.files.map(async ([weight, url]) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const available = await Promise.race([
-        (async () => { const faces = await document.fonts?.load(`16px "${spec.local}"`); return !!faces?.length && ["monospace", "sans-serif"].some(fallback => { const a = width(`16px ${fallback}`, "mmmmWWWiii012345"), b = width(`16px "${spec.local}", ${fallback}`, "mmmmWWWiii012345"); return Number.isFinite(a) && Number.isFinite(b) && a !== b; }); })().catch(() => false),
+        (async () => { const faces = await document.fonts?.load(`${weight} 16px "${spec.local}"`); return !!faces?.length && ["monospace", "sans-serif"].some(fallback => { const a = width(`${weight} 16px ${fallback}`, "mmmmWWWiii012345"), b = width(`${weight} 16px "${spec.local}", ${fallback}`, "mmmmWWWiii012345"); return Number.isFinite(a) && Number.isFinite(b) && a !== b; }); })().catch(() => false),
         new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 1500); }),
       ]);
       if (available || signal?.aborted || typeof FontFace === "undefined" || !document.fonts) return;
-      for (const [weight, url] of spec.files) {
-        const face = new FontFace(spec.family, `url("${url}")`, { weight, display: "swap" });
-        document.fonts.add(face); void face.load().catch(() => {});
-      }
+      const face = new FontFace(spec.family, `url("${url}")`, { weight, display: "swap" });
+      document.fonts.add(face); void face.load().catch(() => {});
     } finally { if (timer) clearTimeout(timer); }
-  }));
+  })));
 }

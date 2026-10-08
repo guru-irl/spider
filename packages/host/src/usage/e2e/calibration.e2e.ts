@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { installFixtureRoutes, expectNoBrowserErrors } from "./fixtures.js";
 import { calibrationFixture, envelope } from "../__tests__/fixtures/redesign-contract.js";
 
-const entry = "/states.html?page=calibration&scenario=default";
+const entry = "/#/calibration";
 for (const [status, label] of [["calibrated", "Calibrated"], ["back-applied", "Back-applied"], ["published-only", "Published only"], ["counter-unavailable", "Counter unavailable"]] as const) {
   test(`Calibration status pill: ${label}`, async ({ page }) => {
     const errors = expectNoBrowserErrors(page), fixtures = await installFixtureRoutes(page);
@@ -30,7 +30,7 @@ test("Calibration Chart/Table keyboard preserves zero, gaps and exact credits ac
     { day: Date.UTC(2030, 3, 14), publishedEstimate: 6, counterDelta: 0 },
   ];
   fixtures.replace("/api/calibration", { status: 200, body: envelope(data) }); await page.goto(entry);
-  await expect(page.locator(".counter-line")).toHaveCount(2);
+  await expect(page.locator(".counter-line")).toHaveCount(0);
   await expect(page.locator('[data-series="counter"][data-value="0"]')).toHaveCount(1);
   await expect(page.locator('[data-series="counter"][data-value]')).toHaveCount(2);
   const table = page.getByRole("button", { name: "Table", exact: true }); await table.focus(); await page.keyboard.press("Enter");
@@ -77,7 +77,7 @@ test("Calibration rates and ingestion show tiers, zeros, sources, redacted error
 });
 
 test("Calibration stale data retains UTC last-update label and grey freshness", async ({ page }) => {
-  const fixtures = await installFixtureRoutes(page, "stale"); await page.goto("/states.html?page=calibration&scenario=stale");
+  const fixtures = await installFixtureRoutes(page, "stale"); await page.goto("/?scenario=stale#/calibration");
   await expect(page.locator(".correction-stats .state-pill")).toHaveText("Calibrated");
   await expect(page.locator(".freshness")).toHaveAttribute("data-state", "stale");
   await expect(page.locator(".status-dot")).toHaveCSS("background-color", "rgb(155, 150, 144)");
@@ -86,7 +86,7 @@ test("Calibration stale data retains UTC last-update label and grey freshness", 
 });
 
 test("Calibration counter unavailable retains published evidence and unavailable matched totals", async ({ page }) => {
-  await installFixtureRoutes(page, "counter-unavailable"); await page.goto("/states.html?page=calibration&scenario=counter-unavailable");
+  await installFixtureRoutes(page, "counter-unavailable"); await page.goto("/?scenario=counter-unavailable#/calibration");
   await expect(page.locator(".correction-stats .state-pill")).toHaveText("Counter unavailable");
   await expect(page.locator(".correction-stats")).toContainText("unavailable"); await expect(page.locator(".correction-chart")).toBeVisible();
   await expect(page.locator('[data-series="counter"][data-value]')).toHaveCount(0);
@@ -95,7 +95,7 @@ test("Calibration counter unavailable retains published evidence and unavailable
 });
 
 test("Calibration no-data has one settled line per section and no empty SVG", async ({ page }) => {
-  await installFixtureRoutes(page, "no-data"); await page.goto("/states.html?page=calibration&scenario=no-data");
+  await installFixtureRoutes(page, "no-data"); await page.goto("/?scenario=no-data#/calibration");
   await expect(page.getByRole("heading", { name: "Calibration & data", exact: true })).toBeVisible(); await expect(page.locator("main section")).toHaveCount(3);
   await expect(page.locator("main svg, main table")).toHaveCount(0); await expect(page.locator('main [data-state="empty"]')).toHaveCount(3); await expect(page.locator('main [aria-busy="true"]')).toHaveCount(0);
 });
@@ -131,7 +131,7 @@ test("Calibration Retry settles and nav pill never accepts a late response", asy
   page.on("console", message => {
     if (message.type() === "error" && message.location().url.startsWith("http://127.0.0.1")) resourceErrors.push({ path: new URL(message.location().url).pathname, text: message.text() });
   });
-  const fixtures = await installFixtureRoutes(page, "error"); await page.goto("/states.html?page=calibration&scenario=error");
+  const fixtures = await installFixtureRoutes(page, "error"); await page.goto("/?scenario=error#/calibration");
   const region = page.locator(".calibration-page"), retry = region.getByRole("button", { name: "Retry", exact: true });
   await expect(region.locator('[data-state="error"]')).toHaveCount(1); await expect(retry).toBeVisible();
   fixtures.replace("/api/calibration", { status: 200, body: envelope(calibrationFixture()) }); await retry.focus(); await page.keyboard.press("Enter");
@@ -142,8 +142,7 @@ test("Calibration Retry settles and nav pill never accepts a late response", asy
   await page.getByRole("button", { name: "Overview", exact: true }).click(); release(); await expect(page.locator(".correction-stats")).toHaveCount(0);
   await page.unroute("**/api/calibration"); await page.getByRole("button", { name: "Calibration & data", exact: true }).click();
   await expect(page.locator(".correction-stats")).toBeVisible(); await expect(page).toHaveURL(/#\/calibration$/);
-  // Only Calibration's resource failure belongs to this page. Overview may be
-  // registered (and return its own fixture 503), or still be absent in this lane.
+  // Returning to Overview uses its independent fixture response.
   const expected503 = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
   expect(resourceErrors.filter(e => e.path === "/api/calibration").map(e => e.text)).toEqual([expected503]);
   expect(resourceErrors.every(e => ["/api/calibration", "/api/overview"].includes(e.path) && e.text === expected503)).toBe(true);

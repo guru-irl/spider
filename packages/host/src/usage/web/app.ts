@@ -1,4 +1,7 @@
 import "./theme.css";
+import { mountOverview } from "./overview.js";
+import { mountSession } from "./session.js";
+import { mountCalibration } from "./calibration.js";
 import type { DashboardRouteV4, DashboardPage, DashboardPageMount, RangeQuery, StatusData } from "../dashboard-v4-contract.js";
 import type { DashboardClient } from "./client.js";
 import { createDashboardClient, errorCopy, canRetry, DashboardClientError } from "./client.js";
@@ -7,6 +10,7 @@ import { loadFonts } from "./fonts.js";
 import { formatLocalTime } from "./format.js";
 import { defaultOverview, hashRoute, routeHash } from "./navigation.js";
 import { clearRepresentation } from "./representation.js";
+const productionMounts = { overview: mountOverview, session: mountSession, calibration: mountCalibration } satisfies Record<DashboardRouteV4["page"], DashboardPageMount>;
 export type DashboardOptions = { document?: Document; root?: HTMLElement; client?: DashboardClient; now?: () => number; history?: boolean; initialRoute?: DashboardRouteV4; mounts?: Partial<Record<DashboardRouteV4["page"], DashboardPageMount>> };
 export function startDashboard(options: DashboardOptions = {}): DashboardPage {
   const document = options.document ?? globalThis.document;
@@ -14,7 +18,7 @@ export function startDashboard(options: DashboardOptions = {}): DashboardPage {
   const client = options.client ?? createDashboardClient(), now = options.now ?? Date.now, window = options.history === false ? null : document.defaultView;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   let route = options.initialRoute ?? hashRoute(window?.location.hash ?? "", now(), tz);
-  let overview: RangeQuery = route.page === "overview" ? route.query : defaultOverview(now(), tz);
+  let overview: RangeQuery = route.page === "overview" ? route.query : { ...defaultOverview(now(), tz), unit: route.page === "session" ? route.unit : "credits" };
   let disposed = false, page: DashboardPage | undefined, pageController: AbortController | undefined;
   const lifetime = new AbortController(); let statusController: AbortController | undefined, statusGeneration = 0;
   let timer: ReturnType<typeof setInterval> | undefined, mountPending = false, lastActivity = now();
@@ -57,7 +61,7 @@ export function startDashboard(options: DashboardOptions = {}): DashboardPage {
     if (document.visibilityState !== "visible") { mountPending = true; return; }
     mountPending = false;
     if (statusGeneration === 0) void status();
-    const mount = options.mounts?.[route.page];
+    const mount = (options.mounts ?? productionMounts)[route.page];
     if (!mount) { sectionState(content, "empty", "This section is not included in this build."); return; }
     try { page = mount({ document, root: content, client, route, signal: pageController.signal, navigate, get overview() { return overview; }, now, back }); }
     catch (error) { sectionState(content, "error", errorCopy(error), canRetry(error) ? mountPage : undefined); if (route.page === "session" && error instanceof DashboardClientError && error.code === "not-found") content.append(action(document, "Back", back)); }

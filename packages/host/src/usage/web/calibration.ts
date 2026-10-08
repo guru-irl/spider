@@ -1,6 +1,7 @@
+import type { Period } from "../dashboard-contract.js";
 import type { CalibrationData, Collector, DashboardPage, DashboardPageContext } from "../dashboard-v4-contract.js";
 import { action, element, sectionState, updateEvidence } from "./dom.js";
-import { chartPair } from "./charts.js";
+import { chartPair, creditStep } from "./charts.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { formatUtcTime } from "./format.js";
 import { canRetry, errorCopy, shouldStopPolling } from "./client.js";
@@ -41,11 +42,6 @@ function chip(document: Document, label: string, value: string): HTMLElement {
 function evidenceTable(document: Document, cls: string, caption: string, columns: string[], rows: (string | HTMLElement)[][]): HTMLTableElement {
   const table = renderTable(document, { caption, columns, rows }); table.className += ` ${cls}`; return table;
 }
-// Three readable intervals, rounded up to a 1, 2 or 5 × 10^n step.
-function creditStep(max: number): number {
-  const target = (max > 0 ? max : 1) / 3, power = 10 ** Math.floor(Math.log10(target)), fraction = target / power;
-  return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * power;
-}
 type IntervalExpansion = { count: number | undefined; limit: number };
 function dailyChart(document: Document, daily: CalibrationData["daily"]): SVGElement {
   const ns = "http://www.w3.org/2000/svg";
@@ -63,10 +59,7 @@ function dailyChart(document: Document, daily: CalibrationData["daily"]): SVGEle
     const value = step * i;
     chart.append(svg("line", { x1: left, x2: right, y1: y(value), y2: y(value), class: "correction-grid" }), svg("text", { x: left - 10, y: y(value) + 4, "text-anchor": "end", class: "correction-axis" }, axisNumber.format(value).replace("K", "k")));
   }
-  let line: string[] = [];
-  const flush = () => { if (line.length) chart.append(svg("path", { d: line.join(" "), class: "counter-line" })); line = []; };
   for (const [index, day] of daily.entries()) {
-    if (index && day.day - daily[index - 1]!.day !== 86_400_000) flush();
     const centre = left + (index + 0.5) * slot, width = Math.min(26, slot * 0.22);
     for (const [series, value, x] of [["published", day.publishedEstimate, centre - width - 4], ["counter", day.counterDelta, centre + 4]] as const) {
       if (value === null) {
@@ -76,20 +69,22 @@ function dailyChart(document: Document, daily: CalibrationData["daily"]): SVGEle
         bar.append(svg("title", {}, `${utcDay(day.day)} · ${series === "counter" ? "Account counter" : "Published estimate"}: ${amount(value)} credits`)); chart.append(bar);
       }
     }
-    if (day.counterDelta === null) flush(); else line.push(`${line.length ? "L" : "M"}${centre + 4 + width / 2} ${y(day.counterDelta)}`);
     // Avoid overlapping labels for long daily windows; the table retains every date.
     if (index % Math.max(1, Math.ceil(daily.length / 10)) === 0 || index === daily.length - 1) chart.append(svg("text", { x: centre, y: bottom + 27, "text-anchor": "middle", class: "correction-axis" }, utcDay(day.day).replace(/ UTC$/, "")));
   }
-  flush(); return chart;
+  return chart;
 }
-function correction(document: Document, data: CalibrationData, empty: boolean, root: HTMLElement, expansion: IntervalExpansion): HTMLElement {
+function correction(document: Document, data: CalibrationData, empty: boolean, root: HTMLElement, expansion: IntervalExpansion, period: Period): HTMLElement {
   if (expansion.count !== data.intervals.length) { expansion.count = data.intervals.length; expansion.limit = 10; }
   const node = section(document, "Correction", "correction-section");
   if (empty) { bodyEmpty(document, node, "No correction data yet."); return node; }
   const c = data.correction, stats = element(document, "div", undefined, "data-stats correction-stats");
   const pill = element(document, "span", statusLabels[c.status], `state-pill status-${c.status}`);
   pill.setAttribute("data-status", c.status);
-  stats.append(fact(document, "Correction factor", amount(c.factor), "Published × factor"), fact(document, "Published estimate", headline(c.publishedEstimate), "credits · matched intervals"), fact(document, "Account counter", headline(c.accountCounter), "credits · same intervals"), fact(document, "Hours covered", headline(c.coveredHours)), fact(document, "Status", pill));
+  const windowHours = Math.max(0, period.end - period.start) / 3_600_000;
+  const windowDays = windowHours / 24;
+  const windowLabel = c.status === "counter-unavailable" || c.status === "published-only" ? "Published estimate only" : `Trailing ${headline(windowDays)} ${windowDays === 1 ? "day" : "days"}`;
+  stats.append(fact(document, "Correction factor", amount(c.factor), "Published × factor"), fact(document, "Published estimate", headline(c.publishedEstimate), "credits · matched intervals"), fact(document, "Account counter", headline(c.accountCounter), "credits · same intervals"), fact(document, "Hours covered", headline(c.coveredHours), `of ${headline(windowHours)} hours`), fact(document, "Status", pill, windowLabel));
   const method = c.status === "counter-unavailable" ? "The account counter is unavailable. Credits use the last accepted factor, or published rates when no factor exists."
     : c.status === "published-only" ? "Credits use published rates without a correction factor."
     : c.status === "back-applied" ? "The earliest accepted factor is applied to earlier usage. Matched counter intervals determine the factor."
@@ -186,7 +181,7 @@ export function mountCalibration(ctx: DashboardPageContext): DashboardPage {
       const response = await ctx.client.get<CalibrationData>("/api/calibration", new URLSearchParams(), controller.signal);
       if (disposed || ctx.signal.aborted || controller.signal.aborted || generation !== gen) return;
       const data = response.data, empty = noData(data);
-      updateEvidence(root, heading, correction(document, data, empty, root, expansion), rates(document, data, empty), ingestion(document, data, empty)); painted = true;
+      updateEvidence(root, heading, correction(document, data, empty, root, expansion, response.period), rates(document, data, empty), ingestion(document, data, empty)); painted = true;
     } catch (failure) {
       if (disposed || ctx.signal.aborted || controller.signal.aborted || generation !== gen) return;
       const error = element(document, "div", undefined, "calibration-error"); sectionState(error, "error", errorCopy(failure), canRetry(failure) && !shouldStopPolling(failure) ? () => { void refresh(); } : undefined); root.replaceChildren(heading, error); painted = false;

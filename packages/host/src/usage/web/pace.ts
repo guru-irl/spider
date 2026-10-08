@@ -5,7 +5,7 @@ const NS = "http://www.w3.org/2000/svg";
 const cleanups = new WeakMap<HTMLElement, () => void>();
 let sequence = 0;
 const number = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { notation: n >= 1000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n).replace("K", "k");
-const exact = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { maximumFractionDigits: 20 }).format(n);
+const exact = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { maximumFractionDigits: n < 10 ? 1 : 0 }).format(n);
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 export function disposePace(root: HTMLElement): void { cleanups.get(root)?.(); cleanups.delete(root); }
 export function renderPace(document: Document, pace: Pace, _now: number): HTMLElement {

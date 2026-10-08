@@ -107,9 +107,10 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     if (!d.buckets.length || d.total.calls === 0) return emptyPanel("daily", title, "No calls in this range.");
     const summary = element(document, "div", undefined, "range-summary summary-chips");
     const values = d.buckets.map(b => amount(b.total, query.unit)); const known = values.filter((n): n is number => n !== null);
-    const total = amount(d.total, query.unit), average = total === null ? "unavailable" : formatValue({ ...d.total, credits: total / d.buckets.length, tokens: { ...d.total.tokens, total: total / d.buckets.length } }, query.unit);
-    const peak = known.length ? Math.max(...known) : null;
-    summary.append(chip("Total", formatValue(d.total, query.unit)), chip("Average per bucket", average), chip("Peak", peak === null ? "unavailable" : formatValue({ ...d.total, credits: peak, tokens: { ...d.total.tokens, total: peak } }, query.unit)));
+    const compact = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { notation: n >= 1000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n).replace("K", "k");
+    const total = amount(d.total, query.unit), average = total === null ? null : total / d.buckets.length;
+    const peak = known.length ? Math.max(...known) : null, peakBucket = d.buckets.find(b => amount(b.total, query.unit) === peak);
+    summary.append(chip("Total", formatValue(d.total, query.unit)), chip("Average", `${compact(average)} ${d.bucketSize === "hour" ? "an hour" : "a day"}`), chip("Peak", peakBucket ? `${bucketLabel(peakBucket.key, query.tz, d.bucketSize === "hour")} · ${compact(peak)}` : "unavailable"));
     if (query.buckets.length) { const n = element(document, "span", `Selected ${query.buckets.length} ${d.bucketSize === "hour" ? query.buckets.length === 1 ? "hour" : "hours" : query.buckets.length === 1 ? "day" : "days"} · ${formatValue(d.selectedTotal, query.unit)} ${query.unit}`, "selection-chip"); n.setAttribute("role", "status"); n.setAttribute("aria-live", "polite"); summary.append(n); }
     const svg = svgNode("svg", { viewBox: "0 0 900 350", class: "daily-chart", role: "group" });
     const axis = niceAxis(Math.max(1, ...known)), max = axis.ceiling, step = 810 / d.buckets.length;
@@ -119,7 +120,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     roving = Math.min(roving, d.buckets.length - 1);
     d.buckets.forEach((bucket, index) => {
       const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"), selected = query.buckets.includes(bucket.key);
-      const g = keyed(svgNode("g", { "data-bucket": bucket.key, role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
+      const g = keyed(svgNode("g", { "data-bucket": bucket.key, "data-value": amount(bucket.total, query.unit) ?? "unavailable", role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
       let y = 296; const x = 72 + index * step, w = Math.max(1, step - Math.min(25, step / 4));
       g.append(svgNode("rect", { x: x - 4, y: 20, width: w + 8, height: 284, class: "bucket-hit" }));
       for (const row of bucket.models) { const n = amount(row.value, query.unit); if (n === null) continue; const height = n / max * 240; y -= height;

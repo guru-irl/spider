@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { installFixtureRoutes, expectNoBrowserErrors } from "./fixtures.js";
 import { overviewFixture, sessionsFixture, envelope } from "../__tests__/fixtures/redesign-contract.js";
 import type { OverviewDataV4 } from "../dashboard-v4-contract.js";
-const url = "/states.html?page=overview&scenario=default";
+const url = "/#/";
 const modifier = process.platform === "darwin" ? "Meta" : "Control";
 async function interactive(page: import("@playwright/test").Page, change?: (data: OverviewDataV4, params: URLSearchParams) => void) {
   const routes = await installFixtureRoutes(page);
@@ -141,7 +141,7 @@ test("custom ranges over 93 days show local validation without fetching", async 
   await page.getByLabel("From", { exact: true }).fill("2030-01-01T00:00"); await page.getByLabel("To", { exact: true }).fill("2030-05-01T00:00"); await page.getByRole("button", { name: "Apply range", exact: true }).click(); await expect(page.getByRole("alert")).toContainText("93 days"); expect(routes.count("/api/overview")).toBe(1);
 });
 for (const scenario of ["no-data", "no-budget", "counter-unavailable", "over-pace", "no-budget-or-allowance"] as const) test(`Overview ${scenario} state settles honestly`, async ({ page }) => {
-  await installFixtureRoutes(page, scenario); await page.goto(`/states.html?page=overview&scenario=${scenario}`); await expect(page.locator(".pace-trigger")).toBeVisible(); await page.locator(".pace-trigger").focus(); await expect(page.locator(".pace-popover")).toBeVisible();
+  await installFixtureRoutes(page, scenario); await page.goto(`/?scenario=${scenario}#/`); await expect(page.locator(".pace-trigger")).toBeVisible(); await page.locator(".pace-trigger").focus(); await expect(page.locator(".pace-popover")).toBeVisible();
   if (scenario === "no-data") { await expect(page.locator('[data-panel="daily"]')).toContainText("No calls in this range."); await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0); }
   if (scenario === "no-budget") { await expect(page.locator(".pace-popover")).not.toContainText("Even pace"); await expect(page.locator(".pace-popover")).toContainText("/spider config set usage.monthlyBudget <credits> --global"); }
   if (scenario === "counter-unavailable") await expect(page.locator(".pace-popover")).toContainText("Counter unavailable");
@@ -150,7 +150,7 @@ for (const scenario of ["no-data", "no-budget", "counter-unavailable", "over-pac
   await page.screenshot({ path: resolve(`.spider/scratch/playwright/shots/overview-${scenario}.png`), fullPage: true });
 });
 test("recoverable Overview error settles and Retry recovers", async ({ page }) => {
-  const routes = await installFixtureRoutes(page, "error"); await page.goto("/states.html?page=overview&scenario=error"); await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible(); routes.replace("/api/overview", { status: 200, body: envelope(overviewFixture()) }); await page.getByRole("button", { name: "Retry", exact: true }).click(); await expect(page.getByRole("heading", { name: "Daily credits", exact: true })).toBeVisible();
+  const routes = await installFixtureRoutes(page, "error"); await page.goto("/?scenario=error#/"); await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible(); routes.replace("/api/overview", { status: 200, body: envelope(overviewFixture()) }); await page.getByRole("button", { name: "Retry", exact: true }).click(); await expect(page.getByRole("heading", { name: "Daily credits", exact: true })).toBeVisible();
 });
 
 test("daily table selection, session controls and focus survive refresh", async ({ page }) => {

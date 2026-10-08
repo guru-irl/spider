@@ -89,3 +89,9 @@ export function chartPair(document: Document, options: { id: string; title: stri
   const controls = element(document, "div", undefined, "segmented"); controls.setAttribute("role", "group"); controls.setAttribute("aria-label", "Chart representation"); controls.append(chart, table);
   head.append(controls); section.append(head, graphic, region); select(representation(document, options.id)); return section;
 }
+
+/** Three readable intervals, rounded upward to 1, 2 or 5 × 10^n. */
+export function creditStep(max: number): number {
+  const target = (max > 0 ? max : 1) / 3, power = 10 ** Math.floor(Math.log10(target)), fraction = target / power;
+  return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * power;
+}

@@ -1,11 +1,11 @@
 import "./session.css";
-import type { DashboardPage, DashboardPageMount, DashboardPageContext, SessionData, SessionRun, Unit } from "../dashboard-v4-contract.js";
+import type { DashboardPage, DashboardPageMount, DashboardPageContext, SessionData, SessionRun, Unit, Value } from "../dashboard-v4-contract.js";
 import { action, element, sectionState } from "./dom.js";
 import { supportedDetailId } from "./detail-id.js";
 import { canRetry, errorCopy, DashboardClientError } from "./client.js";
 import { formatLocalTime, formatValue, formatTokens } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
-import { chartPair } from "./charts.js";
+import { chartPair, creditStep } from "./charts.js";
 import { renderFlow } from "./flow.js";
 import { renderModelMarker } from "./model-style.js";
 import { disposeSessionRoute, formatDuration, pinSessionRun, renderSessionRoute } from "./session-route.js";
@@ -71,7 +71,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
   function render(): void {
     if (!data || disposed || ctx.signal.aborted) return;
     const focusedRun = document.activeElement?.getAttribute("data-run-id"), focusedRow = document.activeElement?.getAttribute("data-run-row");
-    const dismissedCard = graphic?.lastElementChild && (graphic.lastElementChild as HTMLElement).hidden;
+    const dismissedCard = (graphic?.firstElementChild?.querySelector("foreignObject")?.firstElementChild as HTMLElement | undefined)?.hidden;
     disposeGraphic(); root.setAttribute("aria-busy", "false");
     const header = element(document, "section", undefined, "session-header"), head = element(document, "div", undefined, "section-head"), units = element(document, "div", undefined, "segmented"); units.setAttribute("role", "group"); units.setAttribute("aria-label", "Unit");
     for (const value of ["credits", "tokens"] as const) { const b = action(document, value === "credits" ? "Credits" : "Tokens", () => { if (unit === value) return; unit = value; ctx.navigate({ page: "session", id, unit, tz }, { replace: true }); render(); unitButtons.get(unit)?.focus(); }); b.setAttribute("aria-pressed", String(unit === value)); unitButtons.set(value, b); units.append(b); }
@@ -83,7 +83,10 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     }
     if (data.span) chips.append(element(document, "span", `${formatLocalTime(data.span.start, tz)} to ${formatLocalTime(data.span.end, tz)} ${tz}`, "fact-chip mono")); header.append(chips);
     const stats = element(document, "div", undefined, "session-stats");
-    for (const [label, value, suffix] of [["Total", formatValue(data.total, unit), unit], ["Subagent runs", formatTokens(data.stats.runs), "runs"], ["Own calls", formatTokens(data.stats.ownCalls), "calls"], ["Compaction", formatTokens(data.stats.compaction), "events"], ["Idle gaps", formatTokens(data.stats.idleGaps), "gaps"]]) {
+    const sum = (values: readonly Value[]) => unit === "tokens" ? formatTokens(values.reduce((n, v) => n + v.tokens.total, 0)) : values.some(v => v.credits === null) ? "unavailable" : formatValue({ ...data!.total, credits: values.reduce((n, v) => n + v.credits!, 0) }, "credits");
+    const count = (n: number, singular: string) => `${formatTokens(n)} ${singular}${n === 1 ? "" : "s"}`;
+    const idleMinutes = data.idleGaps.reduce((n, gap) => n + gap.end - gap.start, 0) / 60000;
+    for (const [label, value, suffix] of [["Total", formatValue(data.total, unit), unit], ["Subagent runs", formatTokens(data.stats.runs), data.stats.runs === 1 ? "run" : "runs"], ["Own calls", sum(data.ownCallBins.map(b => b.value)), unit], ["Compaction", sum(data.compaction.map(c => c.value)), `${unit} · ${count(data.stats.compaction, "event")}`], ["Idle gaps", formatTokens(idleMinutes), `min · ${count(data.stats.idleGaps, "gap")}`]]) {
       const stat = element(document, "div", undefined, "header-stat"), number = element(document, "strong", value, "mono"); if (label === "Total") number.setAttribute("data-session-total", ""); stat.append(element(document, "span", label), number, element(document, "small", suffix)); stats.append(stat);
     }
     header.append(stats); root.replaceChildren(back(), header);
@@ -105,7 +108,8 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     const pair = chartPair(document, { id: `session-route-${id}`, title: "Session route", svg, table });
     // The shared pair accepts SVG, while the route also owns its live hover card.
     const chart = Array.from(pair.children).find(n => n.className === "chart-graphic")!; graphic.replaceChildren(svg, ...Array.from(graphic.children)); chart.replaceChildren(graphic);
-    const summary = element(document, "div", undefined, "summary-chips"); summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.span.end - data.span.start)));
+    const summary = element(document, "div", undefined, "summary-chips"); const max = Math.max(0, ...data.runs.map(r => (unit === "credits" ? r.value.credits : r.value.tokens.total) ?? 0));
+    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.span.end - data.span.start)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(creditStep(max) * 3)}`));
     pair.replaceChildren(pair.firstElementChild!, summary, ...Array.from(pair.children).slice(1)); routeSection.append(pair);
     const legend = element(document, "div", undefined, "session-legend");
     for (const m of data.models) { const key = element(document, "span", undefined, "fact-chip"); key.append(renderModelMarker(document, m.style), element(document, "span", m.id, "mono")); legend.append(key); } routeSection.append(legend); root.append(routeSection);

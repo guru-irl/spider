@@ -35,7 +35,7 @@ export function expectNoBrowserErrors(page: Page): () => readonly string[] {
 let buildPromise: Promise<void> | undefined;
 async function buildRealFixture(): Promise<void> {
   buildPromise ??= (async () => {
-    const { build } = await import("vite"); const outDir = resolve(".spider/scratch/playwright/real-dist");
+    const { build } = await import("vite"); const outDir = resolve(process.env.SPIDER_PLAYWRIGHT_SCRATCH ?? ".spider/scratch/playwright", "real-dist");
     await build({ configFile: resolve("vite.config.mjs"), build: { outDir } });
     await build({ configFile: resolve("vite.dashboard.config.mjs"), mode: "production", build: { outDir: join(outDir, "dashboard") } });
   })();
@@ -43,11 +43,11 @@ async function buildRealFixture(): Promise<void> {
 }
 export async function startRealUsageFixture(): Promise<{ bootstrapUrl: string; origin: string; stop(): Promise<void> }> {
   await buildRealFixture();
-  const base = resolve(".spider/scratch/playwright"); await mkdir(base, { recursive: true });
+  const base = resolve(process.env.SPIDER_PLAYWRIGHT_SCRATCH ?? ".spider/scratch/playwright"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(join(base, "real-fixture-"));
   const env = { ...process.env, SPIDER_GLOBAL_ROOT: root, SPIDER_E2E_FIXTURE_ROOT: root, SPIDER_E2E_BUNDLE: resolve(base, "real-dist/extension.js"), TMPDIR: resolve(base, "tmp") };
   for (const key of ["PI_SUBAGENT_CHILD", "PI_SUBAGENT_RUN_ID", "PI_SPIDER_DB_PATH", "PI_SPIDER_SESSION_ID"]) delete env[key as keyof typeof env];
-  const child = spawn(process.execPath, [resolve("scripts/usage-dashboard-e2e-real-server.mjs")], { env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+  const child = spawn(process.execPath, [resolve(process.env.SPIDER_PLAYWRIGHT_REAL_SERVER ?? "scripts/usage-dashboard-e2e-real-server.mjs")], { env, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
   let exited = false; const exit = once(child, "exit").then(() => { exited = true; }); let stopped = false;
   const stop = async () => {
     if (stopped) return; stopped = true; if (exited) { await rm(root, { recursive: true, force: true }); return; }

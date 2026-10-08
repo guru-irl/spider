@@ -206,7 +206,7 @@ describe("web primitives", () => {
     const local = new PlainDocument(); const attempted: string[] = [];
     local.fonts = { async load(font) { attempted.push(font); return [{}]; } };
     await module!.loadFonts(local.asDocument(), undefined, font => font.includes("Usage") ? 120 : 100);
-    expect(attempted).toEqual(['16px "Usage Text Local"', '16px "Usage Code Local"', '16px "Usage Wordmark Local"']);
+    expect(attempted).toEqual(['400 16px "Usage Text Local"', '500 16px "Usage Text Local"', '600 16px "Usage Text Local"', '700 16px "Usage Text Local"', '400 16px "Usage Code Local"', '700 16px "Usage Code Local"', '400 16px "Usage Wordmark Local"']);
     expect(elements(local.head, "link")).toHaveLength(0);
     const missing = new PlainDocument();
     const finish: ((faces: unknown[]) => void)[] = [];
@@ -435,4 +435,12 @@ it("chart markers use the unscaled CSS viewport and never connect nulls or gaps"
   for(const dot of dots) { let parent=dot.parentElement; while(parent&&parent.tagName.toLowerCase()!=="svg")parent=parent.parentElement; expect(parent?.getAttribute("viewBox")).toBeNull(); }
   expect(elements(chart,"line")).toHaveLength(0);expect(elements(chart,"path")).toHaveLength(0);expect(elements(chart,"polyline")).toHaveLength(0);
   expect(elements(chart,"tr").slice(1).map(row=>cellText(row.children[2]!))).toEqual(["10 tokens","unavailable","20 tokens"]);
+});
+
+it("a missing local bold weight requests only that remote weight", async () => {
+  const { loadFonts } = await import("../web/fonts.js"); const doc = new PlainDocument();
+  doc.fonts = { async load(font) { if (font.startsWith('700 ') && font.includes('Code')) throw new Error('local bold missing'); return [{}]; } };
+  const faces = observeFontTransport(doc);
+  await loadFonts(doc.asDocument(), undefined, font => font.includes('Usage') ? 120 : 100);
+  expect(faces.map(face => `${face.family}:${face.weight}`)).toEqual(["Cascadia Code:700"]);
 });

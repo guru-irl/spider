@@ -50,3 +50,5 @@
 .role-tooltip{position:absolute;bottom:calc(100% + 12px);left:0;background:var(--usage-surface);color:var(--usage-ink);border:1px solid var(--usage-border);border-radius:10px;padding:12px 15px;min-width:238px;z-index:10;pointer-events:none;font-size:12px}.role-tooltip h3{margin-bottom:4px;font-size:12px}
 [data-panel=sessions] .chart-graphic{overflow:visible}[data-panel=sessions] .table-region{overflow:auto}
 @media(max-width:1350px){.overview-grid{grid-template-columns:minmax(0,1.75fr) minmax(0,1fr)}.overview-page .model-name{font-size:12px}.model-note{flex-wrap:wrap}.sessions-table td{padding-left:9px;padding-right:9px}}
+
+.role-key[data-role=own]{border-color:var(--usage-role-own)}.role-key[data-role=workers]{border-color:var(--usage-role-workers)}.role-key[data-role=reviewers]{border-color:var(--usage-role-reviewers)}.role-key[data-role=others]{border-color:var(--usage-role-others)}

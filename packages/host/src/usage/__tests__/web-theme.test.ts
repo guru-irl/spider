@@ -27,14 +27,14 @@ describe("web theme", () => {
   it("font aliases carry their actual weights and NF fallback entries", () => {
     const faces = blocks(css).filter(block => block.selector === "@font-face").map(block => block.body);
     for (const [alias, weight] of aliases) {
-      const face = faces.filter(body => body.includes(`local('${alias}')`)); expect(face, alias).toHaveLength(1); expect(face[0]).toMatch(new RegExp(`font-weight:${weight}(?:;|})`));
+      const face = faces.filter(body => body.includes(`local('${alias}')`)); expect(face, alias).toHaveLength(1); expect(face[0]).toMatch(new RegExp(`font-weight:(?:${weight}|400 700)(?:;|})`));
     }
     const code = rule(":root").match(/--usage-code:([^;]+);/)![1]!;
     expect(code).toContain("'Usage Code Local'"); expect(code).toContain("'Cascadia Code'");
   });
   it("unused axis and unreachable cell focus styles are removed", () => {
     expect(css).not.toContain("--axis-accent"); expect(css).not.toMatch(/(?:td|tr):focus-visible/); expect(css).not.toContain(".action:hover:not(:disabled)");
-    expect(blocks(css).some(block => block.selector === "@font-face" && block.body.includes("local('Fira Sans Bold')") && /font-weight:700;/.test(block.body))).toBe(true);
+    expect(blocks(css).some(block => block.selector === "@font-face" && block.body.includes("local('Fira Sans Bold')") && /font-weight:(?:700|400 700);/.test(block.body))).toBe(true);
   });
   it("local faces include full and PostScript names", () => {
     for (const [name] of aliases) expect(css).toContain(`local('${name}')`);

@@ -18,6 +18,22 @@ it("fixture state examples are isolated, settled, disposed and do not change the
   await renderStateExamples(doc.body as unknown as HTMLElement, { overview: ctx => { roots.push(ctx.root); signals.push(ctx.signal); return { refresh: async () => { ctx.root.textContent = "Settled"; }, dispose }; } }, cases);
   expect(new Set(roots).size).toBe(2); expect(signals.every(s => s.aborted)).toBe(true); expect(dispose).toHaveBeenCalledTimes(2); expect(doc.body.textContent).toContain("Settled"); expect(history.replaceState).not.toHaveBeenCalled(); expect(history.pushState).not.toHaveBeenCalled();
 });
+it("gallery disposal freezes page classes and visible interaction cards", async () => {
+  const doc = new PlainDocument();
+  await renderStateExamples(doc.body as unknown as HTMLElement, { overview: ctx => {
+    const card = doc.createElement("div"); card.className = "route-card";
+    ctx.root.className = "overview-page"; ctx.root.append(card as unknown as HTMLElement);
+    return { refresh: async () => {}, dispose() { ctx.root.className = ""; card.hidden = true; } };
+  } }, fixtureStateCases().filter(c => c.page === "overview").slice(0, 1));
+  expect(descendants(doc.body).find(n => n.className === "overview-page")).toBeDefined();
+  expect(descendants(doc.body).find(n => n.className === "route-card")!.hidden).toBe(false);
+});
+it("gallery waits for layout frames before disposing responsive graphics", async () => {
+  const doc = new PlainDocument(), events: string[] = [];
+  Object.defineProperty(doc, "defaultView", { value: Object.assign(new EventTarget(), { requestAnimationFrame(callback: FrameRequestCallback) { events.push("frame"); queueMicrotask(() => callback(0)); return 1; } }) });
+  await renderStateExamples(doc.body as unknown as HTMLElement, { overview: () => ({ refresh: async () => { events.push("refresh"); }, dispose() { events.push("dispose"); } }) }, fixtureStateCases().filter(c => c.page === "overview").slice(0, 1));
+  expect(events).toEqual(["refresh", "frame", "frame", "dispose"]);
+});
 it("unknown-session catalogue mounts its typed 404 identity", async () => {
   const doc = new PlainDocument(), ids: string[] = [];
   await renderStateExamples(doc.body as unknown as HTMLElement, { session: ctx => { if (ctx.route.page === "session") ids.push(ctx.route.id); return { refresh: async () => {}, dispose() {} }; } }, fixtureStateCases().filter(c => c.page === "session" && c.scenario === "unknown-session"));
@@ -28,7 +44,7 @@ it("fonts load local text code and wordmark before direct remote files", async (
   doc.fonts = { load: async font => { local.push(font); return []; } };
   Object.assign(doc.fonts, { add() {} });
   vi.stubGlobal("FontFace", class { constructor(family: string, source: string) { remote.push(family + source); } load() { return Promise.reject(new Error("offline")); } });
-  try { await loadFonts(doc.asDocument(), undefined, () => 10); expect(local).toEqual(['16px "Usage Text Local"', '16px "Usage Code Local"', '16px "Usage Wordmark Local"']); expect(remote.filter(r => r.startsWith("Fira Sans"))).toHaveLength(4); expect(remote.filter(r => r.startsWith("Cascadia Code"))).toHaveLength(2); expect(remote.filter(r => r.startsWith("Bebas Neue"))).toHaveLength(1); expect(remote.join(" ")).toContain("Fira Sans"); expect(remote.join(" ")).toContain("Cascadia Code"); expect(remote.join(" ")).toContain("Bebas Neue"); expect(remote.every(r => r.includes("https://fonts.gstatic.com/") && r.includes(".woff2") && !r.includes("Google Sans") && !r.includes("googleapis"))).toBe(true); } finally { vi.unstubAllGlobals(); }
+  try { await loadFonts(doc.asDocument(), undefined, () => 10); expect(local).toEqual(['400 16px "Usage Text Local"', '500 16px "Usage Text Local"', '600 16px "Usage Text Local"', '700 16px "Usage Text Local"', '400 16px "Usage Code Local"', '700 16px "Usage Code Local"', '400 16px "Usage Wordmark Local"']); expect(remote.filter(r => r.startsWith("Fira Sans"))).toHaveLength(4); expect(remote.filter(r => r.startsWith("Cascadia Code"))).toHaveLength(2); expect(remote.filter(r => r.startsWith("Bebas Neue"))).toHaveLength(1); expect(remote.join(" ")).toContain("Fira Sans"); expect(remote.join(" ")).toContain("Cascadia Code"); expect(remote.join(" ")).toContain("Bebas Neue"); expect(remote.every(r => r.includes("https://fonts.gstatic.com/") && r.includes(".woff2") && !r.includes("Google Sans") && !r.includes("googleapis"))).toBe(true); } finally { vi.unstubAllGlobals(); }
 });
 it("formats credits and tokens without basis markers and local or UTC dates", () => {
   const value = overviewFixture().total;
@@ -52,7 +68,7 @@ it("loading empty and error states replace old content, only errors retry", () =
 });
 it("model markers have shape and safe SVG colour, never inline styles", () => {
   const doc = new PlainDocument();
-  for (const shape of ["circle", "square", "diamond", "triangle"] as const) { const marker = renderModelMarker(doc.asDocument(), { shape, color: "#f8785c" }); expect(marker.getAttribute("data-shape")).toBe(shape); expect(marker.getAttribute("role")).toBe("img"); expect(marker.getAttribute("aria-label")).toBe(shape); expect(descendants(marker as never).some(n => n.hasAttribute("style"))).toBe(false); }
+  for (const shape of ["circle", "square", "diamond", "triangle"] as const) { const marker = renderModelMarker(doc.asDocument(), { shape, color: "#f8785c" }); expect(marker.getAttribute("data-shape")).toBe(shape === "square" ? "diamond" : shape === "diamond" ? "square" : shape); expect(marker.getAttribute("role")).toBe("img"); expect(marker.getAttribute("aria-label")).toBe(shape === "square" ? "diamond" : shape === "diamond" ? "square" : shape); expect(descendants(marker as never).some(n => n.hasAttribute("style"))).toBe(false); }
   const bad = renderModelMarker(doc.asDocument(), { shape: "circle", color: "url(https://invalid.example)" }); expect(elements(bad, "circle")[0]!.getAttribute("fill")).toBe("currentColor");
 });
 it("flow shows actual edge values in a paired table with no invented total", () => {
@@ -77,4 +93,12 @@ it("repeated local hours include distinct offsets when requested", () => {
 });
 it("shared chips distinguish text labels from machine values without inline styles", () => {
   const doc = new PlainDocument(), node = chip(doc.asDocument(), "Calls", "12"); expect(node.className).toBe("stat-chip"); expect(elements(node, "span")[1]!.textContent).toBe("Calls"); const value = elements(node, "strong")[0]!; expect(value.textContent).toBe("12"); expect(value.className).toBe("mono"); expect(descendants(node as never).some(n => n.hasAttribute("style"))).toBe(false);
+});
+
+it("flow nodes span the chart and the viewport fits its last label", () => {
+  const doc = new PlainDocument(), node = renderFlow(doc.asDocument(), overviewFixture().flow, "credits", "width-flow"), svg = elements(node, "svg")[0]!;
+  expect(svg.getAttribute("viewBox")).toBe("0 0 1122 272");
+  const stations = elements(svg, "rect"); expect(stations.every(n => n.getAttribute("x") === "120")).toBe(true);
+  const modelLabels = elements(svg, "text").filter(n => n.textContent.startsWith("model-"));
+  expect(modelLabels.every(n => n.getAttribute("text-anchor") === "start" && n.getAttribute("x") === "1010")).toBe(true);
 });

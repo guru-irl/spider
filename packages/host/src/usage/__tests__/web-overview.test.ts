@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mountOverview } from "../web/overview-v4.js";
+import { mountOverview } from "../web/overview.js";
 import { overviewFixture, sessionsFixture, envelope } from "./fixtures/redesign-contract.js";
 import { PlainDocument, PlainElement, descendants, button, elements, settle } from "./fixtures/plain-dom.js";
 import type { DashboardPageContext, DashboardRouteV4, OverviewDataV4 } from "../dashboard-v4-contract.js";
@@ -25,7 +25,7 @@ describe("Overview v4", () => {
   it("renders full-range chips, models as the legend and same-value chart tables", async () => {
     const s = setup(); await settle();
     expect(s.root.children[0]!.className).toBe("month-pace");
-    expect(s.root.textContent).toContain("Daily credits"); expect(s.root.textContent).toContain("Average per bucket");
+    expect(s.root.textContent).toContain("Daily credits"); expect(s.root.textContent).toContain("Average");
     expect(s.nodes().filter(n => n.className === "role-key")).toHaveLength(4);
     expect(s.root.textContent).toContain("Mostly worker runs"); expect(s.root.textContent).not.toContain("AIC");
     expect(s.bars()).toHaveLength(7); expect(s.nodes().find(n => n.getAttribute("data-panel") === "daily")!.textContent).toContain("4"); s.page.dispose();
@@ -184,4 +184,12 @@ describe("Overview v4", () => {
   it("tokens changes every page heading and tooltip except credit pace", async () => {
     const d = overviewFixture(); d.range.unit = "tokens"; const s = setup(undefined, d); await settle(); expect(s.root.textContent).toContain("Daily tokens"); expect(s.root.textContent).toContain("960"); expect(s.bars()[4]!.getAttribute("aria-label")).toContain("480 tokens"); expect(s.root.children[0]!.textContent).toContain("40"); s.page.dispose();
   });
+});
+
+it.each(["day", "hour"] as const)("labels Average and Peak in %s buckets with compact amounts and a date", async bucketSize => {
+  const d = overviewFixture(); d.bucketSize = bucketSize; d.total.credits = 118400; d.buckets[4]!.total.credits = 31200;
+  const s = setup(undefined, d); await settle();
+  const summary = s.nodes().find(n => n.className === "range-summary summary-chips")!;
+  expect(summary.children[1]!.textContent).toBe(`Average16.9k ${bucketSize === "day" ? "a day" : "an hour"}`);
+  expect(summary.children[2]!.textContent).toBe(`Peak${bucketSize === "day" ? "Fri 12 APR" : "Fri 12 APR 00:00 UTC+00:00"} · 31.2k`); s.page.dispose();
 });

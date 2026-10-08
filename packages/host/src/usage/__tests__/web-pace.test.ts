@@ -70,3 +70,9 @@ describe("month pace", () => {
     expect(s.byClass("pace-used").textContent).toBe("unavailable"); expect(s.popover.textContent).toContain("unavailable"); disposePace(s.root);
   });
 });
+
+it("rounds fractional popover figures to grouped credits, one decimal below ten", () => {
+  const s = setup({ used: 1234.5678, evenPace: 46.666666666666664, projected: 2345.678, budget: 5000, remaining: 9.876, allowance: null, daysLeft: 8.123 });
+  const rows = elements(s.popover, "tbody")[0]!.children;
+  expect(rows.map(row => row.children[1]!.children[1]!.textContent)).toEqual(["1,235", "5,000", "47", "2,346", "9.9", "8.1"]); disposePace(s.root);
+});

@@ -1,5 +1,7 @@
 import type { Period } from "../dashboard-contract.js";
 import type { SessionData, SessionRun, Unit } from "../dashboard-v4-contract.js";
+import { creditStep } from "./charts.js";
+import { modelShape } from "./model-style.js";
 import { element } from "./dom.js";
 import { formatValue, formatTokens, formatLocalTime } from "./format.js";
 
@@ -71,7 +73,7 @@ function geometry(data: SessionData, unit: Unit, requestedWidth: number) {
     const above = penalty(-1), below = penalty(1);
     const side: -1 | 1 = above === below ? (placed.length % 2 ? 1 : -1) : above < below ? -1 : 1;
     placed.push({ start, end, side });
-    return { runId: r.id, side, height: maxValue > 0 ? amount(r, unit) / maxValue * EXTENT : 0, startX: x(start), endX: x(end) };
+    return { runId: r.id, side, height: maxValue > 0 ? amount(r, unit) / (creditStep(maxValue) * 3) * EXTENT : 0, startX: x(start), endX: x(end) };
   });
   const layout: RouteLayout = { branches, breaks: collapsed.map(period => ({ period, startX: x(period.start), width: 28 })), maxValue };
   return { layout, runs, x, width };
@@ -83,9 +85,10 @@ export function disposeSessionRoute(route: HTMLElement): void { controls.get(rou
 export function renderSessionRoute(document: Document, data: SessionData, unit: Unit, selectRun: (id: string | null) => void, tz: string = Intl.DateTimeFormat().resolvedOptions().timeZone, leaveRoute?: () => void): HTMLElement {
   const box = element(document, "div", undefined, "route-box"), svg = document.createElementNS(NS, "svg");
   svg.setAttribute("class", "session-route"); svg.setAttribute("role", "group"); svg.setAttribute("aria-label", "Session route. Arrows move between runs and events; Tab leaves the route; Enter pins a run; Escape clears.");
-  const card = element(document, "div", undefined, "route-card"); card.setAttribute("role", "status"); card.setAttribute("aria-live", "polite"); card.hidden = true; box.append(svg, card);
+  const card = element(document, "div", undefined, "route-card"); card.setAttribute("role", "status"); card.setAttribute("aria-live", "polite"); card.hidden = true; const cardFrame = document.createElementNS(NS, "foreignObject"); cardFrame.setAttribute("width", "310"); cardFrame.setAttribute("height", "300"); cardFrame.append(card); box.append(svg);
+  let routeWidth = 1200;
   let pinned: string | null = null, hover: SessionRun | null = null, focused: SessionRun | null = null, dismissed = false;
-  let groups: { node: SVGGElement; run: SessionRun }[] = [], observer: ResizeObserver | undefined;
+  let groups: { node: SVGGElement; run: SessionRun; branch: RouteLayout["branches"][number] }[] = [], observer: ResizeObserver | undefined;
   let stops: { node: SVGElement; key: string }[] = [], rovingKey: string | undefined;
   const node = <K extends keyof SVGElementTagNameMap>(parent: SVGElement, tag: K, attrs: Record<string, string | number>, text?: string): SVGElementTagNameMap[K] => {
     const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v)); if (text !== undefined) n.textContent = text; parent.append(n); return n;
@@ -98,6 +101,19 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
     if (run) {
       const dl = element(document, "dl"); field(dl, "Thinking", run.thinking ?? "unavailable"); field(dl, "Credits", formatValue(run.value, "credits")); field(dl, "Tokens", formatTokens(run.value.tokens.total)); field(dl, "Duration", formatDuration(run.durationMs)); field(dl, "Status", run.status ?? "unavailable");
       card.replaceChildren(element(document, "p", run.role, "card-role"), element(document, "h3", run.name), element(document, "p", run.model ?? "unavailable", "card-model mono"), dl);
+      const branch = groups.find(g => g.run === run)?.branch;
+      if (branch) {
+        const width = 310, height = document.defaultView ? card.getBoundingClientRect().height || 270 : 270;
+        const apex = (branch.startX + branch.endX) / 2, apexY = BASE + branch.side * branch.height;
+        const clampX = (x: number) => Math.max(0, Math.min(routeWidth - width, x)), clampY = (y: number) => Math.max(0, Math.min(430 - height, y));
+        const candidates = [apex + 18, apex - width - 18].flatMap(x => [apexY + 12, apexY - height - 12].map(y => ({ x: clampX(x), y: clampY(y) })));
+        const score = (p: { x: number; y: number }) => groups.filter(g => g.run !== run).reduce((n, g) => {
+          const b = g.branch, top = Math.min(BASE, BASE + b.side * b.height), bottom = Math.max(BASE, BASE + b.side * b.height);
+          return n + (p.x < b.endX && p.x + width > b.startX && p.y < bottom && p.y + height > top ? 10000 : 0);
+        }, 0) + Math.abs(p.x - apex) + Math.abs(p.y - apexY);
+        const position = candidates.sort((a, b) => score(a) - score(b))[0]!;
+        cardFrame.setAttribute("x", String(position.x)); cardFrame.setAttribute("y", String(position.y)); cardFrame.setAttribute("height", String(height + 1));
+      }
     }
   };
   const pin = (id: string | null) => { pinned = id; dismissed = id === null; selectRun(id); sync(); };
@@ -126,11 +142,11 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
   };
   const draw = (width: number) => {
     const remembered = stops.find(stop => stop.node === document.activeElement)?.key, wasDismissed = dismissed;
-    const { layout, runs, x, width: effectiveWidth } = geometry(data, unit, width); groups = []; stops = []; svg.removeAttribute("tabindex"); svg.replaceChildren(); svg.setAttribute("viewBox", `0 0 ${effectiveWidth} 430`); svg.setAttribute("width", String(effectiveWidth)); svg.setAttribute("height", "430"); svg.setAttribute("preserveAspectRatio", "none");
+    const { layout, runs, x, width: effectiveWidth } = geometry(data, unit, width); groups = []; stops = []; svg.removeAttribute("tabindex"); svg.replaceChildren(); routeWidth = effectiveWidth; svg.setAttribute("viewBox", `0 0 ${effectiveWidth} 430`); svg.setAttribute("width", String(effectiveWidth)); svg.setAttribute("height", "430"); svg.setAttribute("preserveAspectRatio", "none");
     node(svg, "text", { x: 0, y: 20, class: "axis-title" }, `${unit === "credits" ? "Credits" : "Tokens"} per run`);
-    for (let i = 1; i <= 4 && layout.maxValue > 0; i++) for (const side of [-1, 1]) {
-      const y = BASE + side * EXTENT * i / 4; node(svg, "line", { x1: LEFT, x2: effectiveWidth - RIGHT, y1: y, y2: y, class: "route-grid" });
-      node(svg, "text", { x: LEFT - 14, y: y + 4, "text-anchor": "end", class: "numeric" }, new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(layout.maxValue * i / 4));
+    for (let i = 1; i <= 3 && layout.maxValue > 0; i++) for (const side of [-1, 1]) {
+      const y = BASE + side * EXTENT * i / 3; node(svg, "line", { x1: LEFT, x2: effectiveWidth - RIGHT, y1: y, y2: y, class: "route-grid" });
+      node(svg, "text", { x: LEFT - 14, y: y + 4, "text-anchor": "end", class: "numeric" }, new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(creditStep(layout.maxValue) * i));
     }
     node(svg, "text", { x: LEFT - 14, y: BASE + 4, "text-anchor": "end", class: "numeric" }, "0");
     if (data.span) {
@@ -169,18 +185,18 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
       // when a short run is more expensive than a long one.
       const j = Math.max(0, Math.min(7, b.height / 2, (b.endX - b.startX) / 4));
       const d = `M${b.startX} ${BASE}l${j} ${b.side * j}V${y - b.side * j}l${j} ${b.side * j}H${b.endX - 2 * j}l${j} ${-b.side * j}V${BASE + b.side * j}L${b.endX} ${BASE}`;
-      const g = node(svg, "g", { class: "run-route", tabindex: 0, role: "button", "data-run-id": run.id ?? "", "data-height": b.height, "data-side": b.side, "aria-pressed": "false", "aria-label": `${run.role}, ${run.name}, ${formatValue(run.value, unit)} ${unit}, ${run.status ?? "unavailable"}. Enter pins.` });
+      const g = node(svg, "g", { class: "run-route", tabindex: 0, role: "button", "data-run-id": run.id ?? "", "data-credits": run.value.credits ?? "unavailable", "data-tokens": run.value.tokens.total, "data-height": b.height, "data-side": b.side, "aria-pressed": "false", "aria-label": `${run.role}, ${run.name}, ${formatValue(run.value, unit)} ${unit}, ${run.status ?? "unavailable"}. Enter pins.` });
       const color = run.style && /^#[0-9a-f]{6}$/i.test(run.style.color) ? run.style.color : "var(--usage-muted)";
-      node(g, "path", { d, class: "route-casing" }); node(g, "path", { d, class: "route-ink", stroke: color, "stroke-dasharray": run.style?.shape === "square" ? "7 3" : run.style?.shape === "diamond" ? "3 3" : run.style?.shape === "triangle" ? "9 3 2 3" : "none" });
-      const markerX = (b.startX + b.endX) / 2, shape = run.style?.shape;
+      node(g, "path", { d, class: "route-casing" }); node(g, "path", { d, class: "route-ink", stroke: color, "stroke-dasharray": run.style && modelShape(run.style.shape) === "square" ? "7 3" : run.style && modelShape(run.style.shape) === "diamond" ? "3 3" : run.style && modelShape(run.style.shape) === "triangle" ? "9 3 2 3" : "none" });
+      const markerX = (b.startX + b.endX) / 2, shape = run.style ? modelShape(run.style.shape) : undefined;
       if (shape === "circle") node(g, "circle", { cx: markerX, cy: y, r: 3, fill: color, "data-model-marker": shape });
       else if (shape) node(g, "path", { d: shape === "diamond" ? `M${markerX} ${y - 4}l4 4-4 4-4-4Z` : shape === "square" ? `M${markerX - 3} ${y - 3}h6v6h-6Z` : `M${markerX} ${y - 4}l4 7h-8Z`, fill: color, "data-model-marker": shape });
       const mark = { "data-status-mark": run.status ?? "unavailable", class: `route-status${run.status === "failed" ? " danger" : ""}` };
       if (run.status === "completed") node(g, "circle", { ...mark, cx: b.endX, cy: BASE, r: 4, fill: "var(--usage-ground)" });
       else if (run.status === "running") node(g, "path", { ...mark, d: `M${b.endX + 3} ${BASE - 3}a4 4 0 1 0 0 6`, fill: "var(--usage-ground)" });
       else if (run.status === "cancelled" || run.status === "failed") node(g, "path", { ...mark, d: `M${b.endX - 4} ${BASE - 4}l8 8m0-8-8 8` });
-      else node(g, "path", { ...mark, d: `M${b.endX} ${BASE - 4}v8`, "stroke-dasharray": "2 2" });
-      node(g, "path", { d, class: "route-hit" }); groups.push({ node: g, run });
+      else node(g, "path", { ...mark, d: `M${b.endX} ${BASE - 4}l4 4-4 4-4-4Z`, "stroke-dasharray": "2 2" });
+      node(g, "path", { d, class: "route-hit" }); groups.push({ node: g, run, branch: b });
       enroll(g, `run-${run.id ?? index}`);
       g.addEventListener("pointerenter", () => { dismissed = false; hover = run; sync(); }); g.addEventListener("pointerleave", () => { hover = null; sync(); });
       g.addEventListener("focus", () => { dismissed = false; focused = run; sync(); }); g.addEventListener("blur", () => { focused = null; sync(); });
@@ -204,6 +220,7 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
     }
     const current = stops.find(stop => stop.key === rovingKey) ?? stops[0]!; rovingKey = current.key;
     for (const stop of stops) stop.node.setAttribute("tabindex", stop === current ? "0" : "-1");
+    svg.append(cardFrame); cardFrame.setAttribute("x", String(Math.max(0, routeWidth - 334))); cardFrame.setAttribute("y", "32");
     dismissed = wasDismissed; sync();
     if (remembered !== undefined) stops.find(stop => stop.key === remembered)?.node.focus();
     dismissed = wasDismissed; if (wasDismissed) sync();

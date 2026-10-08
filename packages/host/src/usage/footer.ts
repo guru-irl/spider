@@ -21,6 +21,9 @@ export type FooterInput = {
   autoCompaction?: boolean;
   subscription: boolean;
   totals: FooterTotals;
+  monthlyBudget?: number;
+  /** Shared billing semantics already validated by the mount/worker; null omits month. */
+  monthUsed?: number | null;
   calibration?: CalibrationResult;
   counter: CounterStateView;
   statuses: ReadonlyMap<string, string>;
@@ -43,11 +46,22 @@ function tokens(count: number): string {
   return `${Math.round(count / 1000000)}M`;
 }
 
-function credits(count: number, lowerBound: boolean): string {
-  // Floor lower bounds, ignoring floating accumulation noise at display boundaries.
-  const tenths = (lowerBound ? Math.floor(count * 10 + 1e-9) : Math.round(count * 10)) / 10;
-  if (tenths < 10) return !lowerBound && count > 0 && tenths === 0 ? "<0.1" : tenths.toFixed(1);
-  return (lowerBound ? Math.floor(count + 1e-9) : Math.round(count)).toLocaleString("en-US");
+function credits(count: number): string {
+  const rounded = Math.round(count);
+  if (rounded >= 1000000) {
+    const millions = Math.round(rounded / 100000) / 10;
+    return millions < 10 ? `${millions.toFixed(1)}M` : `${Math.round(rounded / 1000000)}M`;
+  }
+  if (rounded >= 1000) {
+    const thousands = rounded < 10000 ? Math.round(rounded / 100) / 10 : Math.round(rounded / 1000);
+    if (thousands >= 1000) return "1.0M";
+    return thousands < 10 ? `${thousands.toFixed(1)}k` : `${Math.round(rounded / 1000)}k`;
+  }
+  const tenths = Math.round(count * 10 + 1e-9) / 10;
+  if (tenths < 10) {
+    return count > 0 && tenths === 0 ? "<0.1" : tenths.toFixed(1);
+  }
+  return String(rounded);
 }
 
 function leftTruncate(text: string, width: number): string {
@@ -100,31 +114,31 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const percentText = typeof percent === "number" && Number.isFinite(percent) ? `${percent.toFixed(1)}%` : "?";
   const window = tokens(context?.contextWindow ?? 0);
   const contextText = `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
-  const unpriced = totals.unpricedEntries > 0;
   const calibration = input.calibration ?? calibrationFallback();
   const display = toAicDisplay(totals.aic, totals.unpricedEntries, calibration);
-  const marker = display.basis === "calibrated" ? "cal" : calibration.status === "off" ? "est" : "?";
-  const aic = `${display.basis === "calibrated" ? "" : "~"}${credits(display.primaryAic!, unpriced)}${unpriced ? "+" : ""} AIC ${marker}`;
-  const items = [contextText, aic];
+  const items = [contextText, `${credits(display.primaryAic ?? 0)} credits`];
   if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && totals.latestCacheHitRate !== null) {
     items.push(`CH${totals.latestCacheHitRate.toFixed(1)}%`);
   }
   const snapshot = input.counter.availability === "available" ? input.counter.snapshot : null;
-  if (snapshot && typeof snapshot.entitlement === "number" && Number.isFinite(snapshot.entitlement)
-    && snapshot.entitlement > 0 && Number.isFinite(snapshot.creditsUsed) && snapshot.creditsUsed >= 0) {
-    items.push(`month ${(snapshot.creditsUsed / snapshot.entitlement * 100).toFixed(1)}%`);
+  const positive = (n: number | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+  const denominator = positive(input.monthlyBudget) ? input.monthlyBudget : positive(input.counter.snapshot?.entitlement) ? input.counter.snapshot!.entitlement : undefined;
+  const used = input.monthUsed !== undefined ? input.monthUsed : snapshot?.creditsUsed;
+  if (typeof used === "number" && Number.isFinite(used) && used >= 0 && denominator !== undefined) {
+    const percent = 100 * (used / denominator);
+    if (Number.isFinite(percent)) items.push(`month ${Math.round(percent)}%`);
   }
   if (totals.input || totals.output) items.push(`↑${tokens(totals.input)} ↓${tokens(totals.output)}`);
   if (totals.cacheRead || totals.cacheWrite) items.push(`R${tokens(totals.cacheRead)} W${tokens(totals.cacheWrite)}`);
   // Drop the entire lowest-priority item. Context alone can also be omitted.
-  while (items.length && visibleWidth(items.join(" ")) > width) items.pop();
+  while (items.length && visibleWidth(items.join(" · ")) > width) items.pop();
   return items.map((item, index) => {
     if (!theme) return item;
     if (index === 0 && typeof percent === "number" && percent > 70) {
       return theme.fg(percent > 90 ? "error" : "warning", item);
     }
     return theme.fg("dim", item);
-  }).join(" ");
+  }).join(" · ");
 }
 
 function render(input: FooterInput, width: number, theme?: Theme): string[] {

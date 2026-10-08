@@ -34,7 +34,8 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   const runtime = { snapshot: () => snapshot, configure: vi.fn(), refresh: vi.fn() } as unknown as UsageRuntime;
   return { pi, ctx, runtime, setFooter, getEntries, getBranch, registry, unsubBranch, requestRender,
     append: (entry: unknown) => entries.push(entry), replace: (next: unknown[], nextFile = file) => { entries = next; file = nextFile; },
-    counter: (creditsUsed: number, ts = 100) => { snapshot = { ...snapshot, counter: { availability: "available", role: "owner", lastAttemptAt: ts, lastSuccessAt: ts, nextPollAt: ts + 600000, snapshotAgeMs: 0, errorCode: null, notice: null, latest: { creditsUsed, entitlement: 100, ts, raw: {} } } }; },
+    counter: (creditsUsed: number, ts = Date.now()) => { snapshot = { ...snapshot, counter: { availability: "available", role: "owner", lastAttemptAt: ts, lastSuccessAt: ts, nextPollAt: ts + 600000, snapshotAgeMs: 0, errorCode: null, notice: null, latest: { creditsUsed, entitlement: 100, ts, resetDate: new Date(Date.UTC(new Date().getUTCFullYear(),new Date().getUTCMonth()+1,1)).toISOString().slice(0,10), raw: {} } } }; },
+    month: (used:number|null, ago=0) => { const d=new Date(Date.now()); snapshot={...snapshot,monthUsed:used,monthPeriod:{start:Date.UTC(d.getUTCFullYear(),d.getUTCMonth()-ago,1),end:Date.UTC(d.getUTCFullYear(),d.getUTCMonth()+1-ago,1)}}; },
     calibrate: () => { snapshot = { ...snapshot, calibration: { ...calibrationFallback(), status: "calibrated", factor: 0.5 } }; },
     failWorker: () => { snapshot = { ...snapshot, errorCode: "usage-worker-failed" }; },
     emit: (name: string, event: unknown = {}) => { for (const handler of [...events.get(name) ?? []]) handler(event, ctx); },
@@ -47,18 +48,18 @@ function mount(f: ReturnType<typeof fixture>) { return mounted = mountUsage(f.pi
 describe("public usage footer mount", () => {
   it("sets AIC footer on parent TUI startup and keeps model/thinking at 40 columns", () => {
     const f = fixture(); mount(f);
-    expect(f.render().join("\n")).toMatch(/AIC/); expect(f.render().join("\n")).not.toMatch(/\$/);
+    expect(f.render().join("\n")).toMatch(/credits/g); expect(f.render().join("\n")).not.toMatch(/\$/);
     expect(f.render(40)[0]).toMatch(/gpt-6.1-sol.*high/);
   });
   it("footer false restores pi with setFooter(undefined) and leaves the agents widget alone", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, footer: false });
     expect(f.setFooter).toHaveBeenLastCalledWith(undefined); expect(f.unsubBranch).toHaveBeenCalledTimes(1);
     expect(f.ctx.ui.setWidget).not.toHaveBeenCalled();
-    mounted!.configure(config); expect(f.render()[1]).toMatch(/AIC/);
+    mounted!.configure(config); expect(f.render()[1]).toMatch(/credits/g);
   });
   it("poll changes hot-apply separately from footer and alerts", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, counterPoll: false, alertsSessionCredits: 10 });
-    expect(f.runtime.configure).toHaveBeenLastCalledWith(false, "auto"); expect(f.render()[1]).toMatch(/AIC/);
+    expect(f.runtime.configure).toHaveBeenLastCalledWith(false, "auto"); expect(f.render()[1]).toMatch(/credits/g);
   });
   it("reads public thinking name context and subscription flag and omits unknown auto state", () => {
     const f = fixture(); mount(f);
@@ -129,9 +130,9 @@ describe("public usage footer mount", () => {
   });
   it("counter changes render only when the displayed month percentage changes", () => {
     const f = fixture(); f.counter(10); mount(f); f.render(); f.requestRender.mockClear();
-    f.counter(10, 200); vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
-    f.counter(11, 300); vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(1);
-    expect(f.render()[1]).toContain("month 11.0%");
+    f.counter(10, Date.now()-1000); vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
+    f.counter(11, Date.now()); vi.advanceTimersByTime(1000); expect(f.requestRender).toHaveBeenCalledTimes(1);
+    expect(f.render()[1]).toContain("month 11%");
   });
   it("same-file session_start re-reduces without double counting", () => {
     const f = fixture(); mount(f); f.emit("session_start");
@@ -161,17 +162,31 @@ describe("public usage footer mount", () => {
     vi.stubEnv("PI_SUBAGENT_CHILD", "1"); const f = fixture(); mount(f); expect(f.setFooter).not.toHaveBeenCalled(); expect(f.runtime.configure).not.toHaveBeenCalled();
   });
   it("worker error does not uninstall a working footer", () => {
-    const f = fixture(); mount(f); f.failWorker(); mounted!.refresh(); expect(f.render()[1]).toMatch(/AIC/); expect(f.setFooter).toHaveBeenCalledTimes(1);
+    const f = fixture(); mount(f); f.failWorker(); mounted!.refresh(); expect(f.render()[1]).toMatch(/credits/g); expect(f.setFooter).toHaveBeenCalledTimes(1);
   });
 });
 
 it("calibration reload changes footer without repricing tokens", () => {
   const f = fixture(); f.replace([assistant("a", 1000000)]); f.calibrate();
   const price = vi.spyOn(pricing, "priceCall"); mount(f);
-  expect(f.render()[1]).toContain("200 AIC cal");
+  expect(f.render()[1]).toContain("200 credits");
   mounted!.configure({ ...config, calibration: "off" });
   expect(f.runtime.configure).toHaveBeenLastCalledWith(true, "off");
-  expect(f.render()[1]).toContain("~400 AIC est");
+  expect(f.render()[1]).toContain("400 credits");
   expect(f.render()[1]).toContain("↑1.0M ↓10");
   expect(price).toHaveBeenCalledTimes(1);
+});
+
+
+it("live budget changes and worker corrected fallback refresh month without repricing or ledger reads",()=>{
+ const f=fixture();f.month(48);const price=vi.spyOn(pricing,"priceCall");mount(f);
+ mounted!.configure({...config,monthlyBudget:200});expect(f.render()[1]).toContain("month 24%");
+ mounted!.configure({...config,monthlyBudget:400});expect(f.render()[1]).toContain("month 12%");
+ f.counter(49,Date.now()-86400000);mounted!.refresh();mounted!.configure({...config,monthlyBudget:200});expect(f.render()[1]).toContain("month 25%");
+ expect(price).toHaveBeenCalledTimes(1);expect(f.runtime.refresh).not.toHaveBeenCalled();
+});
+
+it("omits the month item when the worker published a previous billing period",()=>{
+ const f=fixture();f.month(48,1);mount(f);mounted!.configure({...config,monthlyBudget:200});
+ expect(f.render()[1]).not.toContain("month");
 });

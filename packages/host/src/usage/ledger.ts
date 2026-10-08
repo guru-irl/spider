@@ -71,6 +71,10 @@ export type RunMeta = {
   startedAt: number | null; endedAt: number | null;
   status?: "queued" | "running" | "paused" | "done" | "failed" | "cancelled" | null;
 };
+export function normalizeRunStatus(status: unknown): NonNullable<RunMeta["status"]> | null {
+  return typeof status === "string" && ["queued", "running", "paused", "done", "failed", "cancelled"].includes(status)
+    ? status as NonNullable<RunMeta["status"]> : null;
+}
 /** Private store inputs. Public dashboard responses must redact these fields. */
 export type SessionMeta = {
   id: string; ownerSessionId: string | null; name: string; nameSource: "name" | "first-user" | "id";
@@ -101,6 +105,8 @@ export type ImportBatch = {
   calls: readonly CallRow[]; runs: readonly RunMeta[]; states: readonly ImportState[];
   sessions?: readonly SessionMeta[];
   metadataCheckpoints?: readonly MetadataCheckpoint[];
+  /** Replaced sources rebuild labels/spans instead of merging stale metadata. */
+  resetSessionMetadata?: readonly { path: string; sessionId: string | null }[];
   /** Worker ingest-lease fence, sampled under the same IMMEDIATE write lock. */
   commitGuard?: () => boolean;
   publishedSnapshot?: Extract<UsageWorkerEvent, { type: "snapshot" }>;
@@ -397,6 +403,8 @@ function createLedger(db: Db): UsageLedger {
     WHERE (session_metadata_import.generation,session_metadata_import.offset,session_metadata_import.size,session_metadata_import.complete)
       IS NOT (excluded.generation,excluded.offset,excluded.size,excluded.complete)`) : undefined;
   const getMetadataCheckpoint = hasMetadata ? db.prepare("SELECT path,generation,offset,size,complete FROM session_metadata_import WHERE path=?") : undefined;
+  const resetSession = hasMetadata ? db.prepare("DELETE FROM sessions WHERE id=?") : undefined;
+  const resetMetadataCheckpoint = hasMetadata ? db.prepare("DELETE FROM session_metadata_import WHERE path=?") : undefined;
   const putCoverageEdge = db.prepare(`INSERT INTO coverage_edges (report_run_id, included_run_id, evidence)
     VALUES (@reportRunId, @includedRunId, @evidence) ON CONFLICT(report_run_id, included_run_id)
     DO UPDATE SET evidence=excluded.evidence WHERE coverage_edges.evidence IS NOT excluded.evidence`);
@@ -477,15 +485,41 @@ function createLedger(db: Db): UsageLedger {
             throw new Error(`Stale call generation for ${call.sourceFile}`);
           }
         }
+        const metadataResets = [...batch.resetSessionMetadata ?? []];
         for (const source of batch.resetSources) {
+          const old = context.get(source.path) as { header: string } | undefined;
+          const id = old ? (JSON.parse(old.header) as { id?: unknown } | null)?.id : null;
+          metadataResets.push({ path: source.path, sessionId: typeof id === "string" ? id : null });
           reset.run(source.path, source.generation);
           resetPending.run(source.path);
           resetIncomplete.run(source.path);
           resetEntries.run(source.path);
         }
-        for (const run of batch.runs) putRun.run({ ...run, status: run.status ?? null, hasStatus: Number(run.status !== undefined) });
-        for (const session of batch.sessions ?? []) putSession!.run(session);
-        for (const checkpoint of batch.metadataCheckpoints ?? []) putMetadataCheckpoint!.run({ ...checkpoint, complete: Number(checkpoint.complete) });
+        // Only batches carrying billing calls isolate optional metadata with
+        // savepoints. Metadata-only batches remain strict and transactional.
+        // Diagnostic keys identify the write, not a source path, and successful
+        // retries (including strict batches) clear only their own fallback row.
+        const clearMetadataError = db.prepare("DELETE FROM import_state WHERE path=? AND source_error_code='metadata-invalid'");
+        const optionalMetadata = (write: () => void, path: string) => {
+          if (!batch.calls.length) { write(); clearMetadataError.run(path); return; }
+          db.exec("SAVEPOINT usage_optional_metadata");
+          try { write(); clearMetadataError.run(path); db.exec("RELEASE usage_optional_metadata"); }
+          catch {
+            db.exec("ROLLBACK TO usage_optional_metadata"); db.exec("RELEASE usage_optional_metadata");
+            try { putError.run({ path, code: "metadata-invalid", checkedPaths: null, at: batch.at }); } catch { /* malformed diagnostic cannot abort billing */ }
+          }
+        };
+        for (const run of batch.runs) optionalMetadata(() => putRun.run({ ...run, status: batch.calls.length ? normalizeRunStatus(run.status) : run.status ?? null, hasStatus: Number(run.status !== undefined) }), `metadata:run:${JSON.stringify([run.dbPath, run.id])}`);
+        for (const item of metadataResets) optionalMetadata(() => {
+          if (item.sessionId !== null) resetSession?.run(item.sessionId);
+          resetMetadataCheckpoint?.run(item.path);
+        }, `metadata:reset:${item.path}`);
+        for (const session of batch.sessions ?? []) optionalMetadata(() => {
+          if (!Number.isSafeInteger(session.nameOrder) || session.nameOrder < 0 ||
+            [session.firstActivity, session.lastActivity].some(v => v !== null && (!Number.isFinite(v) || Math.abs(v) > 8.64e15))) throw new Error("invalid metadata");
+          putSession?.run(session);
+        }, `metadata:session:${session.id}`);
+        for (const checkpoint of batch.metadataCheckpoints ?? []) optionalMetadata(() => putMetadataCheckpoint?.run({ ...checkpoint, complete: Number(checkpoint.complete) }), `metadata:checkpoint:${checkpoint.path}`);
         for (const call of batch.calls) insertCall.run(callValues(call));
         for (const edge of batch.removeCoverageEdges ?? []) removeCoverageEdge.run(edge.reportRunId, edge.includedRunId);
         for (const edge of batch.coverageEdges ?? []) putCoverageEdge.run(edge);

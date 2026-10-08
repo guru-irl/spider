@@ -1,8 +1,13 @@
 import { statSync } from "node:fs";
+import { openDashboardReader } from "./dashboard-reader.js";
+import type { DashboardReader } from "./dashboard-contract.js";
+import { billingPeriod } from "./billing-pace.js";
+import { readCorrectedTotal } from "./query-redesign-shared.js";
 import { calibrationFallback } from "./calibration.js";
 import type { MessagePort } from "node:worker_threads";
 import { discoverUsageSources } from "./discovery.js";
 import { ingestOnce } from "./ingest.js";
+import { backfillSessionMetadata, METADATA_BACKFILL_BYTES_PER_PASS } from "./session-backfill.js";
 import { openUsageLedger, openUsageLedgerReadOnly, type UsageLedger, type ImportBatch } from "./ledger.js";
 import { acquireUsageLease, UsageLeaseError, type Lease } from "./lease.js";
 import { CounterPoller, counterSnapshotIsFresh } from "./counter.js";
@@ -33,6 +38,7 @@ export async function bootUsageWorker(
   const discover = dependencies.discover ?? discoverUsageSources;
   const ingest = dependencies.ingest ?? ingestOnce;
   let ledger: UsageLedger | undefined, lease: Lease | undefined, poller: CounterPoller | undefined;
+  let monthReader: DashboardReader | undefined;
   let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
   let poll = !command.dashboardMode && command.poll;
   let calibrationMode = command.calibration ?? "auto";
@@ -48,6 +54,7 @@ export async function bootUsageWorker(
   let dashboardLease: Lease | undefined;
   let pendingRelease: { lease: Lease; ledger: UsageLedger } | undefined;
   let backfill: BackfillState = "pending";
+  let metadataBackfill: BackfillState = "pending", monthDirty = true;
   let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
   let cachedSnapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
   let version = -1, lastPublish = -Infinity;
@@ -70,6 +77,7 @@ export async function bootUsageWorker(
   }
   // Detach before a fallible close/stop/open, so the next cycle can retry.
   function closeLedger(): void {
+    monthReader?.close(); monthReader = undefined;
     const previous = ledger; ledger = undefined;
     previous?.close();
   }
@@ -91,7 +99,7 @@ export async function bootUsageWorker(
   }
   function open(): void {
     // SQLite data_version is connection-local, not a ledger-wide revision.
-    version = -1; cachedSnapshot = undefined;
+    version = -1; cachedSnapshot = undefined; monthDirty = true;
     // A live owner means followers never even use the writable opener/migrations.
     ledger = openUsageLedgerReadOnly(command.roots.ledgerFile);
     if (command.dashboardMode && monotonicNow() < nextPassAt) {
@@ -148,7 +156,18 @@ export async function bootUsageWorker(
     }
     const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const monthPeriod = billingPeriod(now(), ledger.latestCounter());
+    const sameMonth = cachedSnapshot?.monthPeriod?.start === monthPeriod.start && cachedSnapshot.monthPeriod.end === monthPeriod.end;
+    let monthUsed = sameMonth ? cachedSnapshot?.monthUsed ?? null : null;
+    if (monthDirty || !sameMonth) {
+      try {
+      monthReader ??= openDashboardReader(command.roots.ledgerFile, { instanceId: "usage-footer", serverBuild: "worker", now,
+        calibrationMode: () => calibrationMode });
+      monthUsed = monthReader?.snapshot(ctx => readCorrectedTotal(ctx, { start: monthPeriod.start, end: now() })) ?? null;
+      } catch { monthUsed = null; /* Footer data must never fail ingestion. */ }
+      monthDirty = false;
+    }
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", metadataBackfill, monthUsed, monthPeriod, collector: { kind: command.dashboardMode ? "dashboard" : "pi", sessionId: command.dashboardMode ? null : command.sessionId ?? null, owner: command.owner }, sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }
@@ -161,12 +180,13 @@ export async function bootUsageWorker(
     const release = lease ?? dashboardLease;
     lease = dashboardLease = undefined;
     if (release && ledger) {
+      monthReader?.close(); monthReader = undefined;
       pendingRelease = { lease: release, ledger }; ledger = undefined;
       retryRelease();
     } else closeLedger();
     if (stopped) return;
     controller = new AbortController(); reopen = false;
-    version = -1; cachedSnapshot = undefined;
+    version = -1; cachedSnapshot = undefined; monthDirty = true;
     ledger = openUsageLedgerReadOnly(command.roots.ledgerFile);
     if (!ledger) throw new Error("ledger unavailable");
     counter(); post({ type: "standby" });
@@ -218,12 +238,12 @@ export async function bootUsageWorker(
     }
     progress = { sourcesCompleted: discovery.sources.length - changed.length, sourcesTotal: discovery.sources.length };
     let firstCall = true;
-    if (!changed.length) { await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: [], skipHealth: true, commitGuard: guard }); firstCall = false; }
+    if (!changed.length) { await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: [], skipHealth: true, commitGuard: guard, onCallsAdded: () => { monthDirty = true; } }); firstCall = false; }
     for (let i = 0; i < changed.length && guard(); i += BATCH_SOURCES) {
       let remaining = changed.slice(i, i + BATCH_SOURCES);
       while (remaining.length && guard()) {
         const offsets = new Map(remaining.map(path => [path, ledger!.getImportState(path)?.offset ?? -1]));
-        await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: remaining, maxBytes: BATCH_BYTES, commitGuard: guard, skipHealth: true, skipShared: !firstCall });
+        await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: remaining, maxBytes: BATCH_BYTES, commitGuard: guard, skipHealth: true, skipShared: !firstCall, onCallsAdded: () => { monthDirty = true; } });
         firstCall = false;
         remaining = remaining.filter(path => { const state = ledger!.getImportState(path); return state && state.offset < state.size && state.offset > offsets.get(path)!; });
         if (guard() && performance.now() - lastPublish >= SNAPSHOT_MS) publish(false);
@@ -234,7 +254,12 @@ export async function bootUsageWorker(
       if (guard() && (performance.now() - lastPublish >= SNAPSHOT_MS || first && progress.sourcesCompleted % 32 === 0)) publish(false);
     }
     if (!guard()) return;
-    ledger!.apply(stateBatch("complete")); backfill = "complete"; publish();
+    const metadata = await backfillSessionMetadata(ledger!, discovery, now(), controller.signal, guard, METADATA_BACKFILL_BYTES_PER_PASS);
+    if (!guard()) return;
+    metadataBackfill = metadata.complete ? "complete" : "running";
+    // Billing import completion is independent of the bounded metadata pass.
+    backfill = "complete";
+    ledger!.apply(stateBatch(backfill)); publish();
   }
   function schedule(): void {
     if (stopped) return;

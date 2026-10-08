@@ -24,7 +24,7 @@ export function applyConfigEdit(cwd: string, key: string, raw: string, scope: "l
 	if (error) return { ok: false, error };
 	const c = coerce(getField(key, UI_CONFIG_SCHEMA)!, raw);
 	if (!c.ok) return { ok: false, error: c.error ?? "invalid value" };
-	if (key === "memory.snapshotCharCap" && c.value === undefined) return controlConfig("unset", cwd, key, undefined, scope);
+	if ((key === "memory.snapshotCharCap" || getField(key, UI_CONFIG_SCHEMA)?.optional) && c.value === undefined) return controlConfig("unset", cwd, key, undefined, scope);
 	return controlConfig("set", cwd, key, c.value, scope);
 }
 

@@ -125,3 +125,24 @@ it("calibration config is global only auto by default", () => {
   controlConfig("unset", root, "usage.calibration", undefined, "global");
   expect(controlConfig("get", root, "usage.calibration")).toBe("auto");
 });
+
+
+it("budget defaults unset and is global only with live provenance and blank unset", () => {
+  expect(readUsageConfig({}, {}).value.monthlyBudget).toBeUndefined();
+  expect(readUsageConfig({"usage.monthlyBudget":undefined},{}).errors).toEqual([]);
+  expect(isUsageConfigKey("usage.monthlyBudget")).toBe(true);
+  expect(() => controlConfig("set",root,"usage.monthlyBudget",200)).toThrow(/global/);
+  expect(applyConfigEdit(root,"usage.monthlyBudget","0.5","global").ok).toBe(true);
+  writeFileSync(join(root,"local/config.json"),JSON.stringify({"usage.monthlyBudget":999}));
+  expect(configValues(root)).toMatchObject({config:{"usage.monthlyBudget":0.5},sources:{"usage.monthlyBudget":"global"},errors:[expect.stringMatching(/ignored.*global/)]});
+  let budget:number|undefined;
+  const reload=makeConfigReloader(root,merged=>{budget=readUsageConfig(merged as Record<string,unknown>,{}).value.monthlyBudget;});
+  controlConfig("set",root,"usage.monthlyBudget",200,"global");reload.reload();expect(budget).toBe(200);
+  expect(applyConfigEdit(root,"usage.monthlyBudget","","global").ok).toBe(true);
+  expect(controlConfig("get",root,"usage.monthlyBudget")).toBeUndefined();
+  expect(JSON.parse(readFileSync(join(paths.globalRoot,"config.json"),"utf8"))).not.toHaveProperty("usage.monthlyBudget");
+});
+it.each([0,-1,NaN,Infinity,"200",null])("rejects nonpositive or nonnumeric budget %s", value => {
+ expect(readUsageConfig({"usage.monthlyBudget":value},{}).errors).toHaveLength(1);
+ expect(()=>controlConfig("set",root,"usage.monthlyBudget",value,"global")).toThrow(/positive/);
+});

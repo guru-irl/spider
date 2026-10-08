@@ -162,6 +162,7 @@ export function configValues(cwd: string, localRoot?: string): {
   for (const [key, value] of Object.entries({
     "usage.calibration": usage.calibration, "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
     "usage.alerts.sessionCredits": usage.alertsSessionCredits, "usage.alerts.runCredits": usage.alertsRunCredits,
+    "usage.monthlyBudget": usage.monthlyBudget,
   })) {
     all[key] = value;
     sources[key] = Object.hasOwn(g, key) && !usageConfigError(key, g[key]) ? "global" : "default";

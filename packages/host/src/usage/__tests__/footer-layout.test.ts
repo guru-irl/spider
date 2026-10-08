@@ -64,11 +64,11 @@ describe("usage footer layout", () => {
 
   it("row two drops entire lowest priority items", () => {
     const variant = input();
-    const items = ["14.6%/1.0M", "~3,294 AIC ?", "CH99.3%", "month 3.4%", "↑3.7M ↓4.0M", "R763M W65M"];
+    const items = ["14.6%/1.0M", "3.3k credits", "CH99.3%", "month 3%", "↑3.7M ↓4.0M", "R763M W65M"];
     for (let retained = items.length; retained > 0; retained--) {
-      const expected = items.slice(0, retained).join(" ");
+      const expected = items.slice(0, retained).join(" · ");
       expect(renderUsageFooter(variant, visibleWidth(expected))[1]).toBe(expected);
-      expect(renderUsageFooter(variant, visibleWidth(expected) - 1)[1]).toBe(items.slice(0, retained - 1).join(" "));
+      expect(renderUsageFooter(variant, visibleWidth(expected) - 1)[1]).toBe(items.slice(0, retained - 1).join(" · "));
     }
     expect(renderUsageFooter(variant, 1)[1]).toBe("");
   });
@@ -88,7 +88,7 @@ describe("usage footer layout", () => {
       { availability: "available", snapshot: { creditsUsed: 0, entitlement: 0, ts: 1234 } },
     ] as const) expect(renderUsageFooter(input({ counter }), 200)[1]).not.toContain("month");
     expect(renderUsageFooter(input({ counter: { availability: "available", snapshot: {
-      creditsUsed: 0, entitlement: 1000, ts: 1234 } } }), 200)[1]).toContain("month 0.0%");
+      creditsUsed: 0, entitlement: 1000, ts: 1234 } } }), 200)[1]).toContain("month 0%");
   });
 
   it("absent context matches pi zero while explicit unknown remains unknown", () => {
@@ -97,9 +97,9 @@ describe("usage footer layout", () => {
   });
 
   it.each([
-    ["off", null, "~3,294+ AIC est"], ["uncalibrated", null, "~3,294+ AIC ?"],
-    ["implausible", 2, "~3,294+ AIC ?"], ["calibrated", 0.56, "1,844+ AIC cal"],
-  ] as const)("labels partial and estimated AIC with %s calibration independently of subscription or dollars", (status, factor, expected) => {
+    ["off", null, "3.3k credits"], ["uncalibrated", null, "3.3k credits"],
+    ["implausible", 2, "3.3k credits"], ["calibrated", 0.56, "1.8k credits"],
+  ] as const)("shows corrected credits with %s calibration without basis markers", (status, factor, expected) => {
     const variant = input({ calibration: { ...calibrationFallback(), status, factor } });
     variant.totals.unpricedEntries = 2;
     expect(variant.totals.estimated).toBe(true);
@@ -115,22 +115,21 @@ describe("usage footer layout", () => {
   it("retains nonzero fractional AIC rather than presenting estimated zero", () => {
     const variant = input();
     variant.totals.aic = 0.0323;
-    expect(renderUsageFooter(variant, 200)[1]).toContain("~<0.1 AIC");
+    expect(renderUsageFooter(variant, 200)[1]).toContain("<0.1 credits");
   });
 
   it.each([
     [0, "0.0", "0.0"], [0.04, "<0.1", "0.0"], [0.0323, "<0.1", "0.0"],
     [4.24, "4.2", "4.2"], [9.94, "9.9", "9.9"], [9.96, "10", "9.9"],
     [9.999999, "10", "9.9"], [99.999999, "100", "99"],
-    [84.375, "84", "84"], [84.6, "85", "84"], [3294.4, "3,294", "3,294"],
-    [1234567.891, "1,234,568", "1,234,567"],
-  ])("formats %s AIC with rounded totals and truthful lower bounds", (aic, rounded, lowerBound) => {
+    [84.375, "84", "84"], [84.6, "85", "84"], [3294.4, "3.3k", "3.3k"],
+    [1234567.891, "1.2M", "1.2M"],
+  ])("formats %s credits without exposing lower-bound markers", (aic, rounded, lowerBound) => {
     for (const unpricedEntries of [0, 1]) {
       const variant = input();
       variant.totals.aic = aic;
       variant.totals.unpricedEntries = unpricedEntries;
-      expect(renderUsageFooter(variant, 200)[1].split(" ").slice(1, 3).join(" "))
-        .toBe(`~${unpricedEntries ? lowerBound + "+" : rounded} AIC`);
+      expect(renderUsageFooter(variant, 200)[1].split(" · ")[1]).toBe(`${rounded} credits`);
     }
   });
 
@@ -225,7 +224,7 @@ describe("usage footer layout", () => {
     const variant = input();
     variant.totals.aic = Array.from({ length: entries }, () => 0.1).reduce((sum, value) => sum + value, 0);
     variant.totals.unpricedEntries = 1;
-    expect(renderUsageFooter(variant, 200)[1]).toContain(`~${expected}+ AIC`);
+    expect(renderUsageFooter(variant, 200)[1]).toContain(`${expected} credits`);
   });
 
   it("hides CH for a cache-less session even when the latest ratio is zero", () => {
@@ -287,11 +286,11 @@ describe("public usage footer component", () => {
   });
 
   it.each([[70, "\x1b[2m"], [70.1, "\x1b[33m"], [90, "\x1b[33m"], [90.1, "\x1b[31m"]])
-    ("colours context at %s percent without colouring AIC", (percent, color) => {
+    ("colours context at %s percent without colouring credits", (percent, color) => {
       const component = themed(input({ context: { percent, contextWindow: 1000000 } }));
       try {
         expect(component.render(200)[1]).toContain(`${color}${percent.toFixed(1)}%/1.0M\x1b[0m`);
-        expect(component.render(200)[1]).toContain("\x1b[2m~3,294 AIC ?\x1b[0m");
+        expect(component.render(200)[1]).toContain("\x1b[2m3.3k credits\x1b[0m");
       } finally { component.dispose(); }
     });
 
@@ -338,17 +337,27 @@ describe("public usage footer component", () => {
   });
 });
 
-it.each([["calibrated", 0.56, "1,845", "cal"], ["uncalibrated", null, "3,294", "?"], ["implausible", 2, "3,294", "?"], ["off", null, "3,294", "est"]] as const)("footer %s calibration marker fits forty to two hundred columns", (status, factor, amount, marker) => {
-    const variant = input({ calibration: { ...calibrationFallback(), status, factor } });
-    for (let width = 40; width <= 200; width++) {
-      const lines = renderUsageFooter(variant, width);
-      for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
-      expect(lines[1]).toContain(`${status === "calibrated" ? "" : "~"}${amount} AIC ${marker}`);
-      expect(lines[1]).not.toContain("published");
-      expect(lines[1]).not.toContain("≈");
-      if (status === "calibrated") expect(lines[1]).not.toContain("~");
-      if (status === "calibrated") expect(lines[1]).not.toContain("3,294");
-    }
-    variant.totals.unpricedEntries = 1;
-    expect(renderUsageFooter(variant, 80)[1]).toContain(`${status === "calibrated" ? "" : "~"}${status === "calibrated" ? "1,844" : amount}+ AIC ${marker}`);
+it.each([["calibrated",0.56,"1.8k"],["uncalibrated",null,"3.3k"],["implausible",2,"3.3k"],["off",null,"3.3k"]] as const)("footer %s credits fit forty to two hundred columns",(status,factor,amount)=>{
+ const variant=input({calibration:{...calibrationFallback(),status,factor}});
+ for(let width=40;width<=200;width++){
+  const lines=renderUsageFooter(variant,width);for(const line of lines)expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+  expect(lines[1]).toContain(`${amount} credits`);expect(lines[1]!.split(" · ")[1]).not.toMatch(/AIC|cal|est|[~+?]/);
+ }
+ variant.totals.unpricedEntries=1;expect(renderUsageFooter(variant,80)[1]).toContain(`${amount} credits`);
+});
+
+
+it("context comes first and credit copy is plain with budget before allowance",()=>{
+ const variant=input({context:{percent:45.2,contextWindow:200000},monthlyBudget:200,monthUsed:48});variant.totals.aic=1200;
+ const line=renderUsageFooter(variant,200)[1]!;expect(line).toMatch(/^45.2%\/200k · 1.2k credits · CH99.3% · month 24% · ↑/);
+ expect(line.split(" · ")[1]).not.toMatch(/AIC|cal|est|[~+?]/);
+ expect(renderUsageFooter({...variant,monthUsed:49},200)[1]).toContain("month 25%");
+ expect(renderUsageFooter({...variant,monthlyBudget:undefined,counter:{availability:"available",snapshot:{creditsUsed:48,entitlement:400,ts:1}}},200)[1]).toContain("month 12%");
+ expect(renderUsageFooter({...variant,counter:{availability:"unavailable",snapshot:null}},200)[1]).toContain("month 24%");
+ for(const monthUsed of [null,NaN,Infinity])expect(renderUsageFooter({...variant,monthUsed},200)[1]).not.toContain("month");
+});
+
+it.each([[999.96,"1.0k"],[9999.6,"10k"],[999500,"1.0M"],[999999,"1.0M"]])("credits choose units after rounding %s",(count,want)=>{
+ const variant=input();variant.totals={...variant.totals,aic:count};
+ expect(renderUsageFooter(variant,200)[1]).toContain(`${want} credits`);
 });

@@ -1,4 +1,4 @@
-import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource } from "./types";
+import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource, RunCostFormatter } from "./types";
 
 const RETENTION_MS = 10_000;
 const TAIL_CAP = 20;
@@ -21,6 +21,8 @@ export function projectRow(row: RunRow): AgentSnapshot {
     stepCount: row.step_count ?? 0,
     tokenCount: row.token_count ?? 0,
     cost: row.cost ?? 0,
+    usageCosts: row.usageCosts,
+    costText: row.costText,
     compactionCount: row.compactionCount,
     recentActivity: [],
   };
@@ -59,7 +61,7 @@ export class AgentStore {
   private selecting = false;
   private sel = 0;
 
-  constructor(private src: RunSource, now: () => number = Date.now) { this.now = now; }
+  constructor(private src: RunSource, now: () => number = Date.now, private formatRunCost?: RunCostFormatter) { this.now = now; }
 
   start(): void {
     for (const row of this.src.listActive()) this.agents.set(row.id, projectRow(row));
@@ -88,9 +90,10 @@ export class AgentStore {
    *  The detail view uses this so drilling into a just-finished run isn't a blank screen. */
   getById(id: string): AgentSnapshot | undefined {
     const cached = this.agents.get(id);
-    if (cached) return cached;
-    const row = this.src.getRun(id);
-    return row ? projectRow(row) : undefined;
+    const row = cached ? undefined : this.src.getRun(id);
+    const snap = cached ?? (row ? projectRow(row) : undefined);
+    return snap && this.formatRunCost && snap.usageCosts
+      ? { ...snap, costText: this.formatRunCost(snap.usageCosts) } : snap;
   }
 
   edges(): HandoffEdge[] { return this.handoffs; }

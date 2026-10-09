@@ -1,7 +1,7 @@
 // packages/host/src/agents/agents-ui.ts
 import type { Db } from "@spider/db-core";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import { AgentStore, AgentFooter, AgentDetail, type ThemeAdapter, type AgentActions } from "@spider/ui";
+import { AgentStore, AgentFooter, AgentDetail, type ThemeAdapter, type AgentActions, type RunCostFormatter } from "@spider/ui";
 import { createRunSource } from "./run-source";
 import { piTheme } from "./theme-adapter";
 
@@ -15,7 +15,7 @@ interface HostPi {
   registerShortcut?(key: string, opts: { description?: string; handler: (ctx: unknown) => void }): void;
   registerCommand?(name: string, def: { description?: string; handler: (ctx?: unknown) => void }): void;
 }
-interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean; registration?: AgentsUIRegistration }
+interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean; registration?: AgentsUIRegistration; formatRunCost?: RunCostFormatter }
 
 const WIDGET = "spider-agents";
 
@@ -102,7 +102,7 @@ export function buildAgentsSelector(ctrl: SelectorController): OverlayComponent 
 
 export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): () => void {
   const { db, sessionId } = deps;
-  const store = new AgentStore(createRunSource(db, sessionId));
+  const store = new AgentStore(createRunSource(db, sessionId), Date.now, deps.formatRunCost);
   store.start();
 
   let mounted = false;

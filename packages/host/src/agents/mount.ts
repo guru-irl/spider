@@ -22,6 +22,7 @@ export interface MountOpts {
   sessionId: string;
   cwd: string;
   registration?: AgentsUIRegistration;
+  formatRunCost?: import("@spider/ui").RunCostFormatter;
   // Injectable for tests — defaults to real dispatch that calls into spider action handler
   dispatch?: (action: string, args: Record<string, unknown>) => Promise<unknown>;
 }
@@ -42,6 +43,7 @@ export function mountAgentsUI(
     sessionId,
     showFooter: controlConfig("get", opts.cwd, "ui.footer") !== false,
     registration: opts.registration,
+    formatRunCost: opts.formatRunCost,
     actions: createAgentActions(pi, {
       ui: ctx.ui,
       dispatch,

@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter } from "@spider/ui";
+import { formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -19,6 +19,7 @@ import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { toToolResult } from "./result";
+import { makeRunCostFormatter } from "./run-credits";
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 
 interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; }
@@ -64,10 +65,10 @@ function plainBody(text: string, expanded = false): Component {
   return textComponent({ content: [{ type: "text", text: text.replace(/^## [^\n]*\n?/, "") }] }, expanded);
 }
 
-interface RunLike { token_count?: number; cost?: number; compactionCount?: number; id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
+interface RunLike { token_count?: number; cost?: number; usageCosts?: RunUsageCosts; costText?: string; compactionCount?: number; id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
 
 /** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
-function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] {
+function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter): string[] {
   const status = r.status ?? "running";
   const glyph = t.fg("toolTitle", SG[status] ?? "•");
   const name = t.bold(r.name ?? r.agent ?? "agent");
@@ -75,7 +76,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean): string[] 
   const thinkSeg = r.thinking ? ` ${sep} ${t.fg("muted", r.thinking)}` : "";
   const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
   const lines = [expanded ? head : clip(head, width)];
-  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) lines.push(t.fg("dim", `    ${formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount)}`));
+  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) lines.push(t.fg("dim", `    ${formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))}`));
   const task = (r.task ?? "").trim();
   if (task) {
     const body = expanded ? task.split("\n") : [clip(task, width - 7)];
@@ -100,14 +101,14 @@ function thinkingNoticeLines(t: T, details: any, width: number, expanded: boolea
     .map(notice => t.fg("muted", expanded ? `  ${notice}` : clip(`  ${notice}`, width)));
 }
 
-function renderRun(t: T, details: any, expanded: boolean): Component {
+function renderRun(t: T, details: any, expanded: boolean, formatRunCost: RunCostFormatter = makeRunCostFormatter(() => undefined)): Component {
   const runs: RunLike[] = Array.isArray(details?.runs) ? details.runs : details?.run ? [details.run] : [];
   return {
     render(width: number): string[] {
       if (runs.length === 0) return fitResultLines(["", t.fg("muted", "   (no runs)"), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded);
       const lines: string[] = [];
       const multi = runs.length > 1;
-      for (const r of runs) { lines.push(...runBlock(t, r, width, expanded)); if (multi) lines.push(""); }
+      for (const r of runs) { lines.push(...runBlock(t, r, width, expanded, formatRunCost)); if (multi) lines.push(""); }
       lines.push(...thinkingNoticeLines(t, details, width, expanded));
       const anyTask = runs.some((r) => (r.task ?? "").trim());
       const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
@@ -607,7 +608,7 @@ function renderSpiderResultBody(
 
   switch (action) {
     case "run":
-      return renderRun(t, details, expanded);
+      return renderRun(t, details, expanded, context?.formatRunCost);
     case "exec":
     case "exec_file":
     case "batch": {
@@ -796,7 +797,7 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   // Feed the same shape a real `spider run` produces: a title (renderCall) + a single run block
   // (renderResult) carrying the child's name/agent/model/status and its output as the result.
   const args = { action: "run" };
-  const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, compactionCount: d.compactionCount } } };
+  const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount } } };
   const box = new Box(1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, {}) as any);
   box.addChild(renderSpiderResult(result, { expanded }, theme, { args }) as any);

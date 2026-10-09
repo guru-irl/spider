@@ -48,7 +48,7 @@
 .role-stack{position:relative}.role-stack-svg{display:block;width:100%;height:32px;border-radius:999px;overflow:hidden;background:var(--usage-control)}
 .role-segment{cursor:help}.role-segment:focus-visible{outline:none}.role-segment:focus-visible rect{stroke:var(--usage-focus-ring);stroke-width:3}
 .role-stack text.segment-share{fill:var(--usage-ground);font-family:var(--usage-code);font-size:11px;font-weight:700}
-.role-tooltip{position:absolute;bottom:calc(100% + 12px);left:0;background:var(--usage-surface);color:var(--usage-ink);border:1px solid var(--usage-border);border-radius:10px;padding:12px 15px;min-width:238px;z-index:10;pointer-events:none;font-size:12px}.role-tooltip h3{margin-bottom:4px;font-size:12px}
+.role-tooltip{position:absolute;bottom:calc(100% + 12px);left:0;background:var(--usage-surface);color:var(--usage-ink);border:1px solid var(--usage-border);border-radius:10px;padding:12px 15px;min-width:238px;z-index:10;pointer-events:none;font-size:12px}.role-tooltip h3{margin-bottom:4px;font-size:12px}.role-tooltip.below{bottom:auto;top:calc(100% + 12px)}
 [data-panel=sessions] :is(.chart-graphic,.table-region){overflow:auto;max-height:720px;scrollbar-gutter:stable}
 [data-panel=sessions] thead{position:sticky;top:0;background:var(--usage-ground);z-index:2}
 .sessions-sentinel{height:1px}
@@ -58,7 +58,7 @@
 .overview-page [data-scroll]::-webkit-scrollbar{width:8px;height:8px}
 .overview-page [data-scroll]::-webkit-scrollbar-track{background:var(--usage-ground)}
 .overview-page [data-scroll]::-webkit-scrollbar-thumb{background:var(--usage-muted);border-radius:8px}
-.overview-page [data-scroll]:focus-visible{outline-offset:-2px}
+.overview-page [data-scroll]:focus-visible{outline-offset:2px}
 @media(max-width:1350px){.overview-grid{grid-template-columns:minmax(0,1.75fr) minmax(0,1fr)}.overview-page .model-name{font-size:12px}.model-note{flex-wrap:wrap}:is(.sessions-table,.sessions-numeric-table) td{padding-left:9px;padding-right:9px}}
 
 .role-key[data-role=own]{border-color:var(--usage-role-own)}.role-key[data-role=workers]{border-color:var(--usage-role-workers)}.role-key[data-role=reviewers]{border-color:var(--usage-role-reviewers)}.role-key[data-role=others]{border-color:var(--usage-role-others)}

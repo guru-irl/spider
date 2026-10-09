@@ -21,8 +21,8 @@ function nearEnd() {
   expect(observer, "a live sessions sentinel observer").toBeDefined();
   observer!.callback([{ isIntersecting: true, target: observer!.targets[0]! } as IntersectionObserverEntry], {} as IntersectionObserver);
 }
-function setup(get?: (path: string, params: URLSearchParams) => Promise<ApiEnvelope<unknown>>, initial = overviewFixture()) {
-  const doc = new PlainDocument(), root = doc.createElement("main"); doc.body.append(root);
+function setup(get?: (path: string, params: URLSearchParams) => Promise<ApiEnvelope<unknown>>, initial = overviewFixture(), prepare?: (doc: PlainDocument) => void) {
+  const doc = new PlainDocument(); prepare?.(doc); const root = doc.createElement("main"); doc.body.append(root);
   const requests: { path: string; params: URLSearchParams; signal: AbortSignal | undefined }[] = [], routes: { route: DashboardRouteV4; replace: boolean }[] = [];
   const controller = new AbortController();
   const ctx: DashboardPageContext = { document: doc.asDocument(), root: root as unknown as HTMLElement, signal: controller.signal,
@@ -303,12 +303,15 @@ it("loads only one next page in flight, appends ranks, preserves total and stops
   let finish!: (reply: ApiEnvelope<unknown>) => void;
   const s = setup(async path => path === "/api/sessions" ? new Promise(resolve => { finish = resolve; }) : envelope(d), d); await settle();
   const scroll = s.nodes().find(n => n.getAttribute("aria-label") === "Sessions chart")!;
+  const unaffected = s.root.children.filter(n => !n.hasAttribute("data-panel") || n.getAttribute("data-panel") !== "sessions");
   Object.assign(scroll, { scrollTop: 240 }); scroll.focus();
   nearEnd(); nearEnd(); await settle();
   expect(s.requests.filter(r => r.path === "/api/sessions")).toHaveLength(1);
-  expect(s.requests.at(-1)!.params.get("limit")).toBe("10");
+  expect(s.requests.at(-1)!.params.get("limit")).toBe("50");
   finish(envelope(sessionsFixture({ total: 30, offset: 10, nextOffset: 20, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `paged-${i + 10}` })) }))); await settle();
   expect(s.nodes().filter(n => n.hasAttribute("data-session"))).toHaveLength(20);
+  const unchanged = s.root.children.filter(n => n.getAttribute("data-panel") !== "sessions");
+  unaffected.forEach((node, index) => expect(unchanged[index]).toBe(node));
   const replacement = s.nodes().find(n => n.getAttribute("aria-label") === "Sessions chart")!;
   expect((replacement as unknown as HTMLElement).scrollTop).toBe(240); expect(s.doc.activeElement).toBe(replacement);
   nearEnd(); await settle(); expect(s.requests.at(-1)!.params.get("offset")).toBe("20");
@@ -324,4 +327,43 @@ it("a late sessions page after disposal cannot repaint", async () => {
   nearEnd(); await settle(); s.page.dispose();
   finish(envelope(sessionsFixture({ rows: [{ ...d.sessions.rows[0]!, name: "Late sessions page" }] }))); await settle();
   expect(s.root.textContent).not.toContain("Late sessions page"); expect(s.requests.at(-1)!.signal!.aborted).toBe(true);
+});
+
+it("daily chart releases its observer, resize listener and pending frame on repaint and disposal", async () => {
+  const observers: { target?: Element; disconnect: ReturnType<typeof vi.fn> }[] = [];
+  vi.stubGlobal("ResizeObserver", class {
+    record = { target: undefined as Element | undefined, disconnect: vi.fn() };
+    constructor() { observers.push(this.record); }
+    observe(target: Element) { this.record.target = target; }
+    disconnect() { this.record.disconnect(); }
+  });
+  const view = new EventTarget(); let frame = 0;
+  const add = vi.spyOn(view, "addEventListener"), remove = vi.spyOn(view, "removeEventListener");
+  const request = vi.fn(() => ++frame), cancel = vi.fn();
+  Object.assign(view, { requestAnimationFrame: request, cancelAnimationFrame: cancel });
+  const s = setup(undefined, overviewFixture(), doc => {
+    Object.defineProperty(doc, "defaultView", { value: view });
+    const create = doc.createElementNS.bind(doc);
+    vi.spyOn(doc, "createElementNS").mockImplementation((ns, tag) => {
+      const node = create(ns, tag);
+      if (tag === "svg") Object.defineProperty(node, "getBoundingClientRect", { value: () => ({ width: 0, height: 0 }) });
+      return node;
+    });
+  });
+  try {
+    await settle();
+    const first = observers.find(o => (o.target as unknown as PlainElement)?.className === "daily-chart")!;
+    expect(first).toBeDefined(); expect(request).toHaveBeenCalledOnce();
+    // Pace registers first; the daily listener is the last resize registration.
+    const dailyResize = add.mock.calls.filter(([kind]) => kind === "resize").at(-1)![1];
+    await s.page.refresh();
+    expect(first.disconnect).toHaveBeenCalledOnce(); expect(remove).toHaveBeenCalledWith("resize", dailyResize);
+    expect(cancel).toHaveBeenCalledWith(1);
+    const latest = observers.findLast(o => (o.target as unknown as PlainElement)?.className === "daily-chart")!;
+    const latestResize = add.mock.calls.filter(([kind]) => kind === "resize").at(-1)![1];
+    expect(latest).not.toBe(first); expect(request).toHaveBeenCalledTimes(2);
+    s.page.dispose();
+    expect(latest.disconnect).toHaveBeenCalledOnce(); expect(remove).toHaveBeenCalledWith("resize", latestResize);
+    expect(cancel).toHaveBeenCalledWith(2);
+  } finally { s.page.dispose(); }
 });

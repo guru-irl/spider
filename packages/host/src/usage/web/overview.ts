@@ -39,8 +39,10 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
   let disposed = false, generation = 0, sessionsGeneration = 0, controller: AbortController | undefined, sessionsController: AbortController | undefined;
   let paceNode: HTMLElement | undefined, sort: SessionSort = "credits", roving = 0, sessionsExpanded = false;
   let sessionsLoading = false;
-  let viewCleanups: (() => void)[] = [];
-  const disposeViews = () => { viewCleanups.forEach(cleanup => cleanup()); viewCleanups = []; };
+  let viewCleanups: (() => void)[] = [], sessionCleanups: (() => void)[] = [];
+  let positionDaily: (() => void) | undefined;
+  const disposeSessionViews = () => { sessionCleanups.forEach(cleanup => cleanup()); sessionCleanups = []; };
+  const disposeViews = () => { viewCleanups.forEach(cleanup => cleanup()); viewCleanups = []; positionDaily = undefined; disposeSessionViews(); };
   const roleRoving = new Map<string, number>();
   let customOpen = query.range === "custom", fromInput = localInput(query.from), toInput = localInput(query.to), rangeError = "";
   let loading: Promise<void> | undefined;
@@ -111,15 +113,19 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     const svg = svgNode("svg", { viewBox: "0 0 900 350", preserveAspectRatio: "xMidYMid meet", class: "daily-chart", role: "group" });
     const draw = (width: number, height: number) => {
       const key = svg.contains(document.activeElement) ? focusKey() : null;
-      svg.replaceChildren(); svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const existing = Array.from(svg.children).filter(n => n.hasAttribute("data-bucket")) as SVGElement[];
+      for (const child of Array.from(svg.children)) if (!child.hasAttribute("data-bucket")) child.remove();
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const backdrop = (...children: SVGElement[]) => { for (const child of children) { if (existing[0]) svg.insertBefore(child, existing[0]); else svg.append(child); } };
       const axis = niceAxis(Math.max(1, ...known)), max = axis.ceiling, step = Math.max(1, width - 90) / d.buckets.length, baseline = height - 54, plotHeight = Math.max(1, height - 110);
-      svg.append(svgNode("text", { x: 66, y: 30, class: "daily-unit" }, query.unit));
-      for (let tick = 0; tick <= Math.round(max / axis.step); tick++) { const value = tick * axis.step, y = baseline - value / max * plotHeight; svg.append(svgNode("path", { d: `M66 ${y}H${width - 10}`, class: "daily-gridline" }), svgNode("text", { x: 56, y: y + 5, "text-anchor": "end", class: "numeric" }, formatValue({ ...d.total, credits: value, tokens: { ...d.total.tokens, total: value } }, query.unit))); }
+      backdrop(svgNode("text", { x: 66, y: 30, class: "daily-unit" }, query.unit));
+      for (let tick = 0; tick <= Math.round(max / axis.step); tick++) { const value = tick * axis.step, y = baseline - value / max * plotHeight; backdrop(svgNode("path", { d: `M66 ${y}H${width - 10}`, class: "daily-gridline" }), svgNode("text", { x: 56, y: y + 5, "text-anchor": "end", class: "numeric" }, formatValue({ ...d.total, credits: value, tokens: { ...d.total.tokens, total: value } }, query.unit))); }
       const groups: SVGElement[] = [];
       roving = Math.min(roving, d.buckets.length - 1);
       d.buckets.forEach((bucket, index) => {
         const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"), selected = query.buckets.includes(bucket.key);
-        const g = keyed(svgNode("g", { "data-bucket": bucket.key, "data-value": amount(bucket.total, query.unit) ?? "unavailable", role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
+        const g = existing[index] ?? keyed(svgNode("g", { "data-bucket": bucket.key, "data-value": amount(bucket.total, query.unit) ?? "unavailable", role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
+        g.replaceChildren();
         let y = baseline; const x = 72 + index * step, w = Math.max(1, step - Math.min(25, step / 4));
         g.append(svgNode("rect", { x: x - 4, y: 20, width: w + 8, height: baseline - 12, class: "bucket-hit" }));
         for (const row of bucket.models) { const n = amount(row.value, query.unit); if (n === null) continue; const height = n / max * plotHeight; y -= height;
@@ -128,12 +134,14 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
         }
         g.append(svgNode("rect", { x: x - 3, y: y - 3, width: w + 6, height: Math.max(0, baseline - y) + 6, class: "bucket-focus" }));
         const tooltip = svgNode("title", {}, `${label}\n${bucket.models.map(m => `${m.model}: ${formatValue(m.value, query.unit)} ${query.unit}`).join("\n")}`); g.append(tooltip);
-        g.addEventListener("click", e => { const event = e as MouseEvent; if (event.button && event.button !== 0) return; roving = index; groups.forEach((bar, i) => bar.setAttribute("tabindex", i === index ? "0" : "-1")); g.focus(); if (event.metaKey || event.ctrlKey) select(bucket.key); });
-        g.addEventListener("keydown", e => { const event = e as KeyboardEvent;
-          if (["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) { event.preventDefault(); roving = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1 : Math.max(0, Math.min(groups.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))); groups.forEach((bar, i) => bar.setAttribute("tabindex", i === roving ? "0" : "-1")); groups[roving]!.focus(); }
-          else if (event.key === " " || event.key === "Spacebar" || event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); roving = index; select(bucket.key); }
-        });
-        groups.push(g); svg.append(g);
+        if (!existing[index]) {
+          g.addEventListener("click", e => { const event = e as MouseEvent; if (event.button && event.button !== 0) return; roving = index; groups.forEach((bar, i) => bar.setAttribute("tabindex", i === index ? "0" : "-1")); g.focus(); if (event.metaKey || event.ctrlKey) select(bucket.key); });
+          g.addEventListener("keydown", e => { const event = e as KeyboardEvent;
+            if (["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) { event.preventDefault(); roving = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1 : Math.max(0, Math.min(groups.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))); groups.forEach((bar, i) => bar.setAttribute("tabindex", i === roving ? "0" : "-1")); groups[roving]!.focus(); }
+            else if (event.key === " " || event.key === "Spacebar" || event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); roving = index; select(bucket.key); }
+          });
+        }
+        groups.push(g); if (!existing[index]) svg.append(g);
         if (index % Math.ceil(d.buckets.length / Math.max(1, Math.floor((width - 90) / (d.bucketSize === "hour" ? 60 : 105)))) === 0) svg.append(svgNode("text", { x: x + w / 2, y: height - 21, "text-anchor": "middle", class: "numeric" }, d.bucketSize === "hour" ? formatLocalTime(bucket.key, query.tz).slice(-5) : label));
       });
       restoreFocus(key);
@@ -145,6 +153,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
       if (width > 0 && height > 0 && svg.getAttribute("viewBox") !== `0 0 ${width} ${height}`) draw(width, height);
     };
     if (document.defaultView) {
+      positionDaily = position;
       const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(position) : undefined;
       observer?.observe(svg); document.defaultView.addEventListener("resize", position);
       const frame = document.defaultView.requestAnimationFrame(position);
@@ -196,7 +205,14 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
       group.append(svgNode("rect", { x, y: 0, width: w, height: 32, fill: `var(--usage-role-${split.role})` }));
       if (share >= .14) group.append(svgNode("text", { x: x + w / 2, y: 21, "text-anchor": "middle", class: "segment-share" }, percent(share)));
       const tip = element(document, "div", undefined, "role-tooltip"); tip.id = `role-tip-${index}-${split.role}`; tip.setAttribute("role", "tooltip"); tip.hidden = true; tip.append(element(document, "h3", roleNames[split.role]), element(document, "p", `${formatValue(split.value, "credits")} credits · ${formatValue(split.value, "tokens")} tokens`, "mono"), element(document, "p", `${percent(share)} · ${split.runs} runs`, "mono"));
-      const show = () => { tip.hidden = false; }, hide = () => { tip.hidden = true; };
+      const show = () => {
+        tip.hidden = false; tip.className = "role-tooltip";
+        if (!document.defaultView) return;
+        const region = nodes(root).find(n => n.getAttribute("data-scroll") === "sessions-chart" && n.contains(group));
+        if (!region) return;
+        const top = region.querySelector("thead")?.getBoundingClientRect().bottom ?? region.getBoundingClientRect().top;
+        if (tip.getBoundingClientRect().top < top) tip.className = "role-tooltip below";
+      }, hide = () => { tip.hidden = true; };
       group.addEventListener("pointerenter", show); group.addEventListener("pointerleave", hide); group.addEventListener("focus", show); group.addEventListener("blur", hide);
       const segmentIndex = groups.length;
       group.addEventListener("keydown", e => {
@@ -263,7 +279,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
           const observer = new IntersectionObserver(entries => {
             if (active && !region.hidden && entries.some(entry => entry.isIntersecting)) void loadSessions(true);
           }, { root: region, rootMargin: "0px 0px 160px 0px" });
-          observer.observe(sentinel); viewCleanups.push(() => { active = false; observer.disconnect(); });
+          observer.observe(sentinel); sessionCleanups.push(() => { active = false; observer.disconnect(); });
         }
       }
     }
@@ -281,8 +297,19 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     const key = focusKey(), paceOpen = paceNode?.getAttribute("data-open") === "true"; if (paceNode) disposePace(paceNode);
     paceNode = renderPace(document, data.pace, ctx.now(), paceOpen); keyed(paceNode.children[0]!, "pace");
     const grid = element(document, "div", undefined, "overview-grid"); grid.append(daily(data), models(data));
-    root.replaceChildren(paceNode, controls(), grid, sessions(sessionData ?? data.sessions), flow(data)); root.setAttribute("aria-busy", "false"); restoreFocus(key);
+    root.replaceChildren(paceNode, controls(), grid, sessions(sessionData ?? data.sessions), flow(data)); root.setAttribute("aria-busy", "false"); positionDaily?.(); restoreFocus(key);
     for (const n of nodes(root).filter(n => n.hasAttribute("data-scroll"))) {
+      const saved = scrolls.get(n.getAttribute("data-scroll")); if (saved) { (n as HTMLElement).scrollTop = saved[0]!; (n as HTMLElement).scrollLeft = saved[1]!; }
+    }
+  }
+  function paintSessions(): void {
+    const section = nodes(root).find(n => n.getAttribute("data-panel") === "sessions");
+    if (!section || !data) return;
+    const key = focusKey();
+    const scrolls = new Map(nodes(section).filter(n => n.hasAttribute("data-scroll")).map(n => [n.getAttribute("data-scroll"), [(n as HTMLElement).scrollTop, (n as HTMLElement).scrollLeft]]));
+    disposeSessionViews();
+    const replacement = sessions(sessionData ?? data.sessions); section.replaceWith(replacement); restoreFocus(key);
+    for (const n of nodes(replacement).filter(n => n.hasAttribute("data-scroll"))) {
       const saved = scrolls.get(n.getAttribute("data-scroll")); if (saved) { (n as HTMLElement).scrollTop = saved[0]!; (n as HTMLElement).scrollLeft = saved[1]!; }
     }
   }
@@ -298,7 +325,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     if (control && !append) { control.disabled = true; control.setAttribute("aria-busy", "true"); }
     try {
       do {
-        const p = params({ ...frozen, range: "custom" }); p.set("sort", sort); p.set("offset", String(offset ?? 0)); p.set("limit", String(reload && append ? Math.min(100, Math.max(10, target - rows.length)) : 10));
+        const p = params({ ...frozen, range: "custom" }); p.set("sort", sort); p.set("offset", String(offset ?? 0)); p.set("limit", String(reload && append ? Math.min(100, Math.max(10, target - rows.length)) : append ? 50 : 10));
         const reply = await ctx.client.get<SessionsData>("/api/sessions", p, signal);
         if (disposed || signal.aborted || gen !== sessionsGeneration || expectedGeneration !== generation) return;
         if (reply.revision !== expectedRevision) { void refresh(); return; }
@@ -306,7 +333,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
         if (next !== null && (next <= (offset ?? 0) || !reply.data.rows.length)) throw new Error("Invalid sessions page");
         rows.push(...reply.data.rows); current = { ...reply.data, rows, offset: 0 }; offset = next;
       } while (reload && append && offset !== null && rows.length < target);
-      sessionData = current; sessionsExpanded = append; paint();
+      sessionData = current; sessionsExpanded = append; paintSessions();
     } catch (error) {
       if (!disposed && !signal.aborted && gen === sessionsGeneration) {
         const section = nodes(root).find(n => n.getAttribute("data-panel") === "sessions") as HTMLElement | undefined;

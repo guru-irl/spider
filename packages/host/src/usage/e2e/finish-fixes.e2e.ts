@@ -64,3 +64,34 @@ test("session identities share a text baseline with project pills in every row",
   }));
   expect(gaps.every(n => n <= .5)).toBe(true);
 });
+
+test("initial daily geometry is CSS sized before any resize callback or frame", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.requestAnimationFrame = () => 1;
+    window.cancelAnimationFrame = () => {};
+    window.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+  });
+  await installFixtureRoutes(page); await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto("/#/");
+  const chart = page.locator(".daily-chart"); await expect(chart).toBeVisible();
+  const geometry = await chart.evaluate((n: SVGSVGElement) => {
+    const box = n.getBoundingClientRect(), unit = n.querySelector(".daily-unit")!.getBoundingClientRect();
+    return { width: Math.abs(n.viewBox.baseVal.width - box.width), height: Math.abs(n.viewBox.baseVal.height - box.height), topGap: unit.y - box.y };
+  });
+  expect(geometry.width).toBeLessThan(1); expect(geometry.height).toBeLessThan(1); expect(geometry.topGap).toBeLessThan(28);
+});
+
+test("resize redraw keeps the selected daily bar node and keyboard focus", async ({ page }) => {
+  const routes = await installFixtureRoutes(page), d = overviewFixture();
+  d.range.buckets = [d.buckets[4]!.key]; routes.replace("/api/overview", { status: 200, body: envelope(d) });
+  await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto("/#/");
+  const bar = page.locator('.daily-chart [data-bucket]').nth(4); await bar.focus();
+  const original = await bar.elementHandle();
+  for (const width of [1280, 1600, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expect.poll(() => page.locator(".daily-chart").evaluate((n: SVGSVGElement) => Math.abs(n.viewBox.baseVal.width - n.getBoundingClientRect().width))).toBeLessThan(1);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(await original!.evaluate(n => n.isConnected && n === document.activeElement)).toBe(true);
+    await expect(bar).toBeFocused(); await expect(bar).toHaveAttribute("aria-pressed", "true");
+    await expect(bar.locator(".bucket-focus")).toHaveCSS("stroke", "rgb(243, 234, 219)");
+  }
+});

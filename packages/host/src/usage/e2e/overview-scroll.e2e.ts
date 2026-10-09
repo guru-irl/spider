@@ -2,12 +2,13 @@ import { test, expect, type Page } from "@playwright/test";
 import { resolve } from "node:path";
 import { installFixtureRoutes, expectNoBrowserErrors } from "./fixtures.js";
 import { overviewFixture, sessionsFixture, envelope } from "../__tests__/fixtures/redesign-contract.js";
-const shots = resolve(".spider/scratch/dash-overview/shots");
+const shots = resolve(process.env.SPIDER_OVERVIEW_EVIDENCE || ".spider/scratch/playwright/shots");
+const evidence = !!process.env.SPIDER_OVERVIEW_EVIDENCE;
 const DAY = 86400000;
 async function world(page: Page) {
   await installFixtureRoutes(page);
   const seed = overviewFixture(), row = seed.sessions.rows[0]!;
-  const rows = Array.from({ length: 35 }, (_, i) => ({ ...structuredClone(row), id: `scroll-${i}`, name: `Synthetic session ${i + 1}` }));
+  const rows = Array.from({ length: 125 }, (_, i) => ({ ...structuredClone(row), id: `scroll-${i}`, name: `Synthetic session ${i + 1}` }));
   const pages: URLSearchParams[] = [];
   await page.route("**/api/sessions?**", async route => {
     const p = new URL(route.request().url()).searchParams; pages.push(p);
@@ -38,14 +39,14 @@ async function unscaled(page: Page) {
 }
 test("daily text stays CSS-sized across presets, sixty days, tall cards and desktop widths", async ({ page }) => {
   const errors = expectNoBrowserErrors(page); await world(page); await unscaled(page);
-  await page.screenshot({ path: resolve(shots, "overview-7-days.png"), fullPage: true });
+  if (evidence) await page.screenshot({ path: resolve(shots, "overview-7-days.png"), fullPage: true });
   for (const label of ["24 h", "7 days", "30 days", "This month"]) {
     await page.getByRole("button", { name: label, exact: true }).click(); await unscaled(page);
     for (const width of [1280, 1440, 1600]) { await page.setViewportSize({ width, height: 1000 }); await unscaled(page); }
     await page.setViewportSize({ width: 1440, height: 1000 });
     const daily = await page.locator('[data-panel="daily"]').boundingBox(), models = await page.locator('[data-panel="models"]').boundingBox();
     expect(Math.abs(daily!.height - models!.height)).toBeLessThan(1);
-    if (label === "30 days") await page.screenshot({ path: resolve(shots, "overview-30-days.png"), fullPage: true });
+    if (label === "30 days" && evidence) await page.screenshot({ path: resolve(shots, "overview-30-days.png"), fullPage: true });
   }
   await page.getByRole("button", { name: "Custom", exact: true }).click();
   await page.getByLabel("From", { exact: true }).fill("2030-01-01T00:00"); await page.getByLabel("To", { exact: true }).fill("2030-03-02T00:00");
@@ -61,7 +62,7 @@ test("models list scrolls inside an equal-height card and its table is bounded",
   await expect(list).toHaveCSS("scrollbar-width", "auto");
   expect(await list.evaluate(n => (n as HTMLElement).offsetWidth - n.clientWidth)).toBeGreaterThanOrEqual(8);
   await list.focus(); await list.press("PageDown"); await expect.poll(() => list.evaluate(n => n.scrollTop)).toBeGreaterThan(0);
-  await page.screenshot({ path: resolve(shots, "overview-models-scrolled.png"), fullPage: true });
+  if (evidence) await page.screenshot({ path: resolve(shots, "overview-models-scrolled.png"), fullPage: true });
   await page.locator('[data-panel="models"]').getByRole("button", { name: "Table", exact: true }).click();
   const table = page.getByRole("region", { name: "Models table", exact: true }); expect(await table.evaluate(n => n.scrollHeight > n.clientHeight)).toBe(true);
 });
@@ -70,22 +71,58 @@ for (const mode of ["chart", "table"]) test(`sessions ${mode} scroll paginates, 
   if (mode === "table") await page.locator('[data-panel="sessions"]').getByRole("button", { name: "Table", exact: true }).click();
   const region = page.getByRole("region", { name: `Sessions ${mode}`, exact: true });
   await expect(region).toHaveAttribute("tabindex", "0"); await region.scrollIntoViewIfNeeded();
-  await expect(page.locator("tr[data-session]")).toHaveCount(20);
+  await expect(page.locator("tr[data-session]")).toHaveCount(60);
   expect(await region.evaluate(n => n.scrollHeight > n.clientHeight)).toBe(true);
   await region.focus(); await region.press("ArrowDown"); await expect.poll(() => region.evaluate(n => n.scrollTop)).toBeGreaterThan(0); await region.press("PageDown"); await expect.poll(() => region.evaluate(n => n.scrollTop)).toBeGreaterThan(0);
-  for (const count of [30, 35]) { await region.evaluate(n => { n.scrollTop = n.scrollHeight; }); await expect.poll(() => page.locator("tr[data-session]").count()).toBeGreaterThanOrEqual(count); }
+  for (const count of [110, 125]) { await region.evaluate(n => { n.scrollTop = n.scrollHeight; }); await expect.poll(() => page.locator("tr[data-session]").count()).toBeGreaterThanOrEqual(count); }
   await expect(region).toBeFocused();
+  await expect(page.locator("tr[data-session]")).toHaveCount(125);
   const header = region.locator("thead"); expect((await header.boundingBox())!.y).toBeCloseTo((await region.boundingBox())!.y, 0);
   const before = requests.length; await region.evaluate(n => { n.scrollTop = 0; }); await region.press("End");
-  await expect(page.locator('[data-panel="sessions"] .summary-chips')).toContainText("Sessions35");
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(page.locator('[data-panel="sessions"] .summary-chips')).toContainText("Sessions125");
   await expect(page.getByRole("button", { name: /Show all/ })).toHaveCount(0); expect(requests.length).toBe(before);
-  expect(requests.every(p => p.get("limit") === "10" && p.get("range") === "custom")).toBe(true);
-  if (mode === "table") await page.screenshot({ path: resolve(shots, "overview-sessions-scrolled.png"), fullPage: true });
+  expect(requests.map(p => p.get("offset"))).toEqual(["10", "60", "110"]);
+  expect(requests.every(p => p.get("limit") === "50" && p.get("range") === "custom")).toBe(true);
+  if (mode === "table" && evidence) await page.screenshot({ path: resolve(shots, "overview-sessions-scrolled.png"), fullPage: true });
 });
 for (const [label, used, projected, danger] of [["normal", 35, 95, false], ["projected-over-budget", 35, 110, true], ["used-over-budget", 110, 110, true]] as const) test(`pace ${label} uses the budget rule`, async ({ page }) => {
   const routes = await installFixtureRoutes(page), d = overviewFixture(); Object.assign(d.pace, { used, projected, evenPace: 30, overPace: true, overBudget: used > 100 });
   routes.replace("/api/overview", { status: 200, body: envelope(d) }); await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto("/#/");
   await expect(page.locator(".month-pace")).toHaveAttribute("data-danger", String(danger));
   await expect(page.locator(".pace-fill")).toHaveCSS("fill", danger ? "rgb(248, 120, 92)" : "rgb(243, 234, 219)");
-  await page.screenshot({ path: resolve(shots, `overview-pace-${label}.png`), fullPage: true });
+  if (evidence) await page.screenshot({ path: resolve(shots, `overview-pace-${label}.png`), fullPage: true });
+});
+
+for (const [panel, labels] of [["sessions", ["Sessions chart", "Sessions table"]], ["models", ["Models list", "Models table"]]] as const) {
+  for (const [index, label] of labels.entries()) test(`${label} focus ring clears the content and sticky header`, async ({ page }) => {
+    await world(page);
+    if (index === 1) await page.locator(`[data-panel="${panel}"]`).getByRole("button", { name: "Table", exact: true }).click();
+    const region = page.getByRole("region", { name: label, exact: true });
+    await region.scrollIntoViewIfNeeded(); await page.keyboard.press("Tab"); await region.focus(); await expect(region).toBeFocused();
+    const ring = await region.evaluate(n => {
+      const css = getComputedStyle(n), box = n.getBoundingClientRect(), parent = n.closest(".overview-panel")!.getBoundingClientRect();
+      const reach = parseFloat(css.outlineOffset) + parseFloat(css.outlineWidth);
+      return { style: css.outlineStyle, offset: parseFloat(css.outlineOffset), within: box.left - reach >= parent.left && box.top - reach >= parent.top && box.right + reach <= parent.right && box.bottom + reach <= parent.bottom };
+    });
+    expect(ring.style).toBe("solid"); expect(ring.offset).toBeGreaterThanOrEqual(2); expect(ring.within).toBe(true);
+    if (evidence) await page.screenshot({ path: resolve(shots, `${panel}-${index ? "table" : "chart"}-focus.png`), fullPage: true });
+  });
+}
+test("the first session role tooltip stays inside the scroll region below the sticky header", async ({ page }) => {
+  await world(page);
+  const region = page.getByRole("region", { name: "Sessions chart", exact: true }); await region.scrollIntoViewIfNeeded();
+  await region.evaluate(n => { n.scrollTop = 0; });
+  const segment = region.locator(".role-segment").first(); await segment.focus();
+  const tip = region.locator(".role-tooltip").first(); await expect(tip).toBeVisible();
+  const a = (await tip.boundingBox())!, b = (await region.boundingBox())!, header = (await region.locator("thead").boundingBox())!;
+  expect(a.x).toBeGreaterThanOrEqual(b.x); expect(a.x + a.width).toBeLessThanOrEqual(b.x + b.width);
+  expect(a.y).toBeGreaterThanOrEqual(header.y + header.height); expect(a.y + a.height).toBeLessThanOrEqual(b.y + b.height);
+  expect(await tip.evaluate(n => {
+    const sheet = document.styleSheets[0]!, index = sheet.cssRules.length;
+    sheet.insertRule(".role-tooltip{pointer-events:auto}", index);
+    try { const r = n.getBoundingClientRect(); return n.contains(document.elementFromPoint(r.x + r.width / 2, r.y + 2)); }
+    finally { sheet.deleteRule(index); }
+  })).toBe(true);
+  if (evidence) await page.screenshot({ path: resolve(shots, "sessions-first-role-tooltip.png"), fullPage: true });
 });

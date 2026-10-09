@@ -265,9 +265,10 @@ export async function bootUsageWorker(
       if (guard() && (performance.now() - lastPublish >= SNAPSHOT_MS || first && progress.sourcesCompleted % 32 === 0)) publish(false);
     }
     if (!guard()) return;
-    // Billing freshness must not wait for the separate metadata backfill.
+    // Billing freshness must not wait for the separate metadata backfill. Once the
+    // backfill is complete the metadata step is a no-op, so the final publish suffices.
     backfill = "complete";
-    publish();
+    if (metadataBackfill !== "complete") publish();
     if (!guard()) return;
     const reprice = ledger!.repriceUnpriced(guard, dependencies.repriceBatchSize);
     repriceIncomplete = reprice.state !== "complete";

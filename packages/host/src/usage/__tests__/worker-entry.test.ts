@@ -144,14 +144,17 @@ it("multi-source cycles pay shared work once, publish bounded progress, and skip
     return ingestOnce(...args);
   };
   await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => d, ingest, now: () => clock });
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", metadataBackfill: "complete" }));
   expect(sharedWrites).toBe(1); expect(healthCalls).toBeLessThanOrEqual(2);
   const progress = snapshots(p).filter(s => s.backfill === "running" && (s as any).progress?.sourcesCompleted > 0);
   expect(progress.length).toBeGreaterThan(0);
   expect((progress[0] as any).progress).toMatchObject({ sourcesTotal: 40 });
   expect((progress[0] as any).progress.sourcesCompleted).toBeLessThan(40);
-  const before = calls; p.emit("message", { type: "refresh" });
-  await vi.waitFor(() => expect(snapshots(p).filter(s => s.backfill === "complete")).toHaveLength(2));
+  const before = calls, complete = () => snapshots(p).filter(s => s.backfill === "complete").length, completeBefore = complete();
+  p.emit("message", { type: "refresh" });
+  // The refresh pass must run and publish exactly once: nothing changed, metadata is complete.
+  await vi.waitFor(() => expect(complete()).toBe(completeBefore + 1));
+  await new Promise(resolve => setTimeout(resolve, 200)); expect(complete()).toBe(completeBefore + 1);
   expect(calls - before).toBeLessThanOrEqual(1); expect(sharedWrites).toBe(1);
 });
 it("multi-MiB sources do not pay fixed work once per tiny slice", async () => {

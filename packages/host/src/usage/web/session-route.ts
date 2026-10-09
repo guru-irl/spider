@@ -18,9 +18,9 @@ export function formatDuration(ms: number | null): string {
   const minutes = Math.round(ms / 60000); return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 function geometry(data: SessionData, unit: Unit, requestedWidth: number) {
-  const span = data.span;
+  const span = data.span ? { start: data.range.from, end: data.range.to } : null;
   const sorted = [...data.runs].sort((a, b) => (a.start ?? Infinity) - (b.start ?? Infinity) || (a.id ?? a.name).localeCompare(b.id ?? b.name));
-  const runs = sorted.filter(r => span && r.start !== null && (r.end !== null || r.status === "running"));
+  const runs = sorted.filter(r => span && r.start !== null && r.start < span.end && (r.end !== null || r.status === "running") && (r.status === "running" || r.end! >= span.start));
   const periods: Period[] = data.idleGaps.filter(g => g.end - g.start > 1800000).map(g => ({ start: g.start, end: g.end }));
   if (span && data.activePeriods.length) {
     let end = span.start;
@@ -99,7 +99,7 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
     for (const g of groups) { g.node.setAttribute("class", `run-route${run && g.run !== run ? " is-dim" : run === g.run ? " is-active" : ""}`); g.node.setAttribute("aria-pressed", String(g.run.id !== null && g.run.id === pinned)); }
     card.hidden = !run;
     if (run) {
-      const dl = element(document, "dl"); field(dl, "Role", run.role); field(dl, "Thinking", run.thinking ?? "unavailable"); field(dl, "Credits", formatValue(run.value, "credits")); field(dl, "Tokens", formatTokens(run.value.tokens.total)); field(dl, "Duration", formatDuration(run.durationMs)); field(dl, "Status", run.status ?? "unavailable");
+      const dl = element(document, "dl"); field(dl, "Role", run.role); field(dl, "Thinking", run.thinking ?? "unavailable"); field(dl, "Credits", formatValue(run.value, "credits")); if (run.value.unpricedCalls) field(dl, "Unpriced calls", formatTokens(run.value.unpricedCalls)); field(dl, "Tokens", formatTokens(run.value.tokens.total)); field(dl, "Duration", formatDuration(run.durationMs)); field(dl, "Status", run.status ?? "unavailable");
       card.replaceChildren(element(document, "h3", run.name), element(document, "p", run.model ?? "unavailable", "card-model mono"), dl);
       const branch = groups.find(g => g.run === run)?.branch;
       if (branch) {
@@ -142,6 +142,7 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
   };
   const draw = (width: number) => {
     const remembered = stops.find(stop => stop.node === document.activeElement)?.key, wasDismissed = dismissed;
+    const span = data.span ? { start: data.range.from, end: data.range.to } : null;
     const { layout, runs, x, width: effectiveWidth } = geometry(data, unit, width); groups = []; stops = []; svg.removeAttribute("tabindex"); svg.replaceChildren(); routeWidth = effectiveWidth; svg.setAttribute("viewBox", `0 0 ${effectiveWidth} 430`); svg.setAttribute("width", String(effectiveWidth)); svg.setAttribute("height", "430"); svg.setAttribute("preserveAspectRatio", "none");
     node(svg, "text", { x: 0, y: 20, class: "axis-title" }, `${unit === "credits" ? "Credits" : "Tokens"} per run`);
     const axis = niceAxis(layout.maxValue), ticks = Math.round(axis.ceiling / axis.step);
@@ -150,18 +151,18 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
       node(svg, "text", { x: LEFT - 14, y: y + 4, "text-anchor": "end", class: "numeric" }, new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(axis.step * i));
     }
     node(svg, "text", { x: LEFT - 14, y: BASE + 4, "text-anchor": "end", class: "numeric" }, "0");
-    if (data.span) {
-      const times = [data.span.start, ...data.activePeriods.flatMap(p => [p.start, p.end]).filter(ts => ts > data.span!.start && ts < data.span!.end), data.span.end];
+    if (span) {
+      const times = [span.start, ...data.activePeriods.flatMap(p => [p.start, p.end]).filter(ts => ts > span!.start && ts < span!.end), span.end];
       const labelWidth = (label: SVGTextElement) => {
         const measured = typeof label.getComputedTextLength === "function" ? label.getComputedTextLength() : 0;
         // Detached SVGs (and structure-only DOM fixtures) have no font metrics yet.
         return measured > 0 ? measured : (label.textContent?.length ?? 0) * 8;
       };
-      const endAt = x(data.span.end), endLabel = node(svg, "text", { x: endAt, y: 418, class: "numeric", "text-anchor": "end", "data-time-tick": data.span.end }, formatLocalTime(data.span.end, tz));
+      const endAt = x(span.end), endLabel = node(svg, "text", { x: endAt, y: 418, class: "numeric", "text-anchor": "end", "data-time-tick": span.end }, formatLocalTime(span.end, tz));
       const endLeft = endAt - labelWidth(endLabel); endLabel.remove();
       let lastRight = -Infinity;
       for (const ts of [...new Set(times)].sort((a, b) => a - b)) {
-        const end = ts === data.span.end, start = ts === data.span.start, at = x(ts);
+        const end = ts === span.end, start = ts === span.start, at = x(ts);
         const label = end ? endLabel : node(svg, "text", { x: at, y: 418, class: "numeric", "text-anchor": start ? "start" : "middle", "data-time-tick": ts }, formatLocalTime(ts, tz));
         const width = labelWidth(label), left = at - (end ? width : start ? 0 : width / 2), right = left + width;
         if (!start && !end && (left < lastRight + 8 || right > endLeft - 8)) { label.remove(); continue; }
@@ -172,7 +173,7 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
       for (const [index, bin] of data.ownCallBins.entries()) {
         const g = node(svg, "g", { tabindex: 0, role: "img", "data-event": "own", "aria-label": `Own calls: ${formatValue(bin.value, unit)} ${unit}` });
         node(g, "line", { x1: x(bin.start), x2: x(bin.end), y1: BASE, y2: BASE, class: "own-bin" });
-        eventCard(g, `own-${index}`, "Own calls", [["Credits", formatValue(bin.value, "credits")], ["Tokens", formatTokens(bin.value.tokens.total)], ["Calls", formatTokens(bin.value.calls)]]);
+        eventCard(g, `own-${index}`, "Own calls", [["Credits", formatValue(bin.value, "credits")], ["Tokens", formatTokens(bin.value.tokens.total)], ["Calls", formatTokens(bin.value.calls)], ...(bin.value.unpricedCalls ? [["Unpriced calls", formatTokens(bin.value.unpricedCalls)] as const] : [])]);
       }
       for (const b of layout.breaks) {
         node(svg, "path", { d: `M${b.startX} ${BASE - 5}l5 10 5 -10 5 10 5 -10 8 5`, class: "idle-break" });
@@ -207,7 +208,7 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
       });
     });
     for (const [index, c] of data.compaction.entries()) {
-      const g = node(svg, "g", { tabindex: 0, role: "img", "data-event": "compaction", "aria-label": `Compaction, ${formatValue(c.value, unit)} ${unit}` }); node(g, "line", { x1: x(c.ts), x2: x(c.ts), y1: BASE - 7, y2: BASE + 7, class: "compaction-tick" }); eventCard(g, `compaction-${index}`, "Compaction", [["Credits", formatValue(c.value, "credits")], ["Tokens", formatTokens(c.value.tokens.total)]]);
+      const g = node(svg, "g", { tabindex: 0, role: "img", "data-event": "compaction", "aria-label": `Compaction, ${formatValue(c.value, unit)} ${unit}` }); node(g, "line", { x1: x(c.ts), x2: x(c.ts), y1: BASE - 7, y2: BASE + 7, class: "compaction-tick" }); eventCard(g, `compaction-${index}`, "Compaction", [["Credits", formatValue(c.value, "credits")], ["Tokens", formatTokens(c.value.tokens.total)], ...(c.value.unpricedCalls ? [["Unpriced calls", formatTokens(c.value.unpricedCalls)] as const] : [])]);
     }
     for (const [index, gap] of data.idleGaps.entries()) {
       if (gap.end - gap.start <= 300000 || x(gap.end) - x(gap.start) < 2) continue;

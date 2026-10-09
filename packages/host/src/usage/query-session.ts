@@ -1,15 +1,18 @@
 import { DashboardQueryError, type DashboardQueryContext, type DashboardRoute, type Period } from "./dashboard-contract.js";
-import { RESPONSE_CAPS_V4, type OwnCallBin, type SessionData, type SessionRun, type Value } from "./dashboard-v4-contract.js";
+import { RESPONSE_CAPS_V4, type OwnCallBin, type SessionData, type SessionRun, type SessionRange, type Value } from "./dashboard-v4-contract.js";
+import { billingPeriod } from "./billing-pace.js";
+import { latestValidCounter } from "./latest-valid-counter.js";
+import { runRoleGroup, fourRoleGroup } from "./run-role.js";
 import { shortSessionName } from "./session-name.js";
 import { dashboardLabel, supportedDetailId } from "./dashboard-identities.js";
 import { DAY_MS, invalidQuery, safeTimestamp, validateParams } from "./dashboard-selection.js";
 import { flowFromCube, modelRows, readSessionCorrectedComponents, readCorrectionFactors, readSessionUsageCube, sessionCandidatesSql, sessionModelStyles, sessionOwnerResolver, sumValues, UNATTRIBUTED_SESSION_ID } from "./query-redesign-shared.js";
 
 type Session = { id: string; name: string; project: string | null };
-type Run = { id: string; sessionId: string | null; parentRunId: string | null; name: string | null; role: string | null; model: string | null; thinking: string | null; start: number | null; end: number | null; status: string | null };
+type Run = { id: string; sessionId: string | null; parentRunId: string | null; name: string | null; role: string | null; agent: string | null; model: string | null; thinking: string | null; start: number | null; end: number | null; status: string | null };
 type Identity = { sessionId: string | null; runId: string | null };
-type Scope = { ownerId: string | null; session: Session; runs: Run[]; bindings: { sessions: string; runs: string }; owns(row: Identity): boolean; sql: string };
-const candidateColumns = ["id", "ts", "session_id", "run_id", "actor", "model", "role", "run_name", "thinking", "aic", "price_status", "input", "cache_read", "cache_write", "output", "cache_write_1h", "reasoning", "is_report", "selection_shadowed", "fingerprint", "copied", "source_file", "entry_id"].map(column => `c.${column}`).join(",");
+type Scope = { ownerId: string | null; session: Session; runs: Run[]; bindings: { sessions: string; runs: string; from?: number; to?: number }; owns(row: Identity): boolean; sql: string };
+const candidateColumns = ["id", "ts", "session_id", "run_id", "actor", "model", "role", "agent", "run_name", "thinking", "aic", "price_status", "input", "cache_read", "cache_write", "output", "cache_write_1h", "reasoning", "is_report", "selection_shadowed", "fingerprint", "copied", "source_file", "entry_id"].map(column => `c.${column}`).join(",");
 
 /** Discover identities from the small durable dictionary and metadata, not an
  * all-history raw-call pass. The shared resolver fails closed on ambiguous evidence. */
@@ -17,7 +20,7 @@ function scopeFor(ctx: DashboardQueryContext, id: string): Scope {
   if (!supportedDetailId(id)) throw new DashboardQueryError("not-found");
   const unattributed = id === UNATTRIBUTED_SESSION_ID;
   const sessions = ctx.db.prepare("SELECT id,name,project FROM sessions").all() as Session[];
-  const runs = ctx.db.prepare(`SELECT id,session_id AS sessionId,parent_run_id AS parentRunId,name,role,model,thinking,
+  const runs = ctx.db.prepare(`SELECT id,session_id AS sessionId,parent_run_id AS parentRunId,name,role,agent,model,thinking,
     started_at AS start,ended_at AS end,status FROM runs_meta`).all() as Run[];
   const dictionary = ctx.db.prepare("SELECT dimension,value FROM dimension_values WHERE dimension IN ('session','run') AND has_value=1").all() as { dimension: string; value: string }[];
   const resolveOwner = sessionOwnerResolver(ctx, [...new Set([...sessions.map(s => s.id), ...dictionary.filter(row => row.dimension === "session").map(row => row.value), id])]);
@@ -98,22 +101,23 @@ function status(value: string | null): SessionRun["status"] {
     default: return null;
   }
 }
-type RunFact = Identity & { name: string | null; model: string | null; role: string | null; thinking: string | null };
-function sessionRuns(ctx: DashboardQueryContext, scope: Scope, rows: readonly { runId: string | null; value: Value }[], styles: ReturnType<typeof sessionModelStyles>): SessionRun[] {
-  const facts = (ctx.db.prepare(`${scope.sql} SELECT session_id AS sessionId,run_id AS runId,run_name AS name,model,role,thinking
-    FROM session_candidates WHERE run_id IS NOT NULL GROUP BY session_id,run_id,run_name,model,role,thinking`).all(scope.bindings) as RunFact[]).filter(scope.owns);
+type RunFact = Identity & { name: string | null; model: string | null; role: string | null; agent: string | null; thinking: string | null };
+function sessionRuns(ctx: DashboardQueryContext, scope: Scope, rows: readonly { runId: string | null; value: Value }[], styles: ReturnType<typeof sessionModelStyles>, includeMetadata: boolean): SessionRun[] {
+  const facts = (ctx.db.prepare(`${scope.sql} SELECT session_id AS sessionId,run_id AS runId,run_name AS name,model,role,agent,thinking
+    FROM session_candidates WHERE run_id IS NOT NULL GROUP BY session_id,run_id,run_name,model,role,agent,thinking`).all(scope.bindings) as RunFact[]).filter(scope.owns);
   const metadata = new Map<string, Run[]>(), labels = new Map<string, RunFact[]>(), values = new Map<string, Value[]>();
   for (const run of scope.runs) { const list = metadata.get(run.id) ?? []; list.push(run); metadata.set(run.id, list); }
   for (const row of facts) { const list = labels.get(row.runId!) ?? []; list.push(row); labels.set(row.runId!, list); }
   for (const row of rows) if (row.runId !== null) { const list = values.get(row.runId) ?? []; list.push(row.value); values.set(row.runId, list); }
-  return [...new Set([...metadata.keys(), ...labels.keys(), ...values.keys()])].sort().map(id => {
+  return [...new Set([...(includeMetadata ? metadata.keys() : []), ...labels.keys(), ...values.keys()])].sort().map(id => {
     const meta = metadata.get(id) ?? [], actual = labels.get(id) ?? [];
     // Disagreeing metadata identities never choose an arbitrary private database.
-    const label = (field: "name" | "model" | "role" | "thinking") => meta.some(row => row[field] !== null)
+    const label = (field: "name" | "model" | "role" | "agent" | "thinking") => meta.some(row => row[field] !== null)
       ? unanimous(meta.map(row => row[field])) : unanimous(actual.map(row => row[field]));
     const start = timestamp(unanimous(meta.map(row => row.start))), end = timestamp(unanimous(meta.map(row => row.end)));
     const model = dashboardLabel("model", label("model"));
-    return { id: supportedDetailId(id) ? id : null, name: dashboardLabel("runName", label("name") ?? id)!, role: dashboardLabel("role", label("role")) ?? "other",
+    return { id: supportedDetailId(id) ? id : null, name: dashboardLabel("runName", label("name") ?? id)!, role: dashboardLabel("role", label("agent") ?? label("role")) ?? "other",
+      roleGroup: fourRoleGroup(runRoleGroup(unanimous(actual.map(row => row.role)) ?? label("role"), unanimous(actual.map(row => row.agent)) ?? label("agent"))),
       model, thinking: dashboardLabel("thinking", label("thinking")), start, end, durationMs: start !== null && end !== null && end >= start ? end - start : null,
       status: status(unanimous(meta.map(row => row.status))), value: sumValues(values.get(id) ?? []), style: model === null ? null : styles.get(model) ?? null };
   });
@@ -132,7 +136,7 @@ const knownSum = (a: number | null, b: number | null) => a === null && b === nul
 function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionData {
   const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
   const envelopeBytes = () => bytes({ apiVersion: 1, revision: ctx.revision, generatedAt: ctx.now(),
-    period: data.span ?? { start: ctx.now(), end: ctx.now() }, data });
+    period: { start: data.range.from, end: data.range.to }, data });
   const cap = RESPONSE_CAPS_V4["/api/session/<id>"] - 1024;
   let wireBytes = envelopeBytes();
   if (wireBytes <= cap) return data;
@@ -172,7 +176,7 @@ function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionDa
       { size: data.runs.length > 1 ? runBytes : 0, merge: () => {
         runs ??= [...data.runs].sort(runCost);
         const a = runs.shift()!, b = runs.shift()!;
-        const combined: SessionRun = { id: null, name: "Combined runs", role: "other", model: null, thinking: null,
+        const combined: SessionRun = { id: null, name: "Combined runs", role: "other", roleGroup: "others", model: null, thinking: null,
           start: null, end: null, durationMs: null, status: null, value: sumValues([a.value, b.value]), style: null };
         // Sorted reinsertion lets a growing summary compete with other cheap runs.
         let lo = 0, hi = runs.length;
@@ -204,8 +208,26 @@ function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionDa
   return data;
 }
 
-export function querySession(ctx: DashboardQueryContext, id: string, _tz: string): SessionData {
-  const scope = scopeFor(ctx, id), span = periodFor(ctx, scope);
+function scopedRange(scope: Scope, range: SessionRange): Scope {
+  // Time filtering follows global canonical selection, so out-of-range reports and copies cannot reappear.
+  return { ...scope, bindings: { ...scope.bindings, ...range },
+    sql: `${scope.sql.replace(", session_candidates AS MATERIALIZED (", ", whole_session_candidates AS MATERIALIZED (")},
+      session_candidates AS MATERIALIZED (SELECT * FROM whole_session_candidates WHERE ts>=@from AND ts<@to)` };
+}
+function defaultSessionRange(ctx: DashboardQueryContext, scope: Scope, span: Period | null, current: SessionRange): SessionRange {
+  if (!span) return current;
+  const selected = scopedRange(scope, current);
+  const activity = ctx.db.prepare(`${selected.sql} SELECT DISTINCT session_id AS sessionId,run_id AS runId FROM session_candidates`).all(selected.bindings) as Identity[];
+  if (activity.some(scope.owns)) return current;
+  const last = new Date(span.end - 1);
+  return { from: Date.UTC(last.getUTCFullYear(), last.getUTCMonth(), 1), to: Date.UTC(last.getUTCFullYear(), last.getUTCMonth() + 1, 1) };
+}
+export function querySession(ctx: DashboardQueryContext, id: string, _tz: string, requested?: SessionRange): SessionData {
+  if (requested && (!safeTimestamp(requested.from) || !safeTimestamp(requested.to) || requested.from >= requested.to)) invalidQuery();
+  const whole = scopeFor(ctx, id), period = periodFor(ctx, whole), month = billingPeriod(ctx.now(), latestValidCounter(ctx.db, ctx.now()));
+  const billingMonth = { from: month.start, to: month.end }, range = requested ?? defaultSessionRange(ctx, whole, period, billingMonth);
+  const span = period ? { ...period, first: period.start, last: period.end - 1 } : null;
+  const scope = scopedRange(whole, range), selected = { start: range.from, end: range.to };
   const own = (ctx.db.prepare(`${scope.sql} SELECT id,ts,session_id AS sessionId,run_id AS runId,
     (CAST(ts/${DAY_MS} AS INTEGER)+1)*${DAY_MS} AS endpoint,aic AS credits,1 AS calls,price_status='unpriced' AS unpricedCalls,
     input,cache_read AS cacheRead,cache_write AS cacheWrite,output,cache_write_1h AS cacheWrite1h,reasoning FROM session_candidates
@@ -218,15 +240,16 @@ export function querySession(ctx: DashboardQueryContext, id: string, _tz: string
     else activePeriods.at(-1)!.end = call.ts + 1;
   }
   const empty = sumValues([]);
-  const cube = span === null ? null : readSessionUsageCube(ctx, span, scope);
+  const cube = span === null ? null : readSessionUsageCube(ctx, selected, scope);
   const total = cube?.total ?? empty, flow = cube ? flowFromCube(cube) : { total, edges: [], models: [] };
   // Session timestamps need no server-side local buckets. The browser formats
   // labels in tz; correction and scoped grouping stay UTC for every zone.
-  const components = span ? readSessionCorrectedComponents(ctx, span, gaps.map(gap => gap.next)) : new Map();
-  const runs = sessionRuns(ctx, scope, cube?.rows ?? [], cube ? sessionModelStyles(cube) : new Map()), compaction = span ? compactions(ctx, scope, span) : [];
-  return boundResponse(ctx, { id, name: dashboardLabel("runName", scope.session.name)!, project: dashboardLabel("project", scope.session.project), span, total,
+  const components = span ? readSessionCorrectedComponents(ctx, selected, gaps.map(gap => gap.next)) : new Map();
+  const includeMetadata = period !== null && range.from <= period.start && range.to >= period.end;
+  const runs = sessionRuns(ctx, scope, cube?.rows ?? [], cube ? sessionModelStyles(cube) : new Map(), includeMetadata), compaction = span ? compactions(ctx, scope, selected) : [];
+  return boundResponse(ctx, { id, name: dashboardLabel("runName", scope.session.name)!, project: dashboardLabel("project", scope.session.project), span, range, billingMonth, total,
     stats: { runs: runs.length, ownCalls: own.length, compaction: compaction.reduce((n, event) => n + event.value.calls, 0), idleGaps: gaps.length }, runs,
-    ownCallBins: span ? ownBins(ctx, span, own, activePeriods) : [], compaction,
+    ownCallBins: span ? ownBins(ctx, selected, own, activePeriods) : [], compaction,
     idleGaps: gaps.map(gap => ({ start: gap.start, end: gap.end, cacheWriteCredits: components.get(gap.next)?.cacheWriteCredits ?? null })),
     activePeriods, models: cube ? modelRows(cube) : [], flow, detailsBinned: false });
 }
@@ -234,7 +257,14 @@ export function querySession(ctx: DashboardQueryContext, id: string, _tz: string
 export function sessionRoute(id: string): DashboardRoute {
   if (!supportedDetailId(id)) invalidQuery();
   return { path: `/api/session/${id}`, handle: (ctx, params) => {
-    validateParams(params, ["tz"]);
-    return querySession(ctx, id, params.get("tz") ?? "UTC");
+    validateParams(params, ["tz", "from", "to"]);
+    if (params.has("from") !== params.has("to")) invalidQuery();
+    let range: SessionRange | undefined;
+    if (params.has("from")) {
+      const from = params.get("from")!, to = params.get("to")!;
+      if (!/^\d+$/.test(from) || !/^\d+$/.test(to)) invalidQuery();
+      range = { from: Number(from), to: Number(to) };
+    }
+    return querySession(ctx, id, params.get("tz") ?? "UTC", range);
   } };
 }

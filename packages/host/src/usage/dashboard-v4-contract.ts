@@ -51,8 +51,12 @@ export type OverviewDataV4 = {
   buckets: readonly Bucket[]; selectedTotal: Value; models: readonly ModelRow[];
   unpriced: readonly { reason: string; calls: number }[]; sessions: SessionsData; flow: FlowData;
 };
+export type SessionRange = { from: number; to: number };
+export type SessionQuery = { tz: string; range?: SessionRange };
+/** start/end remain for existing consumers; first/last are the inclusive whole-session activity endpoints. */
+export type SessionSpan = Period & { first: number; last: number };
 export type SessionRun = {
-  id: string | null; name: string; role: string; model: string | null; thinking: string | null;
+  id: string | null; name: string; role: string; roleGroup: Role; model: string | null; thinking: string | null;
   start: number | null; end: number | null; durationMs: number | null;
   /** Unknown legacy terminal status remains null, never guessed. */
   status: RunStatus | null; value: Value; style: ModelStyle | null;
@@ -62,7 +66,7 @@ export type OwnCallBin = Period & { value: Value };
 /** Duration is end - start; no redundant id or period copy. */
 export type IdleGap = { start: number; end: number; cacheWriteCredits: number | null };
 export type SessionData = {
-  id: string; name: string; project: string | null; span: Period | null; total: Value;
+  id: string; name: string; project: string | null; span: SessionSpan | null; range: SessionRange; billingMonth: SessionRange; total: Value;
   stats: { runs: number; ownCalls: number; compaction: number; idleGaps: number;
     /** Shortest gaps omitted on overflow, never synthetic idle spans. Raw idleGaps includes these. */
     omittedIdleGaps?: { count: number; cacheWriteCredits: number | null } };
@@ -116,7 +120,7 @@ export type DashboardApiResponsesV4 = {
 export type DashboardApiFailureV4 = ApiErrorBody;
 export type DashboardRouteV4 =
   | { page: "overview"; query: RangeQuery }
-  | { page: "session"; id: string; unit: Unit; tz: string }
+  | { page: "session"; id: string; unit: Unit; tz: string; range?: SessionRange }
   | { page: "calibration" };
 export type DashboardPageContext = {
   document: Document; root: HTMLElement; client: DashboardClient;

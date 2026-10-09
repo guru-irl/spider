@@ -6,12 +6,14 @@ import { RESPONSE_CAPS_V4, type SessionData } from "../dashboard-v4-contract.js"
 import { openDashboardReader } from "../dashboard-reader.js";
 import { calibrationFallback } from "../calibration.js";
 import type { CallRow, RunMeta, SessionMeta } from "../ledger.js";
-import { querySession, sessionPeriod, sessionRoute } from "../query-session.js";
+import { querySession as querySessionRange, sessionPeriod, sessionRoute } from "../query-session.js";
 import { sumValues, UNATTRIBUTED_SESSION_ID } from "../query-redesign-shared.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH as S, DASHBOARD_DAY as D, type DashboardFixture } from "./fixtures/dashboard-ledger.js";
 
 let f: DashboardFixture, reader: DashboardReader, ctx: DashboardQueryContext;
 const H = "parent-session", M = 60_000;
+// Legacy lifetime tests explicitly ask for the whole timeline; defaults are pinned in session-feedback.test.ts.
+const querySession = (ctx: DashboardQueryContext, id: string, tz: string) => querySessionRange(ctx, id, tz, { from: 0, to: 8640000000000000 });
 const human = (id = H, ownerSessionId: string | null = null): SessionMeta => ({ id, ownerSessionId, name: `Name ${id}`, nameSource: "name", project: "synthetic", firstActivity: S, lastActivity: S + 1, nameOrder: 1 });
 const run = (id: string, extras: Partial<RunMeta> = {}): RunMeta => ({ id, dbPath: "synthetic/runs.db", project: null, repo: null, sessionId: H, parentRunId: null, agent: null, role: "worker", name: id, model: null, thinking: null, phase: null, startedAt: null, endedAt: null, status: null, ...extras });
 const call = (id: string, ts: number, credits = 1, extras: Partial<CallRow> = {}): CallRow => dashboardCall(id, { ts, price: { status: "priced", aic: credits, components: { input: 0, cacheRead: 0, cacheWrite: credits, output: 0 }, rateVersion: "synthetic", tier: "base", confidence: "estimated" }, ...extras });
@@ -29,12 +31,15 @@ afterEach(() => { vi.restoreAllMocks(); reader.close(); f.close(); });
 // Exact-path fixture transport, not the production matcher (Task 10 owns it).
 async function reply(id: string, search = "") {
   const route = sessionRoute(id);
+  const query = new URLSearchParams(search.replace(/^\?/, ""));
+  if (!query.has("from") && !query.has("to")) { query.set("from", "0"); query.set("to", "8640000000000000"); }
+  search = `?${query}`;
   const server = createServer((req, res) => {
     const url = new URL(req.url!, "http://fixture.invalid");
     if (url.pathname !== route.path) { res.writeHead(404).end(); return; }
     try {
       const data = route.handle(ctx, url.searchParams) as SessionData;
-      const envelope: ApiEnvelope<SessionData> = { apiVersion: 1, revision: ctx.revision, generatedAt: ctx.now(), period: data.span ?? { start: ctx.now(), end: ctx.now() }, data };
+      const envelope: ApiEnvelope<SessionData> = { apiVersion: 1, revision: ctx.revision, generatedAt: ctx.now(), period: { start: data.range.from, end: data.range.to }, data };
       const body = JSON.stringify(envelope);
       res.writeHead(Buffer.byteLength(body) <= RESPONSE_CAPS_V4["/api/session/<id>"] ? 200 : 413, { "content-type": "application/json" }).end(body);
     } catch (error) {
@@ -54,8 +59,8 @@ it("old session includes its last call and mapped nested children, not cached ac
   seed([call("first", S, 2), call("direct", S + D, 3, { actor: "subagent", runId: "direct", sessionId: "child" }), call("nested", S + 8 * D, 5, { actor: "subagent", runId: "nested", sessionId: "nested-child" }), call("last", S + 10 * D, 7)], [run("direct"), run("nested", { sessionId: "child" })], [human(), human("child", H), human("nested-child", "child")]);
   const data = querySession(ctx, H, "Asia/Kathmandu");
   expect(data.total).toMatchObject({ credits: 17, calls: 4 });
-  expect(data.span).toEqual({ start: S, end: S + 10 * D + 1 });
-  expect(sessionPeriod(ctx, H)).toEqual(data.span);
+  expect(data.span).toMatchObject({ start: S, end: S + 10 * D + 1 });
+  expect(data.span).toMatchObject(sessionPeriod(ctx, H)!);
   expect(data.name).toBe(`Name ${H}`); expect(data.project).toBe("synthetic");
   expect(querySession(ctx, H, "Not/AZone").total).toEqual(data.total);
 });
@@ -78,7 +83,7 @@ it("canonical reports copies and covered descendants never reappear in the lifet
   seed([call("own", S, 2), call("native", S + 1, 3, { actor: "subagent", runId: "a", responseId: "same" }), call("copy", S + 1, 3, { copied: true, responseId: "same", sourceFile: "synthetic/copy", sessionId: "copy-session" }), call("report", S + 100 * D, 99, { actor: "subagent", runId: "a", aggregate: true, sourceKind: "report" }), call("cover", S + 2, 5, { actor: "subagent", runId: "cover", aggregate: true, sourceKind: "report" }), call("covered", S + 200 * D, 77, { actor: "subagent", runId: "covered" })], [run("a"), run("cover"), run("covered", { parentRunId: "cover" })]);
   f.ledger.apply(dashboardBatch([], { coverageEdges: [{ reportRunId: "cover", includedRunId: "covered", evidence: "transcript" }] })); refresh();
   const data = querySession(ctx, H, "UTC");
-  expect(data.span).toEqual({ start: S, end: S + 3 });
+  expect(data.span).toMatchObject({ start: S, end: S + 3 });
   expect(data.total).toMatchObject({ credits: 10, calls: 3 });
   expect(data.runs.find(r => r.id === "a")!.value.credits).toBe(3);
   expect(data.runs.find(r => r.id === "covered")!.value).toMatchObject({ credits: null, calls: 0 });
@@ -86,7 +91,7 @@ it("canonical reports copies and covered descendants never reappear in the lifet
 
 it("statuses use metadata facts and never guess completed from an end timestamp", () => {
   const statuses = ["done", "cancelled", "failed", "queued", "running", "paused", null] as const;
-  seed([], statuses.map((status, i) => run(`r${i}`, { status, endedAt: status === null ? S + M : null })));
+  seed([call("own", S)], statuses.map((status, i) => run(`r${i}`, { status, endedAt: status === null ? S + M : null })));
   expect(querySession(ctx, H, "UTC").runs.map(r => r.status)).toEqual(["completed", "cancelled", "failed", "running", "running", "running", null]);
 });
 
@@ -140,7 +145,7 @@ it("whole lifetime beyond 93 days includes mapped child activity beyond stale me
   seed([call("first", S), call("middle", S + 94 * D, 2), call("late-child", S + 400 * D, 3, { actor: "subagent", sessionId: "child", runId: "r" })], [run("r", { sessionId: "child" })], [human(), human("child", H)]);
   const data = querySession(ctx, H, "Pacific/Apia");
   expect(data.total).toMatchObject({ credits: 6, calls: 3 });
-  expect(data.span).toEqual({ start: S, end: S + 400 * D + 1 });
+  expect(data.span).toMatchObject({ start: S, end: S + 400 * D + 1 });
   expect(data.runs[0]!.value.credits).toBe(3);
 });
 
@@ -158,7 +163,7 @@ it("known metadata-only session returns HTTP 200 with intact header and no inven
   const response = await reply(H, "?tz=UTC");
   expect(response.status).toBe(200);
   const { data, period } = JSON.parse(response.body) as ApiEnvelope<SessionData>;
-  expect(period).toEqual({ start: ctx.now(), end: ctx.now() });
+  expect(period).toEqual({ start: 0, end: 8640000000000000 });
   expect(data).toMatchObject({ id: H, name: `Name ${H}`, project: "synthetic", span: null, stats: { runs: 0, ownCalls: 0, compaction: 0, idleGaps: 0 }, total: { credits: null, calls: 0 } });
   for (const rows of [data.runs, data.ownCallBins, data.compaction, data.idleGaps, data.activePeriods, data.models, data.flow.edges]) expect(rows).toEqual([]);
   expect(sessionPeriod(ctx, H)).toBeNull();
@@ -199,11 +204,12 @@ it("public labels redact stored paths and no private evidence reaches the wire",
   for (const key of ["dbPath", "sourceFile", "ownerSessionId", "nextCallId", "ownCalls\":[]"]) expect(wire).not.toContain(key);
 });
 
-it("route accepts only tz once and rejects unsupported id syntax before lookup", async () => {
+it("route accepts a range and tz once and rejects unsupported id syntax before lookup", async () => {
   seed([call("own", S)]);
   expect(sessionRoute(H).path).toBe(`/api/session/${H}`);
   expect((await reply(H, "?tz=Not%2FAZone")).status).toBe(200);
-  for (const search of ["?from=1&to=2", "?tz=UTC&tz=UTC", "?unit=tokens"]) expect((await reply(H, search)).status).toBe(400);
+  expect((await reply(H, "?from=1&to=2")).status).toBe(200);
+  for (const search of ["?from=1", "?from=2&to=1", "?tz=UTC&tz=UTC", "?unit=tokens"]) expect((await reply(H, search)).status).toBe(400);
   for (const id of ["../escape", "parent/session", ""]) expect(() => sessionRoute(id)).toThrowError(expect.objectContaining({ code: "invalid-query" }));
 });
 

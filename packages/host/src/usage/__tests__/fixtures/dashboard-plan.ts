@@ -202,7 +202,7 @@ export function planRequests(period: Period, sessionId: string, _runId: string, 
     { name: "status", path: "/api/status", params: new URLSearchParams(), cap: 12, kib: 8, budgetMs: 100, access: "metadata" },
     { name: "overview", path: "/api/overview", params: new URLSearchParams(params), cap: 26, kib: 1024, budgetMs: 1000, access: "period" },
     { name: "sessions", path: "/api/sessions", params: new URLSearchParams(params), cap: 8, kib: 512, budgetMs: 1000, access: "period" },
-    { name: "session", path: "/api/session/<id>", params: new URLSearchParams({ tz: "UTC", fixtureId: sessionId }), cap: 28, kib: 2048, budgetMs: 1500, access: "session" },
+    { name: "session", path: "/api/session/<id>", params: new URLSearchParams({ tz: "UTC", fixtureId: sessionId, from: "0", to: "8640000000000000" }), cap: 28, kib: 2048, budgetMs: 1500, access: "session" },
     { name: "calibration", path: "/api/calibration", params: new URLSearchParams(), cap: 22, kib: 1024, budgetMs: 1500, access: "period" },
   ];
   assertRegisteredRoutes(DASHBOARD_ROUTES, entries.map(r => r.path));

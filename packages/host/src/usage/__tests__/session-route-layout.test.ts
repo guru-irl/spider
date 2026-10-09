@@ -1,11 +1,11 @@
 import { expect, it } from "vitest";
 import { layoutSessionRoute } from "../web/session-route.js";
-import { sessionFixture } from "./fixtures/redesign-contract.js";
+import { sessionSpan, sessionFixture } from "./fixtures/redesign-contract.js";
 
 const minute = 60000;
 function data() {
   const d = sessionFixture();
-  return sessionFixture({ span: { start: 0, end: 120 * minute }, activePeriods: [{ start: 0, end: 120 * minute }], idleGaps: [],
+  return sessionFixture({ span: sessionSpan(0, 120 * minute), range: { from: 0, to: 120 * minute }, activePeriods: [{ start: 0, end: 120 * minute }], idleGaps: [],
     runs: d.runs.slice(0, 2).map((r, i) => ({ ...r, start: i * minute, end: (40 + i) * minute, value: { ...r.value, credits: (i + 1) * 10, tokens: { ...r.value.tokens, total: (i + 1) * 100 } } })) });
 }
 it("branch cost is a mirrored linear height with raw token scaling", () => {
@@ -23,7 +23,7 @@ it("idle collapse is exactly 28px and preserves monotonic run endpoints", () => 
   const b = layoutSessionRoute(d, "credits", 900); expect(b.breaks[0]!.width).toBe(28);
 });
 it("worker activity during parent idle retains proportional time width", () => {
-  const d = data(); d.span = { start: 0, end: 60 * minute };
+  const d = data(); d.span = sessionSpan(0, 60 * minute); d.range = { from: d.span.start, to: d.span.end };
   d.activePeriods = [{ start: 0, end: 10 * minute }, { start: 11 * minute, end: 54 * minute }, { start: 55 * minute, end: 60 * minute }];
   d.idleGaps = [{ start: 10 * minute, end: 55 * minute, cacheWriteCredits: 0 }];
   d.runs = [{ ...d.runs[0]!, start: 11 * minute, end: 54 * minute }];
@@ -32,7 +32,7 @@ it("worker activity during parent idle retains proportional time width", () => {
   expect(a.branches[0]!.endX - a.branches[0]!.startX).toBeCloseTo(1094 * 43 / 60);
 });
 it("run intervals split long idle candidates before the collapse threshold", () => {
-  const d = data(); d.span = { start: 0, end: 180 * minute };
+  const d = data(); d.span = sessionSpan(0, 180 * minute); d.range = { from: d.span.start, to: d.span.end };
   d.activePeriods = [{ start: 0, end: 10 * minute }, { start: 170 * minute, end: 180 * minute }];
   d.idleGaps = [{ start: 10 * minute, end: 170 * minute, cacheWriteCredits: 0 }];
   d.runs = [{ ...d.runs[0]!, start: 50 * minute, end: 120 * minute }];
@@ -53,7 +53,7 @@ it.each([{ duration: 10 * minute, breaks: 0 }, { duration: 30 * minute, breaks: 
     expect(layoutSessionRoute(d, "credits", 1200).breaks).toHaveLength(breaks);
   });
 it("dormant months fit active periods without a huge empty timeline", () => {
-  const d = data(); d.span = { start: 0, end: 365 * 86400000 };
+  const d = data(); d.span = sessionSpan(0, 365 * 86400000); d.range = { from: d.span.start, to: d.span.end };
   d.activePeriods = [{ start: 0, end: 40 * minute }, { start: d.span.end - 40 * minute, end: d.span.end }];
   d.runs = [{ ...d.runs[0]!, start: 0, end: 40 * minute }, { ...d.runs[1]!, start: d.span.end - 40 * minute, end: d.span.end }];
   const a = layoutSessionRoute(d, "credits", 1200); expect(a.breaks).toHaveLength(1);
@@ -74,7 +74,7 @@ it("running routes end at the session right edge", () => {
 });
 
 it.each([{ minutes: 29, breaks: 0 }, { minutes: 31, breaks: 1 }])("only a trailing idle remnant over thirty minutes collapses ($minutes)", ({ minutes, breaks }) => {
-  const d = data(); d.span = { start: 0, end: (60 + minutes) * minute };
+  const d = data(); d.span = sessionSpan(0, (60 + minutes) * minute); d.range = { from: d.span.start, to: d.span.end };
   d.idleGaps = [{ start: 10 * minute, end: d.span.end, cacheWriteCredits: 0 }];
   d.activePeriods = [{ start: 0, end: 10 * minute }];
   d.runs = [{ ...d.runs[0]!, start: 10 * minute, end: 60 * minute }];

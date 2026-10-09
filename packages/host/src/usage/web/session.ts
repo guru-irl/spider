@@ -1,21 +1,24 @@
 import "./session.css";
-import type { DashboardPage, DashboardPageMount, DashboardPageContext, SessionData, SessionRun, Unit, Value } from "../dashboard-v4-contract.js";
+import type { DashboardPage, DashboardPageMount, DashboardPageContext, SessionData, SessionRun, SessionRange, Unit, Value } from "../dashboard-v4-contract.js";
 import { action, element, sectionState } from "./dom.js";
 import { supportedDetailId } from "./detail-id.js";
-import { canRetry, errorCopy, DashboardClientError } from "./client.js";
+import { canRetry, errorCopy, DashboardClientError, sessionRequestParams } from "./client.js";
 import { formatLocalTime, formatValue, formatTokens } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
 import { chartPair } from "./charts.js";
 import { renderFlow } from "./flow.js";
+import { renderRangePicker, type RangePicker } from "./range-picker.js";
 import { renderModelMarker } from "./model-style.js";
 import { disposeSessionRoute, formatDuration, pinSessionRun, renderSessionRoute } from "./session-route.js";
 
+const rangeFocus = new WeakMap<Document, string>();
 export function mountSession(ctx: DashboardPageContext): DashboardPage {
   const { document, root } = ctx, route = ctx.route;
   root.className = `${root.className} session-page`.trim();
   let unit: Unit = route.page === "session" ? route.unit : "credits", data: SessionData | undefined;
   let disposed = false, generation = 0, controller: AbortController | undefined, graphic: HTMLElement | undefined, pinned: string | null = null;
-  let expanded = false, sort = "Start", descending = false;
+  let sort = "Start", descending = false;
+  let picker: RangePicker | undefined, range: SessionRange | undefined = route.page === "session" ? route.range : undefined;
   const id = route.page === "session" ? route.id : "", tz = route.page === "session" ? route.tz : "UTC";
   const valid = supportedDetailId(id);
   const back = () => {
@@ -24,21 +27,30 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
   };
   const state = (kind: "loading" | "empty" | "error", text: string, retry?: () => void) => { disposeGraphic(); sectionState(root, kind, text, retry); const notice = Array.from(root.children); root.replaceChildren(back(), ...notice); };
   const notFound = () => state("empty", "Session not found");
-  const disposeGraphic = () => { if (graphic) disposeSessionRoute(graphic); graphic = undefined; };
+  const disposeGraphic = () => { picker?.dispose(); picker = undefined; if (graphic) disposeSessionRoute(graphic); graphic = undefined; };
+  const changeRange = (next: SessionRange | undefined) => {
+    const field = document.activeElement?.getAttribute("data-range-field"); if (field) rangeFocus.set(document, field);
+    ctx.navigate({ page: "session", id, unit, tz, ...(next ? { range: next } : {}) });
+  };
+  const creditCell = (value: Value) => {
+    const cell = element(document, "span", undefined, "session-credit"); cell.append(element(document, "span", formatValue(value, "credits"), "mono"));
+    if (value.unpricedCalls) cell.append(element(document, "small", `${formatTokens(value.unpricedCalls)} unpriced ${value.unpricedCalls === 1 ? "call" : "calls"}`, "unpriced-count"));
+    return cell;
+  };
   const chip = (label: string, value: string) => { const c = element(document, "span", undefined, "stat-chip"); c.append(element(document, "span", label), element(document, "strong", value, "mono")); return c; };
   const status = (run: SessionRun) => element(document, "span", run.status ?? "unavailable", `state-pill${run.status === "failed" ? " danger" : ""}`);
   const runCells = (run: SessionRun, interactive: boolean) => {
     const name = interactive ? action(document, run.name, () => pinSessionRun(graphic!, run.id)) : element(document, "span", run.name);
     if (interactive) name.setAttribute("data-run-name", run.id ?? "");
     const model = element(document, "span", undefined, "run-model mono"); if (run.style) model.append(renderModelMarker(document, run.style)); model.append(element(document, "span", run.model ?? "unavailable"));
-    return [run.start === null ? "unavailable" : formatLocalTime(run.start, tz), name, run.role, model, run.thinking ?? "unavailable", formatValue(run.value, "credits"), formatTokens(run.value.tokens.total), formatDuration(run.durationMs), status(run)];
+    const role = element(document, "span", run.role, "run-role"); role.setAttribute("data-role-group", run.roleGroup);
+    return [run.start === null ? "unavailable" : formatLocalTime(run.start, tz), name, role, model, run.thinking ?? "unavailable", creditCell(run.value), formatTokens(run.value.tokens.total), formatDuration(run.durationMs), status(run)];
   };
   const columns = ["Start", "Name", "Role", "Model", "Thinking", "Credits", "Tokens", "Duration", "Status"];
-  let runRows: HTMLTableRowElement[] = [], runsSection: HTMLElement | undefined;
+  let runRows: HTMLTableRowElement[] = [];
   const sortButtons = new Map<string, HTMLButtonElement>(), unitButtons = new Map<Unit, HTMLButtonElement>();
   const select = (id: string | null) => {
     pinned = id;
-    if (id !== null && runsSection && !expanded && data?.runs.some(r => r.id === id) && !runRows.some(row => row.getAttribute("data-run-row") === id)) { expanded = true; drawRuns(runsSection); }
     for (const row of runRows) { const selected = id !== null && row.getAttribute("data-run-row") === id; row.setAttribute("aria-selected", String(selected)); row.className = selected ? "selected" : ""; }
   };
   const compare = (a: SessionRun, b: SessionRun) => {
@@ -50,7 +62,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     section.replaceChildren(); const head = element(document, "div", undefined, "section-head"); head.append(element(document, "h2", "Subagent runs")); section.append(head);
     if (!data!.runs.length) { section.append(element(document, "p", "No subagent runs", "notice")); runRows = []; return; }
     const summary = element(document, "div", undefined, "summary-chips"); summary.append(chip("Runs", formatTokens(data!.runs.length))); section.append(summary);
-    const all = [...data!.runs].sort(compare), visible = expanded ? all : all.slice(0, 20);
+    const visible = [...data!.runs].sort(compare);
     const table = renderTable(document, { caption: "Subagent runs", columns, rows: visible.map(r => runCells(r, true)) }); table.className += " runs-table";
     const header = table.querySelector("thead")!.firstElementChild!;
     Array.from(header.children).forEach((cell, i) => {
@@ -65,8 +77,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); runRows[(i + (event.key === "ArrowDown" ? 1 : -1) + runRows.length) % runRows.length]!.querySelector<HTMLButtonElement>("button")!.focus(); }
       });
     });
-    select(pinned); section.append(tableRegion(document, table));
-    if (!expanded && all.length > 20) section.append(action(document, `Show all ${all.length}`, () => { expanded = true; drawRuns(section); runRows[20]?.querySelector<HTMLButtonElement>("button")?.focus(); }));
+    select(pinned); const region = tableRegion(document, table); region.className += " runs-scroll"; region.setAttribute("aria-label", "Subagent runs"); section.append(region);
   };
   function render(): void {
     if (!data || disposed || ctx.signal.aborted) return;
@@ -74,28 +85,33 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     const dismissedCard = (graphic?.firstElementChild?.querySelector("foreignObject")?.firstElementChild as HTMLElement | undefined)?.hidden;
     disposeGraphic(); root.setAttribute("aria-busy", "false");
     const header = element(document, "section", undefined, "session-header"), head = element(document, "div", undefined, "section-head"), units = element(document, "div", undefined, "segmented"); units.setAttribute("role", "group"); units.setAttribute("aria-label", "Unit");
-    for (const value of ["credits", "tokens"] as const) { const b = action(document, value === "credits" ? "Credits" : "Tokens", () => { if (unit === value) return; unit = value; ctx.navigate({ page: "session", id, unit, tz }, { replace: true }); render(); unitButtons.get(unit)?.focus(); }); b.setAttribute("aria-pressed", String(unit === value)); unitButtons.set(value, b); units.append(b); }
+    for (const value of ["credits", "tokens"] as const) { const b = action(document, value === "credits" ? "Credits" : "Tokens", () => { if (unit === value) return; unit = value; ctx.navigate({ page: "session", id, unit, tz, ...(range ? { range } : {}) }, { replace: true }); render(); unitButtons.get(unit)?.focus(); }); b.setAttribute("aria-pressed", String(unit === value)); unitButtons.set(value, b); units.append(b); }
     head.append(element(document, "h1", data.name), units); header.append(head);
     const chips = element(document, "div", undefined, "session-chips");
     if (data.project) {
       const project = element(document, "span", undefined, "fact-chip project-chip"), folder = document.createElementNS("http://www.w3.org/2000/svg", "svg"), path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       folder.setAttribute("viewBox", "0 0 24 24"); folder.setAttribute("aria-hidden", "true"); path.setAttribute("d", "M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"); folder.append(path); project.append(folder, element(document, "span", "Project"), element(document, "strong", data.project)); chips.append(project);
     }
-    if (data.span) chips.append(element(document, "span", `${formatLocalTime(data.span.start, tz)} to ${formatLocalTime(data.span.end, tz)} ${tz}`, "fact-chip mono")); header.append(chips);
+    if (data.span) { picker = renderRangePicker(document, { range: data.range, month: data.billingMonth, span: data.span, tz, now: ctx.now, change: changeRange }); chips.append(picker.element); } header.append(chips);
     const stats = element(document, "div", undefined, "session-stats");
-    const sum = (values: readonly Value[]) => unit === "tokens" ? formatTokens(values.reduce((n, v) => n + v.tokens.total, 0)) : values.some(v => v.credits === null) ? "unavailable" : formatValue({ ...data!.total, credits: values.reduce((n, v) => n + v.credits!, 0) }, "credits");
+    const sum = (values: readonly Value[]) => unit === "tokens" ? formatTokens(values.reduce((n, v) => n + v.tokens.total, 0)) : values.length > 0 && !values.some(v => v.credits !== null) ? "unavailable" : formatValue({ ...data!.total, credits: values.reduce((n, v) => n + (v.credits ?? 0), 0) }, "credits");
     const count = (n: number, singular: string) => `${formatTokens(n)} ${singular}${n === 1 ? "" : "s"}`;
     const idleMinutes = data.idleGaps.reduce((n, gap) => n + gap.end - gap.start, 0) / 60000;
     for (const [label, value, suffix] of [["Total", formatValue(data.total, unit), unit], ["Subagent runs", formatTokens(data.stats.runs), data.stats.runs === 1 ? "run" : "runs"], ["Own calls", sum(data.ownCallBins.map(b => b.value)), unit], ["Compaction", sum(data.compaction.map(c => c.value)), `${unit} · ${count(data.stats.compaction, "event")}`], ["Idle gaps", formatTokens(idleMinutes), `min · ${count(data.stats.idleGaps, "gap")}`]]) {
-      const stat = element(document, "div", undefined, "header-stat"), number = element(document, "strong", value, "mono"); if (label === "Total") number.setAttribute("data-session-total", ""); stat.append(element(document, "span", label), number, element(document, "small", suffix)); stats.append(stat);
+      const stat = element(document, "div", undefined, "header-stat"), number = element(document, "strong", value, "mono"); if (label === "Total") number.setAttribute("data-session-total", ""); stat.append(element(document, "span", label), number, element(document, "small", suffix));
+      const unpriced = label === "Total" ? data.total.unpricedCalls : label === "Own calls" ? data.ownCallBins.reduce((n, b) => n + b.value.unpricedCalls, 0) : label === "Compaction" ? data.compaction.reduce((n, c) => n + c.value.unpricedCalls, 0) : 0;
+      if (unpriced) stat.append(element(document, "small", `${formatTokens(unpriced)} unpriced ${unpriced === 1 ? "call" : "calls"}`, "unpriced-count")); stats.append(stat);
     }
     header.append(stats); root.replaceChildren(back(), header);
+    const field = rangeFocus.get(document);
+    if (field && picker) { (Array.from(picker.element.children).find(child => child.getAttribute("data-range-field") === field) as HTMLElement | undefined)?.focus(); rangeFocus.delete(document); }
     if (data.detailsBinned) {
       const omitted = data.stats.omittedIdleGaps;
       const note = "Some short idle gaps or small runs are combined." + (omitted ? ` ${formatTokens(omitted.count)} idle ${omitted.count === 1 ? "gap" : "gaps"} omitted${omitted.cacheWriteCredits === null ? "" : ` · ${formatValue({ ...data.total, credits: omitted.cacheWriteCredits }, "credits")} next-call cache-write credits`}.` : "");
       const notice = element(document, "p", note, "session-detail-note"); notice.setAttribute("role", "status"); root.append(notice);
     }
     if (!data.span) { root.append(element(document, "p", "No calls were recorded.", "notice")); return; }
+    if (!data.total.calls) { const empty = element(document, "div", undefined, "session-range-empty"); empty.setAttribute("role", "status"); empty.append(element(document, "p", "No activity in this range.", "notice"), action(document, "Whole session", () => changeRange({ from: data!.span!.first, to: data!.span!.last + 1 }))); root.append(empty); return; }
     const routeSection = element(document, "section", undefined, "session-route-section");
     graphic = renderSessionRoute(document, data, unit, select, tz, data.runs.length ? () => runRows[0]?.querySelector<HTMLButtonElement>("button")?.focus() : undefined);
     const svg = graphic.firstElementChild as SVGElement;
@@ -109,12 +125,12 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
         return [formatLocalTime(gap.start, tz), "Idle gap", "idle gap", "unavailable", "unavailable", credits, "unavailable", formatDuration(gap.end - gap.start), "unavailable"];
       }),
     ] });
-    const totalRow = element(document, "tr"); totalRow.append(element(document, "td", "Total"), element(document, "td", data.name), element(document, "td", "All roles"), element(document, "td", "All models"), element(document, "td", ""), element(document, "td", formatValue(data.total, "credits")), element(document, "td", formatTokens(data.total.tokens.total)), element(document, "td", formatDuration(data.span.end - data.span.start)), element(document, "td", "")); table.querySelector("tbody")!.append(totalRow);
+    const totalRow = element(document, "tr"); totalRow.append(element(document, "td", "Total"), element(document, "td", data.name), element(document, "td", "All roles"), element(document, "td", "All models"), element(document, "td", ""), element(document, "td", formatValue(data.total, "credits")), element(document, "td", formatTokens(data.total.tokens.total)), element(document, "td", formatDuration(data.range.to - data.range.from)), element(document, "td", "")); table.querySelector("tbody")!.append(totalRow);
     const pair = chartPair(document, { id: `session-route-${id}`, title: "Session route", svg, table });
     // The shared pair accepts SVG, while the route also owns its live hover card.
     const chart = Array.from(pair.children).find(n => n.className === "chart-graphic")!; graphic.replaceChildren(svg, ...Array.from(graphic.children)); chart.replaceChildren(graphic);
     const summary = element(document, "div", undefined, "summary-chips"); const max = Math.max(0, ...data.runs.map(r => (unit === "credits" ? r.value.credits : r.value.tokens.total) ?? 0));
-    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.span.end - data.span.start)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(max)}`));
+    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.range.to - data.range.from)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(max)}`));
     pair.replaceChildren(pair.firstElementChild!, summary, ...Array.from(pair.children).slice(1)); routeSection.append(pair);
     const legend = element(document, "div", undefined, "session-legend");
     for (const m of data.models) { const key = element(document, "span", undefined, "fact-chip"); key.append(renderModelMarker(document, m.style), element(document, "span", m.id, "mono")); legend.append(key); } routeSection.append(legend); root.append(routeSection);
@@ -122,9 +138,9 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
       edges: data.flow.edges.map(e => ({ ...e, share: data!.flow.total.tokens.total > 0 ? e.value.tokens.total / data!.flow.total.tokens.total : 0 })),
       models: data.flow.models.map(m => ({ ...m, share: data!.flow.total.tokens.total > 0 ? m.value.tokens.total / data!.flow.total.tokens.total : 0 })),
     }; flow.append(renderFlow(document, unitFlow, unit, `session-flow-${id}`)); root.append(flow);
-    const runs = element(document, "section", undefined, "session-runs-section"); root.append(runs); runsSection = runs; drawRuns(runs);
+    const runs = element(document, "section", undefined, "session-runs-section"); root.append(runs); drawRuns(runs);
     const models = element(document, "section", undefined, "session-models-section"); models.append(element(document, "h2", "Models in this session"));
-    const modelTable = renderTable(document, { caption: "Models in this session", columns: ["Model", "Calls", "Credits", "Tokens", "Share"], rows: data.models.map(m => { const name = element(document, "span", undefined, "run-model mono"); name.append(renderModelMarker(document, m.style), element(document, "span", m.id)); return [name, formatTokens(m.value.calls), formatValue(m.value, "credits"), formatTokens(m.value.tokens.total), `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format((unit === "tokens" ? data!.total.tokens.total > 0 ? m.value.tokens.total / data!.total.tokens.total : 0 : m.share) * 100)}%`]; }) }); models.append(tableRegion(document, modelTable)); root.append(models);
+    const modelTable = renderTable(document, { caption: "Models in this session", columns: ["Model", "Calls", "Credits", "Tokens", "Share"], rows: data.models.map(m => { const name = element(document, "span", undefined, "run-model mono"); name.append(renderModelMarker(document, m.style), element(document, "span", m.id)); return [name, formatTokens(m.value.calls), creditCell(m.value), formatTokens(m.value.tokens.total), `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format((unit === "tokens" ? data!.total.tokens.total > 0 ? m.value.tokens.total / data!.total.tokens.total : 0 : m.share) * 100)}%`]; }) }); models.append(tableRegion(document, modelTable)); root.append(models);
     if (pinned) pinSessionRun(graphic, pinned);
     if (focusedRun) {
       const target = Array.from(graphic.firstElementChild!.children).find(n => n.getAttribute("data-run-id") === focusedRun) as SVGElement | undefined;
@@ -136,9 +152,9 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     if (!valid) { notFound(); return; }
     const gen = ++generation; controller?.abort(); controller = new AbortController(); if (!data) state("loading", "Loading session");
     try {
-      const reply = await ctx.client.get<SessionData>(`/api/session/${encodeURIComponent(id)}`, new URLSearchParams({ tz }), controller.signal);
+      const reply = await ctx.client.get<SessionData>(`/api/session/${encodeURIComponent(id)}`, sessionRequestParams({ tz, range }), controller.signal);
       if (disposed || gen !== generation || ctx.signal.aborted || controller.signal.aborted) return;
-      data = reply.data; if (pinned !== null && !data.runs.some(run => run.id === pinned)) pinned = null; render();
+      data = reply.data; if (range === undefined) { range = data.range; ctx.navigate({ page: "session", id, unit, tz, range }, { replace: true }); } if (pinned !== null && !data.runs.some(run => run.id === pinned)) pinned = null; render();
     } catch (error) {
       if (disposed || gen !== generation || ctx.signal.aborted || controller.signal.aborted) return;
       if (error instanceof DashboardClientError && error.code === "not-found") notFound(); else state("error", errorCopy(error), canRetry(error) ? () => { void refresh(); } : undefined);

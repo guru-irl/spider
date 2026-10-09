@@ -1,10 +1,10 @@
 import { expect, it, vi } from "vitest";
 import { mountSession } from "../web/session.js";
 import { sessionStateCases, mountSessionStates } from "../web/states-session.js";
-import { renderSessionRoute } from "../web/session-route.js";
+import { renderSessionRoute, layoutSessionRoute } from "../web/session-route.js";
 import { DashboardClientError } from "../web/client.js";
 import { PlainDocument, PlainElement, descendants, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
-import { sessionFixture, envelope, overviewFixture, fixtureStateCases } from "./fixtures/redesign-contract.js";
+import { sessionSpan, sessionFixture, envelope, overviewFixture, fixtureStateCases } from "./fixtures/redesign-contract.js";
 import type { DashboardPageContext, SessionData } from "../dashboard-v4-contract.js";
 class SessionDocument extends PlainDocument {
   override createElement(tag: string): PlainElement { return tag === "strong" ? new PlainElement(this, "STRONG") : super.createElement(tag); }
@@ -34,12 +34,12 @@ it("mounted Session examples retain page-scoped styling after fixture teardown",
   const headers = descendants(doc.body).filter(n => n.className === "session-header"); expect(headers.length).toBeGreaterThan(2);
   expect(headers.every(n => n.parentElement!.className.includes("session-page"))).toBe(true);
 });
-it("header and flow reconcile over the whole lifetime with only tz in the request", async () => {
+it("header and flow reconcile over the applied range with server-chosen default", async () => {
   const s = setup(), page = mountSession(s.ctx); await page.refresh();
   expect(s.get.mock.calls[0]![0]).toBe(`/api/session/${sessionFixture().id}`);
   expect(String(s.get.mock.calls[0]![1])).toBe("tz=UTC");
   expect(s.doc.body.textContent).toContain("Garden tools"); expect(s.doc.body.textContent).toContain("garden");
-  for (const label of ["Total", "Subagent runs", "Own calls", "Compaction", "Idle gaps", "Fri 12 APR 09:00 to Sun 14 APR 10:20 UTC", "Where it went"]) expect(s.doc.body.textContent).toContain(label);
+  for (const label of ["Total", "Subagent runs", "Own calls", "Compaction", "Idle gaps", "From 12 Apr 2030", "To 14 Apr 2030", "This month", "Whole session", "Where it went"]) expect(s.doc.body.textContent).toContain(label);
   expect(descendants(s.doc.body).some(n => n.className.includes("pace"))).toBe(false);
   expect(descendants(s.doc.body).find(n => n.getAttribute("data-session-total") !== null)!.textContent).toBe("10");
   button(s.doc.body, "Back").click(); expect(s.back).toHaveBeenCalledOnce(); page.dispose();
@@ -68,7 +68,7 @@ it("route has one roving Tab stop and arrows reach runs and every event type", (
   key(stops()[0]!, "Home"); expect(stops()[0]!.getAttribute("data-run-id")).toBe("run-build");
 });
 it("route skips sub-two-pixel idle glyphs but retains every gap in its table", async () => {
-  const d = sessionFixture(); d.span = { start: 0, end: 180 * 86400000 }; d.runs = []; d.compaction = [];
+  const d = sessionFixture(); d.span = sessionSpan(0, 180 * 86400000); d.range = { from: d.span.start, to: d.span.end }; d.runs = []; d.compaction = [];
   d.activePeriods = [{ ...d.span }]; d.ownCallBins = [];
   d.idleGaps = Array.from({ length: 10000 }, (_, i) => ({ start: i * 600001, end: (i + 1) * 600001, cacheWriteCredits: 0 }));
   const s = setup(d), page = mountSession(s.ctx); await page.refresh();
@@ -118,11 +118,14 @@ it("idle route rows identify the role and label the next-call credit component i
   expect(row.children[5]!.textContent).toContain("Next call cache-write credits");
   expect(row.children[5]!.textContent).toContain("0.1"); page.dispose();
 });
-it("runs table starts at twenty, sorts, expands and pins the corresponding real row", async () => {
+it("runs table includes every row in a focusable scroll region and retains sorting and pinning", async () => {
   const d = sessionFixture(); d.runs = Array.from({ length: 24 }, (_, i) => ({ ...d.runs[0]!, id: `run-${i}`, name: `Task ${i}`, start: d.span!.start + i * 1000, value: { ...d.runs[0]!.value, credits: i } }));
   const s = setup(d), page = mountSession(s.ctx); await page.refresh();
   const rows = () => descendants(s.doc.body).filter(n => n.getAttribute("data-run-row") !== null);
-  expect(rows()).toHaveLength(20); button(s.doc.body, "Show all 24").click(); expect(rows()).toHaveLength(24);
+  expect(rows()).toHaveLength(24);
+  const region = descendants(s.doc.body).find(n => n.className.includes("runs-scroll"))!;
+  expect(region.getAttribute("tabindex")).toBe("0"); expect(region.getAttribute("aria-label")).toBe("Subagent runs");
+  expect(s.doc.body.textContent).not.toContain("Show all");
   descendants(s.doc.body).find(n => n.className === "sort" && n.textContent === "Credits")!.click(); expect(rows()[0]!.getAttribute("data-run-row")).toBe("run-23");
   button(s.doc.body, "Task 23").click(); expect(rows()[0]!.getAttribute("aria-selected")).toBe("true");
   for (const column of ["Start", "Name", "Role", "Model", "Thinking", "Credits", "Tokens", "Duration", "Status", "Calls", "Share"]) expect(elements(s.doc.body, "th").some(n => n.textContent === column)).toBe(true);
@@ -131,7 +134,7 @@ it("runs table starts at twenty, sorts, expands and pins the corresponding real 
 it("unit switching updates route and total locally, without refetching lifetime data", async () => {
   const s = setup(), page = mountSession(s.ctx); await page.refresh(); const count = s.get.mock.calls.length;
   button(s.doc.body, "Tokens").click(); expect(s.doc.body.textContent).toContain("Tokens per run");
-  expect(s.navigate).toHaveBeenCalledWith({ page: "session", id: sessionFixture().id, unit: "tokens", tz: "UTC" }, { replace: true });
+  expect(s.navigate).toHaveBeenCalledWith({ page: "session", id: sessionFixture().id, unit: "tokens", tz: "UTC", range: sessionFixture().range }, { replace: true });
   expect(s.get).toHaveBeenCalledTimes(count); page.dispose();
 });
 it("Tokens recalculates model and flow shares from raw counts", async () => {
@@ -170,7 +173,7 @@ it("route time labels reflect the entire lifetime", () => {
   expect(labels[0]!.textContent).toBe("Fri 12 APR 09:00"); expect(labels.at(-1)!.textContent).toBe("Sun 14 APR 10:20");
 });
 it("route time ticks reserve measured label extents and both lifetime endpoints", () => {
-  const d = sessionFixture(), start = d.span!.start; d.span = { start, end: start + 1094 * 60000 }; d.runs = []; d.idleGaps = [];
+  const d = sessionFixture(), start = d.span!.start; d.span = sessionSpan(start, start + 1094 * 60000); d.range = { from: d.span.start, to: d.span.end }; d.runs = []; d.idleGaps = [];
   d.activePeriods = Array.from({ length: 1094 }, (_, i) => ({ start: start + i * 60000, end: start + (i + 1) * 60000 }));
   const doc = new SessionDocument(), create = doc.createElementNS.bind(doc);
   doc.createElementNS = (ns, tag) => {
@@ -282,4 +285,50 @@ it("the run title is first and its role is a fact, not an eyebrow", () => {
   expect(card.children[0]!.textContent).toBe("Build garden tools");
   const labels = elements(card, "dt"), values = elements(card, "dd");
   expect(values[labels.findIndex(n => n.textContent === "Role")]?.textContent).toBe("worker");
+});
+
+it("route ticks follow the applied range and clamp a long run's branch to it", () => {
+  const d = sessionFixture(); d.range = { from: d.runs[0]!.start! + 60000, to: d.runs[0]!.end! - 60000 };
+  const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});
+  const labels = descendants(route as never).filter(n => n.hasAttribute("data-time-tick"));
+  expect(labels[0]!.getAttribute("data-time-tick")).toBe(String(d.range.from));
+  expect(labels.at(-1)!.getAttribute("data-time-tick")).toBe(String(d.range.to));
+  expect(runNodes(route as never).map(n => n.getAttribute("data-run-id"))).toEqual(["run-build"]);
+  const layout = layoutSessionRoute(d, "credits", 1200);
+  expect([layout.branches[0]!.startX, layout.branches[0]!.endX]).toEqual([78, 1172]);
+});
+// Mutant: require every own bin to be priced instead of summing known credits.
+it("mixed own-call bins show priced credits and disclose the missing prices", async () => {
+  const d = sessionFixture(); d.ownCallBins = [...d.ownCallBins, { ...d.ownCallBins[0]!, value: { ...d.ownCallBins[0]!.value, credits: null, unpricedCalls: 2 } }];
+  const s = setup(d), page = mountSession(s.ctx); await page.refresh();
+  const stats = descendants(s.doc.body).find(n => n.className === "session-stats")!;
+  expect(stats.children[2]!.textContent).toContain("Own calls2credits");
+  expect(stats.children[2]!.textContent).toContain("2 unpriced calls"); page.dispose();
+});
+it.each([{ calls: 0, credits: null, display: "0" }, { calls: 2, credits: null, display: "unavailable" }, { calls: 2, credits: 0, display: "0" }])("own-call header distinguishes no calls from unpriced calls ($calls, $credits)", async ({ calls, credits, display }) => {
+  const d = sessionFixture(); d.ownCallBins = calls ? [{ ...d.ownCallBins[0]!, value: { ...d.ownCallBins[0]!.value, calls, credits, unpricedCalls: credits === null ? calls : 0 } }] : [];
+  const s = setup(d), page = mountSession(s.ctx); await page.refresh();
+  const stats = descendants(s.doc.body).find(n => n.className === "session-stats")!;
+  expect(elements(stats.children[2]!, "strong")[0]!.textContent).toBe(display); page.dispose();
+});
+it("Session requests forward an explicit range and keep it when the unit changes", async () => {
+  const s = setup(); s.ctx.route = { page: "session", id: sessionFixture().id, tz: "UTC", unit: "credits", range: { from: 1000, to: 9000 } };
+  const page = mountSession(s.ctx); await page.refresh();
+  expect(Object.fromEntries(s.get.mock.calls[0]![1])).toEqual({ tz: "UTC", from: "1000", to: "9000" });
+  button(s.doc.body, "Tokens").click();
+  expect(s.navigate).toHaveBeenLastCalledWith(expect.objectContaining({ range: { from: 1000, to: 9000 }, unit: "tokens" }), { replace: true }); page.dispose();
+});
+it("a chosen empty range keeps date controls and offers Whole session without rendering charts", async () => {
+  const d = sessionFixture(); d.total.calls = 0; d.runs = []; d.ownCallBins = []; d.compaction = []; d.idleGaps = []; d.models = []; d.flow.edges = [];
+  const s = setup(d), page = mountSession(s.ctx); await page.refresh();
+  expect(s.doc.body.textContent).toContain("No activity in this range.");
+  expect(elements(s.doc.body, "button").some(n => n.textContent === "Whole session")).toBe(true);
+  expect(descendants(s.doc.body).some(n => n.className === "session-route-section")).toBe(false); page.dispose();
+});
+it("run agents are displayed with the separate role group for styling", async () => {
+  const d = sessionFixture(); d.runs[0]!.role = "planner"; d.runs[0]!.roleGroup = "reviewers";
+  const s = setup(d), page = mountSession(s.ctx); await page.refresh();
+  const row = descendants(s.doc.body).find(n => n.getAttribute("data-run-row") === "run-build")!;
+  expect(cellText(row.children[2]!)).toBe("planner");
+  expect(descendants(row).some(n => n.getAttribute("data-role-group") === "reviewers")).toBe(true); page.dispose();
 });

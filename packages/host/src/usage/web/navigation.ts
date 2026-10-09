@@ -6,7 +6,11 @@ export function browserZone(zone: string): string {
 export function defaultOverview(now: number, tz: string): RangeQuery { return { range: "7d", from: now - 7 * 86400000, to: now, tz: browserZone(tz), unit: "credits", buckets: [] }; }
 export function routeHash(route: DashboardRouteV4): string {
   if (route.page === "calibration") return "#/calibration";
-  if (route.page === "session") return `#/session/${encodeURIComponent(route.id)}?${new URLSearchParams({ unit: route.unit, tz: route.tz })}`;
+  if (route.page === "session") {
+    const params = new URLSearchParams({ unit: route.unit, tz: route.tz });
+    if (route.range) { params.set("from", String(route.range.from)); params.set("to", String(route.range.to)); }
+    return `#/session/${encodeURIComponent(route.id)}?${params}`;
+  }
   const q = route.query;
   return `#/?${new URLSearchParams({ range: q.range, from: String(q.from), to: String(q.to), tz: q.tz, unit: q.unit, buckets: JSON.stringify(q.buckets) })}`;
 }
@@ -18,7 +22,12 @@ export function hashRoute(hash: string, now: number = Date.now(), tz: string = "
   if (path === "/calibration") return { page: "calibration" };
   if (path?.startsWith("/session/")) {
     let id = ""; try { const decoded = decodeURIComponent(path.slice(9)); if (supportedDetailId(decoded)) id = decoded; } catch { /* Invalid ids remain a local Session not-found state. */ }
-    return { page: "session", id, unit: params.get("unit") === "tokens" ? "tokens" : "credits", tz: browserZone(params.get("tz") ?? tz) };
+    const from = params.get("from"), to = params.get("to");
+    const valid = from !== null && to !== null && /^\d+$/.test(from) && /^\d+$/.test(to) &&
+      params.getAll("from").length === 1 && params.getAll("to").length === 1 &&
+      Number.isSafeInteger(Number(from)) && Number.isSafeInteger(Number(to)) && Number(from) < Number(to) && Number(to) <= 8640000000000000;
+    return { page: "session", id, unit: params.get("unit") === "tokens" ? "tokens" : "credits", tz: browserZone(params.get("tz") ?? tz),
+      ...(valid ? { range: { from: Number(from), to: Number(to) } } : {}) };
   }
   if (path && path !== "/") return fallback;
   try {

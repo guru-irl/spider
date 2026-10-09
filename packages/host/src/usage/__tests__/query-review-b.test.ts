@@ -68,7 +68,7 @@ it("fractional credits stay unrounded across Overview, Sessions and whole-sessio
     expect(overview.total.credits).toBe(amount * 0.5);
     expect(overview.sessions.rows[0]!.value.credits).toBe(amount * 0.5);
     expect(overview.buckets.find(row => row.total.calls)!.total.credits).toBe(amount * 0.5);
-    const session = querySession(ctx, "parent-session", "UTC");
+    const session = querySession(ctx, "parent-session", "UTC", { from: M-D, to: M+2*D });
     expect(session.total.credits).toBe(500 + amount * 0.5);
     expect(session.flow.total).toEqual(session.total);
     expect(readCorrectedComponents(ctx, ["fractional"]).get("fractional")?.cacheWriteCredits).toBe(0);

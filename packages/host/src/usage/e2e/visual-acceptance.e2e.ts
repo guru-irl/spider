@@ -43,7 +43,7 @@ async function layoutFailures(page: Page): Promise<string[]> {
       const outer = getComputedStyle(section);
       if (!(parseFloat(outer.borderTopWidth) > 0 && parseFloat(outer.borderTopLeftRadius) > 0)) continue;
       for (const descendant of section.querySelectorAll("*")) {
-        if (descendant.closest("button, input, select, [role=button], [role=group].segmented, .fact-chip, .stat-chip, .state-pill, .project-pill, .selection-chip, .role-key, .legend-key, [role=tooltip], .route-card, .pace-popover")) continue;
+        if (descendant.closest("button, input, select, [role=button], [role=group].segmented, .fact-chip, .stat-chip, .state-pill, .project-pill, .selection-chip, .role-key, .legend-key, [role=tooltip], .route-card, .pace-popover, .range-calendar")) continue;
         const cs = getComputedStyle(descendant);
         if ([cs.borderTopWidth, cs.borderRightWidth, cs.borderBottomWidth, cs.borderLeftWidth].some(n => parseFloat(n) > 0) && [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomLeftRadius, cs.borderBottomRightRadius].some(n => parseFloat(n) > 0)) failures.push(`nested section box: ${descendant.tagName}.${descendant.className}`);
       }

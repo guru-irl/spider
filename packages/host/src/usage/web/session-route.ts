@@ -17,8 +17,24 @@ export function formatDuration(ms: number | null): string {
   if (ms < 60000) return `${Math.round(ms / 1000)} s`;
   const minutes = Math.round(ms / 60000); return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
+export function sessionActivitySpan(data: SessionData): Period | null {
+  if (!data.span) return null;
+  const periods = [...data.activePeriods, ...data.ownCallBins,
+    ...data.compaction.map(event => ({ start: event.ts, end: event.ts + 1 })),
+    ...data.runs.flatMap(run => run.start !== null && (run.end !== null || run.status === "running")
+      ? [{ start: run.start, end: run.end ?? data.span!.end }] : [])];
+  let start = Infinity, end = -Infinity;
+  for (const period of periods) {
+    const from = Math.max(data.range.from, period.start), to = Math.min(data.range.to, period.end);
+    if (to < from || from >= data.range.to || period.end <= data.range.from) continue;
+    start = Math.min(start, from); end = Math.max(end, to);
+  }
+  // Auxiliary-only calls have no route marks. Preserve their recorded extent.
+  if (start === Infinity) { start = Math.max(data.range.from, data.span.start); end = Math.min(data.range.to, data.span.end); }
+  return end >= start ? { start, end } : null;
+}
 function geometry(data: SessionData, unit: Unit, requestedWidth: number) {
-  const span = data.span ? { start: data.range.from, end: data.range.to } : null;
+  const span = sessionActivitySpan(data);
   const sorted = [...data.runs].sort((a, b) => (a.start ?? Infinity) - (b.start ?? Infinity) || (a.id ?? a.name).localeCompare(b.id ?? b.name));
   const runs = sorted.filter(r => span && r.start !== null && r.start < span.end && (r.end !== null || r.status === "running") && (r.status === "running" || r.end! >= span.start));
   const periods: Period[] = data.idleGaps.filter(g => g.end - g.start > 1800000).map(g => ({ start: g.start, end: g.end }));
@@ -142,7 +158,7 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
   };
   const draw = (width: number) => {
     const remembered = stops.find(stop => stop.node === document.activeElement)?.key, wasDismissed = dismissed;
-    const span = data.span ? { start: data.range.from, end: data.range.to } : null;
+    const span = sessionActivitySpan(data);
     const { layout, runs, x, width: effectiveWidth } = geometry(data, unit, width); groups = []; stops = []; svg.removeAttribute("tabindex"); svg.replaceChildren(); routeWidth = effectiveWidth; svg.setAttribute("viewBox", `0 0 ${effectiveWidth} 430`); svg.setAttribute("width", String(effectiveWidth)); svg.setAttribute("height", "430"); svg.setAttribute("preserveAspectRatio", "none");
     node(svg, "text", { x: 0, y: 20, class: "axis-title" }, `${unit === "credits" ? "Credits" : "Tokens"} per run`);
     const axis = niceAxis(layout.maxValue), ticks = Math.round(axis.ceiling / axis.step);

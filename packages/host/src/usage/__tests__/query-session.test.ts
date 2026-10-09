@@ -62,7 +62,8 @@ it("old session includes its last call and mapped nested children, not cached ac
   expect(data.span).toMatchObject({ start: S, end: S + 10 * D + 1 });
   expect(data.span).toMatchObject(sessionPeriod(ctx, H)!);
   expect(data.name).toBe(`Name ${H}`); expect(data.project).toBe("synthetic");
-  expect(querySession(ctx, H, "Not/AZone").total).toEqual(data.total);
+  expect(querySession(ctx, H, "UTC").total).toEqual(data.total);
+  expect(() => querySession(ctx, H, "Not/AZone")).toThrowError(expect.objectContaining({ code: "invalid-query" }));
 });
 
 it("header models flow and direct run totals reconcile without recursively charging descendants", () => {
@@ -207,7 +208,7 @@ it("public labels redact stored paths and no private evidence reaches the wire",
 it("route accepts a range and tz once and rejects unsupported id syntax before lookup", async () => {
   seed([call("own", S)]);
   expect(sessionRoute(H).path).toBe(`/api/session/${H}`);
-  expect((await reply(H, "?tz=Not%2FAZone")).status).toBe(200);
+  expect((await reply(H, "?tz=Not%2FAZone")).status).toBe(400);
   expect((await reply(H, "?from=1&to=2")).status).toBe(200);
   for (const search of ["?from=1", "?from=2&to=1", "?tz=UTC&tz=UTC", "?unit=tokens"]) expect((await reply(H, search)).status).toBe(400);
   for (const id of ["../escape", "parent/session", ""]) expect(() => sessionRoute(id)).toThrowError(expect.objectContaining({ code: "invalid-query" }));
@@ -331,12 +332,15 @@ it("six month payload bins 50000 own calls and compactly returns 10000+ gaps and
   process.stdout.write(`LONG_SESSION calls=${data.stats.ownCalls} runs=${data.runs.length} gaps=${data.idleGaps.length} bins=${data.ownCallBins.length} bytes=${Buffer.byteLength(response.body, "utf8")} cap=${RESPONSE_CAPS_V4["/api/session/<id>"]}\n`);
 }, 120_000);
 
-it("Session timezone changes no server grouping or SQL work", () => {
+it("Session timezone localizes billing bounds but changes no explicit-range grouping or SQL work", () => {
   seed([call("first", S - 1), call("last", S + 2 * D + 1)]);
   const utc = traceStatements(), first = querySession(ctx, H, "UTC");
   vi.restoreAllMocks(); refresh();
   const kathmandu = traceStatements(), second = querySession(ctx, H, "Asia/Kathmandu");
-  expect(second).toEqual(first);
+  const { billingMonth: utcMonth, ...utcActivity } = first, { billingMonth: localMonth, ...localActivity } = second;
+  expect(utcMonth).toEqual({ from: Date.parse("2029-06-01T00:00:00Z"), to: Date.parse("2029-07-01T00:00:00Z") });
+  expect(localMonth).toEqual({ from: Date.parse("2029-05-31T18:15:00Z"), to: Date.parse("2029-06-30T18:15:00Z") });
+  expect(localActivity).toEqual(utcActivity);
   expect(kathmandu.executed).toEqual(utc.executed);
 });
 

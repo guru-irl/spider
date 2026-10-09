@@ -76,7 +76,7 @@ it("running routes end at the session right edge", () => {
 it.each([{ minutes: 29, breaks: 0 }, { minutes: 31, breaks: 1 }])("only a trailing idle remnant over thirty minutes collapses ($minutes)", ({ minutes, breaks }) => {
   const d = data(); d.span = sessionSpan(0, (60 + minutes) * minute); d.range = { from: d.span.start, to: d.span.end };
   d.idleGaps = [{ start: 10 * minute, end: d.span.end, cacheWriteCredits: 0 }];
-  d.activePeriods = [{ start: 0, end: 10 * minute }];
+  d.activePeriods = [{ start: 0, end: 10 * minute }, { start: d.span.end - 1, end: d.span.end }];
   d.runs = [{ ...d.runs[0]!, start: 10 * minute, end: 60 * minute }];
   const layout = layoutSessionRoute(d, "credits", 1200);
   expect(layout.breaks).toHaveLength(breaks);

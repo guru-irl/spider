@@ -12,7 +12,7 @@ class SessionDocument extends PlainDocument {
 function setup(data: SessionData = sessionFixture(), id = data.id, unit: "credits" | "tokens" = "credits") {
   const doc = new SessionDocument(), get = vi.fn(async (_path: string, _params: URLSearchParams, _signal: AbortSignal) => envelope(data)), back = vi.fn(), navigate = vi.fn();
   const controller = new AbortController();
-  const ctx: DashboardPageContext = { document: doc.asDocument(), root: doc.body as unknown as HTMLElement, client: { get: get as never }, route: { page: "session", id, unit, tz: "UTC" }, signal: controller.signal, navigate, back, overview: overviewFixture().range, now: Date.now };
+  const ctx: DashboardPageContext = { document: doc.asDocument(), root: doc.body as unknown as HTMLElement, client: { get: get as never }, route: { page: "session", id, unit, tz: "UTC" }, signal: controller.signal, navigate, back, overview: overviewFixture().range, now: () => Date.UTC(2029, 0, 1) };
   return { doc, ctx, get, back, navigate, controller };
 }
 const runNodes = (root: Parameters<typeof descendants>[0]) => descendants(root).filter(n => n.getAttribute("data-run-id") !== null && n.tagName === "g");
@@ -39,7 +39,7 @@ it("header and flow reconcile over the applied range with server-chosen default"
   expect(s.get.mock.calls[0]![0]).toBe(`/api/session/${sessionFixture().id}`);
   expect(String(s.get.mock.calls[0]![1])).toBe("tz=UTC");
   expect(s.doc.body.textContent).toContain("Garden tools"); expect(s.doc.body.textContent).toContain("garden");
-  for (const label of ["Total", "Subagent runs", "Own calls", "Compaction", "Idle gaps", "From 12 Apr 2030", "To 14 Apr 2030", "This month", "Whole session", "Where it went"]) expect(s.doc.body.textContent).toContain(label);
+  for (const label of ["Total", "Subagent runs", "Own calls", "Compaction", "Idle gaps", "From Fri 12 APR 2030", "To Sun 14 APR 2030", "This month", "Whole session", "Where it went"]) expect(s.doc.body.textContent).toContain(label);
   expect(descendants(s.doc.body).some(n => n.className.includes("pace"))).toBe(false);
   expect(descendants(s.doc.body).find(n => n.getAttribute("data-session-total") !== null)!.textContent).toBe("10");
   button(s.doc.body, "Back").click(); expect(s.back).toHaveBeenCalledOnce(); page.dispose();
@@ -262,6 +262,16 @@ it("binned small runs without omitted gaps have a single plain disclosure", asyn
   const s = setup(sessionFixture({ detailsBinned: true })), page = mountSession(s.ctx); await page.refresh();
   expect(descendants(s.doc.body).filter(n => n.className === "session-detail-note").map(n => n.textContent)).toEqual(["Some short idle gaps or small runs are combined."]); page.dispose();
 });
+it("gallery includes a visible open calendar without leaving live handlers", async () => {
+  const doc = new SessionDocument(); await mountSessionStates(doc.body as unknown as HTMLElement, fixtureStateCases());
+  const heading = elements(doc.body, "h2").find(n => n.textContent === "Session calendar popover");
+  expect(heading).toBeDefined();
+  const example = heading!.parentElement!;
+  expect(descendants(example).filter(n => n.className === "range-calendar" && !n.hidden)).toHaveLength(1);
+  const from = descendants(example).find(n => n.getAttribute("data-range-field") === "from")!;
+  expect(from.getAttribute("aria-expanded")).toBe("true");
+  expect(doc.listeners.get("pointerdown")?.size ?? 0).toBe(0);
+});
 it("gallery includes the actual binned detail disclosure", async () => {
   const doc = new SessionDocument(); await mountSessionStates(doc.body as unknown as HTMLElement, fixtureStateCases());
   expect(doc.body.textContent).toContain("Combined session details");
@@ -287,6 +297,58 @@ it("the run title is first and its role is a fact, not an eyebrow", () => {
   expect(values[labels.findIndex(n => n.textContent === "Role")]?.textContent).toBe("worker");
 });
 
+it("route ticks start at the first in-range activity rather than the selected month", () => {
+  const d = sessionFixture(), from = Date.UTC(2030, 3, 1), to = Date.UTC(2030, 4, 1);
+  d.range = { from, to };
+  const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});
+  const labels = descendants(route as never).filter(n => n.hasAttribute("data-time-tick"));
+  expect(labels[0]!.getAttribute("data-time-tick")).toBe(String(Date.UTC(2030, 3, 12, 9)));
+  expect(labels.at(-1)!.getAttribute("data-time-tick")).toBe(String(Date.UTC(2030, 3, 14, 10, 20)));
+  expect(layoutSessionRoute(d, "credits", 1200).breaks.some(b => b.period.start === from || b.period.end === to)).toBe(false);
+});
+it.each(["own", "run", "compaction"])("a range with timed %s activity never uses the recorded-span fallback", kind => {
+  const d = sessionFixture(), start = Date.UTC(2030, 3, 13, 10), end = start + (kind === "compaction" ? 1 : 20 * 60000);
+  d.span = sessionSpan(Date.UTC(2030, 2, 1), Date.UTC(2030, 5, 1));
+  d.range = { from: Date.UTC(2030, 3, 1), to: Date.UTC(2030, 4, 1) };
+  const run = d.runs[0]!, bin = d.ownCallBins[0]!, compact = d.compaction[0]!;
+  d.activePeriods = []; d.idleGaps = []; d.ownCallBins = kind === "own" ? [{ ...bin, start, end }] : [];
+  d.runs = kind === "run" ? [{ ...run, start, end }] : [];
+  d.compaction = kind === "compaction" ? [{ ...compact, ts: start }] : [];
+  const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});
+  expect(descendants(route as never).filter(n => n.hasAttribute("data-time-tick")).map(n => Number(n.getAttribute("data-time-tick")))).toEqual([start, end]);
+});
+it("only timestamp-free ranges use the clipped recorded-span fallback", () => {
+  const d = sessionFixture(); d.range = { from: d.span!.start + 60000, to: d.span!.end - 60000 };
+  d.activePeriods = []; d.ownCallBins = []; d.runs = []; d.compaction = []; d.idleGaps = [];
+  const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});
+  expect(descendants(route as never).filter(n => n.hasAttribute("data-time-tick")).map(n => Number(n.getAttribute("data-time-tick")))).toEqual([Date.UTC(2030, 3, 12, 9, 1), Date.UTC(2030, 3, 14, 10, 19)]);
+});
+it("activity ending exactly at From does not stretch the first in-range tick", () => {
+  const d = sessionFixture(), start = Date.UTC(2030, 3, 13, 10);
+  d.range = { from: start - 60000, to: start + 3600000 };
+  d.activePeriods = [{ start: start - 120000, end: d.range.from }, { start, end: start + 1 }];
+  d.ownCallBins = []; d.compaction = []; d.runs = [];
+  const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});
+  expect(descendants(route as never).find(n => n.hasAttribute("data-time-tick"))!.getAttribute("data-time-tick")).toBe(String(start));
+});
+it("Span chip and Total duration describe in-range activity, not the whole selected month", async () => {
+  const d = sessionFixture(); d.range = { from: Date.UTC(2030, 3, 1), to: Date.UTC(2030, 4, 1) };
+  const s = setup(d), page = mountSession(s.ctx); await page.refresh();
+  const section = descendants(s.doc.body).find(n => n.className === "session-route-section")!;
+  const span = descendants(section).find(n => n.className === "stat-chip" && n.children[0]?.textContent === "Span")!;
+  expect(span.children[1]!.textContent).toBe("49 h 20 min");
+  const table = elements(section, "table")[0]!;
+  const total = elements(table, "tr").find(n => n.children[0]?.textContent === "Total")!;
+  expect(cellText(total.children[7]!)).toBe("49 h 20 min");
+  page.dispose();
+});
+it("compaction-only activity retains its own instant instead of the selected month", () => {
+  const d = sessionFixture(); d.range = { from: Date.UTC(2030, 3, 1), to: Date.UTC(2030, 4, 1) };
+  d.runs = []; d.activePeriods = []; d.ownCallBins = [];
+  const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});
+  const ticks = descendants(route as never).filter(n => n.hasAttribute("data-time-tick"));
+  expect(ticks.map(n => Number(n.getAttribute("data-time-tick")))).toEqual([d.compaction[0]!.ts, d.compaction[0]!.ts + 1]);
+});
 it("route ticks follow the applied range and clamp a long run's branch to it", () => {
   const d = sessionFixture(); d.range = { from: d.runs[0]!.start! + 60000, to: d.runs[0]!.end! - 60000 };
   const s = setup(d), route = renderSessionRoute(s.ctx.document, d, "credits", () => {});

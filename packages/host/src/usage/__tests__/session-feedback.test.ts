@@ -30,10 +30,10 @@ it("null roles use call and metadata agents in flow and four-role session breakd
   expect(session.runs.map(r => r.role)).toEqual(["worker", "implementer", "reviewer", "scout", "planner", "tester", "architect", "other"]);
   expect(session.runs.map(r => r.roleGroup)).toEqual(["workers", "workers", "reviewers", "others", "others", "others", "others", "others"]);
 });
-it("an explicit role overrides the agent group while the Role column retains the agent name", () => {
+it("an explicit role overrides the agent for both the Role column and group", () => {
   seed([priced("override", MAY, 2, { actor: "subagent", runId: "override", role: "reviewer", agent: "planner" })], [run("override", "planner", "reviewer")]);
   const session = data();
-  expect(session.runs[0]).toMatchObject({ role: "planner", roleGroup: "reviewers" });
+  expect(session.runs[0]).toMatchObject({ role: "reviewer", roleGroup: "reviewers" });
   expect(session.flow.edges[0]).toMatchObject({ role: "reviewers" });
 });
 // Mutant: null out a partly unpriced aggregate instead of retaining SUM(aic).
@@ -75,6 +75,34 @@ it("counter reset period is used rather than the calendar month", () => {
   seed([priced("bill", MAY + 25 * D, 4), priced("calendar", JUN + 12 * D, 9)], [], JUN + 5 * D);
   f.ledger.insertCounter({ ts: JUN + D, creditsUsed: 10, resetDate: "2030-06-10", accountLogin: "synthetic", raw: {} });
   expect(data()).toMatchObject({ range: { from: Date.UTC(2030, 4, 10), to: Date.UTC(2030, 5, 10) }, total: { credits: 4 } });
+});
+it.each([
+  ["Asia/Kolkata", "2030-05-31T18:30:00Z", "2030-06-30T18:30:00Z"],
+  ["America/Los_Angeles", "2030-06-01T07:00:00Z", "2030-07-01T07:00:00Z"],
+])("billing month snaps UTC calendar dates to local day bounds in %s", (tz, from, to) => {
+  seed([priced("current", JUN + 10 * D)]);
+  const month = { from: Date.parse(from), to: Date.parse(to) };
+  expect(data(`tz=${tz}`)).toMatchObject({ range: month, billingMonth: month, total: { calls: 1 } });
+});
+it.each([
+  ["Asia/Kolkata", "2030-05-01T00:30:00Z", "2030-04-30T18:30:00Z", "2030-05-31T18:30:00Z"],
+  ["America/Los_Angeles", "2030-05-01T00:30:00Z", "2030-04-01T07:00:00Z", "2030-05-01T07:00:00Z"],
+  ["America/Los_Angeles", "2030-03-15T00:30:00Z", "2030-03-01T08:00:00Z", "2030-04-01T07:00:00Z"],
+])("fallback uses the last activity's local month including DST in %s (%s)", (tz, last, from, to) => {
+  seed([priced("last", Date.parse(last))]);
+  expect(data(`tz=${tz}`)).toMatchObject({ range: { from: Date.parse(from), to: Date.parse(to) }, total: { calls: 1 } });
+});
+it.each([
+  ["Asia/Kolkata", "2030-05-09T18:30:00Z", "2030-06-09T18:30:00Z"],
+  ["America/Los_Angeles", "2030-05-10T07:00:00Z", "2030-06-10T07:00:00Z"],
+])("counter billing-period dates snap to local days in %s", (tz, from, to) => {
+  seed([priced("bill", MAY + 25 * D)], [], JUN + 5 * D);
+  f.ledger.insertCounter({ ts: JUN + D, creditsUsed: 10, resetDate: "2030-06-10", accountLogin: "synthetic", raw: {} });
+  expect(data(`tz=${tz}`)).toMatchObject({ range: { from: Date.parse(from), to: Date.parse(to) }, billingMonth: { from: Date.parse(from), to: Date.parse(to) } });
+});
+it("rejects invalid Session timezones rather than ignoring them", () => {
+  seed([priced("own", MAY)]);
+  expect(() => data("tz=Not/AZone")).toThrowError(expect.objectContaining({ code: "invalid-query" }));
 });
 it("an explicitly empty range retains the whole span but no activity or run metadata", () => {
   seed([priced("first", APR), priced("last", JUN)], [run("r", "worker")]);

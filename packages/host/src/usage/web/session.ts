@@ -9,7 +9,7 @@ import { chartPair } from "./charts.js";
 import { renderFlow } from "./flow.js";
 import { renderRangePicker, type RangePicker } from "./range-picker.js";
 import { renderModelMarker } from "./model-style.js";
-import { disposeSessionRoute, formatDuration, pinSessionRun, renderSessionRoute } from "./session-route.js";
+import { disposeSessionRoute, formatDuration, pinSessionRun, renderSessionRoute, sessionActivitySpan } from "./session-route.js";
 
 const rangeFocus = new WeakMap<Document, string>();
 export function mountSession(ctx: DashboardPageContext): DashboardPage {
@@ -112,6 +112,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     }
     if (!data.span) { root.append(element(document, "p", "No calls were recorded.", "notice")); return; }
     if (!data.total.calls) { const empty = element(document, "div", undefined, "session-range-empty"); empty.setAttribute("role", "status"); empty.append(element(document, "p", "No activity in this range.", "notice"), action(document, "Whole session", () => changeRange({ from: data!.span!.first, to: data!.span!.last + 1 }))); root.append(empty); return; }
+    const activity = sessionActivitySpan(data), duration = activity ? activity.end - activity.start : 0;
     const routeSection = element(document, "section", undefined, "session-route-section");
     graphic = renderSessionRoute(document, data, unit, select, tz, data.runs.length ? () => runRows[0]?.querySelector<HTMLButtonElement>("button")?.focus() : undefined);
     const svg = graphic.firstElementChild as SVGElement;
@@ -125,12 +126,12 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
         return [formatLocalTime(gap.start, tz), "Idle gap", "idle gap", "unavailable", "unavailable", credits, "unavailable", formatDuration(gap.end - gap.start), "unavailable"];
       }),
     ] });
-    const totalRow = element(document, "tr"); totalRow.append(element(document, "td", "Total"), element(document, "td", data.name), element(document, "td", "All roles"), element(document, "td", "All models"), element(document, "td", ""), element(document, "td", formatValue(data.total, "credits")), element(document, "td", formatTokens(data.total.tokens.total)), element(document, "td", formatDuration(data.range.to - data.range.from)), element(document, "td", "")); table.querySelector("tbody")!.append(totalRow);
+    const totalRow = element(document, "tr"); totalRow.append(element(document, "td", "Total"), element(document, "td", data.name), element(document, "td", "All roles"), element(document, "td", "All models"), element(document, "td", ""), element(document, "td", formatValue(data.total, "credits")), element(document, "td", formatTokens(data.total.tokens.total)), element(document, "td", formatDuration(duration)), element(document, "td", "")); table.querySelector("tbody")!.append(totalRow);
     const pair = chartPair(document, { id: `session-route-${id}`, title: "Session route", svg, table });
     // The shared pair accepts SVG, while the route also owns its live hover card.
     const chart = Array.from(pair.children).find(n => n.className === "chart-graphic")!; graphic.replaceChildren(svg, ...Array.from(graphic.children)); chart.replaceChildren(graphic);
     const summary = element(document, "div", undefined, "summary-chips"); const max = Math.max(0, ...data.runs.map(r => (unit === "credits" ? r.value.credits : r.value.tokens.total) ?? 0));
-    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.range.to - data.range.from)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(max)}`));
+    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(duration)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(max)}`));
     pair.replaceChildren(pair.firstElementChild!, summary, ...Array.from(pair.children).slice(1)); routeSection.append(pair);
     const legend = element(document, "div", undefined, "session-legend");
     for (const m of data.models) { const key = element(document, "span", undefined, "fact-chip"); key.append(renderModelMarker(document, m.style), element(document, "span", m.id, "mono")); legend.append(key); } routeSection.append(legend); root.append(routeSection);

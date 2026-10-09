@@ -2,6 +2,7 @@ import { DashboardQueryError, type DashboardQueryContext, type DashboardRoute, t
 import { RESPONSE_CAPS_V4, type OwnCallBin, type SessionData, type SessionRun, type SessionRange, type Value } from "./dashboard-v4-contract.js";
 import { billingPeriod } from "./billing-pace.js";
 import { latestValidCounter } from "./latest-valid-counter.js";
+import { dayKey, keyAt, localDayStart, ordinal } from "./web/session-day.js";
 import { runRoleGroup, fourRoleGroup } from "./run-role.js";
 import { shortSessionName } from "./session-name.js";
 import { dashboardLabel, supportedDetailId } from "./dashboard-identities.js";
@@ -116,8 +117,9 @@ function sessionRuns(ctx: DashboardQueryContext, scope: Scope, rows: readonly { 
       ? unanimous(meta.map(row => row[field])) : unanimous(actual.map(row => row[field]));
     const start = timestamp(unanimous(meta.map(row => row.start))), end = timestamp(unanimous(meta.map(row => row.end)));
     const model = dashboardLabel("model", label("model"));
-    return { id: supportedDetailId(id) ? id : null, name: dashboardLabel("runName", label("name") ?? id)!, role: dashboardLabel("role", label("agent") ?? label("role")) ?? "other",
-      roleGroup: fourRoleGroup(runRoleGroup(unanimous(actual.map(row => row.role)) ?? label("role"), unanimous(actual.map(row => row.agent)) ?? label("agent"))),
+    const role = unanimous(actual.map(row => row.role)) ?? label("role") ?? unanimous(actual.map(row => row.agent)) ?? label("agent");
+    return { id: supportedDetailId(id) ? id : null, name: dashboardLabel("runName", label("name") ?? id)!, role: dashboardLabel("role", role) ?? "other",
+      roleGroup: fourRoleGroup(runRoleGroup(role, null)),
       model, thinking: dashboardLabel("thinking", label("thinking")), start, end, durationMs: start !== null && end !== null && end >= start ? end - start : null,
       status: status(unanimous(meta.map(row => row.status))), value: sumValues(values.get(id) ?? []), style: model === null ? null : styles.get(model) ?? null };
   });
@@ -214,18 +216,21 @@ function scopedRange(scope: Scope, range: SessionRange): Scope {
     sql: `${scope.sql.replace(", session_candidates AS MATERIALIZED (", ", whole_session_candidates AS MATERIALIZED (")},
       session_candidates AS MATERIALIZED (SELECT * FROM whole_session_candidates WHERE ts>=@from AND ts<@to)` };
 }
-function defaultSessionRange(ctx: DashboardQueryContext, scope: Scope, span: Period | null, current: SessionRange): SessionRange {
+function defaultSessionRange(ctx: DashboardQueryContext, scope: Scope, span: Period | null, current: SessionRange, tz: string): SessionRange {
   if (!span) return current;
   const selected = scopedRange(scope, current);
   const activity = ctx.db.prepare(`${selected.sql} SELECT DISTINCT session_id AS sessionId,run_id AS runId FROM session_candidates`).all(selected.bindings) as Identity[];
   if (activity.some(scope.owns)) return current;
-  const last = new Date(span.end - 1);
-  return { from: Date.UTC(last.getUTCFullYear(), last.getUTCMonth(), 1), to: Date.UTC(last.getUTCFullYear(), last.getUTCMonth() + 1, 1) };
+  const firstDay = `${dayKey(span.end - 1, tz).slice(0, 7)}-01`, lastMonth = new Date(ordinal(firstDay));
+  const nextDay = keyAt(Date.UTC(lastMonth.getUTCFullYear(), lastMonth.getUTCMonth() + 1, 1));
+  return { from: localDayStart(firstDay, tz), to: localDayStart(nextDay, tz) };
 }
-export function querySession(ctx: DashboardQueryContext, id: string, _tz: string, requested?: SessionRange): SessionData {
+export function querySession(ctx: DashboardQueryContext, id: string, tz: string, requested?: SessionRange): SessionData {
+  try { dayKey(ctx.now(), tz); } catch { invalidQuery(); }
   if (requested && (!safeTimestamp(requested.from) || !safeTimestamp(requested.to) || requested.from >= requested.to)) invalidQuery();
   const whole = scopeFor(ctx, id), period = periodFor(ctx, whole), month = billingPeriod(ctx.now(), latestValidCounter(ctx.db, ctx.now()));
-  const billingMonth = { from: month.start, to: month.end }, range = requested ?? defaultSessionRange(ctx, whole, period, billingMonth);
+  const billingMonth = { from: localDayStart(keyAt(month.start), tz), to: localDayStart(keyAt(month.end - 1), tz, 1) };
+  const range = requested ?? defaultSessionRange(ctx, whole, period, billingMonth, tz);
   const span = period ? { ...period, first: period.start, last: period.end - 1 } : null;
   const scope = scopedRange(whole, range), selected = { start: range.from, end: range.to };
   const own = (ctx.db.prepare(`${scope.sql} SELECT id,ts,session_id AS sessionId,run_id AS runId,
@@ -242,8 +247,7 @@ export function querySession(ctx: DashboardQueryContext, id: string, _tz: string
   const empty = sumValues([]);
   const cube = span === null ? null : readSessionUsageCube(ctx, selected, scope);
   const total = cube?.total ?? empty, flow = cube ? flowFromCube(cube) : { total, edges: [], models: [] };
-  // Session timestamps need no server-side local buckets. The browser formats
-  // labels in tz; correction and scoped grouping stay UTC for every zone.
+  // Default bounds use local days; correction endpoints and scoped grouping stay UTC.
   const components = span ? readSessionCorrectedComponents(ctx, selected, gaps.map(gap => gap.next)) : new Map();
   const includeMetadata = period !== null && range.from <= period.start && range.to >= period.end;
   const runs = sessionRuns(ctx, scope, cube?.rows ?? [], cube ? sessionModelStyles(cube) : new Map(), includeMetadata), compaction = span ? compactions(ctx, scope, selected) : [];

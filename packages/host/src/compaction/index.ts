@@ -266,14 +266,31 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
     warn(reason);
   }
 
-
   let cache: { mtimeMs: number; map: ThresholdMap } | null = null;
   let warnedParseError = false;
   let compacting = false;
 
+  // Disk removal does not unload a parent extension; only registration/reload does.
+  const latchedLegacy = isChild ? undefined : legacyCompactionPath({});
   let warnedLegacy = false;
-  function inactive(ctx: ExtensionContext, values = deps.readConfig(ctx.cwd)): boolean {
-    const legacy = legacyCompactionPath(values);
+  let warnedConfigError = false;
+  function readValues(ctx: ExtensionContext): Record<string, unknown> | undefined {
+    try {
+      return deps.readConfig(ctx.cwd);
+    } catch (error) {
+      if (!warnedConfigError) {
+        warnedConfigError = true;
+        const reason = error instanceof Error ? error.message : String(error);
+        const message = `spider-compaction: could not read config (${reason}); inactive for this attempt`;
+        if (ctx.hasUI) ctx.ui.notify(message, 'warning');
+        else warn(message.replace(/^spider-compaction: /, ''));
+      }
+      return undefined;
+    }
+  }
+  function inactive(ctx: ExtensionContext, values = readValues(ctx)): boolean {
+    if (!values) return true;
+    const legacy = latchedLegacy ?? legacyCompactionPath(values);
     if (!legacy) return false;
     if (!warnedLegacy) {
       warnedLegacy = true;
@@ -341,7 +358,6 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
       warnSkip(`mirrored pi 0.87 internals; running ${VERSION}, re-run the fuzz`);
     }
     pi.on("turn_end", async (event, ctx) => {
-      if (inactive(ctx)) return;
       if (
         compacting ||
         event.outcome !== "completed" ||
@@ -358,6 +374,7 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
         if (threshold === undefined) return;
         const usage = ctx.getContextUsage();
         if (!usage || usage.percent === null || usage.percent < threshold) return;
+        if (inactive(ctx)) return;
 
         if (event.entries.some((entry) => entry.type === "context_edit")) {
           warnSkip("pending context edit; skipping this turn");
@@ -436,11 +453,12 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
   }
 
   pi.on("session_before_compact", async (event, ctx) => {
-    const values = deps.readConfig(ctx.cwd);
-    if (inactive(ctx, values)) return;
+    const values = readValues(ctx);
+    if (!values) return;
     const config = readCompactionConfig(values);
     const SUMMARY_MODEL = config.summaryModel;
     if (SUMMARY_MODEL === null) return;
+    if (inactive(ctx, values)) return;
     const SUMMARY_THINKING = config.summaryThinking;
     const SUMMARY_MIN_RESERVE_TOKENS = Math.ceil(config.minSummaryOutputTokens / 0.8);
     // Throwing here does not cancel compaction: pi's extension runner catches
@@ -491,7 +509,6 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    if (inactive(ctx)) return;
     if (compacting) return; // don't stack compactions
     const model = ctx.model;
     if (!model) return;
@@ -503,6 +520,7 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
     // percent is null right after a compaction (tokens unknown) -> skip.
     if (!usage || usage.percent === null) return;
     if (usage.percent < threshold) return;
+    if (inactive(ctx)) return;
 
     compacting = true;
     if (ctx.hasUI) {

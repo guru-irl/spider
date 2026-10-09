@@ -1,5 +1,5 @@
 import { test, expect, vi, beforeEach } from 'vitest';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getField, coerce } from '@spider/ui';
 
@@ -60,5 +60,16 @@ test('doctor reports the legacy child extension with removal and restart instruc
   writeFileSync(join(globalRoot, 'config.json'), JSON.stringify({ 'subagents.extensions': [file] }));
   const report = controlDoctor(cwd);
   const line = report.lines.find(line => /legacy extension/.test(line));
-  expect(line).toBeDefined(); expect(line).toContain('per-model-compaction.ts'); expect(line).toContain('subagents.extensions'); expect(line).toContain('restart'); expect(report.ok).toBe(false);
+  expect(line).toBeDefined(); expect(line).toContain('per-model-compaction.ts'); expect(line).toContain('listed in subagents.extensions (missing file)'); expect(line).not.toContain('remove it'); expect(line).toContain('restart'); expect(report.ok).toBe(false);
+});
+
+// Break: doctor loses the installed source or recommends unrelated config edits.
+for (const layout of ['per-model-compaction.ts', 'per-model-compaction/index.js']) test(`doctor reports installed legacy ${layout}`, () => {
+  const file = join(agentDir, 'extensions', layout);
+  mkdirSync(join(agentDir, 'extensions/per-model-compaction'), { recursive: true }); writeFileSync(file, '// fixture');
+  try {
+    const report = controlDoctor(cwd); const line = report.lines.find(line => /legacy extension/.test(line));
+    expect(report.ok).toBe(false); expect(line).toContain('installed in'); expect(line).toContain(layout);
+    expect(line).toContain('remove it'); expect(line).not.toContain('subagents.extensions');
+  } finally { rmSync(join(agentDir, 'extensions'), { recursive: true }); }
 });

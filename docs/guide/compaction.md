@@ -65,10 +65,18 @@ The child path preserves recent context, merges the previous summary and appends
 
 ## Migrate from the standalone plugin
 
-Spider remains inactive while `per-model-compaction.ts` or `.js` exists in pi's global extensions directory, or a path with that basename appears in global `subagents.extensions`, even if that configured file is missing. It warns once per session and `/doctor` reports the conflict.
+Spider detects these legacy locations only:
+
+- Pi's global agent directory: `extensions/per-model-compaction.ts` and `extensions/per-model-compaction.js`.
+- Directory plugins there: `extensions/per-model-compaction/index.ts` and `extensions/per-model-compaction/index.js`.
+- Paths whose basename is `per-model-compaction.ts` or `per-model-compaction.js` listed in `subagents.extensions`, even when the file is missing.
+
+Project-level `.pi/extensions`, settings `extensions`, packages and `-e` are not detected. Remove any standalone plugin loaded through those sources before enabling spider compaction.
+
+Spider warns once and `/doctor` names the detected source and its removal action. Parent registrations latch an installed plugin until restart or `/reload`: removing its file does not unload it or immediately enable spider. Children check live at actionable thresholds without a latch. Below thresholds, turn and agent-end handlers do not read spider config or check legacy locations. A config-read failure warns once and disables that attempt.
 
 1. Configure spider's summary model and thinking if you want managed parent summaries. Thresholds in `models.json` stay unchanged.
-2. Remove the standalone extension and its `subagents.extensions` entry. Keep unrelated entries.
-3. Restart pi, then run `/doctor`.
+2. Remove the installed standalone plugin or its detected `subagents.extensions` entry as directed. If both exist, remove both. Keep unrelated entries.
+3. Restart pi or run `/reload`, then run `/doctor`.
 
 Migration does not rewrite sessions. Spider recognizes legacy checkpoint details for file-list recovery.

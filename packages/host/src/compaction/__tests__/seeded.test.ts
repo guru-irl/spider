@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import { setup, pi, user, assistant, summaryCalls } from './harness.js';
+// Test-only deep import: pi does not root-export prepareCompaction.
 const { prepareCompaction } = await import(new URL('../../../../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js', import.meta.url).href);
 
 // Break: child cut or history extraction diverges from pi, or parent recency becomes sorted/forward.

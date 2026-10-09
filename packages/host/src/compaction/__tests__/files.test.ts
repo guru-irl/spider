@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach } from 'vitest';
 import { setup, summaryCalls, pi, assistant, user, ROOT } from './harness.js';
-// Use real pi cut/projection via the installed package only in tests.
+// Test-only deep import: pi does not root-export prepareCompaction.
 const { prepareCompaction } = await import(new URL('../../../../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js', import.meta.url).href);
 beforeEach(() => { summaryCalls.length = 0; });
 const range = (prefix: string, count: number) => Array.from({ length: count }, (_, i) => `${prefix}-${i}.ts`);

@@ -1,7 +1,17 @@
 import { test, expect, vi } from 'vitest';
 import { writeFileSync, utimesSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { setup, summaryCalls } from './harness.js';
+import { setup, summaryCalls, pi, user, assistant } from './harness.js';
+
+function childHistory(f: any) {
+  const sm = pi.SessionManager.inMemory(f.ctx.cwd);
+  sm.appendMessage(user('HISTORY ' + 'h'.repeat(2000)));
+  sm.appendMessage(assistant('history'));
+  sm.appendMessage({ ...assistant(''), content: [{ type: 'toolCall', id: 'keep', name: 'read', arguments: { path: 'kept.ts' } }], stopReason: 'toolUse' });
+  sm.appendMessage({ role: 'toolResult', toolCallId: 'keep', toolName: 'read', content: [{ type: 'text', text: 'k'.repeat(160) }], isError: false, timestamp: 3 });
+  f.ctx.sessionManager = sm;
+}
+const childTurn = { outcome: 'completed', entries: [], toolResults: [{}] };
 
 // Break: managed summaries run by default, or partial live updates are ignored.
 test('null summary model leaves pi in charge, while settings are read on each attempt', async () => {
@@ -70,6 +80,8 @@ for (const child of [false, true]) for (const ext of ['per-model-compaction.ts',
   test(`legacy ${ext} prevents ${child ? 'child' : 'parent'} compaction and warns once`, async () => {
     const f = setup(child); mkdirSync(join(f.agentDir, 'extensions'), { recursive: true });
     const legacy = join(f.agentDir, 'extensions', ext); writeFileSync(legacy, '// fixture');
+    if (child) childHistory(f);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
       const start = f.handlers.get('session_start'); expect(typeof start).toBe('function');
       await start({}, f.ctx); await start({}, f.ctx);
@@ -77,13 +89,17 @@ for (const child of [false, true]) for (const ext of ['per-model-compaction.ts',
       else { expect(await f.run()).toBeUndefined(); let calls = 0; f.ctx.compact = () => calls++; await f.handlers.get('agent_end')({}, f.ctx); expect(calls).toBe(0); }
       expect(summaryCalls).toHaveLength(0);
       expect(f.notices.filter((n: any) => /legacy/.test(n.text))).toHaveLength(1);
-      expect(f.notices[0].text).toContain(ext); expect(f.notices[0].text).toContain('subagents.extensions'); expect(f.notices[0].text).toContain('restart');
-    } finally { rmSync(legacy); }
+      expect(stderr).not.toHaveBeenCalled();
+      expect(f.notices[0].text).toContain(ext); expect(f.notices[0].text).toContain('installed in');
+      expect(f.notices[0].text).not.toContain('subagents.extensions'); expect(f.notices[0].text).toContain('restart');
+    } finally { stderr.mockRestore(); rmSync(legacy); }
   });
 }
 test('legacy configured child extension blocks compaction even if file is absent', async () => {
   const f = setup(); f.config['subagents.extensions'] = [join(f.agentDir, 'missing/per-model-compaction.ts')];
   expect(await f.run()).toBeUndefined(); expect(f.notices[0].text).toContain('per-model-compaction.ts');
+  expect(f.notices[0].text).toContain('listed in subagents.extensions (missing file)');
+  expect(f.notices[0].text).not.toContain('remove it');
   expect(summaryCalls).toHaveLength(0);
 });
 
@@ -109,4 +125,100 @@ test('default keeps 500 paths independently per list', async () => {
   expect(r.details.readFiles).toHaveLength(500); expect(r.details.modifiedFiles).toHaveLength(500);
   expect(r.details.readFiles[499]).toBe('read-499.ts'); expect(r.details.modifiedFiles[499]).toBe('edit-499.ts');
   expect(r.summary).toContain('read-499.ts'); expect(r.summary).not.toContain('read-500.ts');
+});
+
+// Break: config or legacy discovery runs for users without a crossed threshold.
+for (const child of [false, true]) for (const threshold of [false, true]) test(`cheap gates avoid config reads: child=${child}, threshold=${threshold}`, async () => {
+  const f = setup(child);
+  if (child) childHistory(f);
+  f.readConfig.mockClear();
+  if (!threshold) writeFileSync(f.modelsPath, '{}');
+  else f.ctx.getContextUsage = () => ({ tokens: 1000, percent: 49 });
+  const handler = f.handlers.get(child ? 'turn_end' : 'agent_end');
+  await handler(child ? childTurn : {}, f.ctx);
+  expect(f.readConfig).not.toHaveBeenCalled();
+  expect(summaryCalls).toHaveLength(0);
+});
+
+// Break: reader exceptions escape or repeatedly warn at threshold boundaries.
+for (const child of [false, true]) test(`config read failure is inactive and warns once: child=${child}`, async () => {
+  const f = setup(child); if (child) childHistory(f);
+  f.readConfig.mockImplementation(() => { throw new Error('fixture config failure'); });
+  const compact = vi.fn(); f.ctx.compact = compact;
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    await expect(Promise.resolve().then(() => f.handlers.get('session_start')({}, f.ctx))).resolves.toBeUndefined();
+    for (let i = 0; i < 3; i++) {
+      await f.handlers.get(child ? 'turn_end' : 'agent_end')(child ? childTurn : {}, f.ctx);
+      if (!child) expect(await f.run()).toBeUndefined();
+    }
+    expect(summaryCalls).toHaveLength(0); expect(compact).not.toHaveBeenCalled();
+    expect(f.notices.filter((n: any) => /could not read config/.test(n.text))).toHaveLength(1);
+    expect(stderr).not.toHaveBeenCalled();
+    f.readConfig.mockImplementation(() => f.config);
+    const result = child ? await f.handlers.get('turn_end')(childTurn, f.ctx) : await f.run();
+    expect(result).toBeDefined(); expect(summaryCalls).toHaveLength(1);
+  } finally { stderr.mockRestore(); }
+});
+
+// Break: removing a loaded parent plugin re-enables spider before reload.
+test('parent latches installed legacy plugin until fresh registration', async () => {
+  const f = setup(); const legacy = join(f.agentDir, 'extensions/per-model-compaction.ts');
+  mkdirSync(join(f.agentDir, 'extensions'), { recursive: true }); writeFileSync(legacy, '// fixture');
+  try {
+    f.register(); rmSync(legacy);
+    const compact = vi.fn(); f.ctx.compact = compact;
+    await f.handlers.get('agent_end')({}, f.ctx);
+    expect(await f.run()).toBeUndefined();
+    expect(compact).not.toHaveBeenCalled(); expect(summaryCalls).toHaveLength(0);
+    f.register();
+    await f.handlers.get('agent_end')({}, f.ctx);
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect((await f.run()).compaction.details.source).toBe('spider-compaction');
+  } finally { rmSync(legacy, { force: true }); }
+});
+
+// Break: pi's global directory-plugin layout is not detected.
+for (const ext of ['index.ts', 'index.js']) test(`legacy directory plugin ${ext} blocks managed summaries`, async () => {
+  const f = setup(); const dir = join(f.agentDir, 'extensions/per-model-compaction');
+  mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, ext), '// fixture');
+  try {
+    expect(await f.run()).toBeUndefined(); expect(summaryCalls).toHaveLength(0);
+    expect(f.notices[0].text).toContain('installed in'); expect(f.notices[0].text).toContain(ext);
+  } finally { rmSync(dir, { recursive: true }); }
+});
+
+// Break: the attempt reader trusts invalid raw settings instead of validating them.
+test('invalid raw summary model is a no-op and invalid raw cap uses defaults', async () => {
+  const f = setup();
+  Object.assign(f.config, { 'compaction.summaryModel': 'bad', 'compaction.fileListCap': -1, 'compaction.minSummaryOutputTokens': 0 });
+  expect(await f.run()).toBeUndefined(); expect(summaryCalls).toHaveLength(0); expect(f.notices).toEqual([]);
+  f.config['compaction.summaryModel'] = 'fixture-provider/summary-model';
+  f.event.preparation.settings.reserveTokens = 1000;
+  f.event.preparation.fileOps.read = new Set(Array.from({ length: 510 }, (_, i) => `raw-${String(i).padStart(3, '0')}.ts`));
+  const r = (await f.run()).compaction;
+  expect(r.details.readFiles).toHaveLength(500); expect(r.details.readFiles[499]).toBe('raw-499.ts');
+  expect(f.requests[0].options.maxTokens).toBe(800);
+});
+
+// Break: legacy discovery runs before the managed-summary opt-in gate.
+test('unmanaged summaries do not discover or warn about legacy conflicts', async () => {
+  const f = setup(); f.config['compaction.summaryModel'] = null;
+  f.config['subagents.extensions'] = ['missing/per-model-compaction.ts'];
+  expect(await f.run()).toBeUndefined(); expect(f.notices).toEqual([]);
+  expect(summaryCalls).toHaveLength(0);
+});
+
+// Break: parent-only lifetime latching leaks into a fresh child attempt.
+test('child does not latch a removed legacy plugin', async () => {
+  const f = setup(true); childHistory(f);
+  const legacy = join(f.agentDir, 'extensions/per-model-compaction.ts');
+  mkdirSync(join(f.agentDir, 'extensions'), { recursive: true }); writeFileSync(legacy, '// fixture');
+  try {
+    f.register(); await f.handlers.get('session_start')({}, f.ctx); rmSync(legacy);
+    const result = await f.handlers.get('turn_end')(childTurn, f.ctx);
+    expect(result).toBeDefined();
+    expect(result.entries.at(-1).details.source).toBe('spider-compaction');
+    expect(summaryCalls).toHaveLength(1);
+  } finally { rmSync(legacy, { force: true }); }
 });

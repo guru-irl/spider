@@ -35,13 +35,18 @@ const summaryModel = { ...sessionModel, id: 'summary-model', name: 'Summary', co
 export const user = (text: string): { role: 'user'; content: string; timestamp: number } => ({ role: 'user' as const, content: text, timestamp: 1 });
 export const assistant = (text: string): any => ({ role: 'assistant', api: sessionModel.api, provider: sessionModel.provider, model: sessionModel.id, content: [{ type: 'text', text }], usage: USAGE, stopReason: 'stop', timestamp: 2 });
 export function setup(child = false): any {
+  writeFileSync(modelsPath, JSON.stringify({ providers: { 'fixture-provider': {
+    modelOverrides: { 'session-model': { compactAtPercent: 50 } },
+  } } }));
   vi.stubEnv('PI_CODING_AGENT_DIR', agentDir);
   vi.stubEnv('PI_SUBAGENT_CHILD', child ? '1' : '0');
   const handlers = new Map<string, any>();
   const config: Record<string, unknown> = { 'compaction.summaryModel': 'fixture-provider/summary-model' };
-  install({ on: (name: string, fn: any) => handlers.set(name, fn), getThinkingLevel: () => 'low' }, {
-    readConfig: () => config, modelsPath,
+  const readConfig = vi.fn(() => config);
+  const register = () => install({ on: (name: string, fn: any) => handlers.set(name, fn), getThinkingLevel: () => 'low' }, {
+    readConfig, modelsPath,
   });
+  register();
   const requests: any[] = [], notices: any[] = [];
   const controller = new AbortController();
   const response = assistant('## Goal\nPreserve the task\n## Next Steps\nContinue');
@@ -67,7 +72,7 @@ export function setup(child = false): any {
     assert.equal(typeof handlers.get('session_before_compact'), 'function', 'parent must register compaction hook');
     return handlers.get('session_before_compact')(event, ctx);
   };
-  return { handlers, requests, notices, controller, response, registry, ctx, event, run, config, modelsPath, agentDir };
+  return { handlers, requests, notices, controller, response, registry, ctx, event, run, config, modelsPath, agentDir, readConfig, register };
 }
 beforeEach(() => { summaryCalls.length = 0; });
 export const pi: typeof Pi = await import('@earendil-works/pi-coding-agent');

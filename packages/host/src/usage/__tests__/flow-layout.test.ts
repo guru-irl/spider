@@ -24,7 +24,7 @@ it.each(["credits", "tokens"] as const)("%s filled bands conserve every node on 
   expect(widths[1]).toBeCloseTo(widths[3]!, 8); expect(widths[0]! / widths[2]!).toBeCloseTo(3, 8);
   for (const attribute of ["data-role-node", "data-model-node"] as const) {
     const nodes = elements(root, "rect").filter(n => n.hasAttribute(attribute));
-    expect(nodes).toHaveLength(attribute === "data-role-node" ? 6 : 2);
+    expect(nodes).toHaveLength(2);
     for (const node of nodes) {
       const key = node.getAttribute(attribute), top = Number(node.getAttribute("y")), height = Number(node.getAttribute("height"));
       expect(node.getAttribute("width")).toBe("8");
@@ -84,12 +84,27 @@ it.each(["credits", "tokens"] as const)("%s labels fit the viewBox with unavaila
   }
 });
 
-it("always names the six standard roles and adds Other runs only when present", () => {
-  const flow = overviewFixture().flow, doc = new PlainDocument(); flow.edges = flow.edges.slice(0, 1);
-  const labels = (root: HTMLElement) => elements(root, "text").filter(n => n.className.includes("flow-role-label")).map(n => n.textContent);
-  expect(labels(renderFlow(doc.asDocument(), flow, "credits", "roles"))).toEqual(["Own calls", "Workers", "Reviewers", "Scouts", "Compaction", "Background"]);
-  flow.edges = [...flow.edges, { ...flow.edges[0]!, role: "other-runs" }];
-  expect(labels(renderFlow(doc.asDocument(), flow, "credits", "other"))).toEqual(["Own calls", "Workers", "Reviewers", "Scouts", "Compaction", "Background", "Other runs"]);
+it.each(["credits", "tokens"] as const)("%s shows only positive roles, including Other runs, in chart order", unit => {
+  const flow = overviewFixture().flow, doc = new PlainDocument(), sample = flow.edges[0]!;
+  flow.edges = [
+    sample,
+    { ...sample, role: "scouts", value: { ...sample.value, credits: 0, tokens: { ...sample.value.tokens, total: 0 } }, share: 0 },
+    { ...sample, role: "workers", value: { ...sample.value, credits: null, tokens: { ...sample.value.tokens, total: 0 } }, share: 0 },
+    { ...sample, role: "other-runs" },
+  ];
+  const root = renderFlow(doc.asDocument(), flow, unit, `roles-${unit}`);
+  expect(elements(root, "text").filter(n => n.className.includes("flow-role-label")).map(n => n.textContent)).toEqual(["Own calls", "Other runs"]);
+  expect(elements(root, "rect").filter(n => n.hasAttribute("data-role-node")).every(n => Number(n.getAttribute("height")) > 0)).toBe(true);
+  // Zero-width and unavailable calls remain in the table, not as empty role rows.
+  expect(elements(root, "tbody")[0]!.children).toHaveLength(4);
+});
+
+it.each(["credits", "tokens"] as const)("%s keeps the empty state when no role has a positive value", unit => {
+  const flow = overviewFixture().flow;
+  flow.edges = flow.edges.map(e => ({ ...e, value: { ...e.value, credits: 0, tokens: { ...e.value.tokens, total: 0 } }, share: 0 }));
+  const root = renderFlow(new PlainDocument().asDocument(), flow, unit, `empty-${unit}`);
+  expect(root.textContent).toContain("No calls in this selection.");
+  expect(elements(root, "svg")).toHaveLength(0);
 });
 
 it.each(["credits", "tokens"] as const)("%s hover and focus detail dims only unrelated bands and dismisses without losing focus", unit => {
@@ -129,6 +144,39 @@ it("mixed priced and unpriced edges preserve known node credits and sum call det
   node.dispatchEvent(new Event("focus")); expect(tooltip.textContent).toContain("12 credits"); expect(tooltip.textContent).toContain("5 calls"); expect(tooltip.textContent).toContain("2 unpriced calls");
   descendants(root as never).find(n => n.getAttribute("data-flow-node-model") === "model-cedar")!.dispatchEvent(new Event("focus"));
   expect(tooltip.textContent).toContain("12 credits"); expect(tooltip.textContent).toContain("5 calls"); expect(tooltip.textContent).toContain("2 unpriced calls");
-  descendants(root as never).find(n => n.getAttribute("data-flow-node-model") === "unknown-model")!.dispatchEvent(new Event("focus"));
-  expect(tooltip.textContent).toContain("unavailable credits"); expect(tooltip.textContent).toContain("1 unpriced calls");
+  expect(descendants(root as never).some(n => n.getAttribute("data-flow-node-role") === "background")).toBe(false);
+  expect(elements(root, "tbody")[0]!.textContent).toContain("unavailable");
+});
+
+
+it.each(["credits", "tokens"] as const)("%s groups the smallest models with conserved totals and keeps every table row", unit => {
+  const flow = overviewFixture().flow, sample = flow.edges[0]!.value;
+  flow.models = Array.from({ length: 18 }, (_, i) => ({ ...flow.models[0]!, id: `model-${String(i + 1).padStart(2, "0")}` }));
+  flow.edges = flow.models.map((m, i) => ({ role: "own", model: m.id, value: { ...sample, credits: i + 1, calls: i + 1, tokens: { ...sample.tokens, total: (i + 1) * 100 } }, share: (i + 1) / 171 }));
+  const root = renderFlow(new PlainDocument().asDocument(), flow, unit, `many-${unit}`);
+  const labels = elements(root, "text").filter(n => n.className.includes("flow-model-label")).map(n => n.textContent);
+  expect(labels).toEqual(["model-18", "model-17", "model-16", "model-15", "model-14", "model-13", "model-12", "11 other models"]);
+  expect(elements(root, "tbody")[0]!.children).toHaveLength(18);
+  const grouped = descendants(root as never).find(n => n.getAttribute("aria-label")?.startsWith("11 other models,"))!;
+  grouped.dispatchEvent(new Event("focus"));
+  const tooltip = descendants(root as never).find(n => n.getAttribute("role") === "tooltip")!;
+  expect(tooltip.textContent).toContain(unit === "credits" ? "66 credits" : "6.6k tokens");
+  expect(tooltip.textContent).toContain("38.6% of total"); expect(tooltip.textContent).toContain("66 calls");
+  const paths = bands(root), role = elements(root, "rect").find(n => n.hasAttribute("data-role-node"))!;
+  expect(paths).toHaveLength(8);
+  expect(paths.reduce((n, p) => n + thickness(p), 0)).toBeCloseTo(Number(role.getAttribute("height")), 8);
+  for (const model of elements(root, "rect").filter(n => n.hasAttribute("data-model-node"))) {
+    expect(paths.filter(p => p.getAttribute("data-flow-model") === model.getAttribute("data-model-node")).reduce((n, p) => n + thickness(p), 0)).toBeCloseTo(Number(model.getAttribute("height")), 8);
+  }
+});
+
+it("flow uses complete accessible names without describing targets by a shared live tooltip", () => {
+  const root = renderFlow(new PlainDocument().asDocument(), overviewFixture().flow, "credits", "a11y");
+  const targets = descendants(root as never).filter(n => n.getAttribute("tabindex") === "0" && n.getAttribute("role") === "img");
+  expect(targets.length).toBeGreaterThan(0);
+  for (const target of targets) {
+    expect(target.getAttribute("aria-label")).toMatch(/credits, .* of total, \d+ calls/);
+    expect(target.hasAttribute("aria-describedby")).toBe(false);
+  }
+  expect(descendants(root as never).find(n => n.getAttribute("role") === "tooltip")!.getAttribute("aria-hidden")).toBe("true");
 });

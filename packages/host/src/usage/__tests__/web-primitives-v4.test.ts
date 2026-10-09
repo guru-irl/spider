@@ -112,12 +112,12 @@ it("flow nodes span the chart and the viewport fits its last label", () => {
   expect(modelLabels.every(n => n.getAttribute("text-anchor") === "start" && Number(n.getAttribute("x")) > width / 2 && Number(n.getAttribute("x")) + 100 < width)).toBe(true);
 });
 
-it("flow keeps standard role labels but omits table rows for roles with no usage", () => {
+it("flow omits labels and table rows for roles with no usage", () => {
   const doc = new PlainDocument(), flow = overviewFixture().flow, value = structuredClone(flow.total);
   value.credits = 0; value.calls = 0; value.tokens.total = 0;
   flow.edges = [...flow.edges, { role: "scouts", model: flow.models[0]!.id, value, share: 0 }];
   const node = renderFlow(doc.asDocument(), flow, "credits", "zero-flow");
-  expect(elements(node, "text").some(n => n.textContent === "Scouts")).toBe(true);
+  expect(elements(node, "text").some(n => n.textContent === "Scouts")).toBe(false);
   expect(elements(node, "tbody")[0]!.children.some(n => n.textContent.includes("Scouts"))).toBe(false);
 });
 

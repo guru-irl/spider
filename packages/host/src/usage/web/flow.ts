@@ -27,11 +27,31 @@ export function renderFlow(document: Document, flow: FlowData, unit: Unit, id: s
   const svg = node("svg", { class: "flow-svg", role: "group" });
   const amount = (v: Value) => unit === "credits" ? v.credits : v.tokens.total;
   const edges = flow.edges.filter(e => (amount(e.value) ?? 0) > 0 || e.value.calls > 0);
-  const roles = [...standardRoles, ...(edges.some(e => e.role === "other-runs") ? ["other-runs" as const] : [])];
-  const modelIds = [...flow.models.filter(m => edges.some(e => e.model === m.id)).map(m => m.id)];
-  for (const model of [...new Set(edges.map(e => e.model))].sort()) if (!modelIds.includes(model)) modelIds.push(model);
-  const models = modelIds.map(model => ({ id: model, style: flow.models.find(m => m.id === model)?.style ?? { color: "#c4b7a8", shape: "circle" } }));
-  const ordered = [...edges].sort((a, b) => roles.indexOf(a.role) - roles.indexOf(b.role) || modelIds.indexOf(a.model) - modelIds.indexOf(b.model));
+  const roles = [...standardRoles, "other-runs" as const].filter(role => (amount(sumValues(edges.filter(e => e.role === role))) ?? 0) > 0);
+  if (!roles.length) {
+    const empty = element(document, "div", undefined, "flow-panel");
+    empty.append(element(document, "h2", "Where it went"), element(document, "p", "No calls in this selection.", "notice"));
+    return empty;
+  }
+  let chartEdges = edges.filter(e => roles.includes(e.role));
+  let modelIds = [...flow.models.filter(m => chartEdges.some(e => e.model === m.id)).map(m => m.id)];
+  for (const model of [...new Set(chartEdges.map(e => e.model))].sort()) if (!modelIds.includes(model)) modelIds.push(model);
+  let groupedId = "other-models", groupedCount = 0;
+  if (modelIds.length > 7) {
+    while (modelIds.includes(groupedId)) groupedId += "-group";
+    const totals = new Map(modelIds.map(model => [model, amount(sumValues(chartEdges.filter(e => e.model === model))) ?? 0]));
+    const ranked = [...modelIds].sort((a, b) => totals.get(b)! - totals.get(a)!);
+    const rest = new Set(ranked.slice(7)); groupedCount = rest.size;
+    modelIds = [...ranked.slice(0, 7), groupedId];
+    const retained = chartEdges.filter(e => !rest.has(e.model));
+    for (const role of roles) {
+      const rows = chartEdges.filter(e => e.role === role && rest.has(e.model));
+      if (rows.length) retained.push({ role, model: groupedId, value: sumValues(rows), share: rows.reduce((n, e) => n + e.share, 0) });
+    }
+    chartEdges = retained;
+  }
+  const models = modelIds.map(model => ({ id: model, name: groupedCount && model === groupedId ? `${groupedCount} other models` : model, style: flow.models.find(m => m.id === model)?.style ?? { color: "#c4b7a8", shape: "circle" } }));
+  const ordered = [...chartEdges].sort((a, b) => roles.indexOf(a.role) - roles.indexOf(b.role) || modelIds.indexOf(a.model) - modelIds.indexOf(b.model));
   const total = amount(sumValues(edges)) ?? 0, scale = total > 0 ? 300 / total : 0;
   // Both endpoints sum the exact same widths, including the floor for tiny nonzero flows.
   const widths = new Map(ordered.map(e => [e, (amount(e.value) ?? 0) > 0 ? Math.max(.75, (amount(e.value) ?? 0) * scale) : 0]));
@@ -49,21 +69,21 @@ export function renderFlow(document: Document, flow: FlowData, unit: Unit, id: s
   // Conservative glyph bounds for Fira Sans at 14px, code values at 15px and
   // model ids at 12px. Include the value line, not only the node's name.
   const leftGutter = Math.max(0, ...roles.map(role => Math.max(names[role].length * 9, valueLine(left.get(role)!).length * 10))) + 30;
-  const rightGutter = Math.max(0, ...models.map(m => Math.max(m.id.length * 12, valueLine(right.get(m.id)!).length * 10))) + 30;
+  const rightGutter = Math.max(0, ...models.map(m => Math.max(m.name.length * 12, valueLine(right.get(m.id)!).length * 10))) + 30;
   const width = Math.max(1200, leftGutter + rightGutter + 400), x1 = leftGutter, x2 = width - rightGutter;
   const bottom = (stations: Map<string, Station>) => Math.max(0, ...[...stations.values()].map(n => n.y + n.height / 2 + Math.max(32, n.height) / 2));
-  const height = Math.max(630, bottom(left) + 32, bottom(right) + 32);
+  const height = Math.max(bottom(left), bottom(right)) + 24;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   const color = (model: string) => { const value = models.find(m => m.id === model)?.style.color ?? "#c4b7a8"; return /^#[0-9a-f]{6}$/i.test(value) ? value : "currentColor"; };
-  const tooltip = element(document, "div", undefined, "flow-tooltip"); tooltip.setAttribute("role", "tooltip"); tooltip.id = `${id}-detail`; tooltip.hidden = true;
+  const tooltip = element(document, "div", undefined, "flow-tooltip"); tooltip.setAttribute("role", "tooltip"); tooltip.setAttribute("aria-hidden", "true"); tooltip.id = `${id}-detail`; tooltip.hidden = true;
   // SVG positioning works under the dashboard's CSP, which forbids inline style attributes.
-  const frameWidth = Math.min(width - 32, Math.max(330, ...models.map(m => m.id.length * 8 + 34)));
+  const frameWidth = Math.min(width - 32, Math.max(330, ...models.map(m => m.name.length * 8 + 34)));
   const frame = node("foreignObject", { class: "flow-tooltip-frame", x: Math.max(16, Math.min(width - frameWidth - 16, (x1 + x2 - frameWidth) / 2)), y: 120, width: frameWidth, height: 220, visibility: "hidden" }); frame.append(tooltip);
   const paths: { edge: FlowEdge; path: SVGPathElement }[] = [];
   const detail = (label: string, value: Value, fraction: number) => `${label}, ${formatValue(value, unit)} ${unit}, ${share(fraction)} of total, ${value.calls} calls${value.unpricedCalls ? `, ${value.unpricedCalls} unpriced calls` : ""}`;
   const hide = () => { tooltip.hidden = true; frame.setAttribute("visibility", "hidden"); paths.forEach(({ path }) => path.setAttribute("opacity", "1")); };
   function interact(target: SVGElement, matches: (edge: FlowEdge) => boolean, label: string, value: Value, fraction: number) {
-    target.setAttribute("tabindex", "0"); target.setAttribute("role", "img"); target.setAttribute("aria-label", detail(label, value, fraction)); target.setAttribute("aria-describedby", tooltip.id);
+    target.setAttribute("tabindex", "0"); target.setAttribute("role", "img"); target.setAttribute("aria-label", detail(label, value, fraction));
     const show = () => {
       paths.forEach(({ edge, path }) => path.setAttribute("opacity", matches(edge) ? "1" : "0.16"));
       tooltip.replaceChildren(element(document, "strong", label), element(document, "p", `${formatValue(value, unit)} ${unit} · ${share(fraction)} of total`, "mono"), element(document, "p", `${value.calls} calls${value.unpricedCalls ? ` · ${value.unpricedCalls} unpriced calls` : ""}`, "mono"));
@@ -77,7 +97,8 @@ export function renderFlow(document: Document, flow: FlowData, unit: Unit, id: s
     const centre = station.y + station.height / 2, x = isRole ? x1 - 18 : x2 + 20, anchor = isRole ? "end" : "start";
     const g = node("g", { class: "flow-node", [isRole ? "data-flow-node-role" : "data-flow-node-model"]: key });
     // The labels are part of the pointer target, including nodes with no priced width.
-    g.append(node("rect", { class: "flow-node-hit", x: isRole ? 0 : x2, y: Math.max(0, centre - 22), width: isRole ? x1 : rightGutter, height: 44, fill: "transparent" }));
+    const hitLeft = isRole ? 0 : x2, hitRight = isRole ? x1 : width, hitTop = Math.max(0, centre - 22);
+    g.append(node("path", { class: "flow-node-hit", d: `M ${hitLeft} ${hitTop} H ${hitRight} V ${hitTop + 44} H ${hitLeft} Z`, fill: "transparent" }));
     g.append(node("rect", { x: isRole ? x1 - 8 : x2, y: station.y, width: 8, height: station.height, rx: Math.min(4, station.height / 2), fill: isRole ? `var(--usage-role-${roleTokens[key as FlowRole]})` : color(key), [isRole ? "data-role-node" : "data-model-node"]: key }));
     g.append(node("text", { x, y: centre - 5, "text-anchor": anchor, class: isRole ? "flow-role-label" : "flow-model-label numeric" }, name));
     g.append(node("text", { x, y: centre + 15, "text-anchor": anchor, class: "flow-value numeric" }, valueLine(station)));
@@ -86,13 +107,13 @@ export function renderFlow(document: Document, flow: FlowData, unit: Unit, id: s
   // Tab order follows the chart: left nodes, bands in role/model order, right nodes.
   for (const role of roles) svg.append(label(left.get(role)!, names[role], role, true));
   for (const edge of ordered) {
-    const source = left.get(edge.role)!, target = right.get(edge.model)!, w = widths.get(edge)!;
+    const w = widths.get(edge)!; if (!w) continue;
+    const source = left.get(edge.role)!, target = right.get(edge.model)!;
     const a = source.cursor, b = target.cursor, mid = (x1 + x2) / 2; source.cursor += w; target.cursor += w;
-    if (!w) continue;
     const path = node("path", { class: "flow-band", d: `M ${x1} ${a} C ${mid} ${a} ${mid} ${b} ${x2} ${b} L ${x2} ${b + w} C ${mid} ${b + w} ${mid} ${a + w} ${x1} ${a + w} Z`, fill: color(edge.model), opacity: 1, "data-flow-role": edge.role, "data-flow-model": edge.model });
-    paths.push({ edge, path }); interact(path, e => e === edge, `${names[edge.role]} to ${edge.model}`, edge.value, edge.share); svg.append(path);
+    paths.push({ edge, path }); interact(path, e => e === edge, `${names[edge.role]} to ${models.find(m => m.id === edge.model)!.name}`, edge.value, edge.share); svg.append(path);
   }
-  for (const model of models) svg.append(label(right.get(model.id)!, model.id, model.id, false));
+  for (const model of models) svg.append(label(right.get(model.id)!, model.name, model.id, false));
   svg.append(frame);
   // Preserve the table's wire order and values, independently of band stacking and node sums.
   const table = renderTable(document, { caption: "Where it went", columns: ["Role", "Model", unit === "credits" ? "Credits" : "Tokens", "Share"], rows: edges.map(edge => [names[edge.role], edge.model, formatValue(edge.value, unit), share(edge.share)]) });

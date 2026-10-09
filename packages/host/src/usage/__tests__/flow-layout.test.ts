@@ -52,3 +52,14 @@ it("tiny ribbons remain visible without breaking node conservation", () => {
     expect(sum).toBeCloseTo(Number(station.getAttribute("height")), 8);
   }
 });
+
+it("ribbons are opaque so crossings never blend model colours", () => {
+  // Translucent ribbons mix where they cross into a colour that no model owns.
+  const doc = new PlainDocument(), root = renderFlow(doc.asDocument(), overviewFixture().flow, "credits", "opaque");
+  const paths = elements(root, "path").filter(n => n.hasAttribute("stroke-width"));
+  expect(paths.length).toBeGreaterThan(1);
+  for (const path of paths) {
+    expect([null, "1"]).toContain(path.getAttribute("stroke-opacity"));
+    expect([null, "1"]).toContain(path.getAttribute("opacity"));
+  }
+});

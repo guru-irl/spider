@@ -43,7 +43,7 @@ export function renderFlow(document: Document, flow: FlowData, unit: Unit, id: s
   for (const edge of ordered) {
     const source = left.get(edge.role)!, target = right.get(edge.model)!, w = widths.get(edge)!;
     const y1 = source.cursor + w / 2, y2 = target.cursor + w / 2; source.cursor += w; target.cursor += w;
-    const line = node("path", { d: `M128 ${y1}C450 ${y1} 650 ${y2} 980 ${y2}`, fill: "none", stroke: color(edge.model), "stroke-width": w, "stroke-opacity": ".82", tabindex: 0, "data-flow-role": edge.role, "data-flow-model": edge.model });
+    const line = node("path", { d: `M128 ${y1}C450 ${y1} 650 ${y2} 980 ${y2}`, fill: "none", stroke: color(edge.model), "stroke-width": w, "stroke-opacity": "1", tabindex: 0, "data-flow-role": edge.role, "data-flow-model": edge.model });
     const title = `${names[edge.role]} to ${edge.model}: ${formatValue(edge.value, unit)} ${unit} · ${share(edge.share)}`;
     line.setAttribute("aria-label", title); line.append(node("title", {}, title)); svg.append(line);
   }

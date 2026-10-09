@@ -83,7 +83,7 @@ export class AgentDetail implements Component {
     const convoTail = convo.length ? convo.slice(-120) : ["  " + t.fg("dim", "(waiting for the agent…)")];
 
     const body = [
-      head, meta, fit("  " + t.fg("dim", formatRunUsage(a.tokenCount, a.cost ?? 0, a.compactionCount))), idLine, ...thinkingNotes, "",
+      head, meta, fit("  " + t.fg("dim", formatRunUsage(a.tokenCount, a.cost ?? 0, a.compactionCount, a.costText))), idLine, ...thinkingNotes, "",
       t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
       t.fg("dim", `${t.glyph} conversation`), ...convoTail,
       "", fit(this.isArmed()

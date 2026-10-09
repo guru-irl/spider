@@ -52,7 +52,7 @@ it.each(["off", "auto"] as const)("replacement aggregates are identical before a
   expect(before.measure.calls).toBe(75); expect(before.measure.unpricedCalls).toBe(2);
   expect(before.warmer.calls).toBe(1);
   expect(before.intervals).toHaveLength(3);
-  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(4);
+  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(5);
   expect(read(mode, responses)).toEqual(before);
   expect(read(mode, ctx => readUsageCube(ctx, customRange(slice.start, slice.end))).total.calls).toBe(75);
 });

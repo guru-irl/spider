@@ -44,7 +44,7 @@ describe("parseTranscript", () => {
     expect(result.calls.map(call => call.actor)).toEqual(["parent", "aux", "compaction", "compaction", "warmer"]);
     expect(result.calls.map(call => call.aggregate)).toEqual([false, false, true, true, false]);
     expect(result.calls[1].auxPurpose).toBe("reflection");
-    expect(result.calls[2]).toMatchObject({ provider: null, model: null, requestedModel: null, price: { status: "unpriced", reason: "missing-attribution" } });
+    expect(result.calls[2]).toMatchObject({ provider: "github-copilot", model: null, requestedModel: null, price: { status: "priced", aic: 3.6999999999999997 } });
     expect(result.calls[0]).toMatchObject({ sessionId: "session-fixture", runId: null, agent: null, role: null, project: "fixture-project", repo: "fixture-repo" });
     const child = parseTranscript(lines(HEADER, entry("message", "child", { message: assistant() })), CHILD).calls[0];
     expect(child).toMatchObject({ actor: "subagent", runId: "run-child", sessionId: "session-owner", parentRunId: "run-outer",
@@ -59,7 +59,7 @@ describe("parseTranscript", () => {
     expect(call.usage).toEqual({ input: 100, output: 500, cacheRead: 200, cacheWrite: 50, cacheWrite1h: 20, reasoning: 300, totalTokens: 850 });
   });
 
-  it("handles anonymous tool and summary usage without pricing ancestor selections", () => {
+  it("prices summary cost from ancestor provider state without inferring tool billing", () => {
     const result = parseTranscript(lines(HEADER,
       entry("model_change", "model", { provider: "github-copilot", modelId: "gpt-6.1-sol" }),
       entry("thinking_level_change", "thinking", { parentId: "model", thinkingLevel: "medium" }),
@@ -72,13 +72,13 @@ describe("parseTranscript", () => {
     expect(result.calls[1]).toMatchObject({ actor: "compaction", aggregate: true });
     expect(result.calls[2]).toMatchObject({ actor: "compaction", aggregate: true });
     for (const call of result.calls) {
-      expect(call).toMatchObject({ provider: null, model: null, requestedModel: null, displayModel: "gpt-6.1-sol", thinking: "medium", price: { status: "unpriced", reason: "missing-attribution" } });
+      expect(call).toMatchObject({ provider: call.actor === "compaction" ? "github-copilot" : null, model: null, requestedModel: null, displayModel: "gpt-6.1-sol", thinking: "medium", price: call.actor === "compaction" ? { status: "priced", rateVersion: "pi-reported-cost-v1" } : { status: "unpriced", reason: "missing-attribution" } });
       expect(call.usage.output).toBe(500);
       expect(call.usage.reasoning).toBe(300);
     }
   });
 
-  it("uses only explicit attribution on tools and summary sources", () => {
+  it("uses rate-table pricing and response aliases for explicitly attributed summaries", () => {
     const result = parseTranscript(lines(
       entry("message", "tool", { message: { role: "toolResult", toolName: "fixture_summary", provider: "github-copilot", model: "gpt-6.1-sol", usage: usage({ source: "compaction" }), timestamp: AT } }),
       entry("compaction", "compact", { provider: "github-copilot", model: "gpt-6.1-sol", responseModel: "unknown-response-model", usage: usage() }),

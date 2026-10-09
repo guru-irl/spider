@@ -1,6 +1,6 @@
 // packages/host/src/agents/run-source.ts
 import { bus, type Db } from "@spider/db-core";
-import type { RunEvent, RunRow, RunSource } from "@spider/ui";
+import type { RunEvent, RunRow, RunSource, RunUsageCosts } from "@spider/ui";
 import { runUsageSummary, sumUsage } from "@spider/subagents";
 
 const RETENTION_MS = 10_000;
@@ -12,15 +12,15 @@ export function createRunSource(db: Db, sessionId: string): RunSource {
   const eventsStmt = db.prepare(
     `SELECT run_id, session_id, ts, type, tool, summary, payload FROM run_events WHERE run_id = ? ORDER BY ts ASC, id ASC`);
   const safeParse = (s: unknown): unknown => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };
-  const costs = new Map<string, { tokens: number | undefined; cost: number; compactionCount?: number }>();
+  const costs = new Map<string, { tokens: number | undefined; cost: number; usageCosts: RunUsageCosts; compactionCount?: number }>();
   const withCost = (row: RunRow): RunRow => {
     let cached = costs.get(row.id);
     if (!cached || cached.tokens !== row.token_count) {
       const summary = runUsageSummary(db, row.id);
-      cached = { tokens: row.token_count, cost: sumUsage(summary.usage.map(r => r.usage)).cost.total, compactionCount: summary.compactionCount };
+      cached = { tokens: row.token_count, cost: sumUsage(summary.usage.map(r => r.usage)).cost.total, usageCosts: summary.usage.map(r => ({ provider: r.provider, cost: r.usage.cost.total })), compactionCount: summary.compactionCount };
       costs.set(row.id, cached);
     }
-    return { ...row, cost: cached.cost, compactionCount: cached.compactionCount };
+    return { ...row, cost: cached.cost, usageCosts: cached.usageCosts, compactionCount: cached.compactionCount };
   };
   return {
     listActive(): RunRow[] {

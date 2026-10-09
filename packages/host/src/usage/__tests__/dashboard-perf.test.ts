@@ -11,7 +11,7 @@ afterEach(() => { for (const close of closers.splice(0).reverse()) close(); });
 test("all five replacement queries use bounded indexed billing reads", () => {
   const fixture = createDashboardFixture(false); closers.push(fixture.close);
   const seed = seedPlanLedger(fixture.file, 1600);
-  expect(fixture.db.pragma("user_version")).toBe(4);
+  expect(fixture.db.pragma("user_version")).toBe(5);
   const reader = openDashboardReader(fixture.file, { instanceId: "plans", serverBuild: "fixture", now: () => seed.now, calibrationMode: () => "auto" })!;
   closers.push(() => reader.close());
   for (const request of planRequests(seed.periods[0]!, seed.sessionId, seed.runId)) {

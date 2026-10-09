@@ -50,7 +50,7 @@ it("v1 upgrades additively and twice is harmless", () => {
   expect(revision(db)).toBe(-1);
   migrateUsageLedger(db);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(4);
+  expect(db.pragma("user_version")).toBe(5);
   expect(revision(db)).toBe(0);
   expect(facts(db)).toEqual(before);
   const afterDdl = db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").all();
@@ -64,13 +64,15 @@ it("v1 upgrades additively and twice is harmless", () => {
   }).map(stripStatus)).toEqual(ddl.filter(row => (row as { name: string }).name !== "calls"));
   const callsSql = (afterDdl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql;
   const stripSelection = (sql: string) => sql.replace(/,\s*selection_(?:shadowed|undercount) INTEGER NOT NULL DEFAULT 0 CHECK \(selection_(?:shadowed|undercount) IN \(0,1\)\)/g, "");
-  expect(stripSelection(callsSql)).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
+  const stripReportedCost = (sql: string) => sql.replace('CREATE TABLE "calls"', "CREATE TABLE calls")
+    .replace("AND (rate_version = 'pi-reported-cost-v1' OR (", "AND ").replace("AND aic_output IS NOT NULL))", "AND aic_output IS NOT NULL");
+  expect(stripReportedCost(stripSelection(callsSql))).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
   expect(db.prepare("PRAGMA index_info(runs_meta_session)").all().map(row => (row as { name: string }).name))
     .toEqual(["session_id", "db_path", "id"]);
   expect(db.prepare("SELECT * FROM ledger_metadata WHERE key != 'call-selection-revision' ORDER BY key").all()).toEqual(metadata);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   const writable = track(openUsageLedger(file));
-  expect(writable.health().schemaVersion).toBe(4);
+  expect(writable.health().schemaVersion).toBe(5);
   expect(writable.leases.inspect("ingest", 2000)).toMatchObject({ owner: "fixture-owner", role: "follower", expiresAt: 121000 });
   expect(writable.leases.acquire("ingest", "other-owner", 2000, 120000)).toBeUndefined();
   expect(facts(db)).toEqual(before);
@@ -81,7 +83,7 @@ it("v1 upgrades additively and twice is harmless", () => {
   const shipped = v1();
   const shippedFacts = facts(shipped);
   const writer = track(openUsageLedger(file));
-  expect(writer.health().schemaVersion).toBe(4);
+  expect(writer.health().schemaVersion).toBe(5);
   expect(revision(shipped)).toBe(0);
   expect(facts(shipped)).toEqual(shippedFacts);
 });

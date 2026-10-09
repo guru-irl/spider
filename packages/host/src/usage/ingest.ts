@@ -86,6 +86,8 @@ function compact(entry: unknown): unknown {
     "type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId",
     "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "api"
   ]);
+  if (record.type === "compaction" || record.type === "branch_summary")
+    result.details = pick(object(record.details), ["summaryModel"]);
   if (record.type === "message")
     result.message = pick(object(record.message), [
       "role", "timestamp",
@@ -181,8 +183,10 @@ async function readTranscript(
     });
     const prefix = reset ? [] : ledger.getSourceContext(source.path, roots)?.entries ?? [];
     const seedHeader = !reset && context?.header ? [{ byteOffset: -1, json: context.header }] : [];
-    const parsed = parseTranscript([...seedHeader, ...prefix, ...lines], parserSource(source));
     const header = lines.map(l => object(l.json)).find(e => e.type === "session") ?? (reset ? undefined : context?.header ?? undefined);
+    const parsed = parseTranscript([...seedHeader, ...prefix, ...lines], parserSource(source), {
+      sessionProviders: ledger.getSessionProviders(text(source.run?.sessionId) ?? text(header?.id), reset ? source.path : undefined),
+    });
     const entries = lines.filter(l => text(object(l.json).type)).map(l => ({ ...l, json: cheap(l.json) }));
     let session: SessionMeta | null = null;
     try { capture?.activity(parsed.calls.map(call => call.ts)); session = await capture?.finish() ?? null; } catch { /* optional metadata never blocks billing */ }

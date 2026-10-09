@@ -56,6 +56,7 @@ export type CallRow = {
   project: string | null; repo: string | null; sessionId: string | null; runId: string | null;
   actor: Actor; role: string | null; agent: string | null; runName: string | null; phase: string | null;
   parentRunId: string | null; auxPurpose: string | null; provider: string | null; model: string | null;
+  rawProvider?: string | null;
   requestedModel: string | null; thinking: string | null; api: string | null;
   usage: UsageTokens; price: PriceResult; piCost: number | null; latencyMs: number | null;
   aggregate: boolean; counted: boolean; originKey: string | null;
@@ -155,6 +156,7 @@ export interface UsageLedger {
    * An empty roots array reads header/checkpoints only. Omitted roots is a diagnostic full read. */
   getSourceContext(path: string, roots?: readonly string[]): SourceContext | undefined;
   getSourceHeaders(): readonly { path: string; header: Record<string, unknown> | null }[];
+  getSessionProviders(sessionId: string | null, excludeSource?: string): readonly string[];
   getPendingReports(): readonly PendingReport[];
   getIncompleteReports(): readonly { path: string; runId: string }[];
   getReportModels(path: string, runId: string): readonly { provider: string | null; requestedModel: string | null }[];
@@ -199,7 +201,7 @@ function callValues(call: CallRow): Record<string, string | number | null> {
     source_generation: call.sourceGeneration, project: call.project, repo: call.repo,
     session_id: call.sessionId, run_id: call.runId, actor: call.actor, role: call.role, agent: call.agent,
     run_name: call.runName, phase: call.phase, parent_run_id: call.parentRunId, aux_purpose: call.auxPurpose,
-    provider: canonical.provider, model: canonical.model, raw_provider: call.provider, raw_model: call.model,
+    provider: canonical.provider, model: canonical.model, raw_provider: call.rawProvider === undefined ? call.provider : call.rawProvider, raw_model: call.model,
     source_kind: call.sourceKind, requested_model: call.requestedModel, thinking: call.thinking, api: call.api,
     input: call.usage.input, output: call.usage.output, cache_read: call.usage.cacheRead, cache_write: call.usage.cacheWrite,
     cache_write_1h: call.usage.cacheWrite1h ?? null, reasoning: call.usage.reasoning ?? null, total_tokens: call.usage.totalTokens ?? null,
@@ -213,7 +215,9 @@ function callValues(call: CallRow): Record<string, string | number | null> {
     tier: price.status === "priced" ? price.tier : null, confidence: price.status === "priced" ? price.confidence : null,
     pi_cost: call.piCost, latency_ms: call.latencyMs, aggregate: Number(call.aggregate), counted: Number(call.counted),
     origin_key: call.originKey, response_id: call.responseId ?? null, copied: Number(call.copied ?? false),
-    fingerprint: fingerprint(canonical),
+    // Repricing cannot change historical identity. Infer billing provider without
+    // changing the raw attribution used to recognize copied transcript entries.
+    fingerprint: fingerprint({ ...canonical, provider: call.rawProvider === undefined ? canonical.provider : call.rawProvider }),
   };
 }
 
@@ -601,6 +605,12 @@ function createLedger(db: Db): UsageLedger {
           .map(e => ({ byteOffset: e.byteOffset, json: { ...JSON.parse(e.json), parentId: e.parentId } }));
       }
       return { header: JSON.parse(row.header), entries, tailHash: row.tailHash };
+    },
+    getSessionProviders(sessionId, excludeSource) {
+      if (sessionId === null) return [];
+      return (db.prepare(`SELECT DISTINCT raw_provider AS provider FROM calls WHERE session_id=?
+        AND raw_provider IS NOT NULL AND (? IS NULL OR source_file != ?)`)
+        .all(sessionId, excludeSource ?? null, excludeSource ?? null) as { provider: string }[]).map(row => row.provider);
     },
     getSourceHeaders() {
       return (headers.all() as { path: string; header: string }[]).map(row => ({ ...row, header: JSON.parse(row.header) }));

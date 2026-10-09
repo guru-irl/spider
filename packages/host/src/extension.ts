@@ -16,6 +16,7 @@ import { isAbsolutePathList } from "@spider/ui";
 // attach action handlers via registerAction (re-exported below).
 import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerUsage } from "./usage/mount.js";
+import { makeRunCostFormatter } from "./run-credits.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
@@ -757,7 +758,7 @@ export function buildActionCtx(
   if (args.action === "run" && configuredChildMode !== "rpc" && configuredChildMode !== "print") throw new Error("subagents.childMode must be rpc or print");
   const childMode = configuredChildMode === "print" ? "print" : "rpc";
   const accounting = usageRuntimes.get(pi);
-  return { usage: accounting?.factory(sessionId), reportUsage: accounting ? (db, run) => accounting.reportRun(db, run) : undefined, db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, subagentOnlyExtensions };
+  return { formatRunCost: makeRunCostFormatter(() => usageControllers.get(pi)?.snapshot()), usage: accounting?.factory(sessionId), reportUsage: accounting ? (db, run) => accounting.reportRun(db, run) : undefined, db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, subagentOnlyExtensions };
 }
 
 async function dispatchWithDoctorSnapshot(
@@ -1054,7 +1055,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
       "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
-    renderResult: renderSpiderResult,
+    renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
+      { ...context, formatRunCost: makeRunCostFormatter(() => usageControllers.get(pi)?.snapshot()) }),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
       // empty update fired before any output exists: it materialises the result section
@@ -1187,6 +1189,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
         sessionId,
         cwd,
         registration: agentsUI,
+        formatRunCost: makeRunCostFormatter(() => usageControllers.get(pi)?.snapshot()),
         dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions),
       });
     } catch { /* UI mount best-effort; never break the session */ }

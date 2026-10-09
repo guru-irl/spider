@@ -137,7 +137,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 }
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
-export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
+export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
   let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
@@ -170,7 +170,7 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     watchFile(watchedFile, { persistent: false, interval: 1000 }, reload);
   });
   pi.on("session_shutdown", stop);
-  return { reload, doctor: async () => {
+  return { reload, snapshot: () => runtime?.snapshot(), doctor: async () => {
     if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
     const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
     const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };

@@ -25,6 +25,7 @@ export interface ActionCtx {
   pi: unknown;               // pi ExtensionAPI (events, sendMessage, on, registerTool)
   usage?: import("@spider/models").UsageSinkFactory;
   reportUsage?: (db: Db, run: import("@spider/subagents").RunRow) => void;
+  formatRunCost?: import("@spider/ui").RunCostFormatter;
   auxModel?: string;         // cheap aux-model id hint from config (digest routing)
   models: typeof import("@spider/models");  // model router: catalog()/pick()/complete()
   /** Streams a cumulative, capped output snapshot to the UI while a command is still

@@ -1,6 +1,31 @@
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import type { ModelRef, PriceResult, RateVersion, UsageTokens } from "./types.js";
 
+export const REPORTED_COST_RATE_VERSION = "pi-reported-cost-v1";
+
+/** Plugin attribution is billing evidence only when it is a bounded qualified id. */
+export function summaryModelRef(value: unknown): ModelRef | undefined {
+  if (typeof value !== "string" || value.length > 128 || !/^[a-z0-9._-]+\/[A-Za-z0-9.:_-]+$/.test(value)) return undefined;
+  const [provider, id] = value.split("/");
+  return { provider: provider!, id: id! };
+}
+
+/** Pi records USD. Only Copilot's reported cost has the 100 credits/USD basis. */
+export function priceReportedCost(provider: string | null, cost: {
+  total?: unknown; input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown;
+} | null | undefined, usage: UsageTokens, at: number): PriceResult {
+  if (!provider) return { status: "unpriced", reason: "missing-attribution" };
+  if (provider !== "github-copilot") return { status: "unpriced", reason: "unsupported-provider" };
+  if (!rateVersionAt(at)) return { status: "unpriced", reason: "no-rate-at-time" };
+  const credits = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 && Number.isFinite(value * 100) ? value * 100 : null;
+  const aic = credits(cost?.total);
+  if (aic === null) return { status: "unpriced", reason: "invalid-usage" };
+  if (aic === 0 && Object.values(usage).some(value => value > 0)) return { status: "unpriced", reason: "reported-cost-zero" };
+  return { status: "priced", aic, components: { input: credits(cost?.input), output: credits(cost?.output),
+    cacheRead: credits(cost?.cacheRead), cacheWrite: credits(cost?.cacheWrite) },
+    rateVersion: REPORTED_COST_RATE_VERSION, tier: "reported-cost", confidence: "estimated" };
+}
+
 function validUsage(usage: UsageTokens): boolean {
   const required = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
   const optional = [usage.cacheWrite1h, usage.reasoning, usage.totalTokens];
@@ -9,12 +34,8 @@ function validUsage(usage: UsageTokens): boolean {
     && (usage.cacheWrite1h === undefined || usage.cacheWrite1h <= usage.cacheWrite);
 }
 
-export function priceCall(model: ModelRef, usage: UsageTokens, at: number, options?: { aggregate?: boolean }): PriceResult {
-  if (!model.provider || !model.id) return { status: "unpriced", reason: "missing-attribution" };
-  if (model.provider !== "github-copilot") return { status: "unpriced", reason: "unsupported-provider" };
-  if (!validUsage(usage)) return { status: "unpriced", reason: "invalid-usage" };
-  if (!Number.isFinite(at)) return { status: "unpriced", reason: "no-rate-at-time" };
-
+function rateVersionAt(at: number): RateVersion | undefined {
+  if (!Number.isFinite(at)) return undefined;
   // Select the most recent effective version, independent of array ordering.
   let version: RateVersion | undefined;
   let effectiveFrom = -Infinity;
@@ -25,6 +46,14 @@ export function priceCall(model: ModelRef, usage: UsageTokens, at: number, optio
       effectiveFrom = from;
     }
   }
+  return version;
+}
+
+export function priceCall(model: ModelRef, usage: UsageTokens, at: number, options?: { aggregate?: boolean }): PriceResult {
+  if (!model.provider || !model.id) return { status: "unpriced", reason: "missing-attribution" };
+  if (model.provider !== "github-copilot") return { status: "unpriced", reason: "unsupported-provider" };
+  if (!validUsage(usage)) return { status: "unpriced", reason: "invalid-usage" };
+  const version = rateVersionAt(at);
   if (!version) return { status: "unpriced", reason: "no-rate-at-time" };
   // Alias attribution is scoped to the selected version, not guessed from another date.
   const rate = version.models.find(rate => rate.id === model.id || rate.aliases.includes(model.id!));

@@ -1,15 +1,16 @@
 import type { Db } from "@spider/db-core";
-import { USAGE_SCHEMA, USAGE_SCHEMA_V2, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOUT, USAGE_LEASE_SCHEMA, USAGE_LEASE_COLUMNS } from "./schema.js";
+import { USAGE_SCHEMA, USAGE_SCHEMA_V2, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOUT, USAGE_LEASE_SCHEMA, USAGE_LEASE_COLUMNS, upgradeReportedCostSchema } from "./schema.js";
 
 import { USAGE_SCHEMA_V3 } from "./schema-v3.js";
 import { USAGE_SCHEMA_V4 } from "./schema-v4.js";
 
 // Never rewrite shipped migration SQL. Append additive versions here.
-export const USAGE_MIGRATIONS: readonly { version: number; sql: string }[] = [
+export const USAGE_MIGRATIONS: readonly { version: number; sql: string; apply?: typeof upgradeReportedCostSchema }[] = [
   { version: 1, sql: USAGE_SCHEMA },
   { version: 2, sql: USAGE_SCHEMA_V2 },
   { version: 3, sql: USAGE_SCHEMA_V3 },
   { version: 4, sql: USAGE_SCHEMA_V4 },
+  { version: 5, sql: "-- v5: preserve calls and dependencies while allowing reported-cost component nulls", apply: upgradeReportedCostSchema },
 ];
 
 const normalizedDdl = (sql: string) => sql
@@ -28,7 +29,7 @@ function expectedObjects(db: Db, version: number): SchemaObject[] {
     const reference = new Database(":memory:");
     try {
       for (const migration of USAGE_MIGRATIONS) {
-        if (migration.version <= version) reference.exec(migration.sql);
+        if (migration.version <= version) { reference.exec(migration.sql); migration.apply?.(reference); }
       }
       objects = normalizedObjects(reference.prepare(durableSql).all() as SchemaObject[]);
       shippedObjects.set(version, objects);
@@ -67,6 +68,7 @@ export function migrateUsageLedger(db: Db): void {
     for (const migration of USAGE_MIGRATIONS) {
       if (migration.version <= version) continue;
       db.exec(migration.sql);
+      migration.apply?.(db.raw);
       db.pragma(`user_version = ${migration.version}`);
     }
     let columns = db.prepare("PRAGMA table_info(leases)").all() as { name: string; type: string; notnull: number; pk: number; dflt_value: unknown }[];

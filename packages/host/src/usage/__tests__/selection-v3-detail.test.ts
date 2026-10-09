@@ -106,7 +106,7 @@ it.each(["off", "auto"] as const)("scoped canonical measures preserve migration 
   expect(before[3]).toMatchObject({ calls: 0, aic: null });
   expect(before[4]).toMatchObject({ possibleUndercount: true }); expect(before[5]).toMatchObject({ possibleOverlap: true });
   if (mode === "auto") expect(before[0]!.aicDisplay.primaryAic).toBe(2.5);
-  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(4);
+  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(5);
   expect(read(mode, responses)).toEqual(before);
 });
 it.each(targets.slice(0, 2))("$kind scoped measure switches to stored selection", target => {

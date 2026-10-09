@@ -10,7 +10,7 @@ const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
 export function disposePace(root: HTMLElement): void { cleanups.get(root)?.(); cleanups.delete(root); }
 export function renderPace(document: Document, pace: Pace, _now: number, initiallyOpen = false): HTMLElement {
   const root = element(document, "div", undefined, "month-pace");
-  root.setAttribute("data-danger", String(pace.overPace || pace.overBudget || (pace.scale !== null && (pace.projected ?? 0) > pace.scale)));
+  root.setAttribute("data-danger", String(pace.overBudget || (pace.scale !== null && ((pace.used ?? 0) > pace.scale || (pace.projected ?? 0) > pace.scale))));
   const id = `pace-details-${++sequence}`, patternId = `pace-hatch-${sequence}`;
   const start = new Date(pace.period.start), last = new Date(pace.period.end - 1);
   const month = start.getUTCDate() === 1 ? months[start.getUTCMonth()]! : `to ${last.getUTCDate()} ${months[last.getUTCMonth()]}`;

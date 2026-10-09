@@ -1,10 +1,26 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountOverview } from "../web/overview.js";
 import { overviewFixture, sessionsFixture, envelope } from "./fixtures/redesign-contract.js";
 import { PlainDocument, PlainElement, descendants, button, elements, settle, cellText } from "./fixtures/plain-dom.js";
 import type { DashboardPageContext, DashboardRouteV4, OverviewDataV4 } from "../dashboard-v4-contract.js";
 import type { ApiEnvelope } from "../dashboard-contract.js";
 const NOW = Date.UTC(2030, 3, 15), DAY = 86400000;
+const intersections: { callback: IntersectionObserverCallback; root: Element | Document | null | undefined; targets: Element[]; disconnected: boolean }[] = [];
+beforeEach(() => {
+  intersections.length = 0;
+  vi.stubGlobal("IntersectionObserver", class {
+    record: typeof intersections[number];
+    constructor(callback: IntersectionObserverCallback, options: IntersectionObserverInit) { this.record = { callback, root: options.root, targets: [], disconnected: false }; intersections.push(this.record); }
+    observe(target: Element) { this.record.targets.push(target); }
+    disconnect() { this.record.disconnected = true; }
+  });
+});
+afterEach(() => vi.unstubAllGlobals());
+function nearEnd() {
+  const observer = intersections.findLast(o => !o.disconnected && o.targets.length && !(o.root as unknown as PlainElement)?.hidden);
+  expect(observer, "a live sessions sentinel observer").toBeDefined();
+  observer!.callback([{ isIntersecting: true, target: observer!.targets[0]! } as IntersectionObserverEntry], {} as IntersectionObserver);
+}
 function setup(get?: (path: string, params: URLSearchParams) => Promise<ApiEnvelope<unknown>>, initial = overviewFixture()) {
   const doc = new PlainDocument(), root = doc.createElement("main"); doc.body.append(root);
   const requests: { path: string; params: URLSearchParams; signal: AbortSignal | undefined }[] = [], routes: { route: DashboardRouteV4; replace: boolean }[] = [];
@@ -120,11 +136,11 @@ describe("Overview v4", () => {
     inputs[0]!.value = "2030-01-01T00:00"; inputs[1]!.value = "2030-05-01T00:00"; button(s.root, "Apply range").click();
     expect(s.root.textContent).toContain("93 days"); expect(s.requests).toHaveLength(1); s.page.dispose();
   });
-  it("freezes expanded and sorted sessions to resolved custom bounds and opens real ids", async () => {
+  it("freezes paginated and sorted sessions to resolved custom bounds and opens real ids", async () => {
     const d = overviewFixture(), row = d.sessions.rows[0]!; d.sessions = sessionsFixture({ total: 12, nextOffset: 10, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `session-${i}`, name: `Session ${i}` })) });
     const s = setup(async path => envelope(path === "/api/sessions" ? sessionsFixture({ total: 12, offset: 10, rows: [{ ...row, id: "session-10" }, { ...row, id: "session-11" }] }) : d), d); await settle();
     expect(s.nodes().filter(n => n.getAttribute("data-session") !== null)).toHaveLength(10);
-    button(s.root, "Show all 12").click(); await settle(); const r = s.requests.at(-1)!;
+    nearEnd(); await settle(); const r = s.requests.at(-1)!;
     expect(r.path).toBe("/api/sessions"); expect(r.params.get("range")).toBe("custom"); expect(r.params.get("from")).toBe(String(d.range.from)); expect(r.params.get("to")).toBe(String(d.range.to)); expect(r.params.get("offset")).toBe("10");
     expect(s.nodes().filter(n => n.getAttribute("data-session") !== null)).toHaveLength(12);
     const rowNode = s.nodes().find(n => n.getAttribute("data-session") === "session-0")!; elements(rowNode, "button")[0]!.click(); expect(s.routes.at(-1)!.route).toMatchObject({ page: "session", id: "session-0" }); s.page.dispose();
@@ -133,7 +149,7 @@ describe("Overview v4", () => {
     let finish!: (reply: ApiEnvelope<unknown>) => void;
     const d = overviewFixture(); d.sessions.total = 12; d.sessions.nextOffset = 1;
     const s = setup(async (path, params) => { if (path === "/api/sessions") return new Promise(resolve => { finish = resolve; }); const data = structuredClone(d); data.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); return envelope(data); }, d); await settle();
-    button(s.root, "Show all 12").click(); await settle(); fire(s.bars()[4]!, "keydown", { key: " " }); await settle();
+    nearEnd(); await settle(); fire(s.bars()[4]!, "keydown", { key: " " }); await settle();
     finish(envelope(sessionsFixture({ rows: [{ ...d.sessions.rows[0]!, name: "Stale row" }] }))); await settle();
     expect(s.root.textContent).not.toContain("Stale row"); expect(s.requests.find(r => r.path === "/api/sessions")!.signal!.aborted).toBe(true); s.page.dispose();
   });
@@ -268,4 +284,44 @@ it("capture-scale daily ticks fit the peak and selected outline hugs the stack",
   expect(Number(outline.getAttribute("y"))).toBeCloseTo(Number(bar.getAttribute("y")) - 3, 8);
   expect(Number(outline.getAttribute("height"))).toBeCloseTo(Number(bar.getAttribute("height")) + 6, 8);
   s.page.dispose();
+});
+
+it("sessions and model representations expose labelled keyboard scroll regions without Show all", async () => {
+  const d = overviewFixture(); d.sessions.nextOffset = 1; d.sessions.total = 20;
+  const s = setup(undefined, d); await settle();
+  for (const label of ["Models list", "Models table", "Sessions chart", "Sessions table"]) {
+    const region = s.nodes().find(n => n.getAttribute("aria-label") === label)!;
+    expect(region, label).toBeDefined(); expect(region.getAttribute("tabindex")).toBe("0");
+  }
+  expect(s.root.textContent).not.toContain("Show all");
+  expect(intersections.filter(o => !o.disconnected)).toHaveLength(2);
+  s.page.dispose(); expect(intersections.every(o => o.disconnected)).toBe(true);
+});
+it("loads only one next page in flight, appends ranks, preserves total and stops at the end", async () => {
+  const d = overviewFixture(), row = d.sessions.rows[0]!;
+  d.sessions = sessionsFixture({ total: 30, nextOffset: 10, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `paged-${i}` })) });
+  let finish!: (reply: ApiEnvelope<unknown>) => void;
+  const s = setup(async path => path === "/api/sessions" ? new Promise(resolve => { finish = resolve; }) : envelope(d), d); await settle();
+  const scroll = s.nodes().find(n => n.getAttribute("aria-label") === "Sessions chart")!;
+  Object.assign(scroll, { scrollTop: 240 }); scroll.focus();
+  nearEnd(); nearEnd(); await settle();
+  expect(s.requests.filter(r => r.path === "/api/sessions")).toHaveLength(1);
+  expect(s.requests.at(-1)!.params.get("limit")).toBe("10");
+  finish(envelope(sessionsFixture({ total: 30, offset: 10, nextOffset: 20, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `paged-${i + 10}` })) }))); await settle();
+  expect(s.nodes().filter(n => n.hasAttribute("data-session"))).toHaveLength(20);
+  const replacement = s.nodes().find(n => n.getAttribute("aria-label") === "Sessions chart")!;
+  expect((replacement as unknown as HTMLElement).scrollTop).toBe(240); expect(s.doc.activeElement).toBe(replacement);
+  nearEnd(); await settle(); expect(s.requests.at(-1)!.params.get("offset")).toBe("20");
+  finish(envelope(sessionsFixture({ total: 30, offset: 20, nextOffset: null, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `paged-${i + 20}` })) }))); await settle();
+  const rows = s.nodes().filter(n => n.hasAttribute("data-session")); expect(rows).toHaveLength(30); expect(cellText(rows[29]!.children[0]!)).toBe("30");
+  expect(s.nodes().find(n => n.className === "stat-chip" && n.children[0]?.textContent === "Sessions")!.textContent).toBe("Sessions30");
+  expect(intersections.every(o => o.disconnected)).toBe(true); s.page.dispose();
+});
+it("a late sessions page after disposal cannot repaint", async () => {
+  const d = overviewFixture(); d.sessions.nextOffset = 1;
+  let finish!: (reply: ApiEnvelope<unknown>) => void;
+  const s = setup(async path => path === "/api/sessions" ? new Promise(resolve => { finish = resolve; }) : envelope(d), d); await settle();
+  nearEnd(); await settle(); s.page.dispose();
+  finish(envelope(sessionsFixture({ rows: [{ ...d.sessions.rows[0]!, name: "Late sessions page" }] }))); await settle();
+  expect(s.root.textContent).not.toContain("Late sessions page"); expect(s.requests.at(-1)!.signal!.aborted).toBe(true);
 });

@@ -17,7 +17,7 @@ async function interactive(page: import("@playwright/test").Page, change?: (data
 test("pace hover/focus anchors to ring, clamps on resize and Escape keeps focus", async ({ page }) => {
   const errors = expectNoBrowserErrors(page); await installFixtureRoutes(page); await page.goto(url);
   await expect(page.getByRole("heading", { name: "Daily credits", exact: true })).toBeVisible();
-  await page.screenshot({ path: resolve(".spider/scratch/playwright/shots/overview-default.png"), fullPage: true });
+  await page.screenshot({ path: resolve(".spider/scratch/dash-overview/shots/overview-default.png"), fullPage: true });
   const trigger = page.locator(".pace-trigger"), popover = page.locator(".pace-popover"); await trigger.focus(); await expect(popover).toBeVisible();
   const pointer = page.locator(".pace-pointer"), ring = page.locator(".pace-here");
   for (const width of [1440, 1180]) {
@@ -26,7 +26,7 @@ test("pace hover/focus anchors to ring, clamps on resize and Escape keeps focus"
     const box = await popover.boundingBox(); expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(width);
   }
   await expect(popover).toContainText("Even pace"); await trigger.press("Escape"); await expect(popover).toBeHidden(); await expect(trigger).toBeFocused();
-  await trigger.hover(); await expect(popover).toBeVisible(); await expect(page.locator(".even-pace-tick, .pace-limit")).toHaveCount(0); await page.screenshot({ path: resolve(".spider/scratch/playwright/shots/overview-pace.png") }); expect(errors()).toEqual([]);
+  await trigger.hover(); await expect(popover).toBeVisible(); await expect(page.locator(".even-pace-tick, .pace-limit")).toHaveCount(0); await page.screenshot({ path: resolve(".spider/scratch/dash-overview/shots/overview-pace.png") }); expect(errors()).toEqual([]);
 });
 for (const automatic of [false, true]) test(`Sessions sort survives ${automatic ? "automatic" : "manual"} refresh with expansion retained`, async ({ page }) => {
   await page.clock.install();
@@ -41,14 +41,14 @@ for (const automatic of [false, true]) test(`Sessions sort survives ${automatic 
   });
   await page.goto(url); const runs = page.locator('[data-focus="session-sort-runs"]');
   await runs.click(); await expect(page.locator("tr[data-session]").first()).toContainText("runs first page");
-  await page.getByRole("button", { name: "Show all 12", exact: true }).click(); await expect(page.getByRole("button", { name: "Show all 12", exact: true })).toHaveCount(0);
+  await page.locator('[data-panel="sessions"] .chart-graphic').evaluate(n => { n.scrollTop = n.scrollHeight; }); await expect(page.getByRole("button", { name: "Show all 12", exact: true })).toHaveCount(0);
   await expect(page.locator("tr[data-session]")).toHaveCount(12);
   if (automatic) { await page.locator(".pace-trigger").hover(); await expect(page.locator(".pace-popover")).toBeVisible(); }
   {
     const request = page.waitForRequest(r => r.url().includes("/api/sessions?"), { timeout: 5000 });
     if (automatic) await page.clock.fastForward(60000); else await page.getByRole("button", { name: "Refresh", exact: true }).click();
     const params = new URL((await request).url()).searchParams;
-    expect(params.get("sort")).toBe("runs"); expect(params.get("offset")).toBe("0"); expect(params.get("limit")).toBe("100");
+    expect(params.get("sort")).toBe("runs"); expect(params.get("offset")).toBe("0"); expect(params.get("limit")).toBe("12");
     await expect(runs).toHaveAttribute("aria-pressed", "true"); await expect(page.locator("tr[data-session]").first()).toContainText("runs first page");
     await expect(page.getByRole("button", { name: "Show all 12", exact: true })).toHaveCount(0);
     await expect(page.locator("tr[data-session]")).toHaveCount(12);
@@ -124,11 +124,11 @@ test("unit changes all panels while pace stays credits and chart choices persist
   await expect(page.locator('[data-panel="models"]')).toContainText("960"); await page.locator(".pace-trigger").focus(); await expect(page.locator(".pace-popover")).toContainText("40");
   await page.getByRole("button", { name: "Refresh", exact: true }).click(); await expect(page.locator('[data-panel="daily"] table')).toBeVisible(); expect(errors()).toEqual([]);
 });
-test("sessions expands using frozen bounds, sorts and navigates by click or Enter", async ({ page }) => {
+test("sessions paginates using frozen bounds, sorts and navigates by click or Enter", async ({ page }) => {
   const routes = await installFixtureRoutes(page); const data = overviewFixture(), row = data.sessions.rows[0]!;
   data.sessions = sessionsFixture({ total: 12, nextOffset: 10, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `session-${i}`, name: `Garden ${i}` })) });
   routes.replace("/api/overview", { status: 200, body: envelope(data) }); routes.replace("/api/sessions", { status: 200, body: envelope(sessionsFixture({ total: 12, offset: 10, rows: [{ ...row, id: "session-10" }, { ...row, id: "session-11" }] })) });
-  await page.goto(url); await expect(page.locator("tr[data-session]")).toHaveCount(10); await page.getByRole("button", { name: "Show all 12", exact: true }).click(); await expect(page.locator("tr[data-session]")).toHaveCount(12); await expect(page.locator('tr[data-session="session-10"] button')).toBeFocused();
+  await page.goto(url); await expect(page.locator("tr[data-session]")).toHaveCount(12);
   const request = routes.requests.find(r => r.path === "/api/sessions")!; expect(request.params.get("range")).toBe("custom"); expect(request.params.get("from")).toBe("1901836800000"); expect(request.params.get("to")).toBe("1902441600000");
   const segment = page.locator('.role-segment').first(); await segment.focus(); await expect(page.locator('.role-tooltip').first()).toBeVisible(); await expect(page.locator('.role-tooltip').first()).toContainText("tokens");
   await page.locator('tr[data-session="session-0"] button').press("Enter"); await expect(page).toHaveURL(/#\/session\/session-0/);
@@ -153,7 +153,7 @@ for (const scenario of ["no-data", "no-budget", "counter-unavailable", "over-pac
   if (scenario === "counter-unavailable") await expect(page.locator(".pace-popover")).toContainText("Counter unavailable");
   if (scenario === "over-pace") await expect(page.locator(".month-pace")).toHaveAttribute("data-danger", "true");
   if (scenario === "no-budget-or-allowance") { await expect(page.locator(".pace-fill")).toHaveAttribute("width", "0"); await expect(page.locator(".pace-here, .pace-projection")).toHaveCount(0); }
-  await page.screenshot({ path: resolve(`.spider/scratch/playwright/shots/overview-${scenario}.png`), fullPage: true });
+  await page.screenshot({ path: resolve(`.spider/scratch/dash-overview/shots/overview-${scenario}.png`), fullPage: true });
 });
 test("recoverable Overview error settles and Retry recovers", async ({ page }) => {
   const routes = await installFixtureRoutes(page, "error"); await page.goto("/?scenario=error#/"); await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible(); routes.replace("/api/overview", { status: 200, body: envelope(overviewFixture()) }); await page.getByRole("button", { name: "Retry", exact: true }).click(); await expect(page.getByRole("heading", { name: "Daily credits", exact: true })).toBeVisible();

@@ -86,3 +86,18 @@ it("projection alone turns a no-budget allowance bar red", () => {
   const s = setup({ budget: null, evenPace: null, used: 40, allowance: 100, scale: 100, projected: 120, overPace: false, overBudget: false, overAtPace: 20 });
   expect(s.root.getAttribute("data-danger")).toBe("true"); disposePace(s.root);
 });
+
+it.each([100, null])("ahead of even pace stays cream below the budget or allowance", budget => {
+  const s = setup({ budget, allowance: 100, scale: 100, used: 35, evenPace: 30, projected: 95, overPace: true, overBudget: false });
+  expect(s.root.getAttribute("data-danger")).toBe("false");
+  if (budget !== null) expect(s.popover.textContent).toContain("Even pace");
+  disposePace(s.root);
+});
+it.each([100, null])("used above the budget or allowance is danger even without a projection", budget => {
+  const s = setup({ budget, allowance: 100, scale: 100, used: 110, projected: null, overPace: false, overBudget: budget !== null });
+  expect(s.root.getAttribute("data-danger")).toBe("true"); disposePace(s.root);
+});
+it("projection above a budget is danger even below even pace", () => {
+  const s = setup({ used: 20, scale: 100, projected: 110, overPace: false, overBudget: false });
+  expect(s.root.getAttribute("data-danger")).toBe("true"); disposePace(s.root);
+});

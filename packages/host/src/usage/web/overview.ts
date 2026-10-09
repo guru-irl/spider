@@ -5,7 +5,6 @@ import { chartPair, niceAxis } from "./charts.js";
 import { renderTable } from "./tables.js";
 import { renderModelMarker } from "./model-style.js";
 import { renderFlow } from "./flow.js";
-import { representation } from "./representation.js";
 import { formatLocalTime, formatValue } from "./format.js";
 import { canRetry, errorCopy } from "./client.js";
 import { renderPace, disposePace } from "./pace.js";
@@ -39,6 +38,9 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
   let data: OverviewDataV4 | undefined, revision = "", sessionData: SessionsData | undefined;
   let disposed = false, generation = 0, sessionsGeneration = 0, controller: AbortController | undefined, sessionsController: AbortController | undefined;
   let paceNode: HTMLElement | undefined, sort: SessionSort = "credits", roving = 0, sessionsExpanded = false;
+  let sessionsLoading = false;
+  let viewCleanups: (() => void)[] = [];
+  const disposeViews = () => { viewCleanups.forEach(cleanup => cleanup()); viewCleanups = []; };
   const roleRoving = new Map<string, number>();
   let customOpen = query.range === "custom", fromInput = localInput(query.from), toInput = localInput(query.to), rangeError = "";
   let loading: Promise<void> | undefined;
@@ -106,31 +108,48 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     const peak = known.length ? Math.max(...known) : null, peakBucket = d.buckets.find(b => amount(b.total, query.unit) === peak);
     summary.append(chip("Total", formatValue(d.total, query.unit)), chip("Average", `${compact(average)} ${d.bucketSize === "hour" ? "an hour" : "a day"}`), chip("Peak", peakBucket ? `${bucketLabel(peakBucket.key, query.tz, d.bucketSize === "hour")} · ${compact(peak)}` : "unavailable"));
     if (query.buckets.length) { const n = element(document, "span", `Selected ${query.buckets.length} ${d.bucketSize === "hour" ? query.buckets.length === 1 ? "hour" : "hours" : query.buckets.length === 1 ? "day" : "days"} · ${formatValue(d.selectedTotal, query.unit)} ${query.unit}`, "selection-chip"); n.setAttribute("role", "status"); n.setAttribute("aria-live", "polite"); summary.append(n); }
-    const svg = svgNode("svg", { viewBox: "0 0 900 350", preserveAspectRatio: "none", class: "daily-chart", role: "group" });
-    const axis = niceAxis(Math.max(1, ...known)), max = axis.ceiling, step = 810 / d.buckets.length;
-    svg.append(svgNode("text", { x: 66, y: 30, class: "daily-unit" }, query.unit));
-    for (let tick = 0; tick <= Math.round(max / axis.step); tick++) { const value = tick * axis.step, y = 296 - value / max * 240; svg.append(svgNode("path", { d: `M66 ${y}H890`, class: "daily-gridline" }), svgNode("text", { x: 56, y: y + 5, "text-anchor": "end", class: "numeric" }, formatValue({ ...d.total, credits: value, tokens: { ...d.total.tokens, total: value } }, query.unit))); }
-    const groups: SVGElement[] = [];
-    roving = Math.min(roving, d.buckets.length - 1);
-    d.buckets.forEach((bucket, index) => {
-      const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"), selected = query.buckets.includes(bucket.key);
-      const g = keyed(svgNode("g", { "data-bucket": bucket.key, "data-value": amount(bucket.total, query.unit) ?? "unavailable", role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
-      let y = 296; const x = 72 + index * step, w = Math.max(1, step - Math.min(25, step / 4));
-      g.append(svgNode("rect", { x: x - 4, y: 20, width: w + 8, height: 284, class: "bucket-hit" }));
-      for (const row of bucket.models) { const n = amount(row.value, query.unit); if (n === null) continue; const height = n / max * 240; y -= height;
-        const color = modelColors.get(row.model) ?? "#c4b7a8";
-        g.append(svgNode("rect", { x, y, width: w, height, fill: /^#[0-9a-f]{6}$/i.test(color) ? color : "currentColor" }));
-      }
-      g.append(svgNode("rect", { x: x - 3, y: y - 3, width: w + 6, height: Math.max(0, 296 - y) + 6, class: "bucket-focus" }));
-      const tooltip = svgNode("title", {}, `${label}\n${bucket.models.map(m => `${m.model}: ${formatValue(m.value, query.unit)} ${query.unit}`).join("\n")}`); g.append(tooltip);
-      g.addEventListener("click", e => { const event = e as MouseEvent; if (event.button && event.button !== 0) return; roving = index; groups.forEach((bar, i) => bar.setAttribute("tabindex", i === index ? "0" : "-1")); g.focus(); if (event.metaKey || event.ctrlKey) select(bucket.key); });
-      g.addEventListener("keydown", e => { const event = e as KeyboardEvent;
-        if (["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) { event.preventDefault(); roving = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1 : Math.max(0, Math.min(groups.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))); groups.forEach((bar, i) => bar.setAttribute("tabindex", i === roving ? "0" : "-1")); groups[roving]!.focus(); }
-        else if (event.key === " " || event.key === "Spacebar" || event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); roving = index; select(bucket.key); }
+    const svg = svgNode("svg", { viewBox: "0 0 900 350", preserveAspectRatio: "xMidYMid meet", class: "daily-chart", role: "group" });
+    const draw = (width: number, height: number) => {
+      const key = svg.contains(document.activeElement) ? focusKey() : null;
+      svg.replaceChildren(); svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const axis = niceAxis(Math.max(1, ...known)), max = axis.ceiling, step = Math.max(1, width - 90) / d.buckets.length, baseline = height - 54, plotHeight = Math.max(1, height - 110);
+      svg.append(svgNode("text", { x: 66, y: 30, class: "daily-unit" }, query.unit));
+      for (let tick = 0; tick <= Math.round(max / axis.step); tick++) { const value = tick * axis.step, y = baseline - value / max * plotHeight; svg.append(svgNode("path", { d: `M66 ${y}H${width - 10}`, class: "daily-gridline" }), svgNode("text", { x: 56, y: y + 5, "text-anchor": "end", class: "numeric" }, formatValue({ ...d.total, credits: value, tokens: { ...d.total.tokens, total: value } }, query.unit))); }
+      const groups: SVGElement[] = [];
+      roving = Math.min(roving, d.buckets.length - 1);
+      d.buckets.forEach((bucket, index) => {
+        const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"), selected = query.buckets.includes(bucket.key);
+        const g = keyed(svgNode("g", { "data-bucket": bucket.key, "data-value": amount(bucket.total, query.unit) ?? "unavailable", role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
+        let y = baseline; const x = 72 + index * step, w = Math.max(1, step - Math.min(25, step / 4));
+        g.append(svgNode("rect", { x: x - 4, y: 20, width: w + 8, height: baseline - 12, class: "bucket-hit" }));
+        for (const row of bucket.models) { const n = amount(row.value, query.unit); if (n === null) continue; const height = n / max * plotHeight; y -= height;
+          const color = modelColors.get(row.model) ?? "#c4b7a8";
+          g.append(svgNode("rect", { x, y, width: w, height, fill: /^#[0-9a-f]{6}$/i.test(color) ? color : "currentColor" }));
+        }
+        g.append(svgNode("rect", { x: x - 3, y: y - 3, width: w + 6, height: Math.max(0, baseline - y) + 6, class: "bucket-focus" }));
+        const tooltip = svgNode("title", {}, `${label}\n${bucket.models.map(m => `${m.model}: ${formatValue(m.value, query.unit)} ${query.unit}`).join("\n")}`); g.append(tooltip);
+        g.addEventListener("click", e => { const event = e as MouseEvent; if (event.button && event.button !== 0) return; roving = index; groups.forEach((bar, i) => bar.setAttribute("tabindex", i === index ? "0" : "-1")); g.focus(); if (event.metaKey || event.ctrlKey) select(bucket.key); });
+        g.addEventListener("keydown", e => { const event = e as KeyboardEvent;
+          if (["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) { event.preventDefault(); roving = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1 : Math.max(0, Math.min(groups.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))); groups.forEach((bar, i) => bar.setAttribute("tabindex", i === roving ? "0" : "-1")); groups[roving]!.focus(); }
+          else if (event.key === " " || event.key === "Spacebar" || event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); roving = index; select(bucket.key); }
+        });
+        groups.push(g); svg.append(g);
+        if (index % Math.ceil(d.buckets.length / Math.max(1, Math.floor((width - 90) / (d.bucketSize === "hour" ? 60 : 105)))) === 0) svg.append(svgNode("text", { x: x + w / 2, y: height - 21, "text-anchor": "middle", class: "numeric" }, d.bucketSize === "hour" ? formatLocalTime(bucket.key, query.tz).slice(-5) : label));
       });
-      groups.push(g); svg.append(g);
-      if (d.buckets.length <= 12 || index % Math.ceil(d.buckets.length / 8) === 0) svg.append(svgNode("text", { x: x + w / 2, y: 329, "text-anchor": "middle", class: "numeric" }, d.bucketSize === "hour" ? formatLocalTime(bucket.key, query.tz).slice(-5) : label));
-    });
+      restoreFocus(key);
+    };
+    draw(900, 350);
+    const position = () => {
+      if (disposed || !document.defaultView) return;
+      const { width, height } = svg.getBoundingClientRect();
+      if (width > 0 && height > 0 && svg.getAttribute("viewBox") !== `0 0 ${width} ${height}`) draw(width, height);
+    };
+    if (document.defaultView) {
+      const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(position) : undefined;
+      observer?.observe(svg); document.defaultView.addEventListener("resize", position);
+      const frame = document.defaultView.requestAnimationFrame(position);
+      viewCleanups.push(() => { observer?.disconnect(); document.defaultView?.removeEventListener("resize", position); document.defaultView?.cancelAnimationFrame(frame); });
+    }
     const modelIds = [...new Set(d.buckets.flatMap(b => b.models.map(m => m.model)))];
     const table = renderTable(document, { caption: `${title} by model`, columns: ["Bucket", ...modelIds, "Total"], rows: d.buckets.map(bucket => {
       const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"); const toggle = keyed(action(document, label, () => select(bucket.key)), `table-bucket-${bucket.key}`); toggle.setAttribute("data-bucket", String(bucket.key)); toggle.setAttribute("aria-pressed", String(query.buckets.includes(bucket.key)));
@@ -138,6 +157,10 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     }) });
     const section = panel("daily", title, svg, table, summary);
     const instructions = element(document, "p", "Cmd/Ctrl-click to toggle buckets. Arrows move; Space or Cmd/Ctrl+Enter toggles. Escape clears.", "sr-only"); instructions.id = "overview-bucket-help"; svg.setAttribute("aria-describedby", instructions.id); section.append(instructions); return section;
+  }
+  function scrollRegion(region: HTMLElement, label: string, key: string): void {
+    region.removeAttribute("aria-labelledby"); region.setAttribute("role", "region"); region.setAttribute("aria-label", label); region.setAttribute("tabindex", "0");
+    region.setAttribute("data-scroll", key); keyed(region, key);
   }
   function models(d: OverviewDataV4): HTMLElement {
     if (!d.models.length) { const empty = emptyPanel("models", "Models", "No calls in this selection."); if (d.unpriced.length) empty.append(element(document, "p", unpriced(d), "models-foot")); return empty; }
@@ -150,6 +173,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     }
     const table = renderTable(document, { caption: "Models in the selection", columns: ["Model", query.unit === "credits" ? "Credits" : "Tokens", "Share", "Main source"], rows: d.models.map(m => [m.id, formatValue(m.value, query.unit), percent(m.share), m.note]) });
     const section = panel("models", "Models", svgNode("svg"), table, summary), pair = section.children[0]!, graphic = pair.children[2]!; graphic.replaceChildren(list);
+    scrollRegion(graphic as HTMLElement, "Models list", "models-list"); scrollRegion(pair.children[3]! as HTMLElement, "Models table", "models-table");
     if (d.unpriced.length) section.append(element(document, "p", unpriced(d), "models-foot")); return section;
   }
   function unpriced(d: OverviewDataV4): string { return d.unpriced.map(u => `${u.calls} unpriced ${u.calls === 1 ? "call" : "calls"}: ${u.reason}`).join(" · "); }
@@ -230,7 +254,19 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     for (const [key, label] of [["credits", query.unit === "credits" ? "Credits" : "Tokens"], ["last-active", "Last active"], ["runs", "Runs"]] as const) { const b = keyed(action(document, label, () => { sort = key; sessionsExpanded = false; void loadSessions(false); }), `session-sort-${key}`); b.setAttribute("aria-pressed", String(sort === key)); sortControls.append(b); }
     // Sort controls sit beside the heading, not in a second boxed region.
     pair.children[0]!.append(sortControls);
-    if (d.nextOffset !== null) section.append(keyed(action(document, `Show all ${d.total}`, () => { void loadSessions(true); }), "sessions-expand"));
+    for (const [index, mode] of [[2, "chart"], [3, "table"]] as const) {
+      const region = pair.children[index]! as HTMLElement; scrollRegion(region, `Sessions ${mode}`, `sessions-${mode}`);
+      if (d.nextOffset !== null) {
+        const sentinel = element(document, "div", undefined, "sessions-sentinel"); sentinel.setAttribute("aria-hidden", "true"); region.append(sentinel);
+        if (typeof IntersectionObserver !== "undefined") {
+          let active = true;
+          const observer = new IntersectionObserver(entries => {
+            if (active && !region.hidden && entries.some(entry => entry.isIntersecting)) void loadSessions(true);
+          }, { root: region, rootMargin: "0px 0px 160px 0px" });
+          observer.observe(sentinel); viewCleanups.push(() => { active = false; observer.disconnect(); });
+        }
+      }
+    }
     return section;
   }
   function flow(d: OverviewDataV4): HTMLElement {
@@ -240,44 +276,50 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
   }
   function paint(): void {
     if (disposed || !data) return;
+    const scrolls = new Map(nodes(root).filter(n => n.hasAttribute("data-scroll")).map(n => [n.getAttribute("data-scroll"), [(n as HTMLElement).scrollTop, (n as HTMLElement).scrollLeft]]));
+    disposeViews();
     const key = focusKey(), paceOpen = paceNode?.getAttribute("data-open") === "true"; if (paceNode) disposePace(paceNode);
     paceNode = renderPace(document, data.pace, ctx.now(), paceOpen); keyed(paceNode.children[0]!, "pace");
     const grid = element(document, "div", undefined, "overview-grid"); grid.append(daily(data), models(data));
     root.replaceChildren(paceNode, controls(), grid, sessions(sessionData ?? data.sessions), flow(data)); root.setAttribute("aria-busy", "false"); restoreFocus(key);
+    for (const n of nodes(root).filter(n => n.hasAttribute("data-scroll"))) {
+      const saved = scrolls.get(n.getAttribute("data-scroll")); if (saved) { (n as HTMLElement).scrollTop = saved[0]!; (n as HTMLElement).scrollLeft = saved[1]!; }
+    }
   }
-  async function loadSessions(expand: boolean, reload = false): Promise<void> {
-    if (!data || disposed) return;
+  async function loadSessions(append: boolean, reload = false): Promise<void> {
+    if (!data || disposed || append && !reload && (sessionsLoading || (sessionData ?? data.sessions).nextOffset === null)) return;
     const gen = ++sessionsGeneration; sessionsController?.abort(); sessionsController = new AbortController(); const signal = sessionsController.signal;
-    const expectedRevision = revision, frozen = structuredClone(query); const expectedGeneration = generation;
-    let current = sessionData ?? data.sessions, offset = expand && !reload ? current.nextOffset : 0;
-    let rows = expand && !reload ? [...current.rows] : [];
-    const previousLength = rows.length, expansionFocused = expand && focusKey() === "sessions-expand";
-    const control = nodes(root).find(n => n.getAttribute("data-focus") === (expand ? "sessions-expand" : `session-sort-${sort}`)) as HTMLButtonElement | undefined;
-    if (control) { control.disabled = true; control.setAttribute("aria-busy", "true"); }
+    sessionsLoading = true;
+    const expectedRevision = revision, frozen = structuredClone(query), expectedGeneration = generation;
+    let current = sessionData ?? data.sessions, offset = append && !reload ? current.nextOffset : 0;
+    const target = reload && append ? current.rows.length : 10;
+    const rows = append && !reload ? [...current.rows] : [];
+    const control = nodes(root).find(n => n.getAttribute("data-focus") === `session-sort-${sort}`) as HTMLButtonElement | undefined;
+    if (control && !append) { control.disabled = true; control.setAttribute("aria-busy", "true"); }
     try {
       do {
-        const p = params({ ...frozen, range: "custom" }); p.set("sort", sort); p.set("offset", String(offset ?? 0)); p.set("limit", expand ? "100" : "10");
+        const p = params({ ...frozen, range: "custom" }); p.set("sort", sort); p.set("offset", String(offset ?? 0)); p.set("limit", String(reload && append ? Math.min(100, Math.max(10, target - rows.length)) : 10));
         const reply = await ctx.client.get<SessionsData>("/api/sessions", p, signal);
         if (disposed || signal.aborted || gen !== sessionsGeneration || expectedGeneration !== generation) return;
         if (reply.revision !== expectedRevision) { void refresh(); return; }
-        rows.push(...reply.data.rows); current = { ...reply.data, rows, offset: 0 }; const next = reply.data.nextOffset;
-        if (next !== null && next <= (offset ?? 0)) throw new Error("Invalid sessions page"); offset = next;
-      } while (expand && offset !== null);
-      sessionData = current; sessionsExpanded = expand; paint();
-      if (expansionFocused && focusKey() === null) {
-        const firstNew = current.rows.slice(previousLength).find(row => row.id);
-        if (firstNew) restoreFocus(`${representation(document, "overview-sessions") === "table" ? "session-table-name" : "session-name"}-${firstNew.id}`);
-      }
+        const next = reply.data.nextOffset;
+        if (next !== null && (next <= (offset ?? 0) || !reply.data.rows.length)) throw new Error("Invalid sessions page");
+        rows.push(...reply.data.rows); current = { ...reply.data, rows, offset: 0 }; offset = next;
+      } while (reload && append && offset !== null && rows.length < target);
+      sessionData = current; sessionsExpanded = append; paint();
     } catch (error) {
       if (!disposed && !signal.aborted && gen === sessionsGeneration) {
         const section = nodes(root).find(n => n.getAttribute("data-panel") === "sessions") as HTMLElement | undefined;
-        if (section) sectionState(section, "error", errorCopy(error), canRetry(error) ? () => { void loadSessions(expand); } : undefined);
+        if (section) sectionState(section, "error", errorCopy(error), canRetry(error) ? () => { void loadSessions(append, reload); } : undefined);
       }
-    } finally { if (control) { control.disabled = false; control.setAttribute("aria-busy", "false"); } }
+    } finally {
+      if (gen === sessionsGeneration) sessionsLoading = false;
+      if (control) { control.disabled = false; control.setAttribute("aria-busy", "false"); }
+    }
   }
   function refresh(): Promise<void> {
     if (disposed) return Promise.resolve();
-    const gen = ++generation; ++sessionsGeneration; sessionsController?.abort(); controller?.abort(); controller = new AbortController(); const signal = controller.signal;
+    const gen = ++generation; ++sessionsGeneration; sessionsLoading = false; sessionsController?.abort(); controller?.abort(); controller = new AbortController(); const signal = controller.signal;
     if (!data) sectionState(root, "loading", "Loading usage…"); else root.setAttribute("aria-busy", "true");
     loading = (async () => {
       try {
@@ -291,7 +333,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
         fromInput = localInput(query.from); toInput = localInput(query.to);
         ctx.navigate({ page: "overview", query }, { replace: true }); paint();
         if (sort !== "credits" || sessionsExpanded) await loadSessions(sessionsExpanded, true);
-      } catch (error) { if (!disposed && !signal.aborted && gen === generation) { if (paceNode) disposePace(paceNode); sectionState(root, "error", errorCopy(error), canRetry(error) ? () => { void refresh(); } : undefined); } }
+      } catch (error) { if (!disposed && !signal.aborted && gen === generation) { disposeViews(); if (paceNode) disposePace(paceNode); sectionState(root, "error", errorCopy(error), canRetry(error) ? () => { void refresh(); } : undefined); } }
     })(); return loading;
   }
   const clickAway = (event: Event) => { if (!query.buckets.length || !event.target) return; const target = event.target as Node;
@@ -304,7 +346,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
   };
   const escape = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) clearSelection(); };
   document.addEventListener("click", clickAway); document.addEventListener("keydown", escape);
-  function dispose(): void { if (disposed) return; disposed = true; ++generation; ++sessionsGeneration; controller?.abort(); sessionsController?.abort(); if (paceNode) disposePace(paceNode); document.removeEventListener("click", clickAway); document.removeEventListener("keydown", escape); ctx.signal.removeEventListener("abort", dispose); root.className = originalClass; }
+  function dispose(): void { if (disposed) return; disposed = true; disposeViews(); ++generation; ++sessionsGeneration; controller?.abort(); sessionsController?.abort(); if (paceNode) disposePace(paceNode); document.removeEventListener("click", clickAway); document.removeEventListener("keydown", escape); ctx.signal.removeEventListener("abort", dispose); root.className = originalClass; }
   ctx.signal.addEventListener("abort", dispose, { once: true }); void refresh();
   return { refresh, dispose };
 }

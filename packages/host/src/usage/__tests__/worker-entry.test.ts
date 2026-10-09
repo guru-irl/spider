@@ -3,6 +3,7 @@ import type { MessagePort } from "node:worker_threads";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import * as sessionBackfill from "../session-backfill.js";
 import { bootUsageWorker } from "../worker-entry.js";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
 import { dashboardBatch, dashboardCall } from "./fixtures/dashboard-ledger.js";
@@ -35,6 +36,7 @@ class Port extends EventEmitter {
   close() { this.closed = true; }
 }
 let root: string, ports: Port[];
+const metadataBudget = 64 * 1024;
 const at = Date.parse("2026-10-04T12:00:00Z");
 beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-entry-")); ports = []; reads.followers = []; reads.month=0; reads.failMonth=false; vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); })); });
 afterEach(async () => {
@@ -142,14 +144,17 @@ it("multi-source cycles pay shared work once, publish bounded progress, and skip
     return ingestOnce(...args);
   };
   await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => d, ingest, now: () => clock });
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", metadataBackfill: "complete" }));
   expect(sharedWrites).toBe(1); expect(healthCalls).toBeLessThanOrEqual(2);
   const progress = snapshots(p).filter(s => s.backfill === "running" && (s as any).progress?.sourcesCompleted > 0);
   expect(progress.length).toBeGreaterThan(0);
   expect((progress[0] as any).progress).toMatchObject({ sourcesTotal: 40 });
   expect((progress[0] as any).progress.sourcesCompleted).toBeLessThan(40);
-  const before = calls; p.emit("message", { type: "refresh" });
-  await vi.waitFor(() => expect(snapshots(p).filter(s => s.backfill === "complete")).toHaveLength(2));
+  const before = calls, complete = () => snapshots(p).filter(s => s.backfill === "complete").length, completeBefore = complete();
+  p.emit("message", { type: "refresh" });
+  // The refresh pass must run and publish exactly once: nothing changed, metadata is complete.
+  await vi.waitFor(() => expect(complete()).toBe(completeBefore + 1));
+  await new Promise(resolve => setTimeout(resolve, 200)); expect(complete()).toBe(completeBefore + 1);
   expect(calls - before).toBeLessThanOrEqual(1); expect(sharedWrites).toBe(1);
 });
 it("multi-MiB sources do not pay fixed work once per tiny slice", async () => {
@@ -401,12 +406,12 @@ it.each([false, true])("collector identity publishes with the fenced snapshot, d
 });
 
 it("normal worker ingestion precedes bounded historical metadata in every pass", async () => {
-  const c = command(), p = port(); let clock = at;
+  const c = { ...command(), metadataBackfillBytesPerPass: metadataBudget }, p = port(); let clock = at;
   const historical = { path: join(root, "historical.jsonl"), project: null, repo: null, run: null };
   const live = { path: join(root, "live.jsonl"), project: null, repo: null, run: null };
   const header = { type: "session", id: "fixture-live", timestamp: new Date(at).toISOString() };
   const call = (id: string) => ({ type: "message", id, timestamp: new Date(clock).toISOString(), message: { role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } });
-  writeFileSync(historical.path, JSON.stringify({ ...header, id: "fixture-history" }) + "\n" + JSON.stringify({ type: "message", message: { role: "toolResult", content: "x".repeat(13 * 1024 * 1024) } }) + "\n");
+  writeFileSync(historical.path, JSON.stringify({ ...header, id: "fixture-history" }) + "\n" + JSON.stringify({ type: "message", message: { role: "toolResult", content: "x".repeat(metadataBudget * 3 + metadataBudget / 4) } }) + "\n");
   writeFileSync(live.path, JSON.stringify(header) + "\n" + JSON.stringify(call("one")) + "\n");
   await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [historical, live], runs: [], errors: [] }) });
   await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.calls).toBe(1), { timeout: 5000 });
@@ -512,4 +517,170 @@ it("persistent non-parse metadata errors finish status progress while keeping th
     expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
     expect(check.getSourceErrors()).toContainEqual({ path: `metadata:source:${missing}`, code: "metadata-missing-source" });
   } finally { check.close(); }
+});
+
+// Catches leaving incomplete metadata on the 60s cadence, including dashboard standby.
+it.each([false, true])("incomplete metadata schedules short owner passes with billing each time, dashboard=%s", async dashboardMode => {
+  const c = { ...command(), dashboardMode, metadataBackfillBytesPerPass: metadataBudget }, p = port(), path = join(root, "bounded-history.jsonl"), live = join(root, "bounded-live.jsonl");
+  const entry = (id: string) => JSON.stringify({ type: "message", id, timestamp: new Date(at - 1).toISOString(), message: { role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } } }) + "\n";
+  writeFileSync(path, JSON.stringify({ type: "session", id: "bounded-history" }) + "\n" + JSON.stringify({ type: "message", message: { role: "toolResult", content: "x".repeat(metadataBudget * 2 + metadataBudget / 4) } }) + "\n");
+  writeFileSync(live, entry("first"));
+  const d = { sources: [ { path, project: null, repo: null, run: null }, { path: live, project: null, repo: null, run: null } ], runs: [], errors: [] };
+  const store = openUsageLedger(c.roots.ledgerFile);
+  await ingestOnce(store, d, at, new AbortController().signal);
+  store.apply(dashboardBatch([], { resetSessionMetadata: [{ path, sessionId: "bounded-history" }] })); store.close();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] }); let ingests = 0;
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, monotonicNow: () => Date.now(), discover: async () => d, ingest: async (...args) => { ingests++; return ingestOnce(...args); } });
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("running"));
+  await vi.advanceTimersByTimeAsync(0);
+  const first = snapshots(p).length;
+  appendFileSync(live, entry("second"));
+  await vi.advanceTimersByTimeAsync(3000);
+  await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(first));
+  expect(snapshots(p).at(-1)?.health.calls).toBe(2); expect(ingests).toBe(2);
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(3000);
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("complete"));
+  await vi.advanceTimersByTimeAsync(0);
+  const complete = snapshots(p).length, imported = ingests;
+  await vi.advanceTimersByTimeAsync(59000);
+  expect(ingests).toBe(imported);
+  await vi.advanceTimersByTimeAsync(1100);
+  await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(complete));
+  expect(ingests).toBe(imported + 1);
+  p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+});
+
+it("owner reprices stored calls and refreshes an already cached footer month", async () => {
+  const c = command(), p = port(), store = openUsageLedger(c.roots.ledgerFile);
+  store.repriceUnpriced?.(() => true); // A completed fingerprint precedes a synthetic legacy call.
+  store.apply(dashboardBatch([dashboardCall("legacy-month", { ts: at - 1, provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 10000, output: 0, cacheRead: 0, cacheWrite: 0 }, price: { status: "unpriced", reason: "no-rate-at-time" } })]));
+  store.close();
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBeNull();
+  const Database = (await import("better-sqlite3")).default, db = new Database(c.roots.ledgerFile);
+  try { db.prepare("UPDATE ledger_metadata SET value='previous-table' WHERE key='reprice-rate-fingerprint'").run(); } finally { db.close(); }
+  p.emit("message", { type: "refresh" });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.monthUsed).toBe(2));
+  expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "complete", repriced: 1 });
+});
+
+it("owner publishes fresh billing before repricing and before metadata reads start", async () => {
+  const c = command(), p = port(), path = join(root, "publish-order.jsonl");
+  writeFileSync(path, JSON.stringify({ type: "message", id: "fresh-order", timestamp: new Date(at - 1).toISOString(),
+    message: { role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol",
+      usage: { input: 10000, output: 0, cacheRead: 0, cacheWrite: 0 } } }) + "\n");
+  const d = { sources: [{ path, project: null, repo: null, run: null }], runs: [], errors: [] };
+  let beforeReprice: ReturnType<UsageLedger["getPublishedSnapshot"]>, beforeMetadata: ReturnType<UsageLedger["getPublishedSnapshot"]>;
+  const backfill = sessionBackfill.backfillSessionMetadata;
+  vi.spyOn(sessionBackfill, "backfillSessionMetadata").mockImplementation(async (...args) => {
+    beforeMetadata = args[0].getPublishedSnapshot();
+    return backfill(...args);
+  });
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, discover: async () => d,
+    ingest: async (...args) => {
+      const result = await ingestOnce(...args), repricer = args[0].repriceUnpriced.bind(args[0]);
+      vi.spyOn(args[0], "repriceUnpriced").mockImplementation((...params) => {
+        beforeReprice = args[0].getPublishedSnapshot(); return repricer(...params);
+      });
+      return result;
+    } });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("complete"));
+  for (const published of [beforeReprice!, beforeMetadata!]) {
+    expect(published).toMatchObject({ backfill: "complete", monthUsed: 2, health: { calls: 1 },
+      reconciliation: { computedAIC: 2, unpricedCalls: 0 } });
+  }
+  expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ repriced: 0, state: "complete" });
+});
+
+it("owner republishes repriced values for followers before a blocked metadata pass", async () => {
+  const c = command(), owner = port(), follower = port();
+  const discovery = { sources: [], runs: [], errors: [] };
+  await bootUsageWorker(owner as unknown as MessagePort, c, { now: () => at, discover: async () => discovery });
+  await vi.waitFor(() => expect(snapshots(owner).at(-1)?.backfill).toBe("complete"));
+  await bootUsageWorker(follower as unknown as MessagePort, { ...c, owner: `${process.pid}:follower` }, { now: () => at });
+  await vi.waitFor(() => expect(snapshots(follower).at(-1)?.ingestRole).toBe("follower"));
+  const store = openUsageLedger(c.roots.ledgerFile);
+  store.apply(dashboardBatch([dashboardCall("early-publish", { ts: at - 1, provider: "github-copilot", model: "gpt-6.1-sol",
+    usage: { input: 10000, output: 0, cacheRead: 0, cacheWrite: 0 }, price: { status: "unpriced", reason: "no-rate-at-time" } })]));
+  const Database = (await import("better-sqlite3")).default, db = new Database(c.roots.ledgerFile);
+  db.prepare("UPDATE ledger_metadata SET value='previous-table' WHERE key='reprice-rate-fingerprint'").run(); db.close();
+  let release!: () => void, entered = false;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const backfill = sessionBackfill.backfillSessionMetadata;
+  vi.spyOn(sessionBackfill, "backfillSessionMetadata").mockImplementationOnce(async (...args) => {
+    entered = true; await blocked; return backfill(...args);
+  });
+  try {
+    owner.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(entered).toBe(true));
+    expect(store.getPublishedSnapshot()).toMatchObject({ collector: { kind: "pi" }, monthUsed: 2, health: { reprice: { repriced: 1 } } });
+    const before = snapshots(follower).length; follower.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(snapshots(follower).length).toBeGreaterThan(before));
+    expect(snapshots(follower).at(-1)).toMatchObject({ ingestRole: "follower", collector: { kind: "pi" }, monthUsed: 2, health: { calls: 1, reprice: { repriced: 1 } } });
+  } finally { release(); store.close(); }
+});
+
+it.each([false, true])("incomplete repricing alone schedules three second owner passes then sixty seconds, dashboard=%s", async dashboardMode => {
+  const c = { ...command(), dashboardMode }, p = port(), store = openUsageLedger(c.roots.ledgerFile);
+  store.apply(dashboardBatch(Array.from({ length: 3 }, (_, i) => dashboardCall(`cadence-${i}`, {
+    ts: at - 1, provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 10000, output: 0, cacheRead: 0, cacheWrite: 0 },
+    price: { status: "unpriced", reason: "no-rate-at-time" },
+  })))); store.close();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  let ingests = 0;
+  await bootUsageWorker(p as unknown as MessagePort, c, { repriceBatchSize: 1, now: () => at, monotonicNow: () => Date.now(),
+    discover: async () => ({ sources: [], runs: [], errors: [] }), ingest: async (...args) => { ingests++; return ingestOnce(...args); } });
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", health: { reprice: { state: "running", processed: 1 } } }));
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(3000);
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "running", processed: 2 }));
+  expect(ingests).toBe(2);
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(3000);
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "complete", processed: 3, repriced: 3 }));
+  expect(ingests).toBe(3);
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(59000); expect(ingests).toBe(3);
+  await vi.advanceTimersByTimeAsync(1100);
+  await vi.waitFor(() => expect(ingests).toBe(4));
+  p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+});
+
+it("worker passes its live lease guard into the reprice transaction", async () => {
+  const c = command(), p = port(), store = openUsageLedger(c.roots.ledgerFile);
+  store.apply(dashboardBatch([dashboardCall("lease-fenced-reprice", { ts: at - 1, provider: "github-copilot", model: "gpt-6.1-sol",
+    usage: { input: 10000, output: 0, cacheRead: 0, cacheWrite: 0 }, price: { status: "unpriced", reason: "no-rate-at-time" } })]));
+  const Database = (await import("better-sqlite3")).default, db = new Database(c.roots.ledgerFile);
+  const prices = () => db.prepare("SELECT aic, aic_input, aic_output, aic_cache_read, aic_cache_write, price_status, unpriced_reason, rate_version, tier, confidence FROM calls").all();
+  const before = prices(); let clock = at, finished = false, successor: ReturnType<typeof acquireUsageLease>;
+  try {
+    await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [], runs: [], errors: [] }),
+      ingest: async (...args) => {
+        const result = await ingestOnce(...args), repricer = args[0].repriceUnpriced.bind(args[0]);
+        vi.spyOn(args[0], "repriceUnpriced").mockImplementation((guard, size) => {
+          clock += 120001; successor = acquireUsageLease(store, "ingest", `${process.pid}:successor`, () => clock, 120000);
+          const progress = repricer(guard, size); finished = true; return progress;
+        });
+        return result;
+      } });
+    await vi.waitFor(() => expect(finished).toBe(true));
+    expect(successor!.isCurrent(() => clock)).toBe(true);
+    expect(prices()).toEqual(before);
+    expect(store.health(clock).reprice).toMatchObject({ state: "pending", processed: 0 });
+  } finally { successor?.release(); db.close(); store.close(); }
+});
+
+// Catches an omitted default or a worker/backfill budget mismatch without a large fixture.
+it("worker passes the production metadata budget to backfill when no override is given", async () => {
+  const backfill = vi.spyOn(sessionBackfill, "backfillSessionMetadata");
+  const p = port();
+  await bootUsageWorker(p as unknown as MessagePort, command(), { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("complete"));
+  expect(backfill).toHaveBeenCalledTimes(1);
+  expect(backfill.mock.calls[0][5]).toBe(sessionBackfill.METADATA_BACKFILL_BYTES_PER_PASS);
+  expect(backfill.mock.calls[0][5]).toBe(32 * 1024 * 1024);
 });

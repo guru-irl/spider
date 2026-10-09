@@ -37,14 +37,14 @@ it("doctor shows bounded redacted source diagnostics", () => {
   }));
   sourceErrors[2] = { ...sourceErrors[2]!, code: "/private/secret-code", sourceLabel: "\u001b[31m/source-private/source-2.jsonl\u001b[0m" };
   sourceErrors[3] = { ...sourceErrors[3]!, projectLabel: "%252Fproject-private%252Fproject-name" };
-  const snapshot = { health: { schemaVersion: 3, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0, aggregateCalls: 0, unpricedModels: ["\u001b[31mUnknown model\u001b[0m"], lastIngestAt: null }, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null,
+  const snapshot = { health: { schemaVersion: 3, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0, aggregateCalls: 0, unpricedModels: [], unpricedBillingPeriod: { models: ["\u001b[31mUnknown model\u001b[0m"], withoutModel: 0 }, lastIngestAt: null }, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null,
     calibration: { ...calibrationFallback(), status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: 86400000,
       coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 2 } };
   const diagnostics = { sourceErrors, truncated: false, serverFailures: [], now: DASHBOARD_NOW };
   const before = structuredClone({ snapshot, diagnostics });
   const result = usageDoctorLines(snapshot, config, diagnostics);
   const rows = result.lines.filter(line => line.startsWith("- usage source diagnostic:"));
-  expect(result.lines).toContain("- usage unpriced models: Unknown model");
+  expect(result.lines).toContain("- usage unpriced (this billing period): 1 model, 0 calls without a model; Unknown model");
   expect(rows).toHaveLength(20);
   expect(rows[0]).toContain("code=EACCES count=1 source=source-0.jsonl project=project-name");
   expect(rows[1]).toContain("code=unknown-aux-purpose count=2");

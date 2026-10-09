@@ -8,11 +8,11 @@ function model(id: string, tiers: readonly RateTier[], aliases: readonly string[
   return { id, aliases, tiers, ...(validUntil ? { validUntil } : {}) };
 }
 
-// The public snapshot is not evidence of rates before the inspected month.
+// Apply 2026-10-04 published rates from the 2026-06-01 billing change: https://docs.github.com/en/copilot/reference/copilot-billing/request-based-billing-legacy/what-changed-with-billing.
 // All values are USD per million tokens. No runtime fetch is performed.
 export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
   id: "copilot-public-2026-10-04",
-  effectiveFrom: "2026-10-01T00:00:00.000Z",
+  effectiveFrom: "2026-06-01T00:00:00.000Z",
   sourceAsOf: "2026-10-04",
   confidence: "estimated",
   source: "GitHub Docs, Models and pricing for GitHub Copilot: "

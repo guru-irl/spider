@@ -65,7 +65,7 @@ function assertReadPlans(db: Db, queries: string[], start: number, end: number, 
   for (const index of ["calls_health_reports", "calls_health_unpriced"]) {
     const sql = queries.find(sql => sql.includes(`INDEXED BY ${index}`));
     expect(sql).toBeDefined();
-    const details = plan(db, sql!);
+    const details = plan(db, sql!, index === "calls_health_unpriced" ? [start, end] : []);
     expect(details.some(detail => new RegExp(`(?:SEARCH|SCAN) c USING (?:COVERING )?INDEX ${index}\\b`).test(detail))).toBe(true);
     if (index === "calls_health_reports") {
       expect(details.some(detail => detail.startsWith("SEARCH ledger_totals USING INTEGER PRIMARY KEY"))).toBe(true);

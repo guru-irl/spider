@@ -1,3 +1,5 @@
+import { billingPeriod } from "./billing-pace.js";
+import { createRepricer, type RepriceProgress } from "./reprice.js";
 import type { UsageWorkerEvent } from "./protocol.js";
 import { readSourceErrorDiagnostics } from "./source-error-diagnostics.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
@@ -95,7 +97,10 @@ export type CounterSnapshot = {
 };
 export type LedgerHealth = {
   schemaVersion: number; calls: number; sources: number; parseErrors: number; sourceErrors: number;
-  unpricedModels: readonly string[]; aggregateCalls: number; lastIngestAt: number | null;
+  /** Legacy snapshots may carry this field; current health uses unpricedBillingPeriod. */
+  unpricedModels?: readonly string[]; aggregateCalls: number; lastIngestAt: number | null;
+  unpricedBillingPeriod?: { models: readonly string[]; withoutModel: number };
+  reprice?: RepriceProgress;
   /** Number of selected report/run overlap pairs. Omitted when zero. */
   possibleOverlaps?: number;
 };
@@ -158,7 +163,8 @@ export interface UsageLedger {
   latestCounter(): CounterSnapshot | undefined;
   getCalibration(mode: "auto" | "off"): CalibrationResult;
   summarize(start: number, end: number): UsageSummary;
-  health(): LedgerHealth;
+  health(at?: number): LedgerHealth;
+  repriceUnpriced(commitGuard: () => boolean, batchSize?: number): RepriceProgress & { changed: number };
   getBackfillState(): "pending" | "running" | "complete" | "failed";
   close(): void;
 }
@@ -313,6 +319,7 @@ function createLedger(db: Db): UsageLedger {
     if (!row || !/^\d+$/.test(row.value)) throw new Error("usage-revision-unavailable");
     return row.value;
   } });
+  const repricer = createRepricer(db);
   const context = db.prepare("SELECT header, tail_hash AS tailHash FROM source_context WHERE path=?");
   const headers = db.prepare("SELECT path, header FROM source_context");
   const putContext = db.prepare(`INSERT INTO source_context(path,header,tail_hash) VALUES (?,?,?)
@@ -435,11 +442,13 @@ function createLedger(db: Db): UsageLedger {
   const healthOverlaps = db.prepare("SELECT COUNT(*) AS possibleOverlaps FROM usage_possible_overlaps");
   const healthSources = db.prepare(`SELECT COUNT(*) AS sources, COALESCE(SUM(parse_errors), 0) AS parseErrors,
     COALESCE(SUM(source_error_code IS NOT NULL), 0) AS sourceErrors, MAX(last_ingest_at) AS lastIngestAt FROM import_state`);
-  const unpricedModels = db.prepare(`WITH RECURSIVE ${selectionCtes}
-    SELECT DISTINCT c.model FROM calls c INDEXED BY calls_health_unpriced
-    WHERE c.price_status = 'unpriced' AND c.model IS NOT NULL AND ${selectedPredicate("c", storedSelection(db))} ORDER BY c.model`);
+  const periodUnpriced = db.prepare(`WITH RECURSIVE ${selectionCtes}
+    SELECT c.model, COUNT(*) AS calls FROM calls c INDEXED BY calls_health_unpriced
+    WHERE c.price_status='unpriced' AND c.ts >= ? AND c.ts < ? AND ${selectedPredicate("c", storedSelection(db))}
+    GROUP BY c.model ORDER BY c.model`);
 
   const ledger: UsageLedger = {
+    repriceUnpriced: repricer.pass,
     leases: createUsageLeaseStore(db, snapshot => ledger.insertCounter(snapshot)),
     apply(batch) {
       return db.raw.transaction(() => {
@@ -648,15 +657,19 @@ function createLedger(db: Db): UsageLedger {
         ...(possibleOverlap ? { possibleOverlap: true } : {})
       };
     },
-    health() {
+    health(at = Date.now()) {
       const calls = healthCalls.get() as
         { calls: number; aggregateCalls: number };
       const sources = healthSources.get() as
         { sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null };
-      const models = unpricedModels.all() as { model: string }[];
       const { possibleOverlaps } = healthOverlaps.get() as { possibleOverlaps: number };
+      const period = billingPeriod(at, ledger.latestCounter());
+      const unpriced = periodUnpriced.all(period.start, period.end) as { model: string | null; calls: number }[];
       return {
-        schemaVersion: db.pragma("user_version") as number, ...calls, ...sources, unpricedModels: models.map(row => row.model),
+        reprice: repricer.progress(),
+        unpricedBillingPeriod: { models: unpriced.flatMap(row => row.model === null ? [] : [row.model]),
+          withoutModel: unpriced.find(row => row.model === null)?.calls ?? 0 },
+        schemaVersion: db.pragma("user_version") as number, ...calls, ...sources,
         ...(possibleOverlaps ? { possibleOverlaps } : {})
       };
     },

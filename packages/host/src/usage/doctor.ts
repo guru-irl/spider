@@ -60,7 +60,11 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
     lines.push(`- usage ledger: schema=${health.schemaVersion} calls=${health.calls} sources=${health.sources} parse_errors=${health.parseErrors} source_errors=${health.sourceErrors} aggregate=${health.aggregateCalls} possible_overlaps=${health.possibleOverlaps ?? 0}`);
     if (health.parseErrors) lines.push(`- usage parse errors: ${health.parseErrors} (recorded count)`);
     if (health.sourceErrors) lines.push(`- usage source errors: ${health.sourceErrors} (current errors; includes missing deleted worktrees or projects)`);
-    lines.push(`- usage unpriced models: ${health.unpricedModels.length ? health.unpricedModels.slice(0, 20).map(label).join(", ") : "none"}`);
+    const reprice = health.reprice;
+    lines.push(`- usage reprice=${reprice?.state ?? "not published yet"}${reprice?.state === "running" ? ` ${reprice.processed}/${reprice.total} calls` : ""}`);
+    const unpriced = health.unpricedBillingPeriod;
+    lines.push(`- usage unpriced (this billing period): ${!unpriced ? "not published yet" : !unpriced.models.length && !unpriced.withoutModel ? "none"
+      : `${unpriced.models.length} model${unpriced.models.length === 1 ? "" : "s"}, ${unpriced.withoutModel} calls without a model${unpriced.models.length ? `; ${unpriced.models.slice(0, 20).map(label).join(", ")}` : ""}`}`);
   } else lines.push("- usage ledger: not published yet; no main-thread open or creation");
   const sourceErrors = diagnostics?.sourceErrors ?? snapshot.sourceErrorDiagnostics?.rows ?? [];
   for (const row of sourceErrors.slice(0, 20)) lines.push(`- usage source diagnostic: code=${sourceErrorCode(row.code)} count=${number(row.count)} source=${label(sourceErrorLabel(stripTerminalSequences(row.sourceLabel), "Unknown source"))} project=${label(sourceErrorLabel(stripTerminalSequences(row.projectLabel), "Unknown project"))}`);

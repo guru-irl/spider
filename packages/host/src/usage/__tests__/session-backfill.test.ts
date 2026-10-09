@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDbReadOnly } from "@spider/db-core";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
 import { ingestOnce } from "../ingest.js";
 import { forgetSessionMetadata } from "../session-metadata.js";
-import { backfillSessionMetadata, METADATA_BACKFILL_BYTES_PER_PASS } from "../session-backfill.js";
+import { backfillSessionMetadata } from "../session-backfill.js";
 import type { Discovery, SourceInfo } from "../discovery.js";
 const gitReads=vi.hoisted(()=>({count:0,fake:false}));
 vi.mock("node:child_process",async importOriginal=>{
@@ -29,6 +29,22 @@ function write(s: SourceInfo, lines: unknown[]) { writeFileSync(s.path, lines.ma
 function facts() { const db = openDbReadOnly(join(root, "usage.db"))!; try { return db.prepare("SELECT id,fingerprint,input,output FROM counted_calls ORDER BY id").all(); } finally { db.close(); } }
 beforeEach(() => { gitReads.count=0;gitReads.fake=false; root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "metadata-backfill-")); ledger = openUsageLedger(join(root, "usage.db")); });
 afterEach(() => { vi.restoreAllMocks(); ledger.close(); rmSync(root, { recursive: true, force: true }); });
+it("backfill names newest sources first with path-ordered mtime ties", async () => {
+  const old = source("a-old"), newestZ = source("z-new"), newestB = source("b-new");
+  for (const s of [old, newestZ, newestB]) {
+    write(s, [{ ...header, id: s.path }, { type: "session_info", name: "Named" }]);
+    utimesSync(s.path, 1000, s === old ? 1000 : 2000);
+  }
+  const d = discovery([old, newestZ, newestB]);
+  const first = await backfillSessionMetadata(ledger, d, at, signal(), () => true, statSync(newestB.path).size);
+  expect(first.complete).toBe(false);
+  expect(ledger.getMetadataCheckpoint(newestB.path)?.complete).toBe(true);
+  expect(ledger.getMetadataCheckpoint(old.path)).toBeUndefined();
+  expect(ledger.getMetadataCheckpoint(newestZ.path)).toBeUndefined();
+  await backfillSessionMetadata(ledger, d, at, signal(), () => true, statSync(newestZ.path).size);
+  expect(ledger.getMetadataCheckpoint(newestZ.path)?.complete).toBe(true);
+  expect(ledger.getMetadataCheckpoint(old.path)).toBeUndefined();
+});
 it("backfill resumes without billing reimport and a completed pass reads zero bytes", async () => {
   const s = source(); write(s, [header, call("one"), { type: "session_info", name: "Historical name" }]); const d = discovery([s]);
   await ingestOnce(ledger, d, at, signal()); const before = facts(), billing = ledger.getImportState(s.path);
@@ -53,12 +69,13 @@ it("lost lease and cancellation write no metadata or checkpoint", async () => {
   const controller = new AbortController(); controller.abort(); await backfillSessionMetadata(ledger, discovery([s]), at, controller.signal, () => true, 65536); expect(ledger.getSessions()).toEqual([]);
 });
 it("appending new live billing calls progresses while historical backfill remains bounded", async () => {
-  const old = source("historical"), live = source("live"); write(old, [{ ...header, id: "old" }, { type: "message", message: { role: "toolResult", content: "x".repeat(METADATA_BACKFILL_BYTES_PER_PASS * 3) } }]); write(live, [header, call("one")]);
+  const budget = 64 * 1024;
+  const old = source("historical"), live = source("live"); write(old, [{ ...header, id: "old" }, { type: "message", message: { role: "toolResult", content: "x".repeat(budget * 3) } }]); write(live, [header, call("one")]);
   for (let pass = 0; pass < 2; pass++) {
     appendFileSync(live.path, JSON.stringify(call(`live-${pass}`)) + "\n");
     await ingestOnce(ledger, discovery([live]), at + pass, signal());
-    const result = await backfillSessionMetadata(ledger, discovery([old, live]), at + pass, signal(), () => true, METADATA_BACKFILL_BYTES_PER_PASS);
-    expect(result.complete).toBe(false); expect(result.bytesRead).toBeLessThanOrEqual(METADATA_BACKFILL_BYTES_PER_PASS); expect(ledger.health().calls).toBe(pass + 2); expect(ledger.health().lastIngestAt).toBe(at + pass); expect(ledger.getImportState(live.path)?.offset).toBe(statSync(live.path).size);
+    const result = await backfillSessionMetadata(ledger, discovery([old, live]), at + pass, signal(), () => true, budget);
+    expect(result.complete).toBe(false); expect(result.bytesRead).toBeLessThanOrEqual(budget); expect(ledger.health().calls).toBe(pass + 2); expect(ledger.health().lastIngestAt).toBe(at + pass); expect(ledger.getImportState(live.path)?.offset).toBe(statSync(live.path).size);
   }
 });
 it("missing metadata source has a safe code and does not erase billing facts", async () => {

@@ -187,9 +187,9 @@ describe("Overview v4", () => {
   });
   it("flow uses model colours and code-face model ids", async () => {
     const s = setup(); await settle(); const section = s.nodes().find(n => n.getAttribute("data-panel") === "flow")!;
-    const paths = elements(section, "path").filter(n => n.getAttribute("stroke-width") !== null);
-    expect(paths[0]!.getAttribute("stroke")).toBe("#f8785c");
-    expect(elements(section, "text").find(n => n.textContent === "model-maple")!.className).toBe("numeric");
+    const paths = elements(section, "path").filter(n => n.hasAttribute("data-flow-role"));
+    expect(paths[0]!.getAttribute("fill")).toBe("#f8785c");
+    expect(elements(section, "text").find(n => n.textContent === "model-maple")!.className.split(" ")).toContain("numeric");
     expect(descendants(section).filter(n => n.getAttribute("data-model-node") !== null)).toHaveLength(2); s.page.dispose();
   });
   it("latest refresh wins when the client ignores aborted requests", async () => {

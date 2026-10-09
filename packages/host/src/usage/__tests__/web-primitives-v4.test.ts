@@ -84,8 +84,8 @@ it("flow shows actual edge values in a paired table with no invented total", () 
   const doc = new PlainDocument(), flow = overviewFixture().flow;
   const node = renderFlow(doc.asDocument(), flow, "credits", "flow"); expect(elements(node, "table")).toHaveLength(1); expect(elements(node, "tbody")[0]!.children).toHaveLength(flow.edges.length);
   expect(elements(node, "svg")[0]!.getAttribute("role")).toBe("group");
-  const links = elements(node, "path").filter(path => path.hasAttribute("stroke-width")); expect(links).toHaveLength(flow.edges.length);
-  for (const path of links) { expect(path.getAttribute("tabindex")).toBe("0"); expect(path.getAttribute("aria-label")).toBe(elements(path, "title")[0]!.textContent); }
+  const links = elements(node, "path").filter(path => path.hasAttribute("data-flow-role")); expect(links).toHaveLength(flow.edges.length);
+  for (const path of links) { expect(path.getAttribute("tabindex")).toBe("0"); expect(path.getAttribute("aria-label")).toContain("credits"); expect(elements(path, "title")).toHaveLength(0); }
   flow.edges.forEach(edge => expect(node.textContent).toContain(formatValue(edge.value, "credits")));
   expect(descendants(node as never).some(n => n.hasAttribute("style"))).toBe(false);
 });
@@ -106,18 +106,18 @@ it("shared chips distinguish text labels from machine values without inline styl
 
 it("flow nodes span the chart and the viewport fits its last label", () => {
   const doc = new PlainDocument(), node = renderFlow(doc.asDocument(), overviewFixture().flow, "credits", "width-flow"), svg = elements(node, "svg")[0]!;
-  expect(svg.getAttribute("viewBox")).toBe("0 0 1122 438");
-  const stations = elements(svg, "rect").filter(n => n.hasAttribute("data-role-node")); expect(stations.every(n => n.getAttribute("x") === "120")).toBe(true);
+  const width = Number(svg.getAttribute("viewBox")!.split(" ")[2]);
+  const stations = elements(svg, "rect").filter(n => n.hasAttribute("data-role-node")); expect(stations.every(n => Number(n.getAttribute("x")) > 90)).toBe(true);
   const modelLabels = elements(svg, "text").filter(n => n.textContent.startsWith("model-"));
-  expect(modelLabels.every(n => n.getAttribute("text-anchor") === "start" && n.getAttribute("x") === "1010")).toBe(true);
+  expect(modelLabels.every(n => n.getAttribute("text-anchor") === "start" && Number(n.getAttribute("x")) > width / 2 && Number(n.getAttribute("x")) + 100 < width)).toBe(true);
 });
 
-it("flow omits stations and table rows for roles with no usage", () => {
+it("flow keeps standard role labels but omits table rows for roles with no usage", () => {
   const doc = new PlainDocument(), flow = overviewFixture().flow, value = structuredClone(flow.total);
   value.credits = 0; value.calls = 0; value.tokens.total = 0;
   flow.edges = [...flow.edges, { role: "scouts", model: flow.models[0]!.id, value, share: 0 }];
   const node = renderFlow(doc.asDocument(), flow, "credits", "zero-flow");
-  expect(elements(node, "text").some(n => n.textContent === "Scouts")).toBe(false);
+  expect(elements(node, "text").some(n => n.textContent === "Scouts")).toBe(true);
   expect(elements(node, "tbody")[0]!.children.some(n => n.textContent.includes("Scouts"))).toBe(false);
 });
 

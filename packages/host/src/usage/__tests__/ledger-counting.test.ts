@@ -276,7 +276,7 @@ describe("read-time usage selection", () => {
   it("excludes covered unpriced descendants from health", () => {
     ledger.apply(batch([report("R", 40, { model: "unknown" }), detail("unknown", "N", { parentRunId: "R", model: "unknown",
       price: { status: "unpriced", reason: "unknown-model" } })], { coverageEdges: [edge("R", "N")] }));
-    expect(ledger.health()).toMatchObject({ calls: 2, aggregateCalls: 1, unpricedModels: [] });
+    expect(ledger.health()).toMatchObject({ calls: 2, aggregateCalls: 1, unpricedBillingPeriod: { models: [], withoutModel: 0 } });
     expect(ledger.summarize(0, 200)).toEqual({ aic: 40, pricedCalls: 1, unpricedCalls: 0, estimated: false, possibleUndercount: false });
   });
 

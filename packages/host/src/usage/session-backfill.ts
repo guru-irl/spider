@@ -1,12 +1,18 @@
+import { statSync } from "node:fs";
 import type { Discovery } from "./discovery.js";
 import type { UsageLedger } from "./ledger.js";
 import { forgetSessionMetadata, readSessionMetadata } from "./session-metadata.js";
-export const METADATA_BACKFILL_BYTES_PER_PASS: number = 4 * 1024 * 1024;
+export const METADATA_BACKFILL_BYTES_PER_PASS: number = 32 * 1024 * 1024;
 
 export async function backfillSessionMetadata(ledger: UsageLedger, discovery: Discovery, at: number, signal: AbortSignal, guard: () => boolean, maxBytes: number): Promise<{ complete: boolean; sourcesRead: number; bytesRead: number }> {
   let complete = true, sourcesRead = 0, bytesRead = 0;
   const sessions = new Map(ledger.getSessions().map(session => [session.id, session]));
-  for (const source of discovery.sources) {
+  const sources = discovery.sources.map(source => {
+    let mtime = -Infinity;
+    try { mtime = statSync(source.path).mtimeMs; } catch { /* the reader records missing sources */ }
+    return { source, mtime };
+  }).sort((a, b) => b.mtime - a.mtime || (a.source.path < b.source.path ? -1 : a.source.path > b.source.path ? 1 : 0));
+  for (const { source } of sources) {
     if (signal.aborted || !guard()) return { complete: false, sourcesRead, bytesRead };
     if (bytesRead >= maxBytes) { complete = false; continue; }
     const stored = ledger.getMetadataCheckpoint(source.path);

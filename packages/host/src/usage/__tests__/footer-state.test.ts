@@ -108,7 +108,7 @@ describe("FooterAccumulator", () => {
       model: "unlisted-request", responseModel: "claude-opus-5-5" } },
       { ...extra("future-kind"), model: "unlisted-model" },
       { ...extra("spider-aux"), provider: "other-provider" },
-      { ...extra("cache_warm"), timestamp: "2026-09-30T12:00:00.000Z" }]);
+      { ...extra("cache_warm"), timestamp: "2026-05-31T12:00:00.000Z" }]);
     expect(state.snapshot()).toMatchObject({ aic: 400, unpricedEntries: 3, input: 1000030 });
   });
 

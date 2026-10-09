@@ -19,6 +19,7 @@ export type UsageWorkerDependencies = {
   now?: () => number;
   monotonicNow?: () => number;
   fetch?: typeof globalThis.fetch;
+  repriceBatchSize?: number;
 };
 const TTL_MS = 120000;
 export const CYCLE_MS = 60000;
@@ -55,6 +56,8 @@ export async function bootUsageWorker(
   let pendingRelease: { lease: Lease; ledger: UsageLedger } | undefined;
   let backfill: BackfillState = "pending";
   let metadataBackfill: BackfillState = "pending", monthDirty = true;
+  let repriceIncomplete = false;
+  const passDelay = () => metadataBackfill === "running" || repriceIncomplete ? SNAPSHOT_MS : CYCLE_MS;
   let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
   let metadataProgress = { sourcesCompleted: 0, sourcesTotal: 0 };
   let monthCounterKey: string | undefined;
@@ -141,7 +144,7 @@ export async function bootUsageWorker(
     if (!lease) {
       const currentVersion = ledger.dataVersion();
       if (version !== currentVersion) { cachedSnapshot = ledger.getPublishedSnapshot(); version = currentVersion; }
-      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, calibration: calibrationFallback(), health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0, unpricedModels: [] }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
+      const snapshot = cachedSnapshot ?? { type: "snapshot" as const, calibration: calibrationFallback(), health: { schemaVersion: 1, ...ledger.getProgress(), aggregateCalls: 0 }, backfill, reconciliation: { windowStart: 0, windowEnd: 0, computedAIC: 0, counterAIC: null, gap: null, ratio: null, unpricedCalls: 0, estimated: true } };
       const comparison = { ...snapshot.reconciliation };
       // Until the owner publishes the matching window, do not compare a new
       // counter to a summary of a different interval. No follower ledger scan.
@@ -156,7 +159,7 @@ export async function bootUsageWorker(
       post({ ...snapshot, calibration, ingestRole, counter: counterState, reconciliation: comparison });
       return;
     }
-    const health = full || !cachedSnapshot ? ledger.health() : { ...cachedSnapshot.health, ...ledger.getProgress() };
+    const health = full || !cachedSnapshot ? ledger.health(now()) : { ...cachedSnapshot.health, ...ledger.getProgress() };
     const comparison = full || !cachedSnapshot ? reconciliation() : cachedSnapshot.reconciliation;
     const latestCounter = ledger.latestCounter();
     const counterKey = JSON.stringify(latestCounter ? { ts: latestCounter.ts, creditsUsed: latestCounter.creditsUsed,
@@ -180,8 +183,9 @@ export async function bootUsageWorker(
   }
   async function standby(): Promise<void> {
     const completedAt = monotonicNow();
-    standbyUntil = completedAt + DASHBOARD_BACKOFF_MS;
-    nextPassAt = completedAt + CYCLE_MS;
+    const delay = passDelay();
+    standbyUntil = completedAt + Math.min(DASHBOARD_BACKOFF_MS, delay);
+    nextPassAt = completedAt + delay;
     controller.abort(); reopen = true;
     await stopCounter();
     const release = lease ?? dashboardLease;
@@ -261,7 +265,18 @@ export async function bootUsageWorker(
       if (guard() && (performance.now() - lastPublish >= SNAPSHOT_MS || first && progress.sourcesCompleted % 32 === 0)) publish(false);
     }
     if (!guard()) return;
-    const metadata = await backfillSessionMetadata(ledger!, discovery, now(), controller.signal, guard, METADATA_BACKFILL_BYTES_PER_PASS);
+    // Billing freshness must not wait for the separate metadata backfill.
+    backfill = "complete";
+    publish();
+    if (!guard()) return;
+    const reprice = ledger!.repriceUnpriced(guard, dependencies.repriceBatchSize);
+    repriceIncomplete = reprice.state !== "complete";
+    if (reprice.changed) {
+      monthDirty = true; cachedSnapshot = undefined;
+      if (guard()) publish();
+    }
+    if (!guard()) return;
+    const metadata = await backfillSessionMetadata(ledger!, discovery, now(), controller.signal, guard, command.metadataBackfillBytesPerPass ?? METADATA_BACKFILL_BYTES_PER_PASS);
     if (!guard()) return;
     // A failed source was attempted, not pending work. Keep its diagnostic and
     // retry next pass, but let status reach caught up once every source finished.
@@ -275,9 +290,7 @@ export async function bootUsageWorker(
           checkpoint.generation === imported.generation && checkpoint.size === imported.size);
       }).length };
     metadataBackfill = metadataProgress.sourcesCompleted === metadataProgress.sourcesTotal ? "complete" : "running";
-    // Billing import completion is independent of the bounded metadata pass.
-    backfill = "complete";
-    ledger!.apply(stateBatch(backfill)); publish();
+    publish();
   }
   function schedule(): void {
     if (stopped) return;
@@ -286,7 +299,7 @@ export async function bootUsageWorker(
     const at = monotonicNow();
     const delay = !opened ? Math.max(0, retryOpenAt - at) : pendingRelease ? SNAPSHOT_MS : command.dashboardMode && at < standbyUntil ? standbyUntil - at
       : command.dashboardMode && !lease && nextPassAt > at ? Math.min(SNAPSHOT_MS, nextPassAt - at)
-      : !lease ? SNAPSHOT_MS : CYCLE_MS;
+      : !lease ? SNAPSHOT_MS : passDelay();
     timer = setTimeout(request, delay);
     timer.unref?.();
   }

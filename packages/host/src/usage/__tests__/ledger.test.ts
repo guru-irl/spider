@@ -216,7 +216,7 @@ describe("usage ledger", () => {
   it("counts retained unpriced detail regardless of the obsolete counted flag", () => {
     const ledger = track(openUsageLedger(file));
     ledger.apply(batch({ calls: [call({ counted: false, price: { status: "unpriced", reason: "unknown-model" } })] }));
-    expect(ledger.health().unpricedModels).toEqual(["fixture-model"]);
+    expect(ledger.health(100).unpricedBillingPeriod).toEqual({ models: ["fixture-model"], withoutModel: 0 });
   });
 
   // M15: detailedRunIds must reconcile retained rows even if this batch has no calls.
@@ -302,7 +302,9 @@ describe("usage ledger", () => {
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
     expect(ledger.health()).toEqual({
       schemaVersion: 4, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
-      unpricedModels: [], aggregateCalls: 0, lastIngestAt: null
+      aggregateCalls: 0, lastIngestAt: null,
+      unpricedBillingPeriod: { models: [], withoutModel: 0 },
+      reprice: { state: "pending", processed: 0, total: 0, repriced: 0 },
     });
     expect(reader().pragma("journal_mode")).toBe("wal");
     if (process.platform !== "win32") {
@@ -502,7 +504,7 @@ describe("usage ledger", () => {
       reasoning: null, cache_write_1h: null,
     });
     expect(ledger.summarize(0, 200)).toEqual({ aic: 0, pricedCalls: 0, unpricedCalls: 1, estimated: false, possibleUndercount: false });
-    expect(ledger.health().unpricedModels).toEqual(["fixture-model"]);
+    expect(ledger.health(100).unpricedBillingPeriod).toEqual({ models: ["fixture-model"], withoutModel: 0 });
   });
 
   // Catches closed intervals, hidden aggregates and estimated flag based on excluded rows.

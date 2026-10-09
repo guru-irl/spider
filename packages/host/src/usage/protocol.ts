@@ -4,7 +4,7 @@ import type { CounterState } from "./counter.js";
 import type { CalibrationResult, SourceErrorRow, Period } from "./dashboard-contract.js";
 
 export type UsageWorkerCommand =
-  | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean; calibration?: "auto" | "off"; dashboardMode?: boolean; sessionId?: string | null }
+  | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean; calibration?: "auto" | "off"; metadataBackfillBytesPerPass?: number; dashboardMode?: boolean; sessionId?: string | null }
   | { type: "refresh" }
   | { type: "configure"; poll: boolean; calibration?: "auto" | "off" }
   | { type: "stop" };

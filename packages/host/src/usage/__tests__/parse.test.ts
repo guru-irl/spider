@@ -186,7 +186,7 @@ describe("parseTranscript", () => {
 
   it("keeps pre-rate and foreign-provider calls unpriced with their original metadata", () => {
     const result = parseTranscript(lines(
-      entry("message", "historical", { timestamp: "2026-09-01T00:00:00.000Z", message: assistant() }),
+      entry("message", "historical", { timestamp: "2026-05-31T00:00:00.000Z", message: assistant() }),
       entry("usage", "foreign", { kind: "spider-aux", provider: "fixture-provider", model: "fixture-model", usage: usage() }),
     ), SOURCE);
     expect(result.calls[0].price).toEqual({ status: "unpriced", reason: "no-rate-at-time" });

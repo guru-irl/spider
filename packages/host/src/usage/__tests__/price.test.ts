@@ -26,6 +26,11 @@ const PROMPT_SHAPES = ["input", "cacheRead", "cacheWrite", "mixed"] as const;
 const TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning", "totalTokens"] as const;
 
 describe("priceCall", () => {
+  it("prices September calls with the published snapshot applied since June", () => {
+    expect(priceCall(MODEL, { ...ZERO, input: 10000 }, Date.UTC(2026, 8, 15))).toMatchObject({
+      status: "priced", aic: 2, rateVersion: "copilot-public-2026-10-04",
+    });
+  });
   // Catches double billing of reasoning or 1h writes, wrong conversion or component swaps.
   it("bills output once including reasoning", () => {
     expect(priceCall(MODEL, {
@@ -81,7 +86,7 @@ describe("priceCall", () => {
   );
 
   it.each([
-    ["before effective date", MODEL, Date.UTC(2026, 9, 1) - 1, "no-rate-at-time"],
+    ["before effective date", MODEL, Date.UTC(2026, 5, 1) - 1, "no-rate-at-time"],
     ["unknown model", { provider: "github-copilot", id: "unknown-model" }, AT, "unknown-model"],
     ["missing model", { provider: "github-copilot", id: null }, AT, "missing-attribution"],
     ["missing provider", { provider: null, id: "gpt-6.1-sol" }, AT, "missing-attribution"],
@@ -94,7 +99,7 @@ describe("priceCall", () => {
   });
 
   it("prices from the effective date inclusively", () => {
-    expect(priceCall(MODEL, { ...ZERO, input: 10000 }, Date.UTC(2026, 9, 1))).toMatchObject({ status: "priced", aic: 2 });
+    expect(priceCall(MODEL, { ...ZERO, input: 10000 }, Date.UTC(2026, 5, 1))).toMatchObject({ status: "priced", aic: 2 });
   });
 
   for (const field of TOKEN_FIELDS) {

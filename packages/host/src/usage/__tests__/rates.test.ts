@@ -108,7 +108,7 @@ describe("public Copilot rates", () => {
   it("retains the dated estimated source and explicit limitations", () => {
     expect(COPILOT_RATE_VERSIONS[0]).toMatchObject({
       id: "copilot-public-2026-10-04",
-      effectiveFrom: "2026-10-01T00:00:00.000Z",
+      effectiveFrom: "2026-06-01T00:00:00.000Z",
       sourceAsOf: "2026-10-04",
       confidence: "estimated",
     });

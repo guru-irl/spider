@@ -15,7 +15,7 @@ describe("usage doctor", () => {
     const result = usageDoctorLines(fixture(), config);
     expect(result.ok).toBe(true);
     const text = result.lines.join("\n");
-    for (const pattern of [/schema=1/, /calls=5/, /sources=2/, /parse_errors=3/, /source_errors=4/, /aggregate=1/, /unpriced.*fixture-model/, /backfill=running.*1\/2/, /lease.*owner/, /estimated/, /copilot-public-2026-10-04/, /effective.*2026-10-01/, /source.*2026-10-04/, /https:\/\/docs.github.com/]) expect(text).toMatch(pattern);
+    for (const pattern of [/schema=1/, /calls=5/, /sources=2/, /parse_errors=3/, /source_errors=4/, /aggregate=1/, /unpriced.*not published/, /backfill=running.*1\/2/, /lease.*owner/, /estimated/, /copilot-public-2026-10-04/, /effective.*2026-06-01/, /source.*2026-10-04/, /https:\/\/docs.github.com/]) expect(text).toMatch(pattern);
   });
   it("missing Copilot login is informational, not a health failure", () => {
     const s = fixture();
@@ -70,11 +70,16 @@ describe("usage doctor", () => {
     const s = fixture(); s.errorCode = "Bearer fixture-secret\nraw body";
     s.counter!.errorCode = "{\"access_token\":\"fixture-secret\"}";
     s.counter!.notice = { code: "https://example.invalid/?token=fixture-secret", at: 1 };
-    s.health!.unpricedModels = ["\u001b[31mgithub-copilot/fixture-model\nspoof"];
+    s.health!.unpricedBillingPeriod = { models: ["\u001b[31mgithub-copilot/fixture-model\nspoof"], withoutModel: 0 };
     const text = usageDoctorLines(s, config).lines.join("\n");
     expect(text).not.toMatch(/fixture-secret|access_token|raw body|example.invalid|\u001b/);
     expect(text).toMatch(/redacted|unknown-error/);
   });
+});
+
+it("older owner snapshots report repricing diagnostics as not published", () => {
+  const lines = usageDoctorLines(fixture(), config).lines;
+  expect(lines).toContain("- usage reprice=not published yet");
 });
 
 it.each(["usage-ingest-lease-lost", "usage-ingest-lease-busy"])("doctor treats %s as follower information", errorCode => {
@@ -118,4 +123,16 @@ it("shows metadata backfill state and its own progress on one doctor line", () =
   expect(usageDoctorLines({ ...s, metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 8, sourcesTotal: 8 } }, config).lines)
     .toContain("- usage metadata backfill=complete progress=8/8 sources");
   expect(usageDoctorLines(fixture(), config).lines).toContain("- usage metadata backfill=pending progress=unavailable");
+});
+
+it("doctor shows reprice progress and only published billing-period unpriced counts", () => {
+  const s = fixture();
+  Object.assign(s.health!, { reprice: { state: "running", processed: 2000, total: 5000, repriced: 1500 }, unpricedBillingPeriod: { models: ["current-a", "current-b"], withoutModel: 58 } });
+  const lines = usageDoctorLines(s, config).lines;
+  expect(lines).toContain("- usage reprice=running 2000/5000 calls");
+  expect(lines).toContain("- usage unpriced (this billing period): 2 models, 58 calls without a model; current-a, current-b");
+  expect(lines.join("\n")).not.toContain("fixture-model");
+  Object.assign(s.health!, { reprice: { state: "complete", processed: 5000, total: 5000, repriced: 4500 }, unpricedBillingPeriod: { models: [], withoutModel: 0 } });
+  expect(usageDoctorLines(s, config).lines).toContain("- usage reprice=complete");
+  expect(usageDoctorLines(s, config).lines).toContain("- usage unpriced (this billing period): none");
 });

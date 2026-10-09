@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { priceCall } from "./price.js";
+import { priceCall, priceReportedCost, summaryModelRef } from "./price.js";
 import type { Actor, PriceResult, UsageTokens } from "./types.js";
 
 export type RunAttribution = {
@@ -40,6 +40,8 @@ export type ParsedCall = {
   parentRunId: string | null;
   auxPurpose: string | null;
   provider: string | null;
+  /** Original billing attribution, distinct from inferred summary provider state. */
+  rawProvider?: string | null;
   model: string | null;
   /** Only the usage-bearing record's request model, never inherited display state. */
   requestedModel: string | null;
@@ -66,7 +68,7 @@ export type ParsedSource = {
 
 type ObjectValue = Record<string, unknown>;
 type Node = { entry: ObjectValue; entryId: string; parentId: string | null; byteOffset: number };
-type DisplayState = { model: string | null; thinking: string | null; invalidTree: boolean };
+type DisplayState = { model: string | null; thinking: string | null; provider: string | null; invalidTree: boolean };
 
 function object(value: unknown): ObjectValue | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : undefined;
@@ -103,7 +105,8 @@ function timestamp(entry: ObjectValue, message: ObjectValue): number | undefined
 }
 
 /** Pure normalization. Nothing outside the supplied source and entry tree is consulted. */
-export function parseTranscript(lines: readonly { byteOffset: number; json: unknown }[], source: SourceInfo): ParsedSource {
+export function parseTranscript(lines: readonly { byteOffset: number; json: unknown }[], source: SourceInfo,
+  options: { sessionProviders?: readonly string[] } = {}): ParsedSource {
   let sessionId: string | null = null;
   let parentSession: string | null = null;
   const calls: ParsedCall[] = [];
@@ -142,7 +145,7 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
 
   const runModel = text(source.run?.model);
   const initial: DisplayState = { model: runModel?.includes("/") ? runModel.slice(runModel.indexOf("/") + 1) : runModel,
-    thinking: source.run?.thinking ?? null, invalidTree: false };
+    thinking: source.run?.thinking ?? null, provider: null, invalidTree: false };
   const states = new Map<Node, DisplayState>();
   function displayState(node: Node): DisplayState {
     const trail: Node[] = [];
@@ -154,7 +157,7 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
       if (cached) { state = cached; break; }
       if (visited.has(cursor)) {
         // A corrupt cycle is not evidence of a selected model or effort level.
-        const invalid: DisplayState = { model: null, thinking: null, invalidTree: true };
+        const invalid: DisplayState = { model: null, thinking: null, provider: null, invalidTree: true };
         // Only the cycle itself is corrupt, not each descendant billed call.
         // Memoization ensures each cycle node is diagnosed exactly once.
         for (const item of trail.slice(trail.indexOf(cursor))) {
@@ -170,7 +173,7 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
     // Iterative memoization avoids stack growth and repeated full ancestor walks.
     for (let index = trail.length - 1; index >= 0; index--) {
       const item = trail[index];
-      if (!state.invalidTree && item.entry.type === "model_change") state = { ...state, model: text(item.entry.modelId) };
+      if (!state.invalidTree && item.entry.type === "model_change") state = { ...state, model: text(item.entry.modelId), provider: text(item.entry.provider) };
       if (!state.invalidTree && item.entry.type === "thinking_level_change") state = { ...state, thinking: text(item.entry.thinkingLevel) };
       states.set(item, state);
     }
@@ -180,6 +183,7 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
   // Also diagnose cycles with no usage-bearing descendants.
   for (const node of nodes) displayState(node);
 
+  const reportedCosts = new Map<ParsedCall, ObjectValue | undefined>();
   for (const node of nodes) {
     const { entry, entryId, byteOffset } = node;
     let record = entry;
@@ -232,13 +236,16 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
     const state = displayState(node);
     // Preserve response aliases verbatim. priceCall alone normalizes supported aliases.
     // Display/request context cannot fill in a missing billing model or provider.
-    const provider = text(record.provider);
-    const model = text(record.responseModel) ?? text(record.model);
-    const requestedModel = text(record.model);
+    const plugin = actor === "compaction" && (entry.type === "compaction" || entry.type === "branch_summary")
+      ? summaryModelRef(object(entry.details)?.summaryModel) : undefined;
+    const rawProvider = plugin?.provider ?? text(record.provider);
+    const provider = rawProvider ?? (actor === "compaction" ? state.provider : null);
+    const model = plugin?.id ?? text(record.responseModel) ?? text(record.model);
+    const requestedModel = plugin?.id ?? text(record.model);
     const report = reportedRun ? text(entry.note)?.match(/^([\s\S]*?)\s*\(([A-Za-z0-9][A-Za-z0-9_-]*)\)\s*$/) : undefined;
     const cost = object(rawUsage.cost)?.total;
     const latency = record.latencyMs ?? entry.latencyMs;
-    calls.push({
+    const call: ParsedCall = {
       id: createHash("sha256").update(JSON.stringify([source.path, entryId])).digest("hex"),
       ts, sourceFile: source.path, entryId, project: source.project, repo: source.repo,
       // Registry run sessionId identifies the owning parent session, while the
@@ -250,12 +257,24 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
       runName: reportedRun ? text(report?.[1]) : source.run?.name ?? null,
       phase: reportedRun ? null : source.run?.phase ?? null,
       parentRunId: reportedRun ? source.run?.id ?? null : source.run?.parentRunId ?? null,
-      auxPurpose, provider, model, requestedModel, displayModel: reportedRun ? null : state.model,
+      auxPurpose, provider, rawProvider, model, requestedModel, displayModel: reportedRun ? null : state.model,
       thinking: reportedRun ? null : text(record.providerThinkingLevel) ?? state.thinking, api: text(record.api), usage,
-      price: priceCall({ provider, id: model }, usage, ts, { aggregate }),
+      price: actor === "compaction" && !plugin ? priceReportedCost(provider, object(rawUsage.cost))
+        : priceCall({ provider, id: model }, usage, ts, { aggregate: plugin ? false : aggregate }),
       piCost: nonnegative(cost) ? cost : null,
       latencyMs: nonnegative(latency) ? latency : null, aggregate,
-    });
+    };
+    calls.push(call);
+    if (actor === "compaction" && !plugin && provider === null) reportedCosts.set(call, object(rawUsage.cost));
+  }
+  // Unknown state may use only unanimous recorded call attribution, never an
+  // inferred summary's own provider. Include persisted evidence for append scans.
+  const providers = new Set([...options.sessionProviders ?? [], ...calls.flatMap(call => call.rawProvider ? [call.rawProvider] : [])]);
+  if (providers.size === 1 && providers.has("github-copilot")) {
+    for (const [call, cost] of reportedCosts) {
+      call.provider = "github-copilot";
+      call.price = priceReportedCost(call.provider, cost);
+    }
   }
   return { sessionId, parentSession, calls, errors, warnings };
 }

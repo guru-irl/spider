@@ -158,7 +158,7 @@ describe("usage ledger", () => {
     });
     migrateUsageLedger(db);
     expect(competingWriteSucceeded).toBe(false);
-    expect(db.pragma("user_version")).toBe(4);
+    expect(db.pragma("user_version")).toBe(5);
   });
 
   // M23: callers of migrate directly must not overwrite a future schema version.
@@ -301,7 +301,7 @@ describe("usage ledger", () => {
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
     expect(ledger.health()).toEqual({
-      schemaVersion: 4, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
+      schemaVersion: 5, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
       aggregateCalls: 0, lastIngestAt: null,
       unpricedBillingPeriod: { models: [], withoutModel: 0 },
       reprice: { state: "pending", processed: 0, total: 0, repriced: 0 },
@@ -320,7 +320,7 @@ describe("usage ledger", () => {
     first.close();
     const before = readFileSync(file);
     const second = openUsageLedger(file);
-    expect(second.health().schemaVersion).toBe(4);
+    expect(second.health().schemaVersion).toBe(5);
     expect(second.health().calls).toBe(1);
     second.close();
     expect(readFileSync(file)).toEqual(before);
@@ -562,7 +562,7 @@ it("fails loudly when opening a ledger with an unknown layout marker", () => {
   const legacy = new Database(file);
   legacy.exec("DELETE FROM ledger_metadata WHERE key='schema-layout'; DROP VIEW counted_calls; CREATE VIEW counted_calls AS SELECT * FROM calls");
   legacy.close();
-  expect(() => openUsageLedger(file)).toThrow(/schema 4.*layout/i);
+  expect(() => openUsageLedger(file)).toThrow(/schema 5.*layout/i);
 });
 it("appends attribution entries without updating historical rows", () => {
   const ledger = track(openUsageLedger(file));

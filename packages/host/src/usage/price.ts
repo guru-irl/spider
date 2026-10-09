@@ -1,6 +1,29 @@
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import type { ModelRef, PriceResult, RateVersion, UsageTokens } from "./types.js";
 
+export const REPORTED_COST_RATE_VERSION = "pi-reported-cost-v1";
+
+/** Plugin attribution is billing evidence only when it is a bounded qualified id. */
+export function summaryModelRef(value: unknown): ModelRef | undefined {
+  if (typeof value !== "string" || value.length > 128 || !/^[a-z0-9._-]+\/[A-Za-z0-9.:_-]+$/.test(value)) return undefined;
+  const [provider, id] = value.split("/");
+  return { provider: provider!, id: id! };
+}
+
+/** Pi records USD. Only Copilot's reported cost has the 100 credits/USD basis. */
+export function priceReportedCost(provider: string | null, cost: {
+  total?: unknown; input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown;
+} | null | undefined): PriceResult {
+  if (!provider) return { status: "unpriced", reason: "missing-attribution" };
+  if (provider !== "github-copilot") return { status: "unpriced", reason: "unsupported-provider" };
+  const credits = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 && Number.isFinite(value * 100) ? value * 100 : null;
+  const aic = credits(cost?.total);
+  if (aic === null) return { status: "unpriced", reason: "invalid-usage" };
+  return { status: "priced", aic, components: { input: credits(cost?.input), output: credits(cost?.output),
+    cacheRead: credits(cost?.cacheRead), cacheWrite: credits(cost?.cacheWrite) },
+    rateVersion: REPORTED_COST_RATE_VERSION, tier: "reported-cost", confidence: "estimated" };
+}
+
 function validUsage(usage: UsageTokens): boolean {
   const required = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite];
   const optional = [usage.cacheWrite1h, usage.reasoning, usage.totalTokens];

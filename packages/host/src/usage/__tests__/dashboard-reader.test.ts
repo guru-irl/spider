@@ -118,7 +118,7 @@ it("route status reads its fields in the snapshot transaction", async () => {
   try {
     let schemaVersion: number | undefined;
     expect(() => { schemaVersion = reader.snapshot(ctx => ctx.status()).schemaVersion; }).not.toThrow();
-    expect(schemaVersion).toBe(4);
+    expect(schemaVersion).toBe(5);
   } finally { spy.mockRestore(); }
 });
 
@@ -134,8 +134,8 @@ it("status refreshes schema version after a writable migration", async () => {
   const { openUsageLedger } = await import("../ledger.js");
   const migrated = openUsageLedger(file);
   migrated.close();
-  expect(reader.snapshot(ctx => ctx.status()).schemaVersion).toBe(4);
-  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(4);
+  expect(reader.snapshot(ctx => ctx.status()).schemaVersion).toBe(5);
+  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(5);
 });
 
 it("reader generations retain the launcher owner prefix and invalidate old cursors", async () => {

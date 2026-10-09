@@ -1,11 +1,14 @@
+import { summaryModelRef } from "./price.js";
+
 // The ingest parser consumes metadata/usage, not message bodies. Project before
 // JSON.parse, rather than after: one tool-result line can exceed the worker heap.
-const ROOT = new Set(["type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId", "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "api", "message"]);
+const ROOT = new Set(["type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId", "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "api", "message", "details"]);
 const MESSAGE = new Set(["role", "timestamp", "provider", "model", "responseModel", "providerThinkingLevel", "responseId", "usage", "latencyMs", "api", "toolName"]);
 const CONTENT = new Set(["type", "text"]);
+const SUMMARY_DETAILS = new Set(["summaryModel"]);
 const MAX_METADATA = 1024 * 1024;
 const MAX_DEPTH = 512;
-type Frame = { kind: "object" | "array"; state: "key-or-end" | "key" | "colon" | "value" | "value-or-end" | "comma-or-end"; emit: boolean; scope: "root" | "message" | "content" | "all"; key?: string; blockType?: string; blockText?: string; contentArray?: boolean; textBlock?: boolean };
+type Frame = { kind: "object" | "array"; state: "key-or-end" | "key" | "colon" | "value" | "value-or-end" | "comma-or-end"; emit: boolean; scope: "root" | "message" | "content" | "summary-details" | "all"; key?: string; blockType?: string; blockText?: string; contentArray?: boolean; textBlock?: boolean };
 const whitespace = (b: number) => b === 32 || b === 9 || b === 10 || b === 13;
 const delimiter = (b: number) => whitespace(b) || b === 44 || b === 125 || b === 93;
 
@@ -52,14 +55,16 @@ export class UsageJsonLine {
     let emit = parent?.emit ?? b === 123;
     let scope: Frame["scope"] = parent ? "all" : "root";
     if (parent?.kind === "object" && parent.scope !== "all") {
-      const keys = parent.scope === "root" ? ROOT : parent.scope === "message" ? MESSAGE : CONTENT;
+      const keys = parent.scope === "root" ? ROOT : parent.scope === "message" ? MESSAGE : parent.scope === "summary-details" ? SUMMARY_DETAILS : CONTENT;
       emit = parent.emit && (keys.has(parent.key ?? "") || this.metadata && parent.scope === "root" && parent.key === "name");
       if (parent.scope === "root" && parent.key === "message") scope = "message";
+      if (parent.scope === "root" && parent.key === "details") scope = "summary-details";
+      if (parent.scope === "summary-details" && b !== 34) emit = false;
       if (this.metadata && (parent.scope === "message" && parent.key === "content" || parent.scope === "content")) scope = "content";
       if (this.metadata && parent.key === "name" && b !== 34) emit = false;
       if (parent.scope === "content") emit = false;
     } else if (parent?.scope === "content") scope = "content";
-    this.boundedString = this.metadata && b === 34 && (scope === "content" || parent?.key === "name");
+    this.boundedString = b === 34 && (parent?.scope === "summary-details" || this.metadata && (scope === "content" || parent?.key === "name"));
     this.capturedString = this.metadata && b === 34 && (parent?.scope === "message" && parent.key === "content" || parent?.textBlock && CONTENT.has(parent.key ?? "") && this.firstText === undefined) ? [34] : undefined;
     this.cutString = false; this.stringLength = 0;
     // Output a placeholder once, not the discarded container's descendants.
@@ -182,6 +187,11 @@ export class UsageJsonLine {
     if (this.failed || !this.started || !this.done || this.frames.length || this.token) return undefined;
     try {
       const projected = JSON.parse(this.output.subarray(0, this.length).toString("utf8"));
+      if (projected && typeof projected === "object" && "details" in projected) {
+        const value = projected.details?.summaryModel;
+        if ((projected.type === "compaction" || projected.type === "branch_summary") && summaryModelRef(value)) projected.details = { summaryModel: value };
+        else delete projected.details;
+      }
       if (this.metadata && this.firstText !== undefined && projected?.message && typeof projected.message === "object")
         projected.message.content = [{ type: "text", text: this.firstText }];
       return projected;

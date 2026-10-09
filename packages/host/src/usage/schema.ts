@@ -1,8 +1,31 @@
 import type { Db } from "@spider/db-core";
 
 // Shipped v1 SQL/layout remain immutable; later versions are additive.
-export const USAGE_SCHEMA_VERSION = 4;
+export const USAGE_SCHEMA_VERSION = 5;
 export const USAGE_SCHEMA_LAYOUT = "v1-ingest-append-1";
+
+/** v5 changes only the calls CHECK. Preserve rowids (reprice cursors), all
+ * columns and dependent objects without firing data-maintenance triggers. */
+export function upgradeReportedCostSchema(db: Pick<Db["raw"], "prepare" | "exec">): void {
+  const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='calls'").get() as { sql: string };
+  const oldCheck = `AND aic_input IS NOT NULL AND aic_cache_read IS NOT NULL AND aic_cache_write IS NOT NULL
+    AND aic_output IS NOT NULL`;
+  if (!table.sql.includes(oldCheck)) throw new Error("Unsupported v4 priced-component CHECK");
+  const ddl = table.sql.replace(/^CREATE TABLE calls\s*\(/, "CREATE TABLE calls_v5 (")
+    .replace(oldCheck, `AND (rate_version = 'pi-reported-cost-v1' OR (${oldCheck.slice(4)}))`);
+  const objects = db.prepare(`SELECT type,name,tbl_name,sql FROM sqlite_master
+    WHERE type IN ('index','trigger','view') AND sql IS NOT NULL ORDER BY type,name`).all() as
+    { type: string; name: string; tbl_name: string; sql: string }[];
+  const dependent = objects.filter(obj => obj.tbl_name === "calls" || /\bcalls\b/.test(obj.sql));
+  const columns = (db.prepare("PRAGMA table_xinfo(calls)").all() as { name: string; hidden: number }[])
+    .filter(column => column.hidden === 0).map(column => quote(column.name)).join(",");
+  for (const obj of dependent) if (obj.type !== "index") db.exec(`DROP ${obj.type.toUpperCase()} ${quote(obj.name)}`);
+  db.exec(ddl);
+  db.exec(`INSERT INTO calls_v5(rowid,${columns}) SELECT rowid,${columns} FROM calls`);
+  db.exec("DROP TABLE calls; ALTER TABLE calls_v5 RENAME TO calls");
+  for (const obj of dependent) db.exec(obj.sql);
+}
 
 // Call content and attribution are revision-keyed reader inputs. Legacy counted /
 // origin_key flags, parser checkpoints and coordination are not selection inputs.

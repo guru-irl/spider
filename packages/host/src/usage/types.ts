@@ -18,7 +18,7 @@ export type PriceResult = {
   status: "priced";
   /** Unrounded double: round only for display; compare summed estimates with tolerance. */
   aic: number;
-  components: { input: number; cacheRead: number; cacheWrite: number; output: number };
+  components: { input: number | null; cacheRead: number | null; cacheWrite: number | null; output: number | null };
   rateVersion: string;
   tier: string;
   confidence: "estimated" | "verified";

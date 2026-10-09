@@ -84,12 +84,12 @@ it("v3 upgrades once without changing selected calls or shipped SQL", () => {
   const before = layout(db);
   const beforeRevision = revision(db);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(4);
+  expect(db.pragma("user_version")).toBe(5);
   expect(selected(db)).toEqual(selectedBefore);
   expect(allFacts(db)).toEqual({ ...facts, sessions: [], session_metadata_import: [] });
   expect(db.prepare("SELECT status FROM runs_meta").get()).toEqual({ status: null });
-  expect(layout(db).filter(row => (row as { name: string }).name !== "runs_meta" && before.some(old => (old as { name: string }).name === (row as { name: string }).name)))
-    .toEqual(before.filter(row => (row as { name: string }).name !== "runs_meta"));
+  expect(layout(db).filter(row => (row as { name: string }).name !== "runs_meta" && (row as { name: string }).name !== "calls" && before.some(old => (old as { name: string }).name === (row as { name: string }).name)))
+    .toEqual(before.filter(row => !["runs_meta", "calls"].includes((row as { name: string }).name)));
   expect(revision(db)).toBe(beforeRevision);
   const upgraded = layout(db);
   migrateUsageLedger(db);
@@ -121,7 +121,7 @@ it("an upgrade interrupted after v4 SQL rolls back all rows and upgrades on next
   expect(allFacts(db)).toEqual(beforeFacts);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   const reopened = track(openUsageLedger(file));
-  expect(reopened.health().schemaVersion).toBe(4);
+  expect(reopened.health().schemaVersion).toBe(5);
   expect(allFacts(db)).toEqual({ ...beforeFacts, sessions: [], session_metadata_import: [] });
 });
 
@@ -348,9 +348,9 @@ it.each([
   const db = database();
   db.exec(change);
   const before = layout(db);
-  expect(() => assertUsageSchemaVersion(db)).toThrow(/schema 4.*durable layout/);
-  expect(() => migrateUsageLedger(db)).toThrow(/schema 4.*durable layout/);
-  expect(() => openUsageLedger(file)).toThrow(/schema 4.*durable layout/);
+  expect(() => assertUsageSchemaVersion(db)).toThrow(/schema 5.*durable layout/);
+  expect(() => migrateUsageLedger(db)).toThrow(/schema 5.*durable layout/);
+  expect(() => openUsageLedger(file)).toThrow(/schema 5.*durable layout/);
   expect(layout(db)).toEqual(before);
-  expect(db.pragma("user_version")).toBe(4);
+  expect(db.pragma("user_version")).toBe(5);
 });

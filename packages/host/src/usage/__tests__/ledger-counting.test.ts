@@ -95,7 +95,7 @@ describe("read-time usage selection", () => {
       { report_run_id: "R", included_run_id: "N", evidence }]);
     expect(db.prepare("SELECT id, possible_overlap FROM counted_calls ORDER BY id").all()).toEqual([
       { id: "orphan", possible_overlap: 1 }, { id: "report-R", possible_overlap: 1 }]);
-    expect(ledger.getRuns()).toEqual([meta("N", "R")]);
+    expect(ledger.getRuns()).toEqual([{ ...meta("N", "R"), status: null }]);
   });
 
   // Only late explicit proof changes selection; later withdrawal restores raw detail.

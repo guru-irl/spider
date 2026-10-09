@@ -129,17 +129,17 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 - `/exec-enforce on|off`: user-controlled bash enforcement in worktree-local config, not other repos; no argument reports the current state.
 - `/todos`: live todo overlay.
 - `/agents` or `alt+shift+up`: run selector; `Enter` opens details, `k` twice confirms killing a run.
-- `ui.footer=false` disables the agents widget and run selector from the next session, not the AIC footer.
-- [Usage and AI Credits](docs/guide/usage.md): AIC footer, local ledger, account counter, dashboard calibration and doctor diagnostics.
+- `ui.footer=false` disables the agents widget and run selector from the next session, not the usage footer.
+- [Usage dashboard](docs/guide/usage.md): credits footer, local ledger, account counter, collection health and doctor diagnostics. The footer shows context percentage/window, session credits, cache-hit rate (`CH`), whole-percent `month`, input/output tokens and cache read/write tokens, separated by middle dots.
 
 ### Dashboard
 
-- The local dashboard has period totals, attribution filters, call timelines, cache observations, reconciliation and rate history. See [Usage and AI Credits](docs/guide/usage.md#dashboard) for views, calibration and recovery.
+- The local dashboard has three pages: Overview, Session, and Calibration & data. Credits are selected by default, with a Tokens switch. Set an optional positive monthly budget with `/spider config set usage.monthlyBudget <credits> --global`, or remove it with `/spider config unset usage.monthlyBudget --global`. The footer's `month` item uses the budget when set, otherwise the account allowance, and is omitted when neither is available. See [Usage dashboard](docs/guide/usage.md) for controls, correction and recovery.
 
 ## Configuration
 
 - Keys are flat JSON properties with dots, for example `"organism.enabled": false`.
-- Precedence: built-in defaults, then `~/.pi/agent/spider/config.json`, then `<worktree>/.spider/config.json`, except `subagents.extensions` and the five usage keys, which are read from global config only.
+- Precedence: built-in defaults, then `~/.pi/agent/spider/config.json`, then `<worktree>/.spider/config.json`, except `subagents.extensions` and the usage keys, which are read from global config only.
 - `SPIDER_GLOBAL_ROOT` overrides the global root and must be absolute (drive-qualified or UNC on Windows). A relative value, including a Windows root-relative path, stops spider from loading with `paths: SPIDER_GLOBAL_ROOT must be absolute; received "<value>"`. An empty value is treated as unset.
 - For writes, `scope:"global"` selects global config; omitted scope or `scope:"repo"` selects worktree-local config. Other write scopes are rejected.
 - `get` reports effective values and their sources; global writes report local shadowing.
@@ -156,7 +156,7 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 ```
 
 - Common keys: `organism.enabled` (default `true`), `subagents.childMode` (`"rpc"`), `ui.footer` (`true`).
-- Global-only usage keys: `usage.footer` and `usage.counter.poll` default to `true`; `usage.alerts.sessionCredits` and `usage.alerts.runCredits` default to `0`. `usage.calibration` defaults to `auto`; `auto` uses sufficient counter evidence and `off` shows published estimates without factor history. Footer, polling and calibration changes apply live. Alerts are not implemented.
+- Global-only usage keys: `usage.footer` and `usage.counter.poll` default to `true`; `usage.alerts.sessionCredits` and `usage.alerts.runCredits` default to `0`. `usage.calibration` defaults to `auto`; `auto` uses sufficient counter evidence and `off` shows published estimates without factor history. `usage.monthlyBudget` is an optional positive credit budget, unset by default. Footer, polling, calibration and budget changes apply live. Alerts are not implemented.
 - Reviewers: `memory.reviewer.enabled` and `skills.reviewer.enabled` default to `true`.
 - `models.defaults` maps roles to model references. Resolution is explicit model, local override, global default, shipped role default, then parent model for unknown roles or an empty eligible catalog.
 - `memory.snapshotCharCap` defaults to unlimited injection of active memory; it does not change the storage cap.

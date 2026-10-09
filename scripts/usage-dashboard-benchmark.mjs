@@ -18,10 +18,10 @@ export function benchmarkSamples(read, validate = () => {}) {
   return { samplesMs: samples, p50Ms: (sorted[4] + sorted[5]) / 2, p95Ms: sorted[9], maxMs: sorted[9] };
 }
 
-/** Cold setup and warm p95 must both fit; 366-day rows have no D8 budget. */
+/** Cold setup and warm p95 must both fit; historical rows have no month budget. */
 export function summarizeBenchmarkBudgets(report) {
   const month = report.routes.filter(row => row.window === "dense-month");
-  const allMonthBudgetsMet = month.length === 13 && new Set(month.map(row => row.route)).size === 13 && month.every(row => Number.isFinite(row.budgetMs) && row.coldMs <= row.budgetMs && row.p95Ms <= row.budgetMs);
+  const allMonthBudgetsMet = month.length === 5 && new Set(month.map(row => row.route)).size === 5 && month.every(row => Number.isFinite(row.budgetMs) && row.coldMs <= row.budgetMs && row.p95Ms <= row.budgetMs);
   return { ...report, allMonthBudgetsMet, result: allMonthBudgetsMet ? "pass" : "fail" };
 }
 
@@ -69,7 +69,7 @@ export async function loadBenchmarkModules(checkout) {
     const source = path => JSON.stringify(join(checkout, "packages/host/src/usage", path));
     writeFileSync(entry, `export { DASHBOARD_ROUTES } from ${source("api-routes.ts")};
       export { openDashboardReader } from ${source("dashboard-reader.ts")};
-      export { seedPlanLedger, planRequests, captureQueries, referenceRouteResult, assertReferenceResult, assertNoWrites, callPassQueries } from ${source("__tests__/fixtures/dashboard-plan.ts")};
+      export { seedPlanLedger, planRequests, executePlanRequest, captureQueries, referenceRouteResult, assertReferenceResult, assertNoWrites, callPassQueries } from ${source("__tests__/fixtures/dashboard-plan.ts")};
       export { openDb } from "@spider/db-core";`);
     await build({ configFile: false, root: checkout, logLevel: "error", build: {
       outDir: join(root, "dist"), emptyOutDir: false, minify: false,
@@ -126,18 +126,21 @@ async function main() {
       };
       for (const [i, period] of seed.periods.entries()) {
         for (const request of module.planRequests(period, seed.sessionId, seed.runId)) {
-          const reader = open(), freshReaders = [];
+          const reader = open();
           try {
             const route = module.DASHBOARD_ROUTES.find(route => route.path === request.path);
             const expected = reader.snapshot(ctx => module.referenceRouteResult(ctx.db, request));
-            if (i === 0 && request.name === "overview") result.countedMonthCalls = expected.totals.calls;
+            if (i === 0 && request.name === "overview") result.countedMonthCalls = expected.total.calls;
             const read = (activeReader = reader, capture = false) => {
               const value = activeReader.snapshot(ctx => {
-                const run = () => route.handle(ctx, request.params);
+                const run = () => module.executePlanRequest(ctx, request);
                 const data = capture ? module.captureQueries(ctx, run) : { value: run() };
-                return { ...data, revision: ctx.revision };
+                const date = new Date(ctx.now());
+                const effectivePeriod = route.responsePeriod?.(ctx, request.params, data.value) ??
+                  route.resolvePeriod?.(request.params, ctx.now()) ?? { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: ctx.now() };
+                return { ...data, revision: ctx.revision, period: effectivePeriod };
               });
-              const body = JSON.stringify({ apiVersion: 1, generatedAt: seed.now, revision: value.revision, period, data: value.value });
+              const body = JSON.stringify({ apiVersion: 1, generatedAt: seed.now, revision: value.revision, period: value.period, data: value.value });
               if (Buffer.byteLength(body) > request.kib * 1024) throw new Error(`response cap: ${request.name}`);
               return value;
             };
@@ -146,19 +149,15 @@ async function main() {
             const coldMs = performance.now() - coldStart; validate(cold);
             const warm = read(reader, true); validate(warm);
             module.assertNoWrites(observer, dataVersion);
-            // The filter-values budget is the cache-miss path. Each timed sample has
-            // its own already-open connection with an empty per-reader values cache.
-            if (request.name === "filter-values") for (let n = 0; n < 11; n++) freshReaders.push(open());
-            let sample = 0;
-            const timing = benchmarkSamples(() => read(request.name === "filter-values" ? freshReaders[sample++] : reader), validate);
-            const row = { route: request.name, window: i === 0 ? "dense-month" : "366-day", period, load, coldMs,
-              cachePath: request.name === "filter-values" ? "cold values cache, pre-opened reader for every sample" : "warm",
+            const timing = benchmarkSamples(() => read(reader), validate);
+            const row = { route: request.name, window: i === 0 ? "dense-month" : "history", period: cold.period, load, coldMs,
+              cachePath: "warm",
               reference: expected, coldCounts: reader.snapshot(ctx => summarize(ctx.db, cold.queries)), hitCounts: reader.snapshot(ctx => summarize(ctx.db, warm.queries)), ...timing,
               budgetMs: i === 0 ? request.budgetMs : null, withinBudget: i === 0 ? coldMs <= request.budgetMs && timing.p95Ms <= request.budgetMs : null };
             module.assertNoWrites(observer, dataVersion);
             result.routes.push(row);
             console.log(`${row.window} ${row.route}: p50=${timing.p50Ms.toFixed(2)} p95=${timing.p95Ms.toFixed(2)} max=${timing.maxMs.toFixed(2)} ms; cold=${coldMs.toFixed(2)}; load=${load.map(n => n.toFixed(2)).join(",")}${row.withinBudget === false ? "; D8 MISS" : ""}`);
-          } finally { for (const fresh of freshReaders) fresh.close(); reader.close(); }
+          } finally { reader.close(); }
         }
       }
       result.loadAfter = loadavg();

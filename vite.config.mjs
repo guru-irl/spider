@@ -7,7 +7,6 @@ import { builtinModules } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { captureBuildId, formatBuildId } from "./scripts/build-id.mjs";
-import { usageDashboardAssetsPlugin } from "./scripts/usage-dashboard-assets.mjs";
 
 const version = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
 const checkout = fileURLToPath(new URL(".", import.meta.url));
@@ -47,7 +46,7 @@ const isExternal = (id) =>
 
 export default defineConfig({
   define: { __SPIDER_BUILD__: "__SPIDER_BUILD_ID_PLACEHOLDER__" },
-  plugins: [buildIdPlugin(), usageDashboardAssetsPlugin()],
+  plugins: [buildIdPlugin()],
   // SSR build: bundle every dep EXCEPT our explicit externals, using node conditions.
   ssr: {
     target: "node",
@@ -56,7 +55,7 @@ export default defineConfig({
   build: {
     target: "node22",
     outDir: "dist",
-    emptyOutDir: true,
+    emptyOutDir: false,
     minify: false,
     sourcemap: false,
     ssr: "packages/host/src/extension.ts",

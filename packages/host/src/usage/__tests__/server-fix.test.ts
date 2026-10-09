@@ -1,13 +1,15 @@
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { request, Server } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { networkInterfaces } from "node:os";
 import { randomBytes } from "node:crypto";
 import { afterEach, expect, test, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import * as security from "../server-security.js";
 import { startUsageHttpServer } from "../server.js";
 import type { HttpOptions } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { OVERVIEW_ROUTES } from "../query-overview.js";
+import { DASHBOARD_ROUTES as OVERVIEW_ROUTES } from "../api-routes.js";
 import { createDashboardFixture, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 
 const closers: (() => void | Promise<void>)[] = [];
@@ -17,7 +19,7 @@ async function start(overrides: Partial<HttpOptions> = {}) {
   const secret = randomBytes(32).toString("base64url");
   const options: HttpOptions = { instanceId: "security-fix", serverBuild: "fixture", secret,
     reader: openDashboardReader(fixture.file, { instanceId: "security-fix", serverBuild: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto" }),
-    routes: OVERVIEW_ROUTES, html: "<title>fixture</title>", now: () => DASHBOARD_NOW, ...overrides };
+    routes: OVERVIEW_ROUTES, dashboardDir: createFixtureDashboard(), now: () => DASHBOARD_NOW, ...overrides };
   const server = await startUsageHttpServer(options); closers.push(() => server.close());
   return { ...server, secret, options };
 }
@@ -87,9 +89,9 @@ test("routing and metadata use the one validated path even if raw url changes af
   vi.spyOn(security, "validateTransport" as keyof typeof security).mockImplementation(((req: import("node:http").IncomingMessage, port: number, path: string) => {
     req.url = "/"; const ok = original!(req, port, path); req.url = "/local/bootstrap-nonce"; return ok;
   }) as never);
-  const reply = await get(s.port, "/api/context", { Cookie: cookie });
+  const reply = await get(s.port, "/api/calibration", { Cookie: cookie });
   expect(reply.status).toBe(200); expect(JSON.parse(reply.body).data).not.toHaveProperty("nonce");
-  expect((await get(s.port, "/api/context", { Cookie: cookie, "Sec-Fetch-Site": "none" })).status).toBe(403);
+  expect((await get(s.port, "/api/calibration", { Cookie: cookie, "Sec-Fetch-Site": "none" })).status).toBe(403);
 });
 
 test("binding reports actual IPv4 loopback and refuses a nonloopback connection", async () => {

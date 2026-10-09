@@ -4,7 +4,6 @@ import { assertUsageSchemaVersion } from "./migrate.js";
 import { counterSnapshotIsFresh } from "./counter.js";
 import { createCalibrationService } from "./calibration.js";
 import { safeTimestamp } from "./dashboard-selection.js";
-import { phase2CompositionProvider } from "./composition-provider.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
 import { DashboardQueryError, type DashboardReader, type ReaderOptions, type DashboardQueryContext, type DashboardCounter, type DashboardStatus, type DashboardIngestState } from "./dashboard-contract.js";
 
@@ -22,10 +21,12 @@ export function readDashboardCounter(db: Db, now: number): DashboardCounter {
     availability: counterSnapshotIsFresh({ ts: row.ts, creditsUsed: row.creditsUsed, raw: {} }, now, row.nextPollAt) ? "available" : "stale" };
 }
 
-function sqliteQueryError(error: unknown): DashboardQueryError | undefined {
+function sqliteQueryError(error: unknown, schemaVersion?: number): DashboardQueryError | undefined {
   if (error instanceof DashboardQueryError) return error;
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code !== "string") return undefined;
+  if (code === "SQLITE_ERROR" && schemaVersion !== undefined && schemaVersion < 4 &&
+    error instanceof Error && /^no such table: (?:sessions|session_metadata_import)\b/.test(error.message)) return new DashboardQueryError("ledger-unavailable");
   if (/^SQLITE_(NOTADB|CORRUPT)(_|$)/.test(code)) return new DashboardQueryError("unsupported-schema");
   if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) return new DashboardQueryError("busy");
   if (/^SQLITE_(CANTOPEN|IOERR)(_|$)/.test(code)) return new DashboardQueryError("ledger-unavailable");
@@ -41,6 +42,18 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
     if (db.pragma("user_version") === 0) throw new DashboardQueryError("unsupported-schema");
     try { assertUsageSchemaVersion(db); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("unsupported-schema"); }
     db.pragma("query_only=ON");
+    const schemaVersion = db.pragma("user_version") as number;
+    let replacement: DashboardReader | undefined;
+    const upgradedReader = (): DashboardReader | undefined => {
+      if (replacement) return replacement;
+      // Check outside a snapshot transaction. A v1-v3 reader must not retain
+      // schema-dependent statements or selection caches after a writer upgrades.
+      if (db.pragma("user_version") === schemaVersion) return undefined;
+      const next = openDashboardReader(file, options);
+      if (!next) throw new DashboardQueryError("ledger-unavailable");
+      db.close();
+      return replacement = next;
+    };
     // Keep the launcher's owner prefix; a fresh reader generation invalidates old cursors.
     const instanceId = `${options.instanceId}:${randomUUID()}`;
     const revisionStatement = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'");
@@ -53,7 +66,7 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
     const rates = options.rates ?? COPILOT_RATE_VERSIONS;
     const readStatus = (now: number): DashboardStatus => {
       const metadata = db.prepare("SELECT key,value FROM ledger_metadata WHERE key IN ('worker-snapshot','backfill-state')").all() as { key: string; value: string }[];
-      let published: { health?: { sources?: number; parseErrors?: number; sourceErrors?: number; lastIngestAt?: number }; backfill?: DashboardIngestState["backfill"]; ingestRole?: DashboardIngestState["role"] } = {};
+      let published: { health?: { lastIngestAt?: number }; backfill?: DashboardIngestState["backfill"]; ingestRole?: DashboardIngestState["role"] } = {};
       try { published = JSON.parse(metadata.find(row => row.key === "worker-snapshot")?.value ?? "{}"); } catch { /* unavailable publication */ }
       if (!published || typeof published !== "object") published = {};
       const count = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -69,31 +82,29 @@ export function openDashboardReader(file: string, options: ReaderOptions): Dashb
         errorCode: supplied?.errorCode ? codes.includes(supplied.errorCode) ? supplied.errorCode : "usage-ingest-failed" : null,
         ...(supplied?.progress ? { progress: { sourcesCompleted: count(supplied.progress.sourcesCompleted), sourcesTotal: count(supplied.progress.sourcesTotal) } } : {}),
       };
-      const totals = db.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get() as { calls: number };
-      return { serverBuild: options.serverBuild, schemaVersion: db.pragma("user_version") as number, rateVersions: rates.map(rate => rate.id), calls: totals.calls,
-        sources: count(published.health?.sources), parseErrors: count(published.health?.parseErrors), sourceErrors: count(published.health?.sourceErrors),
+      return { serverBuild: options.serverBuild, schemaVersion: db.pragma("user_version") as number, rateVersions: rates.map(rate => rate.id),
         ingest: { ...ingest, ageMs: lastIngestAt === null ? null : Math.max(0, now - lastIngestAt),
           stale: lastIngestAt === null || now < lastIngestAt || now - lastIngestAt > 120000 },
         counter: readDashboardCounter(db, now) };
     };
     const mapped = <T>(read: () => T): T => {
-      try { return read(); } catch (error) { throw sqliteQueryError(error) ?? new DashboardQueryError("internal"); }
+      try { return read(); } catch (error) { throw sqliteQueryError(error, schemaVersion) ?? new DashboardQueryError("internal"); }
     };
     const reader: DashboardReader = {
-      revision: () => mapped(revision),
-      status() { return mapped(() => db.raw.inTransaction ? readStatus(options.now()) : db.raw.transaction(() => readStatus(options.now())).deferred()); },
+      revision: () => mapped(() => upgradedReader()?.revision() ?? revision()),
       snapshot<T>(read: (ctx: DashboardQueryContext) => T): T {
         return mapped(() => {
+          const upgraded = upgradedReader();
+          if (upgraded) return upgraded.snapshot(read);
           const now = options.now();
           const calibrationMode = options.calibrationMode();
           if (calibrationMode !== "auto" && calibrationMode !== "off") throw new TypeError("calibrationMode must return auto or off");
           return db.raw.transaction(() => read({ db, instanceId, revision: revision(), now: () => now, rates,
-          composition: phase2CompositionProvider,
           calibration,
-          calibrationMode, status: () => readStatus(now) })).deferred();
+          calibrationMode, monthlyBudget: options.monthlyBudget, participantActive: options.participantActive, status: () => readStatus(now) })).deferred();
         });
       },
-      close() { db.close(); },
+      close() { if (replacement) replacement.close(); else db.close(); },
     };
     return reader;
   } catch (error) { opened?.close(); throw sqliteQueryError(error) ?? error; }

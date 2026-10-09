@@ -4,7 +4,7 @@
 
 - Store keys as literal dotted JSON properties, not nested objects.
 - Built-in defaults are overridden by global config, then worktree-local config.
-- `subagents.extensions`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
+- `subagents.extensions`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.monthlyBudget`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
 - Global file: `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
 - Local file: `<worktree>/.spider/config.json`.
 - For config writes, `scope:"repo"` means the local file, not the shared repository database. Omitted scope is local; `scope:"global"` selects global.
@@ -59,6 +59,19 @@ Local values are ignored and reported with their file in `config get` and `docto
 
 Every new RPC or print child loads these files after spider's own extensions. Paths are normalized and deduplicated by realpath when available, keeping the first spelling. Missing paths and paths that are not files are skipped with one warning run event per path; the run still starts.
 
+## Monthly usage budget
+
+`usage.monthlyBudget` is unset by default. Set a positive finite number of credits per billing month. Positive fractions are valid; zero does not mean unset. The config screen accepts a blank field to clear it.
+
+```text
+/spider config set usage.monthlyBudget <credits> --global
+/spider config unset usage.monthlyBudget --global
+```
+
+The tool form is `command:"config" op:"set" key:"usage.monthlyBudget" value:<number> scope:"global"` on the `spider control` action. The dashboard is read-only and cannot change this setting.
+
+The live footer shows corrected credits without basis markers, then cache hit rate and a whole-percent `month` item. Month uses the budget first, otherwise the account allowance. A valid in-period counter observation supplies used credits even when stale; without one, the worker supplies the corrected pi billing-month total. No usable used value or denominator means the month item is omitted.
+
 ## Reviewer and learner models
 
 - Authenticate the [default provider](../../README.md#requirements) through pi's `/login`, or use models available through another authenticated provider.
@@ -72,9 +85,10 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector; next session. |
-| `usage.footer` | `true` | Global-only AIC footer in parent TUI sessions; changes apply live. |
+| `usage.footer` | `true` | Global-only corrected credits footer in parent TUI sessions; changes apply live. |
 | `usage.counter.poll` | `true` | Global-only read-only account polling every ten minutes, parents only; changes apply live. |
 | `usage.calibration` | `auto` | Global-only `auto` or `off`; auto uses sufficient trailing seven-day counter evidence, off shows published estimates and disables factor history. Changes apply live. |
+| `usage.monthlyBudget` | unset | Global-only positive finite credits per billing month. Blank in the config screen clears it; changes apply live. |
 | `usage.alerts.sessionCredits` | `0` | Global-only finite nonnegative session threshold; reserved, alerts are not implemented. |
 | `usage.alerts.runCredits` | `0` | Global-only finite nonnegative run threshold; reserved, alerts are not implemented. |
 | `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
@@ -111,7 +125,7 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 - Configuration readers use merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads that same flat map.
 - The organism refreshes configuration when resolving its runtime for a request or drain.
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
-- `usage.footer`, `usage.counter.poll` and `usage.calibration` apply live. Usage alert thresholds are registered but inactive.
+- `usage.footer`, `usage.counter.poll`, `usage.calibration` and `usage.monthlyBudget` apply live. Usage alert thresholds are registered but inactive.
 - `subagents.childMode` and `subagents.extensions` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.
 - `memory.snapshotCharCap` is captured with the frozen memory block at the first agent start. Changes apply next session, after an extension reload, or when the memory binding target changes. Doctor uses the current value.

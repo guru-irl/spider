@@ -85,7 +85,7 @@ it("import and worker entry are inert", async () => {
     expect(m!.isUsageServerMain(moduleUrl, ["node", spaced, "--spider-usage-server", join(root, "startup.json")], true)).toBe(true);
   }
   expect(m!.isUsageServerMain("https://example.test/bundle.mjs", ["node", resolve("https://example.test/bundle.mjs"), "--spider-usage-server", join(root, "startup.json")], true)).toBe(false);
-  await m!.runUsageServerEntry(url); // Vitest's argv is not direct-main.
+  await m!.runUsageServerEntry(url, { dashboardDir: join(root, "dashboard") }); // Vitest's argv is not direct-main.
   expect(await readdir(root)).toEqual([]);
   const fixtureUrl = new URL("./fixtures/dashboard-process.mjs", import.meta.url).href;
   const h = await import(/* @vite-ignore */ fixtureUrl); processFixtures ??= await h.processFixtures();

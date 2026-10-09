@@ -1,41 +1,49 @@
-import type { Dimension, Filter } from "../dashboard-contract.js";
-import type { ViewRoute } from "./views.js";
+import type { DashboardRouteV4, RangeQuery, RangePreset } from "../dashboard-v4-contract.js";
 import { supportedDetailId } from "./detail-id.js";
-const views = ["overview", "explorer", "session", "run", "context", "cache", "reconciliation", "rates"] as const;
-const dimensions: readonly Dimension[] = ["project", "repo", "session", "actor", "role", "agent", "provider", "model", "requestedModel", "thinking", "run", "runName", "phase", "parentRun", "auxPurpose", "api", "day"];
-export function routeHash(route: ViewRoute): string {
-  const params = new URLSearchParams({ view: route.view });
-  if (route.id !== undefined) params.set("id", route.id);
-  if (route.period) { params.set("start", String(route.period.start)); params.set("end", String(route.period.end)); }
-  if (route.filters?.length) params.set("filters", JSON.stringify(route.filters));
-  return `#${params}`;
+export function browserZone(zone: string): string {
+  try { return new Intl.DateTimeFormat("en", { timeZone: zone }).resolvedOptions().timeZone; } catch { return "UTC"; }
 }
-export function hashRoute(hash: string): ViewRoute {
-  const fallback: ViewRoute = { view: "overview", filters: [], mode: "chart" };
+export function defaultOverview(now: number, tz: string): RangeQuery { return { range: "7d", from: now - 7 * 86400000, to: now, tz: browserZone(tz), unit: "credits", buckets: [] }; }
+export function routeHash(route: DashboardRouteV4): string {
+  if (route.page === "calibration") return "#/calibration";
+  if (route.page === "session") return `#/session/${encodeURIComponent(route.id)}?${new URLSearchParams({ unit: route.unit, tz: route.tz })}`;
+  const q = route.query;
+  return `#/?${new URLSearchParams({ range: q.range, from: String(q.from), to: String(q.to), tz: q.tz, unit: q.unit, buckets: JSON.stringify(q.buckets) })}`;
+}
+export function hashRoute(hash: string, now: number = Date.now(), tz: string = "UTC"): DashboardRouteV4 {
+  const fallback: DashboardRouteV4 = { page: "overview", query: defaultOverview(now, tz) };
+  if (hash.length > 16384) return fallback;
+  const [path, raw = ""] = hash.replace(/^#/, "").split("?");
+  const params = new URLSearchParams(raw);
+  if (path === "/calibration") return { page: "calibration" };
+  if (path?.startsWith("/session/")) {
+    let id = ""; try { const decoded = decodeURIComponent(path.slice(9)); if (supportedDetailId(decoded)) id = decoded; } catch { /* Invalid ids remain a local Session not-found state. */ }
+    return { page: "session", id, unit: params.get("unit") === "tokens" ? "tokens" : "credits", tz: browserZone(params.get("tz") ?? tz) };
+  }
+  if (path && path !== "/") return fallback;
   try {
-    if (!hash || hash.length > 16384) return fallback;
-    // URLSearchParams tolerates malformed escapes; reject them before parsing.
-    decodeURIComponent(hash.slice(1));
-    // Accept mode= from incoming links; the dashboard never writes it.
-    const params = new URLSearchParams(hash.slice(1)), view = params.get("view"), mode = params.get("mode") ?? "chart";
-    if (!views.includes(view as ViewRoute["view"]) || !["chart", "table"].includes(mode)) return fallback;
-    if ([...params.keys()].some((key, i, keys) => keys.indexOf(key) !== i || !["view", "mode", "id", "start", "end", "filters"].includes(key))) return fallback;
-    const route: ViewRoute = { view: view as ViewRoute["view"], mode: mode as ViewRoute["mode"], filters: [] };
-    const start = params.get("start"), end = params.get("end");
-    if (start !== null || end !== null) {
-      if (start === null || end === null || !/^\d+$/.test(start) || !/^\d+$/.test(end)) return fallback;
-      const a = Number(start), b = Number(end);
-      if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || b <= a || b > 8640000000000000) return fallback;
-      route.period = { start: a, end: b };
-    }
-    const id = params.get("id");
-    if (id !== null) { if (!supportedDetailId(id)) return fallback; route.id = id; }
-    if (params.has("filters")) {
-      const filters: unknown = JSON.parse(params.get("filters")!);
-      if (!Array.isArray(filters) || filters.length > 16 || filters.some(f => !f || !dimensions.includes(f.field) ||
-        (f.kind === "missing" ? f.value !== undefined : ![undefined, "raw", "id"].includes(f.kind) || typeof f.value !== "string" || f.value.length > 1024))) return fallback;
-      route.filters = filters as Filter[];
-    }
-    return route;
+    const range = params.get("range") ?? "7d";
+    if (!["24h", "7d", "30d", "month", "custom"].includes(range)) return fallback;
+    const from = Number(params.get("from")), to = Number(params.get("to"));
+    const valid = params.has("from") && params.has("to") && Number.isSafeInteger(from) && Number.isSafeInteger(to) && from >= 0 && to > from && to <= 8640000000000000 && to - from <= 93 * 86400000;
+    if (range === "custom" && !valid) return fallback;
+    const zone = browserZone(params.get("tz") ?? tz);
+    const start = range === "month" ? monthStart(now, zone) : now - (range === "24h" ? 1 : range === "30d" ? 30 : 7) * 86400000;
+    const buckets: unknown = JSON.parse(params.get("buckets") ?? "[]");
+    if (!Array.isArray(buckets) || buckets.length > 2300 || buckets.some(v => !Number.isSafeInteger(v) || v < 0)) return fallback;
+    return { page: "overview", query: { range: range as RangePreset, from: valid ? from : start, to: valid ? to : now, tz: zone, unit: params.get("unit") === "tokens" ? "tokens" : "credits", buckets: [...new Set(buckets)].sort((a, b) => a - b) } };
   } catch { return fallback; }
+}
+
+function monthStart(now: number, tz: string): number {
+  const formatter = new Intl.DateTimeFormat("en-GB", { timeZone: tz, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" });
+  const parts = (ts: number) => { const values = formatter.formatToParts(ts); const n = (type: string) => Number(values.find(p => p.type === type)!.value); return { year: n("year"), month: n("month"), day: n("day"), hour: n("hour"), minute: n("minute"), second: n("second") }; };
+  const local = parts(now), target = Date.UTC(local.year, local.month - 1, 1);
+  let candidate = target;
+  for (let i = 0; i < 4; i++) {
+    const p = parts(candidate), delta = target - Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+    if (!delta) break;
+    candidate += delta;
+  }
+  return candidate;
 }

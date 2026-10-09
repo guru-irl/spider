@@ -6,7 +6,8 @@ import { createCalibrationService } from "../calibration.js";
 import type { DashboardQueryContext } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
 import { migrateUsageLedger, USAGE_MIGRATIONS } from "../migrate.js";
-import { queryDetail, queryDetailLinks, type DetailQuery } from "../query-detail.js";
+import { readMeasure } from "../dashboard-selection.js";
+import { querySession } from "../query-session.js";
 import { USAGE_LEASE_SCHEMA } from "../schema.js";
 import { DASHBOARD_MONTH as M, DASHBOARD_DAY as D } from "./fixtures/dashboard-ledger.js";
 
@@ -95,85 +96,40 @@ const targets = [
   { kind: "run", id: "open-run" }, { kind: "run", id: "hint-run" },
 ] as const;
 function responses(ctx: DashboardQueryContext) {
-  return targets.map(target => {
-    const query: DetailQuery = { ...target, slice, page: { limit: 1 } };
-    const details = [], links = [];
-    let cursor: string | undefined;
-    do {
-      const detail = queryDetail(ctx, { ...query, page: { limit: 1, cursor } });
-      details.push(detail); cursor = detail.calls.nextCursor ?? undefined;
-      expect(details.length).toBeLessThanOrEqual(7);
-    } while (cursor);
-    do {
-      const page = queryDetailLinks(ctx, { ...query, page: { limit: 1, cursor } });
-      links.push(page); cursor = page.nextCursor ?? undefined;
-      expect(links.length).toBeLessThanOrEqual(20);
-    } while (cursor);
-    return { ...target, details, links };
-  });
+  return targets.map(target => readMeasure(ctx, slice, target.kind === "session" ? { sessionId: target.id } : { runId: target.id }));
 }
-
-// Breaks if stored selection changes any wire field, misses global copied/native
-// shadows or loses partial-import, incomplete-report or ongoing-run undercount.
-it.each(["off", "auto"] as const)("Task 7 responses are byte identical on unmigrated v2 and migrated v3 (%s)", mode => {
-  expect(db.pragma("user_version")).toBe(2);
+it.each(["off", "auto"] as const)("scoped canonical measures preserve migration evidence (%s)", mode => {
   const before = read(mode, responses);
-  const session = before[0]!.details[0]!, run = before[1]!.details[0]!;
-  expect(session.totals).toMatchObject({ calls: 7, unpricedCalls: 1, aic: 5, possibleUndercount: true, possibleOverlap: true });
-  expect(run.totals).toMatchObject({ calls: 4, unpricedCalls: 1, aic: 2, possibleUndercount: true });
-  expect(run.accounting.status).toBe("replaced");
-  expect(before[2]!.details[0]!).toMatchObject({ accounting: { status: "aggregate" }, totals: { possibleUndercount: true } });
-  expect(before[3]!.details[0]!).toMatchObject({ accounting: { status: "covered", coveringRunId: "covering-run" },
-    totals: { calls: 0, aic: null }, timeline: [], calls: { rows: [] } });
-  expect(before[4]!.details[0]!.totals.possibleUndercount).toBe(true);
-  expect(before[5]!.details[0]!.totals.possibleOverlap).toBe(true);
-  expect(before[0]!.details).toHaveLength(7);
-  expect(before[1]!.details).toHaveLength(4);
-  expect(session.timeline.reduce((sum, point) => sum + point.measure.calls, 0)).toBe(7);
-  expect(session.calls.nextCursor).not.toBeNull();
-  expect(run.links.nextCursor).not.toBeNull();
-  expect(before[1]!.links.flatMap(page => page.rows).map(row => [row.relationship, row.id])).toEqual([
-    ["child", "child-a"], ["child", "child-b"], ["parent", "detail-parent"],
-    ["reporting-session", "reporting-session"], ["transcript-session", "detail-session"],
-  ]);
-  expect(session.contextFillPercent).toBeNull();
-  expect(session.contextFillMessage).toBe("Context fill unavailable: historical window not recorded");
-  for (const key of ["composition", "carry", "itemReuse"] as const) {
-    expect(session[key]).toEqual({ status: "unavailable", phase: 2, reason: "not-built", message: "Not available yet (Phase 2)" });
-  }
-  expect(session.calibration.status).toBe(mode === "off" ? "off" : "calibrated");
-  if (mode === "auto") expect(session.calibration.factor).toBe(0.5);
-  migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(3);
-  const after = read(mode, responses);
-  // Compare the entire DTO on every calls and links page, including timeline,
-  // accounting, calibration, context, redacted labels, opaque ids and cursors.
-  expect(after).toEqual(before);
-  expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+  expect(before[0]).toMatchObject({ calls: 7, unpricedCalls: 1, aic: 5, possibleUndercount: true, possibleOverlap: true });
+  expect(before[1]).toMatchObject({ calls: 4, unpricedCalls: 1, aic: 2, possibleUndercount: true });
+  expect(before[2]).toMatchObject({ possibleUndercount: true });
+  expect(before[3]).toMatchObject({ calls: 0, aic: null });
+  expect(before[4]).toMatchObject({ possibleUndercount: true }); expect(before[5]).toMatchObject({ possibleOverlap: true });
+  if (mode === "auto") expect(before[0]!.aicDisplay.primaryAic).toBe(2.5);
+  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(4);
+  expect(read(mode, responses)).toEqual(before);
 });
-
-// A dynamic-on-v3 mutant returns identical DTOs but must fail this SQL-plan spy.
-it.each(targets.slice(0, 2))("$kind detail reads stored decisions on v3 and dynamic decisions on v2", target => {
+it.each(targets.slice(0, 2))("$kind scoped measure switches to stored selection", target => {
   const capture = () => read("off", ctx => {
-    const sql: string[] = [], original = ctx.db.prepare.bind(ctx.db);
-    const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(statement => {
-      if (statement.includes("window AS MATERIALIZED")) sql.push(statement);
-      return original(statement);
-    });
-    try { queryDetail(ctx, { ...target, slice, page: { limit: 1 } }); } finally { spy.mockRestore(); }
-    expect(sql).toHaveLength(1);
-    return sql[0]!;
+    const sql: string[] = [], prepare = ctx.db.prepare.bind(ctx.db);
+    const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(statement => { if (statement.includes("window AS MATERIALIZED")) sql.push(statement); return prepare(statement); });
+    try { readMeasure(ctx, slice, target.kind === "session" ? { sessionId: target.id } : { runId: target.id }); } finally { spy.mockRestore(); }
+    expect(sql).toHaveLength(1); return sql[0]!;
   });
-  const dynamic = capture();
-  expect(dynamic).not.toMatch(/selection_shadowed|selection_undercount/);
-  expect(dynamic.match(/prior\.fingerprint/g)).toHaveLength(2);
+  expect(capture()).toContain("prior.fingerprint"); migrateUsageLedger(db);
+  expect(capture()).toContain("c.selection_shadowed = 0"); expect(capture()).not.toContain("prior.fingerprint");
+});
+it("whole-session replacement redacts names and excludes copied and covered calls", () => {
   migrateUsageLedger(db);
-  const stored = capture();
-  expect(stored.match(/c\.selection_shadowed = 0/g)).toHaveLength(1);
-  expect(stored).toContain("active.selection_shadowed = 0");
-  expect(stored).toContain("w.selection_undercount AS possible_undercount");
-  expect(stored).not.toMatch(/prior\.fingerprint|FROM incomplete_reports i|WHERE r\.id = w\.run_id/);
-  const projection = /window AS MATERIALIZED \(SELECT (.*?) FROM calls c /.exec(stored)![1]!;
-  for (const column of projection.split(",")) expect(column.trim()).toMatch(/^c\.[a-z_][a-z_0-9]*$/);
-  expect(projection).not.toMatch(/source_generation|fingerprint|entry_id|total_tokens|rate_version/);
+  db.prepare("INSERT INTO sessions(id,name,name_source,name_order) VALUES ('human','Safe name','name',1)").run();
+  db.exec("UPDATE runs_meta SET session_id='human',parent_run_id=NULL WHERE id IN ('detail-parent','detail-run','aggregate-run','open-run'); UPDATE calls SET session_id='human' WHERE session_id='detail-session'");
+  db.exec("UPDATE calls SET actor='parent',run_id=NULL WHERE id='clean'");
+  const session = read("off", ctx => querySession(ctx, "human", "UTC"));
+  {
+    // The hint run points to another owner's covering run, so ownership
+    // fails closed. Six canonical calls remain on this human session.
+    expect(session.total.calls).toBe(6); expect(session.total.credits).toBe(4);
+    expect(session.flow.total).toEqual(session.total); expect(JSON.stringify(session)).not.toContain(root);
+    expect(session.runs.find(row => row.id === "detail-run")?.value.calls).toBe(3);
+  }
 });

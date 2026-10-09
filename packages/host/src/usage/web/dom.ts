@@ -12,11 +12,6 @@ export function action(document: Document, label: string, run: () => void): HTML
   node.addEventListener("click", () => actions.get(node)?.());
   return node;
 }
-export function liveMessage(document: Document): HTMLElement {
-  const node = element(document, "p", "", "notice");
-  node.setAttribute("role", "status"); node.setAttribute("aria-live", "polite");
-  return node;
-}
 
 /** Patch evidence without detaching retained controls or scroll regions. Chart
  * representation is user state, not server data. Other actions adopt new rows. */
@@ -44,4 +39,19 @@ export function updateEvidence(parent: HTMLElement, ...incoming: HTMLElement[]):
     while (parent.children.length > children.length) parent.lastElementChild!.remove();
   }
   reconcile(parent, incoming);
+}
+
+export function sectionState(root: HTMLElement, state: "loading" | "empty" | "error", message: string, retry?: () => void): void {
+  const document = root.ownerDocument;
+  root.setAttribute("aria-busy", String(state === "loading"));
+  const notice = element(document, "p", message, "notice"); notice.setAttribute("role", "status"); notice.setAttribute("aria-live", "polite"); notice.setAttribute("data-state", state);
+  root.replaceChildren(notice);
+  if (state === "error" && retry) root.append(action(document, "Retry", retry));
+}
+
+/** Shared fact grammar: a text label and a machine-value chip. */
+export function chip(document: Document, label: string, value: string): HTMLElement {
+  const node = element(document, "span", undefined, "stat-chip");
+  node.append(element(document, "span", label), element(document, "strong", value, "mono"));
+  return node;
 }

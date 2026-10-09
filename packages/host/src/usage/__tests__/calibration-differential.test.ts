@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createCalibrationService } from "../calibration.js";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { analysisFits, type AnalysisFit } from "../query-cache.js";
+import { analysisFits, type AnalysisFit } from "./fixtures/calibration-endpoints.js";
 import type { DashboardQueryContext } from "../dashboard-contract.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_MONTH as M, DASHBOARD_DAY as D, type DashboardFixture } from "./fixtures/dashboard-ledger.js";
 

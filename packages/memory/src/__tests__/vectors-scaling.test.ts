@@ -33,8 +33,11 @@ it("keeps idle probes and stale repair bounded at 6000 fully vectorized content 
       repairMs: measure(() => expect(db.raw.transaction(() => repairStaleVectors(db)).immediate()).toBe(0)) });
   }
   console.log("content scan timings (median of five, ms)", JSON.stringify(samples));
-  expect(samples[2].probeMs).toBeLessThan(60);
-  expect(samples[2].repairMs).toBeLessThan(60);
+  if (!process.env.CI) {
+    // Wall-clock bounds are local evidence; shared CI runners are too noisy, so CI keeps the plan assertion below.
+    expect(samples[2].probeMs).toBeLessThan(60);
+    expect(samples[2].repairMs).toBeLessThan(60);
+  }
   const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT 1 FROM vector_map m WHERE ${invalidOwnerSql(db, "m")}`).all() as { detail: string }[];
   expect(plan.some(row => /SEARCH x USING INTEGER PRIMARY KEY/.test(row.detail))).toBe(true);
 });

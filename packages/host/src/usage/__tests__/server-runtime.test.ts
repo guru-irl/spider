@@ -1,3 +1,4 @@
+import { seedCalibrationEvidence } from "./fixtures/calibration-evidence.js";
 import { USAGE_REPLACEMENT_GRACE_MS, USAGE_LAUNCH_DEADLINE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { readFile, rm, stat, writeFile, symlink, access, mkdir, chmod, utimes, open, readdir } from "node:fs/promises";
@@ -23,6 +24,16 @@ it("launcher failures expose fixed codes only", async () => {
   await expect(launchIsolated(m, f, { ...f.options, calibrationMode: undefined as any })).rejects.toThrow(/^usage-server-startup-invalid$/);
 });
 
+it("launcher propagates missing packaged assets with a safe code and no ledger startup", async () => {
+  const { module: m } = await helpers(); const f = await fixtures.fixture({ SPIDER_FIXTURE_PARTICIPANT: "1" });
+  const bundle = join(f.root, "missing-assets.mjs"); await writeFile(bundle, await readFile(fixtures.built));
+  await rm(join(f.root, "dashboard"), { recursive: true, force: true });
+  await expect(launchIsolated(m, f, { ...f.options, bundleUrl: bundle })).rejects.toThrow(/^usage-dashboard-missing$/);
+  expect((await m.readUsageServerCrashCodes(f.privateDir)).filter((code: string) => code === "usage-dashboard-missing")).toEqual(["usage-dashboard-missing"]);
+  await expect(access(f.options.roots.ledgerFile)).rejects.toThrow();
+  await expect(access(join(f.root, "fixture-lease"))).rejects.toThrow();
+  await expect(access(f.options.lockFile)).rejects.toThrow();
+});
 it("crash inspection never creates a directory", async () => {
   const { module: m } = await helpers(); const f = await fixtures.fixture();
   const absent = join(f.root, "absent-private-dir");
@@ -33,11 +44,37 @@ it("crash inspection never creates a directory", async () => {
 it("caller calibration reload reaches initial and retry readers", async () => {
   // Hardcoding the mode, omitting the reader callback, or omitting it on retry would keep auto/off stale.
   const { h } = await helpers();
-  const { openUsageLedger } = await import("../ledger.js");
   for (const initiallyMissing of [false, true]) {
     const f = await fixtures.fixture(); const configFile = join(f.root, "config.json");
     f.options.calibrationConfigFile = configFile;
     await writeFile(configFile, JSON.stringify({ "usage.calibration": "off" }));
+    await writeFile(join(f.root, "launcher-options.json"), JSON.stringify(f.options));
+    if (!initiallyMissing) seedCalibrationEvidence(f.options.roots.ledgerFile);
+    const launched = await f.start("launch").exited; expect(launched.code, launched.stderr).toBe(0);
+    const running = JSON.parse(launched.stdout); f.pids.add(running.pid);
+    const bootstrap = await h.reply(running.port, new URL(running.bootstrapUrl).pathname + new URL(running.bootstrapUrl).search);
+    const headers = { Cookie: bootstrap.headers["set-cookie"][0].split(";")[0] };
+    if (initiallyMissing) {
+      expect((await h.reply(running.port, "/api/calibration", headers)).status).toBe(503);
+      seedCalibrationEvidence(f.options.roots.ledgerFile);
+    }
+    const off = await h.waitFor(async () => { const r = await h.reply(running.port, "/api/calibration", headers); return r.status === 200 ? r : undefined; });
+    expect(JSON.parse(off.body).data.correction).toMatchObject({ status: "published-only", factor: null });
+    for (const contents of ["{}", '{"usage.calibration":"invalid"}', "broken", null]) {
+      if (contents === null) await rm(configFile); else await writeFile(configFile, contents);
+      const auto = await h.reply(running.port, "/api/calibration", headers);
+      expect(auto.status).toBe(200); expect(JSON.parse(auto.body).data.correction, contents ?? "missing").toMatchObject({ status: "back-applied", factor: 0.5 });
+    }
+  }
+});
+
+it("global budget reload reaches initial and retry readers without ledger writes", async () => {
+  const { h } = await helpers();
+  const { openUsageLedger } = await import("../ledger.js");
+  for (const initiallyMissing of [false, true]) {
+    const f = await fixtures.fixture(), configFile = join(f.root, "config.json");
+    f.options.calibrationConfigFile = configFile;
+    await writeFile(configFile, JSON.stringify({ "usage.monthlyBudget": 250 }));
     await writeFile(join(f.root, "launcher-options.json"), JSON.stringify(f.options));
     if (!initiallyMissing) openUsageLedger(f.options.roots.ledgerFile).close();
     const launched = await f.start("launch").exited; expect(launched.code, launched.stderr).toBe(0);
@@ -48,12 +85,14 @@ it("caller calibration reload reaches initial and retry readers", async () => {
       expect((await h.reply(running.port, "/api/overview", headers)).status).toBe(503);
       openUsageLedger(f.options.roots.ledgerFile).close();
     }
-    const off = await h.waitFor(async () => { const r = await h.reply(running.port, "/api/overview", headers); return r.status === 200 ? r : undefined; });
-    expect(JSON.parse(off.body).data.calibration.status).toBe("off");
-    for (const contents of ["{}", '{"usage.calibration":"invalid"}', "broken", null]) {
+    const first = await h.waitFor(async () => { const r = await h.reply(running.port, "/api/overview", headers); return r.status === 200 ? r : undefined; });
+    expect(JSON.parse(first.body).data.pace.budget).toBe(250);
+    await writeFile(configFile, JSON.stringify({ "usage.monthlyBudget": 500 }));
+    expect(JSON.parse((await h.reply(running.port, "/api/overview", headers)).body).data.pace.budget).toBe(500);
+    for (const contents of ["{}", '{"usage.monthlyBudget":0}', "broken", null]) {
       if (contents === null) await rm(configFile); else await writeFile(configFile, contents);
-      const auto = await h.reply(running.port, "/api/overview", headers);
-      expect(auto.status).toBe(200); expect(JSON.parse(auto.body).data.calibration.status, contents ?? "missing").toBe("uncalibrated");
+      const response = await h.reply(running.port, "/api/overview", headers);
+      expect(response.status).toBe(200); expect(JSON.parse(response.body).data.pace.budget).toBeNull();
     }
   }
 });
@@ -138,7 +177,7 @@ it("server survives launcher exiting", async () => {
     const cookie = bootstrap.headers["set-cookie"][0].split(";")[0];
     const status = await h.reply(lock.port, "/api/status", { Cookie: cookie });
     expect(status.status).toBe(200); expect(JSON.parse(status.body).data.serverBuild).toBe("synthetic@2026-10-05T00:00:00.000Z");
-    expect(JSON.parse(status.body).data.ingest.role).toBe("inactive");
+    expect(JSON.parse(status.body).data.collector).toBe("none");
   }
 }, 30000);
 

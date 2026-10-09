@@ -7,6 +7,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { Worker, type MessagePort, type WorkerOptions } from "node:worker_threads";
 import { afterAll, beforeAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as runtimeModule from "../runtime.js";
+import { bootUsageServer } from "../server-entry.js";
+import { mintUsageBootstrap, localUsageRequest } from "../server-runtime.js";
+import { readServerRecord, writeServerRecord } from "../server-lock.js";
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
+import { openDashboardReader } from "../dashboard-reader.js";
+import { queryStatusV4 } from "../ingestion-status.js";
 import { startUsageServerIngest } from "../server-ingest.js";
 import { UsageRuntime, type UsageWorker } from "../runtime.js";
 import { bootUsageWorker, SNAPSHOT_MS, CYCLE_MS, DASHBOARD_BACKOFF_MS, type UsageWorkerDependencies } from "../worker-entry.js";
@@ -747,4 +753,83 @@ it.each(["transient", "future", "unsupported"])("first-open %s failures use expo
   expect(attempts).toEqual(kind === "transient" ? [0, 3000, 9000, 21000, 45000, 93000, 153000, 213000] : [0, 60000, 120000, 180000, 240000]);
   failing = false; await vi.advanceTimersByTimeAsync(60000);
   expect(snapshots(server.port).at(-1)?.ingestRole).toBe("standby");
+});
+
+
+it("a live server participant remains the collector after a real ingest pass releases its claim", async () => {
+  openUsageLedger(command().roots.ledgerFile).close();
+  const RealRuntime = UsageRuntime;
+  vi.spyOn(runtimeModule, "UsageRuntime").mockImplementation(function(options) {
+    const runtime = new RealRuntime({ ...options, workerFactory: runtimeWorker({}) });
+    runtimes.push(runtime); return runtime;
+  });
+  const handle = startUsageServerIngest({ bundleUrl: "file:///fixture/worker.mjs", roots: command().roots,
+    getCalibrationMode: () => "auto" });
+  const reader = openDashboardReader(command().roots.ledgerFile, { instanceId: "collector", serverBuild: "fixture", now: Date.now,
+    calibrationMode: () => "auto", ingestStatus: handle.snapshot, participantActive: () => handle.participantActive?.() ?? false })!;
+  try {
+    expect(reader.snapshot(queryStatusV4).collector).toBe("none");
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(handle.snapshot().role).toBe("standby"), WAIT);
+    expect(handle.snapshot()).toMatchObject({ backfill: "complete", errorCode: null });
+    expect(runtimes[0].snapshot()).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 0, sourcesTotal: 0 } });
+    expect(inspect().owner).toBeNull();
+    expect(reader.snapshot(queryStatusV4).collector).toBe("dashboard-server");
+    // A live pi claim still takes priority over the server's minute cadence.
+    const pi = await boot(false, {}, false); await vi.advanceTimersByTimeAsync(0);
+    expect(reader.snapshot(queryStatusV4).collector).toBe("another-session");
+    pi.port.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+    expect(reader.snapshot(queryStatusV4).collector).toBe("dashboard-server");
+    ports[0].postMessage({ type: "error", code: "usage-ingest-failed" });
+    expect(reader.snapshot(queryStatusV4).collector).toBe("none");
+    const stopped = handle.stop(); await vi.advanceTimersByTimeAsync(0); await stopped;
+    expect(reader.snapshot(queryStatusV4).collector).toBe("none");
+  } finally { reader.close(); }
+});
+
+it("a failed server pass cannot claim the idle collector", async () => {
+  const RealRuntime = UsageRuntime;
+  vi.spyOn(runtimeModule, "UsageRuntime").mockImplementation(function(options) {
+    const runtime = new RealRuntime({ ...options, workerFactory: runtimeWorker({ discover: async () => { throw new Error("fixture discovery failure"); } }) });
+    runtimes.push(runtime); return runtime;
+  });
+  const handle = startUsageServerIngest({ bundleUrl: "file:///fixture/worker.mjs", roots: command().roots, getCalibrationMode: () => "auto" });
+  await vi.advanceTimersByTimeAsync(1);
+  const reader = openDashboardReader(command().roots.ledgerFile, { instanceId: "failed-collector", serverBuild: "fixture", now: Date.now,
+    calibrationMode: () => "auto", ingestStatus: handle.snapshot, participantActive: () => handle.participantActive?.() ?? false })!;
+  try {
+    expect(inspect().owner).toBeNull();
+    expect(reader.snapshot(queryStatusV4).collector).toBe("none");
+  } finally { reader.close(); const stopped = handle.stop(); await vi.advanceTimersByTimeAsync(0); await stopped; }
+});
+
+
+it("server boot wires the real participant into the authenticated collector route", async () => {
+  const RealRuntime = UsageRuntime;
+  vi.spyOn(runtimeModule, "UsageRuntime").mockImplementation(function(options) {
+    const runtime = new RealRuntime({ ...options, workerFactory: runtimeWorker({}) });
+    runtimes.push(runtime); return runtime;
+  });
+  openUsageLedger(command().roots.ledgerFile).close();
+  const dir = join(root, "usage-server"); mkdirSync(dir, { mode: 0o700 });
+  const instanceId = "c".repeat(32), secret = "s".repeat(43), lockFile = join(dir, "lock.json");
+  await writeServerRecord(`${lockFile}.guard`, { version: 1, instanceId, pid: process.pid, createdAt: Date.now() });
+  await writeServerRecord(join(dir, "startup.json"), { version: 1, instanceId, secret, createdAt: Date.now() });
+  await bootUsageServer({ instanceId, bundleUrl: "file:///fixture/worker.mjs", roots: command().roots, lockFile,
+    calibrationMode: "auto", serverBuild: "fixture", startParticipant: startUsageServerIngest, dashboardDir: createFixtureDashboard() });
+  const lock = (await readServerRecord(lockFile))!;
+  const url = new URL(await mintUsageBootstrap(lock as never));
+  const bootstrap = await localUsageRequest(lock.port as number, url.pathname + url.search);
+  const Cookie = (bootstrap.headers["set-cookie"] as string[])[0].split(";")[0];
+  try {
+    await vi.advanceTimersByTimeAsync(1);
+    expect(inspect().owner).toBeNull();
+    const response = await localUsageRequest(lock.port as number, "/api/status", { Cookie });
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body.toString()).data.collector).toBe("dashboard-server");
+  } finally {
+    process.emit("SIGTERM");
+    await vi.waitFor(async () => expect(await readServerRecord(lockFile)).toBeUndefined(), WAIT);
+    cleanupFixtureDashboards();
+  }
 });

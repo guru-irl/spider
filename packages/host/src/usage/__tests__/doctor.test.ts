@@ -109,3 +109,13 @@ it("doctor rounds covered hours and labels raw implausible factors rejected", ()
   expect(text).toContain("covered_hours=24.1"); expect(text).not.toContain("24.123456");
   expect(text).toContain("factor=2.5 (rejected)"); expect(text).toContain("published fallback");
 });
+
+
+it("shows metadata backfill state and its own progress on one doctor line", () => {
+  const s = { ...fixture(), metadataBackfill: "running" as const, metadataProgress: { sourcesCompleted: 3, sourcesTotal: 8 } };
+  const lines = usageDoctorLines(s, config).lines.filter(line => line.startsWith("- usage metadata backfill="));
+  expect(lines).toEqual(["- usage metadata backfill=running progress=3/8 sources"]);
+  expect(usageDoctorLines({ ...s, metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 8, sourcesTotal: 8 } }, config).lines)
+    .toContain("- usage metadata backfill=complete progress=8/8 sources");
+  expect(usageDoctorLines(fixture(), config).lines).toContain("- usage metadata backfill=pending progress=unavailable");
+});

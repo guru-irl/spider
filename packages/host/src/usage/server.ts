@@ -1,10 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHmac, randomBytes } from "node:crypto";
-import { DashboardQueryError, type ApiErrorCode, type DashboardStatus, type HttpOptions } from "./dashboard-contract.js";
+import { DashboardQueryError, type ApiErrorCode, type HttpOptions } from "./dashboard-contract.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
-import { parsePage, parseSlice, validateParams } from "./dashboard-selection.js";
+import { RESPONSE_CAPS_V4, type StatusData } from "./dashboard-v4-contract.js";
+import { supportedDetailId } from "./dashboard-keys.js";
+import { validateParams } from "./dashboard-selection.js";
 import { equalCredential, hasMintBearer, hasSafeBrowserMetadata, isBrowserMint, parseUsageTarget, usageSecurityHeaders, validateTransport } from "./server-security.js";
 
+import { loadDashboardAssets } from "./dashboard-assets.js";
 import { USAGE_HTTP_DRAIN_MS } from "./server-lifecycle.js";
 
 const errors = {
@@ -15,27 +18,17 @@ const errors = {
   "rate-limited": [429, "Rate limited"], "response-limit": [413, "Response limit"],
   "method-not-allowed": [405, "Method not allowed"], "not-found": [404, "Not found"],
 } as const satisfies Record<ApiErrorCode, readonly [number, string]>;
-function fail(res: ServerResponse, code: keyof typeof errors, path?: string): void {
+function fail(res: ServerResponse, code: keyof typeof errors, path?: string, sessionNotFound = false): void {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   if (code === "method-not-allowed") {
     res.setHeader("Allow", path === "/bootstrap" || path === "/local/bootstrap-nonce" ? "GET" : "GET, HEAD");
   }
-  const body = JSON.stringify({ apiVersion: 1, error: { code: code satisfies ApiErrorCode, message: errors[code][1] } });
+  const body = JSON.stringify({ apiVersion: 1, error: { code: code satisfies ApiErrorCode, message: sessionNotFound ? "Session not found" : errors[code][1] } });
   res.setHeader("Content-Length", Buffer.byteLength(body));
   res.writeHead(errors[code][0]);
   res.end(res.req.method === "HEAD" ? undefined : body);
 }
 
-// Preflight the frozen foundational routes before even reading the snapshot revision.
-// Query handlers retain their endpoint-specific validation and cursor generation checks.
-const routeParams: Record<string, readonly string[]> = {
-  "/api/status": [], "/api/overview": ["start", "end", "filters", "cursor"],
-  "/api/context": ["start", "end", "filters"], "/api/source-errors": ["limit", "cursor"],
-};
-const responseCaps: Record<string, number> = {
-  "/api/status": 8, "/api/source-errors": 64, "/api/overview": 512, "/api/explorer": 256, "/api/filter-values": 64,
-  "/api/detail": 512, "/api/detail-links": 64, "/api/context": 8, "/api/cache": 256, "/api/reconciliation": 256, "/api/rates": 512,
-};
 function send(res: ServerResponse, body: string, maximum: number): boolean {
   if (Buffer.byteLength(body) > maximum) { res.setHeader("Content-Type", "application/json; charset=utf-8"); fail(res, "response-limit"); return false; }
   res.setHeader("Content-Length", Buffer.byteLength(body));
@@ -50,6 +43,12 @@ function send(res: ServerResponse, body: string, maximum: number): boolean {
  * collisions, not exposure to another service on the same loopback hostname.
  */
 export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid: number; port: number; close(): Promise<void> }> {
+  const assets = await loadDashboardAssets(options.dashboardDir);
+  return startUsageHttpServerWithAssets(options, assets);
+}
+
+/** Boot loads assets before starting any reader or participant. */
+export async function startUsageHttpServerWithAssets(options: HttpOptions, assets: Awaited<ReturnType<typeof loadDashboardAssets>>): Promise<{ pid: number; port: number; close(): Promise<void> }> {
   const now = options.now ?? Date.now;
   // A random instance secret binds lookups even if options.instanceId and clocks are reused.
   const instanceKey = randomBytes(32);
@@ -58,32 +57,23 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
   let reader = options.reader;
   let lastOpenAt = -Infinity;
   let unavailableCode: keyof typeof errors = "ledger-unavailable";
-  const fallbackStatus = (): DashboardStatus => {
-    const state = options.ingestStatus?.();
-    const last = state?.lastIngestAt;
-    const lastIngestAt = typeof last === "number" && Number.isSafeInteger(last) && last >= 0 ? last : null;
-    const allowedCodes = ["usage-ingest-failed", "usage-ingest-lease-lost", "usage-ingest-lease-busy", "usage-ledger-unavailable"];
-    return { serverBuild: options.serverBuild, schemaVersion: 0, rateVersions: COPILOT_RATE_VERSIONS.map(rate => rate.id),
-      calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
-      ingest: { role: state?.role ?? "inactive", backfill: state?.backfill ?? "pending", lastIngestAt,
-        errorCode: state?.errorCode ? allowedCodes.includes(state.errorCode) ? state.errorCode : "usage-ingest-failed" : null,
-        ageMs: lastIngestAt === null ? null : Math.max(0, now() - lastIngestAt),
-        stale: lastIngestAt === null || now() < lastIngestAt || now() - lastIngestAt > 120_000 },
-      counter: { ts: null, creditsUsed: null, entitlement: null, remaining: null, resetDate: null, ageMs: null,
-        availability: "unavailable", nextPollAt: null } };
+  const fallbackStatus = (): StatusData => {
+    const last = options.ingestStatus?.().lastIngestAt;
+    return { lastIngestAt: typeof last === "number" && Number.isSafeInteger(last) && last >= 0 ? last : null,
+      collector: "none", latestCounterAt: null, serverBuild: options.serverBuild,
+      rateVersions: COPILOT_RATE_VERSIONS.map(rate => rate.id) };
   };
   const statusEnvelope = () => {
-    const timestamp = now();
-    const date = new Date(timestamp);
+    const timestamp = now(), date = new Date(timestamp);
     return { apiVersion: 1, revision: `${options.instanceId}:unavailable`, generatedAt: timestamp,
-      period: { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp }, data: reader?.status() ?? fallbackStatus() };
+      period: { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp }, data: fallbackStatus() };
   };
-  const nonces = new Map<string, { value: string; issuedAt: number }>();
-  const sessions = new Map<string, { value: string; lastUsedAt: number }>();
+  const nonces = new Map<string, { value: string; issuedAt: number; openerSessionId?: string }>();
+  const sessions = new Map<string, { value: string; lastUsedAt: number; openerSessionId?: string }>();
   let authenticatedRequests: number[] = [];
   let unauthenticatedRequests: number[] = [];
   let crossSiteRequests: number[] = [];
-  const securityHeaders = usageSecurityHeaders(options.html);
+  const securityHeaders = usageSecurityHeaders();
   const idleMs = options.idleMs ?? 1_800_000;
   const sweepCredentials = () => {
     const timestamp = now();
@@ -115,6 +105,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
     connectionsCheckingInterval: 1000, maxHeaderSize: 16_384 }, (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     for (const [name, value] of Object.entries(securityHeaders)) res.setHeader(name, value);
+    const rawAsset = req.url?.startsWith("/assets/") === true;
     const target = parseUsageTarget(req.url);
     const credentialRoute = target?.pathname === "/bootstrap" || target?.pathname === "/local/bootstrap-nonce";
     const session = credentialRoute ? undefined : requireSession(req);
@@ -133,6 +124,21 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
       if (unauthenticatedRequests.length >= 120) { fail(res, "rate-limited"); return; }
       unauthenticatedRequests.push(now());
     }
+    // Asset targets are never URL-normalized, decoded or joined to filesystem paths.
+    // Authenticate even malformed asset paths before disclosing the exact-map result.
+    if (rawAsset) {
+      if (!validateTransport(req, port, "/assets/")) { fail(res, "forbidden"); return; }
+      if (!session) { fail(res, "unauthorized"); return; }
+      if (req.method !== "GET" && req.method !== "HEAD") { fail(res, "method-not-allowed"); return; }
+      authenticatedRequests = authenticatedRequests.filter(timestamp => timestamp > now() - 60_000);
+      if (authenticatedRequests.length >= 600) { fail(res, "rate-limited"); return; }
+      authenticatedRequests.push(now());
+      session.lastUsedAt = now();
+      const asset = assets.get(req.url!);
+      if (!asset) { fail(res, "not-found"); return; }
+      res.setHeader("Content-Type", asset.contentType); res.setHeader("Cache-Control", asset.cacheControl);
+      res.setHeader("Content-Length", asset.body.length); res.end(req.method === "HEAD" ? undefined : asset.body); activity(); return;
+    }
     if (!target) { fail(res, "invalid-query"); return; }
     if (!validateTransport(req, port, target.pathname)) { fail(res, "forbidden"); return; }
     // Authenticate all non-credential paths, including unknown paths, before method/query disclosure.
@@ -150,12 +156,14 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
       if (isBrowserMint(req)) { fail(res, "forbidden"); return; }
       if (!hasMintBearer(req, options.secret)) { fail(res, "unauthorized"); return; }
       if (target.search) { fail(res, "invalid-query"); return; }
+      const openerSessionId = req.headers["x-spider-opener-session"];
+      if (openerSessionId !== undefined && !supportedDetailId(openerSessionId)) { fail(res, "invalid-query"); return; }
       sweepCredentials();
       if (nonces.size >= 64) { fail(res, "rate-limited"); return; }
       const timestamp = now();
       const date = new Date(timestamp);
       const nonce = randomBytes(32).toString("base64url");
-      nonces.set(hash(nonce), { value: nonce, issuedAt: timestamp });
+      nonces.set(hash(nonce), { value: nonce, issuedAt: timestamp, openerSessionId });
       send(res, JSON.stringify({ apiVersion: 1, revision: `${options.instanceId}:bootstrap`, generatedAt: timestamp,
         period: { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp }, data: { nonce } }), 8192); return;
     }
@@ -173,6 +181,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
       const existing = requireSession(req);
       if (existing) {
         existing.lastUsedAt = now();
+        existing.openerSessionId = record.openerSessionId;
       } else {
         if (sessions.size >= 32) {
           let oldest: string | undefined;
@@ -183,7 +192,7 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
           if (oldest !== undefined) sessions.delete(oldest);
         }
         const session = randomBytes(32).toString("base64url");
-        sessions.set(hash(session), { value: session, lastUsedAt: now() });
+        sessions.set(hash(session), { value: session, lastUsedAt: now(), openerSessionId: record.openerSessionId });
         res.setHeader("Set-Cookie", `spider_usage_${port}=${session}; HttpOnly; SameSite=Strict; Path=/`);
       }
       res.setHeader("Content-Length", 0);
@@ -198,19 +207,20 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
     session.lastUsedAt = now();
     if (target.pathname === "/") {
       if (target.search) { fail(res, "invalid-query"); return; }
-      res.setHeader("Content-Type", "text/html; charset=utf-8"); if (send(res, options.html, 512 * 1024)) activity(); return;
+      const asset = assets.get("/")!;
+      res.setHeader("Content-Type", asset.contentType); res.setHeader("Cache-Control", asset.cacheControl);
+      res.setHeader("Content-Length", asset.body.length); res.end(req.method === "HEAD" ? undefined : asset.body); activity(); return;
     }
-    const route = options.routes.find(route => route.path === target.pathname);
+    const dynamicId = /^\/api\/session\/([^/]+)$/.exec(target.pathname)?.[1];
+    const route = options.routes.find(route => route.path === target.pathname) ??
+      (dynamicId ? options.routes.find(route => route.path === "/api/session/<id>") : undefined);
     if (route) {
+      const maximum = RESPONSE_CAPS_V4[route.path as keyof typeof RESPONSE_CAPS_V4] ?? route.responseCap ?? 1024 * 1024;
       try {
-        const allowed = routeParams[target.pathname];
-        if (allowed) validateParams(target.searchParams, allowed);
-        if (target.searchParams.has("limit") || target.searchParams.has("cursor")) parsePage(target.searchParams);
-        if (target.searchParams.has("start") || target.searchParams.has("end") || target.searchParams.has("filters")) {
-          const sliceParams = new URLSearchParams();
-          for (const key of ["start", "end", "filters"]) if (target.searchParams.has(key)) sliceParams.set(key, target.searchParams.get(key)!);
-          if (route.resolvePeriod) route.resolvePeriod(target.searchParams, now());
-          else parseSlice(sliceParams, now());
+        let sessionId: string | undefined;
+        if (dynamicId) {
+          try { sessionId = decodeURIComponent(dynamicId); } catch { throw new DashboardQueryError("invalid-query"); }
+          if (!supportedDetailId(sessionId)) throw new DashboardQueryError("invalid-query");
         }
         if (target.pathname === "/api/status") validateParams(target.searchParams, []);
         if (!reader && options.retryOpenReader && now() - lastOpenAt >= 5000) {
@@ -219,25 +229,26 @@ export async function startUsageHttpServer(options: HttpOptions): Promise<{ pid:
           catch (error) { unavailableCode = error instanceof DashboardQueryError ? error.code : "internal"; }
         }
         if (!reader) {
-          if (target.pathname === "/api/status") send(res, JSON.stringify(statusEnvelope()), 8192);
+          if (target.pathname === "/api/status") send(res, JSON.stringify(statusEnvelope()), maximum);
           else fail(res, unavailableCode);
           return;
         }
-        const envelope = reader.snapshot(ctx => {
+        const envelope = reader.snapshot(snapshot => {
+          const ctx = { ...snapshot, viewerSessionId: session.openerSessionId };
           const timestamp = ctx.now();
           const date = new Date(timestamp);
+          const data = route.handle(ctx, target.searchParams, sessionId);
           return { apiVersion: 1, revision: ctx.revision, generatedAt: timestamp,
-            period: route.resolvePeriod?.(target.searchParams, timestamp) ?? { start: target.searchParams.has("start") ? Number(target.searchParams.get("start")) : Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1),
-              end: target.searchParams.has("end") ? Number(target.searchParams.get("end")) : timestamp },
-            data: route.handle(ctx, target.searchParams) };
+            period: route.responsePeriod?.(ctx, target.searchParams, data) ?? { start: Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1), end: timestamp },
+            data };
         });
-        if (send(res, JSON.stringify(envelope), (responseCaps[target.pathname] ?? 1024) * 1024) && target.pathname !== "/api/status") activity();
+        if (send(res, JSON.stringify(envelope), maximum) && target.pathname !== "/api/status") activity();
         return;
       } catch (error) {
         const code = error instanceof DashboardQueryError && Object.hasOwn(errors, error.code) ? error.code as keyof typeof errors : "internal";
         if (target.pathname === "/api/status" && code === "ledger-unavailable") {
-          try { send(res, JSON.stringify(statusEnvelope()), 8192); } catch { fail(res, "internal"); }
-        } else fail(res, code);
+          try { send(res, JSON.stringify(statusEnvelope()), maximum); } catch { fail(res, "internal"); }
+        } else fail(res, code, undefined, route.path === "/api/session/<id>" && code === "not-found");
         return;
       }
     }

@@ -1,10 +1,13 @@
+import { seedCalibrationEvidence } from "./fixtures/calibration-evidence.js";
+import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { DashboardQueryError, type ApiErrorCode, type HttpOptions } from "../dashboard-contract.js";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { OVERVIEW_ROUTES } from "../query-overview.js";
+import { DASHBOARD_ROUTES as OVERVIEW_ROUTES } from "../api-routes.js";
 import { createDashboardFixture, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 
 type RunningServer = { pid: number; port: number; close(): Promise<void> };
@@ -21,7 +24,7 @@ async function start(overrides: Partial<HttpOptions> = {}, calibrationMode: () =
   const secret = randomBytes(32).toString("hex");
   const options: HttpOptions = { instanceId: "fixture-instance", serverBuild: "fixture-build", secret,
     reader: Object.hasOwn(overrides, "reader") ? overrides.reader : openDashboardReader(fixture.file, { instanceId: "fixture-instance", serverBuild: "fixture-build", now: () => DASHBOARD_NOW, calibrationMode }),
-    routes: OVERVIEW_ROUTES, html: "<!doctype html><title>Fixture</title><style>body{color:white}</style><script>void 0</script>",
+    routes: OVERVIEW_ROUTES, dashboardDir: createFixtureDashboard(),
     now: () => DASHBOARD_NOW, ...overrides };
   const server: RunningServer = await implementation!.startUsageHttpServer(options);
   closers.push(() => server.close());
@@ -46,34 +49,27 @@ async function login(server: { port: number; secret: string }): Promise<string> 
 }
 
 describe("usage HTTP", () => {
-  test("reader calibration mode reaches HTTP response bases", async () => {
+  test("reader calibration mode reaches Calibration correction status", async () => {
     let mode: "auto" | "off" = "off";
     const server = await start({}, () => mode);
+    seedCalibrationEvidence(server.fixture.file, DASHBOARD_NOW);
     const cookie = await login(server);
-    for (const [selected, status] of [["off", "off"], ["auto", "uncalibrated"]] as const) {
+    for (const selected of ["off", "auto"] as const) {
       mode = selected;
-      const reply = await get(server.port, "/api/overview", { Cookie: cookie });
+      const reply = await get(server.port, "/api/calibration", { Cookie: cookie });
       expect(reply.status).toBe(200);
-      expect(JSON.parse(reply.body).data).toMatchObject({ calibration: { status }, totals: { aicDisplay: { basis: "published" } } });
+      expect(JSON.parse(reply.body).data).toMatchObject({ correction: selected === "off" ? { factor: null, status: "published-only" } : { factor: 0.5, status: "back-applied" } });
     }
   });
-  test("invalid queries fail before reader snapshots", async () => {
-    const server = await start();
-    const cookie = await login(server);
+  test("transport query errors fail before snapshots and focused handlers validate their own grammar", async () => {
+    const server = await start(), cookie = await login(server);
     const snapshot = vi.spyOn(server.options.reader!, "snapshot");
-    const filter = (value: unknown) => encodeURIComponent(JSON.stringify(value));
-    for (const path of ["/api/overview?unknown=1", "/api/context?unknown=1", "/api/source-errors?start=0&end=0",
-      "/api/overview?cursor=" + "x".repeat(2049), "/api/source-errors?limit=201", "/api/source-errors?limit=0",
-      "/api/overview?start=0&end=31622400001", "/api/overview?start=1&end=0", "/api/overview?start=9007199254740992&end=9007199254740992",
-      "/api/overview?filters=" + filter(Array.from({ length: 17 }, () => ({ field: "role", value: "worker" }))),
-      "/api/overview?filters=" + filter([{ field: "role", value: "x".repeat(1025) }]),
-      "/api/overview?filters=" + filter([{ field: "role", value: 1 }]), "/api/overview?filters=not-json",
-      "/api/overview?start=0&end=0&end=0"]) {
-      expect((await get(server.port, path, { Cookie: cookie })).status, path).toBe(400);
-    }
+    for (const path of ["/api/status?unknown=1", "/api/overview?tz=UTC&tz=UTC", "/api/status?x=" + "a".repeat(8192)]) expect((await get(server.port, path, { Cookie: cookie })).status).toBe(400);
+    for (const path of ["/api/context", "/api/source-errors"]) expect((await get(server.port, path, { Cookie: cookie })).status).toBe(404);
     expect(snapshot).not.toHaveBeenCalled();
-    expect((await get(server.port, "/api/source-errors?limit=200", { Cookie: cookie })).status).toBe(200);
-    expect(snapshot).toHaveBeenCalledTimes(1);
+    for (const path of ["/api/overview?unknown=1", "/api/overview?start=1&end=2", "/api/sessions?limit=201", "/api/overview?range=custom&from=0&to=8035200001", "/api/overview?buckets=[1,1]"]) expect((await get(server.port, path, { Cookie: cookie })).status).toBe(400);
+    expect((await get(server.port, "/api/sessions?limit=200", { Cookie: cookie })).status).toBe(200);
+    expect(snapshot).toHaveBeenCalledTimes(6);
   });
   test("slow headers expire within five seconds", async () => {
     const server = await start();
@@ -147,7 +143,7 @@ describe("usage HTTP", () => {
     const cookie = await login(server);
     const status = await get(server.port, "/api/status", { Cookie: cookie });
     expect(status.status).toBe(200);
-    expect(JSON.parse(status.body)).toMatchObject({ apiVersion: 1, revision: "fixture-instance:unavailable", data: { serverBuild: "fixture-build", schemaVersion: 0 } });
+    expect(JSON.parse(status.body)).toMatchObject({ apiVersion: 1, revision: "fixture-instance:unavailable", data: { serverBuild: "fixture-build", collector: "none", latestCounterAt: null, lastIngestAt: null } });
     expect(attempts).toBe(1);
     expect((await get(server.port, "/api/overview", { Cookie: cookie })).status).toBe(503);
     expect(attempts).toBe(1);
@@ -176,7 +172,7 @@ describe("usage HTTP", () => {
     const data = await get(server.port, "/api/overview", { Cookie: cookie });
     expect(data.status).toBe(200);
     expect(JSON.parse(data.body)).toMatchObject({ apiVersion: 1, revision: expect.stringMatching(/^fixture-instance:[0-9a-f-]{36}:\d+$/),
-      generatedAt: DASHBOARD_NOW, period: { start: Date.UTC(2026, 9, 1), end: DASHBOARD_NOW }, data: { totals: { calls: 5 } } });
+      generatedAt: DASHBOARD_NOW, period: { start: DASHBOARD_NOW - 7 * 86400000, end: DASHBOARD_NOW }, data: { total: { calls: 0 }, pace: { used: 4 } } });
     const head = await get(server.port, "/api/overview", { Cookie: cookie }, "HEAD");
     expect(head.status).toBe(200); expect(head.body).toBe("");
     expect(Number(head.headers["content-length"])).toBe(Buffer.byteLength(data.body));
@@ -242,9 +238,7 @@ describe("usage HTTP", () => {
     expect(large.status).toBe(413);
     expect(JSON.parse(large.body)).toEqual({ apiVersion: 1, error: { code: "response-limit", message: "Response limit" } });
     expect(Buffer.byteLength(large.body)).toBeLessThan(1024);
-    const largeHtml = await start({ html: "x".repeat(512 * 1024 + 1) });
-    const htmlCookie = await login(largeHtml);
-    expect((await get(largeHtml.port, "/", { Cookie: htmlCookie })).status).toBe(413);
+    await expect(start({ dashboardDir: createFixtureDashboard("x".repeat(512 * 1024 + 1)) })).rejects.toMatchObject({ code: "usage-dashboard-invalid" });
     const largeStatus = await start({ routes: [{ path: "/api/status", handle: () => ({ text: "x".repeat(8192) }) }] });
     const statusCookie = await login(largeStatus);
     expect((await get(largeStatus.port, "/api/status", { Cookie: statusCookie })).status).toBe(413);

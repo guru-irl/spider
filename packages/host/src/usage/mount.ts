@@ -4,8 +4,9 @@ import { watchFile, unwatchFile } from "node:fs";
 import { controlConfig } from "../control.js";
 import { makeConfigReloader } from "../config-reload.js";
 import { readUsageConfig } from "./config.js";
+import { billingPeriod, computePace } from "./billing-pace.js";
 import { calibrationFallback } from "./calibration.js";
-import { usageDoctorLines } from "./doctor.js";
+import { usageDoctorLines, dashboardAssetsStatus } from "./doctor.js";
 import { readUsageServerCrashDiagnostics } from "./server-runtime.js";
 import { homedir } from "node:os";
 import { isAbsolute, relative, sep, join } from "node:path";
@@ -79,11 +80,15 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       (current.modelRegistry.isUsingOAuth(model) && current.modelRegistry.getProvider(model.provider)?.auth?.oauth?.isSubscription === true));
     const runtimeSnapshot = runtime.snapshot();
     const snapshot = runtimeSnapshot.counter;
+    const now = Date.now(), period = billingPeriod(now, snapshot?.latest ?? undefined);
+    const sameMonth = runtimeSnapshot.monthPeriod?.start === period.start && runtimeSnapshot.monthPeriod.end === period.end;
+    const pace = computePace({ now, snapshots: snapshot?.latest ? [snapshot.latest] : [], budget: settings.monthlyBudget,
+      correctedMonth: sameMonth ? runtimeSnapshot.monthUsed ?? null : null, correctedWindow: null });
     input = {
       cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null,
       modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
       context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
-      subscription, totals: totals.snapshot(),
+      subscription, totals: totals.snapshot(), monthlyBudget: settings.monthlyBudget, monthUsed: pace.used,
       calibration: settings.calibration === "off" ? calibrationFallback("off") : runtimeSnapshot.calibration ?? calibrationFallback(),
       counter: { availability: snapshot?.availability === "available" ? "available" : snapshot?.availability === "disabled" ? "disabled" : "unavailable", snapshot: snapshot?.latest ?? null },
     };
@@ -152,7 +157,7 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     await stop();
     current = ctx;
     config = readUsageConfig(controlConfig("get", ctx.cwd) as Record<string, unknown>, {}).value;
-    runtime = new UsageRuntime({ bundleUrl, child: false, roots: resolveUsageRoots(), onSnapshot: () => mounted?.refresh() });
+    runtime = new UsageRuntime({ bundleUrl, child: false, sessionId: ctx.sessionManager?.getSessionId?.() ?? null, roots: resolveUsageRoots(), onSnapshot: () => mounted?.refresh() });
     runtime.start(config.counterPoll, config.calibration);
     mounted = mountUsage(pi, ctx, runtime, config);
     reloader = makeConfigReloader(ctx.cwd, merged => {
@@ -170,6 +175,7 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
     const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
     return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
-      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now() });
+      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now(),
+      dashboardAssets: await dashboardAssetsStatus(bundleUrl) });
   } };
 }

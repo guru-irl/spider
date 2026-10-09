@@ -4,10 +4,12 @@ import { open, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
 import { UsageJsonLine } from "./jsonl-projection.js";
+import { SessionMetadataCapture, forgetSessionMetadata } from "./session-metadata.js";
+import { normalizeRunStatus } from "./ledger.js";
 import type { Discovery, SourceInfo } from "./discovery.js";
 import type {
   CallRow, CoverageEdge, ImportBatch, ImportState, LedgerHealth, RunMeta,
-  UsageLedger, SourceContext, PendingReport,
+  UsageLedger, SourceContext, PendingReport, SessionMeta,
 } from "./ledger.js";
 
 export type IngestOptions = {
@@ -19,6 +21,8 @@ export type IngestOptions = {
   /** Shared discovery facts and DB-only auxiliary events run once per cycle. */
   skipShared?: boolean;
   commitGuard?: () => boolean;
+  /** Notify a worker only after a fenced batch committed new calls. */
+  onCallsAdded?: () => void;
 };
 const CHUNK = 64 * 1024;
 const PREFIX = 4096;
@@ -37,6 +41,7 @@ type Scan = {
   state: ImportState;
   context: SourceContext;
   partial: boolean;
+  session: SessionMeta | null;
 };
 type Report = {
   runId: string;
@@ -107,7 +112,7 @@ async function checkpoint(file: Awaited<ReturnType<typeof open>>, start: number,
  */
 async function readTranscript(
   source: SourceInfo, previous: ImportState | undefined,
-  context: SourceContext | undefined, signal: AbortSignal, ledger: UsageLedger, maxBytes: number,
+  context: SourceContext | undefined, signal: AbortSignal, ledger: UsageLedger, maxBytes: number, sessions: ReadonlyMap<string, SessionMeta>,
 ): Promise<Scan | undefined> {
   const before = await stat(source.path);
   if (!before.isFile())
@@ -125,9 +130,15 @@ async function readTranscript(
       reset = prefix !== previous.prefixHash || tail !== context!.tailHash;
     }
     const resume = reset ? 0 : previous?.offset ?? 0;
+    const oldId = context?.header?.id;
+    const saved = reset || typeof oldId !== "string" ? null : sessions.get(oldId) ?? null;
+    let capture: SessionMetadataCapture | undefined;
+    const metadataCheckpoint = ledger.getMetadataCheckpoint(source.path);
+    const coversPrefix = resume === 0 || !!metadataCheckpoint && metadataCheckpoint.generation === previous?.generation && metadataCheckpoint.offset >= resume;
+    try { capture = new SessionMetadataCapture(source, saved, reset ? null : context?.header ?? null, { firstUserSeen: !coversPrefix }); } catch { /* optional metadata never blocks billing */ }
     const lines: Line[] = [];
     let readOffset = resume, committed = resume;
-    let line = new UsageJsonLine();
+    let line = new UsageJsonLine(), metadataLine = new UsageJsonLine(true);
     let lineBytes = 0;
     const chunk = Buffer.alloc(CHUNK);
     while (readOffset < before.size && committed - resume < maxBytes) {
@@ -141,18 +152,19 @@ async function readTranscript(
       let start = 0, end: number;
       while ((end = data.indexOf(10, start)) !== -1) {
         const part = data.subarray(start, end + 1);
-        line.write(part); lineBytes += part.length;
+        line.write(part); metadataLine.write(part); lineBytes += part.length;
         const projected = line.finish();
+        try { capture?.consume(metadataLine.finish(), committed); } catch { /* optional metadata never blocks billing */ }
         lines.push({ byteOffset: committed, json: projected === undefined ? undefined : compact(projected) });
         committed += lineBytes;
         start = end + 1;
-        line = new UsageJsonLine(); lineBytes = 0;
+        line = new UsageJsonLine(); metadataLine = new UsageJsonLine(true); lineBytes = 0;
         if (committed - resume >= maxBytes) break;
       }
       if (committed - resume >= maxBytes) break;
       if (start < data.length) {
         const part = data.subarray(start);
-        line.write(part); lineBytes += part.length;
+        line.write(part); metadataLine.write(part); lineBytes += part.length;
       }
     }
     const prefixHash = await checkpoint(file, 0, Math.min(PREFIX, committed));
@@ -172,8 +184,10 @@ async function readTranscript(
     const parsed = parseTranscript([...seedHeader, ...prefix, ...lines], parserSource(source));
     const header = lines.map(l => object(l.json)).find(e => e.type === "session") ?? (reset ? undefined : context?.header ?? undefined);
     const entries = lines.filter(l => text(object(l.json).type)).map(l => ({ ...l, json: cheap(l.json) }));
+    let session: SessionMeta | null = null;
+    try { capture?.activity(parsed.calls.map(call => call.ts)); session = await capture?.finish() ?? null; } catch { /* optional metadata never blocks billing */ }
     return {
-      parsed, lines, resume, reset, header, partial: lineBytes > 0 || committed < before.size,
+      parsed, lines, resume, reset, header, session, partial: lineBytes > 0 || committed < before.size,
       context: { header: header ?? null, entries, tailHash },
       state: {
         path: source.path, inode, size: before.size, mtimeMs: before.mtimeMs, offset: committed,
@@ -285,8 +299,11 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
   const savedRuns = new Map(ledger.getRuns().map(r => [JSON.stringify([r.dbPath, r.id]), r]));
   const savedErrors = new Map(ledger.getSourceErrors().map(e => [e.path, e]));
   const sharedErrors = options.skipShared ? [] : discovery.errors.filter(e => JSON.stringify(savedErrors.get(e.path)) !== JSON.stringify(e));
+  const runStates = new Map((discovery.runStates ?? []).map(state => [JSON.stringify([state.dbPath, state.id]), state.status]));
+  const discoveredRuns = discovery.runs.map(run => ({ ...run,
+    status: normalizeRunStatus(runStates.has(JSON.stringify([run.dbPath, run.id])) ? runStates.get(JSON.stringify([run.dbPath, run.id])) : run.status) }));
   const batch: ImportBatch = {
-    calls: [], runs: options.skipShared ? [] : discovery.runs.filter(r => JSON.stringify(savedRuns.get(JSON.stringify([r.dbPath, r.id]))) !== JSON.stringify(r)), states: [], resetSources: [], sourceErrors: sharedErrors,
+    calls: [], runs: options.skipShared ? [] : discoveredRuns.filter(r => JSON.stringify(savedRuns.get(JSON.stringify([r.dbPath, r.id]))) !== JSON.stringify(r)),  states: [], resetSources: [], sourceErrors: sharedErrors,
     detailedRunIds: [], restoreAggregateRunIds: [], at, commitGuard: options.commitGuard
   };
   const calls: CallRow[] = [], states: ImportState[] = [], resets: {
@@ -294,6 +311,8 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
     generation: number;
   }[] = [];
   const errors = [...sharedErrors];
+  const sessions: SessionMeta[] = [];
+  const savedSessions = new Map(ledger.getSessions().map(session => [session.id, session]));
   try {
     const memory = historical(ledger);
     const contexts = new Map(memory.contexts);
@@ -416,10 +435,11 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
             contexts.set(source.run.id, String(header!.id));
           continue;
         }
-        const scan = await readTranscript(source, previous, ledger.getSourceContext(source.path, []), signal, ledger, Math.max(1, options.maxBytes ?? Infinity));
+        const scan = await readTranscript(source, previous, ledger.getSourceContext(source.path, []), signal, ledger, Math.max(1, options.maxBytes ?? Infinity), savedSessions);
         if (!scan)
           continue;
         states.push(scan.state);
+        if (scan.session) { sessions.push(scan.session); savedSessions.set(scan.session.id, scan.session); }
         if (scan.lines.length || !scan.partial) scannedPaths.add(source.path);
         sourceContexts.push({ path: source.path, context: scan.context });
         headers.set(source.path, scan.header ?? null);
@@ -613,11 +633,12 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       return health();
     try {
       const committed = ledger.apply({
-        ...batch, calls, states, resetSources: resets, sourceErrors: errors,
+        ...batch, calls, states, sessions, resetSources: resets, sourceErrors: errors,
         coverageEdges: proof.edges, sourceContexts, pendingReports: pendingUpdates,
         removePendingReports: removePending, incompleteReports: incomplete, completeReports: complete
       });
       if (!committed) return health();
+      if (calls.length) options.onCallsAdded?.();
     }
     catch (error) {
       // No replay/toggle of fallback facts, and no cursor advance. Record diagnostics
@@ -630,6 +651,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       }
       return health();
     }
+    for (const reset of resets) forgetSessionMetadata(reset.path);
     retained.set(ledger, { reports, edges: proof.edges, contexts });
   }
   catch (error) {

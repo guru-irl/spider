@@ -40,3 +40,10 @@ describe("ConfigView", () => {
 		expect(v.render(50)).not.toBe(a);
 	});
 });
+
+it("renders an optional budget as unset instead of undefined", () => {
+ const lines=renderConfig({},id,160,true);
+ const budget=lines.find(line=>line.includes("Monthly budget"));
+ expect(budget).toContain("unset");expect(budget).not.toContain("undefined");
+ expect(renderConfig({"usage.monthlyBudget":0.5},id,160,true).find(line=>line.includes("Monthly budget"))).toContain("0.5");
+});

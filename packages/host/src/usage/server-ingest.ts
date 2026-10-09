@@ -12,6 +12,7 @@ export function startUsageServerIngest(options: ServerIngestOptions): IngestHand
   let stopped = false;
   let stopping: Promise<void> | undefined;
   let calibrationError: string | null = null;
+  let completedPass = false;
   const state = (snapshot: UsageRuntimeSnapshot): DashboardIngestState => ({
     role: stopped ? "inactive" : snapshot.ingestRole ?? "inactive",
     lastIngestAt: snapshot.health?.lastIngestAt ?? null,
@@ -21,7 +22,10 @@ export function startUsageServerIngest(options: ServerIngestOptions): IngestHand
   });
   const runtime = new UsageRuntime({
     bundleUrl: options.bundleUrl, roots: options.roots, child: false, dashboardMode: true,
-    onSnapshot: snapshot => options.onSnapshot?.(state(snapshot)),
+    onSnapshot: snapshot => {
+      if (snapshot.ingestRole === "owner" && snapshot.backfill === "complete" && snapshot.collector?.kind === "dashboard" && !snapshot.errorCode) completedPass = true;
+      options.onSnapshot?.(state(snapshot));
+    },
   });
   let mode: "auto" | "off" = "off";
   const readMode = (): "auto" | "off" => {
@@ -38,6 +42,7 @@ export function startUsageServerIngest(options: ServerIngestOptions): IngestHand
   reload.unref?.();
   return {
     snapshot: () => state(runtime.snapshot()),
+    participantActive: () => completedPass && !stopped && runtime.snapshot().errorCode === null,
     stop: () => {
       if (stopping) return stopping;
       stopped = true; clearInterval(reload);

@@ -151,7 +151,7 @@ it("an upgraded v2 ledger reopens after ANALYZE and PRAGMA optimize", () => {
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_stat%'").all().length).toBeGreaterThan(0);
   const ledger = openUsageLedger(db.raw.name);
   try {
-    expect(ledger.health().schemaVersion).toBe(3);
+    expect(ledger.health().schemaVersion).toBe(4);
     expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   } finally { ledger.close(); }
 });

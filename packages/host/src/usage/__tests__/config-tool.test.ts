@@ -102,3 +102,16 @@ it("calibration config preserves dotted key conventions", async () => {
   await slash("config set usage.counter.poll false --global");
   expect((await run({ op: "get", key: "usage.counter.poll" })).details.value).toBe(false);
 });
+
+
+it("registered budget tool and slash commands set and unset an optional positive global value", async () => {
+ expect((await run({op:"set",key:"usage.monthlyBudget",value:200,scope:"repo"})).isError).toBe(true);
+ expect((await run({op:"set",key:"usage.monthlyBudget",value:0,scope:"global"})).isError).toBe(true);
+ expect((await run({op:"set",key:"usage.monthlyBudget",value:0.5,scope:"global"})).details.ok).toBe(true);
+ expect((await run({op:"get",key:"usage.monthlyBudget"})).details).toMatchObject({value:0.5,source:"global"});
+ await slash("config set usage.monthlyBudget 200 --global");
+ expect((await run({op:"get",key:"usage.monthlyBudget"})).details.value).toBe(200);
+ await slash("config unset usage.monthlyBudget --global");
+ expect((await run({op:"get",key:"usage.monthlyBudget"})).details.value).toBeUndefined();
+ expect(JSON.parse(readFileSync(join(paths.globalRoot,"config.json"),"utf8"))).not.toHaveProperty("usage.monthlyBudget");
+});

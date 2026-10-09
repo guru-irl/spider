@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { SourceErrorRow } from "../dashboard-contract.js";
 import { usageServerCrashCodes as doctorCrashCodes, usageDoctorLines } from "../doctor.js";
 import { usageServerCrashCodes as serverCrashCodes } from "../server-runtime.js";
-import { sourceErrorLabel } from "../query-source-errors.js";
+import { sourceErrorLabel } from "../source-error-diagnostics.js";
 import { calibrationFallback } from "../calibration.js";
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 
@@ -142,4 +142,13 @@ it("mounted doctor keeps each real crash write's time and expires old codes", as
     vi.setSystemTime(now + 7 * 86400000 + 1);
     expect((await mounted.doctor()).lines.filter(line => line.includes("dashboard server failure"))).toEqual([]);
   } finally { vi.useRealTimers(); await rm(dir, { recursive: true, force: true }); }
+});
+
+it("mounted doctor checks packaged assets before any dashboard launch", async () => {
+  const { registerUsage } = await import("../mount.js");
+  const { paths } = await import("@spider/db-core");
+  const { join } = await import("node:path");
+  const result = await registerUsage({ on: () => () => {} } as any, join(paths.globalRoot, "absent/extension.js")).doctor();
+  expect(result.lines.join("\n")).toContain("dashboard-assets: usage-dashboard-missing; rebuild or reinstall spider");
+  expect(result.lines.join("\n")).not.toContain(paths.globalRoot);
 });

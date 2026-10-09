@@ -1,589 +1,271 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiEnvelope, OverviewData, DashboardStatus, UsageMeasure } from "../dashboard-contract.js";
-import { createDashboardClient, DashboardClientError, type DashboardClient } from "../web/client.js";
-import type { ViewContext } from "../web/views.js";
-import { PlainDocument, elements, button, settle, cellText } from "./fixtures/plain-dom.js";
-
-const period = { start: 0, end: 172800000 };
-const fit = { status: "calibrated" as const, factor: 0.56, windowStart: 0, windowEnd: 604800000, coveredHours: 24, computedAic: 1000, counterDelta: 560, unpricedCalls: 0, method: "trailing-7d-ratio" as const };
-function measure(): UsageMeasure { return { calls: 1, pricedCalls: 1, unpricedCalls: 0, aggregateCalls: 0,
-  tokens: { input: 10, cacheRead: 20, cacheWrite: 30, output: 40, prompt: 60, total: 100, reasoning: null, cacheWrite1h: null },
-  aic: 1000, aicDisplay: { primaryAic: 560, publishedAic: 1000, basis: "calibrated" }, aicComponents: { input: 100, cacheRead: 200, cacheWrite: 300, output: 400 }, piCost: null,
-  possibleOverlap: false, possibleUndercount: false, pendingData: false, estimated: false };
-}
-function overview(): OverviewData {
-  const m = measure();
-  const counter = { ts: 86400000, creditsUsed: 10, entitlement: 10000, remaining: 9990, resetDate: null, ageMs: 1000, availability: "available" as const, nextPollAt: null };
-  return { calibration: fit, totals: m, actors: [{ label: "parent", isOther: false, measure: m }], roles: [{ label: "Other", isOther: false, measure: m }, { label: "Other", isOther: true, measure: m }],
-    daily: { rows: [{ start: 0, end: 86400000, label: "1970-01-01", measure: m, actors: [{ label: "parent", isOther: false, measure: m }], roles: [{ label: "Other", isOther: false, measure: m }] }], nextCursor: null },
-    comparison: { start: 0, end: 86400000, counterAic: 10, computed: m, gap: -990, ratio: 100 }, counterObservation: counter,
-    pace: { projected: { aicDisplay: { primaryAic: 1120, publishedAic: 2000, basis: "calibrated" }, tokens: { ...m.tokens, total: 200, prompt: 120 }, possibleOverlap: true, possibleUndercount: false, pendingData: true }, counterAic: 20, elapsedFraction: 0.5 } };
-}
-function envelope<T>(data: T): ApiEnvelope<T> { return { apiVersion: 1, revision: "fixture:0", period, generatedAt: 172800000, data }; }
-function status(): DashboardStatus { return { serverBuild: "fixture", schemaVersion: 2, rateVersions: ["fixture-rate"], calls: 1, sources: 5, parseErrors: 9, sourceErrors: 2,
-  ingest: { role: "standby", lastIngestAt: 0, ageMs: 125000, stale: true, errorCode: null, backfill: "complete", progress: { sourcesCompleted: 5, sourcesTotal: 5 } },
-  counter: { ts: 86400000, creditsUsed: 10, entitlement: 10000, remaining: 9990, resetDate: null, ageMs: 1000, availability: "available", nextPollAt: null } }; }
-function fixture(data = overview(), response?: (path: string, params: URLSearchParams) => unknown) {
+import { mountOverview } from "../web/overview.js";
+import { overviewFixture, sessionsFixture, envelope } from "./fixtures/redesign-contract.js";
+import { PlainDocument, PlainElement, descendants, button, elements, settle, cellText } from "./fixtures/plain-dom.js";
+import type { DashboardPageContext, DashboardRouteV4, OverviewDataV4 } from "../dashboard-v4-contract.js";
+import type { ApiEnvelope } from "../dashboard-contract.js";
+const NOW = Date.UTC(2030, 3, 15), DAY = 86400000;
+function setup(get?: (path: string, params: URLSearchParams) => Promise<ApiEnvelope<unknown>>, initial = overviewFixture()) {
   const doc = new PlainDocument(), root = doc.createElement("main"); doc.body.append(root);
-  const requests: string[] = [];
-  const client = createDashboardClient(async input => {
-    const url = new URL(String(input), "http://127.0.0.1:10000"); requests.push(url.pathname + url.search);
-    return new Response(JSON.stringify(envelope(response ? response(url.pathname, url.searchParams) : url.pathname === "/api/status" ? status() : url.pathname === "/api/source-errors" ? { rows: [], nextCursor: null } : data)));
-  });
+  const requests: { path: string; params: URLSearchParams; signal: AbortSignal | undefined }[] = [], routes: { route: DashboardRouteV4; replace: boolean }[] = [];
   const controller = new AbortController();
-  return { doc, root, requests, controller, ctx: { document: doc.asDocument(), root: root as unknown as HTMLElement, client, period, filters: [{ field: "actor" as const, value: "parent" }], signal: controller.signal, navigate() {} } };
+  const ctx: DashboardPageContext = { document: doc.asDocument(), root: root as unknown as HTMLElement, signal: controller.signal,
+    route: { page: "overview", query: initial.range }, overview: initial.range, now: () => NOW, back() {},
+    navigate(route, opts) { routes.push({ route, replace: !!opts?.replace }); },
+    client: { async get<T>(path: string, params = new URLSearchParams(), signal?: AbortSignal) {
+      requests.push({ path, params, signal });
+      return (get ? await get(path, params) : envelope(path === "/api/sessions" ? sessionsFixture() : initial)) as ApiEnvelope<T>;
+    } },
+  };
+  const page = mountOverview(ctx);
+  return { ctx, doc, root, requests, routes, page, controller, nodes: () => descendants(root), bars: () => descendants(root).filter(n => n.getAttribute("data-bucket") !== null && n.tagName === "g") };
 }
-function tableRows(root: Parameters<typeof elements>[0], caption: string): string[][] {
-  const table = elements(root, "table").find(node => elements(node, "caption")[0]?.textContent === caption);
-  expect(table, `table ${caption}`).toBeDefined(); return elements(table!, "tr").slice(1).map(row => row.children.map(cell => cellText(cell)));
-}
-
-function deferredFixture() {
-  const f = fixture();
-  const pending: { path: string; params: URLSearchParams; signal: AbortSignal; resolve(data: unknown): void }[] = [];
-  const client: DashboardClient = { get<T>(path: string, params: URLSearchParams, signal: AbortSignal) {
-    // This transport deliberately completes after abort, to exercise the view's own stale guards.
-    return new Promise<ApiEnvelope<T>>(resolve => pending.push({ path, params, signal, resolve(data) { resolve(envelope(data as T)); } }));
-  } };
-  return { ...f, pending, ctx: { ...f.ctx, client } };
-}
-function healthPanel(root: Parameters<typeof elements>[0]) { return elements(root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!; }
-
-describe("web Overview", () => {
-  it("Overview timestamps are readable time elements", async () => {
-    // Break caught: raw ISO copy or timestamp semantics lost.
-    const { mountOverview } = await import("../web/overview.js"), f = fixture();
-    const view = await mountOverview(f.ctx);
-    try {
-      await settle();
-      expect(f.root.textContent).toContain("Updated 3 Jan 1970, 00:00 UTC");
-      expect(elements(f.root, "time").some(node => node.getAttribute("datetime") === "1970-01-03T00:00:00.000Z")).toBe(true);
-      expect(f.root.textContent).not.toContain("1970-01-01T00:00:00.000Z");
-      expect(elements(f.root, "dl").length).toBeGreaterThan(0);
-    } finally { view.dispose(); }
+function fire(node: PlainElement | PlainDocument, type: string, props: Record<string, unknown> = {}) { const event = new Event(type, { cancelable: true }); for (const [k, v] of Object.entries(props)) Object.defineProperty(event, k, { value: v }); node.dispatchEvent(event); }
+describe("Overview v4", () => {
+  it("renders full-range chips, models as the legend and same-value chart tables", async () => {
+    const s = setup(); await settle();
+    expect(s.root.children[0]!.className).toBe("month-pace");
+    expect(s.root.textContent).toContain("Daily credits"); expect(s.root.textContent).toContain("Average");
+    expect(s.nodes().filter(n => n.className === "role-key")).toHaveLength(4);
+    expect(s.root.textContent).toContain("Mostly worker runs"); expect(s.root.textContent).not.toContain("AIC");
+    expect(s.bars()).toHaveLength(7); expect(s.nodes().find(n => n.getAttribute("data-panel") === "daily")!.textContent).toContain("4"); s.page.dispose();
   });
-  it.each([0, 1, 2])("Overview count %s pluralizes call, diagnostic and source evidence", async count => {
-    const { mountOverview } = await import("../web/overview.js"), data = overview(), health = status();
-    data.totals = { ...data.totals, calls: count };
-    health.ingest.progress = { sourcesCompleted: count, sourcesTotal: count };
-    const f = fixture(data, path => path === "/api/status" ? health : path === "/api/source-errors" ? {
-      rows: Array.from({ length: count }, () => ({ sourceLabel: "source", projectLabel: "project", code: "parse-error", count: 1, lastCheckedAt: 0 })), nextCursor: null,
-    } : data);
-    const view = await mountOverview(f.ctx);
-    try {
-      await settle();
-      expect.soft(tableRows(f.root, "Selected usage")[0]![4]).toBe(`${count} ${count === 1 ? "call" : "calls"} · 0 unpriced · 0 aggregate`);
-      expect.soft(f.root.textContent).toContain(`Backfill: complete · ${count} of ${count} ${count === 1 ? "source" : "sources"}`);
-      expect.soft(f.root.textContent).toContain(count ? `${count} source ${count === 1 ? "diagnostic" : "diagnostics"} on this page` : "No source diagnostics recorded.");
-    } finally { view.dispose(); }
+  it.each(["runs", "last-active"] as const)("preserves %s sort and reloads its first page for refreshed bounds", async sort => {
+    let refreshes = 0;
+    const s = setup(async (path, params) => {
+      if (path === "/api/sessions") return envelope(sessionsFixture({ rows: [{ ...sessionsFixture().rows[0]!, name: `${sort} result`, id: "sorted-session" }] }));
+      const d = overviewFixture(); d.range.from += refreshes++ * DAY; d.range.buckets = JSON.parse(params.get("buckets") ?? "[]");
+      return envelope(d);
+    }); await settle();
+    const control = () => s.nodes().find(n => n.getAttribute("data-focus") === `session-sort-${sort}`)!;
+    control().click(); await settle();
+    await s.page.refresh(); await settle();
+    expect(control().getAttribute("aria-pressed")).toBe("true");
+    expect(s.root.textContent).toContain(`${sort} result`);
+    const request = s.requests.at(-1)!;
+    expect(request.path).toBe("/api/sessions"); expect(request.params.get("sort")).toBe(sort);
+    expect(request.params.get("from")).toBe("1901923200000"); expect(request.params.get("range")).toBe("custom"); expect(request.params.get("offset")).toBe("0"); expect(request.params.get("limit")).toBe("10");
+    fire(s.bars()[4]!, "keydown", { key: " " }); await settle();
+    expect(control().getAttribute("aria-pressed")).toBe("true"); expect(s.requests.at(-1)!.params.get("buckets")).toBe("[1902182400000]"); s.page.dispose();
   });
-  it("Overview diagnostics show readable codes instead of internal keys", async () => {
-    const { mountOverview } = await import("../web/overview.js"), health = status();
-    health.ingest.errorCode = "ingest-failed";
-    const codes = [
-      ["parse-error", "parse error"], ["missing-db", "missing database"],
-      ["runs-db-recreated:facts-retained", "runs database recreated: facts retained"],
-      ["SQLITE_BUSY", "SQLite busy"], ["SQLITE_CORRUPT", "SQLite corrupt"],
-      ["ENOENT", "file or directory not found"], ["EACCES", "permission denied"],
-      ["EPERM", "operation not permitted"], ["EIO", "input/output error"],
-    ];
-    const f = fixture(overview(), path => path === "/api/status" ? health : path === "/api/source-errors" ? {
-      rows: codes.map(([code]) => ({ sourceLabel: "source", projectLabel: "project", code, count: 1, lastCheckedAt: 0 })), nextCursor: null,
-    } : overview());
-    const view = await mountOverview(f.ctx);
-    try {
-      await settle();
-      expect.soft(f.root.textContent).toContain("Ingest error: ingest failed");
-      expect.soft(tableRows(f.root, "Source diagnostics").map(row => row[2])).toEqual(codes.map(([, label]) => label));
-    } finally { view.dispose(); }
-  });
-  it("filter header shows readable dimension names without changing filter values", async () => {
-    const { startDashboard } = await import("../web/app.js"), f = fixture();
-    const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client,
-      initialRoute: { view: "rates", filters: [
-        { field: "requestedModel", value: "model-key" }, { field: "runName", value: "run-key" },
-        { field: "parentRun", value: "parent-key" }, { field: "auxPurpose", value: "purpose-key" },
-        { field: "repo", value: "repo-key" }, { field: "api", value: "api-key" },
-      ] } });
-    try {
-      expect(elements(f.root, "p").find(node => node.className === "slice-label")!.textContent).toBe("Selected filters: requested model = model-key; run name = run-key; parent run = parent-key; auxiliary purpose = purpose-key; repository = repo-key; API = api-key");
-    } finally { app.dispose(); }
-  });
-  it("Clear filters hides for other errors and after a successful refresh", async () => {
-    const { mountOverview } = await import("../web/overview.js"), f = fixture();
-    let code: "unknown-filter-id" | "ledger-changed" | null = "ledger-changed";
-    const client: DashboardClient = { async get<T>(path: string) {
-      if (path === "/api/overview" && code) throw new DashboardClientError(code);
-      return envelope((path === "/api/overview" ? overview() : status()) as T);
-    } };
-    const view = await mountOverview({ ...f.ctx, client });
-    try {
-      await settle(); const clear = button(f.root, "Clear filters"); expect(clear.hidden).toBe(true);
-      code = "unknown-filter-id"; button(f.root, "Refresh").click(); await settle(); expect(clear.hidden).toBe(false);
-      code = null; button(f.root, "Refresh").click(); expect(clear.hidden).toBe(true); await settle(); expect(clear.hidden).toBe(true);
-    } finally { view.dispose(); }
-  });
-  it("direct mounts clear filters with navigation and keep focus on their heading", async () => {
-    const { mountOverview } = await import("../web/overview.js"), f = fixture(), routes: unknown[] = [];
-    const client: DashboardClient = { async get() { throw new DashboardClientError("unknown-filter-id"); } };
-    const view = await mountOverview({ ...f.ctx, client, navigate(route) { routes.push(route); } });
-    try {
-      await settle(); const clear = button(f.root, "Clear filters"); clear.focus(); clear.click();
-      expect(routes).toEqual([{ view: "overview", filters: [] }]);
-      expect(f.doc.activeElement).toBe(elements(f.root, "h1")[0]);
-      expect(f.root.textContent).toContain("Remove the unknown filter from the address to continue.");
-    } finally { view.dispose(); }
-  });
-
-  it("routed mounts receive the id and a live rolling period across refreshes", async () => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date("2030-01-31T23:59:30.000Z"));
-    try {
-      const { startDashboard } = await import("../web/app.js"), { mountOverview } = await import("../web/overview.js");
-      const f = fixture(); let context: ViewContext | undefined;
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "session", id: "session-fixture" }, mounts: { session: async ctx => { context = ctx; return mountOverview(ctx); } } }); await settle();
-      expect.soft(context!.id).toBe("session-fixture"); expect(context!.period.end).toBe(Date.parse("2030-01-31T23:59:30.000Z"));
-      await vi.advanceTimersByTimeAsync(60000);
-      expect(context!.period).toEqual({ start: Date.parse("2030-02-01T00:00:00.000Z"), end: Date.parse("2030-02-01T00:00:30.000Z") });
-      expect(elements(f.root, "p").find(node => node.className === "period-label")!.textContent).toBe("1 Feb 2030, 00:00 UTC to 1 Feb 2030, 00:00:30 UTC");
-      context!.navigate({ view: "session", id: "new-session" }); await settle(); expect(context!.id).toBe("new-session");
-      const request = new URL(f.requests.filter(path => path.startsWith("/api/overview")).at(-1)!, "http://fixture");
-      expect(request.searchParams.get("end")).toBe(String(Date.parse("2030-02-01T00:00:30.000Z"))); app.dispose();
-    } finally { vi.useRealTimers(); }
-  });
-  it.each(["unknown-filter-id", "identity-unavailable", "invalid-query", "ledger-changed"])("Overview does not offer futile Retry for %s", async code => {
-    const { mountOverview } = await import("../web/overview.js"); const f = fixture();
-    const client = createDashboardClient(async () => new Response(JSON.stringify({ error: { code } }), { status: code === "identity-unavailable" ? 503 : code === "ledger-changed" ? 409 : 400 }));
-    const view = await mountOverview({ ...f.ctx, client }); await settle();
-    expect(elements(f.root, "button").filter(node => node.textContent === "Retry" && !node.hidden)).toHaveLength(0); view.dispose();
-  });
-  it.each(["unknown-filter-id", "identity-unavailable", "invalid-query", "ledger-changed"])("terminal %s pauses automatic refresh and suppresses source Retry", async code => {
-    vi.useFakeTimers();
-    try {
-      const { mountOverview } = await import("../web/overview.js"), f = fixture(); let overviewRequests = 0;
-      const client = createDashboardClient(async input => {
-        if (String(input).startsWith("/api/status")) return new Response(JSON.stringify(envelope(status())));
-        if (String(input).startsWith("/api/overview")) ++overviewRequests;
-        return new Response(JSON.stringify({ error: { code } }), { status: code === "identity-unavailable" ? 503 : code === "ledger-changed" ? 409 : 400 });
-      });
-      const view = await mountOverview({ ...f.ctx, client }); await settle();
-      expect(elements(healthPanel(f.root), "button").filter(node => node.textContent === "Retry" && !node.hidden)).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(60000); expect(overviewRequests).toBe(1); view.dispose();
-    } finally { vi.useRealTimers(); }
-  });
-  it("app-level Retry keeps a rolling month and focuses Retry after a second failure", async () => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date("2030-01-31T23:59:30Z"));
-    try {
-      const { startDashboard } = await import("../web/app.js"), f = fixture(); let context: ViewContext | undefined, attempts = 0;
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { overview: async ctx => {
-        context = ctx; if (++attempts <= 2) throw new Error("offline"); return { dispose() {} };
-      } } }); await settle();
-      const retry = button(f.root, "Retry"); retry.focus(); retry.click(); await settle();
-      const second = button(f.root, "Retry"); expect(f.doc.activeElement).toBe(second);
-      second.click(); await settle(); await vi.advanceTimersByTimeAsync(60000);
-      expect(context!.period).toEqual({ start: Date.parse("2030-02-01T00:00:00Z"), end: Date.parse("2030-02-01T00:00:30Z") }); app.dispose();
-    } finally { vi.useRealTimers(); }
-  });
-  it("unknown filters offer Clear filters in the same routed view with a rolling period", async () => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date("2030-01-31T23:59:30Z"));
-    try {
-      const { startDashboard } = await import("../web/app.js"), { mountOverview } = await import("../web/overview.js"), f = fixture();
-      const client = createDashboardClient(async () => new Response(JSON.stringify({ error: { code: "unknown-filter-id" } }), { status: 400 }));
-      const contexts: ViewContext[] = [];
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client, initialRoute: { view: "session", id: "selected", filters: f.ctx.filters }, mounts: { session: async ctx => { contexts.push(ctx); return mountOverview(ctx); } } }); await settle();
-      expect(f.root.textContent).toContain("Selected filter is no longer available. Clear filters to continue.");
-      const clear = button(f.root, "Clear filters"); expect(clear.hidden).toBe(false); clear.focus(); clear.click(); await settle();
-      expect(f.doc.activeElement).toBe(elements(f.root, "h1")[0]);
-      expect(contexts).toHaveLength(2); expect(contexts[1]!.id).toBe("selected"); expect(contexts[1]!.filters).toEqual([]);
-      await vi.advanceTimersByTimeAsync(60000);
-      expect(contexts[1]!.period).toEqual({ start: Date.parse("2030-02-01T00:00:00Z"), end: Date.parse("2030-02-01T00:00:30Z") }); app.dispose();
-    } finally { vi.useRealTimers(); }
-  });
-  it("empty breakdowns explain their missing rows", async () => {
-    const { mountOverview } = await import("../web/overview.js"), data = overview(); data.actors = []; data.roles = [];
-    const f = fixture(data), view = await mountOverview(f.ctx); await settle();
-    expect(tableRows(f.root, "Actors")).toEqual([["No rows recorded"]]); expect(tableRows(f.root, "Roles")).toEqual([["No rows recorded"]]); view.dispose();
-  });
-  it("app-level Retry focuses the heading of the newly mounted view", async () => {
-    const { startDashboard } = await import("../web/app.js"), { mountOverview } = await import("../web/overview.js"); let first = true;
-    const f = fixture();
-    const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { overview: async ctx => { if (first) { first = false; throw new Error("fixture mount failed"); } return mountOverview(ctx); } } }); await settle();
-    const retry = button(f.root, "Retry"); retry.focus(); retry.click(); await settle();
-    const heading = elements(f.root, "h1")[0]!;
-    expect(f.doc.activeElement).toBe(heading); expect(heading.getAttribute("tabindex")).toBe("-1"); app.dispose();
-  });
-  it("Retry transfers keyboard focus to the refreshed Overview heading", async () => {
-    const { mountOverview } = await import("../web/overview.js"); let online = false;
-    const f = fixture(overview(), path => { if (path === "/api/overview" && !online) throw new TypeError("offline"); return path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview(); });
-    const view = await mountOverview(f.ctx); await settle();
-    const retry = button(f.root, "Retry"); retry.focus(); online = true; retry.click(); await settle();
-    const heading = elements(f.root, "h1")[0]!;
-    expect(f.doc.activeElement).toBe(heading); expect(heading.getAttribute("tabindex")).toBe("-1");
-    view.dispose();
-  });
-  it("source diagnostics Retry transfers focus to its refreshed panel heading", async () => {
-    const { mountOverview } = await import("../web/overview.js"); let online = false;
-    const f = fixture(overview(), path => { if (path === "/api/source-errors" && !online) throw new TypeError("offline"); return path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview(); });
-    const view = await mountOverview(f.ctx); await settle();
-    const panel = healthPanel(f.root), retry = button(panel, "Retry"); retry.focus(); online = true; retry.click(); await settle();
-    const heading = elements(panel, "h2")[0]!;
-    expect(f.doc.activeElement).toBe(heading); expect(heading.getAttribute("tabindex")).toBe("-1"); view.dispose();
-  });
-  it("auto-refresh preserves daily and source-error pages and skips focused controls", async () => {
-    vi.useFakeTimers();
-    try {
-      const { mountOverview } = await import("../web/overview.js");
-      const f = fixture(overview(), (path, params) => {
-        if (path === "/api/status") return status();
-        if (path === "/api/source-errors") return { rows: [{ sourceLabel: params.get("cursor") ?? "first", projectLabel: "fixture", code: "parse-error", count: 1, lastCheckedAt: 0 }], nextCursor: params.has("cursor") ? null : "error-page-2" };
-        const data = overview(); data.daily.nextCursor = params.has("cursor") ? null : "daily-page-2"; data.actors[0]!.label = params.get("cursor") ?? "first"; return data;
-      });
-      const view = await mountOverview(f.ctx); await settle();
-      button(f.root, "Next page").click(); await settle(); button(healthPanel(f.root), "Next page").click(); await settle();
-      await vi.advanceTimersByTimeAsync(60000);
-      expect.soft(new URL(f.requests.filter(path => path.startsWith("/api/overview")).at(-1)!, "http://fixture").searchParams.get("cursor")).toBe("daily-page-2");
-      expect.soft(new URL(f.requests.filter(path => path.startsWith("/api/source-errors")).at(-1)!, "http://fixture").searchParams.get("cursor")).toBe("error-page-2");
-      expect(f.requests.filter(path => path.startsWith("/api/status"))).toHaveLength(2);
-      expect(f.requests.filter(path => path.startsWith("/api/source-errors"))).toHaveLength(3);
-      expect.soft(tableRows(f.root, "Actors")[0]![0]).toBe("daily-page-2"); expect.soft(tableRows(f.root, "Source diagnostics")[0]![0]).toBe("error-page-2");
-      const calls = () => f.requests.length;
-      for (const control of [button(f.root, "Refresh"), button(f.root, "Previous page"), button(healthPanel(f.root), "Previous page")]) {
-        control.focus(); f.doc.dispatchEvent(new Event("keydown")); const before = calls();
-        await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(before); expect(f.doc.activeElement).toBe(control);
+  it("refetches Overview rather than mixing a Sessions page from another revision", async () => {
+    let overviews = 0, sessionRequests = 0;
+    const s = setup(async path => {
+      if (path === "/api/sessions") {
+        const reply = envelope(sessionsFixture({ rows: [{ ...sessionsFixture().rows[0]!, name: sessionRequests++ === 0 ? "Wrong revision row" : "Current revision row" }] }));
+        reply.revision = "next-revision"; return reply;
       }
-      view.dispose();
-    } finally { vi.useRealTimers(); }
+      const reply = envelope(overviewFixture()); if (overviews++ > 0) reply.revision = "next-revision"; return reply;
+    }); await settle();
+    s.nodes().find(n => n.getAttribute("data-focus") === "session-sort-runs")!.click(); await settle();
+    expect(s.requests.filter(r => r.path === "/api/overview")).toHaveLength(2);
+    expect(s.root.textContent).not.toContain("Wrong revision row"); expect(s.root.textContent).toContain("Current revision row"); s.page.dispose();
   });
-  it("auto-refresh pauses on refresh and daily or health paging buttons", async () => {
-    vi.useFakeTimers();
+  it.each([
+    ["credits", 4, ["0", "1", "2", "3", "4"]],
+    ["tokens", 26800, ["0", "10k", "20k", "30k"]],
+  ] as const)("uses rounded %s ticks and labels the unit above the daily axis", async (unit, maximum, ticks) => {
+    const d = overviewFixture(); d.range.unit = unit;
+    d.buckets = [{ ...d.buckets[4]!, total: { ...d.buckets[4]!.total, credits: maximum, tokens: { ...d.buckets[4]!.total.tokens, total: maximum } }, models: [] }];
+    const s = setup(undefined, d); await settle(); const svg = s.nodes().find(n => n.className === "daily-chart")!;
+    const labels = elements(svg, "text");
+    expect(labels.filter(n => n.getAttribute("text-anchor") === "end").map(n => n.textContent)).toEqual(ticks);
+    const axis = labels.find(n => n.textContent === unit); expect(axis).toBeDefined(); expect(Number(axis!.getAttribute("y"))).toBeLessThan(56); s.page.dispose();
+  });
+  it("names the leading model alongside its share in the Top chip", async () => {
+    const s = setup(); await settle(); const models = s.nodes().find(n => n.getAttribute("data-panel") === "models")!;
+    expect(descendants(models).find(n => n.className === "stat-chip" && n.children[0]!.textContent === "Top")!.children[1]!.textContent).toBe("model-cedar · 50%"); s.page.dispose();
+  });
+  it("starts This month at local calendar midnight across a DST change", async () => {
+    vi.stubEnv("TZ", "America/New_York");
     try {
-      const { mountOverview } = await import("../web/overview.js"); const data = overview(); data.daily.nextCursor = "daily-next";
-      const f = fixture(data, path => path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: "error-next" } : data);
-      const view = await mountOverview(f.ctx); await settle();
-      for (const control of [button(f.root, "Refresh"), button(f.root, "Next page"), button(healthPanel(f.root), "Next page")]) {
-        control.focus(); f.doc.dispatchEvent(new Event("keydown")); const before = f.requests.length;
-        await vi.advanceTimersByTimeAsync(60000); expect.soft(f.requests.length).toBe(before); expect.soft(f.doc.activeElement).toBe(control);
-      }
-      f.doc.activeElement = f.doc.body; await vi.advanceTimersByTimeAsync(60000);
-      expect(f.requests.filter(path => path.startsWith("/api/overview"))).toHaveLength(2); view.dispose();
-    } finally { vi.useRealTimers(); }
+      const s = setup(); await settle(); s.ctx.now = () => Date.UTC(2030, 2, 15, 16);
+      button(s.root, "This month").click(); expect(s.routes.at(-1)!.route).toMatchObject({ page: "overview", query: { range: "month", from: Date.UTC(2030, 2, 1, 5), to: Date.UTC(2030, 2, 15, 16), buckets: [] } }); s.page.dispose();
+    } finally { vi.unstubAllEnvs(); }
   });
-  it.each(["navigation", "app disposal"])("%s aborts and disposes the mounted Overview", async mode => {
-    vi.useFakeTimers();
-    try {
-      const { startDashboard } = await import("../web/app.js"); const f = deferredFixture();
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { context: undefined } }); await settle();
-      expect(f.doc.listeners.get("keydown")?.size).toBe(2); expect(vi.getTimerCount()).toBe(2);
-      if (mode === "navigation") { button(f.root, "Context").click(); await settle(); } else app.dispose();
-      expect(f.pending.find(request => request.path === "/api/overview")!.signal.aborted).toBe(true);
-      expect(f.pending.every(request => request.signal.aborted)).toBe(true);
-      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(mode === "navigation" ? 1 : 0); expect(vi.getTimerCount()).toBe(0);
-      app.dispose();
-      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(0);
-    } finally { vi.useRealTimers(); }
+  it("noncontiguous selection toggles on modifiers and Space, not plain or right click", async () => {
+    const s = setup(async (_path, params) => { const data = overviewFixture(); data.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); return envelope(data); }); await settle();
+    let bars = s.bars(); fire(bars[4]!, "click", { button: 2, ctrlKey: true }); fire(bars[4]!, "click", { button: 0 });
+    expect(s.requests).toHaveLength(1);
+    fire(bars[4]!, "click", { button: 0, metaKey: true }); await settle(); bars = s.bars();
+    fire(bars[6]!, "keydown", { key: "Enter", ctrlKey: true }); await settle();
+    expect(s.requests.at(-1)!.params.get("buckets")).toBe(JSON.stringify([Date.UTC(2030, 3, 12), Date.UTC(2030, 3, 14)]));
+    fire(s.bars()[4]!, "keydown", { key: " " }); await settle(); expect(s.requests.at(-1)!.params.get("buckets")).toBe(JSON.stringify([Date.UTC(2030, 3, 14)])); s.page.dispose();
   });
-  it.each(["navigation", "app disposal"])("%s releases a mounted view that does not subscribe to abort", async mode => {
-    vi.useFakeTimers();
-    try {
-      const { startDashboard } = await import("../web/app.js"); const f = fixture(); let ticks = 0;
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, mounts: { context: undefined, overview: async () => {
-        const timer = setInterval(() => { ++ticks; }, 1000); return { dispose() { clearInterval(timer); } };
-      } } }); await settle();
-      await vi.advanceTimersByTimeAsync(1000); expect(ticks).toBe(1);
-      if (mode === "navigation") { button(f.root, "Context").click(); await settle(); } else app.dispose();
-      await vi.advanceTimersByTimeAsync(1000); expect(ticks).toBe(1); expect(vi.getTimerCount()).toBe(0); app.dispose();
-    } finally { vi.useRealTimers(); }
+  it("arrows rove focus and Escape or click away clears selection while controls preserve it", async () => {
+    const s = setup(async (_path, params) => { const d = overviewFixture(); d.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); return envelope(d); }); await settle();
+    fire(s.bars()[4]!, "keydown", { key: "ArrowRight" }); expect(s.doc.activeElement).toBe(s.bars()[5]);
+    fire(s.bars()[5]!, "keydown", { key: " " }); await settle();
+    fire(s.doc, "click", { target: button(s.root, "Tokens") }); expect(s.requests.at(-1)!.params.get("buckets")).not.toBe("[]");
+    fire(s.doc, "keydown", { key: "Escape" }); await settle(); expect(s.requests.at(-1)!.params.get("buckets")).toBe("[]");
+    fire(s.bars()[4]!, "keydown", { key: " " }); await settle(); fire(s.doc, "click", { target: s.root }); await settle(); expect(s.requests.at(-1)!.params.get("buckets")).toBe("[]"); s.page.dispose();
   });
-  it("direct Overview disposal aborts the in-flight request", async () => {
-    const { mountOverview } = await import("../web/overview.js"); const f = deferredFixture();
-    const view = await mountOverview(f.ctx); await settle(); view.dispose();
-    expect(f.pending.find(request => request.path === "/api/overview")!.signal.aborted).toBe(true);
+  it("uses actual selected downstream DTOs, retaining full-range total and bars", async () => {
+    const s = setup(async (_path, params) => {
+      const d = overviewFixture(); d.range.buckets = JSON.parse(params.get("buckets") ?? "[]");
+      if (d.range.buckets.length) { d.selectedTotal.credits = 2; d.models = [{ ...d.models[0]!, value: { ...d.models[0]!.value, credits: 2 } }]; d.sessions.rows = [{ ...d.sessions.rows[0]!, value: { ...d.sessions.rows[0]!.value, credits: 2 } }]; d.flow.total.credits = 2; d.flow.edges = [{ ...d.flow.edges[0]!, value: { ...d.flow.edges[0]!.value, credits: 2 }, share: 1 }]; }
+      return envelope(d);
+    }); await settle(); fire(s.bars()[4]!, "click", { button: 0, ctrlKey: true }); await settle();
+    expect(s.nodes().find(n => n.className === "selection-chip")!.textContent).toBe("Selected 1 day · 2 credits");
+    expect(s.nodes().find(n => n.getAttribute("data-panel") === "models")!.textContent).not.toContain("model-maple");
+    expect(s.nodes().find(n => n.className.split(" ").includes("range-summary"))!.textContent).toContain("Total10"); expect(s.bars()).toHaveLength(7); s.page.dispose();
   });
-  it("already-aborted Overview mounts dispose immediately", async () => {
-    vi.useFakeTimers();
-    try {
-      const { mountOverview } = await import("../web/overview.js"); const f = deferredFixture(); f.controller.abort();
-      const view = await mountOverview(f.ctx); await settle();
-      expect(f.pending).toHaveLength(0); expect(vi.getTimerCount()).toBe(0);
-      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(0); view.dispose();
-    } finally { vi.useRealTimers(); }
+  it("unit carries selection and range changes clear it", async () => {
+    const d = overviewFixture(); d.range.buckets = [d.buckets[4]!.key]; const s = setup(undefined, d); await settle();
+    button(s.root, "Tokens").click(); const unit = s.routes.at(-1)!.route; expect(unit.page === "overview" && unit.query.unit).toBe("tokens"); expect(unit.page === "overview" && unit.query.buckets).toEqual([d.buckets[4]!.key]);
+    button(s.root, "24 h").click(); const range = s.routes.at(-1)!.route; expect(range.page === "overview" && range.query.buckets).toEqual([]); s.page.dispose();
   });
-  it("stale and post-dispose Overview responses never replace newer evidence", async () => {
-    const { mountOverview } = await import("../web/overview.js"); const f = deferredFixture();
-    const view = await mountOverview(f.ctx); await settle(); button(f.root, "Refresh").click();
-    const requests = f.pending.filter(request => request.path === "/api/overview");
-    const newer = overview(); newer.actors[0]!.label = "newer"; requests[1]!.resolve(newer); await settle();
-    const stale = overview(); stale.actors[0]!.label = "stale"; requests[0]!.resolve(stale); await settle();
-    expect(tableRows(f.root, "Actors")[0]![0]).toBe("newer");
-    button(f.root, "Refresh").click(); view.dispose(); f.pending.filter(request => request.path === "/api/overview").at(-1)!.resolve(stale); await settle();
-    expect(tableRows(f.root, "Actors")[0]![0]).toBe("newer");
+  it("rejects custom local ranges over 93 days without a request", async () => {
+    const s = setup(); await settle(); button(s.root, "Custom").click(); const inputs = elements(s.root, "input");
+    inputs[0]!.value = "2030-01-01T00:00"; inputs[1]!.value = "2030-05-01T00:00"; button(s.root, "Apply range").click();
+    expect(s.root.textContent).toContain("93 days"); expect(s.requests).toHaveLength(1); s.page.dispose();
   });
-  it("stale source-error responses never replace newer diagnostics", async () => {
-    const { mountOverview } = await import("../web/overview.js"); const f = deferredFixture();
-    const view = await mountOverview(f.ctx); await settle(); f.pending.find(request => request.path === "/api/status")!.resolve(status()); await settle();
-    button(f.root, "Refresh").click(); f.pending.filter(request => request.path === "/api/status").at(-1)!.resolve(status()); await settle();
-    const requests = f.pending.filter(request => request.path === "/api/source-errors");
-    const page = (label: string) => ({ rows: [{ sourceLabel: label, projectLabel: "fixture", code: "parse-error", count: 1, lastCheckedAt: 0 }], nextCursor: null });
-    requests[1]!.resolve(page("newer")); await settle(); requests[0]!.resolve(page("stale")); await settle();
-    expect(tableRows(f.root, "Source diagnostics")[0]![0]).toBe("newer"); view.dispose();
+  it("freezes expanded and sorted sessions to resolved custom bounds and opens real ids", async () => {
+    const d = overviewFixture(), row = d.sessions.rows[0]!; d.sessions = sessionsFixture({ total: 12, nextOffset: 10, rows: Array.from({ length: 10 }, (_, i) => ({ ...row, id: `session-${i}`, name: `Session ${i}` })) });
+    const s = setup(async path => envelope(path === "/api/sessions" ? sessionsFixture({ total: 12, offset: 10, rows: [{ ...row, id: "session-10" }, { ...row, id: "session-11" }] }) : d), d); await settle();
+    expect(s.nodes().filter(n => n.getAttribute("data-session") !== null)).toHaveLength(10);
+    button(s.root, "Show all 12").click(); await settle(); const r = s.requests.at(-1)!;
+    expect(r.path).toBe("/api/sessions"); expect(r.params.get("range")).toBe("custom"); expect(r.params.get("from")).toBe(String(d.range.from)); expect(r.params.get("to")).toBe(String(d.range.to)); expect(r.params.get("offset")).toBe("10");
+    expect(s.nodes().filter(n => n.getAttribute("data-session") !== null)).toHaveLength(12);
+    const rowNode = s.nodes().find(n => n.getAttribute("data-session") === "session-0")!; elements(rowNode, "button")[0]!.click(); expect(s.routes.at(-1)!.route).toMatchObject({ page: "session", id: "session-0" }); s.page.dispose();
   });
-  it("hostile selected filters and source labels are preserved verbatim", async () => {
-    const { startDashboard } = await import("../web/app.js"); const hostile = '<img src=x onerror=alert(1)>';
-    const f = fixture(overview(), path => path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [{ sourceLabel: hostile, projectLabel: hostile, code: "parse-error", count: 1, lastCheckedAt: 0 }], nextCursor: null } : overview());
-    const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", filters: [{ field: "actor", value: hostile }] } }); await settle();
-    expect(elements(f.root, "p").find(node => node.className === "slice-label")!.textContent).toBe(`Selected filters: actor = ${hostile}`);
-    expect(tableRows(f.root, "Source diagnostics")[0]!.slice(0, 2)).toEqual([hostile, hostile]); expect(elements(f.root, "img")).toHaveLength(0); app.dispose();
+  it("drops old expansion when refreshed selection has changed", async () => {
+    let finish!: (reply: ApiEnvelope<unknown>) => void;
+    const d = overviewFixture(); d.sessions.total = 12; d.sessions.nextOffset = 1;
+    const s = setup(async (path, params) => { if (path === "/api/sessions") return new Promise(resolve => { finish = resolve; }); const data = structuredClone(d); data.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); return envelope(data); }, d); await settle();
+    button(s.root, "Show all 12").click(); await settle(); fire(s.bars()[4]!, "keydown", { key: " " }); await settle();
+    finish(envelope(sessionsFixture({ rows: [{ ...d.sessions.rows[0]!, name: "Stale row" }] }))); await settle();
+    expect(s.root.textContent).not.toContain("Stale row"); expect(s.requests.find(r => r.path === "/api/sessions")!.signal!.aborted).toBe(true); s.page.dispose();
   });
-  it("Overview preserves lower bounds and changing daily bases", async () => {
-    const { mountOverview } = await import("../web/overview.js");
-    const data = overview(); const first = data.daily.rows[0]!;
-    first.measure.unpricedCalls = 1;
-    const back = { ...measure(), aicDisplay: { primaryAic: 560, publishedAic: 1000, basis: "back-applied" as const } };
-    const unpriced = { ...measure(), unpricedCalls: 1, pricedCalls: 0, aic: null, aicDisplay: { primaryAic: null, publishedAic: null, basis: "published" as const } };
-    data.daily = { rows: [first, { ...first, start: 86400000, end: 129600000, label: "1970-01-02 early", measure: back }, { ...first, start: 129600000, end: 172800000, label: "1970-01-02 late", measure: unpriced }], nextCursor: null };
-    const f = fixture(data); const view = await mountOverview(f.ctx); await settle();
-    const totalChart = (basis: string) => elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H3" && child.textContent === `Daily total · ${basis}`))!;
-    expect(elements(totalChart("calibrated"), "title")[1]!.textContent).toContain("560+ AIC cal");
-    expect(tableRows(totalChart("calibrated"), "Daily total · calibrated")[0]![2]).toBe("560+ AIC cal");
-    expect(elements(totalChart("calibrated"), "p")[0]!.textContent).toContain("560+ AIC cal maximum");
-    expect(elements(totalChart("calibrated, back-applied"), "title")[1]!.textContent).toContain("calibrated, back-applied");
-    expect(tableRows(totalChart("calibrated, back-applied"), "Daily total · calibrated, back-applied")[0]![2]).toBe("560 AIC cal (back-applied)");
-    expect(elements(totalChart("published"), "circle")).toHaveLength(0);
-    expect(elements(totalChart("published"), "title")[1]!.textContent).toContain("unpriced AIC");
-    view.dispose();
+  it("reconciles server-pruned keys once without a request or remount loop", async () => {
+    const initial = overviewFixture(); initial.range.buckets = [1, initial.buckets[4]!.key];
+    const s = setup(async () => { const d = overviewFixture(); d.range.buckets = [d.buckets[4]!.key]; return envelope(d); }, initial); await settle();
+    expect(s.requests).toHaveLength(1); expect(s.routes.at(-1)).toMatchObject({ replace: true, route: { query: { buckets: [Date.UTC(2030, 3, 12)] } } }); s.page.dispose();
   });
-  it("Overview shutdown pauses until a successful user retry", async () => {
-    vi.useFakeTimers();
-    try {
-      const { mountOverview } = await import("../web/overview.js");
-      let online = false;
-      const f = fixture(overview(), path => { if (!online) throw new TypeError("fixture server stopped"); return path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview(); });
-      const view = await mountOverview(f.ctx); await settle();
-      expect(f.root.textContent).toContain("Run /usage again");
-      await vi.advanceTimersByTimeAsync(600000);
-      expect(f.requests.filter(path => path.startsWith("/api/overview"))).toHaveLength(1);
-      online = true; f.doc.dispatchEvent(new Event("keydown")); button(f.root, "Retry").click(); await settle();
-      expect(tableRows(f.root, "Actors")[0]![1]).toBe("560 AIC cal");
-      await vi.advanceTimersByTimeAsync(60000);
-      expect(f.requests.filter(path => path.startsWith("/api/overview"))).toHaveLength(3);
-      view.dispose();
-    } finally { vi.useRealTimers(); }
+  it("labels repeated local hours with distinct offsets and selects both keys", async () => {
+    const d = overviewFixture(); d.bucketSize = "hour"; d.range.tz = "America/New_York";
+    d.buckets = [Date.UTC(2030, 10, 3, 5), Date.UTC(2030, 10, 3, 6)].map(key => ({ ...d.buckets[4]!, key, start: key, end: key + 3600000 })); d.range.from = d.buckets[0]!.key; d.range.to = d.buckets[1]!.end;
+    const s = setup(async (_path, params) => { const data = structuredClone(d); data.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); return envelope(data); }, d); await settle();
+    expect(s.bars()[0]!.getAttribute("aria-label")).toContain("UTC-04:00"); expect(s.bars()[1]!.getAttribute("aria-label")).toContain("UTC-05:00");
+    fire(s.bars()[0]!, "keydown", { key: " " }); await settle(); fire(s.bars()[1]!, "keydown", { key: " " }); await settle(); expect(s.requests.at(-1)!.params.get("buckets")).toBe("[1919912400000,1919916000000]"); s.page.dispose();
   });
-  it("browser default month advances through now without changing explicit periods", async () => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date("2030-01-31T23:59:30.000Z"));
-    try {
-      const { startDashboard } = await import("../web/app.js"); const f = fixture();
-      const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client }); await settle();
-      await vi.advanceTimersByTimeAsync(60000);
-      const request = new URL(f.requests.filter(path => path.startsWith("/api/overview")).at(-1)!, "http://127.0.0.1");
-      expect(new Date(Number(request.searchParams.get("end"))).toISOString()).toBe("2030-02-01T00:00:30.000Z");
-      expect(new Date(Number(request.searchParams.get("start"))).toISOString()).toBe("2030-02-01T00:00:00.000Z");
-      app.dispose();
-      const historical = fixture(); const fixed = startDashboard({ document: historical.doc.asDocument(), root: historical.root as unknown as HTMLElement, client: historical.ctx.client, initialRoute: { view: "overview", period } });
-      await settle(); await vi.advanceTimersByTimeAsync(60000);
-      const old = new URL(historical.requests.filter(path => path.startsWith("/api/overview")).at(-1)!, "http://127.0.0.1");
-      expect(old.searchParams.get("start")).toBe("0"); expect(old.searchParams.get("end")).toBe("172800000"); fixed.dispose();
-    } finally { vi.useRealTimers(); }
+  it("settles empty sections while retaining pace", async () => {
+    const d = overviewFixture({ buckets: [], models: [], sessions: sessionsFixture({ rows: [], total: 0 }), flow: { total: overviewFixture().total, edges: [], models: [] } }); d.total.calls = 0;
+    const s = setup(undefined, d); await settle(); expect(s.root.textContent).toContain("No calls in this range."); expect(s.root.textContent).not.toContain("Loading"); expect(s.root.children[0]!.className).toBe("month-pace"); s.page.dispose();
   });
-  it("Overview refreshes only while visible active and unfocused in evidence", async () => {
-    // Break caught: background polling, abandoned-tab polling, or replacing a focused chart/table.
-    vi.useFakeTimers();
-    try {
-      const { mountOverview } = await import("../web/overview.js");
-      const f = fixture(); const view = await mountOverview(f.ctx); await settle();
-      const calls = () => f.requests.filter(path => path.startsWith("/api/overview")).length;
-      expect(calls()).toBe(1);
-      await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(2);
-      f.doc.visibilityState = "hidden"; await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(2);
-      f.doc.visibilityState = "visible";
-      const chart = elements(f.root, "section").find(node => node.className === "chart-panel")!;
-      button(chart, "Table").focus(); await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(2);
-      f.doc.activeElement = null; await vi.advanceTimersByTimeAsync(120000); expect(calls()).toBe(3); // 4 min fetch, 5 min inactive
-      await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(3);
-      f.doc.dispatchEvent(new Event("keydown")); await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(4);
-      view.dispose(); await vi.advanceTimersByTimeAsync(60000); expect(calls()).toBe(4);
-      expect(f.doc.listeners.get("keydown")?.size ?? 0).toBe(0); expect(vi.getTimerCount()).toBe(0);
-    } finally { vi.useRealTimers(); }
+  it("network errors settle and Retry fetches again; disposal ignores late data", async () => {
+    let failure = true; const s = setup(async () => { if (failure) throw new Error("offline"); return envelope(overviewFixture()); }); await settle(); expect(s.root.textContent).not.toContain("Loading"); failure = false; button(s.root, "Retry").click(); await settle(); expect(s.root.textContent).toContain("Daily credits"); s.page.dispose(); expect(s.requests.at(-1)!.signal!.aborted).toBe(true);
   });
-  it("browser entry mounts Overview and preserves focused actions", async () => {
-    // Break caught: an inert browser entry or navigation/refresh that steals focus or changes the selected slice.
-    const module = await import("../web/app.js").catch(() => null);
-    expect(module, "browser entry is available").not.toBeNull();
-    const f = fixture();
-    const app = module!.startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, now: () => period.end,
-      initialRoute: { view: "overview", period, filters: f.ctx.filters } });
-    await settle();
-    expect(elements(f.root, "nav")).toHaveLength(1); expect(elements(f.root, "h1")[0]!.textContent).toBe("Overview");
-    const refresh = button(f.root, "Refresh"); refresh.focus(); refresh.click(); await settle();
-    expect(f.doc.activeElement).toBe(refresh);
-    button(f.root, "Context").click(); await settle();
-    expect(elements(f.root, "h1")[0]!.textContent).toBe("Context");
-    expect(f.requests.some(path => path.startsWith("/api/context?"))).toBe(true);
-    button(f.root, "Overview").click(); await settle();
-    expect(f.requests.filter(path => path.startsWith("/api/overview")).every(path => new URL(path, "http://127.0.0.1").searchParams.get("filters") === '[{"field":"actor","value":"parent"}]')).toBe(true);
-    app.dispose();
+  it("keeps model colours on unselected bars and visible date labels", async () => {
+    const s = setup(async (_path, params) => { const d = overviewFixture(); d.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); if (d.range.buckets.length) { d.models = [d.models[0]!]; d.flow.models = d.models; } return envelope(d); }); await settle();
+    expect(s.bars()[5]!.children[1]!.getAttribute("fill")).toBe("#91c7e5");
+    fire(s.bars()[4]!, "keydown", { key: " " }); await settle(); expect(s.bars()[5]!.children[1]!.getAttribute("fill")).toBe("#91c7e5");
+    const svg = s.nodes().find(n => n.className === "daily-chart")!;
+    expect(elements(svg, "text").map(n => n.textContent)).toContain("Fri 12 APR"); s.page.dispose();
   });
-  it("Overview health separates ages and errors", async () => {
-    // Break caught: conflating ingest/counter ages or resetting the selected usage/daily page when paging errors.
-    const { mountOverview } = await import("../web/overview.js");
-    const s = status();
-    const f = fixture(overview(), (path, params) => path === "/api/status" ? s : path === "/api/source-errors" ? {
-      rows: Array.from({ length: params.has("cursor") ? 50 : 200 }, (_, i) => ({ sourceLabel: `source-${params.has("cursor") ? 200 + i : i}.jsonl`, projectLabel: "Unknown project", code: "parse-error", count: 3, lastCheckedAt: 1000 })),
-      nextCursor: params.has("cursor") ? null : "fixture-page-2",
-    } : overview());
-    const view = await mountOverview(f.ctx); await settle();
-    expect(f.root.textContent).toContain("Ingest age: 125 s (stale)");
-    expect(f.root.textContent).toContain("Counter age: 1 s (available)");
-    expect(f.root.textContent).toContain("Parse errors (recorded): 9");
-    expect(f.root.textContent).toContain("Source errors (current): 2");
-    expect(f.root.textContent).toContain("Ingest role: standby");
-    expect(tableRows(f.root, "Source diagnostics")).toHaveLength(200);
-    const health = elements(f.root, "section").find(node => node.children.some(child => child.tagName === "H2" && child.textContent === "Ingestion and counter"))!;
-    button(health, "Next page").click(); await settle();
-    expect(tableRows(f.root, "Source diagnostics")).toHaveLength(50);
-    expect(tableRows(f.root, "Source diagnostics")[0]).toEqual(["source-200.jsonl", "Unknown project", "parse error", "3", "1 Jan 1970, 00:00:01 UTC"]);
-    expect(f.requests.filter(path => path.startsWith("/api/overview"))).toHaveLength(1);
-    expect(f.requests.filter(path => path.startsWith("/api/source-errors"))).toEqual(["/api/source-errors?limit=200", "/api/source-errors?limit=200&cursor=fixture-page-2"]);
-    for (const role of ["owner", "follower", "inactive", "standby"] as const) {
-      s.ingest.role = role; button(f.root, "Refresh").click(); await settle(); expect(f.root.textContent).toContain(`Ingest role: ${role}`);
-    }
-    s.counter.availability = "stale"; s.counter.ageMs = 650000; s.ingest.ageMs = 1000; s.ingest.stale = false;
-    button(f.root, "Refresh").click(); await settle();
-    expect(f.root.textContent).toContain("Counter age: 650 s (stale)"); expect(f.root.textContent).toContain("Ingest age: 1 s (fresh)");
-    view.dispose();
+  it("known full-range model colours survive a unit remount with selected-only rows", async () => {
+    const s = setup(async (_path, params) => { const d = overviewFixture(); d.range.unit = params.get("unit") === "tokens" ? "tokens" : "credits"; d.range.buckets = JSON.parse(params.get("buckets") ?? "[]"); if (d.range.buckets.length) { d.models = [d.models[0]!]; d.flow.models = d.models; } return envelope(d); }); await settle();
+    fire(s.bars()[4]!, "click", { button: 0, ctrlKey: true }); await settle(); const selected = s.routes.at(-1)!.route;
+    s.page.dispose(); const page = mountOverview({ ...s.ctx, route: selected.page === "overview" ? { ...selected, query: { ...selected.query, unit: "tokens" } } : selected }); await settle();
+    expect(s.bars()[5]!.children[1]!.getAttribute("fill")).toBe("#91c7e5"); page.dispose();
   });
-  it("Overview pairs estimates and tokens", async () => {
-    // Break caught: independent AIC/token panes, published-only primaries, misleading Other bucket or Phase 4 insights.
-    const module = await import("../web/overview.js").catch(() => null);
-    expect(module, "Overview mount is available").not.toBeNull();
-    const f = fixture(); const view = await module!.mountOverview(f.ctx); await settle();
-    expect(tableRows(f.root, "Actors")[0]).toEqual(["parent", "560 AIC cal", "~1,000 AIC published estimate", "input 10; cache read 20; cache write 30; output 40; prompt 60; total 100; cache write 1h unavailable; reasoning unavailable", "1 call · 0 unpriced · 0 aggregate"]);
-    expect(tableRows(f.root, "Roles").map(row => row[0])).toEqual(["Other", "Other (remaining roles)"]);
-    expect(tableRows(f.root, "Month pace")[0]!.slice(0, 3)).toEqual(["Linear month-end projection", "1,120 AIC cal", "~2,000 AIC published estimate"]);
-    expect(tableRows(f.root, "Month pace")[0]![3]).toContain("total 200");
-    expect(f.root.textContent).toContain("calibrated x0.56 over 7 days");
-    expect(f.root.textContent).toContain("Possible overlap"); expect(f.root.textContent).toContain("Pending data");
-    expect(f.root.textContent).not.toMatch(/insights|what-if|alerts/i);
-    expect(f.root.textContent).toContain("counter is account-wide");
-    const chart = elements(f.root, "section").find(node => elements(node, "h3")[0]?.textContent === "Daily actor · parent · calibrated");
-    expect(chart).toBeDefined(); expect(elements(chart!, "title")[1]!.textContent).toContain("560 AIC cal");
-    expect(elements(chart!, "title")[1]!.textContent).toContain("published estimate ~1,000 AIC");
-    expect(elements(chart!, "title")[1]!.textContent).toContain("total 100");
-    button(chart!, "Table").click(); expect(elements(chart!, "table")[0]!.parentElement!.hidden).toBe(false);
-    expect(new URL(f.requests.find(path => path.startsWith("/api/overview"))!, "http://127.0.0.1").searchParams.get("filters")).toBe('[{"field":"actor","value":"parent"}]');
-    view.dispose();
+  it("flow uses model colours and code-face model ids", async () => {
+    const s = setup(); await settle(); const section = s.nodes().find(n => n.getAttribute("data-panel") === "flow")!;
+    const paths = elements(section, "path").filter(n => n.getAttribute("stroke-width") !== null);
+    expect(paths[0]!.getAttribute("stroke")).toBe("#f8785c");
+    expect(elements(section, "text").find(n => n.textContent === "model-maple")!.className).toBe("numeric");
+    expect(descendants(section).filter(n => n.getAttribute("data-model-node") !== null)).toHaveLength(2); s.page.dispose();
+  });
+  it("latest refresh wins when the client ignores aborted requests", async () => {
+    let finish!: (reply: ApiEnvelope<unknown>) => void, first = true;
+    const s = setup(async () => { if (first) { first = false; return new Promise(resolve => { finish = resolve; }); } const d = overviewFixture(); d.models[0]!.note = "Latest data"; return envelope(d); });
+    await s.page.refresh(); finish(envelope(overviewFixture())); await settle(); expect(s.root.textContent).toContain("Latest data"); expect(s.requests[0]!.signal!.aborted).toBe(true); s.page.dispose();
+  });
+  it("tokens changes every page heading and tooltip except credit pace", async () => {
+    const d = overviewFixture(); d.range.unit = "tokens"; const s = setup(undefined, d); await settle(); expect(s.root.textContent).toContain("Daily tokens"); expect(s.root.textContent).toContain("960"); expect(s.bars()[4]!.getAttribute("aria-label")).toContain("480 tokens"); expect(s.root.children[0]!.textContent).toContain("40"); s.page.dispose();
   });
 });
 
-it("in-place resume retains Overview chart selection, focus and page cursors; Refresh and Next still work", async () => {
-  vi.useFakeTimers();
-  const { mountOverview } = await import("../web/overview.js"); const data = overview(); data.daily.nextCursor = "page-2";
-  const f = fixture(data); const view = await mountOverview(f.ctx);
-  try {
-    await settle(); const toggle = button(f.root, "Table"); toggle.click(); toggle.focus();
-    const region = elements(f.root, "table").find(t => elements(t, "caption")[0]?.textContent === "Daily total · calibrated")!.parentElement!;
-    const count = f.requests.length; view.suspend!(false); await vi.advanceTimersByTimeAsync(120000); expect(f.requests).toHaveLength(count);
-    view.suspend!(true); expect(f.controller.signal.aborted).toBe(false); view.resume!(); view.refresh!(); await settle();
-    expect(button(f.root, "Table")).toBe(toggle); expect(f.doc.activeElement).toBe(toggle); expect(region.hidden).toBe(false);
-    view.suspend!(true); button(f.root, "Next page").click(); await settle();
-    expect(new URL(f.requests.filter(p => p.startsWith("/api/overview")).at(-1)!, "https://fixture").searchParams.get("cursor")).toBe("page-2");
-    view.suspend!(true); button(f.root, "Refresh").click(); await settle();
-    expect(new URL(f.requests.filter(p => p.startsWith("/api/overview")).at(-1)!, "https://fixture").searchParams.get("cursor")).toBe("page-2");
-  } finally { view.dispose(); vi.useRealTimers(); }
-});
-it("suspension aborts every owned Overview request without disposal or stale repaint", async () => {
-  const { mountOverview } = await import("../web/overview.js"), f = deferredFixture(); const view = await mountOverview(f.ctx);
-  try {
-    view.suspend!(true); expect(f.pending.every(p => p.signal.aborted)).toBe(true); expect(f.controller.signal.aborted).toBe(false);
-    f.pending.forEach(p => p.resolve(p.path === "/api/status" ? status() : overview())); await settle();
-    expect(f.root.textContent).not.toContain("Selected period");
-    view.resume!(); view.refresh!(); expect(f.pending.filter(p => !p.signal.aborted)).toHaveLength(2);
-  } finally { view.dispose(); }
-});
-it("comparison dates append directly without serializing and reparsing ISO", async () => {
-  const { mountOverview } = await import("../web/overview.js"), f = fixture();
-  const parse = vi.spyOn(Date, "parse"); const view = await mountOverview(f.ctx);
-  try {
-    await settle();
-    // Calibration's backward-compatible legend still parses its ISO; the
-    // comparison must not add another start/end pair to that list.
-    expect(parse.mock.calls.filter(([value]) => value === "1970-01-02T00:00:00.000Z")).toHaveLength(0);
-    const table = elements(f.root, "table").find(t => elements(t, "caption")[0]?.textContent === "Account comparison")!;
-    expect(elements(table, "time").map(t => t.getAttribute("datetime"))).toEqual(["1970-01-01T00:00:00.000Z", "1970-01-02T00:00:00.000Z"]);
-  } finally { parse.mockRestore(); view.dispose(); }
+it.each(["day", "hour"] as const)("labels Average and Peak in %s buckets with compact amounts and a date", async bucketSize => {
+  const d = overviewFixture(); d.bucketSize = bucketSize; d.total.credits = 118400; d.buckets[4]!.total.credits = 31200;
+  const s = setup(undefined, d); await settle();
+  const summary = s.nodes().find(n => n.className === "range-summary summary-chips")!;
+  expect(summary.children[1]!.textContent).toBe(`Average16.9k ${bucketSize === "day" ? "a day" : "an hour"}`);
+  expect(summary.children[2]!.textContent).toBe(`Peak${bucketSize === "day" ? "Fri 12 APR" : "Fri 12 APR 00:00 UTC+00:00"} · 31.2k`); s.page.dispose();
 });
 
-it.each(["Refresh", "Next page"])("paused app runs the user's %s without remount or a redundant wake refresh", async label => {
-  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js"); const data = overview(); data.daily.nextCursor = "page-2";
-  const f = fixture(data); const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", period, filters: f.ctx.filters } });
-  try {
-    await settle(); const section = f.root.children[0]; const control = button(f.root, label); control.focus();
-    await vi.advanceTimersByTimeAsync(300000); const count = f.requests.filter(p => p.startsWith("/api/overview")).length;
-    f.doc.dispatchEvent(new Event("click")); control.click(); await settle(); await vi.advanceTimersByTimeAsync(300);
-    expect(f.requests.filter(p => p.startsWith("/api/overview"))).toHaveLength(count + 1);
-    expect(f.root.children[0]).toBe(section); expect(button(f.root, label)).toBe(control); expect(f.doc.activeElement).toBe(control);
-    expect(new URL(f.requests.filter(p => p.startsWith("/api/overview")).at(-1)!, "https://fixture").searchParams.get("cursor")).toBe(label === "Next page" ? "page-2" : null);
-  } finally { app.dispose(); vi.useRealTimers(); }
+it("24-hour data has an Hourly credits heading", async () => {
+  const d = overviewFixture(); d.bucketSize = "hour"; d.range.range = "24h";
+  const s = setup(undefined, d); await settle();
+  expect(elements(s.root, "h2").map(n => n.textContent)).toContain("Hourly credits"); s.page.dispose();
+});
+it("clicking toolbar padding preserves the selected buckets", async () => {
+  const d = overviewFixture(); d.range.buckets = [d.buckets[4]!.key];
+  const s = setup(undefined, d); await settle();
+  fire(s.doc, "click", { target: s.nodes().find(n => n.hasAttribute("data-controls"))! }); await settle();
+  expect(s.requests).toHaveLength(1); expect(s.root.textContent).toContain("Selected 1 day"); s.page.dispose();
+});
+it("session name buttons are the only open controls and role focus roves within and between rows", async () => {
+  const d = overviewFixture(), first = d.sessions.rows[0]!;
+  d.sessions.rows = [first, { ...structuredClone(first), id: "second-session", name: "Second session" }];
+  const s = setup(undefined, d); await settle();
+  const rows = s.nodes().filter(n => n.hasAttribute("data-session"));
+  expect(rows.every(n => !n.hasAttribute("tabindex"))).toBe(true);
+  const names = rows.map(n => elements(n, "button")[0]!);
+  names[0]!.focus(); fire(names[0]!, "keydown", { key: "ArrowDown" }); expect(s.doc.activeElement).toBe(names[1]);
+  fire(names[1]!, "keydown", { key: "ArrowUp" }); expect(s.doc.activeElement).toBe(names[0]);
+  const segments = rows.map(n => descendants(n).filter(n => n.className === "role-segment"));
+  expect(segments.map(list => list.filter(n => n.getAttribute("tabindex") === "0").length)).toEqual([1, 1]);
+  fire(segments[0]![0]!, "keydown", { key: "ArrowRight" }); expect(s.doc.activeElement).toBe(segments[0]![1]);
+  expect(segments[0]!.map(n => n.getAttribute("tabindex"))).toEqual(segments[0]!.map((_, i) => i === 1 ? "0" : "-1"));
+  fire(segments[0]![1]!, "keydown", { key: "ArrowDown" }); expect(s.doc.activeElement).toBe(segments[1]![1]);
+  fire(segments[1]![1]!, "keydown", { key: "ArrowUp" }); expect(s.doc.activeElement).toBe(segments[0]![1]);
+  names[0]!.click(); expect(s.routes.at(-1)!.route).toMatchObject({ page: "session", id: first.id }); s.page.dispose();
+});
+it("a preserved sort never flashes credits-ranked rows while its refreshed page is pending", async () => {
+  let release!: (value: ApiEnvelope<unknown>) => void, delayed = false;
+  const d = overviewFixture(), sorted = sessionsFixture({ rows: [{ ...d.sessions.rows[0]!, name: "Sorted result" }] });
+  const s = setup(async path => path === "/api/sessions" ? delayed ? new Promise(resolve => { release = resolve; }) : envelope(sorted) : envelope(d));
+  await settle(); s.nodes().find(n => n.getAttribute("data-focus") === "session-sort-runs")!.click(); await settle();
+  delayed = true; const refresh = s.page.refresh(); await settle();
+  expect(s.nodes().find(n => n.getAttribute("data-panel") === "sessions")!.textContent).toContain("Sorted result");
+  release(envelope(sorted)); await refresh; s.page.dispose();
 });
 
-it("app-owned pointer activity keeps real Overview polling for twenty minutes", async () => {
-  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js"); const f = fixture();
-  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", period } });
-  try {
-    await settle();
-    for (let i = 0; i < 20; i++) { await vi.advanceTimersByTimeAsync(60000); f.doc.dispatchEvent(new Event("pointermove")); }
-    expect(f.requests.filter(p => p.startsWith("/api/overview"))).toHaveLength(21);
-  } finally { app.dispose(); vi.useRealTimers(); }
+it("role breakdown keeps a roving stop when refreshed roles shrink", async () => {
+  const d = overviewFixture(), s = setup(undefined, d); await settle();
+  const roles = () => s.nodes().filter(n => n.className === "role-segment");
+  fire(roles()[0]!, "keydown", { key: "End" });
+  d.sessions.rows[0]!.roles = d.sessions.rows[0]!.roles.slice(0, 1);
+  await s.page.refresh();
+  expect(roles()).toHaveLength(1); expect(roles()[0]!.getAttribute("tabindex")).toBe("0"); s.page.dispose();
 });
 
-it("a successful key wake refresh hides Retry and focuses the section heading", async () => {
-  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js"); const f = fixture(); let fail = true;
-  const client: DashboardClient = { async get<T>(path: string) { if (fail && path === "/api/overview") throw new DashboardClientError("busy"); return envelope((path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview()) as T); } };
-  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client, initialRoute: { view: "overview", period } });
-  try {
-    await settle(); const retry = button(f.root, "Retry"); expect(retry.hidden).toBe(false); retry.focus(); await vi.advanceTimersByTimeAsync(300000);
-    fail = false; f.doc.dispatchEvent(new Event("keydown")); await vi.advanceTimersByTimeAsync(300); await settle();
-    expect(retry.hidden).toBe(true); expect(f.doc.activeElement).toBe(elements(f.root, "h1")[0]); expect(elements(f.root, "h1")[0]!.getAttribute("tabindex")).toBe("-1");
-  } finally { app.dispose(); vi.useRealTimers(); }
+it("sessions expose cost-first rank and share in both representations", async () => {
+  const d = overviewFixture(), row = d.sessions.rows[0]!;
+  d.sessions.rows = [row, { ...structuredClone(row), id: "second", name: "Second", value: { ...row.value, credits: 2 } }];
+  const s = setup(undefined, d); await settle();
+  const section = s.nodes().find(n => n.getAttribute("data-panel") === "sessions")!;
+  const tables = elements(section, "table");
+  for (const table of tables) {
+    expect(elements(table, "th").map(n => n.textContent)).toEqual(["Rank", "Session", "Credits", "Share", "Breakdown", "Last active", "Runs"]);
+    const rows = elements(table, "tbody")[0]!.children;
+    expect(rows.map(r => cellText(r.children[0]!))).toEqual(["1", "2"]);
+    expect(rows.map(r => cellText(r.children[3]!))).toEqual(["100%", "20%"]);
+    expect(elements(table, "th")[2]!.getAttribute("aria-sort")).toBe("descending");
+    expect(elements(elements(table, "th")[2]!, "svg")).toHaveLength(1);
+    expect(rows[0]!.children[1]!.textContent).toContain("garden");
+  }
+  button(section, "Table").click(); expect(button(section, "Table").getAttribute("aria-pressed")).toBe("true"); s.page.dispose();
 });
-
-it("paused health Next page runs its own action once, cancelling the pending wake refresh", async () => {
-  vi.useFakeTimers(); const { startDashboard } = await import("../web/app.js");
-  const f = fixture(overview(), path => path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: "diag-2" } : overview());
-  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client: f.ctx.client, initialRoute: { view: "overview", period } });
-  try {
-    await settle(); const next = button(healthPanel(f.root), "Next page"); next.focus(); await vi.advanceTimersByTimeAsync(300000);
-    const count = f.requests.length; f.doc.dispatchEvent(new Event("click")); next.click(); await settle(); await vi.advanceTimersByTimeAsync(300);
-    expect(f.requests).toHaveLength(count + 1); expect(f.requests.at(-1)).toContain("cursor=diag-2"); expect(f.doc.activeElement).toBe(next);
-  } finally { app.dispose(); vi.useRealTimers(); }
-});
-
-it("a resumed Overview cursor keeps its response period across a rolling-month boundary", async () => {
-  vi.useFakeTimers(); vi.setSystemTime(Date.UTC(2030, 0, 31, 23, 59)); const { startDashboard } = await import("../web/app.js"); const f = fixture();
-  const requests: URLSearchParams[] = []; const data = overview(); data.daily.nextCursor = "page-2";
-  const client: DashboardClient = { async get<T>(path: string, params: URLSearchParams) {
-    if (path === "/api/overview") requests.push(new URLSearchParams(params));
-    return { ...envelope((path === "/api/status" ? status() : path === "/api/source-errors" ? { rows: [], nextCursor: null } : data) as T), period: params.has("start") ? { start: Number(params.get("start")), end: Number(params.get("end")) } : period };
-  } };
-  const app = startDashboard({ document: f.doc.asDocument(), root: f.root as unknown as HTMLElement, client });
-  try {
-    await settle(); button(f.root, "Next page").click(); await settle(); const pin = requests.at(-1)!;
-    await vi.advanceTimersByTimeAsync(300000); f.doc.dispatchEvent(new Event("keydown")); await vi.advanceTimersByTimeAsync(300); await settle();
-    expect(requests.at(-1)!.get("cursor")).toBe("page-2"); expect(requests.at(-1)!.get("start")).toBe(pin.get("start")); expect(requests.at(-1)!.get("end")).toBe(pin.get("end"));
-    button(f.root, "Previous page").click(); await settle(); expect(requests.at(-1)!.get("cursor")).toBeNull(); expect(requests.at(-1)!.get("start")).toBe(String(Date.UTC(2030, 1, 1)));
-  } finally { app.dispose(); vi.useRealTimers(); }
-});
-
-
-it.each([0, 2])("successful wake with %s source errors hides health Retry and focuses its heading", async sourceErrors => {
-  // Break caught: diagnostics success leaves a focused Retry visible or loses focus.
-  const { mountOverview } = await import("../web/overview.js"); const f = fixture(); let fail = true;
-  f.ctx.client = { async get<T>(path: string) {
-    if (path === "/api/source-errors" && fail) throw new DashboardClientError("busy");
-    return envelope((path === "/api/status" ? { ...status(), sourceErrors: fail ? 2 : sourceErrors, parseErrors: 0 } : path === "/api/source-errors" ? { rows: [], nextCursor: null } : overview()) as T);
-  } };
-  const view = await mountOverview(f.ctx);
-  try {
-    await settle(); const panel = healthPanel(f.root), retry = button(panel, "Retry"); expect(retry.hidden).toBe(false); retry.focus();
-    fail = false; view.refresh!(); await settle(); expect(retry.hidden).toBe(true); expect(f.doc.activeElement).toBe(elements(panel, "h2")[0]);
-  } finally { view.dispose(); }
+it("capture-scale daily ticks fit the peak and selected outline hugs the stack", async () => {
+  const d = overviewFixture(); d.buckets = [d.buckets[4]!]; d.range.buckets = [d.buckets[0]!.key];
+  d.buckets[0]!.total.credits = 31200; d.buckets[0]!.models[0]!.value.credits = 31200;
+  const s = setup(undefined, d); await settle(); const svg = s.nodes().find(n => n.className === "daily-chart")!;
+  expect(elements(svg, "text").filter(n => n.getAttribute("text-anchor") === "end").map(n => n.textContent)).toEqual(["0", "10k", "20k", "30k", "40k"]);
+  expect(elements(svg, "text").find(n => n.textContent === "credits")!.className).not.toContain("numeric");
+  const rects = elements(s.bars()[0]!, "rect"), bar = rects[1]!, outline = rects.at(-1)!;
+  expect(Number(outline.getAttribute("y"))).toBeCloseTo(Number(bar.getAttribute("y")) - 3, 8);
+  expect(Number(outline.getAttribute("height"))).toBeCloseTo(Number(bar.getAttribute("height")) + 6, 8);
+  s.page.dispose();
 });

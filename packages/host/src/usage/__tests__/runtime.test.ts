@@ -228,3 +228,26 @@ it.each([
   expect(f.runtime.snapshot().sourceErrorDiagnostics).toBeUndefined();
   expect(f.runtime.snapshot().backfill).toBe(snapshot.backfill);
 });
+
+
+it("runtime carries corrected month snapshots without ledger work and clears legacy fields",async()=>{
+ const f=fixture();f.runtime.start(false);await vi.advanceTimersByTimeAsync(0);
+ f.worker.emit("message",{...snapshot,monthUsed:48,monthPeriod:{start:0,end:86400000}});
+ expect(f.runtime.snapshot()).toMatchObject({monthUsed:48,monthPeriod:{start:0,end:86400000}});
+ f.worker.emit("message",snapshot);expect(f.runtime.snapshot().monthUsed).toBeUndefined();
+});
+
+it("passes opener session identity to the worker and retains collector metadata", async () => {
+  const f = fixture({ sessionId: "fixture-session" }); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  const options = (f.factory.mock.calls[0] as unknown as [URL, any])[1];
+  expect(options.workerData.command.sessionId).toBe("fixture-session");
+  const collector = { kind: "pi" as const, sessionId: "fixture-session", owner: "fixture-owner" };
+  f.worker.emit("message", { ...snapshot, collector }); expect(f.runtime.snapshot().collector).toEqual(collector);
+});
+
+it("metadata progress stays separate from calls and clears for older worker snapshots", async()=>{
+ const f=fixture();f.runtime.start(false);await vi.advanceTimersByTimeAsync(0);
+ f.worker.emit("message",{...snapshot,metadataBackfill:"running"});
+ expect(f.runtime.snapshot()).toMatchObject({backfill:"complete",metadataBackfill:"running"});
+ f.worker.emit("message",snapshot);expect(f.runtime.snapshot().metadataBackfill).toBeUndefined();
+});

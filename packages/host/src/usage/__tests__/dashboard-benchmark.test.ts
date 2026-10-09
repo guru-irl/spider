@@ -18,7 +18,7 @@ afterEach(() => { for (const close of closers.splice(0).reverse()) close(); });
 
 test("Node imports the real routes from built dist without esbuild", () => {
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", `import { loadBenchmarkModules } from './scripts/usage-dashboard-benchmark.mjs'; const m = await loadBenchmarkModules(process.cwd()); console.log(m.DASHBOARD_ROUTES.length);`], { encoding: "utf8", env: process.env });
-  expect(run.status, run.stderr).toBe(0); expect(run.stdout.trim()).toBe("11");
+  expect(run.status, run.stderr).toBe(0); expect(run.stdout.trim()).toBe("5");
 });
 
 test("benchmark rejects output outside checkout scratch, including symlink escapes", () => {
@@ -55,7 +55,7 @@ test("every dense-fixture route matches its independent reference", () => {
   closers.push(() => reader.close());
   for (const period of seed.periods) for (const request of plans.planRequests(period, seed.sessionId, seed.runId)) {
     const reference = plans.referenceRouteResult(fixture.db, request);
-    const value = reader.snapshot(ctx => DASHBOARD_ROUTES.find(r => r.path === request.path)!.handle(ctx, request.params));
+    const value = reader.snapshot(ctx => plans.executePlanRequest(ctx, request));
     plans.assertReferenceResult(request.name, value, reference);
   }
 });
@@ -63,10 +63,10 @@ test("every dense-fixture route matches its independent reference", () => {
 test("reference validation checks calls and published AIC independently", () => {
   const validate = Reflect.get(plans, "assertReferenceResult");
   expect(validate).toBeTypeOf("function");
-  const expected = { calls: 20, aic: 2000 };
-  validate("overview", { totals: expected }, { totals: expected });
-  expect(() => validate("cache", { totals: { calls: 19, aic: 2000 } }, { totals: expected })).toThrow(/reference/);
-  expect(() => validate("rates", { totals: { calls: 20, aic: 1999 } }, { totals: expected })).toThrow(/reference/);
+  const expected = { calls: 20, credits: 2000 };
+  validate("overview", { total: expected }, { total: expected });
+  expect(() => validate("overview", { total: { calls: 19, credits: 2000 } }, { total: expected })).toThrow(/reference/);
+  expect(() => validate("session", { total: { calls: 20, credits: 1999 } }, { total: expected })).toThrow(/reference/);
 });
 
 
@@ -101,7 +101,7 @@ test("any cold or warm month budget miss produces a failed report and non-SKIP f
   const summarize = Reflect.get(benchmark, "summarizeBenchmarkBudgets");
   expect(summarize).toBeTypeOf("function");
   const route = { route: "overview", window: "dense-month", coldMs: 5, p95Ms: 5, budgetMs: 10 };
-  const month = Array.from({ length: 13 }, (_, i) => ({ ...route, route: `route-${i}` }));
+  const month = Array.from({ length: 5 }, (_, i) => ({ ...route, route: `route-${i}` }));
   for (const first of [route, { ...route, coldMs: 11 }, { ...route, p95Ms: 11 }, { ...route, coldMs: 10, p95Ms: 10 }]) {
     const rows = [first, ...month.slice(1)];
     const result = summarize({ routes: rows });
@@ -120,12 +120,12 @@ test("Status reference does not depend on maintained ledger_totals", () => {
   const seed = plans.seedPlanLedger(fixture.file, 100);
   fixture.db.exec("UPDATE ledger_totals SET calls=999 WHERE singleton=1");
   const request = plans.planRequests(seed.periods[0]!, seed.sessionId, seed.runId).find(r => r.name === "status")!;
-  expect(plans.referenceRouteResult(fixture.db, request)).toEqual({ calls: 100 });
+  expect(plans.referenceRouteResult(fixture.db, request)).toEqual({ latestCounterAt: seed.now });
 });
 
 
-test("month budgets require exactly 13 distinct budgeted dense-month routes", () => {
-  const month = Array.from({ length: 13 }, (_, i) => ({ route: `route-${i}`, window: "dense-month", coldMs: 5, p95Ms: 5, budgetMs: 10 }));
+test("month budgets require exactly five distinct budgeted dense-month routes", () => {
+  const month = Array.from({ length: 5 }, (_, i) => ({ route: `route-${i}`, window: "dense-month", coldMs: 5, p95Ms: 5, budgetMs: 10 }));
   expect(benchmark.summarizeBenchmarkBudgets({ routes: month }).allMonthBudgetsMet).toBe(true);
   for (const routes of [[], month.slice(1), [...month, { ...month[0]!, route: "extra" }],
     month.map(row => ({ ...row, window: "current-month" })),

@@ -10,8 +10,9 @@ import { USAGE_SCHEMA_V3 } from "../schema-v3.js";
 import { DIMENSION_COLUMNS, readDimensionValues } from "../dimension-values.js";
 import { dynamicSelectionSql } from "./fixtures/selection-v3.js";
 import { openDashboardReader } from "../dashboard-reader.js";
-import { queryOverview } from "../query-overview.js";
-import { queryExplorer, queryFilterValues } from "../query-explorer.js";
+import { readMeasure } from "../dashboard-selection.js";
+import { readUsageCube, sumValues } from "../query-redesign-shared.js";
+import { customRange } from "./fixtures/redesign-range.js";
 
 let root: string, file: string, db: Db;
 beforeEach(() => {
@@ -113,49 +114,32 @@ it("stored narrow result has only requested columns and public selection flags",
   const sql = countedUsageSql("1", "c.ts,c.run_id,c.is_report,c.source_file,c.source_kind", undefined, true);
   expect(Object.keys(db.prepare(sql).get()!)).not.toContain("selection_undercount");
 });
-it.each([2, 3])("Overview, Explorer and filter values select correctly on unmigrated v%s", version => {
+it.each([2, 3])("replacement selects canonical rows on unmigrated v%s", version => {
   insert("a"); insert("b", "b", "b", "a");
-  if (version === 3) migrateUsageLedger(db);
-  const helper = (schema as unknown as { storedSelection?: (db: Db) => boolean }).storedSelection;
+  if (version === 3) { db.exec(USAGE_SCHEMA_V3); db.pragma("user_version=3"); }
   const reader = openDashboardReader(file, { instanceId: "fixture", serverBuild: "fixture", now: () => 1000, calibrationMode: () => "off" })!;
-  const queries: string[] = []; const prepare = db.prepare.bind(db);
-  const spy = vi.spyOn(db, "prepare").mockImplementation(sql => { queries.push(sql); return prepare(sql); });
   try {
     reader.snapshot(ctx => {
-      ctx = { ...ctx, db }; const slice = { start: 0, end: 1000, filters: [] };
-      const overview = queryOverview(ctx, slice); expect(overview.totals.calls).toBe(1);
-      const explorer = queryExplorer(ctx, { slice, groupBy: ["actor"], page: { limit: 20 } }); expect(explorer.totals.calls).toBe(1);
-      queryFilterValues(ctx, slice, "actor", "", 20);
+      const queries: string[] = [], prepare = ctx.db.prepare.bind(ctx.db);
+      const spy = vi.spyOn(ctx.db, "prepare").mockImplementation(sql => { queries.push(sql); return prepare(sql); });
+      try { expect(readMeasure(ctx, { start: 0, end: 1000, filters: [] }).calls).toBe(1); } finally { spy.mockRestore(); }
+      const selections = queries.filter(sql => sql.includes("selected_reports") && sql.includes("FROM calls c"));
+      expect(selections.length).toBeGreaterThan(0);
+      for (const sql of selections) expect(sql.includes("c.selection_shadowed = 0")).toBe(version === 3);
     });
-    expect(helper?.(db)).toBe(version === 3);
-    const selections = queries.filter(sql => sql.includes("selected_reports") && sql.includes("FROM calls c"));
-    expect(selections.length).toBeGreaterThanOrEqual(3);
-    for (const sql of selections) expect(sql.includes("c.selection_shadowed = 0"), sql).toBe(version === 3);
-  } finally { spy.mockRestore(); reader.close(); }
+  } finally { reader.close(); }
 });
-it.each(["published", "calibrated", "back-applied"])("Overview preserves %s AIC throughout its branches, identically to Explorer", basis => {
+it.each(["published", "calibrated", "back-applied"])("replacement keeps %s credit precision in all slices", basis => {
   migrateUsageLedger(db); insert("a");
   const reader = openDashboardReader(file, { instanceId: "rounding", serverBuild: "fixture", now: () => 1000, calibrationMode: () => "auto" })!;
   try {
     reader.snapshot(ctx => {
-      const fallback = ctx.calibration.at(999, "off");
-      const fit = { ...fallback, status: "calibrated" as const, factor: 0.54321987, windowEnd: 2000 };
+      const fallback = ctx.calibration.at(999, "off"), fit = { ...fallback, status: "calibrated" as const, factor: 0.54321987, windowEnd: 2000 };
       ctx = { ...ctx, calibrationMode: basis === "published" ? "off" : "auto", calibration: { ...ctx.calibration,
         atMany: ends => ends.map(() => basis === "calibrated" ? fit : fallback), earliest: () => fit } };
-      const result = queryOverview(ctx, { start: 0, end: 1000, filters: [] });
-      const measures = [result.totals, ...result.actors.map(x => x.measure), ...result.roles.map(x => x.measure),
-        ...result.daily.rows.flatMap(x => [x.measure, ...x.actors.map(a => a.measure), ...x.roles.map(r => r.measure)])];
-      for (const measure of measures) {
-        const publishedAic = measure.calls ? 0.123456789 : null;
-        expect(measure.aic).toBe(publishedAic);
-        expect(measure.aicComponents).toEqual({ input: publishedAic, cacheRead: measure.calls ? 0 : null,
-          cacheWrite: measure.calls ? 0 : null, output: measure.calls ? 0 : null });
-        expect(measure.aicDisplay).toEqual({ publishedAic, primaryAic: publishedAic === null ? null :
-          basis === "published" ? publishedAic : publishedAic * 0.54321987, basis });
-      }
-      expect(result.totals.aicDisplay.basis).toBe(basis);
-      const explorer = queryExplorer(ctx, { slice: { start: 0, end: 1000, filters: [] }, groupBy: ["actor"], page: { limit: 20 } });
-      expect(explorer.totals).toEqual(result.totals);
+      const cube = readUsageCube(ctx, customRange(0, 1000));
+      const expected = 0.123456789 * (basis === "published" ? 1 : 0.54321987);
+      expect(cube.total.credits).toBe(expected); expect(sumValues(cube.rows.map(row => row.value))).toEqual(cube.total);
     });
   } finally { reader.close(); }
 });

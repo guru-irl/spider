@@ -1,0 +1,47 @@
+.calibration-page .calibration-heading{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:22px}.calibration-heading .summary-chips{margin:0}
+.calibration-page .data-stats{display:grid;grid-template-columns:.8fr 1.2fr 1.2fr .8fr 1.2fr;margin:24px 0}
+.calibration-page .data-stat{padding:0 24px;border-left:1px solid var(--usage-border);display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:0}
+.calibration-page .data-stat:first-child{padding-left:0;border-left:0}
+.calibration-page .data-stat>.fact-label,.calibration-page .data-stat small{font-size:12px;color:var(--usage-muted)}
+.calibration-page .data-stat>.stat-value.mono{font-size:32px;font-weight:700;line-height:1.2;white-space:nowrap}
+.calibration-page .data-stat>.stat-value{color:var(--usage-ink)}
+.calibration-page .data-stat .unavailable-value{font-size:24px;font-weight:700;line-height:1.6}
+.calibration-page .data-stat>time{font-size:13px;max-width:24ch}
+.calibration-page .state-pill{border:1px solid var(--usage-border);border-radius:999px;display:inline-flex;align-items:center;gap:8px;padding:5px 11px;font-size:13px;font-weight:500;white-space:nowrap;min-height:32px}
+.calibration-page .status-calibrated,.calibration-page .status-back-applied{color:var(--usage-model-sage);border-color:var(--usage-model-sage)}
+.calibration-page .status-published-only{color:var(--usage-model-mustard);border-color:var(--usage-model-mustard)}
+.calibration-page .status-counter-unavailable{color:var(--usage-muted);border-color:var(--usage-muted)}
+.calibration-page .state-pill[data-status]::before{content:'';width:6px;height:6px;background:currentColor;border-radius:50%}
+.calibration-page .method-copy{max-width:75ch;color:var(--usage-muted);margin:20px 0 24px}
+.calibration-page .counter-legend,.calibration-page .summary-chips,.calibration-page .counter-gap-days{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.calibration-page .counter-legend{margin:0 0 10px}
+.calibration-page .legend-key{border:1px solid var(--usage-border);border-radius:999px;padding:6px 10px;display:inline-flex;align-items:center;gap:8px;font-size:12px;white-space:nowrap}
+.calibration-page .legend-key::before{content:'';width:10px;height:10px;background:var(--usage-ink)}
+.calibration-page .counter-key::before{background:var(--usage-muted)}
+.calibration-page .correction-chart{display:block;width:100%;height:284px}
+.calibration-page .correction-grid{stroke:var(--usage-border);stroke-width:1}
+.calibration-page .published-bar{fill:var(--usage-ink)}
+.calibration-page .counter-bar{fill:var(--usage-muted)}
+.calibration-page .correction-gap{fill:none;stroke:var(--usage-hatch);stroke-width:2;stroke-dasharray:2 3}
+.calibration-page .correction-axis,.calibration-page .correction-gap-label{font-family:var(--usage-code);font-size:12px}
+.calibration-page .correction-note,.calibration-page .interval-note{font-size:12px;color:var(--usage-muted)}
+.calibration-page .correction-note{margin:14px 0 24px}
+.calibration-page .subsection-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:28px 0 10px}
+.calibration-page .subsection-head h3,.calibration-page .subsection-title{font-size:16px}
+.calibration-page .table-note{display:flex;align-items:center;gap:16px;margin-top:14px}
+.calibration-page .data-table caption{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.calibration-page .intervals-table td,.calibration-page .intervals-table th{padding-top:11px;padding-bottom:11px}
+.calibration-page .intervals-table td{font-family:var(--usage-code);font-size:13px;white-space:nowrap}
+.calibration-page .intervals-table td:nth-child(n+3),.calibration-page .intervals-table th:nth-child(n+3){text-align:right}
+.calibration-page .rates-table{margin:18px 0 20px}
+.calibration-page .rates-table td,.calibration-page .daily-table td,.calibration-page .errors-table td{font-family:var(--usage-code);font-size:13px}
+.calibration-page .rates-table td:nth-child(2){font-family:var(--usage-text)}
+.calibration-page .rates-table td:nth-child(n+3):nth-child(-n+7),.calibration-page .rates-table th:nth-child(n+3):nth-child(-n+7),.calibration-page .daily-table td:nth-child(n+2),.calibration-page .daily-table th:nth-child(n+2){text-align:right}
+.calibration-page .unpriced-models{margin-top:20px}
+.calibration-page .unpriced-models>p{margin-top:10px;font-size:13px}
+.calibration-page .ingestion-stats{grid-template-columns:1.3fr 1.3fr .9fr 1fr .6fr}
+.calibration-page .subsection-title{margin:28px 0 10px}
+.calibration-page .empty-errors{padding:20px 0;border-top:1px solid var(--usage-border);border-bottom:1px solid var(--usage-border);color:var(--usage-muted)}
+.calibration-page .gaps-stats{grid-template-columns:1fr 1fr 1fr;margin-bottom:0}
+.calibration-page .counter-gap-days{margin-top:20px}
+@media(max-width:1350px){.calibration-page .data-stat{padding:0 16px}.calibration-page .data-stat>.stat-value.mono{font-size:28px}.calibration-page .state-pill{font-size:12px;padding:5px 8px}.calibration-page .correction-stats{grid-template-columns:.8fr 1.1fr 1.1fr .8fr 1.3fr}.calibration-page .ingestion-stats{grid-template-columns:1.3fr 1.2fr .9fr 1fr .6fr}}

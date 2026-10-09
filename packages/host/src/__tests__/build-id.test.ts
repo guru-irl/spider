@@ -1,9 +1,11 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+afterEach(cleanupFixtureDashboards);
 import { mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { controlDoctor } from "../control";
+import { createFixtureDashboard, cleanupFixtureDashboards } from "../usage/__tests__/fixtures/dashboard-assets.js";
 import * as build from "../../../../scripts/build-id.mjs";
 import * as runtime from "../build-id";
 
@@ -160,6 +162,7 @@ describe("assert-bundle marker gate", () => {
   it("rejects a natively linkable marked bundle whose default export is not a function", () => {
     const dir = join(scratch, "non-function-export", "dist");
     mkdirSync(dir, { recursive: true });
+    createFixtureDashboard(undefined, join(dir, "dashboard"));
     writeFileSync(join(dir, "extension.js"), `// ${marker}\nexport default { fixture: true };\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
@@ -168,6 +171,7 @@ describe("assert-bundle marker gate", () => {
   it("rejects a marked bundle that cannot link natively", () => {
     const dir = join(scratch, "native-link-failure", "dist");
     mkdirSync(dir, { recursive: true });
+    createFixtureDashboard(undefined, join(dir, "dashboard"));
     writeFileSync(join(dir, "extension.js"), `// ${marker}\nimport { missing } from 'node:fs';\nexport default function spiderExtension() { return missing; }\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
@@ -182,6 +186,7 @@ describe("assert-bundle marker gate", () => {
   ])("checks %s", (name, banner, exitCode) => {
     const dir = join(scratch, name, "dist");
     mkdirSync(dir, { recursive: true });
+    createFixtureDashboard(undefined, join(dir, "dashboard"));
     writeFileSync(join(dir, "extension.js"), `${banner}export default function spiderExtension() {}\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(exitCode);

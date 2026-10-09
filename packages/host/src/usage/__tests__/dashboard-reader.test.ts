@@ -103,7 +103,7 @@ it("first pragma failure closes its handle and maps corrupt errors", async () =>
   } finally { opener.mockRestore(); pragma.mockRestore(); closed.mockRestore(); }
 });
 
-it("standalone status reads all tables in a deferred transaction", async () => {
+it("route status reads its fields in the snapshot transaction", async () => {
   fixture = createDashboardFixture();
   const { openDashboardReader } = await import("../dashboard-reader.js");
   const reader = openDashboardReader(fixture.file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
@@ -112,9 +112,14 @@ it("standalone status reads all tables in a deferred transaction", async () => {
   const prepare = db.prepare.bind(db);
   const spy = vi.spyOn(db, "prepare").mockImplementation(sql => {
     expect(db.raw.inTransaction).toBe(true);
+    if (/ledger_totals/.test(sql)) throw new Error("status must not query unused call totals");
     return prepare(sql);
   });
-  try { expect(reader.status().schemaVersion).toBe(3); } finally { spy.mockRestore(); }
+  try {
+    let schemaVersion: number | undefined;
+    expect(() => { schemaVersion = reader.snapshot(ctx => ctx.status()).schemaVersion; }).not.toThrow();
+    expect(schemaVersion).toBe(4);
+  } finally { spy.mockRestore(); }
 });
 
 it("status refreshes schema version after a writable migration", async () => {
@@ -125,12 +130,12 @@ it("status refreshes schema version after a writable migration", async () => {
   const { openDashboardReader } = await import("../dashboard-reader.js");
   const reader = openDashboardReader(file, { instanceId: "fixture", now: () => DASHBOARD_NOW, calibrationMode: () => "auto", serverBuild: "fixture" })!;
   readers.push(reader);
-  expect(reader.status().schemaVersion).toBe(1);
+  expect(() => reader.snapshot(ctx => ctx.status())).toThrow("ledger-unavailable");
   const { openUsageLedger } = await import("../ledger.js");
   const migrated = openUsageLedger(file);
   migrated.close();
-  expect(reader.status().schemaVersion).toBe(3);
-  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(3);
+  expect(reader.snapshot(ctx => ctx.status()).schemaVersion).toBe(4);
+  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(4);
 });
 
 it("reader generations retain the launcher owner prefix and invalidate old cursors", async () => {
@@ -201,7 +206,7 @@ it.each([
   readers.push(reader);
   const db = reader.snapshot(ctx => ctx.db);
   // Revision owns a prepared statement, so inject at SQLite's transaction/statement boundary.
-  for (const invoke of [() => reader.revision(), () => reader.status(), () => reader.snapshot(() => 42)]) {
+  for (const invoke of [() => reader.revision(), () => reader.snapshot(ctx => ctx.status()), () => reader.snapshot(() => 42)]) {
     const error = Object.assign(new Error("synthetic private SQLite text"), { code });
     const statement = db.raw.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'");
     const prototype = Object.getPrototypeOf(statement) as typeof statement;

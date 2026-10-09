@@ -1,4 +1,3 @@
-import { resolveTokenCell } from "./format.js";
 import { element } from "./dom.js";
 const captionSequences = new WeakMap<Document, number>();
 export function renderTable(document: Document, options: { caption: string; columns: readonly string[]; rows: readonly (readonly (string | HTMLElement)[])[] }): HTMLTableElement {
@@ -20,7 +19,7 @@ export function renderTable(document: Document, options: { caption: string; colu
       cell.setAttribute("role", "cell"); cell.setAttribute("headers", `${caption.id}-col-${index}`);
       const label = element(document, "span", options.columns[index] ?? "", "cell-label"); label.setAttribute("aria-hidden", "true");
       const content = element(document, "div", undefined, "cell-value");
-      if (typeof value === "string") content.textContent = value; else content.append(resolveTokenCell(document, value, options.columns.length));
+      if (typeof value === "string") content.textContent = value; else content.append(value);
       cell.append(label, content);
       line.append(cell);
     }
@@ -40,7 +39,6 @@ export function tableRegion(document: Document, table: HTMLTableElement): HTMLEl
   region.id = `${caption.id}-region`; region.setAttribute("aria-labelledby", caption.id); region.append(table);
   if (table.className.split(" ").includes("wide-table")) {
     region.className += " wide-table-region";
-    const cue = element(document, "p", "Scroll horizontally to see all columns", "scroll-cue"); cue.id = `${caption.id}-scroll-cue`; region.setAttribute("aria-describedby", cue.id); region.append(cue);
   }
   // Tall tables can be centered by native Tab scrolling, hiding their focus indicator.
   region.addEventListener("focus", () => { if (region.matches(":focus-visible")) caption.scrollIntoView?.({ block: "nearest" }); });

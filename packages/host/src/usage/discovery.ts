@@ -2,7 +2,7 @@ import { open, readdir, realpath, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
-import type { RunMeta } from "./ledger.js";
+import { normalizeRunStatus, type RunMeta } from "./ledger.js";
 import type { SourceInfo as ParserSource } from "./parse.js";
 
 export type UsageRoots = { registryDb: string; sessionsDir: string; ledgerFile: string; authPath: string; leaseDir: string };
@@ -156,7 +156,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
           id, dbPath, project: owner.project, repo: owner.repo, sessionId: text(row.session_id),
           parentRunId: text(row.parent_run_id), agent: text(row.agent), role: text(row.role), name: text(row.name),
           model: text(row.model), thinking: text(row.thinking), phase: text(row.phase),
-          startedAt: number(row.started_at), endedAt: number(row.ended_at)
+          startedAt: number(row.started_at), endedAt: number(row.ended_at), status: normalizeRunStatus(row.status)
         };
         runs.push(run); runStates.push({ id, dbPath, status: text(row.status), childMode: text(row.child_mode) });
         // Current runs schemas (including migrations) contain no launch cwd or

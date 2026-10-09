@@ -43,8 +43,13 @@ it("v3 backfills shipped v2 facts additively and repeated migration is inert", (
   ]);
   expect(db.prepare("SELECT id,ts,source_file,copied,fingerprint,counted FROM calls ORDER BY id").all()).toEqual(facts);
   const after = db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").all();
-  // Only calls gains columns. All other shipped durable SQL stays verbatim.
-  expect(after.filter(row => (row as { name: string }).name !== "calls" && objects.some(old => (old as { name: string }).name === (row as { name: string }).name)))
+  // Calls gains v3 selection columns; runs_meta gains the v4 status column.
+  // All original SQL is preserved after stripping the additive status column.
+  const stripStatus = (row: unknown) => {
+    const object = row as { name: string; sql: string };
+    return object.name === "runs_meta" ? { ...object, sql: object.sql.replace(/, status TEXT\s+CHECK \(status IN \('queued','running','paused','done','failed','cancelled'\)\)/, "") } : object;
+  };
+  expect(after.filter(row => (row as { name: string }).name !== "calls" && objects.some(old => (old as { name: string }).name === (row as { name: string }).name)).map(stripStatus))
     .toEqual(objects.filter(row => (row as { name: string }).name !== "calls"));
   const revision = db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get();
   migrateUsageLedger(db);

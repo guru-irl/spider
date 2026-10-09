@@ -92,3 +92,12 @@ it("calibration setting offers live global auto and off", () => {
   expect(coerce(field!, "false").ok).toBe(false);
   expect(field!.restart).not.toBe(true);
 });
+
+
+it("optional positive budget accepts fractions and blank clears without changing other numeric fields",()=>{
+ const field=getField("usage.monthlyBudget")!;expect(field).toBeDefined();
+ expect(field).toMatchObject({scope:"global",optional:true,exclusiveMin:0});expect(field.default).toBeUndefined();
+ expect(coerce(field," ")).toEqual({ok:true,value:undefined});expect(coerce(field,"0.5")).toEqual({ok:true,value:0.5});
+ for(const raw of ["0","-1","NaN","Infinity","nonnumeric"])expect(coerce(field,raw).ok).toBe(false);
+ expect(coerce(getField("usage.alerts.sessionCredits")!,"0")).toEqual({ok:true,value:0});
+});

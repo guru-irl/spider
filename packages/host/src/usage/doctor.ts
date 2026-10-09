@@ -6,7 +6,16 @@ import { calibrationFallback } from "./calibration.js";
 import { toAicDisplay } from "./aic-display.js";
 import { safeTimestamp } from "./dashboard-selection.js";
 import type { SourceErrorRow } from "./dashboard-contract.js";
-import { sourceErrorCode, sourceErrorLabel } from "./query-source-errors.js";
+import { sourceErrorCode, sourceErrorLabel } from "./source-error-diagnostics.js";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadDashboardAssets, DashboardAssetsError } from "./dashboard-assets.js";
+export async function dashboardAssetsStatus(bundleUrl: string | URL): Promise<"ready" | "usage-dashboard-missing" | "usage-dashboard-invalid"> {
+  try {
+    const url = bundleUrl instanceof URL ? bundleUrl : /^[a-z][a-z\d+.-]*:/i.test(bundleUrl) ? new URL(bundleUrl) : pathToFileURL(bundleUrl);
+    await loadDashboardAssets(fileURLToPath(new URL("./dashboard/", url)));
+    return "ready";
+  } catch (error) { return error instanceof DashboardAssetsError ? error.code : "usage-dashboard-invalid"; }
+}
 
 // Never show arbitrary error messages, source payloads, paths, account identities or raw JSON.
 const codes = new Set([
@@ -29,6 +38,7 @@ import { usageServerCrashCodes } from "./server-crash-codes.js";
 export type UsageDoctorDiagnostics = {
   sourceErrors: readonly SourceErrorRow[]; truncated: boolean;
   serverFailures: readonly { code: string; mtimeMs: number }[]; now: number;
+  dashboardAssets?: "ready" | "usage-dashboard-missing" | "usage-dashboard-invalid";
 };
 function relativeFailureTime(ageMs: number): string {
   const [size, unit] = ageMs >= 86400000 ? [86400000, "day"] : ageMs >= 3600000 ? [3600000, "hour"]
@@ -42,6 +52,7 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
   const { health, counter, reconciliation, progress } = snapshot;
   const lines = [`- usage: footer=${config.footer ? "enabled" : "disabled"} poll=${config.counterPoll ? "enabled" : "disabled"}; alerts not implemented`,
     `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources` : " progress=unavailable"}`];
+  lines.push(`- usage metadata backfill=${snapshot.metadataBackfill ?? "pending"}${snapshot.metadataProgress ? ` progress=${snapshot.metadataProgress.sourcesCompleted}/${snapshot.metadataProgress.sourcesTotal} sources` : " progress=unavailable"}`);
   const followerNotice = snapshot.errorCode === "usage-ingest-lease-lost" || snapshot.errorCode === "usage-ingest-lease-busy";
   const role = followerNotice ? "follower" : snapshot.ingestRole;
   lines.push(`- usage ingest: ${role === "follower" ? "follower (another ingest participant owns ingestion)" : role ?? "not published yet"}`);
@@ -57,6 +68,8 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
     lines.push("- usage source diagnostics: truncated; open /usage for more");
   if (diagnostics) {
     const seen = new Set<string>();
+    const status = diagnostics.dashboardAssets;
+    lines.push(`- dashboard-assets: ${status === "ready" ? "ready" : status ? `${status}; rebuild or reinstall spider` : "not checked"}`);
     const failures = diagnostics.serverFailures.filter(({ code, mtimeMs }) => usageServerCrashCodes.has(code) &&
       Number.isFinite(mtimeMs) && diagnostics.now - mtimeMs <= 7 * 86400000).slice().reverse().sort((a, b) => b.mtimeMs - a.mtimeMs);
     for (const { code, mtimeMs } of failures) {

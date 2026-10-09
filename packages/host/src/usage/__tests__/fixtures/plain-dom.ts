@@ -60,11 +60,11 @@ export class PlainDocument {
   readonly listeners: Map<string, Set<Listener>> = new Map<string, Set<Listener>>();
   readonly listenerOptions: Map<string, unknown> = new Map<string, unknown>();
   createElement(tag: string): PlainElement {
-    if (!/^(a|button|caption|code|dd|div|dl|dt|h1|h2|h3|header|input|label|link|main|nav|option|p|section|select|small|span|table|tbody|td|th|thead|time|tr)$/i.test(tag)) throw new Error(`plain-dom: unsupported element ${tag}`);
+    if (!/^(a|button|caption|code|dd|div|dl|dt|h1|h2|h3|header|input|label|link|main|nav|option|p|section|select|small|span|strong|table|tbody|td|th|thead|time|tr)$/i.test(tag)) throw new Error(`plain-dom: unsupported element ${tag}`);
     return new PlainElement(this, tag.toUpperCase());
   }
   createElementNS(ns: string, tag: string): PlainElement {
-    if (ns !== "http://www.w3.org/2000/svg" || !/^(svg|title|circle|line|text|g|path)$/.test(tag)) throw new Error("plain-dom: unsupported namespace element");
+    if (ns !== "http://www.w3.org/2000/svg" || !/^(svg|title|circle|line|text|g|path|rect|defs|pattern|foreignObject)$/.test(tag)) throw new Error("plain-dom: unsupported namespace element");
     return new PlainElement(this, tag, ns);
   }
   getElementById(id: string): PlainElement | null { return descendants(this.body).find(node => node.id === id) ?? null; }

@@ -10,7 +10,7 @@ describe("web entry", () => {
       await import("../web/app.js");
       if (readyState === "loading") { expect(elements(root, "main")).toHaveLength(0); doc.dispatchEvent(new Event("DOMContentLoaded")); }
       await settle(); expect(elements(doc.body, "main")).toHaveLength(1); expect(elements(root, "nav")).toHaveLength(1);
-      expect(elements(root, "h1")[0]!.textContent).toBe("Overview");
+      expect(elements(root, "button").some(button => button.textContent === "Overview")).toBe(true);
     } finally { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); }
   });
   it.each(["complete", "loading"] as const)("entry import does not auto-start a %s document without usage-app", async readyState => {
@@ -23,7 +23,7 @@ describe("web entry", () => {
       const { startDashboard } = await import("../web/app.js");
       if (readyState === "loading") doc.dispatchEvent(new Event("DOMContentLoaded")); await settle();
       expect(doc.body.children).toEqual([existing]); expect(doc.activeElement).toBe(existing); expect(requests).toBe(0); expect(vi.getTimerCount()).toBe(0);
-      const app = startDashboard({ document: doc.asDocument(), mounts: { overview: async ctx => { const heading = ctx.document.createElement("h1"); heading.textContent = "Explicit mount"; ctx.root.append(heading); return { dispose() {} }; } } }); await settle();
+      const app = startDashboard({ document: doc.asDocument(), mounts: { overview: ctx => { const heading = ctx.document.createElement("h1"); heading.textContent = "Explicit mount"; ctx.root.append(heading); return { refresh: async () => {}, dispose() {} }; } } }); await settle();
       expect(elements(doc.body, "h1")[0]!.textContent).toBe("Explicit mount"); app.dispose();
     } finally { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetModules(); }
   });

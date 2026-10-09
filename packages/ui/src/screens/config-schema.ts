@@ -3,7 +3,7 @@ import { isAbsolutePathList } from "./absolute-paths.js";
 export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
-	enum?: readonly string[]; min?: number; max?: number; description: string; restart?: boolean; scope?: "global";
+	enum?: readonly string[]; min?: number; max?: number; optional?: boolean; exclusiveMin?: number; description: string; restart?: boolean; scope?: "global";
 }
 export interface ConfigGroup { id: string; label: string; fields: ConfigField[]; }
 
@@ -60,8 +60,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "exec.enforce", label: "Enforce spider exec", type: "boolean", default: true, description: "Block bash tool; model must use spider exec." },
 	]},
 	{ id: "usage", label: "Usage", fields: [
-		{ key: "usage.calibration", label: "AIC calibration", type: "enum", enum: ["auto", "off"], default: "auto", scope: "global", description: "Global-only trailing seven-day counter calibration. Auto uses sufficient evidence; off shows published estimates. Changes apply live." },
-		{ key: "usage.footer", label: "Usage footer", type: "boolean", default: true, scope: "global", description: "Global-only estimated AIC footer. Changes apply live, independently of the agents widget." },
+		{ key: "usage.monthlyBudget", label: "Monthly budget (credits)", type: "number", default: undefined, optional: true, exclusiveMin: 0, scope: "global", description: "Optional positive credits per billing month. Unset by default; blank clears. Global-only, changes apply live. The dashboard is read-only." },
+		{ key: "usage.calibration", label: "Credit correction", type: "enum", enum: ["auto", "off"], default: "auto", scope: "global", description: "Global-only trailing seven-day counter calibration. Auto uses sufficient evidence; off shows published estimates. Changes apply live." },
+		{ key: "usage.footer", label: "Usage footer", type: "boolean", default: true, scope: "global", description: "Global-only corrected credits footer. Changes apply live, independently of the agents widget." },
 		{ key: "usage.counter.poll", label: "Counter poll", type: "boolean", default: true, scope: "global", description: "Global-only read-only account polling every ten minutes, parents only. Changes apply live." },
 		{ key: "usage.alerts.sessionCredits", label: "Session alert credits", type: "number", default: 0, min: 0, scope: "global", description: "Global-only threshold. Reserved, alerts are not implemented." },
 		{ key: "usage.alerts.runCredits", label: "Run alert credits", type: "number", default: 0, min: 0, scope: "global", description: "Global-only threshold. Reserved, alerts are not implemented." },
@@ -91,10 +92,12 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 			return { ok: false, error: "expected true|false" };
 		}
 		case "number": {
+			if (field.optional && raw.trim() === "") return { ok: true, value: undefined };
 			if (field.key === "memory.snapshotCharCap" && (raw.trim() === "" || raw.trim().toLowerCase() === "unlimited"))
 				return { ok: true, value: undefined };
 			const n = Number(raw);
 			if (!Number.isFinite(n)) return { ok: false, error: "expected a number" };
+			if (field.exclusiveMin !== undefined && n <= field.exclusiveMin) return { ok: false, error: `must be greater than ${field.exclusiveMin}` };
 			if (field.min !== undefined && n < field.min) return { ok: false, error: `min ${field.min}` };
 			if (field.max !== undefined && n > field.max) return { ok: false, error: `max ${field.max}` };
 			return { ok: true, value: n };

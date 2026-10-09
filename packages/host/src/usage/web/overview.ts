@@ -1,197 +1,310 @@
-import type { Period, OverviewData, OverviewBreakdown, UsageMeasure, CalibrationResult, TokenTotals, AicDisplay, DashboardStatus, Page, SourceErrorRow } from "../dashboard-contract.js";
-import type { ViewContext, MountedView } from "./views.js";
-import { action, element, liveMessage, updateEvidence } from "./dom.js";
-import { formatCallEvidence, calibrationText, formatAicDisplay, formatCount, formatEstimatedAic, formatTokens, readableKey, tokenList, numericText, evidenceText, utcTime, periodTimes, formatRatio, signedGap } from "./format.js";
-import { chartWithTable, type ChartPoint } from "./charts.js";
-import { renderTable, tableRegion } from "./tables.js";
-import { shouldStopPolling, canRetry, errorCopy, DashboardClientError } from "./client.js";
-
-function qualifiers(measure: Pick<UsageMeasure, "possibleOverlap" | "possibleUndercount" | "pendingData">): string[] {
-  return [measure.possibleOverlap ? "Possible overlap" : "", measure.possibleUndercount ? "Possible undercount" : "", measure.pendingData ? "Pending data" : ""].filter(Boolean);
+import "./overview.css";
+import type { DashboardPage, DashboardPageContext, OverviewDataV4, RangeQuery, Role, SessionRow, SessionsData, SessionSort, Unit, Value } from "../dashboard-v4-contract.js";
+import { action, element, sectionState } from "./dom.js";
+import { chartPair, niceAxis } from "./charts.js";
+import { renderTable } from "./tables.js";
+import { renderModelMarker } from "./model-style.js";
+import { renderFlow } from "./flow.js";
+import { representation } from "./representation.js";
+import { formatLocalTime, formatValue } from "./format.js";
+import { canRetry, errorCopy } from "./client.js";
+import { renderPace, disposePace } from "./pace.js";
+const NS = "http://www.w3.org/2000/svg", DAY = 86400000;
+const observedModelColors = new WeakMap<Document, Map<string, string>>();
+const roleNames: Record<Role, string> = { own: "Own calls", workers: "Workers", reviewers: "Reviewers", others: "Others" };
+const roles: Role[] = ["own", "workers", "reviewers", "others"];
+const percent = (n: number) => new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(n);
+const amount = (value: Value, unit: Unit) => unit === "credits" ? value.credits : value.tokens.total;
+function params(query: RangeQuery): URLSearchParams {
+  return new URLSearchParams({ range: query.range, from: String(query.from), to: String(query.to), tz: query.tz, unit: query.unit, buckets: JSON.stringify(query.buckets) });
 }
-function evidence(measure: UsageMeasure): string {
-  return formatCallEvidence(measure);
+function nodes(root: Element): Element[] { return [root, ...Array.from(root.children).flatMap(nodes)]; }
+function localInput(ts: number): string {
+  const d = new Date(ts), pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-function displayRow(document: Document, label: string, measure: { aicDisplay: AicDisplay; tokens: TokenTotals }, calibration: CalibrationResult, unpriced: number, note: string | HTMLElement): (string | HTMLElement)[] {
-  const aic = formatAicDisplay(measure.aicDisplay, unpriced, calibration);
-  return [label, numericText(document, aic.primary), numericText(document, aic.secondary), tokenList(document, measure.tokens), typeof note === "string" ? evidenceText(document, note) : note];
+/** Offset-bearing accessible labels distinguish both occurrences of a repeated local hour. */
+function bucketLabel(ts: number, tz: string, hourly: boolean): string {
+  const label = formatLocalTime(ts, tz);
+  if (!hourly) return label.slice(0, -6);
+  let offset: string;
+  try { offset = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "longOffset" }).formatToParts(ts).find(p => p.type === "timeZoneName")!.value.replace("GMT", "UTC"); } catch { offset = "UTC"; }
+  return `${label} ${offset === "UTC" ? "UTC+00:00" : offset}`;
 }
-const columns = ["Observation", "Primary AIC (approximate)", "Published estimate", "Tokens (subsets not additive)", "Evidence"];
-function breakdownLabel(row: OverviewBreakdown): string { return row.isOther ? "Other (remaining roles)" : row.label ?? "Unknown"; }
-function breakdown(ctx: ViewContext, title: string, rows: readonly OverviewBreakdown[], calibration: CalibrationResult): HTMLElement {
-  return tableRegion(ctx.document, renderTable(ctx.document, { caption: title, columns, rows: rows.map(row => displayRow(ctx.document, breakdownLabel(row), row.measure, calibration, row.measure.unpricedCalls, evidence(row.measure))) }));
-}
-function charts(ctx: ViewContext, data: OverviewData): HTMLElement {
-  const root = element(ctx.document, "div", undefined, "small-multiples");
-  const draw = (section: string, title: string, rows: readonly { start: number; end: number; label: string; measure: UsageMeasure }[]) => {
-    // A series can change basis across days. Separate series keep each axis honest,
-    // without scaling, summing or replacing unavailable observations with zero.
-    for (const basis of ["calibrated", "back-applied", "published"] as const) {
-      const selected = rows.filter(row => row.measure.aicDisplay.basis === basis);
-      if (!selected.length) continue;
-      const points: ChartPoint[] = selected.map(row => ({ start: row.start, end: row.end, label: row.label, labelDate: "day",
-        value: row.measure.aicDisplay.primaryAic, tokens: row.measure.tokens, lowerBound: row.measure.unpricedCalls > 0,
-        note: `${formatAicDisplay(row.measure.aicDisplay, row.measure.unpricedCalls, data.calibration).primary} · published estimate ${formatEstimatedAic(row.measure.aicDisplay.publishedAic, row.measure.unpricedCalls).replace(/ published estimate$/, "")} · ${basis === "back-applied" ? "calibrated, back-applied" : basis} · ${evidence(row.measure)}` }));
-      root.append(chartWithTable(ctx.document, { view: "overview", section: `${section}:${basis}`, title: `${title} · ${basis === "back-applied" ? "calibrated, back-applied" : basis}`, points,
-        calibrationStatus: data.calibration.status, unit: basis === "published" ? "estimated-aic" : basis === "back-applied" ? "back-applied-aic" : "calibrated-aic" }));
-    }
-  };
-  draw("daily-total", "Daily total", data.daily.rows);
-  for (const dimension of ["actors", "roles"] as const) {
-    for (const row of data[dimension]) {
-      const days = data.daily.rows.flatMap(day => {
-        const match = day[dimension].find(item => item.label === row.label && item.isOther === row.isOther);
-        return match ? [{ start: day.start, end: day.end, label: day.label, labelDate: "day", measure: match.measure }] : [];
-      });
-      draw(`${dimension}:${JSON.stringify([row.label, row.isOther])}`, `Daily ${dimension === "actors" ? "actor" : "role"} · ${breakdownLabel(row)}`, days);
-    }
-  }
-  return root;
-}
-function renderOverview(ctx: ViewContext, data: OverviewData): HTMLElement {
-  const root = element(ctx.document, "div", undefined, "overview-evidence");
-  root.append(element(ctx.document, "p", "AIC is approximate; tokens are recorded.", "muted"));
-  const calibrationEvidence = element(ctx.document, "p", undefined, "calibration-evidence");
-  calibrationEvidence.append(calibrationText(ctx.document, data.calibration, data.totals.aicDisplay.basis)); root.append(calibrationEvidence);
-  root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Selected usage", columns,
-    rows: [displayRow(ctx.document, "Selected period", data.totals, data.calibration, data.totals.unpricedCalls, evidence(data.totals))] })));
-  root.append(element(ctx.document, "p", "The counter is account-wide and includes other clients. Billing lags and integer quantization limit comparison. Calibration does not prove exact billing or completeness.", "muted"));
-  const comparison = data.comparison;
-  const comparisonNote = element(ctx.document, "span");
-  if (comparison.computed) comparisonNote.append(periodTimes(ctx.document, comparison.start, comparison.end), element(ctx.document, "span", ` · ${evidence(comparison.computed)}`));
-  const comparisonRows = comparison.computed ? [displayRow(ctx.document, "Account window (unfiltered)", comparison.computed, data.calibration, comparison.computed.unpricedCalls, comparisonNote)] : [];
-  root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Account comparison", columns, rows: comparisonRows })));
-  const counterComparison = element(ctx.document, "p");
-  counterComparison.append(numericText(ctx.document, comparison.counterAic === null ? "Current account comparison unavailable for this period."
-    : `${formatTokens(comparison.counterAic)} AIC counter · published gap ${signedGap(comparison.gap)} · published ${formatRatio(comparison.ratio)}`));
-  root.append(counterComparison);
-  root.append(breakdown(ctx, "Actors", data.actors, data.calibration), breakdown(ctx, "Roles", data.roles, data.calibration));
-  const projected = data.pace.projected;
-  root.append(tableRegion(ctx.document, renderTable(ctx.document, { caption: "Month pace", columns, rows: projected ? [displayRow(ctx.document, "Linear month-end projection", projected, data.calibration,
-    data.totals.unpricedCalls, ["Linear pace, not a forecast", ...qualifiers(projected)].join(" · "))] : [] })));
-  root.append(element(ctx.document, "p", projected ? `Counter month-end pace: ${data.pace.counterAic === null ? "unavailable" : `~${formatTokens(data.pace.counterAic)} AIC`}` : "Month pace unavailable for this period.", "muted"));
-  root.append(element(ctx.document, "h2", "Daily observations"), charts(ctx, data));
-  return root;
-}
-function mountHealth(ctx: ViewContext, parent: HTMLElement): { refresh(reset?: boolean, preserveFocus?: boolean): void; dispose(): void; hasFocus(): boolean; suspend(): void } {
-  const { document } = ctx;
-  const root = element(document, "section", undefined, "health-panel"), heading = element(document, "h2", "Ingestion and counter");
-  heading.setAttribute("tabindex", "-1"); root.append(heading);
-  const health = element(document, "div"), message = liveMessage(document), errors = element(document, "div"), errorMessage = liveMessage(document);
-  let disposed = false, statusSequence = 0, errorSequence = 0;
-  let statusController: AbortController | undefined, errorController: AbortController | undefined;
-  let cursor: string | undefined, nextCursor: string | null = null; const previous: (string | undefined)[] = [];
-  const next = action(document, "Next page", () => { if (!nextCursor) return; previous.push(cursor); cursor = nextCursor; void readErrors(); });
-  const back = action(document, "Previous page", () => { if (!previous.length) return; cursor = previous.pop(); void readErrors(); });
-  const retry = action(document, "Retry", () => { void readErrors(); }); retry.hidden = true;
-  const controls = element(document, "div", undefined, "view-actions"); controls.append(back, next, retry); back.disabled = next.disabled = true;
-  root.append(health, message, errors, errorMessage, controls); parent.append(root);
-  async function readErrors(preserveFocus = false): Promise<void> {
-    if (disposed || ctx.signal.aborted) return;
-    ctx.requestStarted?.();
-    errorController?.abort(); errorController = new AbortController(); const current = ++errorSequence;
-    errorMessage.textContent = "Loading source diagnostics"; if (!preserveFocus || document.activeElement !== retry) { if (document.activeElement === retry) heading.focus(); retry.hidden = true; } next.disabled = back.disabled = true;
-    const params = new URLSearchParams({ limit: "200" }); if (cursor) params.set("cursor", cursor);
-    try {
-      const response = await ctx.client.get<Page<SourceErrorRow>>("/api/source-errors", params, errorController.signal);
-      if (disposed || ctx.signal.aborted || current !== errorSequence) return;
-      updateEvidence(errors, tableRegion(document, renderTable(document, { caption: "Source diagnostics", columns: ["Source", "Project", "Code", "Count", "Last checked UTC"], rows: response.data.rows.map(row => [row.sourceLabel, row.projectLabel, readableKey(row.code), numericText(document, formatTokens(row.count)), utcTime(document, row.lastCheckedAt)]) })));
-      if (document.activeElement === retry) heading.focus(); retry.hidden = true;
-      nextCursor = response.data.nextCursor; next.disabled = !nextCursor; back.disabled = !previous.length;
-      errorMessage.textContent = response.data.rows.length ? `${formatCount(response.data.rows.length, "source diagnostic")} on this page` : "No source diagnostics recorded.";
-    } catch (error) { if (!disposed && !ctx.signal.aborted && current === errorSequence) { errorMessage.textContent = errorCopy(error); retry.hidden = !canRetry(error); } }
-  }
-  async function refresh(reset: boolean, preserveFocus: boolean): Promise<void> {
-    if (disposed || ctx.signal.aborted) return;
-    statusController?.abort(); errorController?.abort(); ++errorSequence;
-    statusController = new AbortController(); const current = ++statusSequence;
-    message.textContent = "Loading health";
-    try {
-      const response = await ctx.client.get<DashboardStatus>("/api/status", new URLSearchParams(), statusController.signal);
-      if (disposed || ctx.signal.aborted || current !== statusSequence) return;
-      const data = response.data, age = (value: number | null) => value === null ? "unavailable" : `${formatTokens(value / 1000)} s`;
-      const timestampLine = (label: string, value: number | null) => {
-        const p = element(document, "p"); p.append(element(document, "span", label), value === null ? element(document, "span", "unavailable") : utcTime(document, value)); return p;
-      };
-      updateEvidence(health,
-        element(document, "p", `Ingest role: ${data.ingest.role}`),
-        element(document, "p", `Ingest age: ${age(data.ingest.ageMs)} (${data.ingest.stale ? "stale" : "fresh"})`),
-        element(document, "p", `Counter age: ${age(data.counter.ageMs)} (${data.counter.availability})`),
-        element(document, "p", `Parse errors (recorded): ${formatTokens(data.parseErrors)}`),
-        element(document, "p", `Source errors (current): ${formatTokens(data.sourceErrors)}`),
-        element(document, "p", `Backfill: ${data.ingest.backfill}${data.ingest.progress ? ` · ${formatTokens(data.ingest.progress.sourcesCompleted)} of ${formatCount(data.ingest.progress.sourcesTotal, "source")}` : ""}`),
-        element(document, "p", `Ingest error: ${data.ingest.errorCode === null ? "none" : readableKey(data.ingest.errorCode)}`),
-        timestampLine("Last ingest: ", data.ingest.lastIngestAt),
-        timestampLine("Counter observed: ", data.counter.ts),
-        element(document, "p", `Server ${data.serverBuild} · schema ${data.schemaVersion} · rates ${data.rateVersions.join(", ")}`, "muted"),
-      );
-      message.textContent = "Health updated"; if (reset) { cursor = undefined; previous.length = 0; }
-      if (data.sourceErrors || data.parseErrors) void readErrors(preserveFocus);
-      else { errors.replaceChildren(); errorMessage.textContent = "No source diagnostics recorded."; next.disabled = back.disabled = true; if (document.activeElement === retry) heading.focus(); retry.hidden = true; }
-    } catch (error) { if (!disposed && !ctx.signal.aborted && current === statusSequence) message.textContent = errorCopy(error); }
-  }
-  return { suspend() { ++statusSequence; ++errorSequence; statusController?.abort(); errorController?.abort(); next.disabled = !nextCursor; back.disabled = !previous.length; }, refresh(reset = true, preserveFocus = false) { void refresh(reset, preserveFocus); }, hasFocus() { return root.contains(document.activeElement); }, dispose() { disposed = true; ++statusSequence; ++errorSequence; statusController?.abort(); errorController?.abort(); } };
-}
-export async function mountOverview(ctx: ViewContext): Promise<MountedView> {
+export function mountOverview(ctx: DashboardPageContext): DashboardPage {
   const { document, root } = ctx;
-  const section = element(document, "section", undefined, "overview"), heading = element(document, "h1", "Overview");
-  heading.setAttribute("tabindex", "-1"); section.append(heading);
-  const message = liveMessage(document), content = element(document, "div");
-  let disposed = false, sequence = 0, controller: AbortController | undefined;
-  let lastActivity = Date.now(), loading = false, shutdown = false, paused = false;
-  let timer: ReturnType<typeof setInterval> | undefined;
-  let pinnedPeriod: Period | undefined;
-  let cursor: string | undefined; const previous: (string | undefined)[] = [];
-  const next = action(document, "Next page", () => { if (!nextCursor) return; previous.push(cursor); cursor = nextCursor; void refresh(false); });
-  const back = action(document, "Previous page", () => { cursor = previous.pop(); void refresh(false); });
-  let nextCursor: string | null = null;
-  const refreshButton = action(document, "Refresh", () => { void refresh(false, true); });
-  const retry = action(document, "Retry", () => { void refresh(true); }); retry.hidden = true;
-  const clear = action(document, "Clear filters", () => { if (document.activeElement === clear) heading.focus(); if (ctx.clearFilters) ctx.clearFilters(); else ctx.navigate({ view: "overview", filters: [] }); }); clear.hidden = true;
-  const controls = element(document, "div", undefined, "view-actions"); controls.append(refreshButton, retry, clear);
-  const paging = element(document, "div", undefined, "view-actions"); paging.append(back, next); back.disabled = next.disabled = true;
-  section.append(controls, message, content, paging); root.append(section);
-  const health = mountHealth(ctx, section);
-  async function refresh(reset: boolean, updateHealth = reset, preserveFocus = false): Promise<void> {
-    if (disposed || ctx.signal.aborted) return;
-    if (paused) resume();
-    ctx.requestStarted?.();
-    if (reset) { cursor = undefined; previous.length = 0; }
-    if (updateHealth) health.refresh(reset, preserveFocus);
-    controller?.abort(); controller = new AbortController();
-    const current = ++sequence; loading = true; if (!preserveFocus || document.activeElement !== clear) clear.hidden = true; message.textContent = "Loading usage"; if (!preserveFocus || document.activeElement !== retry) { if (document.activeElement === retry) heading.focus(); retry.hidden = true; } next.disabled = back.disabled = true;
-    const requestPeriod = cursor && pinnedPeriod ? pinnedPeriod : ctx.period;
-    const params = new URLSearchParams({ start: String(requestPeriod.start), end: String(requestPeriod.end), filters: JSON.stringify(ctx.filters) });
-    if (cursor) params.set("cursor", cursor);
+  const originalClass = root.className; root.className = `${originalClass} overview-page`.trim();
+  const modelColors = observedModelColors.get(document) ?? new Map<string, string>(); observedModelColors.set(document, modelColors);
+  let query = structuredClone(ctx.route.page === "overview" ? ctx.route.query : ctx.overview);
+  let data: OverviewDataV4 | undefined, revision = "", sessionData: SessionsData | undefined;
+  let disposed = false, generation = 0, sessionsGeneration = 0, controller: AbortController | undefined, sessionsController: AbortController | undefined;
+  let paceNode: HTMLElement | undefined, sort: SessionSort = "credits", roving = 0, sessionsExpanded = false;
+  const roleRoving = new Map<string, number>();
+  let customOpen = query.range === "custom", fromInput = localInput(query.from), toInput = localInput(query.to), rangeError = "";
+  let loading: Promise<void> | undefined;
+  const focusKey = () => document.activeElement?.getAttribute("data-focus");
+  const restoreFocus = (key: string | null | undefined) => { if (key) (nodes(root).find(n => n.getAttribute("data-focus") === key) as HTMLElement | undefined)?.focus(); };
+  const keyed = <T extends Element>(node: T, key: string): T => { node.setAttribute("data-focus", key); return node; };
+  const svgNode = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number> = {}, text?: string): SVGElementTagNameMap[K] => {
+    const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v)); if (text !== undefined) n.textContent = text; return n;
+  };
+  function chip(label: string, value: string): HTMLElement { const n = element(document, "span", undefined, "stat-chip"); n.append(element(document, "span", label), element(document, "strong", value, "mono")); return n; }
+  function panel(id: string, title: string, svg: SVGElement, table: HTMLTableElement, summary?: HTMLElement): HTMLElement {
+    const section = element(document, "section", undefined, "overview-panel"); section.setAttribute("data-panel", id);
+    const pair = chartPair(document, { id: `overview-${id}`, title, svg, table });
+    const children = Array.from(pair.children) as HTMLElement[];
+    const buttons = nodes(children[0]!).filter(n => n.tagName.toLowerCase() === "button"); buttons.forEach((n, i) => keyed(n, `${id}-view-${i}`));
+    if (summary) pair.replaceChildren(children[0]!, summary, ...children.slice(1));
+    section.append(pair); return section;
+  }
+  function emptyPanel(id: string, title: string, text: string): HTMLElement {
+    const section = element(document, "section", undefined, "overview-panel"); section.setAttribute("data-panel", id); section.append(element(document, "h2", title));
+    const body = element(document, "div"); sectionState(body, "empty", text); section.append(body); return section;
+  }
+  function navigate(next: RangeQuery): void { ctx.navigate({ page: "overview", query: next }); }
+  function select(key: number): void {
+    query = { ...query, buckets: query.buckets.includes(key) ? query.buckets.filter(k => k !== key) : [...query.buckets, key].sort((a, b) => a - b) };
+    ctx.navigate({ page: "overview", query }, { replace: true }); void refresh();
+  }
+  function clearSelection(): void { if (query.buckets.length) { query = { ...query, buckets: [] }; ctx.navigate({ page: "overview", query }, { replace: true }); void refresh(); } }
+  function controls(): HTMLElement {
+    const toolbar = element(document, "div", undefined, "overview-toolbar"); toolbar.setAttribute("data-controls", "true"); toolbar.setAttribute("aria-label", "Usage filters");
+    const presets = element(document, "div", undefined, "segmented presets"); presets.setAttribute("role", "group"); presets.setAttribute("aria-label", "Time range");
+    for (const [range, label] of [["24h", "24 h"], ["7d", "7 days"], ["30d", "30 days"], ["month", "This month"], ["custom", "Custom"]] as const) {
+      const b = keyed(action(document, label, () => {
+        if (range === "custom") { customOpen = true; paint(); return; }
+        const now = ctx.now(), local = new Date(now); navigate({ ...query, range, from: range === "month" ? new Date(local.getFullYear(), local.getMonth(), 1).getTime() : now - (range === "24h" ? 1 : range === "30d" ? 30 : 7) * DAY, to: now, buckets: [] });
+      }), `range-${range}`); b.setAttribute("aria-pressed", String(range === query.range)); presets.append(b);
+    }
+    const units = element(document, "div", undefined, "segmented units"); units.setAttribute("role", "group"); units.setAttribute("aria-label", "Unit");
+    for (const unit of ["credits", "tokens"] as const) { const b = keyed(action(document, unit === "credits" ? "Credits" : "Tokens", () => navigate({ ...query, unit })), `unit-${unit}`); b.setAttribute("aria-pressed", String(unit === query.unit)); units.append(b); }
+    toolbar.append(presets, units);
+    if (customOpen) {
+      const custom = element(document, "div", undefined, "overview-custom");
+      for (const [label, value, key] of [["From", fromInput, "from"], ["To", toInput, "to"]] as const) {
+        const wrap = element(document, "label", label), input = keyed(element(document, "input"), `custom-${key}`); input.type = "datetime-local"; input.value = value;
+        input.addEventListener("input", () => { if (key === "from") fromInput = input.value; else toInput = input.value; }); wrap.append(input); custom.append(wrap);
+      }
+      custom.append(keyed(action(document, "Apply range", () => {
+        // datetime-local is intentionally interpreted in the browser's local zone.
+        const inputs = nodes(custom).filter(n => n.tagName.toLowerCase() === "input") as HTMLInputElement[];
+        fromInput = inputs[0]!.value; toInput = inputs[1]!.value;
+        const from = new Date(fromInput).getTime(), to = new Date(toInput).getTime();
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to <= from || to - from > 93 * DAY) { rangeError = "Choose an ordered range of at most 93 days."; paint(); return; }
+        navigate({ ...query, range: "custom", from, to, buckets: [] });
+      }), "custom-apply")); const error = element(document, "span", rangeError, "danger"); error.setAttribute("role", "alert"); custom.append(error); toolbar.append(custom);
+    }
+    return toolbar;
+  }
+  function daily(d: OverviewDataV4): HTMLElement {
+    const title = `${d.bucketSize === "hour" ? "Hourly" : "Daily"} ${query.unit}`;
+    if (!d.buckets.length || d.total.calls === 0) return emptyPanel("daily", title, "No calls in this range.");
+    const summary = element(document, "div", undefined, "range-summary summary-chips");
+    const values = d.buckets.map(b => amount(b.total, query.unit)); const known = values.filter((n): n is number => n !== null);
+    const compact = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { notation: n >= 1000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n).replace("K", "k");
+    const total = amount(d.total, query.unit), average = total === null ? null : total / d.buckets.length;
+    const peak = known.length ? Math.max(...known) : null, peakBucket = d.buckets.find(b => amount(b.total, query.unit) === peak);
+    summary.append(chip("Total", formatValue(d.total, query.unit)), chip("Average", `${compact(average)} ${d.bucketSize === "hour" ? "an hour" : "a day"}`), chip("Peak", peakBucket ? `${bucketLabel(peakBucket.key, query.tz, d.bucketSize === "hour")} · ${compact(peak)}` : "unavailable"));
+    if (query.buckets.length) { const n = element(document, "span", `Selected ${query.buckets.length} ${d.bucketSize === "hour" ? query.buckets.length === 1 ? "hour" : "hours" : query.buckets.length === 1 ? "day" : "days"} · ${formatValue(d.selectedTotal, query.unit)} ${query.unit}`, "selection-chip"); n.setAttribute("role", "status"); n.setAttribute("aria-live", "polite"); summary.append(n); }
+    const svg = svgNode("svg", { viewBox: "0 0 900 350", preserveAspectRatio: "none", class: "daily-chart", role: "group" });
+    const axis = niceAxis(Math.max(1, ...known)), max = axis.ceiling, step = 810 / d.buckets.length;
+    svg.append(svgNode("text", { x: 66, y: 30, class: "daily-unit" }, query.unit));
+    for (let tick = 0; tick <= Math.round(max / axis.step); tick++) { const value = tick * axis.step, y = 296 - value / max * 240; svg.append(svgNode("path", { d: `M66 ${y}H890`, class: "daily-gridline" }), svgNode("text", { x: 56, y: y + 5, "text-anchor": "end", class: "numeric" }, formatValue({ ...d.total, credits: value, tokens: { ...d.total.tokens, total: value } }, query.unit))); }
+    const groups: SVGElement[] = [];
+    roving = Math.min(roving, d.buckets.length - 1);
+    d.buckets.forEach((bucket, index) => {
+      const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"), selected = query.buckets.includes(bucket.key);
+      const g = keyed(svgNode("g", { "data-bucket": bucket.key, "data-value": amount(bucket.total, query.unit) ?? "unavailable", role: "button", tabindex: index === roving ? 0 : -1, "aria-pressed": String(selected), "aria-label": `${label}, ${formatValue(bucket.total, query.unit)} ${query.unit}`, "data-dim": String(query.buckets.length > 0 && !selected), "data-selected": String(selected) }), `bucket-${bucket.key}`);
+      let y = 296; const x = 72 + index * step, w = Math.max(1, step - Math.min(25, step / 4));
+      g.append(svgNode("rect", { x: x - 4, y: 20, width: w + 8, height: 284, class: "bucket-hit" }));
+      for (const row of bucket.models) { const n = amount(row.value, query.unit); if (n === null) continue; const height = n / max * 240; y -= height;
+        const color = modelColors.get(row.model) ?? "#c4b7a8";
+        g.append(svgNode("rect", { x, y, width: w, height, fill: /^#[0-9a-f]{6}$/i.test(color) ? color : "currentColor" }));
+      }
+      g.append(svgNode("rect", { x: x - 3, y: y - 3, width: w + 6, height: Math.max(0, 296 - y) + 6, class: "bucket-focus" }));
+      const tooltip = svgNode("title", {}, `${label}\n${bucket.models.map(m => `${m.model}: ${formatValue(m.value, query.unit)} ${query.unit}`).join("\n")}`); g.append(tooltip);
+      g.addEventListener("click", e => { const event = e as MouseEvent; if (event.button && event.button !== 0) return; roving = index; groups.forEach((bar, i) => bar.setAttribute("tabindex", i === index ? "0" : "-1")); g.focus(); if (event.metaKey || event.ctrlKey) select(bucket.key); });
+      g.addEventListener("keydown", e => { const event = e as KeyboardEvent;
+        if (["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) { event.preventDefault(); roving = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1 : Math.max(0, Math.min(groups.length - 1, index + (event.key === "ArrowRight" ? 1 : -1))); groups.forEach((bar, i) => bar.setAttribute("tabindex", i === roving ? "0" : "-1")); groups[roving]!.focus(); }
+        else if (event.key === " " || event.key === "Spacebar" || event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); roving = index; select(bucket.key); }
+      });
+      groups.push(g); svg.append(g);
+      if (d.buckets.length <= 12 || index % Math.ceil(d.buckets.length / 8) === 0) svg.append(svgNode("text", { x: x + w / 2, y: 329, "text-anchor": "middle", class: "numeric" }, d.bucketSize === "hour" ? formatLocalTime(bucket.key, query.tz).slice(-5) : label));
+    });
+    const modelIds = [...new Set(d.buckets.flatMap(b => b.models.map(m => m.model)))];
+    const table = renderTable(document, { caption: `${title} by model`, columns: ["Bucket", ...modelIds, "Total"], rows: d.buckets.map(bucket => {
+      const label = bucketLabel(bucket.key, query.tz, d.bucketSize === "hour"); const toggle = keyed(action(document, label, () => select(bucket.key)), `table-bucket-${bucket.key}`); toggle.setAttribute("data-bucket", String(bucket.key)); toggle.setAttribute("aria-pressed", String(query.buckets.includes(bucket.key)));
+      return [toggle, ...modelIds.map(id => { const value = bucket.models.find(m => m.model === id)?.value; return value ? formatValue(value, query.unit) : "0"; }), formatValue(bucket.total, query.unit)];
+    }) });
+    const section = panel("daily", title, svg, table, summary);
+    const instructions = element(document, "p", "Cmd/Ctrl-click to toggle buckets. Arrows move; Space or Cmd/Ctrl+Enter toggles. Escape clears.", "sr-only"); instructions.id = "overview-bucket-help"; svg.setAttribute("aria-describedby", instructions.id); section.append(instructions); return section;
+  }
+  function models(d: OverviewDataV4): HTMLElement {
+    if (!d.models.length) { const empty = emptyPanel("models", "Models", "No calls in this selection."); if (d.unpriced.length) empty.append(element(document, "p", unpriced(d), "models-foot")); return empty; }
+    const summary = element(document, "div", undefined, "summary-chips"); summary.append(chip("Models", String(d.models.length)), chip(query.unit === "credits" ? "Credits" : "Tokens", formatValue(d.selectedTotal, query.unit)), chip("Top", `${d.models[0]!.id} · ${percent(d.models[0]!.share)}`));
+    const list = element(document, "div", undefined, "model-list");
+    for (const [i, model] of d.models.entries()) {
+      const row = element(document, "div", undefined, "model-row"); row.append(element(document, "span", String(i + 1), "rank mono"), renderModelMarker(document, model.style), element(document, "span", model.id, "model-name mono"), element(document, "span", formatValue(model.value, query.unit), "model-amount mono"));
+      const track = svgNode("svg", { viewBox: "0 0 100 4", preserveAspectRatio: "none", class: "model-share", "aria-hidden": "true" }); track.append(svgNode("rect", { x: 0, y: 0, width: 100, height: 4, class: "model-share-track" }), svgNode("rect", { x: 0, y: 0, width: model.share * 100, height: 4, fill: /^#[0-9a-f]{6}$/i.test(model.style.color) ? model.style.color : "currentColor" }));
+      const note = element(document, "div", undefined, "model-note"); note.append(element(document, "span", model.note), element(document, "span", percent(model.share), "mono")); row.append(track, note); list.append(row);
+    }
+    const table = renderTable(document, { caption: "Models in the selection", columns: ["Model", query.unit === "credits" ? "Credits" : "Tokens", "Share", "Main source"], rows: d.models.map(m => [m.id, formatValue(m.value, query.unit), percent(m.share), m.note]) });
+    const section = panel("models", "Models", svgNode("svg"), table, summary), pair = section.children[0]!, graphic = pair.children[2]!; graphic.replaceChildren(list);
+    if (d.unpriced.length) section.append(element(document, "p", unpriced(d), "models-foot")); return section;
+  }
+  function unpriced(d: OverviewDataV4): string { return d.unpriced.map(u => `${u.calls} unpriced ${u.calls === 1 ? "call" : "calls"}: ${u.reason}`).join(" · "); }
+  function openSession(row: SessionRow): void { if (row.id) ctx.navigate({ page: "session", id: row.id, unit: query.unit, tz: query.tz }); }
+  function sessionName(row: SessionRow, table = false): HTMLElement {
+    const n = row.id ? keyed(action(document, row.name, () => openSession(row)), `session-${table ? "table-name" : "name"}-${row.id}`) : element(document, "span", row.name);
+    n.className = "session-name"; if (row.project) { const project = element(document, "span", row.project, "project-pill"); const group = element(document, "div", undefined, "session-identity"); group.append(n, project); return group; } return n;
+  }
+  function breakdown(row: SessionRow, index: number): HTMLElement {
+    const stack = element(document, "div", undefined, "role-stack"); stack.setAttribute("role", "group"); stack.setAttribute("aria-label", `${row.name} role breakdown`);
+    const width = 420, total = amount(row.value, query.unit); let x = 0;
+    // SVG carries the proportional geometry. HTML tooltips remain in the same focus target.
+    const svg = svgNode("svg", { viewBox: `0 0 ${width} 32`, preserveAspectRatio: "none", class: "role-stack-svg" });
+    const groups: SVGElement[] = [], rowKey = row.id ?? String(index);
+    const visibleRoles = row.roles.filter(split => amount(split.value, query.unit) !== 0 || split.value.calls !== 0);
+    roleRoving.set(rowKey, Math.min(roleRoving.get(rowKey) ?? 0, Math.max(0, visibleRoles.length - 1)));
+    for (const split of visibleRoles) {
+      const n = amount(split.value, query.unit), share = total !== null && total > 0 && n !== null ? n / total : split.share;
+      const w = Math.max(0, share * width), group = keyed(svgNode("g", { tabindex: groups.length === (roleRoving.get(rowKey) ?? 0) ? 0 : -1, role: "img", class: "role-segment", "data-role-row": index, "data-role": split.role, "aria-label": `${roleNames[split.role]}, ${formatValue(split.value, "credits")} credits, ${formatValue(split.value, "tokens")} tokens, ${percent(share)}, ${split.runs} runs`, "aria-describedby": `role-tip-${index}-${split.role}` }), `role-${index}-${split.role}`);
+      group.append(svgNode("rect", { x, y: 0, width: w, height: 32, fill: `var(--usage-role-${split.role})` }));
+      if (share >= .14) group.append(svgNode("text", { x: x + w / 2, y: 21, "text-anchor": "middle", class: "segment-share" }, percent(share)));
+      const tip = element(document, "div", undefined, "role-tooltip"); tip.id = `role-tip-${index}-${split.role}`; tip.setAttribute("role", "tooltip"); tip.hidden = true; tip.append(element(document, "h3", roleNames[split.role]), element(document, "p", `${formatValue(split.value, "credits")} credits · ${formatValue(split.value, "tokens")} tokens`, "mono"), element(document, "p", `${percent(share)} · ${split.runs} runs`, "mono"));
+      const show = () => { tip.hidden = false; }, hide = () => { tip.hidden = true; };
+      group.addEventListener("pointerenter", show); group.addEventListener("pointerleave", hide); group.addEventListener("focus", show); group.addEventListener("blur", hide);
+      const segmentIndex = groups.length;
+      group.addEventListener("keydown", e => {
+        const event = e as KeyboardEvent;
+        if (event.key === "Escape") { e.stopPropagation(); hide(); }
+        else if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+          event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? groups.length - 1 : (segmentIndex + (event.key === "ArrowRight" ? 1 : -1) + groups.length) % groups.length;
+          roleRoving.set(rowKey, next); groups.forEach((g, i) => g.setAttribute("tabindex", i === next ? "0" : "-1")); groups[next]!.focus();
+        } else if (["ArrowUp", "ArrowDown"].includes(event.key)) {
+          event.preventDefault(); const next = index + (event.key === "ArrowDown" ? 1 : -1);
+          const targets = nodes(root).filter(n => n.getAttribute("data-role-row") === String(next)) as SVGElement[];
+          const target = targets[Math.min(segmentIndex, targets.length - 1)];
+          if (target) { targets.forEach(g => g.setAttribute("tabindex", g === target ? "0" : "-1")); const nextRow = (sessionData ?? data!.sessions).rows[next]; if (nextRow) roleRoving.set(nextRow.id ?? String(next), targets.indexOf(target)); target.focus(); }
+        }
+      });
+      groups.push(group);
+      svg.append(group); stack.append(tip); x += w;
+    }
+    stack.append(svg); return stack;
+  }
+  function sessions(d: SessionsData): HTMLElement {
+    if (!d.rows.length) return emptyPanel("sessions", "Sessions", "No sessions in this selection.");
+    const summary = element(document, "div", undefined, "sessions-context"); const chips = element(document, "div", undefined, "summary-chips"); chips.append(chip("Sessions", String(d.total)), chip("Subagent runs", String(d.summary.runs)), chip("Top 3 share", percent(d.summary.top3Share)));
+    const legend = element(document, "div", undefined, "role-legend"); legend.setAttribute("aria-label", "Session roles");
+    for (const role of roles) { const key = element(document, "span", roleNames[role], "role-key"); key.setAttribute("data-role", role); legend.append(key); } summary.append(chips, legend);
+    const columns = ["Rank", "Session", query.unit === "credits" ? "Credits" : "Tokens", "Share", "Breakdown", "Last active", "Runs"];
+    const total = amount(data!.selectedTotal, query.unit);
+    const sessionShare = (row: SessionRow) => { const value = amount(row.value, query.unit); return total === null || value === null ? "unavailable" : percent(total > 0 ? value / total : 0); };
+    const numericBreakdown = (row: SessionRow) => {
+      const list = element(document, "dl", undefined, "session-breakdown-values");
+      for (const role of roles) { const value = row.roles.find(v => v.role === role)?.value; const item = element(document, "div"); item.append(element(document, "dt", roleNames[role]), element(document, "dd", value ? formatValue(value, query.unit) : "0", "mono")); list.append(item); } return list;
+    };
+    const table = renderTable(document, { caption: "Sessions in the selected range", columns, rows: d.rows.map((r, i) => [String(d.offset + i + 1), sessionName(r), formatValue(r.value, query.unit), sessionShare(r), breakdown(r, i), formatLocalTime(r.lastActive, query.tz), String(r.runs)]) }); table.className = "data-table sessions-table";
+    const numeric = renderTable(document, { caption: "Exact session role values", columns, rows: d.rows.map((r, i) => [String(d.offset + i + 1), sessionName(r, true), formatValue(r.value, query.unit), sessionShare(r), numericBreakdown(r), formatLocalTime(r.lastActive, query.tz), String(r.runs)]) }); numeric.className = "data-table sessions-numeric-table";
+    for (const t of [table, numeric]) {
+      const header = Array.from(t.querySelector("thead")!.firstElementChild!.children);
+      const activeColumn = sort === "credits" ? 2 : sort === "last-active" ? 5 : 6;
+      header[activeColumn]!.setAttribute("aria-sort", "descending");
+      const indicator = svgNode("svg", { viewBox: "0 0 16 16", class: "session-sort-indicator", "aria-hidden": "true" }); indicator.append(svgNode("path", { d: "M8 2v12m-4-4 4 4 4-4", fill: "none", stroke: "currentColor", "stroke-width": 1.5 }));
+      header[activeColumn]!.append(indicator);
+    }
+    const section = panel("sessions", "Sessions", svgNode("svg"), numeric, summary);
+    const pair = section.children[0]!, graphic = pair.children[2]!; graphic.replaceChildren(table);
+    for (const t of [table, numeric]) {
+      const body = t.children[2]!; Array.from(body.children).forEach((line, i) => { const row = d.rows[i]!; if (!row.id) return;
+        line.setAttribute(t === table ? "data-session" : "data-session-table", row.id); keyed(line, `${t === table ? "session-row" : "session-table-row"}-${row.id}`);
+        line.addEventListener("click", e => { if (!nodes(line).some(n => n !== line && n.tagName.toLowerCase() === "button" && n.contains(e.target as Node))) openSession(row); });
+      });
+      const names = Array.from(body.children).map(line => nodes(line).find(n => n.tagName.toLowerCase() === "button")).filter((n): n is HTMLButtonElement => !!n);
+      names.forEach((name, index) => name.addEventListener("keydown", event => {
+        if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); names[(index + (event.key === "ArrowDown" ? 1 : -1) + names.length) % names.length]!.focus(); }
+      }));
+    }
+    const sortControls = element(document, "div", undefined, "session-sort"); sortControls.setAttribute("role", "group"); sortControls.setAttribute("aria-label", "Sort sessions");
+    for (const [key, label] of [["credits", query.unit === "credits" ? "Credits" : "Tokens"], ["last-active", "Last active"], ["runs", "Runs"]] as const) { const b = keyed(action(document, label, () => { sort = key; sessionsExpanded = false; void loadSessions(false); }), `session-sort-${key}`); b.setAttribute("aria-pressed", String(sort === key)); sortControls.append(b); }
+    // Sort controls sit beside the heading, not in a second boxed region.
+    pair.children[0]!.append(sortControls);
+    if (d.nextOffset !== null) section.append(keyed(action(document, `Show all ${d.total}`, () => { void loadSessions(true); }), "sessions-expand"));
+    return section;
+  }
+  function flow(d: OverviewDataV4): HTMLElement {
+    if (!d.flow.edges.length) return emptyPanel("flow", "Where it went", "No calls in this selection.");
+    const section = element(document, "section", undefined, "overview-panel"); section.setAttribute("data-panel", "flow");
+    const pair = renderFlow(document, d.flow, query.unit, "overview-flow"); nodes(pair.children[0]!).filter(n => n.tagName.toLowerCase() === "button").forEach((n, i) => keyed(n, `flow-view-${i}`)); section.append(pair); return section;
+  }
+  function paint(): void {
+    if (disposed || !data) return;
+    const key = focusKey(), paceOpen = paceNode?.getAttribute("data-open") === "true"; if (paceNode) disposePace(paceNode);
+    paceNode = renderPace(document, data.pace, ctx.now(), paceOpen); keyed(paceNode.children[0]!, "pace");
+    const grid = element(document, "div", undefined, "overview-grid"); grid.append(daily(data), models(data));
+    root.replaceChildren(paceNode, controls(), grid, sessions(sessionData ?? data.sessions), flow(data)); root.setAttribute("aria-busy", "false"); restoreFocus(key);
+  }
+  async function loadSessions(expand: boolean, reload = false): Promise<void> {
+    if (!data || disposed) return;
+    const gen = ++sessionsGeneration; sessionsController?.abort(); sessionsController = new AbortController(); const signal = sessionsController.signal;
+    const expectedRevision = revision, frozen = structuredClone(query); const expectedGeneration = generation;
+    let current = sessionData ?? data.sessions, offset = expand && !reload ? current.nextOffset : 0;
+    let rows = expand && !reload ? [...current.rows] : [];
+    const previousLength = rows.length, expansionFocused = expand && focusKey() === "sessions-expand";
+    const control = nodes(root).find(n => n.getAttribute("data-focus") === (expand ? "sessions-expand" : `session-sort-${sort}`)) as HTMLButtonElement | undefined;
+    if (control) { control.disabled = true; control.setAttribute("aria-busy", "true"); }
     try {
-      const response = await ctx.client.get<OverviewData>("/api/overview", params, controller.signal);
-      if (disposed || ctx.signal.aborted || current !== sequence) return;
-      if (document.activeElement === retry) heading.focus(); retry.hidden = true;
-      shutdown = false;
-      updateEvidence(content, renderOverview(ctx, response.data)); pinnedPeriod = response.period; nextCursor = response.data.daily.nextCursor;
-      next.disabled = !nextCursor; back.disabled = !previous.length;
-      message.replaceChildren(element(document, "span", "Updated "), utcTime(document, response.generatedAt));
+      do {
+        const p = params({ ...frozen, range: "custom" }); p.set("sort", sort); p.set("offset", String(offset ?? 0)); p.set("limit", expand ? "100" : "10");
+        const reply = await ctx.client.get<SessionsData>("/api/sessions", p, signal);
+        if (disposed || signal.aborted || gen !== sessionsGeneration || expectedGeneration !== generation) return;
+        if (reply.revision !== expectedRevision) { void refresh(); return; }
+        rows.push(...reply.data.rows); current = { ...reply.data, rows, offset: 0 }; const next = reply.data.nextOffset;
+        if (next !== null && next <= (offset ?? 0)) throw new Error("Invalid sessions page"); offset = next;
+      } while (expand && offset !== null);
+      sessionData = current; sessionsExpanded = expand; paint();
+      if (expansionFocused && focusKey() === null) {
+        const firstNew = current.rows.slice(previousLength).find(row => row.id);
+        if (firstNew) restoreFocus(`${representation(document, "overview-sessions") === "table" ? "session-table-name" : "session-name"}-${firstNew.id}`);
+      }
     } catch (error) {
-      if (disposed || ctx.signal.aborted || current !== sequence) return;
-      clear.hidden = !(error instanceof DashboardClientError && error.code === "unknown-filter-id");
-      message.textContent = errorCopy(error, ctx); shutdown = shouldStopPolling(error); retry.hidden = !canRetry(error);
-    } finally { if (current === sequence) loading = false; }
+      if (!disposed && !signal.aborted && gen === sessionsGeneration) {
+        const section = nodes(root).find(n => n.getAttribute("data-panel") === "sessions") as HTMLElement | undefined;
+        if (section) sectionState(section, "error", errorCopy(error), canRetry(error) ? () => { void loadSessions(expand); } : undefined);
+      }
+    } finally { if (control) { control.disabled = false; control.setAttribute("aria-busy", "false"); } }
   }
-  const activity = () => { lastActivity = Date.now(); };
-  document.addEventListener("keydown", activity); document.addEventListener("pointerdown", activity);
-  function resume(): void {
-    if (disposed || ctx.signal.aborted) return;
-    paused = false; lastActivity = Date.now(); clearInterval(timer);
-    timer = setInterval(() => {
-    if (!disposed && !shutdown && !loading && document.visibilityState === "visible" && (ctx.idleMs?.() ?? Date.now() - lastActivity) < 300000 && !content.contains(document.activeElement) && !controls.contains(document.activeElement) && !paging.contains(document.activeElement) && !health.hasFocus()) void refresh(false, true);
-    }, 60000);
+  function refresh(): Promise<void> {
+    if (disposed) return Promise.resolve();
+    const gen = ++generation; ++sessionsGeneration; sessionsController?.abort(); controller?.abort(); controller = new AbortController(); const signal = controller.signal;
+    if (!data) sectionState(root, "loading", "Loading usage…"); else root.setAttribute("aria-busy", "true");
+    loading = (async () => {
+      try {
+        const reply = await ctx.client.get<OverviewDataV4>("/api/overview", params(query), signal);
+        if (disposed || signal.aborted || gen !== generation) return;
+        const previousRange = data?.range;
+        const sameRange = previousRange && previousRange.range === reply.data.range.range && previousRange.unit === reply.data.range.unit && previousRange.tz === reply.data.range.tz && JSON.stringify(previousRange.buckets) === JSON.stringify(reply.data.range.buckets) && (previousRange.range !== "custom" || previousRange.from === reply.data.range.from && previousRange.to === reply.data.range.to);
+        if (!sameRange) sessionsExpanded = false;
+        const previousSessions = sessionData;
+        data = reply.data; for (const model of [...data.models, ...data.flow.models]) modelColors.set(model.id, model.style.color); query = structuredClone(data.range); revision = reply.revision; sessionData = sort !== "credits" || sessionsExpanded ? previousSessions : undefined;
+        fromInput = localInput(query.from); toInput = localInput(query.to);
+        ctx.navigate({ page: "overview", query }, { replace: true }); paint();
+        if (sort !== "credits" || sessionsExpanded) await loadSessions(sessionsExpanded, true);
+      } catch (error) { if (!disposed && !signal.aborted && gen === generation) { if (paceNode) disposePace(paceNode); sectionState(root, "error", errorCopy(error), canRetry(error) ? () => { void refresh(); } : undefined); } }
+    })(); return loading;
   }
-  resume();
-  const dispose = () => { if (disposed) return; disposed = true; ++sequence; clearInterval(timer); document.removeEventListener("keydown", activity); document.removeEventListener("pointerdown", activity); controller?.abort(); health.dispose(); ctx.signal.removeEventListener("abort", dispose); };
-  ctx.signal.addEventListener("abort", dispose, { once: true });
-  if (ctx.signal.aborted) dispose(); else void refresh(true);
-  return { dispose, resume, refresh() { if (!loading) void refresh(false, true, true); }, suspend(abort) {
-    paused = true; clearInterval(timer); timer = undefined;
-    if (abort) { ++sequence; controller?.abort(); health.suspend(); loading = false; next.disabled = !nextCursor; back.disabled = !previous.length; }
-  } };
+  const clickAway = (event: Event) => { if (!query.buckets.length || !event.target) return; const target = event.target as Node;
+    let ancestor = target as Element | null;
+    while (ancestor) {
+      if (["button", "input", "select", "a"].includes(ancestor.tagName?.toLowerCase()) || ancestor.hasAttribute?.("data-bucket") || ancestor.hasAttribute?.("data-controls")) return;
+      ancestor = ancestor.parentElement;
+    }
+    clearSelection();
+  };
+  const escape = (event: KeyboardEvent) => { if (event.key === "Escape" && !event.defaultPrevented) clearSelection(); };
+  document.addEventListener("click", clickAway); document.addEventListener("keydown", escape);
+  function dispose(): void { if (disposed) return; disposed = true; ++generation; ++sessionsGeneration; controller?.abort(); sessionsController?.abort(); if (paceNode) disposePace(paceNode); document.removeEventListener("click", clickAway); document.removeEventListener("keydown", escape); ctx.signal.removeEventListener("abort", dispose); root.className = originalClass; }
+  ctx.signal.addEventListener("abort", dispose, { once: true }); void refresh();
+  return { refresh, dispose };
 }

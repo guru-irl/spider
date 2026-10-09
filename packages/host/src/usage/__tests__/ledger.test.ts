@@ -158,7 +158,7 @@ describe("usage ledger", () => {
     });
     migrateUsageLedger(db);
     expect(competingWriteSucceeded).toBe(false);
-    expect(db.pragma("user_version")).toBe(3);
+    expect(db.pragma("user_version")).toBe(4);
   });
 
   // M23: callers of migrate directly must not overwrite a future schema version.
@@ -296,12 +296,12 @@ describe("usage ledger", () => {
     const before = spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
     const ledger = track(openUsageLedger(file));
     expect(reader().prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([
-      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "dimension_values" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "leases" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "runs_meta" }, { name: "source_context" }, { name: "source_entries" },
+      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "dimension_values" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "leases" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "runs_meta" }, { name: "session_metadata_import" }, { name: "sessions" }, { name: "source_context" }, { name: "source_entries" },
     ]);
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
     expect(ledger.health()).toEqual({
-      schemaVersion: 3, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
+      schemaVersion: 4, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
       unpricedModels: [], aggregateCalls: 0, lastIngestAt: null
     });
     expect(reader().pragma("journal_mode")).toBe("wal");
@@ -318,7 +318,7 @@ describe("usage ledger", () => {
     first.close();
     const before = readFileSync(file);
     const second = openUsageLedger(file);
-    expect(second.health().schemaVersion).toBe(3);
+    expect(second.health().schemaVersion).toBe(4);
     expect(second.health().calls).toBe(1);
     second.close();
     expect(readFileSync(file)).toEqual(before);
@@ -361,7 +361,8 @@ describe("usage ledger", () => {
     });
     expect(ledger.getImportState("synthetic-session.jsonl")).toEqual(state());
     expect(ledger.getImportState("absent")).toBeUndefined();
-    expect(ledger.getRuns()).toEqual([run(), run({
+    expect(ledger.getRuns()).toEqual([run({ status: null }), run({
+      status: null,
       dbPath: "second-repo.db", project: "fixture-project", repo: "fixture-repo", sessionId: "session",
       parentRunId: "parent", agent: "worker", role: "research", name: "fixture", model: "fixture-model", thinking: "high",
       phase: "implement", startedAt: 10, endedAt: 20
@@ -559,7 +560,7 @@ it("fails loudly when opening a ledger with an unknown layout marker", () => {
   const legacy = new Database(file);
   legacy.exec("DELETE FROM ledger_metadata WHERE key='schema-layout'; DROP VIEW counted_calls; CREATE VIEW counted_calls AS SELECT * FROM calls");
   legacy.close();
-  expect(() => openUsageLedger(file)).toThrow(/schema 3.*layout/i);
+  expect(() => openUsageLedger(file)).toThrow(/schema 4.*layout/i);
 });
 it("appends attribution entries without updating historical rows", () => {
   const ledger = track(openUsageLedger(file));

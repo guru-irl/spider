@@ -149,9 +149,9 @@ it("footer calibration leaves token parity unchanged", () => {
     const input: FooterInput = { cwd: "fixture", branch: null, sessionName: null, modelId: "fixture", thinking: "off", context: null,
       subscription: false, totals: published, counter: { availability: "disabled", snapshot: null }, statuses: new Map(),
       calibration: { ...calibrationFallback(), status, factor: status === "calibrated" ? 0.5 : null } };
-    expect(renderUsageFooter(input, 200)[1]).toContain(status === "calibrated" ? "0.1 AIC cal" : "~0.1 AIC");
+    expect(renderUsageFooter(input, 200)[1]).toContain("0.1 credits");
     expect(state.snapshot()).toEqual(published);
-    expect(renderUsageFooter(input, 200)[1]).toContain("↑40 ↓80 R120 W160");
+    expect(renderUsageFooter(input, 200)[1]).toContain("↑40 ↓80 · R120 W160");
   }
   state.append([assistant("b", "a")]);
   expect(state.snapshot()).toMatchObject({ input: 50, output: 100, cacheRead: 150, cacheWrite: 200 });

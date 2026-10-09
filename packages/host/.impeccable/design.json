@@ -1,0 +1,454 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-09T00:29:17.149546Z",
+  "title": "Design System: Spider usage dashboard",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Ground",
+        "tonalRamp": [
+          "oklch(15% 0.0089 59.06)",
+          "oklch(25% 0.0089 59.06)",
+          "oklch(36% 0.0089 59.06)",
+          "oklch(47% 0.0089 59.06)",
+          "oklch(58% 0.0089 59.06)",
+          "oklch(69% 0.0089 59.06)",
+          "oklch(82% 0.0089 59.06)",
+          "oklch(95% 0.0089 59.06)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "tonalRamp": [
+          "oklch(15% 0.0122 55.68)",
+          "oklch(25% 0.0122 55.68)",
+          "oklch(36% 0.0122 55.68)",
+          "oklch(47% 0.0122 55.68)",
+          "oklch(58% 0.0122 55.68)",
+          "oklch(69% 0.0122 55.68)",
+          "oklch(82% 0.0122 55.68)",
+          "oklch(95% 0.0122 55.68)"
+        ]
+      },
+      "control": {
+        "role": "neutral",
+        "displayName": "Control",
+        "tonalRamp": [
+          "oklch(15% 0.0170 63.29)",
+          "oklch(25% 0.0170 63.29)",
+          "oklch(36% 0.0170 63.29)",
+          "oklch(47% 0.0170 63.29)",
+          "oklch(58% 0.0170 63.29)",
+          "oklch(69% 0.0170 63.29)",
+          "oklch(82% 0.0170 63.29)",
+          "oklch(95% 0.0170 63.29)"
+        ]
+      },
+      "ink": {
+        "role": "primary",
+        "displayName": "Cream ink",
+        "tonalRamp": [
+          "oklch(15% 0.0222 80.69)",
+          "oklch(25% 0.0222 80.69)",
+          "oklch(36% 0.0222 80.69)",
+          "oklch(47% 0.0222 80.69)",
+          "oklch(58% 0.0222 80.69)",
+          "oklch(69% 0.0222 80.69)",
+          "oklch(82% 0.0222 80.69)",
+          "oklch(95% 0.0222 80.69)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0256 71.40)",
+          "oklch(25% 0.0256 71.40)",
+          "oklch(36% 0.0256 71.40)",
+          "oklch(47% 0.0256 71.40)",
+          "oklch(58% 0.0256 71.40)",
+          "oklch(69% 0.0256 71.40)",
+          "oklch(82% 0.0256 71.40)",
+          "oklch(95% 0.0256 71.40)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Border",
+        "tonalRamp": [
+          "oklch(15% 0.0236 61.80)",
+          "oklch(25% 0.0236 61.80)",
+          "oklch(36% 0.0236 61.80)",
+          "oklch(47% 0.0236 61.80)",
+          "oklch(58% 0.0236 61.80)",
+          "oklch(69% 0.0236 61.80)",
+          "oklch(82% 0.0236 61.80)",
+          "oklch(95% 0.0236 61.80)"
+        ]
+      },
+      "hatch": {
+        "role": "neutral",
+        "displayName": "Projection hatch",
+        "tonalRamp": [
+          "oklch(15% 0.0256 71.40)",
+          "oklch(25% 0.0256 71.40)",
+          "oklch(36% 0.0256 71.40)",
+          "oklch(47% 0.0256 71.40)",
+          "oklch(58% 0.0256 71.40)",
+          "oklch(69% 0.0256 71.40)",
+          "oklch(82% 0.0256 71.40)",
+          "oklch(95% 0.0256 71.40)"
+        ]
+      },
+      "danger": {
+        "role": "primary",
+        "displayName": "Danger tomato",
+        "tonalRamp": [
+          "oklch(15% 0.1629 33.71)",
+          "oklch(25% 0.1629 33.71)",
+          "oklch(36% 0.1629 33.71)",
+          "oklch(47% 0.1629 33.71)",
+          "oklch(58% 0.1629 33.71)",
+          "oklch(69% 0.1629 33.71)",
+          "oklch(82% 0.1629 33.71)",
+          "oklch(95% 0.1629 33.71)"
+        ]
+      },
+      "focus-ring": {
+        "role": "primary",
+        "displayName": "Focus cream",
+        "tonalRamp": [
+          "oklch(15% 0.0222 80.69)",
+          "oklch(25% 0.0222 80.69)",
+          "oklch(36% 0.0222 80.69)",
+          "oklch(47% 0.0222 80.69)",
+          "oklch(58% 0.0222 80.69)",
+          "oklch(69% 0.0222 80.69)",
+          "oklch(82% 0.0222 80.69)",
+          "oklch(95% 0.0222 80.69)"
+        ]
+      },
+      "model-tomato": {
+        "role": "primary",
+        "displayName": "Model tomato",
+        "tonalRamp": [
+          "oklch(15% 0.1629 33.71)",
+          "oklch(25% 0.1629 33.71)",
+          "oklch(36% 0.1629 33.71)",
+          "oklch(47% 0.1629 33.71)",
+          "oklch(58% 0.1629 33.71)",
+          "oklch(69% 0.1629 33.71)",
+          "oklch(82% 0.1629 33.71)",
+          "oklch(95% 0.1629 33.71)"
+        ]
+      },
+      "model-sky": {
+        "role": "secondary",
+        "displayName": "Model sky",
+        "tonalRamp": [
+          "oklch(15% 0.0704 233.11)",
+          "oklch(25% 0.0704 233.11)",
+          "oklch(36% 0.0704 233.11)",
+          "oklch(47% 0.0704 233.11)",
+          "oklch(58% 0.0704 233.11)",
+          "oklch(69% 0.0704 233.11)",
+          "oklch(82% 0.0704 233.11)",
+          "oklch(95% 0.0704 233.11)"
+        ]
+      },
+      "model-sage": {
+        "role": "secondary",
+        "displayName": "Model sage",
+        "tonalRamp": [
+          "oklch(15% 0.0901 142.28)",
+          "oklch(25% 0.0901 142.28)",
+          "oklch(36% 0.0901 142.28)",
+          "oklch(47% 0.0901 142.28)",
+          "oklch(58% 0.0901 142.28)",
+          "oklch(69% 0.0901 142.28)",
+          "oklch(82% 0.0901 142.28)",
+          "oklch(95% 0.0901 142.28)"
+        ]
+      },
+      "model-mustard": {
+        "role": "secondary",
+        "displayName": "Model mustard",
+        "tonalRamp": [
+          "oklch(15% 0.1420 87.57)",
+          "oklch(25% 0.1420 87.57)",
+          "oklch(36% 0.1420 87.57)",
+          "oklch(47% 0.1420 87.57)",
+          "oklch(58% 0.1420 87.57)",
+          "oklch(69% 0.1420 87.57)",
+          "oklch(82% 0.1420 87.57)",
+          "oklch(95% 0.1420 87.57)"
+        ]
+      },
+      "role-own": {
+        "role": "tertiary",
+        "displayName": "Own cream",
+        "tonalRamp": [
+          "oklch(15% 0.0222 80.69)",
+          "oklch(25% 0.0222 80.69)",
+          "oklch(36% 0.0222 80.69)",
+          "oklch(47% 0.0222 80.69)",
+          "oklch(58% 0.0222 80.69)",
+          "oklch(69% 0.0222 80.69)",
+          "oklch(82% 0.0222 80.69)",
+          "oklch(95% 0.0222 80.69)"
+        ]
+      },
+      "role-workers": {
+        "role": "tertiary",
+        "displayName": "Worker teal",
+        "tonalRamp": [
+          "oklch(15% 0.1014 186.07)",
+          "oklch(25% 0.1014 186.07)",
+          "oklch(36% 0.1014 186.07)",
+          "oklch(47% 0.1014 186.07)",
+          "oklch(58% 0.1014 186.07)",
+          "oklch(69% 0.1014 186.07)",
+          "oklch(82% 0.1014 186.07)",
+          "oklch(95% 0.1014 186.07)"
+        ]
+      },
+      "role-reviewers": {
+        "role": "tertiary",
+        "displayName": "Reviewer rose",
+        "tonalRamp": [
+          "oklch(15% 0.1035 343.74)",
+          "oklch(25% 0.1035 343.74)",
+          "oklch(36% 0.1035 343.74)",
+          "oklch(47% 0.1035 343.74)",
+          "oklch(58% 0.1035 343.74)",
+          "oklch(69% 0.1035 343.74)",
+          "oklch(82% 0.1035 343.74)",
+          "oklch(95% 0.1035 343.74)"
+        ]
+      },
+      "role-others": {
+        "role": "tertiary",
+        "displayName": "Other violet",
+        "tonalRamp": [
+          "oklch(15% 0.1141 291.35)",
+          "oklch(25% 0.1141 291.35)",
+          "oklch(36% 0.1141 291.35)",
+          "oklch(47% 0.1141 291.35)",
+          "oklch(58% 0.1141 291.35)",
+          "oklch(69% 0.1141 291.35)",
+          "oklch(82% 0.1141 291.35)",
+          "oklch(95% 0.1141 291.35)"
+        ]
+      },
+      "freshness-fresh": {
+        "role": "secondary",
+        "displayName": "Fresh sage",
+        "tonalRamp": [
+          "oklch(15% 0.0901 142.28)",
+          "oklch(25% 0.0901 142.28)",
+          "oklch(36% 0.0901 142.28)",
+          "oklch(47% 0.0901 142.28)",
+          "oklch(58% 0.0901 142.28)",
+          "oklch(69% 0.0901 142.28)",
+          "oklch(82% 0.0901 142.28)",
+          "oklch(95% 0.0901 142.28)"
+        ]
+      },
+      "freshness-stale": {
+        "role": "neutral",
+        "displayName": "Stale gray",
+        "tonalRamp": [
+          "oklch(15% 0.0105 72.61)",
+          "oklch(25% 0.0105 72.61)",
+          "oklch(36% 0.0105 72.61)",
+          "oklch(47% 0.0105 72.61)",
+          "oklch(58% 0.0105 72.61)",
+          "oklch(69% 0.0105 72.61)",
+          "oklch(82% 0.0105 72.61)",
+          "oklch(95% 0.0105 72.61)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "wordmark": {
+        "displayName": "Wordmark",
+        "purpose": "The brand name only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page and session titles."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Chart and section headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Controls and explanatory text."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Short fact labels and supporting notes."
+      },
+      "numeric": {
+        "displayName": "Numeric",
+        "purpose": "Machine values, measurements and tabular data."
+      },
+      "metric": {
+        "displayName": "Metric",
+        "purpose": "Inline session and calibration summary values."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "route-emphasis",
+        "value": "opacity 130ms ease-out",
+        "purpose": "Branch dimming when reduced motion is not requested."
+      },
+      {
+        "name": "refresh-busy",
+        "value": "refresh-turn 650ms linear infinite",
+        "purpose": "Rotation while refreshing; removed for reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-desktop",
+        "value": "1350px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Outlined action",
+      "kind": "button",
+      "description": "The default pill action, with control-tone hover and visible focus.",
+      "html": "<button class=\"ds-action\" type=\"button\">Apply range</button>",
+      "css": ".ds-action{color:var(--usage-ink, #f3eadb);font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif);border:1px solid var(--usage-border, #493d33);border-radius:999px;background:transparent;padding:7px 13px;min-height:36px;cursor:pointer;}.ds-action:hover:not(:disabled):not([aria-disabled=true]){background:var(--usage-control, #332b24)}.ds-action:disabled,.ds-action[aria-disabled=true]{cursor:default;color:var(--usage-muted, #c4b7a8)}.ds-action:focus-visible{outline:2px solid var(--usage-focus-ring, #f3eadb);outline-offset:4px}",
+      "refersTo": "button-outline"
+    },
+    {
+      "name": "Selected toggle",
+      "kind": "button",
+      "description": "A compact selected choice inside a segmented unit control.",
+      "html": "<div class=\"ds-segmented\" role=\"group\" aria-label=\"Unit\"><button type=\"button\" aria-pressed=\"true\">Credits</button><button type=\"button\" aria-pressed=\"false\">Tokens</button></div>",
+      "css": ".ds-segmented{display:inline-flex;gap:3px;border:1px solid var(--usage-border, #493d33);border-radius:999px;padding:3px}.ds-segmented button{color:var(--usage-ink, #f3eadb);font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif);border:1px solid var(--usage-border, #493d33);border-radius:999px;background:transparent;padding:7px 13px;min-height:36px;cursor:pointer;min-height:30px;padding:4px 12px;border-color:transparent;color:var(--usage-muted, #c4b7a8)}.ds-segmented button[aria-pressed=true]{background:var(--usage-control, #332b24);color:var(--usage-ink, #f3eadb);border-color:var(--usage-border, #493d33)}.ds-segmented button:hover:not(:disabled){background:var(--usage-control, #332b24)}.ds-segmented button:disabled{cursor:default;color:var(--usage-muted, #c4b7a8)}.ds-segmented button:focus-visible{outline:2px solid var(--usage-focus-ring, #f3eadb);outline-offset:4px}",
+      "refersTo": "toggle-selected"
+    },
+    {
+      "name": "Date-time field",
+      "kind": "input",
+      "description": "A labeled native date-time input for a custom range.",
+      "html": "<label class=\"ds-field-label\">From<input class=\"ds-field\" type=\"datetime-local\"></label>",
+      "css": ".ds-field-label{display:grid;gap:6px;color:var(--usage-ink, #f3eadb);font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif)}.ds-field{background:var(--usage-surface, #201a16);color:var(--usage-ink, #f3eadb);border:1px solid var(--usage-border, #493d33);padding:7px 10px;border-radius:8px;caret-color:var(--usage-ink, #f3eadb);font:400 14px/1.5 var(--usage-code, 'Cascadia Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace)}.ds-field:focus-visible{outline:2px solid var(--usage-focus-ring, #f3eadb);outline-offset:4px}",
+      "refersTo": "field"
+    },
+    {
+      "name": "Page navigation",
+      "kind": "nav",
+      "description": "Outlined page actions with an ink border on the current page.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Usage pages\"><button type=\"button\" aria-current=\"page\">Overview</button><button type=\"button\">Calibration &amp; data</button></nav>",
+      "css": ".ds-nav{display:flex;gap:8px;align-items:center}.ds-nav button{color:var(--usage-ink, #f3eadb);font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif);border:1px solid var(--usage-border, #493d33);border-radius:999px;background:transparent;padding:7px 13px;min-height:36px;cursor:pointer;color:var(--usage-muted, #c4b7a8);white-space:nowrap}.ds-nav button:hover:not(:disabled){background:var(--usage-control, #332b24);color:var(--usage-ink, #f3eadb)}.ds-nav button[aria-current]{border-color:var(--usage-ink, #f3eadb);color:var(--usage-ink, #f3eadb);font-weight:500}.ds-nav button:focus-visible{outline:2px solid var(--usage-focus-ring, #f3eadb);outline-offset:4px}@media(max-width:1350px){.ds-nav button{padding:6px 10px;font-size:13px}}",
+      "refersTo": "nav-item"
+    },
+    {
+      "name": "Fact chip",
+      "kind": "chip",
+      "description": "A noninteractive compact fact, not a filter action.",
+      "html": "<span class=\"ds-fact\">Time zone <span class=\"ds-fact-value\">UTC</span></span>",
+      "css": ".ds-fact{display:inline-flex;align-items:center;gap:10px;border:1px solid var(--usage-border, #493d33);border-radius:999px;padding:7px 12px;min-height:36px;white-space:nowrap;color:var(--usage-muted, #c4b7a8);font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif)}.ds-fact-value{font-family:var(--usage-code, 'Cascadia Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace);font-variant-numeric:tabular-nums}",
+      "refersTo": "fact-chip"
+    },
+    {
+      "name": "Correction status",
+      "kind": "chip",
+      "description": "A labeled correction state with a small dot and matching outline.",
+      "html": "<span class=\"ds-status\">Calibrated</span>",
+      "css": ".ds-status{border:1px solid var(--usage-model-sage, #8fbf8a);color:var(--usage-model-sage, #8fbf8a);border-radius:999px;display:inline-flex;align-items:center;gap:8px;padding:5px 11px;font:500 13px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif);white-space:nowrap;min-height:32px}.ds-status::before{content:\"\";width:6px;height:6px;background:currentColor;border-radius:50%}@media(max-width:1350px){.ds-status{font-size:12px;padding:5px 8px}}",
+      "refersTo": "status-calibrated"
+    },
+    {
+      "name": "Section panel",
+      "kind": "card",
+      "description": "A ground-toned evidence section with one thin enclosing outline.",
+      "html": "<section class=\"ds-panel\"><h2>Models</h2><p>No calls in this selection.</p></section>",
+      "css": ".ds-panel{border:1px solid var(--usage-border, #493d33);border-radius:12px;background:var(--usage-ground, #16120f);color:var(--usage-ink, #f3eadb);padding:24px;font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif)}.ds-panel h2{margin:0;font-size:20px;line-height:1.3;font-weight:500}.ds-panel p{margin:0;padding:20px 0;color:var(--usage-muted, #c4b7a8)}",
+      "refersTo": "panel"
+    },
+    {
+      "name": "Pace track",
+      "kind": "custom",
+      "description": "Synthetic geometry demonstrates the solid use fill, hatched projection and current-point ring.",
+      "html": "<button class=\"ds-pace\" type=\"button\" aria-label=\"Monthly credit pace details\"><svg class=\"ds-pace-track\" viewBox=\"0 0 1000 40\" preserveAspectRatio=\"none\" aria-hidden=\"true\"><defs><pattern id=\"ds-pace-hatch\" width=\"10\" height=\"10\" patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(30)\"><path class=\"ds-pace-hatch\" d=\"M0 0v10\" stroke-width=\"3\"/></pattern></defs><rect x=\"450\" y=\"0\" width=\"270\" height=\"40\" fill=\"url(#ds-pace-hatch)\"/><rect class=\"ds-pace-fill\" width=\"450\" height=\"40\"/><circle class=\"ds-pace-ring\" cx=\"450\" cy=\"20\" r=\"9\" vector-effect=\"non-scaling-stroke\"/></svg></button>",
+      "css": ".ds-pace{display:block;width:100%;height:40px;min-height:40px;padding:0;border:0;border-radius:999px;background:none;cursor:pointer}.ds-pace-track{display:block;width:100%;height:40px;border:1px solid var(--usage-muted, #c4b7a8);border-radius:999px;background:var(--usage-surface, #201a16);overflow:hidden}.ds-pace-fill{fill:var(--usage-ink, #f3eadb)}.ds-pace-hatch{stroke:var(--usage-hatch, #c4b7a8)}.ds-pace-ring{fill:var(--usage-ground, #16120f);stroke:var(--usage-ink, #f3eadb);stroke-width:3}.ds-pace:hover .ds-pace-ring{stroke-width:4}.ds-pace:focus-visible{outline:2px solid var(--usage-focus-ring, #f3eadb);outline-offset:4px}",
+      "refersTo": "pace-track"
+    },
+    {
+      "name": "Session route",
+      "kind": "custom",
+      "description": "Synthetic branches show model markers, line patterns and focus emphasis. These shapes are not usage records.",
+      "html": "<svg class=\"ds-route\" viewBox=\"0 0 800 430\" role=\"group\" aria-label=\"Example session route\"><path class=\"ds-route-baseline\" d=\"M78 214H772\"/><g class=\"ds-branch\" tabindex=\"0\" role=\"button\" aria-label=\"Example circle model run\"><path class=\"ds-route-casing\" d=\"M120 214l7-7V115l7-7h142l7 7v92l7 7\"/><path class=\"ds-route-ink ds-route-tomato\" d=\"M120 214l7-7V115l7-7h142l7 7v92l7 7\"/><circle class=\"ds-route-circle\" cx=\"205\" cy=\"108\" r=\"3\"/><circle class=\"ds-route-end\" cx=\"290\" cy=\"214\" r=\"4\"/></g><g class=\"ds-branch\" tabindex=\"-1\" role=\"button\" aria-label=\"Example diamond model run\"><path class=\"ds-route-casing\" d=\"M360 214l7 7v67l7 7h172l7-7v-67l7-7\"/><path class=\"ds-route-ink ds-route-sky\" d=\"M360 214l7 7v67l7 7h172l7-7v-67l7-7\"/><path class=\"ds-route-diamond\" d=\"M460 291l4 4-4 4-4-4Z\"/><circle class=\"ds-route-end\" cx=\"560\" cy=\"214\" r=\"4\"/></g></svg>",
+      "css": ".ds-route{display:block;width:100%;height:430px;background:var(--usage-ground, #16120f)}.ds-route-baseline{stroke:var(--usage-muted, #c4b7a8);stroke-width:2;fill:none}.ds-route-casing{stroke:var(--usage-ground, #16120f);stroke-width:6;fill:none;stroke-linejoin:round}.ds-route-ink{stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round;fill:none}.ds-route-tomato{stroke:var(--usage-model-tomato, #f8785c)}.ds-route-sky{stroke:var(--usage-model-sky, #91c7e5);stroke-dasharray:3 3}.ds-route-circle{fill:var(--usage-model-tomato, #f8785c)}.ds-route-diamond{fill:var(--usage-model-sky, #91c7e5)}.ds-route-end{stroke:var(--usage-ink, #f3eadb);stroke-width:2;fill:var(--usage-ground, #16120f)}.ds-branch{cursor:pointer}.ds-branch:focus-visible{outline:none}.ds-branch:hover .ds-route-ink,.ds-branch:focus-visible .ds-route-ink{stroke-width:4}.ds-route:has(.ds-branch:hover) .ds-branch:not(:hover),.ds-route:has(.ds-branch:focus-visible) .ds-branch:not(:focus-visible){opacity:.14}@media(prefers-reduced-motion:no-preference){.ds-branch{transition:opacity .13s ease-out}}"
+    },
+    {
+      "name": "Route detail card",
+      "kind": "card",
+      "description": "An opaque chart detail card with labels and aligned machine values.",
+      "html": "<div class=\"ds-route-card\"><h3>Example run</h3><p class=\"ds-card-model\">Model</p><dl><dt>Role</dt><dd>worker</dd><dt>Status</dt><dd>completed</dd></dl></div>",
+      "css": ".ds-route-card{width:310px;border:1px solid var(--usage-border, #493d33);border-radius:12px;background:var(--usage-control, #332b24);color:var(--usage-ink, #f3eadb);padding:14px 17px;font:400 14px/1.5 var(--usage-text, 'Fira Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif)}.ds-route-card h3{margin:0 0 4px;font-size:16px;font-weight:500}.ds-card-model{font-family:var(--usage-code, 'Cascadia Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace);font-size:12px;margin:0 0 8px}.ds-route-card dl{display:grid;grid-template-columns:1fr auto;gap:4px;margin:0}.ds-route-card dt{color:var(--usage-muted, #c4b7a8)}.ds-route-card dd{margin:0;font-family:var(--usage-code, 'Cascadia Code', Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace);font-size:12px;text-align:right}",
+      "refersTo": "route-card"
+    }
+  ],
+  "narrative": {
+    "northStar": "Night transit map",
+    "overview": "This system describes the usage web interface. Brown-black backgrounds and pale text provide a quiet setting for dense measurements. Outlined controls, short labels and aligned numbers keep the interface readable without separating every fact into a card.\n\nCharts carry the visual identity. Session activity follows a horizontal baseline with colored branches, while stacked bars and connecting ribbons show attribution. Color, marker shape and line pattern distinguish data; they do not decorate the surrounding panels. The wordmark is condensed, but headings and controls remain ordinary reading text.",
+    "keyCharacteristics": [
+      "Warm dark surfaces with pale, high-contrast text.",
+      "Thin outlines and rounded panels, with pills for controls and compact facts.",
+      "Separate color families for models and participant roles.",
+      "Monospaced measurements alongside sans-serif labels.",
+      "Direct chart interaction with an equivalent table view."
+    ],
+    "rules": [
+      {
+        "name": "The Attribution Rule",
+        "body": "Model colors identify models; role colors identify participants. Preserve that distinction when both appear in the same chart.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Needs Context Rule",
+        "body": "A colored status mark accompanies a label or accessible description. Tomato alone does not distinguish a model from a warning.",
+        "section": "colors"
+      },
+      {
+        "name": "The Measurement Rule",
+        "body": "Use the code family for machine values and measurements, not as a substitute for the interface's reading face. Keep tabular numerals in data columns.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Surface Rule",
+        "body": "Use tone, outline and stacking to establish hierarchy. Do not add decorative shadows to the existing panel and control vocabulary.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** use warm neutral surfaces and reserve data colors for attribution and meaningful states.",
+      "**Do** pair model color with marker shape and keep participant-role colors separate.",
+      "**Do** align comparable numeric values and use the code family for measurements, identifiers and times.",
+      "**Do** keep chart and table representations together with visible keyboard focus.",
+      "**Do** show missing data with an explicit label rather than a fabricated amount or series.",
+      "**Do** keep public examples synthetic and free of account details or user paths."
+    ],
+    "donts": [
+      "**Don't** turn every summary value into a separate card or nest content panels inside panels.",
+      "**Don't** add shadows, decorative gradients or translucent glass to this flat interface.",
+      "**Don't** use the wordmark face for ordinary headings or controls.",
+      "**Don't** rely on color alone to communicate model identity, status or selection.",
+      "**Don't** remove chart patterns, neutral dividers or outlines merely to make the interface more minimal.",
+      "**Don't** promise a mobile layout that the desktop implementation does not provide."
+    ]
+  }
+}

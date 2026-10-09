@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { bootUsageWorker } from "../worker-entry.js";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
+import { dashboardBatch, dashboardCall } from "./fixtures/dashboard-ledger.js";
 import { ingestOnce } from "../ingest.js";
 import { acquireUsageLease, UsageLeaseError } from "../lease.js";
 import type { UsageWorkerEvent } from "../protocol.js";
-const reads = vi.hoisted(() => ({ health: 0, summaries: 0, calibration: 0, followers: [] as UsageLedger[] }));
+const reads = vi.hoisted(() => ({ health: 0, summaries: 0, calibration: 0, month: 0, failMonth: false, followers: [] as UsageLedger[] }));
 vi.mock("../ledger.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../ledger.js")>();
   return { ...actual, openUsageLedgerReadOnly: (file: string) => {
@@ -21,6 +22,12 @@ vi.mock("../ledger.js", async importOriginal => {
     return store;
   } };
 });
+vi.mock("../query-redesign-shared.js", async importOriginal => {
+ const actual=await importOriginal<typeof import("../query-redesign-shared.js")>();
+ return {...actual,readCorrectedTotal:(...args: Parameters<typeof actual.readCorrectedTotal>)=>{
+  reads.month++;if(reads.failMonth)throw new Error("fixture month failure");return actual.readCorrectedTotal(...args);
+ }};
+});
 class Port extends EventEmitter {
   events: UsageWorkerEvent[] = [];
   closed = false;
@@ -29,7 +36,7 @@ class Port extends EventEmitter {
 }
 let root: string, ports: Port[];
 const at = Date.parse("2026-10-04T12:00:00Z");
-beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-entry-")); ports = []; reads.followers = []; vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); })); });
+beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-entry-")); ports = []; reads.followers = []; reads.month=0; reads.failMonth=false; vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); })); });
 afterEach(async () => {
   for (const port of ports) { port.emit("message", { type: "stop" }); await vi.waitFor(() => expect(port.closed).toBe(true)); }
   vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); rmSync(root, { recursive: true, force: true });
@@ -92,9 +99,11 @@ it("a lease lost during pending ingestion fences writes and switches to read-onl
   const successor = openUsageLedger(c.roots.ledgerFile); clock += 120001;
   const lease = acquireUsageLease(successor, "ingest", `${process.pid}:successor`, () => clock, 120000)!;
   try {
+    const snapshotBefore = successor.getPublishedSnapshot();
     expect(lease).toBeDefined(); release();
     await vi.waitFor(() => expect(finished).toBe(true));
     expect(successor.health().calls).toBe(0); expect(successor.getImportState(source.path)).toBeUndefined();
+    expect(successor.getPublishedSnapshot()).toEqual(snapshotBefore);
     p.emit("message", { type: "refresh" }); await vi.advanceTimersByTimeAsync(0);
     expect(snapshots(p).at(-1)).toMatchObject({ backfill: "running", health: { calls: 0 } });
     expect(discover).toHaveBeenCalledTimes(1);
@@ -365,4 +374,142 @@ it("dashboard standby and handback retain calibration DTOs without follower scan
   server.emit("message", { type: "refresh" }); await vi.advanceTimersByTimeAsync(0);
   expect(snapshots(server).at(-1)?.calibration).toMatchObject({ status: "uncalibrated", factor: null });
   for (const p of [pi, server]) p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+});
+
+
+it("owner publishes corrected billing-month fallback and follower reuses it",async()=>{
+ const c=command(),ledger=openUsageLedger(c.roots.ledgerFile),start=Date.parse("2026-10-01"),day=86400000;
+ const priced=(id:string,ts:number)=>dashboardCall(id,{ts,price:{status:"priced",aic:600,components:{input:600,cacheRead:0,cacheWrite:0,output:0},rateVersion:"synthetic",tier:"base",confidence:"estimated"}});
+ ledger.apply(dashboardBatch([priced("fit",start+1.5*day),priced("later",start+3.25*day)]));
+ ledger.insertCounter({ts:start+day,creditsUsed:0,accountLogin:"synthetic",resetDate:"2026-11-01",raw:{}});
+ ledger.insertCounter({ts:start+2*day,creditsUsed:300,accountLogin:"synthetic",resetDate:"2026-11-01",raw:{}});ledger.close();
+ const owner=port();await bootUsageWorker(owner as unknown as MessagePort,c,{now:()=>at,discover:async()=>({sources:[],runs:[],errors:[]})});
+ await vi.waitFor(()=>expect(snapshots(owner).at(-1)?.backfill).toBe("complete"));
+ expect(snapshots(owner).at(-1)).toMatchObject({monthUsed:600,monthPeriod:{start,end:Date.parse("2026-11-01")}});
+ const follower=port();await bootUsageWorker(follower as unknown as MessagePort,{...c,owner:`${process.pid}:follower`},{now:()=>at,discover:async()=>{throw new Error("follower scan forbidden");}});
+ await vi.waitFor(()=>expect(snapshots(follower).at(-1)?.ingestRole).toBe("follower"));
+ expect(snapshots(follower).at(-1)?.monthUsed).toBe(600);
+});
+
+it.each([false, true])("collector identity publishes with the fenced snapshot, dashboard=%s", async dashboardMode => {
+  const c = { ...command(), sessionId: "fixture-session", dashboardMode }; const p = port();
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  const collector = { kind: dashboardMode ? "dashboard" : "pi", sessionId: dashboardMode ? null : "fixture-session", owner: c.owner };
+  expect(snapshots(p).at(-1)?.collector).toEqual(collector);
+  const reader = openUsageLedger(c.roots.ledgerFile); try { expect(reader.getPublishedSnapshot()?.collector).toEqual(collector); } finally { reader.close(); }
+});
+
+it("normal worker ingestion precedes bounded historical metadata in every pass", async () => {
+  const c = command(), p = port(); let clock = at;
+  const historical = { path: join(root, "historical.jsonl"), project: null, repo: null, run: null };
+  const live = { path: join(root, "live.jsonl"), project: null, repo: null, run: null };
+  const header = { type: "session", id: "fixture-live", timestamp: new Date(at).toISOString() };
+  const call = (id: string) => ({ type: "message", id, timestamp: new Date(clock).toISOString(), message: { role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+  writeFileSync(historical.path, JSON.stringify({ ...header, id: "fixture-history" }) + "\n" + JSON.stringify({ type: "message", message: { role: "toolResult", content: "x".repeat(13 * 1024 * 1024) } }) + "\n");
+  writeFileSync(live.path, JSON.stringify(header) + "\n" + JSON.stringify(call("one")) + "\n");
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [historical, live], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.calls).toBe(1), { timeout: 5000 });
+  expect(snapshots(p).at(-1)).toMatchObject({backfill:"complete",metadataBackfill:"running"});
+  clock += 1000; appendFileSync(live.path, JSON.stringify(call("two")) + "\n"); p.emit("message", { type: "refresh" });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.calls).toBe(2), { timeout: 5000 });
+  expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", metadataBackfill: "running", health: { lastIngestAt: clock } });
+});
+
+it("torn tails finish call and metadata backfill independently",async()=>{
+ const c=command(),p=port(),path=join(root,"torn.jsonl");
+ writeFileSync(path,JSON.stringify({type:"session",id:"torn"})+"\n"+'{"type":"session_info","name":"torn');
+ await bootUsageWorker(p as unknown as MessagePort,c,{now:()=>at,discover:async()=>({sources:[{path,project:null,repo:null,run:null}],runs:[],errors:[]})});
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)).toMatchObject({backfill:"complete",metadataBackfill:"complete"}));
+});
+it("month totals recompute for committed calls and period changes, not idle metadata",async()=>{
+ const c=command(),p=port(),path=join(root,"month-calls.jsonl");let clock=at;
+ const entry=(id:string)=>JSON.stringify({type:"message",id,timestamp:new Date(clock-1).toISOString(),message:{role:"assistant",provider:"github-copilot",model:"gpt-6.1-sol",usage:{input:1000,output:0,cacheRead:0,cacheWrite:0}}})+"\n";
+ writeFileSync(path,entry("one"));
+ await bootUsageWorker(p as unknown as MessagePort,c,{now:()=>clock,discover:async()=>({sources:[{path,project:null,repo:null,run:null}],runs:[],errors:[]})});
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+ expect(snapshots(p).at(-1)?.monthUsed).toBeCloseTo(0.2);const initial=reads.month;
+ appendFileSync(path,JSON.stringify({type:"session_info",name:"New metadata"})+"\n");
+ let before=snapshots(p).length;p.emit("message",{type:"refresh"});await vi.waitFor(()=>expect(snapshots(p).length).toBeGreaterThan(before));
+ expect(reads.month).toBe(initial);
+ appendFileSync(path,entry("two"));before=snapshots(p).length;p.emit("message",{type:"refresh"});await vi.waitFor(()=>expect(snapshots(p).at(-1)?.health.calls).toBe(2));
+ expect(reads.month).toBe(initial+1);expect(snapshots(p).at(-1)?.monthUsed).toBeCloseTo(0.4);
+ clock=Date.parse("2026-11-02");before=snapshots(p).length;p.emit("message",{type:"refresh"});await vi.waitFor(()=>expect(snapshots(p).length).toBeGreaterThan(before));
+ expect(reads.month).toBe(initial+2);expect(snapshots(p).at(-1)?.monthUsed).toBeNull();
+});
+it("a failed month aggregate omits monthUsed without failing ingest",async()=>{
+ const c=command(),p=port();reads.failMonth=true;
+ await bootUsageWorker(p as unknown as MessagePort,c,{now:()=>at,discover:async()=>({sources:[],runs:[],errors:[]})});
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+ expect(reads.month).toBeGreaterThan(0);expect(snapshots(p).at(-1)?.monthUsed).toBeNull();
+ expect(p.events.filter(e=>e.type==="error")).toEqual([]);
+});
+
+it("a month failure after new calls clears the previous total and preserves completed ingest",async()=>{
+ const c=command(),p=port(),path=join(root,"month-failure.jsonl");
+ const entry=(id:string)=>JSON.stringify({type:"message",id,timestamp:new Date(at-1).toISOString(),message:{role:"assistant",provider:"github-copilot",model:"gpt-6.1-sol",usage:{input:1000,output:0,cacheRead:0,cacheWrite:0}}})+"\n";
+ writeFileSync(path,entry("one"));
+ await bootUsageWorker(p as unknown as MessagePort,c,{now:()=>at,discover:async()=>({sources:[{path,project:null,repo:null,run:null}],runs:[],errors:[]})});
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)?.backfill).toBe("complete"));expect(snapshots(p).at(-1)?.monthUsed).toBeCloseTo(0.2);
+ reads.failMonth=true;appendFileSync(path,entry("two"));p.emit("message",{type:"refresh"});
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)?.health.calls).toBe(2));
+ expect(snapshots(p).at(-1)).toMatchObject({monthUsed:null,backfill:"complete"});expect(p.events.filter(e=>e.type==="error")).toEqual([]);
+});
+
+
+it("footer month recomputes when calibration mode changes without new calls", async () => {
+  const c = command(), ledger = openUsageLedger(c.roots.ledgerFile);
+  ledger.apply(dashboardBatch([dashboardCall("mode-fit", { ts: at - 86400000,
+    price: { status: "priced", aic: 1000, components: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, rateVersion: "fixture", tier: "base", confidence: "estimated" } })]));
+  ledger.insertCounter({ ts: at - 86400000, creditsUsed: 0, raw: {} });
+  ledger.insertCounter({ ts: at, creditsUsed: 500, raw: {} }); ledger.close();
+  const p = port();
+  await bootUsageWorker(p as unknown as MessagePort, { ...c, calibration: "auto" }, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBe(500);
+  p.emit("message", { type: "configure", poll: false, calibration: "off" });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.calibration?.status).toBe("off"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBe(1000);
+  p.emit("message", { type: "configure", poll: false, calibration: "auto" });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.calibration?.status).toBe("calibrated"));
+  expect(snapshots(p).at(-1)?.monthUsed).toBe(500);
+  expect(snapshots(p).at(-1)?.health.calls).toBe(1);
+});
+
+it.each([false, true])("footer month recomputes when the latest counter changes within the same period, duplicate timestamp=%s", async duplicateTimestamp => {
+  const c = command(), ledger = openUsageLedger(c.roots.ledgerFile);
+  ledger.apply(dashboardBatch([dashboardCall("counter-fit", { ts: at - 3600000,
+    price: { status: "priced", aic: 1000, components: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 }, rateVersion: "fixture", tier: "base", confidence: "estimated" } })]));
+  ledger.insertCounter({ ts: at - 2 * 86400000, creditsUsed: 0, raw: {} });
+  ledger.insertCounter({ ts: at - 1, creditsUsed: 500, raw: {} });
+  let clock = at;
+  const p = port();
+  try {
+    await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+    await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+    expect(snapshots(p).at(-1)?.monthUsed).toBe(500);
+    clock += 60000;
+    ledger.insertCounter({ ts: duplicateTimestamp ? at - 1 : clock - 1, creditsUsed: 750, raw: {} });
+    const before = snapshots(p).length; p.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(before));
+    expect(snapshots(p).at(-1)?.monthUsed).toBe(750);
+    expect(snapshots(p).at(-1)?.health.calls).toBe(1);
+  } finally { ledger.close(); }
+});
+
+
+it("persistent non-parse metadata errors finish status progress while keeping the diagnostic", async () => {
+  const c = command(), p = port(), missing = join(root, "missing-session.jsonl");
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at,
+    discover: async () => ({ sources: [{ path: missing, project: null, repo: null, run: null }], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
+  const check = openUsageLedger(c.roots.ledgerFile);
+  try {
+    expect(check.getSourceErrors()).toContainEqual({ path: `metadata:source:${missing}`, code: "metadata-missing-source" });
+    const before = snapshots(p).length; p.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(before));
+    expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", metadataProgress: { sourcesCompleted: 1, sourcesTotal: 1 } });
+    expect(check.getSourceErrors()).toContainEqual({ path: `metadata:source:${missing}`, code: "metadata-missing-source" });
+  } finally { check.close(); }
 });

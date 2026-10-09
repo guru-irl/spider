@@ -114,7 +114,7 @@ function unpricedReasons(ctx: DashboardQueryContext, cube: UsageCube, query: Ran
   const selection = countedUsageSql("c.ts>=? AND c.ts<?", "c.ts,c.price_status,c.unpriced_reason,c.run_id,c.is_report,c.source_file", "calls_period_read", storedSelection(ctx.db));
   return ctx.db.prepare(`WITH counted AS MATERIALIZED (${selection}),
     pieces AS (SELECT json_extract(value,'$.start') AS start,json_extract(value,'$.end') AS end FROM json_each(?))
-    SELECT CASE WHEN c.unpriced_reason IN ('unknown-model','unsupported-provider','missing-attribution','no-rate-at-time','invalid-usage')
+    SELECT CASE WHEN c.unpriced_reason IN ('unknown-model','unsupported-provider','missing-attribution','no-rate-at-time','invalid-usage','reported-cost-zero')
       THEN c.unpriced_reason ELSE 'unavailable' END AS reason,COUNT(*) AS calls
     FROM counted c JOIN pieces p ON c.ts>=p.start AND c.ts<p.end
     WHERE c.price_status='unpriced' GROUP BY reason ORDER BY calls DESC,reason`).all(query.from, query.to, JSON.stringify(pieces)) as OverviewDataV4["unpriced"];

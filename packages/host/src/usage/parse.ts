@@ -201,8 +201,8 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
       record = message;
       if (message.role === "toolResult") {
         if (message.usage == null) continue;
-        // Optional explicit summary provenance is safe; surrounding model changes
-        // and tool details/content are never billing evidence.
+        // Explicit summary provenance is safe. Model-less summaries may use
+        // provider state for reported cost; tool details/content never attribute models.
         const summary = object(message.usage)?.source;
         actor = summary === "compaction" || summary === "branch_summary" ? "compaction" : "aux";
         // Tool fallback may sum multiple aux/subagent calls and overlap child
@@ -239,8 +239,9 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
     const plugin = actor === "compaction" && (entry.type === "compaction" || entry.type === "branch_summary")
       ? summaryModelRef(object(entry.details)?.summaryModel) : undefined;
     const rawProvider = plugin?.provider ?? text(record.provider);
-    const provider = rawProvider ?? (actor === "compaction" ? state.provider : null);
     const model = plugin?.id ?? text(record.responseModel) ?? text(record.model);
+    const reportedSummary = actor === "compaction" && model === null;
+    const provider = rawProvider ?? (reportedSummary ? state.provider : null);
     const requestedModel = plugin?.id ?? text(record.model);
     const report = reportedRun ? text(entry.note)?.match(/^([\s\S]*?)\s*\(([A-Za-z0-9][A-Za-z0-9_-]*)\)\s*$/) : undefined;
     const cost = object(rawUsage.cost)?.total;
@@ -259,13 +260,13 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
       parentRunId: reportedRun ? source.run?.id ?? null : source.run?.parentRunId ?? null,
       auxPurpose, provider, rawProvider, model, requestedModel, displayModel: reportedRun ? null : state.model,
       thinking: reportedRun ? null : text(record.providerThinkingLevel) ?? state.thinking, api: text(record.api), usage,
-      price: actor === "compaction" && !plugin ? priceReportedCost(provider, object(rawUsage.cost))
+      price: reportedSummary ? priceReportedCost(provider, object(rawUsage.cost), usage, ts)
         : priceCall({ provider, id: model }, usage, ts, { aggregate: plugin ? false : aggregate }),
       piCost: nonnegative(cost) ? cost : null,
       latencyMs: nonnegative(latency) ? latency : null, aggregate,
     };
     calls.push(call);
-    if (actor === "compaction" && !plugin && provider === null) reportedCosts.set(call, object(rawUsage.cost));
+    if (reportedSummary && provider === null) reportedCosts.set(call, object(rawUsage.cost));
   }
   // Unknown state may use only unanimous recorded call attribution, never an
   // inferred summary's own provider. Include persisted evidence for append scans.
@@ -273,7 +274,7 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
   if (providers.size === 1 && providers.has("github-copilot")) {
     for (const [call, cost] of reportedCosts) {
       call.provider = "github-copilot";
-      call.price = priceReportedCost(call.provider, cost);
+      call.price = priceReportedCost(call.provider, cost, call.usage, call.ts);
     }
   }
   return { sessionId, parentSession, calls, errors, warnings };

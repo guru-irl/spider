@@ -24,7 +24,7 @@ export type PriceResult = {
   confidence: "estimated" | "verified";
 } | {
   status: "unpriced";
-  reason: "unknown-model" | "unsupported-provider" | "missing-attribution" | "no-rate-at-time" | "invalid-usage";
+  reason: "unknown-model" | "unsupported-provider" | "missing-attribution" | "no-rate-at-time" | "invalid-usage" | "reported-cost-zero";
 };
 
 export type RateVersion = {

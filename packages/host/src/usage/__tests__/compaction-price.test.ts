@@ -16,6 +16,7 @@ import { assertUsageSchemaVersion, migrateUsageLedger } from "../migrate.js";
 import { USAGE_SCHEMA_V4 } from "../schema-v4.js";
 import { readFileSync } from "node:fs";
 import { UsageJsonLine } from "../jsonl-projection.js";
+import { unpricedReasonSql } from "../unpriced-reasons.js";
 import { renderSessionRoute } from "../web/session-route.js";
 import { sessionFixture } from "./fixtures/redesign-contract.js";
 import { PlainDocument, descendants, elements } from "./fixtures/plain-dom.js";
@@ -59,9 +60,9 @@ it.each([{ evidence: [] }, { evidence: [call("copilot"), call("foreign", "fixtur
 it("uses exclusive same-session call evidence when provider state is unknown", () => {
   expect(parse(header, summary("unknown"), call("copilot")).at(0)).toMatchObject({ provider: "github-copilot", price: { status: "priced", aic: 10 } });
 });
-it("preserves only supplied cost components and prices recorded zero", () => {
+it("preserves only supplied cost components and prices recorded zero only without tokens", () => {
   const result = parse(header, select("github-copilot"), summary("partial", "branch_summary", { parentId: "selection", usage: { ...usage, cost: { total: 0.1, input: 0.01 } } }),
-    summary("zero", "compaction", { parentId: "selection", usage: { ...usage, cost: { total: 0 } } }));
+    summary("zero", "compaction", { parentId: "selection", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } }));
   expect(result[0].price).toMatchObject({ status: "priced", aic: 10, components: { input: 1, output: null, cacheRead: null, cacheWrite: null } });
   expect(result[1].price).toMatchObject({ status: "priced", aic: 0, components: { input: null, output: null, cacheRead: null, cacheWrite: null } });
 });
@@ -286,4 +287,112 @@ it("deduplicates newly ingested copies against repriced model-less historical su
   ledger.apply(dashboardBatch([{ ...copied, sourceFile: "synthetic/copy.jsonl", sourceGeneration: 0, copied: true, counted: true, originKey: null, sourceKind: "transcript" }]));
   expect(rows()).toHaveLength(3);
   expect(ledger.summarize(0, at)).toMatchObject({ aic: 11, pricedCalls: 2 });
+});
+
+// Removing the effective-date check or either parser call's timestamp breaks these boundaries.
+const firstRateAt = Math.min(...COPILOT_RATE_VERSIONS.map(rate => Date.parse(rate.effectiveFrom)));
+it.each(["state", "evidence"])("ingests reported-cost summaries at the earliest rate instant, not 1 ms before, using %s", async basis => {
+  const path = join(root, "rate-boundary.jsonl");
+  writeFileSync(path, [header, basis === "state" ? select("github-copilot") : call("copilot"),
+    summary("before", "compaction", { timestamp: new Date(firstRateAt - 1).toISOString() }),
+    summary("boundary", "branch_summary", { timestamp: new Date(firstRateAt).toISOString() }),
+  ].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  await ingestOnce(ledger, { sources: [{ path, project: null, repo: null, run: null }], runs: [], errors: [] }, at, new AbortController().signal);
+  expect(rows().find(row => row.entry_id === "before")).toMatchObject({ price_status: "unpriced", unpriced_reason: "no-rate-at-time", aic: null });
+  expect(rows().find(row => row.entry_id === "boundary")).toMatchObject({ price_status: "priced", aic: 10, rate_version: "pi-reported-cost-v1" });
+});
+it("historical reported-cost pricing leaves pre-rate rows unpriced and prices the boundary instant", () => {
+  ledger.apply(dashboardBatch([dashboardCall("evidence", { sessionId: "summary-session", provider: "github-copilot" }),
+    legacy("before", { ts: firstRateAt - 1 }), legacy("boundary", { ts: firstRateAt })]));
+  const before = rows().find(row => row.entry_id === "before");
+  expect(ledger.repriceUnpriced(() => true)).toMatchObject({ state: "complete", processed: 2, repriced: 1, changed: 1 });
+  expect(rows().find(row => row.entry_id === "before")).toEqual(before);
+  expect(rows().find(row => row.entry_id === "boundary")).toMatchObject({ price_status: "priced", aic: 10 });
+  expect(ledger.repriceUnpriced(() => true)).toMatchObject({ state: "complete", changed: 0 });
+});
+// A totalTokens-only record or optional subset must not sneak through the zero check.
+it.each(["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning", "totalTokens"])("keeps zero reported cost unpriced with nonzero %s", field => {
+  const nonzero = { input: 0, output: 0, cacheRead: 0, cacheWrite: field === "cacheWrite1h" ? 1 : 0, [field]: 1 };
+  expect(parse(header, select("github-copilot"), summary("zero", "compaction", { usage: { ...nonzero, cost: { total: 0 } } }))[0].price)
+    .toEqual({ status: "unpriced", reason: "reported-cost-zero" });
+});
+it("ingests zero reported cost as unpriced in queries and doctor, and keeps it unpriced after reprice", async () => {
+  const path = join(root, "zero-cost.jsonl");
+  writeFileSync(path, [header, select("github-copilot"), summary("zero", "compaction", { usage: { ...usage, cost: { total: 0 } } })]
+    .map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  await ingestOnce(ledger, { sources: [{ path, project: null, repo: null, run: null }], runs: [], errors: [] }, at, new AbortController().signal);
+  expect(rows()[0]).toMatchObject({ price_status: "unpriced", unpriced_reason: "reported-cost-zero", aic: null });
+  expect(db.prepare(`SELECT ${unpricedReasonSql("unpriced_reason")} AS reason FROM calls`).get()).toEqual({ reason: "reported-cost-zero" });
+  const before = rows();
+  expect(ledger.repriceUnpriced(() => true)).toMatchObject({ changed: 0 });
+  expect(rows()).toEqual(before);
+  const diagnosis = usageDoctorLines({ health: ledger.health(at), backfill: "complete", errorCode: null, counter: null, reconciliation: null }, readUsageConfig({}, {}).value);
+  expect(diagnosis.lines).toContain("- usage unpriced (this billing period): 0 models, 1 calls without a model");
+  const reader = openDashboardReader(file, { instanceId: "fixture", serverBuild: "fixture", now: () => at, calibrationMode: () => "off" })!;
+  try {
+    const view = reader.snapshot(ctx => queryOverviewV4(ctx, { range: "month", from: at - 15 * day, to: at, tz: "UTC", unit: "credits", buckets: [] }));
+    expect(view.unpriced).toEqual([{ reason: "reported-cost-zero", calls: 1 }]);
+    expect(view.flow.edges.find(edge => edge.role === "compaction")?.value).toMatchObject({ credits: null, unpricedCalls: 1 });
+  } finally { reader.close(); }
+});
+it("historical zero reported cost is priced only when every recorded token count is zero", () => {
+  ledger.apply(dashboardBatch([dashboardCall("evidence", { sessionId: "summary-session", provider: "github-copilot" }),
+    legacy("nonzero", { piCost: 0 }), legacy("total-only", { piCost: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1 } }),
+    legacy("empty", { piCost: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, reasoning: 0, totalTokens: 0 } })]));
+  const before = rows().slice(1, 3);
+  expect(ledger.repriceUnpriced(() => true)).toMatchObject({ processed: 3, changed: 1 });
+  expect(rows().slice(1, 3)).toEqual(before);
+  expect(rows().at(-1)).toMatchObject({ price_status: "priced", aic: 0 });
+});
+
+// Attributed summaries retain the pre-branch aggregate rate-table basis, even without pi cost.
+it.each(["compaction", "branch_summary", "tool"])("prices a directly attributed %s at aggregate default rates, not reported cost", type => {
+  const recordedUsage = { ...usage, input: 300000 };
+  const entry = type === "tool" ? { ...call("explicit"), message: { role: "toolResult", provider: "github-copilot", model: "gpt-6.1-sol", usage: { ...recordedUsage, source: "compaction" } } }
+    : summary("explicit", type, { provider: "github-copilot", model: "gpt-6.1-sol", usage: recordedUsage });
+  expect(parse(header, select("fixture-provider"), entry)[0]).toMatchObject({ provider: "github-copilot", model: "gpt-6.1-sol",
+    price: { status: "priced", aic: 60.303000000000004, components: { input: 60, output: 0.2, cacheRead: 0.003, cacheWrite: 0.1 }, tier: "aggregate-default-lower-bound" } });
+});
+it("does not infer billing provider for a summary that records a model without its own provider", () => {
+  expect(parse(header, select("github-copilot"), summary("model-only", "compaction", { model: "gpt-6.1-sol" }))[0])
+    .toMatchObject({ provider: null, model: "gpt-6.1-sol", price: { status: "unpriced", reason: "missing-attribution" } });
+});
+
+// Removing the non-string summary-details guard lets these containers exhaust the metadata budget.
+it.each(["array", "object"])("streams a large %s summaryModel without losing the summary usage", shape => {
+  const large = Array(400000).fill(123);
+  const bytes = Buffer.from(JSON.stringify(summary("large-details", "compaction", { details: { summaryModel: shape === "array" ? large : { values: large } } })));
+  const line = new UsageJsonLine();
+  for (let start = 0; start < bytes.length; start += 65536) line.write(bytes.subarray(start, start + 65536));
+  const projected = line.finish();
+  expect(projected).toMatchObject({ type: "compaction", id: "large-details", usage: { ...usage, cost } });
+  expect(projected).not.toHaveProperty("details");
+  expect(parse(header, select("github-copilot"), projected)[0].price).toMatchObject({ status: "priced", aic: 10 });
+});
+// Including a rewritten source's old rows poisons the new generation's provider evidence.
+it("discards foreign provider evidence from a rewritten source before pricing the new generation", async () => {
+  const path = join(root, "rewritten.jsonl");
+  const discovery = { sources: [{ path, project: null, repo: null, run: null }], runs: [], errors: [] };
+  writeFileSync(path, [header, call("old-foreign", "fixture-provider")].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  await ingestOnce(ledger, discovery, at, new AbortController().signal);
+  const generation = ledger.getImportState(path)!.generation;
+  expect(ledger.getSessionProviders("summary-session")).toEqual(["fixture-provider"]);
+  ledger.close(); ledger = openUsageLedger(file);
+  writeFileSync(path, [header, call("new-copilot"), summary("new-summary")].map(entry => JSON.stringify(entry)).join("\n") + "\n");
+  await ingestOnce(ledger, discovery, at, new AbortController().signal);
+  expect(ledger.getSourceErrors()).toEqual([]);
+  expect(ledger.getImportState(path)!.generation).toBe(generation + 1);
+  expect(rows().some(row => row.entry_id === "old-foreign")).toBe(false);
+  expect(rows().find(row => row.entry_id === "new-summary")).toMatchObject({ provider: "github-copilot", raw_provider: null, model: null, aic: 10, rate_version: "pi-reported-cost-v1" });
+});
+// Without model IS NULL, attributed aggregate rows are incorrectly eligible for the reported-cost pass.
+it("excludes modeled aggregate summaries from historical reported-cost candidates", () => {
+  ledger.apply(dashboardBatch([dashboardCall("evidence", { sessionId: "summary-session", provider: "github-copilot" }),
+    legacy("unknown-model", { provider: "github-copilot", model: "unknown-fixture-model", price: { status: "unpriced", reason: "unknown-model" } }),
+    legacy("known-model", { provider: "github-copilot", model: "gpt-6.1-sol" }),
+    legacy("model-only", { model: "gpt-6.1-sol" }), legacy("model-less")]));
+  const before = rows().slice(1, 4);
+  expect(ledger.repriceUnpriced(() => true)).toMatchObject({ state: "complete", processed: 1, total: 1, changed: 1 });
+  expect(rows().slice(1, 4)).toEqual(before);
+  expect(rows().at(-1)).toMatchObject({ price_status: "priced", aic: 10 });
 });

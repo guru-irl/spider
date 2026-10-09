@@ -82,7 +82,7 @@ export function createRepricer(db: Db): {
             }
             provider = evidence.get(row.sessionId)!;
           }
-          const price = row.aggregate ? priceReportedCost(provider, { total: row.piCost })
+          const price = row.aggregate ? priceReportedCost(provider, { total: row.piCost }, usage, row.ts)
             : priceCall({ provider, id: row.model }, usage, row.ts);
           if (price.status === "priced") {
             changed += update.run({ rowId: row.rowId, provider, aic: price.aic, ...price.components,

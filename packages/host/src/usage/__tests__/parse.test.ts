@@ -78,13 +78,13 @@ describe("parseTranscript", () => {
     }
   });
 
-  it("uses recorded summary cost independently of model aliases", () => {
+  it("uses rate-table pricing and response aliases for explicitly attributed summaries", () => {
     const result = parseTranscript(lines(
       entry("message", "tool", { message: { role: "toolResult", toolName: "fixture_summary", provider: "github-copilot", model: "gpt-6.1-sol", usage: usage({ source: "compaction" }), timestamp: AT } }),
       entry("compaction", "compact", { provider: "github-copilot", model: "gpt-6.1-sol", responseModel: "unknown-response-model", usage: usage() }),
     ), SOURCE);
-    expect(result.calls[0]).toMatchObject({ actor: "compaction", aggregate: true, provider: "github-copilot", model: "gpt-6.1-sol", price: { status: "priced", tier: "reported-cost" } });
-    expect(result.calls[1]).toMatchObject({ model: "unknown-response-model", requestedModel: "gpt-6.1-sol", price: { status: "priced", rateVersion: "pi-reported-cost-v1" } });
+    expect(result.calls[0]).toMatchObject({ actor: "compaction", aggregate: true, provider: "github-copilot", model: "gpt-6.1-sol", price: { status: "priced", tier: "aggregate-default-lower-bound" } });
+    expect(result.calls[1]).toMatchObject({ model: "unknown-response-model", requestedModel: "gpt-6.1-sol", price: { status: "unpriced", reason: "unknown-model" } });
   });
 
   it.each([SOURCE, CHILD])("keeps unknown usage kinds for the owning source $path", source => {

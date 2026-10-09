@@ -414,8 +414,12 @@ it("normal worker ingestion precedes bounded historical metadata in every pass",
   writeFileSync(historical.path, JSON.stringify({ ...header, id: "fixture-history" }) + "\n" + JSON.stringify({ type: "message", message: { role: "toolResult", content: "x".repeat(metadataBudget * 3 + metadataBudget / 4) } }) + "\n");
   writeFileSync(live.path, JSON.stringify(header) + "\n" + JSON.stringify(call("one")) + "\n");
   await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover: async () => ({ sources: [historical, live], runs: [], errors: [] }) });
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.calls).toBe(1), { timeout: 5000 });
-  expect(snapshots(p).at(-1)).toMatchObject({backfill:"complete",metadataBackfill:"running"});
+  // Each pass publishes after ingestion (metadata still pending on the first pass) and again after its bounded
+  // metadata step, so wait for the end-of-pass snapshot rather than the first one that counts the call.
+  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", metadataBackfill: "running", health: { calls: 1 } }), { timeout: 5000 });
+  const firstIngested = snapshots(p).findIndex(s => s.health.calls === 1), firstRunning = snapshots(p).findIndex(s => s.metadataBackfill === "running");
+  expect(firstIngested).toBeGreaterThanOrEqual(0);
+  expect(firstIngested).toBeLessThanOrEqual(firstRunning);
   clock += 1000; appendFileSync(live.path, JSON.stringify(call("two")) + "\n"); p.emit("message", { type: "refresh" });
   await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.calls).toBe(2), { timeout: 5000 });
   expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", metadataBackfill: "running", health: { lastIngestAt: clock } });

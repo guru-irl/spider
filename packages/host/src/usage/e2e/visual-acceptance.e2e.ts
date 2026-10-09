@@ -127,6 +127,9 @@ for (const width of widths) for (const pageName of ["overview", "session", "cali
   });
 }
 for (const width of widths) test(`states gallery every component and state ${width}`, async ({ page }, info) => {
+  // Heavy by design: a full gallery capture, layout and contrast passes, then one screenshot per state.
+  // About 32 s locally; shared CI runners need longer, so the test gets three times the default budget.
+  test.slow();
   await page.setViewportSize({ width, height: 1000 }); const errors = expectNoBrowserErrors(page); await installFixtureRoutes(page);
   await page.goto("/states.html"); await expect(page.locator("#states-root")).toHaveAttribute("data-settled", "true");
   for (const example of fixtureStateCases()) await expect(page.locator(".state-example>h2").filter({ hasText: new RegExp(`^${example.name}$`) })).toHaveCount(1);

@@ -101,7 +101,7 @@ it("two years and components have bounded calibration batches and indexed ranges
  modelStyles(ctx);expect(many).not.toHaveBeenCalled();
  const reference=readUsageCube(ctx,q(S,S+730*D),{sessionId:"parent-session"});
  expect(reference.total.credits).toBe(730);
- expect(querySession(ctx,"parent-session","UTC").total).toEqual(reference.total);
+ expect(querySession(ctx,"parent-session","UTC",{from:S,to:S+730*D}).total).toEqual(reference.total);
  const ids=Array.from({length:730},(_,i)=>`c${i}`);
  const referenceComponents=readCorrectedComponents(ctx,ids);
  expect(referenceComponents.size).toBe(730);

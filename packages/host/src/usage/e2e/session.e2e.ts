@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installFixtureRoutes, expectNoBrowserErrors } from "./fixtures.js";
-import { sessionFixture, overviewFixture, envelope } from "../__tests__/fixtures/redesign-contract.js";
+import { sessionSpan, sessionFixture, overviewFixture, envelope } from "../__tests__/fixtures/redesign-contract.js";
 import { routeHash } from "../web/navigation.js";
 
 test("transit hover, pin and Escape retain focus and select the runs row", async ({ page }) => {
@@ -29,12 +29,14 @@ test("transit keyboard arrows, Tab and Enter activate real routes and rows", asy
   const row = page.locator('[data-run-row="run-build"]'); await row.locator("button").focus(); await row.locator("button").press("Enter"); await expect(row).toHaveAttribute("aria-selected", "true");
   await row.locator("button").press("ArrowDown"); await expect(page.locator('[data-run-name="run-review"]')).toBeFocused();
 });
-test("runs Show all and sortable columns preserve the route data", async ({ page }) => {
+test("scrolling runs and sortable columns preserve the route data", async ({ page }) => {
   const routes = await installFixtureRoutes(page), data = sessionFixture();
   data.runs = Array.from({ length: 25 }, (_, i) => ({ ...data.runs[0]!, id: `run-${i}`, name: `Task ${i}`, start: data.span!.start + i * 1000, value: { ...data.runs[0]!.value, credits: i } }));
   routes.replace(`/api/session/${data.id}`, { status: 200, body: envelope(data) });
-  await page.goto("/#/session/session-garden?unit=credits&tz=UTC"); await expect(page.locator("[data-run-row]")).toHaveCount(20);
-  await page.getByRole("button", { name: "Show all 25", exact: true }).press("Enter"); await expect(page.locator("[data-run-row]")).toHaveCount(25);
+  await page.goto("/#/session/session-garden?unit=credits&tz=UTC"); await expect(page.locator("[data-run-row]")).toHaveCount(25);
+  const region = page.getByRole("region", { name: "Subagent runs", exact: true });
+  expect(await region.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await expect(page.getByRole("button", { name: "Show all 25", exact: true })).toHaveCount(0);
   await page.locator('.runs-table th').getByRole("button", { name: "Credits", exact: true }).click();
   await expect(page.locator("[data-run-row]").first()).toHaveAttribute("data-run-row", "run-24");
   expect(routes.count(`/api/session/${data.id}`)).toBe(1);
@@ -94,7 +96,7 @@ test("idle breaks stay fixed width and resize preserves branch focus after Escap
 });
 test("many idle breaks scroll instead of shrinking their fixed width", async ({ page }) => {
   const routes = await installFixtureRoutes(page), d = sessionFixture(), start = d.span!.start, hour = 3600000;
-  d.span = { start, end: start + 101 * hour };
+  d.span = sessionSpan(start, start + 101 * hour); d.range = { from: d.span.start, to: d.span.end };
   d.activePeriods = Array.from({ length: 102 }, (_, i) => ({ start: start + i * hour, end: start + i * hour + 60000 }));
   d.idleGaps = []; routes.replace(`/api/session/${d.id}`, { status: 200, body: envelope(d) });
   await page.goto("/#/session/session-garden?unit=credits&tz=UTC");
@@ -114,7 +116,7 @@ test("metadata-only and own-only sessions render honest empty sections", async (
 });
 test("desktop Session layout and offline fonts remain usable", async ({ page }, testInfo) => {
   const routes = await installFixtureRoutes(page), errors = expectNoBrowserErrors(page);
-  for (const width of [1440, 1280]) {
+  for (const width of [1440, 1280, 1600]) {
     await page.setViewportSize({ width, height: 900 }); await page.goto("/#/session/session-garden?unit=credits&tz=UTC");
     await expect(page.locator('.session-models-section')).toBeVisible();
     expect(await page.locator('main>section section').count()).toBe(0);
@@ -128,7 +130,7 @@ test("desktop Session layout and offline fonts remain usable", async ({ page }, 
 });
 test("dense route time labels do not collide with anchored endpoints", async ({ page }) => {
   const routes = await installFixtureRoutes(page), d = sessionFixture(), start = d.span!.start;
-  d.span = { start, end: start + 1094 * 60000 }; d.runs = []; d.idleGaps = [];
+  d.span = sessionSpan(start, start + 1094 * 60000); d.range = { from: d.span.start, to: d.span.end }; d.runs = []; d.idleGaps = [];
   d.activePeriods = Array.from({ length: 1094 }, (_, i) => ({ start: start + i * 60000, end: start + (i + 1) * 60000 }));
   routes.replace(`/api/session/${d.id}`, { status: 200, body: envelope(d) });
   await page.setViewportSize({ width: 1440, height: 900 }); await page.goto("/#/session/session-garden?unit=credits&tz=UTC");

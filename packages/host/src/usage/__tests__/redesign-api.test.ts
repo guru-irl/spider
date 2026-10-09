@@ -61,7 +61,9 @@ it("five authenticated route envelopes expose complete new shapes and resolved p
   expect(sessions.data.rows).toEqual(overview.data.sessions.rows); expect(sessions.period).toEqual(overview.period);
   const session = data(await reply(server.port, `/api/session/${H}?tz=UTC`, { Cookie }));
   expect(session.data).toMatchObject({ id: H, total: { credits: 2 }, stats: { ownCalls: 2 }, span: { start: S, end: NOW - D + 1 } });
-  expect(session.period).toEqual(session.data.span);
+  expect(session.period).toEqual({ start: S, end: Date.UTC(2026, 10, 1) });
+  expect(session.data.range).toEqual({ from: S, to: Date.UTC(2026, 10, 1) });
+  expect(session.data.span).toMatchObject({ first: S, last: NOW-D });
   const calibration = data(await reply(server.port, "/api/calibration", { Cookie }));
   expect(calibration.data).toMatchObject({ correction: { factor: null }, daily: expect.any(Array), rates: expect.any(Array), ingestion: { collector: "none" }, errors: [], gaps: { unpricedCalls: 0 } });
   expect(calibration.period).toEqual({ start: S, end: NOW });
@@ -73,9 +75,13 @@ it("session not-found is nonretryable, unsupported ids fail and extra segments n
   expect(unknown.status).toBe(404); expect(JSON.parse(unknown.body)).toEqual({ apiVersion: 1, error: { code: "not-found", message: "Session not found" } });
   expect((await reply(server.port, "/api/session/bad!", { Cookie })).status).toBe(400);
   for (const path of ["/api/session/parent-session/extra", "/api/session/", "/api/session/%2e%2e%2fescape"]) expect((await reply(server.port, path, { Cookie })).status).not.toBe(200);
-  for (const search of ["?start=1&end=2", "?from=1&to=2", "?tz=UTC&tz=UTC", "?unit=tokens"]) expect((await reply(server.port, `/api/session/${H}${search}`, { Cookie })).status).toBe(400);
+  for (const search of ["?start=1&end=2", "?from=2&to=1", "?from=1", "?from=1.5&to=2", "?tz=UTC&tz=UTC", "?unit=tokens"]) expect((await reply(server.port, `/api/session/${H}${search}`, { Cookie })).status).toBe(400);
   const empty = data(await reply(server.port, "/api/session/empty", { Cookie }));
-  expect(empty.data.span).toBeNull(); expect(empty.period).toEqual({ start: NOW, end: NOW });
+  expect(empty.data.span).toBeNull(); expect(empty.period).toEqual({ start: S, end: Date.UTC(2026, 10, 1) });
+  const narrowed = data(await reply(server.port, `/api/session/${H}?from=${NOW-D}&to=${NOW}`, { Cookie }));
+  expect(narrowed.data.total).toMatchObject({ calls: 1, credits: 1 });
+  expect(narrowed.period).toEqual({ start: NOW-D, end: NOW });
+  expect(narrowed.data.range).toEqual({ from: NOW-D, to: NOW });
 });
 
 it("all retired routes return not-found and client uses only focused DTOs", async () => {
@@ -200,7 +206,7 @@ it("six-month whole-session envelope retains 50000 own calls, 300 runs and all c
   }
   f.ledger.apply(dashboardBatch(calls, { runs, sessions: [human(), ...runs.map((_, i) => human(`child-${i}`, H))] }));
   const server = await start(), Cookie = await server.cookie();
-  const response = await reply(server.port, `/api/session/${H}?tz=America%2FNew_York`, { Cookie });
+  const response = await reply(server.port, `/api/session/${H}?tz=America%2FNew_York&from=${S}&to=${last+1}`, { Cookie });
   const envelope = data(response) as ApiEnvelope<SessionData>;
   expect(last - S).toBeLessThan(183 * D); expect(last - S).toBeGreaterThan(160 * D);
   expect(envelope.period).toEqual({ start: S, end: last + 1 });

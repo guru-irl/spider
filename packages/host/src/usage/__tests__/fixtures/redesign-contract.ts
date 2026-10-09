@@ -1,7 +1,7 @@
 import type { ApiEnvelope, ApiErrorBody, Period } from "../../dashboard-contract.js";
 import type {
   CalibrationData, DashboardRouteV4, FlowData, ModelRow, OverviewDataV4, Pace,
-  SessionData, SessionNotFound, SessionsData, StatusData, Value,
+  SessionData, SessionSpan, SessionNotFound, SessionsData, StatusData, Value,
 } from "../../dashboard-v4-contract.js";
 
 // Fixed synthetic dates and small invented measures. No ledger, configuration or network access.
@@ -88,19 +88,20 @@ export function overviewFixture(overrides: Partial<OverviewDataV4> = {}): Overvi
     models: modelRows(), unpriced: [], sessions: sessionsFixture(), flow: flowData(), ...overrides,
   } satisfies OverviewDataV4);
 }
+export function sessionSpan(start: number, end: number): SessionSpan { return { start, end, first: start, last: end - 1 }; }
 export function sessionFixture(overrides: Partial<SessionData> = {}): SessionData {
   return structuredClone({
-    id: SESSION_ID, name: "Garden tools", project: "garden", span: { start: FIRST, end: END },
+    id: SESSION_ID, name: "Garden tools", project: "garden", span: { start: FIRST, end: END, first: FIRST, last: END - 1 }, range: { from: FIRST, to: END }, billingMonth: { from: Date.UTC(2030, 3, 1), to: Date.UTC(2030, 4, 1) },
     total: value(10, 6), stats: { runs: 3, ownCalls: 2, compaction: 1, idleGaps: 1 },
     runs: [
-      { id: "run-build", name: "Build garden tools", role: "worker", model: "model-maple", thinking: "high",
+      { id: "run-build", name: "Build garden tools", role: "worker", roleGroup: "workers", model: "model-maple", thinking: "high",
         start: WORKER, end: WORKER + 20 * 60_000, durationMs: 20 * 60_000, status: "completed",
         value: value(3, 1), style: { color: "#91c7e5", shape: "square" } },
-      { id: "run-review", name: "Review garden tools", role: "reviewer", model: "model-cedar", thinking: "high",
+      { id: "run-review", name: "Review garden tools", role: "reviewer", roleGroup: "reviewers", model: "model-cedar", thinking: "high",
         start: REVIEWER, end: END, durationMs: 20 * 60_000, status: "completed",
         value: value(1, 1), style: { color: "#f8785c", shape: "circle" } },
       // Legacy metadata has no terminal status or recorded calls. Do not guess a status.
-      { id: "run-legacy-review", name: "Legacy garden review", role: "reviewer", model: null, thinking: null,
+      { id: "run-legacy-review", name: "Legacy garden review", role: "reviewer", roleGroup: "reviewers", model: null, thinking: null,
         start: null, end: null, durationMs: null, status: null, value: value(0, 0), style: null },
     ],
     ownCallBins: [{ start: FIRST, end: FIRST + 11 * 60_000, value: value(2, 2) }],

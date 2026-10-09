@@ -1,5 +1,11 @@
 import { supportedDetailId } from "./detail-id.js";
 import type { ApiEnvelope, ApiErrorCode } from "../dashboard-contract.js";
+import type { SessionQuery } from "../dashboard-v4-contract.js";
+export function sessionRequestParams(query: SessionQuery): URLSearchParams {
+  const params = new URLSearchParams({ tz: query.tz });
+  if (query.range) { params.set("from", String(query.range.from)); params.set("to", String(query.range.to)); }
+  return params;
+}
 export interface DashboardClient {
   get<T>(path: string, params: URLSearchParams, signal: AbortSignal): Promise<ApiEnvelope<T>>;
 }

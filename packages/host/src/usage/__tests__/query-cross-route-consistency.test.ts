@@ -32,7 +32,7 @@ it.each(["off", "auto"] as const)("Overview, Sessions and lifetime slices reconc
     expect(selected.flow.total).toEqual(selected.selectedTotal);
     expect(sumValues(selected.models.map(row => row.value))).toEqual(selected.selectedTotal);
     for (const row of sessions.rows) expect(sumValues(row.roles.map(role => role.value))).toEqual(row.value);
-    const lifetime = querySession(ctx, "human-a", "UTC");
+    const lifetime = querySession(ctx, "human-a", "UTC", { from: M-D, to: M+7*D });
     expect(lifetime.total.calls).toBe(4); expect(lifetime.span?.start).toBe(M - D);
     expect(lifetime.flow.total).toEqual(lifetime.total);
     expect(sumValues(lifetime.models.map(row => row.value))).toEqual(lifetime.total);

@@ -48,11 +48,27 @@ export function sessionStateCases(cases: readonly FixtureStateCase[]): readonly 
     data.total = { credits: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, prompt: 0, total: 0, reasoning: null, cacheWrite1h: null }, calls: 0, unpricedCalls: 0 };
     data.stats = { runs: 0, ownCalls: 0, compaction: 0, idleGaps: 0 }; data.flow = { total: structuredClone(data.total), models: [], edges: [] };
   });
+  derive("Session calendar popover", () => {});
   return sessions;
 }
-export function mountSessionStates(root: HTMLElement, cases: readonly FixtureStateCase[]): Promise<void> {
-  return renderStateExamples(root, { session: ctx => {
+export async function mountSessionStates(root: HTMLElement, cases: readonly FixtureStateCase[]): Promise<void> {
+  await renderStateExamples(root, { session: ctx => {
     const mounted = mountSession(ctx);
-    return { refresh: mounted.refresh, dispose() { const classes = ctx.root.className; mounted.dispose(); ctx.root.className = classes; } };
+    let example: Element | null = ctx.root; while (example && example.className !== "state-example") example = example.parentElement;
+    const calendarExample = example?.firstElementChild?.textContent === "Session calendar popover";
+    const descendants = (node: Element): Element[] => [node, ...Array.from(node.children).flatMap(descendants)];
+    let popup: Element | undefined, parent: Element | null | undefined;
+    return { async refresh() {
+      await mounted.refresh();
+      if (calendarExample) {
+        (descendants(ctx.root).find(node => node.getAttribute("data-range-field") === "from") as HTMLButtonElement | undefined)?.click();
+        popup = descendants(ctx.root).find(node => node.className === "range-calendar"); parent = popup?.parentElement;
+      }
+    }, dispose() {
+      const classes = ctx.root.className;
+      mounted.dispose(); ctx.root.className = classes;
+      // Preserve the settled open state after releasing the live picker handlers.
+      if (popup && parent) { parent.append(popup); parent.firstElementChild?.setAttribute("aria-expanded", "true"); }
+    } };
   } }, sessionStateCases(cases));
 }

@@ -8,10 +8,10 @@ The dashboard has three pages: Overview, Session, and Calibration & data. It is 
 
 Overview opens with the last 7 days and Credits selected. Choose 24 h, 7 days, 30 days, This month, or a Custom range. Custom date and time inputs use your browser's time zone and accept up to 93 days. Ranges up to 48 hours use hourly buckets; longer ranges use daily buckets.
 
-- The pace bar shows credits used in the current billing month and the projected month-end amount. Hover or focus it to see used, allowance, remaining credits, days left, and budget details when a budget is set. Escape closes the popover.
-- Daily or hourly usage is stacked by model. The Models panel ranks models by usage and identifies their main source.
-- Sessions ranks top-level pi sessions. Each total includes the session's own calls, its compaction and background work, and its subagent runs. Role segments separate own calls, workers, reviewers and others. Sort by credits, last active or runs, and use Show all to expand the list.
-- Where it went shows roles flowing to models. Empty roles are omitted.
+- The pace bar shows credits used in the current billing month and the projected month-end amount. It turns red only when used or projected credits exceed the budget, or the allowance when no budget is set. Hover or focus it to see used, allowance, remaining credits, days left, and budget details when a budget is set. Escape closes the popover.
+- Daily or hourly usage is stacked by model. The Models panel ranks models by usage and identifies their main source. A long model list scrolls inside its panel.
+- Sessions ranks top-level pi sessions. Each total includes the session's own calls, its compaction and background work, and its subagent runs. Role segments separate own calls, workers, reviewers and others; a run's role comes from its agent type, such as worker or reviewer. Sort by credits, last active or runs. The list scrolls and loads more sessions as you reach its end.
+- Where it went shows roles flowing to models. Hover or focus a band or node to see its credits or tokens, share and calls; Escape hides the detail. Beyond seven models, the smallest are grouped into one node, and the table lists every model. Empty roles are omitted. Partly priced groups show their priced credits and the number of unpriced calls.
 
 The Credits | Tokens switch changes charts and tables. The pace bar always uses credits. Every chart has a Chart | Table control showing the same values.
 
@@ -21,9 +21,9 @@ The URL keeps the Overview range, unit and selected buckets. Reload, Back and Fo
 
 ## Session
 
-Click a session row or press Enter to open it. Session always covers its entire recorded lifetime, including calls outside the range you selected on Overview. The unit carries over.
+Click a session row or press Enter to open it. Session opens on the current billing month, or on the calendar month of the session's last activity if it had none this month, and does not follow the range selected on Overview. From and To open a calendar for choosing other days; This month and Whole session switch quickly. Days use your browser's time zone. The URL keeps the range, so Reload, Back and Forward restore it. The unit carries over.
 
-The header shows the session name, project, span and totals. A transit chart places own calls on a baseline and subagent runs on branches. Long idle stretches collapse into breaks. Run marks distinguish completed, cancelled, failed and running work; unavailable status is not guessed. Hover or focus a branch for its details, click or press Enter to pin it, and press Escape to clear it. The runs and models tables provide the same usage evidence, and the flow reconciles with the session total.
+The header shows the session name, project, the selected range and the totals for that range. A transit chart covers the activity inside the range. It places own calls on a baseline and subagent runs on branches. Long idle stretches collapse into breaks. Run marks distinguish completed, cancelled, failed and running work; unavailable status is not guessed. Hover or focus a branch for its details, click or press Enter to pin it, and press Escape to clear it. The runs table scrolls and shows each run's role, and the runs and models tables provide the same usage evidence. The flow reconciles with the session total.
 
 A session without subagent runs shows only its baseline. A known session without calls keeps its header and an empty state. An unknown id shows Session not found with Back, not a retry loop. Back returns through dashboard history or to your remembered Overview.
 

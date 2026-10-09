@@ -1,5 +1,6 @@
 import type { CalibrationResult, DashboardQueryContext, Period } from "./dashboard-contract.js";
-import type { Bucket, FlowData, FlowRole, ModelRow, ModelStyle, RangeQuery, Role, SessionRow, Value } from "./dashboard-v4-contract.js";
+import type { Bucket, FlowData, FlowRole, ModelRow, ModelStyle, RangeQuery, SessionRow, Value } from "./dashboard-v4-contract.js";
+import { runRoleGroup, fourRoleGroup } from "./run-role.js";
 import { shortSessionName } from "./session-name.js";
 import { dashboardLabel, supportedDetailId } from "./dashboard-identities.js";
 import { DAY_MS, invalidQuery, safeTimestamp } from "./dashboard-selection.js";
@@ -10,7 +11,7 @@ export const UNATTRIBUTED_SESSION_ID = "unattributed-runs";
 export type UsageCube = { total: Value; selectedTotal: Value; buckets: readonly Bucket[];
   rows: readonly { bucketKey: number; sessionId: string | null; runId: string | null; role: FlowRole; model: string; value: Value }[] };
 type Session = { id: string; owner: string | null; name: string; project: string | null; lastActive: number | null };
-type Run = { id: string; session: string | null; parent: string | null; role: string | null };
+type Run = { id: string; session: string | null; parent: string | null; role: string | null; agent: string | null };
 type Ownership = { sessions: Map<string, Session>; runs: Map<string, Run[]>; humans: Set<string>; childRuns: Map<string, Set<string>>; loaded: Set<string> };
 const ownershipCache = new WeakMap<DashboardQueryContext["db"], { revision: string; value: Ownership }>();
 function ownership(ctx: DashboardQueryContext, candidates: readonly string[] = []): Ownership {
@@ -18,7 +19,7 @@ function ownership(ctx: DashboardQueryContext, candidates: readonly string[] = [
   if (cached?.revision !== ctx.revision) {
     const sessions = new Map((ctx.db.prepare("SELECT id,owner_session_id AS owner,name,project,last_activity AS lastActive FROM sessions").all() as Session[]).map(s => [s.id, s]));
     const runs = new Map<string, Run[]>();
-    for (const row of ctx.db.prepare("SELECT id,session_id AS session,parent_run_id AS parent,role FROM runs_meta").all() as Run[]) {
+    for (const row of ctx.db.prepare("SELECT id,session_id AS session,parent_run_id AS parent,role,agent FROM runs_meta").all() as Run[]) {
       const list = runs.get(row.id) ?? []; list.push(row); runs.set(row.id, list);
     }
     cached = { revision: ctx.revision, value: { sessions, runs, humans: new Set(), childRuns: new Map(), loaded: new Set() } };
@@ -95,7 +96,7 @@ function ownerFrom(data: Ownership, sessionId: string | null, runId: string | nu
 export function sessionOwnerResolver(ctx: DashboardQueryContext, candidates: readonly string[]): (sessionId: string | null, runId: string | null) => string | null {
   const sessions = new Map((ctx.db.prepare("SELECT id,owner_session_id AS owner,name,project,last_activity AS lastActive FROM sessions").all() as Session[]).map(row => [row.id, row]));
   const runs = new Map<string, Run[]>();
-  for (const row of ctx.db.prepare("SELECT id,session_id AS session,parent_run_id AS parent,role FROM runs_meta").all() as Run[]) {
+  for (const row of ctx.db.prepare("SELECT id,session_id AS session,parent_run_id AS parent,role,agent FROM runs_meta").all() as Run[]) {
     const list = runs.get(row.id) ?? []; list.push(row); runs.set(row.id, list);
   }
   const data: Ownership = { sessions, runs, humans: new Set(), childRuns: new Map(), loaded: new Set() };
@@ -121,7 +122,7 @@ export function sessionOwnerResolver(ctx: DashboardQueryContext, candidates: rea
   return (sessionId, runId) => ownerFrom(data, sessionId, runId);
 }
 
-export type SessionUsageScope = { ownerId: string | null; sql: string; bindings: { sessions: string; runs: string }; owns(row: { sessionId: string | null; runId: string | null }): boolean };
+export type SessionUsageScope = { ownerId: string | null; sql: string; bindings: { sessions: string; runs: string; from?: number; to?: number }; owns(row: { sessionId: string | null; runId: string | null }): boolean };
 /** Canonical selection stays global in meaning, but only the connected coverage
  * component of the candidate runs is read. Ancestors outside this Session still
  * suppress covered detail; unrelated reports and calls are never materialized. */
@@ -205,19 +206,19 @@ export function readCorrectedTotal(ctx: DashboardQueryContext, period: Period): 
   return nullableSum(rows.map((row, i) => row.credits === null ? null : row.credits * correction.get(endpoints[i]!)!));
 }
 export { factors as readCorrectionFactors };
-type Aggregate = { bucketKey:number; endpoint:number; sessionId:string|null; runId:string|null; actor:string; role:string|null; model:string|null; lastActive:number;
+type Aggregate = { bucketKey:number; endpoint:number; sessionId:string|null; runId:string|null; actor:string; role:string|null; agent:string|null; model:string|null; lastActive:number;
   credits:number|null; calls:number; unpricedCalls:number; input:number; cacheRead:number; cacheWrite:number; output:number; cacheWrite1h:number|null; reasoning:number|null };
-const projection = ["ts","session_id","run_id","actor","role","model","aic","input","cache_read","cache_write","output","cache_write_1h","reasoning","price_status"].map(c=>`c.${c}`).join(",");
+const projection = ["ts","session_id","run_id","actor","role","agent","model","aic","input","cache_read","cache_write","output","cache_write_1h","reasoning","price_status"].map(c=>`c.${c}`).join(",");
 function valueFrom(row:Aggregate, factor:number):Value {
   const prompt=row.input+row.cacheRead+row.cacheWrite;
   return {credits:row.credits===null ? null : row.credits*factor,calls:row.calls,unpricedCalls:row.unpricedCalls,
     tokens:{input:row.input,cacheRead:row.cacheRead,cacheWrite:row.cacheWrite,output:row.output,cacheWrite1h:row.cacheWrite1h,reasoning:row.reasoning,prompt,total:prompt+row.output}};
 }
-function flowRole(actor:string, role:string|null):FlowRole {
+function flowRole(actor:string, role:string|null, agent:string|null):FlowRole {
   if(actor==="compaction") return "compaction";
   if(actor==="aux" || actor==="warmer") return "background";
   if(actor!=="subagent") return "own";
-  return role==="worker" ? "workers" : role==="reviewer" ? "reviewers" : role==="scout" ? "scouts" : "other-runs";
+  return runRoleGroup(role, agent);
 }
 type CubeContext = { ctx:DashboardQueryContext; selected:Set<number>; activity:Map<string|null,Map<number,number>>; ownership:Ownership; unit:RangeQuery["unit"] };
 const cubeContexts = new WeakMap<UsageCube,CubeContext>();
@@ -238,12 +239,12 @@ export function readUsageCube(ctx:DashboardQueryContext, query:RangeQuery, scope
     const grouped=ctx.db.prepare(`WITH counted AS MATERIALIZED (${countedUsageSql("c.ts>=? AND c.ts<?",projection,"calls_period_read",storedSelection(ctx.db))}),
       pieces AS MATERIALIZED (SELECT json_extract(value,'$.key') AS bucketKey,json_extract(value,'$.start') AS start,
         json_extract(value,'$.end') AS end,json_extract(value,'$.endpoint') AS endpoint FROM json_each(?))
-      SELECT p.bucketKey,p.endpoint,c.session_id AS sessionId,c.run_id AS runId,c.actor,c.role,c.model,MAX(c.ts) AS lastActive,
+      SELECT p.bucketKey,p.endpoint,c.session_id AS sessionId,c.run_id AS runId,c.actor,c.role,c.agent,c.model,MAX(c.ts) AS lastActive,
         SUM(c.aic) AS credits,COUNT(*) AS calls,SUM(c.price_status='unpriced') AS unpricedCalls,
         SUM(c.input) AS input,SUM(c.cache_read) AS cacheRead,SUM(c.cache_write) AS cacheWrite,SUM(c.output) AS output,
         SUM(c.cache_write_1h) AS cacheWrite1h,SUM(c.reasoning) AS reasoning
       FROM counted c JOIN pieces p ON c.ts>=p.start AND c.ts<p.end
-      GROUP BY p.bucketKey,p.endpoint,c.session_id,c.run_id,c.actor,c.role,c.model`).all(start,end,JSON.stringify(pieces)) as Aggregate[];
+      GROUP BY p.bucketKey,p.endpoint,c.session_id,c.run_id,c.actor,c.role,c.agent,c.model`).all(start,end,JSON.stringify(pieces)) as Aggregate[];
     ownership(ctx, grouped.flatMap(r=>r.sessionId===null ? [] : [r.sessionId]));
     const correction=factors(ctx,grouped.map(r=>r.endpoint));
     for(const row of grouped) {
@@ -251,7 +252,7 @@ export function readUsageCube(ctx:DashboardQueryContext, query:RangeQuery, scope
       if(scope && (scope.sessionId===UNATTRIBUTED_SESSION_ID ? owner!==null : owner!==scope.sessionId)) continue;
       const metadata=row.runId===null ? undefined : data.runs.get(row.runId);
       const role=row.role ?? (metadata && new Set(metadata.map(r=>r.role)).size===1 ? metadata[0]!.role : null);
-      rows.push({bucketKey:row.bucketKey,sessionId:owner,runId:row.runId,role:flowRole(row.actor,role),model:dashboardLabel("model",row.model) ?? "Unknown model",value:valueFrom(row,correction.get(row.endpoint)!)});
+      rows.push({bucketKey:row.bucketKey,sessionId:owner,runId:row.runId,role:flowRole(row.actor,role,row.agent ?? (metadata && new Set(metadata.map(r=>r.agent)).size===1 ? metadata[0]!.agent : null)),model:dashboardLabel("model",row.model) ?? "Unknown model",value:valueFrom(row,correction.get(row.endpoint)!)});
       const times=activity.get(owner) ?? new Map<number,number>();
       times.set(row.bucketKey,Math.max(times.get(row.bucketKey)??0,row.lastActive));activity.set(owner,times);
     }
@@ -271,20 +272,21 @@ const sessionCubeStyles = new WeakMap<UsageCube, ReadonlyMap<string, ModelStyle>
  * buckets or an all-ledger model-style ranking. Only Session uses this entry. */
 export function readSessionUsageCube(ctx: DashboardQueryContext, span: Period, scope: SessionUsageScope): UsageCube {
   const rows = (ctx.db.prepare(`${scope.sql} SELECT (CAST(c.ts/${DAY_MS} AS INTEGER)+1)*${DAY_MS} AS endpoint,
-    c.session_id AS sessionId,c.run_id AS runId,c.actor,c.role,c.model,MAX(c.ts) AS lastActive,
+    c.session_id AS sessionId,c.run_id AS runId,c.actor,c.role,c.agent,c.model,MAX(c.ts) AS lastActive,
     SUM(c.aic) AS credits,COUNT(*) AS calls,SUM(c.price_status='unpriced') AS unpricedCalls,
     SUM(c.input) AS input,SUM(c.cache_read) AS cacheRead,SUM(c.cache_write) AS cacheWrite,SUM(c.output) AS output,
     SUM(c.cache_write_1h) AS cacheWrite1h,SUM(c.reasoning) AS reasoning
-    FROM session_candidates c GROUP BY endpoint,c.session_id,c.run_id,c.actor,c.role,c.model`).all(scope.bindings) as Aggregate[]).filter(scope.owns);
+    FROM session_candidates c GROUP BY endpoint,c.session_id,c.run_id,c.actor,c.role,c.agent,c.model`).all(scope.bindings) as Aggregate[]).filter(scope.owns);
   const correction = factors(ctx, rows.map(row => row.endpoint));
-  const metadata = new Map<string, (string | null)[]>();
-  for (const row of ctx.db.prepare("SELECT id,role FROM runs_meta WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(rows.flatMap(row => row.runId === null ? [] : [row.runId]))])) as { id: string; role: string | null }[]) {
-    const roles = metadata.get(row.id) ?? []; roles.push(row.role); metadata.set(row.id, roles);
+  const metadata = new Map<string, { role: string | null; agent: string | null }[]>();
+  for (const row of ctx.db.prepare("SELECT id,role,agent FROM runs_meta WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify([...new Set(rows.flatMap(row => row.runId === null ? [] : [row.runId]))])) as { id: string; role: string | null; agent: string | null }[]) {
+    const roles = metadata.get(row.id) ?? []; roles.push(row); metadata.set(row.id, roles);
   }
   const projected = rows.map(row => {
-    const roles = row.runId === null ? [] : metadata.get(row.runId) ?? [];
+    const facts = row.runId === null ? [] : metadata.get(row.runId) ?? [];
+    const fact = (key: "role" | "agent") => new Set(facts.map(r => r[key])).size === 1 ? facts[0]![key] : null;
     return { bucketKey: row.endpoint - DAY_MS, sessionId: scope.ownerId, runId: row.runId,
-      role: flowRole(row.actor, row.role ?? (new Set(roles).size === 1 ? roles[0]! : null)),
+      role: flowRole(row.actor, row.role ?? fact("role"), row.agent ?? fact("agent")),
       model: dashboardLabel("model", row.model) ?? "Unknown model", value: valueFrom(row, correction.get(row.endpoint)!) };
   });
   const total = sumValues(projected.map(row => row.value));
@@ -356,14 +358,13 @@ export function flowFromCube(cube:UsageCube):FlowData {
   }
   return {total:cube.selectedTotal,edges,models:modelRows(cube)};
 }
-const sessionRole=(role:FlowRole):Role=>["own","workers","reviewers"].includes(role)?role as Role:"others";
 export function sessionRows(cube:UsageCube):readonly SessionRow[] {
   const rows=selectedRows(cube), context=cubeContexts.get(cube), unit=context?.unit??"credits";
   return [...new Set(rows.map(r=>r.sessionId))].map(id=>{
     const parts=rows.filter(r=>r.sessionId===id),value=sumValues(parts.map(r=>r.value)), metadata=id===null?undefined:context?.ownership.sessions.get(id);
     const runs=new Set(parts.flatMap(r=>r.runId===null?[]:[r.runId])).size;
     const roles=(["own","workers","reviewers","others"] as const).map(role=>{
-      const subset=parts.filter(r=>sessionRole(r.role)===role),v=sumValues(subset.map(r=>r.value));
+      const subset=parts.filter(r=>fourRoleGroup(r.role)===role),v=sumValues(subset.map(r=>r.value));
       return {role,value:v,share:share(weight(v,unit),weight(value,unit)),runs:new Set(subset.flatMap(r=>r.runId===null?[]:[r.runId])).size};
     });
     return {id:id===null?UNATTRIBUTED_SESSION_ID:id===UNATTRIBUTED_SESSION_ID||!supportedDetailId(id)?null:id,

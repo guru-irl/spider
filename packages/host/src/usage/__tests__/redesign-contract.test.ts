@@ -95,9 +95,10 @@ describe("usage dashboard v4 contract", () => {
       for (const row of bucket.models) { keys(row, "model value"); measure(row.value); }
     }
     expect(overview.buckets.reduce((sum, bucket) => sum + (bucket.total.credits ?? 0), 0)).toBe(overview.total.credits);
-    keys(session, "id name project span total stats runs ownCallBins compaction idleGaps activePeriods models flow");
+    keys(session, "id name project span range billingMonth total stats runs ownCallBins compaction idleGaps activePeriods models flow");
+    keys(session.range, "from to"); keys(session.billingMonth, "from to");
     keys(session.stats, "runs ownCalls compaction idleGaps");
-    keys(session.span!, "start end"); measure(session.total); models(session.models); flow(session.flow);
+    keys(session.span!, "start end first last"); measure(session.total); models(session.models); flow(session.flow);
     const legacyRun = session.runs.find(run => run.id === "run-legacy-review");
     expect(legacyRun).toBeDefined();
     expect(legacyRun!.status).toBeNull();
@@ -107,7 +108,7 @@ describe("usage dashboard v4 contract", () => {
     expect(session.runs.reduce((sum, run) => sum + (run.value.credits ?? 0), 0)).toBe(4);
     expect(session.runs.reduce((sum, run) => sum + run.value.calls, 0)).toBe(2);
     for (const run of session.runs) {
-      keys(run, "id name role model thinking start end durationMs status value style"); measure(run.value);
+      keys(run, "id name role roleGroup model thinking start end durationMs status value style"); measure(run.value);
       expect(["completed", "cancelled", "failed", "running", null]).toContain(run.status);
     }
     for (const bin of session.ownCallBins) {

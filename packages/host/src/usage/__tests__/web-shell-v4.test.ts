@@ -118,7 +118,15 @@ it("direct-entry Session Back preserves the initial Tokens unit", () => {
 });
 
 it.each(["credits", "runs"] as const)("one sixty-second refresh preserves expanded %s sessions and the pace popover", async sort => {
-  vi.useFakeTimers(); const doc = new PlainDocument(), d = overviewFixture(), row = d.sessions.rows[0]!;
+  vi.useFakeTimers();
+  const observers: { callback: IntersectionObserverCallback; root: Element | Document | null | undefined; disconnected: boolean }[] = [];
+  vi.stubGlobal("IntersectionObserver", class {
+    record: typeof observers[number];
+    constructor(callback: IntersectionObserverCallback, options: IntersectionObserverInit) { this.record = { callback, root: options.root, disconnected: false }; observers.push(this.record); }
+    observe() {}
+    disconnect() { this.record.disconnected = true; }
+  });
+  const doc = new PlainDocument(), d = overviewFixture(), row = d.sessions.rows[0]!;
   const all = Array.from({ length: 12 }, (_, i) => ({ ...structuredClone(row), id: `session-${i}`, name: `Session ${i}` }));
   d.sessions = sessionsFixture({ rows: all.slice(0, 10), total: 12, nextOffset: 10 });
   const requests: URLSearchParams[] = [];
@@ -129,16 +137,23 @@ it.each(["credits", "runs"] as const)("one sixty-second refresh preserves expand
   try {
     await settle();
     if (sort === "runs") { descendants(doc.body).find(n => n.getAttribute("data-focus") === "session-sort-runs")!.click(); await settle(); }
-    button(doc.body, "Show all 12").click(); await settle();
-    expect(descendants(doc.body).filter(n => n.hasAttribute("data-session"))).toHaveLength(12);
+    const region = () => descendants(doc.body).find(n => n.getAttribute("data-scroll") === "sessions-chart")!;
+    Object.assign(region(), { scrollTop: 180, scrollLeft: 12 });
+    const observer = observers.findLast(o => !o.disconnected && o.root === region() as unknown as Element)!;
+    observer.callback([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver); await settle();
+    const ids = () => descendants(doc.body).filter(n => n.hasAttribute("data-session")).map(n => n.getAttribute("data-session"));
+    expect(ids()).toEqual(all.map(r => r.id));
     const trigger = descendants(doc.body).find(n => n.className === "pace-trigger")!; trigger.dispatchEvent(new Event("pointerenter"));
     expect(descendants(doc.body).find(n => n.className === "pace-popover")!.hidden).toBe(false);
     await vi.advanceTimersByTimeAsync(60000);
-    expect(descendants(doc.body).filter(n => n.hasAttribute("data-session"))).toHaveLength(12);
-    expect(requests.at(-1)!.get("offset")).toBe("0"); expect(requests.at(-1)!.get("limit")).toBe("100");
+    expect(ids()).toEqual(all.map(r => r.id));
+    expect(new Set(ids()).size).toBe(12);
+    expect((region() as unknown as HTMLElement).scrollTop).toBe(180);
+    expect((region() as unknown as HTMLElement).scrollLeft).toBe(12);
+    expect(requests.at(-1)!.get("offset")).toBe("0"); expect(requests.at(-1)!.get("limit")).toBe("12");
     expect(requests.at(-1)!.get("sort")).toBe(sort);
     expect(descendants(doc.body).find(n => n.className === "pace-popover")!.hidden).toBe(false);
-  } finally { app.dispose(); vi.useRealTimers(); }
+  } finally { app.dispose(); vi.useRealTimers(); vi.unstubAllGlobals(); }
 });
 
 it("Session pages mark Overview current, including direct and invalid entries", () => {

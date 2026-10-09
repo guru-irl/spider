@@ -5,7 +5,7 @@ import { supportedDetailId } from "./detail-id.js";
 import { canRetry, errorCopy, DashboardClientError } from "./client.js";
 import { formatLocalTime, formatValue, formatTokens } from "./format.js";
 import { renderTable, tableRegion } from "./tables.js";
-import { chartPair, creditStep } from "./charts.js";
+import { chartPair } from "./charts.js";
 import { renderFlow } from "./flow.js";
 import { renderModelMarker } from "./model-style.js";
 import { disposeSessionRoute, formatDuration, pinSessionRun, renderSessionRoute } from "./session-route.js";
@@ -114,7 +114,7 @@ export function mountSession(ctx: DashboardPageContext): DashboardPage {
     // The shared pair accepts SVG, while the route also owns its live hover card.
     const chart = Array.from(pair.children).find(n => n.className === "chart-graphic")!; graphic.replaceChildren(svg, ...Array.from(graphic.children)); chart.replaceChildren(graphic);
     const summary = element(document, "div", undefined, "summary-chips"); const max = Math.max(0, ...data.runs.map(r => (unit === "credits" ? r.value.credits : r.value.tokens.total) ?? 0));
-    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.span.end - data.span.start)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(creditStep(max) * 3)}`));
+    summary.append(chip("Subagent runs", formatTokens(data.stats.runs)), chip("Span", formatDuration(data.span.end - data.span.start)), chip(`${unit === "credits" ? "Credits" : "Tokens"} per run`, `0 to ${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(max)}`));
     pair.replaceChildren(pair.firstElementChild!, summary, ...Array.from(pair.children).slice(1)); routeSection.append(pair);
     const legend = element(document, "div", undefined, "session-legend");
     for (const m of data.models) { const key = element(document, "span", undefined, "fact-chip"); key.append(renderModelMarker(document, m.style), element(document, "span", m.id, "mono")); legend.append(key); } routeSection.append(legend); root.append(routeSection);

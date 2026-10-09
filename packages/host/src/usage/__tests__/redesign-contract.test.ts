@@ -119,7 +119,7 @@ describe("usage dashboard v4 contract", () => {
     for (const event of session.compaction) { keys(event, "ts value"); measure(event.value); }
     for (const gap of session.idleGaps) { keys(gap, "start end cacheWriteCredits"); expect(gap.end).toBeGreaterThan(gap.start); }
     for (const period of session.activePeriods) keys(period, "start end");
-    keys(calibration, "correction daily intervals rates unpricedModels ingestion errors gaps");
+    keys(calibration, "source correction daily intervals rates unpricedModels ingestion errors gaps");
     keys(calibration.correction, "factor publishedEstimate accountCounter coveredHours status");
     keys(calibration.ingestion, "collector lastIngestAt filesTracked callsToday errors");
     keys(calibration.gaps, "unpricedCalls compactionWithoutModel daysWithoutCounter");

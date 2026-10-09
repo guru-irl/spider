@@ -113,6 +113,7 @@ export function sessionFixture(overrides: Partial<SessionData> = {}): SessionDat
 }
 export function calibrationFixture(overrides: Partial<CalibrationData> = {}): CalibrationData {
   return structuredClone({
+    source: "synthetic fixture",
     correction: { factor: 0.5, publishedEstimate: 12, accountCounter: 6, coveredHours: 48, status: "calibrated" },
     daily: [{ day: Date.UTC(2030, 3, 12), publishedEstimate: 8, counterDelta: null },
       { day: Date.UTC(2030, 3, 13), publishedEstimate: 6, counterDelta: 3 },

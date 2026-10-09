@@ -184,6 +184,10 @@ export function mountCalibration(ctx: DashboardPageContext): DashboardPage {
       const response = await ctx.client.get<CalibrationData>("/api/calibration", new URLSearchParams(), controller.signal);
       if (disposed || ctx.signal.aborted || controller.signal.aborted || generation !== gen) return;
       const data = response.data, empty = noData(data);
+      const facts = element(document, "div", undefined, "summary-chips");
+      const days = Math.max(0, response.period.end - response.period.start) / 86400000;
+      facts.append(chip(document, "Source", data.source), chip(document, "Window", `${headline(days)} ${days === 1 ? "day" : "days"}`));
+      heading.replaceChildren(element(document, "h1", "Calibration & data"), facts);
       updateEvidence(root, heading, correction(document, data, empty, root, expansion, response.period), rates(document, data, empty), ingestion(document, data, empty)); painted = true;
     } catch (failure) {
       if (disposed || ctx.signal.aborted || controller.signal.aborted || generation !== gen) return;

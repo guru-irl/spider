@@ -32,9 +32,11 @@ export function renderPace(document: Document, pace: Pace, _now: number, initial
   const projection = node("rect", { x: used * 1000, y: 0, width: (projected - used) * 1000, height: 40, fill: `url(#${patternId})`, class: "pace-projection" });
   const label = node("text", { x: 18, y: 25, class: "pace-used" }, amount);
   const ring = node("circle", { cx: ringPosition(1000), cy: 20, r: 9, class: "pace-here", "vector-effect": "non-scaling-stroke" });
+  const monthEnd = node("g", { class: "pace-month-end" }), monthBacking = node("rect", { x: 934, y: 7, width: 56, height: 26, rx: 13, class: "pace-month-backing" });
   const monthLabel = node("text", { x: 982, y: 24, "text-anchor": "end", class: "pace-month-label" }, month);
-  if (extent !== null) svg.append(defs, projection, fill, label, ring, monthLabel);
-  else svg.append(fill, label, monthLabel);
+  monthEnd.append(monthBacking, monthLabel);
+  if (extent !== null) svg.append(defs, projection, fill, label, ring, monthEnd);
+  else svg.append(fill, label, monthEnd);
   trigger.append(svg);
   const overlay = node("svg", { class: "pace-overlay", viewBox: "0 0 1000 480", "aria-hidden": "false" });
   const pointer = node("path", { class: "pace-pointer", d: `M${ringPosition(1000) - 6} 8l6 -6 6 6` });
@@ -62,13 +64,15 @@ export function renderPace(document: Document, pace: Pace, _now: number, initial
   const position = () => {
     const view = document.defaultView; if (!view || disposed) return;
     const width = root.getBoundingClientRect().width; if (!width) return;
-    const end = width * used, anchor = ringPosition(width), popWidth = Math.min(370, width), left = Math.max(0, Math.min(width - popWidth, anchor - popWidth / 2));
+    const monthWidth = monthLabel.getComputedTextLength(), monthLeft = width - 18 - monthWidth;
+    const plotWidth = Math.max(0, monthLeft - 26), end = plotWidth * used;
+    const anchor = extent === null ? 18 : Math.max(11, end), popWidth = Math.min(370, width), left = Math.max(0, Math.min(width - popWidth, anchor - popWidth / 2));
     overlay.setAttribute("viewBox", `0 0 ${width} 480`); foreign.setAttribute("x", String(left)); foreign.setAttribute("width", String(popWidth));
     pointer.setAttribute("d", `M${anchor - 6} 8l6 -6 6 6`);
-    svg.setAttribute("viewBox", `0 0 ${width} 40`); fill.setAttribute("width", String(end)); projection.setAttribute("x", String(end)); projection.setAttribute("width", String((projected - used) * width)); ring.setAttribute("cx", String(anchor)); monthLabel.setAttribute("x", String(width - 18));
+    svg.setAttribute("viewBox", `0 0 ${width} 40`); fill.setAttribute("width", String(end)); projection.setAttribute("x", String(end)); projection.setAttribute("width", String((projected - used) * plotWidth)); ring.setAttribute("cx", String(anchor)); monthLabel.setAttribute("x", String(width - 18));
     const labelWidth = label.getComputedTextLength(); const after = extent === null || end < labelWidth + 52;
     label.setAttribute("data-after", String(after)); label.setAttribute("x", String(after ? end + 18 : 18));
-    monthLabel.setAttribute("visibility", projected > .86 || used > .86 ? "hidden" : "visible");
+    monthBacking.setAttribute("x", String(monthLeft - 8)); monthBacking.setAttribute("width", String(monthWidth + 16));
   };
   const show = () => { if (disposed) return; popover.hidden = false; overlay.setAttribute("visibility", "visible"); root.setAttribute("data-open", "true"); trigger.setAttribute("aria-expanded", "true"); position(); };
   const hide = () => { popover.hidden = true; overlay.setAttribute("visibility", "hidden"); root.setAttribute("data-open", "false"); trigger.setAttribute("aria-expanded", "false"); };

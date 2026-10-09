@@ -20,7 +20,13 @@ export function chartPair(document: Document, options: { id: string; title: stri
 }
 
 /** Three readable intervals, rounded upward to 1, 2 or 5 × 10^n. */
-export function creditStep(max: number): number {
-  const target = (max > 0 ? max : 1) / 3, power = 10 ** Math.floor(Math.log10(target)), fraction = target / power;
+export function creditStep(max: number, intervals = 3): number {
+  const target = (max > 0 ? max : 1) / intervals, power = 10 ** Math.floor(Math.log10(target)), fraction = target / power;
   return (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * power;
+}
+
+/** Fit the data on readable steps, rather than reserving three whole steps. */
+export function niceAxis(max: number): { step: number; ceiling: number } {
+  const step = creditStep(max, 4);
+  return { step, ceiling: Math.max(step, Math.ceil(max / step) * step) };
 }

@@ -1,6 +1,6 @@
 import type { Period } from "../dashboard-contract.js";
 import type { SessionData, SessionRun, Unit } from "../dashboard-v4-contract.js";
-import { creditStep } from "./charts.js";
+import { niceAxis } from "./charts.js";
 import { modelShape } from "./model-style.js";
 import { element } from "./dom.js";
 import { formatValue, formatTokens, formatLocalTime } from "./format.js";
@@ -73,7 +73,7 @@ function geometry(data: SessionData, unit: Unit, requestedWidth: number) {
     const above = penalty(-1), below = penalty(1);
     const side: -1 | 1 = above === below ? (placed.length % 2 ? 1 : -1) : above < below ? -1 : 1;
     placed.push({ start, end, side });
-    return { runId: r.id, side, height: maxValue > 0 ? amount(r, unit) / (creditStep(maxValue) * 3) * EXTENT : 0, startX: x(start), endX: x(end) };
+    return { runId: r.id, side, height: maxValue > 0 ? amount(r, unit) / niceAxis(maxValue).ceiling * EXTENT : 0, startX: x(start), endX: x(end) };
   });
   const layout: RouteLayout = { branches, breaks: collapsed.map(period => ({ period, startX: x(period.start), width: 28 })), maxValue };
   return { layout, runs, x, width };
@@ -99,8 +99,8 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
     for (const g of groups) { g.node.setAttribute("class", `run-route${run && g.run !== run ? " is-dim" : run === g.run ? " is-active" : ""}`); g.node.setAttribute("aria-pressed", String(g.run.id !== null && g.run.id === pinned)); }
     card.hidden = !run;
     if (run) {
-      const dl = element(document, "dl"); field(dl, "Thinking", run.thinking ?? "unavailable"); field(dl, "Credits", formatValue(run.value, "credits")); field(dl, "Tokens", formatTokens(run.value.tokens.total)); field(dl, "Duration", formatDuration(run.durationMs)); field(dl, "Status", run.status ?? "unavailable");
-      card.replaceChildren(element(document, "p", run.role, "card-role"), element(document, "h3", run.name), element(document, "p", run.model ?? "unavailable", "card-model mono"), dl);
+      const dl = element(document, "dl"); field(dl, "Role", run.role); field(dl, "Thinking", run.thinking ?? "unavailable"); field(dl, "Credits", formatValue(run.value, "credits")); field(dl, "Tokens", formatTokens(run.value.tokens.total)); field(dl, "Duration", formatDuration(run.durationMs)); field(dl, "Status", run.status ?? "unavailable");
+      card.replaceChildren(element(document, "h3", run.name), element(document, "p", run.model ?? "unavailable", "card-model mono"), dl);
       const branch = groups.find(g => g.run === run)?.branch;
       if (branch) {
         const width = 310, height = document.defaultView ? card.getBoundingClientRect().height || 270 : 270;
@@ -144,9 +144,10 @@ export function renderSessionRoute(document: Document, data: SessionData, unit: 
     const remembered = stops.find(stop => stop.node === document.activeElement)?.key, wasDismissed = dismissed;
     const { layout, runs, x, width: effectiveWidth } = geometry(data, unit, width); groups = []; stops = []; svg.removeAttribute("tabindex"); svg.replaceChildren(); routeWidth = effectiveWidth; svg.setAttribute("viewBox", `0 0 ${effectiveWidth} 430`); svg.setAttribute("width", String(effectiveWidth)); svg.setAttribute("height", "430"); svg.setAttribute("preserveAspectRatio", "none");
     node(svg, "text", { x: 0, y: 20, class: "axis-title" }, `${unit === "credits" ? "Credits" : "Tokens"} per run`);
-    for (let i = 1; i <= 3 && layout.maxValue > 0; i++) for (const side of [-1, 1]) {
-      const y = BASE + side * EXTENT * i / 3; node(svg, "line", { x1: LEFT, x2: effectiveWidth - RIGHT, y1: y, y2: y, class: "route-grid" });
-      node(svg, "text", { x: LEFT - 14, y: y + 4, "text-anchor": "end", class: "numeric" }, new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(creditStep(layout.maxValue) * i));
+    const axis = niceAxis(layout.maxValue), ticks = Math.round(axis.ceiling / axis.step);
+    for (let i = 1; i <= ticks && layout.maxValue > 0; i++) for (const side of [-1, 1]) {
+      const y = BASE + side * EXTENT * i / ticks; node(svg, "line", { x1: LEFT, x2: effectiveWidth - RIGHT, y1: y, y2: y, class: "route-grid" });
+      node(svg, "text", { x: LEFT - 14, y: y + 4, "text-anchor": "end", class: "numeric" }, new Intl.NumberFormat("en-US", { maximumSignificantDigits: 3 }).format(axis.step * i));
     }
     node(svg, "text", { x: LEFT - 14, y: BASE + 4, "text-anchor": "end", class: "numeric" }, "0");
     if (data.span) {

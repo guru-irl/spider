@@ -215,3 +215,13 @@ it("rounds calibration factors, ratios and credit amounts in stats, cells and to
   expect(values(rows(s.root, "rates-table")[0]!).slice(3, 6)).toEqual(["0", "0", "1,235"]);
   s.page.dispose();
 });
+
+it("Calibration header labels the source and envelope window, and refreshes the facts", async () => {
+  const d = calibrationFixture(), s = setup(d); await s.page.refresh();
+  const heading = find(s.root, "calibration-heading");
+  expect(heading.textContent).toContain("Sourcesynthetic fixture"); expect(heading.textContent).toContain("Window7 days");
+  s.page.dispose();
+  const other = setup(d, async () => envelope({ ...d, source: "published rates" }, { start: 0, end: 86400000 }) as never); await other.page.refresh();
+  expect(find(other.root, "calibration-heading").textContent).toContain("Sourcepublished rates");
+  expect(find(other.root, "calibration-heading").textContent).toContain("Window1 day"); other.page.dispose();
+});

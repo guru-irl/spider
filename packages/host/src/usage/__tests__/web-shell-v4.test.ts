@@ -140,3 +140,10 @@ it.each(["credits", "runs"] as const)("one sixty-second refresh preserves expand
     expect(descendants(doc.body).find(n => n.className === "pace-popover")!.hidden).toBe(false);
   } finally { app.dispose(); vi.useRealTimers(); }
 });
+
+it("Session pages mark Overview current, including direct and invalid entries", () => {
+  for (const id of ["synthetic", ""]) {
+    const doc = new PlainDocument(), app = startDashboard({ document: doc.asDocument(), initialRoute: { page: "session", id, unit: "credits", tz: "UTC" }, mounts: {}, client: { get: async () => envelope(statusFixture()) as never } });
+    try { expect(button(doc.body, "Overview").getAttribute("aria-current")).toBe("page"); expect(button(doc.body, "Calibration & data").hasAttribute("aria-current")).toBe(false); } finally { app.dispose(); }
+  }
+});

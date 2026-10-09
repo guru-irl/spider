@@ -106,8 +106,8 @@ it("shared chips distinguish text labels from machine values without inline styl
 
 it("flow nodes span the chart and the viewport fits its last label", () => {
   const doc = new PlainDocument(), node = renderFlow(doc.asDocument(), overviewFixture().flow, "credits", "width-flow"), svg = elements(node, "svg")[0]!;
-  expect(svg.getAttribute("viewBox")).toBe("0 0 1122 272");
-  const stations = elements(svg, "rect"); expect(stations.every(n => n.getAttribute("x") === "120")).toBe(true);
+  expect(svg.getAttribute("viewBox")).toBe("0 0 1122 438");
+  const stations = elements(svg, "rect").filter(n => n.hasAttribute("data-role-node")); expect(stations.every(n => n.getAttribute("x") === "120")).toBe(true);
   const modelLabels = elements(svg, "text").filter(n => n.textContent.startsWith("model-"));
   expect(modelLabels.every(n => n.getAttribute("text-anchor") === "start" && n.getAttribute("x") === "1010")).toBe(true);
 });

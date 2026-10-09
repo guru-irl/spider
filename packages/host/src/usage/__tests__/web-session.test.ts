@@ -225,7 +225,7 @@ it.each(["credits", "tokens"] as const)("header measures use %s and singular cou
   expect(stats.children[3]!.textContent).toBe(unit === "credits" ? "Compaction2credits · 1 event" : "Compaction160tokens · 1 event");
   expect(stats.children[4]!.textContent).toBe("Idle gaps9min · 1 gap");
   const summary = descendants(s.doc.body).find(n => n.className === "session-route-section")!;
-  expect(summary.textContent).toContain(`${unit === "credits" ? "Credits" : "Tokens"} per run0 to ${unit === "credits" ? "3" : "300"}`); page.dispose();
+  expect(summary.textContent).toContain(`${unit === "credits" ? "Credits" : "Tokens"} per run0 to ${unit === "credits" ? "3" : "160"}`); page.dispose();
 });
 it("Session route rounds mirrored ticks upward to nice steps", () => {
   const s = setup(); const route = renderSessionRoute(s.ctx.document, sessionFixture(), "credits", () => {});
@@ -263,4 +263,23 @@ it("gallery includes the actual binned detail disclosure", async () => {
   const doc = new SessionDocument(); await mountSessionStates(doc.body as unknown as HTMLElement, fixtureStateCases());
   expect(doc.body.textContent).toContain("Combined session details");
   expect(doc.body.textContent).toContain("23 idle gaps");
+});
+
+it.each(["credits", "tokens"] as const)("route fits the largest %s run while the chip reports the data range", async unit => {
+  const d = sessionFixture(); d.runs = [d.runs[0]!]; d.runs[0]!.value.credits = 3100; d.runs[0]!.value.tokens.total = 312000;
+  const s = setup(d, d.id, unit), page = mountSession(s.ctx); await page.refresh();
+  const ticks = descendants(s.doc.body).filter(n => n.tagName === "text" && n.getAttribute("text-anchor") === "end" && n.getAttribute("data-time-tick") === null && n.parentElement?.className === "session-route");
+  expect(ticks.map(n => n.textContent)).toEqual(unit === "credits" ? ["1,000", "1,000", "2,000", "2,000", "3,000", "3,000", "4,000", "4,000", "0"] : ["100,000", "100,000", "200,000", "200,000", "300,000", "300,000", "400,000", "400,000", "0"]);
+  expect(Number(runNodes(s.doc.body)[0]!.getAttribute("data-height"))).toBeCloseTo((unit === "credits" ? 3100 / 4000 : 312000 / 400000) * 156, 8);
+  const route = descendants(s.doc.body).find(n => n.className === "session-route-section")!;
+  expect(route.textContent).toContain(unit === "credits" ? "Credits per run0 to 3,100" : "Tokens per run0 to 312,000"); page.dispose();
+});
+it("the run title is first and its role is a fact, not an eyebrow", () => {
+  const s = setup(), route = renderSessionRoute(s.ctx.document, sessionFixture(), "credits", () => {});
+  runNodes(route as never)[0]!.dispatchEvent(new Event("focus"));
+  const card = descendants(route as never).find(n => n.className === "route-card")!;
+  expect(card.children[0]!.tagName.toLowerCase()).toBe("h3");
+  expect(card.children[0]!.textContent).toBe("Build garden tools");
+  const labels = elements(card, "dt"), values = elements(card, "dd");
+  expect(values[labels.findIndex(n => n.textContent === "Role")]?.textContent).toBe("worker");
 });

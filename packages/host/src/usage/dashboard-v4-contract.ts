@@ -84,6 +84,7 @@ export type RateRowV4 = {
 };
 export type SourceError = { pathLabel: string; code: string; count: number; lastCheckedAt: number };
 export type CalibrationData = {
+  source: "account counter" | "published rates" | "synthetic fixture";
   correction: {
     factor: number | null; publishedEstimate: number | null; accountCounter: number | null;
     coveredHours: number; status: "calibrated" | "back-applied" | "published-only" | "counter-unavailable";

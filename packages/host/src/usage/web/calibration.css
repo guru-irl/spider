@@ -1,4 +1,4 @@
-.calibration-page .calibration-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.calibration-page .calibration-heading{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:22px}.calibration-heading .summary-chips{margin:0}
 .calibration-page .data-stats{display:grid;grid-template-columns:.8fr 1.2fr 1.2fr .8fr 1.2fr;margin:24px 0}
 .calibration-page .data-stat{padding:0 24px;border-left:1px solid var(--usage-border);display:flex;flex-direction:column;gap:6px;align-items:flex-start;min-width:0}
 .calibration-page .data-stat:first-child{padding-left:0;border-left:0}

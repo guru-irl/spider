@@ -288,3 +288,13 @@ it("a period with its own trailing fits is calibrated and published/off status t
  const status=ctx.status();ctx.status=()=>({...status,counter:{...status.counter,availability:"unavailable"}});
  expect(queryCalibration({...ctx,calibrationMode:"off"}).correction.status).toBe("counter-unavailable");
 });
+
+it("source reports counter evidence only when a correction factor is used", () => {
+  expect(queryCalibration(context())).toHaveProperty("source", "published rates");
+  f.ledger.apply(dashboardBatch([call("source-evidence", S + D + 1, 600)])); snapshot(S + D, 10); snapshot(S + 2 * D, 310);
+  const ctx = context();
+  expect(queryCalibration(ctx)).toHaveProperty("source", "account counter");
+  expect(queryCalibration({ ...ctx, calibrationMode: "off" })).toHaveProperty("source", "published rates");
+  const status = ctx.status(); ctx.status = () => ({ ...status, counter: { ...status.counter, availability: "unavailable" } });
+  expect(queryCalibration(ctx)).toHaveProperty("source", "account counter");
+});

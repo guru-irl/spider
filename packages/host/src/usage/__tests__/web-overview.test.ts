@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mountOverview } from "../web/overview.js";
 import { overviewFixture, sessionsFixture, envelope } from "./fixtures/redesign-contract.js";
-import { PlainDocument, PlainElement, descendants, button, elements, settle } from "./fixtures/plain-dom.js";
+import { PlainDocument, PlainElement, descendants, button, elements, settle, cellText } from "./fixtures/plain-dom.js";
 import type { DashboardPageContext, DashboardRouteV4, OverviewDataV4 } from "../dashboard-v4-contract.js";
 import type { ApiEnvelope } from "../dashboard-contract.js";
 const NOW = Date.UTC(2030, 3, 15), DAY = 86400000;
@@ -62,7 +62,7 @@ describe("Overview v4", () => {
     expect(s.root.textContent).not.toContain("Wrong revision row"); expect(s.root.textContent).toContain("Current revision row"); s.page.dispose();
   });
   it.each([
-    ["credits", 4, ["0", "2", "4"]],
+    ["credits", 4, ["0", "1", "2", "3", "4"]],
     ["tokens", 26800, ["0", "10k", "20k", "30k"]],
   ] as const)("uses rounded %s ticks and labels the unit above the daily axis", async (unit, maximum, ticks) => {
     const d = overviewFixture(); d.range.unit = unit;
@@ -239,4 +239,33 @@ it("role breakdown keeps a roving stop when refreshed roles shrink", async () =>
   d.sessions.rows[0]!.roles = d.sessions.rows[0]!.roles.slice(0, 1);
   await s.page.refresh();
   expect(roles()).toHaveLength(1); expect(roles()[0]!.getAttribute("tabindex")).toBe("0"); s.page.dispose();
+});
+
+it("sessions expose cost-first rank and share in both representations", async () => {
+  const d = overviewFixture(), row = d.sessions.rows[0]!;
+  d.sessions.rows = [row, { ...structuredClone(row), id: "second", name: "Second", value: { ...row.value, credits: 2 } }];
+  const s = setup(undefined, d); await settle();
+  const section = s.nodes().find(n => n.getAttribute("data-panel") === "sessions")!;
+  const tables = elements(section, "table");
+  for (const table of tables) {
+    expect(elements(table, "th").map(n => n.textContent)).toEqual(["Rank", "Session", "Credits", "Share", "Breakdown", "Last active", "Runs"]);
+    const rows = elements(table, "tbody")[0]!.children;
+    expect(rows.map(r => cellText(r.children[0]!))).toEqual(["1", "2"]);
+    expect(rows.map(r => cellText(r.children[3]!))).toEqual(["100%", "20%"]);
+    expect(elements(table, "th")[2]!.getAttribute("aria-sort")).toBe("descending");
+    expect(elements(elements(table, "th")[2]!, "svg")).toHaveLength(1);
+    expect(rows[0]!.children[1]!.textContent).toContain("garden");
+  }
+  button(section, "Table").click(); expect(button(section, "Table").getAttribute("aria-pressed")).toBe("true"); s.page.dispose();
+});
+it("capture-scale daily ticks fit the peak and selected outline hugs the stack", async () => {
+  const d = overviewFixture(); d.buckets = [d.buckets[4]!]; d.range.buckets = [d.buckets[0]!.key];
+  d.buckets[0]!.total.credits = 31200; d.buckets[0]!.models[0]!.value.credits = 31200;
+  const s = setup(undefined, d); await settle(); const svg = s.nodes().find(n => n.className === "daily-chart")!;
+  expect(elements(svg, "text").filter(n => n.getAttribute("text-anchor") === "end").map(n => n.textContent)).toEqual(["0", "10k", "20k", "30k", "40k"]);
+  expect(elements(svg, "text").find(n => n.textContent === "credits")!.className).not.toContain("numeric");
+  const rects = elements(s.bars()[0]!, "rect"), bar = rects[1]!, outline = rects.at(-1)!;
+  expect(Number(outline.getAttribute("y"))).toBeCloseTo(Number(bar.getAttribute("y")) - 3, 8);
+  expect(Number(outline.getAttribute("height"))).toBeCloseTo(Number(bar.getAttribute("height")) + 6, 8);
+  s.page.dispose();
 });

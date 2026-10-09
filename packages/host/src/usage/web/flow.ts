@@ -2,38 +2,63 @@ import type { FlowData, FlowRole, Unit, Value } from "../dashboard-v4-contract.j
 import { chartPair } from "./charts.js";
 import { renderTable } from "./tables.js";
 import { formatValue } from "./format.js";
-import { renderModelMarker } from "./model-style.js";
 const names: Record<FlowRole, string> = { own: "Own calls", workers: "Workers", reviewers: "Reviewers", scouts: "Scouts", "other-runs": "Other runs", compaction: "Compaction", background: "Background" };
 const roleTokens: Record<FlowRole, string> = { own: "own", workers: "workers", reviewers: "reviewers", scouts: "others", "other-runs": "others", compaction: "others", background: "others" };
 export function renderFlow(document: Document, flow: FlowData, unit: Unit, id: string): HTMLElement {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("class", "flow-svg"); svg.setAttribute("role", "group");
+  const ns = "http://www.w3.org/2000/svg";
+  const node = <K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>, text?: string): SVGElementTagNameMap[K] => {
+    const n = document.createElementNS(ns, tag); for (const [key, value] of Object.entries(attrs)) n.setAttribute(key, String(value)); if (text !== undefined) n.textContent = text; return n;
+  };
+  const svg = node("svg", { class: "flow-svg", role: "group" });
   const amount = (v: Value) => unit === "credits" ? v.credits : v.tokens.total;
   const edges = flow.edges.filter(e => (amount(e.value) ?? 0) > 0 || e.value.calls > 0);
-  const roles = [...new Set(edges.map(e => e.role))]; const models = flow.models.filter(m => edges.some(e => e.model === m.id));
-  const height = 72 + Math.max(0, Math.max(roles.length, models.length) - 1) * 50;
+  const roles = (Object.keys(names) as FlowRole[]).filter(role => edges.some(e => e.role === role));
+  const models = [...flow.models.filter(m => edges.some(e => e.model === m.id))];
+  for (const id of [...new Set(edges.map(e => e.model))].sort()) if (!models.some(m => m.id === id)) {
+    const rows = edges.filter(e => e.model === id), value = rows[0]!.value;
+    models.push({ id, value: { ...value, credits: rows.some(e => e.value.credits === null) ? null : rows.reduce((n, e) => n + e.value.credits!, 0), tokens: { ...value.tokens, total: rows.reduce((n, e) => n + e.value.tokens.total, 0) } }, share: rows.reduce((n, e) => n + e.share, 0), note: "", style: { color: "#c4b7a8", shape: "circle" } });
+  }
+  const ordered = [...edges].sort((a, b) => roles.indexOf(a.role) - roles.indexOf(b.role) || models.findIndex(m => m.id === a.model) - models.findIndex(m => m.id === b.model));
+  const total = edges.reduce((n, e) => n + (amount(e.value) ?? 0), 0), scale = total > 0 ? 300 / total : 0;
+  // Only nonzero tiny flows receive a visibility floor. Node heights sum those
+  // exact displayed widths, so the floor cannot create gaps or lose throughput.
+  const widths = new Map(ordered.map(e => [e, (amount(e.value) ?? 0) > 0 ? Math.max(.75, (amount(e.value) ?? 0) * scale) : 0]));
+  type Station = { y: number; height: number; cursor: number };
+  function stations(keys: readonly string[], matches: (key: string, e: typeof edges[number]) => boolean): Map<string, Station> {
+    let y = 12; const result = new Map<string, Station>();
+    for (const key of keys) {
+      const height = ordered.filter(e => matches(key, e)).reduce((n, e) => n + widths.get(e)!, 0), span = Math.max(48, height), top = y + (span - height) / 2;
+      result.set(key, { y: top, height, cursor: top }); y += span + 24;
+    }
+    return result;
+  }
+  const left = stations(roles, (key, e) => e.role === key), right = stations(models.map(m => m.id), (key, e) => e.model === key);
+  const bottom = (nodes: Map<string, Station>) => Math.max(0, ...[...nodes.values()].map(n => n.y + n.height / 2 + Math.max(48, n.height) / 2));
+  const height = Math.max(bottom(left), bottom(right)) + 12;
   const width = 1010 + Math.max(96, ...models.map(m => m.id.length * 8)) + 16;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   const share = (n: number) => new Intl.NumberFormat("en", { style: "percent", maximumFractionDigits: 1 }).format(n);
-  const text = (x: number, y: number, label: string, anchor: string = "start", numeric = false) => { const node = document.createElementNS("http://www.w3.org/2000/svg", "text"); node.setAttribute("x", String(x)); node.setAttribute("y", String(y)); node.setAttribute("text-anchor", anchor); if (numeric) node.setAttribute("class", "numeric"); node.textContent = label; svg.append(node); };
-  const roleY = (role: FlowRole) => 30 + roles.indexOf(role) * 50;
-  const modelY = (model: string) => 30 + models.findIndex(m => m.id === model) * 50;
-  const total = amount(flow.total) ?? 0;
-  for (const edge of edges) {
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "path"), title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-    const y1 = roleY(edge.role), y2 = modelY(edge.model);
-    line.setAttribute("d", `M128 ${y1}C450 ${y1} 650 ${y2} 980 ${y2}`); line.setAttribute("fill", "none"); const color = models.find(model => model.id === edge.model)?.style.color ?? "#c4b7a8"; line.setAttribute("stroke", /^#[0-9a-f]{6}$/i.test(color) ? color : "currentColor"); line.setAttribute("stroke-width", String(Math.max(2, Math.min(32, (amount(edge.value) ?? 0) / (total || 1) * 100)))); line.setAttribute("stroke-opacity", ".82");
-    line.setAttribute("tabindex", "0"); title.textContent = `${names[edge.role]} to ${edge.model}: ${formatValue(edge.value, unit)} ${unit} · ${share(edge.share)}`; line.setAttribute("aria-label", title.textContent); line.append(title); svg.append(line);
+  const text = (x: number, y: number, label: string, anchor = "start", numeric = false) => svg.append(node("text", { x, y, "text-anchor": anchor, ...(numeric ? { class: "numeric" } : {}) }, label));
+  const color = (model: string) => { const value = models.find(m => m.id === model)?.style.color ?? "#c4b7a8"; return /^#[0-9a-f]{6}$/i.test(value) ? value : "currentColor"; };
+  for (const edge of ordered) {
+    const source = left.get(edge.role)!, target = right.get(edge.model)!, w = widths.get(edge)!;
+    const y1 = source.cursor + w / 2, y2 = target.cursor + w / 2; source.cursor += w; target.cursor += w;
+    const line = node("path", { d: `M128 ${y1}C450 ${y1} 650 ${y2} 980 ${y2}`, fill: "none", stroke: color(edge.model), "stroke-width": w, "stroke-opacity": ".82", tabindex: 0, "data-flow-role": edge.role, "data-flow-model": edge.model });
+    const title = `${names[edge.role]} to ${edge.model}: ${formatValue(edge.value, unit)} ${unit} · ${share(edge.share)}`;
+    line.setAttribute("aria-label", title); line.append(node("title", {}, title)); svg.append(line);
   }
   for (const role of roles) {
     const rows = edges.filter(e => e.role === role), credits = rows.some(e => e.value.credits === null) ? null : rows.reduce((n, e) => n + e.value.credits!, 0), tokens = rows.reduce((n, e) => n + e.value.tokens.total, 0);
-    const value = { ...rows[0]!.value, credits, tokens: { ...rows[0]!.value.tokens, total: tokens } };
-    const station = document.createElementNS("http://www.w3.org/2000/svg", "rect"); station.setAttribute("x", "120"); station.setAttribute("y", String(roleY(role) - 16)); station.setAttribute("width", "8"); station.setAttribute("height", "32"); station.setAttribute("rx", "4"); station.setAttribute("fill", `var(--usage-role-${roleTokens[role]})`); svg.append(station);
-    text(108, roleY(role), names[role], "end"); text(108, roleY(role) + 24, `${formatValue(value, unit)} · ${share(rows.reduce((n, e) => n + e.share, 0))}`, "end", true);
+    const value = { ...rows[0]!.value, credits, tokens: { ...rows[0]!.value.tokens, total: tokens } }, station = left.get(role)!, centre = station.y + station.height / 2;
+    svg.append(node("rect", { x: 120, y: station.y, width: 8, height: station.height, rx: Math.min(4, station.height / 2), fill: `var(--usage-role-${roleTokens[role]})`, "data-role-node": role }));
+    text(108, centre - 5, names[role], "end"); text(108, centre + 15, `${formatValue(value, unit)} · ${share(rows.reduce((n, e) => n + e.share, 0))}`, "end", true);
   }
   for (const model of models) {
-    const marker = renderModelMarker(document, model.style).children[0]!; marker.setAttribute("data-model-node", model.id); marker.setAttribute("x", "972"); marker.setAttribute("y", String(modelY(model.id) - 8)); marker.setAttribute("width", "16"); marker.setAttribute("height", "16"); svg.append(marker);
-    text(1010, modelY(model.id), model.id, "start", true); text(1010, modelY(model.id) + 24, `${formatValue(model.value, unit)} · ${share(model.share)}`, "start", true);
+    const station = right.get(model.id)!, centre = station.y + station.height / 2;
+    svg.append(node("rect", { x: 980, y: station.y, width: 8, height: station.height, rx: Math.min(4, station.height / 2), fill: color(model.id), "data-model-node": model.id }));
+    text(1010, centre - 5, model.id, "start", true); text(1010, centre + 15, `${formatValue(model.value, unit)} · ${share(model.share)}`, "start", true);
   }
+  // Preserve the table's wire order and values, independently of ribbon stacking.
   const table = renderTable(document, { caption: "Where it went", columns: ["Role", "Model", unit === "credits" ? "Credits" : "Tokens", "Share"], rows: edges.map(edge => [names[edge.role], edge.model, formatValue(edge.value, unit), share(edge.share)]) });
   return chartPair(document, { id, title: "Where it went", svg, table });
 }

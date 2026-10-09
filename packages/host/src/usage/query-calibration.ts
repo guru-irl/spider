@@ -109,8 +109,10 @@ export function queryCalibration(ctx: DashboardQueryContext): CalibrationData {
     SELECT model,${unpricedReasonSql("unpriced_reason")} AS reason,COUNT(*) AS calls FROM counted WHERE price_status='unpriced'
     GROUP BY model,reason ORDER BY calls DESC,model,reason`).all(period.start, period.end) as
     { model: string | null; reason: string; calls: number }[];
+  const basis = correctionBasis(ctx, period);
   return {
-    correction: { ...correctionBasis(ctx, period), publishedEstimate: sumKnown(intervals.map(row => row.publishedEstimate)),
+    source: basis.factor !== null ? "account counter" : "published rates",
+    correction: { ...basis, publishedEstimate: sumKnown(intervals.map(row => row.publishedEstimate)),
       accountCounter: sumKnown(intervals.map(row => row.counterDelta)), coveredHours: intervals.reduce((sum, row) => sum + (row.end - row.start) / 3600000, 0) },
     daily, intervals, rates: publishedRates(ctx),
     unpricedModels: unpriced.map(row => ({ model: dashboardLabel("model", row.model), reason: row.reason, calls: row.calls })),

@@ -1,7 +1,7 @@
 import "./overview.css";
 import type { DashboardPage, DashboardPageContext, OverviewDataV4, RangeQuery, Role, SessionRow, SessionsData, SessionSort, Unit, Value } from "../dashboard-v4-contract.js";
 import { action, element, sectionState } from "./dom.js";
-import { chartPair } from "./charts.js";
+import { chartPair, niceAxis } from "./charts.js";
 import { renderTable } from "./tables.js";
 import { renderModelMarker } from "./model-style.js";
 import { renderFlow } from "./flow.js";
@@ -15,13 +15,6 @@ const roleNames: Record<Role, string> = { own: "Own calls", workers: "Workers", 
 const roles: Role[] = ["own", "workers", "reviewers", "others"];
 const percent = (n: number) => new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(n);
 const amount = (value: Value, unit: Unit) => unit === "credits" ? value.credits : value.tokens.total;
-/** Round the axis step upward to 1, 2 or 5 times a power of ten. */
-function niceAxis(maximum: number): { step: number; ceiling: number } {
-  const magnitude = 10 ** Math.floor(Math.log10(maximum / 3));
-  const normalized = maximum / 3 / magnitude;
-  const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude;
-  return { step, ceiling: Math.ceil(maximum / step) * step };
-}
 function params(query: RangeQuery): URLSearchParams {
   return new URLSearchParams({ range: query.range, from: String(query.from), to: String(query.to), tz: query.tz, unit: query.unit, buckets: JSON.stringify(query.buckets) });
 }
@@ -113,9 +106,9 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     const peak = known.length ? Math.max(...known) : null, peakBucket = d.buckets.find(b => amount(b.total, query.unit) === peak);
     summary.append(chip("Total", formatValue(d.total, query.unit)), chip("Average", `${compact(average)} ${d.bucketSize === "hour" ? "an hour" : "a day"}`), chip("Peak", peakBucket ? `${bucketLabel(peakBucket.key, query.tz, d.bucketSize === "hour")} · ${compact(peak)}` : "unavailable"));
     if (query.buckets.length) { const n = element(document, "span", `Selected ${query.buckets.length} ${d.bucketSize === "hour" ? query.buckets.length === 1 ? "hour" : "hours" : query.buckets.length === 1 ? "day" : "days"} · ${formatValue(d.selectedTotal, query.unit)} ${query.unit}`, "selection-chip"); n.setAttribute("role", "status"); n.setAttribute("aria-live", "polite"); summary.append(n); }
-    const svg = svgNode("svg", { viewBox: "0 0 900 350", class: "daily-chart", role: "group" });
+    const svg = svgNode("svg", { viewBox: "0 0 900 350", preserveAspectRatio: "none", class: "daily-chart", role: "group" });
     const axis = niceAxis(Math.max(1, ...known)), max = axis.ceiling, step = 810 / d.buckets.length;
-    svg.append(svgNode("text", { x: 66, y: 30, class: "numeric daily-unit" }, query.unit));
+    svg.append(svgNode("text", { x: 66, y: 30, class: "daily-unit" }, query.unit));
     for (let tick = 0; tick <= Math.round(max / axis.step); tick++) { const value = tick * axis.step, y = 296 - value / max * 240; svg.append(svgNode("path", { d: `M66 ${y}H890`, class: "daily-gridline" }), svgNode("text", { x: 56, y: y + 5, "text-anchor": "end", class: "numeric" }, formatValue({ ...d.total, credits: value, tokens: { ...d.total.tokens, total: value } }, query.unit))); }
     const groups: SVGElement[] = [];
     roving = Math.min(roving, d.buckets.length - 1);
@@ -128,7 +121,7 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
         const color = modelColors.get(row.model) ?? "#c4b7a8";
         g.append(svgNode("rect", { x, y, width: w, height, fill: /^#[0-9a-f]{6}$/i.test(color) ? color : "currentColor" }));
       }
-      g.append(svgNode("rect", { x: x - 4, y: 20, width: w + 8, height: 284, class: "bucket-focus" }));
+      g.append(svgNode("rect", { x: x - 3, y: y - 3, width: w + 6, height: Math.max(0, 296 - y) + 6, class: "bucket-focus" }));
       const tooltip = svgNode("title", {}, `${label}\n${bucket.models.map(m => `${m.model}: ${formatValue(m.value, query.unit)} ${query.unit}`).join("\n")}`); g.append(tooltip);
       g.addEventListener("click", e => { const event = e as MouseEvent; if (event.button && event.button !== 0) return; roving = index; groups.forEach((bar, i) => bar.setAttribute("tabindex", i === index ? "0" : "-1")); g.focus(); if (event.metaKey || event.ctrlKey) select(bucket.key); });
       g.addEventListener("keydown", e => { const event = e as KeyboardEvent;
@@ -205,8 +198,22 @@ export function mountOverview(ctx: DashboardPageContext): DashboardPage {
     const summary = element(document, "div", undefined, "sessions-context"); const chips = element(document, "div", undefined, "summary-chips"); chips.append(chip("Sessions", String(d.total)), chip("Subagent runs", String(d.summary.runs)), chip("Top 3 share", percent(d.summary.top3Share)));
     const legend = element(document, "div", undefined, "role-legend"); legend.setAttribute("aria-label", "Session roles");
     for (const role of roles) { const key = element(document, "span", roleNames[role], "role-key"); key.setAttribute("data-role", role); legend.append(key); } summary.append(chips, legend);
-    const table = renderTable(document, { caption: "Sessions in the selected range", columns: ["Session", "Last active", "Breakdown", query.unit === "credits" ? "Credits" : "Tokens", "Runs"], rows: d.rows.map((r, i) => [sessionName(r), formatLocalTime(r.lastActive, query.tz), breakdown(r, i), formatValue(r.value, query.unit), String(r.runs)]) }); table.className = "data-table sessions-table";
-    const numeric = renderTable(document, { caption: "Exact session role values", columns: ["Session", "Last active", ...roles.map(r => roleNames[r]), query.unit === "credits" ? "Credits" : "Tokens", "Runs"], rows: d.rows.map(r => [sessionName(r, true), formatLocalTime(r.lastActive, query.tz), ...roles.map(role => { const v = r.roles.find(v => v.role === role)?.value; return v ? formatValue(v, query.unit) : "0"; }), formatValue(r.value, query.unit), String(r.runs)]) });
+    const columns = ["Rank", "Session", query.unit === "credits" ? "Credits" : "Tokens", "Share", "Breakdown", "Last active", "Runs"];
+    const total = amount(data!.selectedTotal, query.unit);
+    const sessionShare = (row: SessionRow) => { const value = amount(row.value, query.unit); return total === null || value === null ? "unavailable" : percent(total > 0 ? value / total : 0); };
+    const numericBreakdown = (row: SessionRow) => {
+      const list = element(document, "dl", undefined, "session-breakdown-values");
+      for (const role of roles) { const value = row.roles.find(v => v.role === role)?.value; const item = element(document, "div"); item.append(element(document, "dt", roleNames[role]), element(document, "dd", value ? formatValue(value, query.unit) : "0", "mono")); list.append(item); } return list;
+    };
+    const table = renderTable(document, { caption: "Sessions in the selected range", columns, rows: d.rows.map((r, i) => [String(d.offset + i + 1), sessionName(r), formatValue(r.value, query.unit), sessionShare(r), breakdown(r, i), formatLocalTime(r.lastActive, query.tz), String(r.runs)]) }); table.className = "data-table sessions-table";
+    const numeric = renderTable(document, { caption: "Exact session role values", columns, rows: d.rows.map((r, i) => [String(d.offset + i + 1), sessionName(r, true), formatValue(r.value, query.unit), sessionShare(r), numericBreakdown(r), formatLocalTime(r.lastActive, query.tz), String(r.runs)]) }); numeric.className = "data-table sessions-numeric-table";
+    for (const t of [table, numeric]) {
+      const header = Array.from(t.querySelector("thead")!.firstElementChild!.children);
+      const activeColumn = sort === "credits" ? 2 : sort === "last-active" ? 5 : 6;
+      header[activeColumn]!.setAttribute("aria-sort", "descending");
+      const indicator = svgNode("svg", { viewBox: "0 0 16 16", class: "session-sort-indicator", "aria-hidden": "true" }); indicator.append(svgNode("path", { d: "M8 2v12m-4-4 4 4 4-4", fill: "none", stroke: "currentColor", "stroke-width": 1.5 }));
+      header[activeColumn]!.append(indicator);
+    }
     const section = panel("sessions", "Sessions", svgNode("svg"), numeric, summary);
     const pair = section.children[0]!, graphic = pair.children[2]!; graphic.replaceChildren(table);
     for (const t of [table, numeric]) {

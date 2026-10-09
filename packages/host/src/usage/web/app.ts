@@ -55,7 +55,7 @@ export function startDashboard(options: DashboardOptions = {}): DashboardPage {
     const restoreFocus = content.contains(document.activeElement);
     pageController?.abort(); page?.dispose(); page = undefined; pageController = new AbortController(); content.replaceChildren();
     overviewButton.removeAttribute("aria-current"); calibrationButton.removeAttribute("aria-current");
-    if (route.page !== "session") (route.page === "overview" ? overviewButton : calibrationButton).setAttribute("aria-current", "page");
+    (route.page === "calibration" ? calibrationButton : overviewButton).setAttribute("aria-current", "page");
     if (restoreFocus) (route.page === "calibration" ? calibrationButton : overviewButton).focus();
     if (route.page === "session" && !route.id) { sectionState(content, "empty", "Session not found"); content.append(action(document, "Back", back)); return; }
     if (document.visibilityState !== "visible") { mountPending = true; return; }

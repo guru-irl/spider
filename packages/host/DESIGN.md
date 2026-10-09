@@ -207,7 +207,7 @@ The hierarchy is deliberately compact. Medium-weight headings establish sections
 
 The desktop shell has a full-width header with a minimum height (88px). Content is centered within a maximum width (1536px), with broad horizontal gutters and top and bottom padding (28px and 34px). Section panels share their padding and separation through the panel spacing step.
 
-The overview pairs its main time-series chart with a narrower model column (1.85fr to 1fr). Both panels stretch to the same row height; the daily plot has a minimum height (350px). Further evidence sections use the full content width. Session and calibration summaries use open multi-column rows with vertical dividers rather than separate metric cards.
+The overview pairs its main time-series chart with a narrower model column (1.85fr to 1fr). Both panels share one fixed height so the row never grows with the number of models: the model list scrolls inside its panel, and the daily plot is sized from its box so text always renders at its CSS size. Long lists (models, sessions, runs) scroll inside their panel rather than expanding the page. Further evidence sections use the full content width. Session and calibration summaries use open multi-column rows with vertical dividers rather than separate metric cards.
 
 At the compact desktop breakpoint (1350px), gutters shrink, navigation becomes denser, metric values become smaller and the overview ratio adjusts (1.75fr to 1fr). The page retains a minimum width (1024px). Narrower windows scroll; this system does not claim a phone layout. Wide tables and route diagrams have their own horizontal scrolling regions.
 

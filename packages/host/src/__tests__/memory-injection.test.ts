@@ -455,7 +455,7 @@ describe("production memory injection", () => {
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
       } as any);
-      expect(handlers).toHaveLength(2);
+      expect(handlers).toHaveLength(3);
       const badContext = { cwd: f.cwd, sessionManager: { getSessionId: () => "setup-session", getBranch() { throw new Error("capture failed"); } } };
       for (const handler of handlers) { try { await handler({}, badContext); } catch { /* hooks are independent */ } }
       const check = async (sessionId: string) => {

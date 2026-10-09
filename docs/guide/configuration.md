@@ -80,6 +80,10 @@ The live footer shows corrected credits without basis markers, then cache hit ra
 - Without credentials for the selected models, foreground memory saves report [review skipped](memory-and-learning.md#memory-scope-and-review); learner skill reviews [retry and drop after three attempts](memory-and-learning.md#learner-review-queue). Background drains with input fail model resolution without a fallback, and `/doctor` reports the enabled organism unhealthy after such a failure.
 - Reviewer defaults, inline skill-review failures, and learner selection details are in [Memory and learning](memory-and-learning.md).
 
+## Compaction
+
+[Compaction](compaction.md) is opt-in. `compaction.summaryModel` defaults to `null`, leaving summaries to pi; set it to `provider/model` for managed parent summaries. `compaction.summaryThinking` defaults to `high`. `compaction.fileListCap` defaults to `500` per list, with `0` disabling the cap. `compaction.minSummaryOutputTokens` defaults to `64000`. Both numeric fields require non-negative safe integers, and the output floor must fit its derived reserve. These settings apply on the next compaction. Thresholds remain `compactAtPercent` in pi's `models.json`.
+
 ## Common defaults
 
 | Key | Default | Meaning |

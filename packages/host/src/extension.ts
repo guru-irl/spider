@@ -22,6 +22,7 @@ import { dispatch, registerAction as registerGlobalAction, clearActions, type Ac
 import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
+import { registerCompaction } from "./compaction/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -1245,6 +1246,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
   }
+  // Pi keeps the last truthy before-compact result. The organism returns undefined;
+  // register the managed summary after it, for both parent and child activations.
+  registerCompaction(pi as unknown as ExtensionAPI, { readConfig: cwd => configValues(cwd).config });
   // Registered LAST: shutdown awaits the worker before closing its resources.
   pi.on("session_shutdown", async () => {
     try {

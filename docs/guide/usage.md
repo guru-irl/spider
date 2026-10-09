@@ -35,7 +35,7 @@ Credits use published rates corrected against compatible account-counter evidenc
 
 The 2026-10-04 published rate snapshot is applied from June 1, 2026, when GitHub changed Copilot to usage-based billing. These historical prices are estimates, not evidence that every rate was unchanged throughout that period. Calls before June 1 remain unpriced.
 
-Compaction and branch summaries with a recorded model use that model's published rates. Without a model, they use pi's recorded cost when the active provider is GitHub Copilot, or when it is unknown and all attributed session calls use Copilot (at least one is required). Summaries before the earliest rate date stay unpriced, as do model-less summaries with zero recorded cost for nonzero tokens.
+[Managed compaction](compaction.md#managed-parent-summaries) records its summary model for pricing. Compaction and branch summaries with a recorded model use that model's published rates. Without a model, they use pi's recorded cost when the active provider is GitHub Copilot, or when it is unknown and all attributed session calls use Copilot (at least one is required). Summaries before the earliest rate date stay unpriced, as do model-less summaries with zero recorded cost for nonzero tokens.
 
 Token totals are input plus cache read plus cache write plus output. Reasoning and one-hour cache writes are subsets, not additional tokens. Unknown pricing stays unavailable rather than becoming zero. A total with unpriced calls does not include a fabricated price for those calls.
 

@@ -10,6 +10,8 @@ import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtim
 import { isAbsolutePathList } from "@spider/ui";
 import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } from "./usage/config.js";
 import { usageDoctorLines } from "./usage/doctor.js";
+import { COMPACTION_DEFAULTS, compactionConfigError } from "./compaction/config.js";
+import { legacyCompactionPath, legacyCompactionWarning } from "./compaction/legacy.js";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
@@ -17,6 +19,7 @@ export { controlMigrate } from "./control/migrate-cmd";
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
   ...USAGE_DEFAULTS,
+  ...COMPACTION_DEFAULTS,
   "embeddings.drain": true,
   "subagents.childMode": "rpc",
   "subagents.keepCacheWarm": true,
@@ -74,6 +77,11 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
   const local = readLayer(localFile);
   const errors = [global.error, local.error].filter((s): s is string => s !== undefined);
   for (const [layer, file] of [[global, globalFile], [local, localFile]] as const) {
+    for (const key of Object.keys(COMPACTION_DEFAULTS)) {
+      if (!Object.hasOwn(layer.config, key)) continue;
+      const error = compactionConfigError(key, layer.config[key]);
+      if (error) errors.push(`invalid ${key} in ${file}: ${error}`);
+    }
     const value = layer.config["models.defaults"];
     if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) {
       errors.push(`invalid models.defaults in ${file}: expected an object`);
@@ -156,6 +164,12 @@ export function configValues(cwd: string, localRoot?: string): {
   const all = { ...DEFAULTS, ...g, ...p };
   const sources: Record<string, ConfigSource> = Object.fromEntries(Object.keys(all).map(key =>
     [key, Object.hasOwn(p, key) ? "local" : Object.hasOwn(g, key) ? "global" : "default"]));
+  for (const [key, fallback] of Object.entries(COMPACTION_DEFAULTS)) {
+    const localValid = Object.hasOwn(p, key) && !compactionConfigError(key, p[key]);
+    const globalValid = Object.hasOwn(g, key) && !compactionConfigError(key, g[key]);
+    all[key] = localValid ? p[key] : globalValid ? g[key] : fallback;
+    sources[key] = localValid ? "local" : globalValid ? "global" : "default";
+  }
   all["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? g["subagents.extensions"] : DEFAULTS["subagents.extensions"];
   sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
   const usage = readUsageConfig(g, p).value;
@@ -199,6 +213,8 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     const error = op === "set" ? usageConfigError(key, value) : undefined;
     if (error) throw new Error(error);
   }
+  const compactionError = op === "set" ? compactionConfigError(key, value) : undefined;
+  if (compactionError) throw new Error(compactionError);
   // Ordinary edits stay local unless the caller explicitly chooses global.
   const root = scope === "global" ? paths.globalRoot : paths.projectRoot(cwd);
   const file = configFile(root);
@@ -259,6 +275,8 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
       if (values.warnings.includes(error)) lines.push(`- config: ${error}`);
       else { ok = false; lines.push(`- config: FAILED (${error})`); }
     }
+    const legacyCompaction = legacyCompactionPath(values.config);
+    if (legacyCompaction) { ok = false; lines.push(`- ${legacyCompactionWarning(legacyCompaction)}`); }
     drainEnabled = values.config["embeddings.drain"] !== false;
     usageConfig = readUsageConfig(values.config, {}).value;
   } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }

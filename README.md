@@ -14,6 +14,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - Reference material: fetch, index, and import content for later searches.
 - Skills: bundled procedures, staged proposals, and explicit approval.
 - Background learning: propose memory and skills from session activity.
+- [Compaction](docs/guide/compaction.md): opt-in per-model thresholds and managed parent summaries with bounded file lists.
 
 ## Requirements
 

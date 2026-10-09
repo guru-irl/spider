@@ -1,13 +1,19 @@
 import { isAbsolutePathList } from "./absolute-paths.js";
 
-export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list";
+export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list" | "model-ref";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
-	enum?: readonly string[]; min?: number; max?: number; optional?: boolean; exclusiveMin?: number; description: string; restart?: boolean; scope?: "global";
+	enum?: readonly string[]; min?: number; max?: number; optional?: boolean; exclusiveMin?: number; description: string; restart?: boolean; scope?: "global"; integer?: boolean;
 }
 export interface ConfigGroup { id: string; label: string; fields: ConfigField[]; }
 
 export const CONFIG_SCHEMA: ConfigGroup[] = [
+	{ id: "compaction", label: "Compaction", fields: [
+		{ key: "compaction.summaryModel", label: "Summary model", type: "model-ref", default: null, description: "Optional provider/model for parent summaries. Null leaves pi in charge. Changes apply on the next compaction." },
+		{ key: "compaction.summaryThinking", label: "Summary thinking", type: "enum", default: "high", enum: [], description: "Reasoning level for managed parent summaries. Children retain their own thinking." },
+		{ key: "compaction.fileListCap", label: "File paths per list", type: "number", integer: true, default: 500, min: 0, max: Number.MAX_SAFE_INTEGER, description: "Maximum read and modified paths independently, newest first. Zero disables the file-list cap." },
+		{ key: "compaction.minSummaryOutputTokens", label: "Summary output floor", type: "number", integer: true, default: 64000, min: 0, max: Math.floor(Number.MAX_SAFE_INTEGER * 0.8), description: "Output request floor for parent summaries, capped by the model maximum. Does not change pi's thresholds." },
+	]},
 	{ id: "auxiliary", label: "Auxiliary model", fields: [
 		{ key: "auxiliary.background_review.provider", label: "Provider", type: "string", default: "", description: "Optional background review provider override; default github-copilot." },
 		{ key: "auxiliary.background_review.model", label: "Model", type: "string", default: "", description: "Optional model override; default github-copilot/gpt-6-luna with low thinking, never the session model." },
@@ -76,7 +82,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
  * database or model dependencies belong in this data-only UI schema. */
 export function createConfigSchema(thinkingLevels: readonly string[]): ConfigGroup[] {
   return CONFIG_SCHEMA.map(group => ({ ...group, fields: group.fields.map(field =>
-    field.key.endsWith(".reviewer.thinking") ? { ...field, enum: thinkingLevels } : field) }));
+    (field.key.endsWith(".reviewer.thinking") || field.key === "compaction.summaryThinking") ? { ...field, enum: thinkingLevels } : field) }));
 }
 
 export function getField(key: string, schema: ConfigGroup[] = CONFIG_SCHEMA): ConfigField | undefined {
@@ -97,10 +103,15 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 				return { ok: true, value: undefined };
 			const n = Number(raw);
 			if (!Number.isFinite(n)) return { ok: false, error: "expected a number" };
+			if (field.integer && !Number.isSafeInteger(n)) return { ok: false, error: "expected a safe integer" };
 			if (field.exclusiveMin !== undefined && n <= field.exclusiveMin) return { ok: false, error: `must be greater than ${field.exclusiveMin}` };
 			if (field.min !== undefined && n < field.min) return { ok: false, error: `min ${field.min}` };
 			if (field.max !== undefined && n > field.max) return { ok: false, error: `max ${field.max}` };
 			return { ok: true, value: n };
+		}
+		case "model-ref": {
+			if (raw === "null" || raw.trim() === "") return { ok: true, value: null };
+			return /^[^/\s]+\/\S+$/.test(raw) ? { ok: true, value: raw } : { ok: false, error: "expected provider/model or null" };
 		}
 		case "absolute-path-list": {
 			try {

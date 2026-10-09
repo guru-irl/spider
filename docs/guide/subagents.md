@@ -10,6 +10,7 @@
 - A subagent silent for 60 minutes stops holding warming. Any child event resets this clock without changing the run status.
 - Child model calls, compactions, cache warming, and spider reviewer calls inside children count toward the dispatching session's pi footer, `/session`, and RPC totals after the run finishes, including failed or killed runs.
 - Run cards, completion messages, and `/agents` run details show tokens and cost.
+- Optional [per-model compaction](compaction.md#children) uses each child's model and thinking at tool-turn boundaries, never at `agent_end`.
 - The usage line appends `1 compaction` or `N compactions` when successful compactions are recorded. Aborted compactions do not count. Successful compactions still count when model usage accounting is unavailable.
 - Zero compactions or runs without compaction records keep the usage line unchanged. Reload preserves accounting and compaction counts.
 - A run finishing while another session is active is counted when its owner is next active or makes its next spider call, never in the other session.

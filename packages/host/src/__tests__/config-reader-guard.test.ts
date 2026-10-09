@@ -61,6 +61,15 @@ describe("configuration schema truthfulness", () => {
     expect(guard(DEFAULTS)).toEqual([]);
   });
 
+  it.each(["compaction.summaryModel", "compaction.summaryThinking", "compaction.fileListCap", "compaction.minSummaryOutputTokens"])("recognizes validated compaction-map reads and catches a removed read %s", key => {
+    expect(productionReaders(root).has(key)).toBe(true);
+    const file = resolve("packages/host/src/compaction/config.ts");
+    const source = readFileSync(file, "utf8");
+    const without = source.replace(`effective['${key}']`, "undefined");
+    expect(without).not.toBe(source);
+    expect(guard(DEFAULTS, { [file]: without })).toContain(`no reader: ${key}`);
+  });
+
   it("recognizes validated usage-map reads and catches a removed read", () => {
     expect(productionReaders(root).has("usage.footer")).toBe(true);
     const file = resolve("packages/host/src/usage/config.ts");

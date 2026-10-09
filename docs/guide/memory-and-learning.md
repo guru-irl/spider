@@ -61,6 +61,7 @@ spider control command:"memory" sub:"forget" uuid:"<uuid>" scope:"repo"
 
 ## Background learning
 
+- Optional [managed compaction](compaction.md) is separate from learning; the organism drain does not replace its summary result.
 - The organism registers compaction and shutdown work only in parent sessions. `PI_SUBAGENT_CHILD=1` disables those hooks and manual organism actions.
 - Background learning and skill consolidation default to `github-copilot/gpt-6-luna` with `low` thinking, not the session model.
 - Override with `auxiliary.background_review.model` and `.provider`. A provider-only override selects `<provider>/gpt-6-luna`.

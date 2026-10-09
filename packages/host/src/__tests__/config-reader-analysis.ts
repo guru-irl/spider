@@ -33,6 +33,10 @@ export function productionReaders(root: string, overrides: Record<string, string
         && ts.isStringLiteral(node.argumentExpression) && node.argumentExpression.text.startsWith("usage.")) {
         readers.add(node.argumentExpression.text);
       }
+      if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "effective"
+        && ts.isStringLiteral(node.argumentExpression) && node.argumentExpression.text.startsWith("compaction.")) {
+        readers.add(node.argumentExpression.text);
+      }
       if (ts.isElementAccessExpression(node) && ts.isPropertyAccessExpression(node.expression)
         && node.expression.name.text === "config" && ts.isStringLiteral(node.argumentExpression)) {
         readers.add(node.argumentExpression.text);

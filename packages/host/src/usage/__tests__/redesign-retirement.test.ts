@@ -103,7 +103,8 @@ it("guide matches controls, units, budget, footer and the dashboard development 
   }
   expect(maxDays).toBeGreaterThan(0);
   expect(text).toContain(`up to ${maxDays} days`);
-  expect(text).toContain("Session always covers its entire recorded lifetime");
+  expect(text).toContain("Session opens on the current billing month, or on the calendar month of the session's last activity if it had none this month");
+  expect(text).toContain("From and To open a calendar"); expect(text).toContain("This month and Whole session");
   const budget = CONFIG_SCHEMA.flatMap(group => group.fields).find(field => field.key === "usage.monthlyBudget")!;
   expect(budget).toMatchObject({ scope: "global", optional: true, exclusiveMin: 0, default: undefined });
   expect(text).toContain(`/spider config set ${budget.key} <credits> --${budget.scope}`);

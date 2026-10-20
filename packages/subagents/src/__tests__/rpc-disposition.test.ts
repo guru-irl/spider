@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { buildSync } from "esbuild";
+import { buildFixture } from "../../../../scripts/test-bundle";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,7 +55,7 @@ it.each([
   writeFileSync(commandLog, "");
   const reporterPath = join(root, "reporter.mjs");
   const reporterEntry = fileURLToPath(new URL("../child-reporter.ts", import.meta.url));
-  if (reporter) buildSync({ stdin: { contents: `export { openDbAt } from '@spider/db-core'; export { makeChildReporter } from ${JSON.stringify(reporterEntry)};`,
+  if (reporter) await buildFixture({ stdin: { contents: `export { openDbAt } from '@spider/db-core'; export { makeChildReporter } from ${JSON.stringify(reporterEntry)};`,
     resolveDir: fileURLToPath(new URL(".", import.meta.url)), sourcefile: "reporter.ts" }, bundle: true, platform: "node", format: "esm", external: ["better-sqlite3"], outfile: reporterPath });
   writeFileSync(script, `
     import { appendFileSync } from 'node:fs';

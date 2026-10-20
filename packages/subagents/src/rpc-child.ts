@@ -3,7 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import { sumUsage } from "./usage";
 
-/** pi 0.87 has no disposition field. Keep this wire shape local until the peer upgrade. */
+/** Accept pi 1.x dispositions and legacy pi 0.87 replies without the field. */
 interface RpcInputResponse {
   type: "response";
   id?: string;
@@ -342,6 +342,13 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       settled = false;
     } else if (event.type === "agent_settled") {
       settled = true;
+      // pi 1.2 can settle an aborted run and then exit RPC mode with code 0.
+      // Owned shutdown already has its cancellation cause; unexpected aborts
+      // must not become a successful result just because the pipe closed cleanly.
+      if (event.aborted === true && !stopping && !failureReason) {
+        failureReason = "Child run was aborted before completion.";
+        report({ type: "warning", message: failureReason });
+      }
       if (steering.length || followUp.length || [...pending.values()].some(p => p.command === "steer")) {
         discardAfterSettle = true; send({ type: "clear_queue" });
         finalizeSettledSteers();

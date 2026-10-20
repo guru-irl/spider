@@ -64,16 +64,16 @@ function makeFixture(): string {
 
 /**
  * Bundles the standalone-process harness (which imports the REAL executor.ts)
- * into a single dependency-free .mjs via esbuild, so it can be run with plain
+ * into a single dependency-free .mjs via Vite, so it can be run with plain
  * `node` as a genuinely separate OS process — no pipe/fd shared with vitest.
  *
  * `@spider/db-core` is aliased to a fixture barrel of the real paths and
  * commandEnv primitives, so the bundle never pulls in better-sqlite3/sqlite-vec.
  */
 async function buildHarness(outDir: string): Promise<string> {
-  const esbuild = await import("esbuild");
+  const { buildFixture } = await import("../../../../scripts/test-bundle");
   const outfile = join(outDir, "harness.mjs");
-  await esbuild.build({
+  await buildFixture({
     entryPoints: [join(__dirname, "helpers/background-harness-entry.ts")],
     bundle: true,
     platform: "node",

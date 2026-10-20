@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSync } from "esbuild";
+import { buildFixture } from "../../../../../scripts/test-bundle";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 const modulePath = join(root, "lease-fixture.mjs");
-buildSync({ stdin: { contents: `export * from ${JSON.stringify(fileURLToPath(new URL("../ledger.ts", import.meta.url)))}; export * from ${JSON.stringify(fileURLToPath(new URL("../lease.ts", import.meta.url)))};`, resolveDir: process.cwd() },
+await buildFixture({ stdin: { contents: `export * from ${JSON.stringify(fileURLToPath(new URL("../ledger.ts", import.meta.url)))}; export * from ${JSON.stringify(fileURLToPath(new URL("../lease.ts", import.meta.url)))};`, resolveDir: process.cwd() },
   outfile: modulePath, bundle: true, platform: "node", format: "esm", external: ["better-sqlite3", "sqlite-vec"], logLevel: "silent" });
 function child(script: string) {
   const proc = spawn(process.execPath, ["--input-type=module", "-e", `import { openUsageLedger, acquireUsageLease } from ${JSON.stringify(modulePath)};\n${script}`], { stdio: ["ignore", "pipe", "pipe"] });

@@ -25,15 +25,9 @@ export function countPatchLines(patch: string): { added: number; removed: number
 }
 
 function errorResult(toolCallId: string, message: string, owner?: object) {
-  // A-M1 (branch-review A-architecture.md): pi's `AgentTool.execute()` contract has NO
-  // `isError` field — verified against pi's own types (see A-architecture.md's M1) — so
-  // returning one on the resolved value here is INERT; pi's runtime never reads it. The
-  // ONLY working channel that can flip `ToolResultMessage.isError` while preserving
-  // `content`/`details` is `markToolCallError(toolCallId)` + the `tool_result` hook
-  // (mechanism (B), routing/index.ts) — the same one the `spider` tool already uses.
-  // `isError: true` stays on the returned object too: harmless (pi ignores it), still an
-  // honest description of what happened, and read by nothing but this module's own
-  // (pre-existing) `!result?.isError` checks after a delegate call.
+  // Pi 1.x honors returned isError directly. Keep the tool_result marking hook
+  // too, because supported pi 0.87 hosts require it to mark resolved failures.
+  // Both paths preserve the model-facing content and structured details.
   markToolCallError(toolCallId, owner);
   return { content: [{ type: "text", text: message }], details: {}, isError: true };
 }

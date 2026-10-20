@@ -108,8 +108,9 @@ export function registerHooks(pi: PiLikeAPI): void {
           if (!text) return undefined;
           const prompt = getSystemMessageText(head);
           if (prompt.includes(text)) return undefined;
-          // Idle triggerTurn skips before_agent_start in pi 0.87.x. Use its
-          // public transcript hook, not provider-specific payload rewriting.
+          // Legacy pi 0.87 skips before_agent_start for idle triggerTurn.
+          // Pi 1.2 runs it; the includes guard above prevents double injection.
+          // Keep this public transcript fallback for the supported older hosts.
           // Match the forced-prompt path: one head with the replayed prompt and
           // tool loadout, followed by the conversation. Never edit stored entries.
           return { messages: [

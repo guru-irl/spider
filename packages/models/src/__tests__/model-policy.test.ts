@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { catalog, pick, resolveRoleDefaults, DEFAULT_MODELS_CONFIG, type Tier } from "../index";
 // Public pi-ai export approved for tests only; production uses root imports.
-import { getBuiltinModels, getBuiltinProviders, type BuiltinProvider } from "@earendil-works/pi-ai/providers/all";
+import { getBuiltinModels, getAllBuiltinModels, getBuiltinProviders, type BuiltinProvider } from "@earendil-works/pi-ai/providers/all";
 import { normalizeModelId } from "../model-id";
 
 // Breaks caught: stale preferences, inherited role defaults, or unrestricted any-of-tier fallback.
@@ -138,12 +138,12 @@ describe("built-in model policy", () => {
 });
 
 const providerCases = [
-  ["github-copilot", "gpt-6-sol", "gpt-6-luna", "claude-opus-5.5"],
-  ["openai", "gpt-6-sol", "gpt-6-luna", "gpt-6-astra"],
-  ["anthropic", "claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5-5"],
+  ["github-copilot", "gpt-6.1-sol", "gpt-6-luna", "claude-opus-5.5"],
+  ["openai", "gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"],
+  ["anthropic", "claude-sonnet-5", "claude-haiku-5-5", "claude-opus-5-5"],
   ["google", "gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.1-pro-preview"],
-  ["amazon-bedrock", "anthropic.claude-sonnet-5", "anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic.claude-opus-5-5"],
-  ["openrouter", "openai/gpt-6-sol", "openai/gpt-6-luna", "anthropic/claude-opus-5.5"],
+  ["amazon-bedrock", "openai.gpt-6.1-sol", "openai.gpt-6-luna", "anthropic.claude-opus-5-5"],
+  ["openrouter", "openai/gpt-6.1-sol", "openai/gpt-6-luna", "anthropic/claude-opus-5.5"],
 ] as const satisfies readonly (readonly [BuiltinProvider, string, string, string])[];
 function builtinCatalog(provider: BuiltinProvider) {
   return catalog(() => getBuiltinModels(provider).map(m => ({ ...m, available: true, vision: m.input.includes("image"), ctx: m.contextWindow })));
@@ -176,7 +176,11 @@ describe("real pi built-in provider fallbacks", () => {
 
   it.each(builtinProviders)("sweeps every %s catalog id for automatic exclusions", provider => {
     const models = builtinCatalog(provider);
-    expect(models.length, `${provider} catalog must not be empty`).toBeGreaterThan(0);
+    // Providers can now be classifier-only. An empty chat subset is valid only
+    // when the complete, nonempty catalog really has no chat models.
+    const allModels = getAllBuiltinModels(provider);
+    expect(allModels.length, `${provider} catalog must not be empty`).toBeGreaterThan(0);
+    expect(models.length).toBe(allModels.filter(model => !model.type || model.type === "chat").length);
     let excludedCount = 0;
     for (const model of models) {
       const excluded = isExcludedRawId(model.id);
@@ -228,6 +232,6 @@ describe("real pi built-in provider fallbacks", () => {
 
   it("falls back from Astra to Sol for OpenAI-only review", () => {
     const models = builtinCatalog("openai").filter(m => m.id !== "gpt-6-astra");
-    expect(pick(models, { role: "reviewer" }).entry.id).toBe("gpt-6-sol");
+    expect(pick(models, { role: "reviewer" }).entry.id).toBe("gpt-6.1-sol");
   });
 });

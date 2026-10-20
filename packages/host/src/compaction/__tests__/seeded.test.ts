@@ -4,8 +4,8 @@ import { setup, pi, user, assistant, summaryCalls } from './harness.js';
 const { prepareCompaction } = await import(new URL('../../../../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js', import.meta.url).href);
 
 // Break: child cut or history extraction diverges from pi, or parent recency becomes sorted/forward.
-test('seeded histories preserve child boundaries and parent newest-touch file order', async () => {
-  let seed = 23;
+test.each([7, 11, 23])('seed %s preserves child boundaries and parent newest-touch file order', async initialSeed => {
+  let seed = initialSeed;
   const next = () => { seed = Math.imul(seed, 1664525) + 1013904223 >>> 0; return seed; };
   for (let i = 0; i < 80; i++) {
     const f = setup(true); const sm = pi.SessionManager.inMemory(f.ctx.cwd);

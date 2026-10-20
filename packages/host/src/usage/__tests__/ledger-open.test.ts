@@ -3,7 +3,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSync } from "esbuild";
+import { buildFixture } from "../../../../../scripts/test-bundle";
 import Database from "better-sqlite3";
 import { openDb } from "@spider/db-core";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
@@ -15,10 +15,10 @@ const exits: Promise<number | null>[] = [];
 const ledgers: UsageLedger[] = [];
 const rawHandles: Database.Database[] = [];
 
-beforeEach(() => {
+beforeEach(async () => {
   root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-opening-"));
   helper = join(root, "opener.mjs");
-  buildSync({
+  await buildFixture({
     entryPoints: [fileURLToPath(new URL("../ledger.ts", import.meta.url))],
     outfile: join(root, "ledger.mjs"), bundle: true, platform: "node", format: "esm",
     external: ["better-sqlite3", "sqlite-vec"], logLevel: "silent",

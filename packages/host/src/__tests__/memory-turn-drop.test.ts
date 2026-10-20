@@ -154,7 +154,7 @@ describe("memory on starts that skip before_agent_start", () => {
 });
 
 // Exercise the real public SDK path with a scripted in-memory provider, not a mock session.
-// Pi clears the forced prompt after a user run and skips before_agent_start for idle custom messages.
+// Pi 1.2 also calls before_agent_start for idle custom runs; the legacy request hook must not double-inject.
 for (const continuation of ["notification only", "steer", "followUp", "tool loop"] as const) {
   it(`keeps the system prompt on pi's idle triggerTurn path with ${continuation}`, async () => {
     const f = fixture(continuation);
@@ -182,14 +182,16 @@ for (const continuation of ["notification only", "steer", "followUp", "tool loop
       const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
       runtime.registerNativeProvider(faux.provider);
       const settings = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
-      let starts = 0;
+      const starts: Array<{ messageType: string; prompt?: string; customType?: string }> = [];
       const loader = new DefaultResourceLoader({
         cwd: f.cwd, agentDir: process.env.PI_CODING_AGENT_DIR!, settingsManager: settings,
         noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
         systemPromptOverride: () => "base",
         extensionFactories: [pi => {
           registerHooks(pi);
-          pi.on("before_agent_start", () => { starts++; });
+          pi.on("before_agent_start", event => { starts.push(event.messageType === "custom"
+            ? { messageType: event.messageType, customType: event.message.customType }
+            : { messageType: event.messageType, prompt: event.prompt }); });
           if (continuation === "tool loop") pi.registerTool({
             name: "fixture_tool", label: "Fixture tool", description: "Return a fixture result",
             parameters: Type.Object({}),
@@ -206,7 +208,10 @@ for (const continuation of ["notification only", "steer", "followUp", "tool loop
       await session.prompt("first");
       f.add("SDK later fact");
       await session.sendCustomMessage({ customType: "spider.subagent_done", content: "OK", display: true, details: {} }, { triggerTurn: true });
-      expect(starts).toBe(1); // Idle run and its continuations all bypass preflight.
+      expect(starts).toEqual([
+        { messageType: "user", prompt: "first" },
+        { messageType: "custom", customType: "spider.subagent_done" },
+      ]); // Continuations do not rerun preflight.
       expect(prompts).toHaveLength(continuation === "notification only" ? 2 : 3);
       if (continuation === "steer" || continuation === "followUp") {
         const instruction = continuation === "steer" ? "Idle steer instruction" : "Idle follow-up instruction";
@@ -222,14 +227,23 @@ for (const continuation of ["notification only", "steer", "followUp", "tool loop
         }));
       }
       await session.prompt("last");
-      expect(starts).toBe(2);
+      expect(starts).toEqual([
+        { messageType: "user", prompt: "first" },
+        { messageType: "custom", customType: "spider.subagent_done" },
+        { messageType: "user", prompt: "last" },
+      ]);
       expect(prompts).toHaveLength(continuation === "notification only" ? 3 : 4);
       expect(prompts[0]).toContain("SDK frozen fact");
       for (const prompt of prompts) {
         expect(prompt).toBe(prompts[0]);
         expect(prompt).not.toContain("SDK later fact");
       }
-      for (const request of requests) expect(getCurrentTools(request.messages)).toEqual(getCurrentTools(requests[0].messages));
+      for (const request of requests) {
+        expect(getCurrentTools(request.messages)).toEqual(getCurrentTools(requests[0].messages));
+        const rawSystem = JSON.stringify(request.messages.filter(message => message.role === "system"));
+        expect(rawSystem.split("SDK frozen fact")).toHaveLength(2); // Exactly one copy, not just folded state.
+      }
+      expect(JSON.stringify(f.sessionManager.getEntries())).not.toContain("SDK frozen fact");
     } finally { session?.dispose(); f.repo.close(); }
   });
 }

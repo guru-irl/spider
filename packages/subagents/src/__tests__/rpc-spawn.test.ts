@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
-import { buildSync } from "esbuild";
+import { buildFixture } from "../../../../scripts/test-bundle";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, watch, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -44,6 +44,10 @@ process.stdin.on('data', chunk => {
       out({ type: 'response', id: c.id, command: 'prompt', success: true });
       out({ type: 'agent_start' });
       if (process.env.SCENARIO === 'death') process.exit(7);
+      else if (['aborted', 'finished'].includes(process.env.SCENARIO)) {
+        out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Partial work' }] } });
+        out({ type: 'agent_settled', aborted: process.env.SCENARIO === 'aborted' });
+      }
       else if (process.env.SCENARIO === 'ignore-eof') { setInterval(() => {}, 1000); out({ type: 'agent_end', messages: [] }); }
       else if (process.env.SCENARIO === 'complete') {
         for (let n = 0; n < 2000; n++) out({ type: 'message_update', text: 'x'.repeat(1024) + 'a\\u2028b\\u2029c' });
@@ -79,7 +83,10 @@ process.stdin.on('data', chunk => {
       out({ type: 'response', id: c.id, command: 'steer', success: true });
       out({ type: 'queue_update', steering: [], followUp: [] });
       out({ type: 'message_start', message: { role: 'user', content: c.message } });
-    } else if (c.type === 'abort') out({ type: 'response', id: c.id, command: 'abort', success: true });
+    } else if (c.type === 'abort') {
+      out({ type: 'response', id: c.id, command: 'abort', success: true });
+      out({ type: 'agent_settled', aborted: true });
+    }
   }
 });
 process.stdin.on('end', () => { appendFileSync(log, JSON.stringify({ type: 'eof' }) + '\\n'); if (process.env.SCENARIO !== 'ignore-eof') process.exit(prompts === 1 && !waiting ? 0 : 9); });
@@ -104,6 +111,15 @@ async function bounded<T>(promise: Promise<T>): Promise<T | "timeout"> {
   finally { clearTimeout(timer!); }
 }
 describe("parent-owned RPC child", () => {
+  it.each([['aborted', 1], ['finished', 0]] as const)('pi 1.2 %s settlement cannot turn an interrupted run into success', async (scenario, exitCode) => {
+    const f = fixture(scenario);
+    const result = await bounded(f.h.wait());
+    expect(result).toEqual(exitCode === 0 ? { exitCode } : { exitCode, result: 'Child run was aborted before completion.' });
+    expect(f.events.filter(event => event.type === 'warning').map(event => event.message))
+      .toEqual(exitCode === 0 ? [] : ['Child run was aborted before completion.']);
+    expect(f.commands().at(-1).type).toBe('eof');
+    expect(await f.h.steer('too late')).toMatchObject({ accepted: false, delivered: false });
+  });
   it.skipIf(process.platform === "win32")("retains the legacy default kill grace for print children", async () => {
     const scratch = resolve(".spider/scratch/rpc-spawn"); mkdirSync(scratch, { recursive: true });
     const root = mkdtempSync(join(scratch, "print-")); roots.push(root); execFileSync("git", ["init", "-q", root]);
@@ -123,7 +139,7 @@ describe("parent-owned RPC child", () => {
     const root = mkdtempSync(join(scratch, "death-")); roots.push(root); execFileSync("git", ["init", "-q", root]);
     const script = join(root, "fake.mjs"), log = join(root, "commands.jsonl"), launcher = join(root, "launcher.mjs");
     writeFileSync(script, fake); writeFileSync(log, "");
-    buildSync({ stdin: { contents: `import { defaultSpawner } from ${JSON.stringify(resolve("packages/subagents/src/spawn-default.ts"))}; const h = defaultSpawner({ ...${JSON.stringify({ argv: [process.execPath, script], cwd: root, sessionFile: join(root, "s.jsonl"), env: { COMMAND_LOG: log, SCENARIO: "hold" }, childMode: "rpc", prompt: "one task" })}, onRpcEvent: e => { if (e.type === 'agent_end') process.stdout.write(JSON.stringify({ pid: h.pid })+'\\n'); } });`, resolveDir: process.cwd(), sourcefile: "launcher.ts" }, bundle: true, platform: "node", format: "esm", outfile: launcher });
+    await buildFixture({ stdin: { contents: `import { defaultSpawner } from ${JSON.stringify(resolve("packages/subagents/src/spawn-default.ts"))}; const h = defaultSpawner({ ...${JSON.stringify({ argv: [process.execPath, script], cwd: root, sessionFile: join(root, "s.jsonl"), env: { COMMAND_LOG: log, SCENARIO: "hold" }, childMode: "rpc", prompt: "one task" })}, onRpcEvent: e => { if (e.type === 'agent_end') process.stdout.write(JSON.stringify({ pid: h.pid })+'\\n'); } });`, resolveDir: process.cwd(), sourcefile: "launcher.ts" }, bundle: true, platform: "node", format: "esm", outfile: launcher });
     const parent = spawn(process.execPath, [launcher], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const parentExit = once(parent, "exit"); let childPid: number | undefined; let watcher: ReturnType<typeof watch> | undefined; let timer: ReturnType<typeof setTimeout> | undefined;
     try {

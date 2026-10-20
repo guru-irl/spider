@@ -202,7 +202,7 @@ describe("the installed pi contract through the full spider extension", () => {
     const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
     f.complete.mockResolvedValueOnce({ ...f.answer, usage, content: [{ type: "text", text: "[]" }] });
     const tool = f.runner.getToolDefinition("spider")!;
-    await tool.execute("curate", { action: "control", command: "skill", sub: "curate", force: true, consolidate: true }, undefined, undefined, f.runner.createContext());
+    await tool.execute("curate", { action: "control", command: "skill", sub: "curate", force: true, consolidate: true }, undefined, undefined, f.runner.createToolContext("fixture", undefined));
     expect(f.session.getEntries().filter(e => e.type === "usage")).toContainEqual(expect.objectContaining({ kind: "spider-aux", note: "skill-curate", usage }));
   });
   it("makes proposals visible and activates real artifacts only after explicit approval", async () => {
@@ -211,7 +211,7 @@ describe("the installed pi contract through the full spider extension", () => {
     await vi.waitFor(() => expect(listPending(f.repoDb, "repo")).toHaveLength(1));
     await vi.waitFor(() => expect(new SkillStore(f.repoDb).list({ status: "staged" })).toHaveLength(1));
     const tool = f.runner.getToolDefinition("spider")!;
-    const ctx = f.runner.createContext();
+    const ctx = f.runner.createToolContext("fixture", undefined);
     const listArgs = { action: "skill", op: "list" };
     const listed = await tool.execute("list", listArgs, undefined, undefined, ctx);
     const text = renderSpiderResult(listed, { expanded: true }, {}, { args: listArgs }).render(140).join("\n");
@@ -219,12 +219,12 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(text).toContain("staged");
     expect(text).not.toMatch(/\{|"candidateBody"/);
 
-    const before = await f.runner.emitBeforeAgentStart("next", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
+    const before = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "next" }, { customPrompt: "Base prompt", cwd: f.cwd });
     expect(before.systemPromptOptions.forceSystemPrompt).toBeUndefined();
     expect(before.systemPromptOptions.customPrompt).toBe("Base prompt");
     const pending = listPending(f.repoDb, "repo")[0];
     await tool.execute("approve-memory", { action: "control", command: "memory", sub: "approve", uuid: pending.uuid }, undefined, undefined, ctx);
-    const after = await f.runner.emitBeforeAgentStart("next", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
+    const after = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "next" }, { customPrompt: "Base prompt", cwd: f.cwd });
     expect(listActive(f.repoDb, "repo").map(row => row.content)).toContain("Record the failing assertion before implementing a fix.");
     expect(after.systemPromptOptions).toEqual(before.systemPromptOptions);
 
@@ -239,7 +239,7 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(card).not.toMatch(/\{|"candidateBody"/);
 
     f.session.newSession();
-    const nextSession = await f.runner.emitBeforeAgentStart("next session", undefined, { customPrompt: "Base prompt", cwd: f.cwd });
+    const nextSession = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "next session" }, { customPrompt: "Base prompt", cwd: f.cwd });
     expect(nextSession.systemPromptOptions.forceSystemPrompt).toContain("Record the failing assertion");
   });
 
@@ -252,7 +252,7 @@ describe("the installed pi contract through the full spider extension", () => {
     const sessionFile = f.session.getSessionFile();
     expect(sessionFile).toBeTypeOf("string");
     const options = { customPrompt: "Base prompt", cwd: f.cwd };
-    const before = await f.runner.emitBeforeAgentStart("before compact", undefined, options);
+    const before = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "before compact" }, options);
     expect(before.systemPromptOptions.forceSystemPrompt).toContain("Before compaction fact");
     addMemory(f.repoDb, "repo", { category: "convention", content: "After compaction fact", source: "user", status: "active" });
     const event = compactEvent(f.session);
@@ -263,7 +263,7 @@ describe("the installed pi contract through the full spider extension", () => {
     await f.runner.emit({ type: "session_compact", compactionEntry: entry, fromExtension: false, reason: "manual", willRetry: false });
     expect(f.session.getSessionId()).toBe(sessionId);
     expect(f.session.getSessionFile()).toBe(sessionFile);
-    const after = await f.runner.emitBeforeAgentStart("after compact", undefined, options);
+    const after = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "after compact" }, options);
     expect(after.systemPromptOptions).toEqual(before.systemPromptOptions);
     expect(after.systemPromptOptions.forceSystemPrompt).not.toContain("After compaction fact");
     expect(f.errors).toEqual([]);
@@ -337,7 +337,7 @@ describe("the installed pi contract through the full spider extension", () => {
     const resolveWorker = vi.spyOn(HostOrganismRuntime.prototype, "resolve");
     const f = await setup({ child: true });
     const tool = f.runner.getToolDefinition("spider")!;
-    const result = await tool.execute("child-manual", args, undefined, undefined, f.runner.createContext());
+    const result = await tool.execute("child-manual", args, undefined, undefined, f.runner.createToolContext("fixture", undefined));
     expect(JSON.stringify(result)).toContain("organism is disabled in subagent sessions");
     expect(resolveWorker).not.toHaveBeenCalled();
     expect(f.complete).not.toHaveBeenCalled();
@@ -350,7 +350,7 @@ describe("the installed pi contract through the full spider extension", () => {
     // Any attempt to inspect the registry for skill access is a regression.
     const catalog = vi.spyOn(f.registry, "getAvailable").mockImplementation(() => { throw new Error("unexpected model construction"); });
     const tool = f.runner.getToolDefinition("spider")!;
-    const ctx = f.runner.createContext();
+    const ctx = f.runner.createToolContext("fixture", undefined);
     const staged = await tool.execute("add", { action: "skill", op: "add", name: "child-fixture", text: finalSkillBody("child-fixture", "Use deterministic fixtures.") }, undefined, undefined, ctx);
     expect(staged.details).toMatchObject({ ok: true, outcome: "staged" });
     const listed = await tool.execute("list", { action: "skill", op: "list" }, undefined, undefined, ctx);
@@ -372,7 +372,7 @@ describe("the installed pi contract through the full spider extension", () => {
     const f = await setup({ child: true });
     f.db.prepare("INSERT INTO run_events(session_id, ts, type, summary, payload) VALUES (?,1,'log','organism drain (shutdown): failed',?)").run("parent-session", JSON.stringify({ kind: "organism-drain", sessionId: "parent-session", reason: "shutdown", status: "failed", startedAt: 1, finishedAt: 1, modelCalls: 0, memoryStaged: 0, skillsStaged: 0, todosAdded: 0, dropped: 0, rejected: 0, inputs: { messages: 0, runs: 0, runEvents: 0, events: 0, completedTodos: 0 }, errors: [{ phase: "model", message: "parent failure" }] }));
     const tool = f.runner.getToolDefinition("spider")!;
-    const doctor = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    const doctor = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createToolContext("fixture", undefined));
     const text = JSON.stringify(doctor.content);
     expect(text).toContain("organism: disabled in subagent sessions");
     expect(text).not.toContain("waiting for compaction");
@@ -496,7 +496,7 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(backgrounds).toContain("toolErrorBg");
     const tool = f.runner.getToolDefinition("spider")!;
     expect(tool).toBeDefined();
-    const doctor = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    const doctor = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createToolContext("fixture", undefined));
     const text = JSON.stringify(doctor.content);
     expect(text).toContain("organism: failed");
     expect(text).not.toContain("/unrelated/");
@@ -641,7 +641,7 @@ describe("F3 \u2014 a FRESH runtime + the REAL doctor reads a prior real receipt
     const sessionB = b.session.getSessionId();
     expect(sessionB).not.toBe(sessionA);
     const tool = b.runner.getToolDefinition("spider")!;
-    const res = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, b.runner.createContext()) as
+    const res = await tool.execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, b.runner.createToolContext("fixture", undefined)) as
       { content: unknown; details: { ok?: boolean; lines?: string[] } };
     const text = JSON.stringify(res.content) + "\n" + JSON.stringify(res.details);
 
@@ -702,18 +702,18 @@ it("organism queued reviewer includes pi-loaded catalog and doctor shows queue a
     ? { ...f.answer, content: [{ type: "text", text: '{"verdict":"duplicate","existing_name":"external-reference","reason":"same method"}' }] } : f.answer);
   // Drain independently to inspect durable queued work before the live hook starts its runner.
   const runtime = new HostOrganismRuntime(async () => null, undefined, () => [{ name: "external-reference", description: "Use when tracing external writers" }]);
-  const deps = runtime.fromContext(f.runner.createContext());
+  const deps = runtime.fromContext(f.runner.createToolContext("fixture", undefined));
   try {
     await deps.worker.runDrain(f.session.getSessionId(), "before_compact", { transcript: [{ role: "user", content: "Trace writer ownership" }] });
     const tool = f.runner.getToolDefinition("spider")!;
-    const doctor = await tool.execute("queue", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    const doctor = await tool.execute("queue", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createToolContext("fixture", undefined));
     expect(JSON.stringify(doctor.content)).toContain("skill review queue: 1");
     deps.worker.startSkillReviews();
     await vi.waitFor(() => expect(f.repoDb.prepare("SELECT count(*) n FROM skill_review_queue").get()).toEqual({ n: 0 }));
     const call = f.complete.mock.calls.find(call => call[1].systemPrompt?.startsWith("Review a skill candidate."))!;
     expect(call[2]).toMatchObject({ reasoning: "medium" });
     expect(JSON.parse(call[1].messages[0].content as string).existing_skills).toEqual(expect.arrayContaining([{ name: "external-reference", description: "Use when tracing external writers" }]));
-    const result = await tool.execute("recent", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createContext());
+    const result = await tool.execute("recent", { action: "control", command: "doctor" }, undefined, undefined, f.runner.createToolContext("fixture", undefined));
     expect(JSON.stringify(result.content)).toContain("duplicate: same method");
   } finally { await deps.worker.stopSkillReviews(); runtime.dispose(); }
 });

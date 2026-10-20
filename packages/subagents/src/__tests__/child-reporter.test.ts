@@ -109,6 +109,39 @@ describe("child reporter", () => {
       });
     });
 
+    // A preflight/tool-boundary abort need not produce an aborted assistant message.
+    it.each([
+      { aborted: true, recovered: false, cancelled: false, status: "failed" },
+      { aborted: false, recovered: false, cancelled: false, status: "done" },
+      { aborted: undefined, recovered: false, cancelled: false, status: "done" },
+      { aborted: true, recovered: true, cancelled: false, status: "done" },
+      { aborted: true, recovered: false, cancelled: true, status: "cancelled" },
+    ])("settlement $aborted preserves $status after abort recovery=$recovered cancellation=$cancelled", ({ aborted, recovered, cancelled, status }) => {
+      const dbFile = scratchDbPath("child-reporter-settlement");
+      const seed = openDbAt(dbFile, "project");
+      const store = new RunStore(seed);
+      const { id: runId } = store.create({ sessionId: "child-sess", agent: "worker" });
+      store.start(runId);
+      if (cancelled) store.cancel(runId, "Parent-owned cancellation");
+      seed.close();
+      withChildEnv(dbFile, runId, handlers => {
+        handlers.message_end({ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Previous report" }] } });
+        handlers.agent_settled?.({ type: "agent_settled", aborted });
+        if (recovered) {
+          handlers.agent_start({ type: "agent_start" });
+          handlers.message_end({ message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Recovered report" }] } });
+          handlers.agent_settled?.({ type: "agent_settled", aborted: false });
+        }
+        handlers.session_shutdown();
+        const verify = openDbAt(dbFile, "project");
+        try {
+          const row = new RunStore(verify).get(runId)!;
+          expect(row.status).toBe(status);
+          expect(row.result).toBe(cancelled ? "Parent-owned cancellation" : recovered ? "Recovered report" : aborted ? "Child run was aborted before completion." : "Previous report");
+        } finally { verify.close(); }
+      });
+    });
+
     it("an aborted last turn is reported failed, not done, on clean process exit", () => {
       const dbFile = scratchDbPath("child-reporter-provider-aborted");
       const seed = openDbAt(dbFile, "project");

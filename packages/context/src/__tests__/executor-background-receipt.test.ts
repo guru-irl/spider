@@ -24,13 +24,13 @@ async function waitForFile(path: string, deadlineMs: number): Promise<void> {
 }
 
 /** Reuses the existing cross-process harness (background-harness-entry.ts, bundled
- *  with esbuild) READ-ONLY — the same one executor-background-survival.test.ts
+ *  with Vite) READ-ONLY — the same one executor-background-survival.test.ts
  *  already uses. It runs a SEPARATE `node` process that backgrounds a command and
  *  then exits completely, writing the exec result to `handoffPath`. */
 async function buildHarness(outDir: string): Promise<string> {
-  const esbuild = await import("esbuild");
+  const { buildFixture } = await import("../../../../scripts/test-bundle");
   const outfile = join(outDir, "harness.mjs");
-  await esbuild.build({
+  await buildFixture({
     entryPoints: [join(__dirname, "helpers/background-harness-entry.ts")],
     bundle: true,
     platform: "node",

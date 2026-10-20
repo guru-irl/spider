@@ -11,7 +11,7 @@ import { RunStore } from "../run-store";
 import { RunEventTailer } from "../event-tailer";
 import { getChild, teardownAllAsync } from "../coordinators";
 
-it("real pi: runner reports swallowed steers as accepted but not confirmed and normal/transformed steers as delivered", async () => {
+it("real pi: runner reports swallowed steers as consumed without delivery and normal/transformed steers as delivered", async () => {
   const scratch = resolve(".spider/scratch/steer-delivery/real-pi"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "case-")), agentDir = join(root, "agent"), home = join(root, "home");
   mkdirSync(agentDir); mkdirSync(home);
@@ -55,14 +55,14 @@ it("real pi: runner reports swallowed steers as accepted but not confirmed and n
     tools.push(...await Promise.all(pendingTools));
     for (const [index, result] of tools.entries()) {
       expect(result.isError).toBe(false);
-      expect(result.details.delivery).toBe(index === 0 ? "accepted but not confirmed" : "delivered");
+      expect(result.details.delivery).toBe(index === 0 ? "consumed by an extension, not delivered" : "delivered");
       expect(result.details.delivered).toBe(index !== 0);
       expect(result.details.queued).toBe(false);
     }
     expect(await handle!.wait()).toEqual({ exitCode: 0 });
     const evidence = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='steer_delivery' ORDER BY id").all(row.id) as Array<{ payload: string }>;
     const latest = new Map<string, any>(); for (const e of evidence) { const p = JSON.parse(e.payload); latest.set(p.steer, p); }
-    expect(latest.get("SWALLOW_STEER marker")).toMatchObject({ accepted: true, delivered: false, delivery: "accepted but not confirmed" });
+    expect(latest.get("SWALLOW_STEER marker")).toMatchObject({ accepted: true, delivered: false, delivery: "consumed by an extension, not delivered" });
     expect(latest.get("normal instruction")).toMatchObject({ delivered: true, delivery: "delivered", transformed: false });
     expect(latest.get("TRANSFORM_STEER marker")).toMatchObject({ delivered: true, delivery: "delivered", transformed: true, observedText: "transformed instruction" });
     expect(latest.get("INJECT_THEN_PASS marker")).toMatchObject({ delivered: true, delivery: "delivered", transformed: false, observedText: "INJECT_THEN_PASS marker" });
@@ -72,7 +72,7 @@ it("real pi: runner reports swallowed steers as accepted but not confirmed and n
     expect(events.slice(0, injectedIndex + 1).some(e => e.type === "steer_delivery" && e.steer === "INJECT_THEN_PASS marker" && e.delivered)).toBe(false);
     expect(notifications).toHaveLength(1);
     expect(notifications[0].content).toContain("3 steer(s) delivered.");
-    expect(notifications[0].content).toContain("1 steer(s) accepted but not confirmed.");
+    expect(notifications[0].content).toContain("1 steer(s) consumed by an extension, not delivered.");
     expect(notifications[0].content).toContain("1 steer(s) refused.");
     expect(store.get(row.id)?.status).toBe("done"); expect(getChild("offline-owner", row.id)).toBeUndefined();
     if (process.env.SPIDER_STEER_EVIDENCE === "1") writeFileSync(join(scratch, "evidence.json"), JSON.stringify({ piVersion: JSON.parse(readFileSync(join(piRoot, "package.json"), "utf8")).version, tools, deliveryEvents: evidence.map(e => JSON.parse(e.payload)), completion: notifications[0].content }, null, 2));

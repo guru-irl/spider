@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Db } from "@spider/db-core";
 import { sessionIdFromCtx } from "@spider/subagents";
-import { recordIntent, recordResult, correlateResult, isExempt, SPIDER_TOOL_NAME } from "./tracking";
+import { recordIntent, recordResult, correlateResult, isExempt } from "./tracking";
 import { guardForegroundSleep } from "./sleep-guard";
 import { processToolContent, sanitizeIntentPayload, scrubToolData } from "./safety";
 import { autoIndexOutput } from "./autoindex";
@@ -41,8 +41,8 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
 
   pi.on("tool_call", (event: any, ctx) => {
     const tool = event?.toolName;
-    if (tool === SPIDER_TOOL_NAME) {
-      return guardForegroundSleep(event.input, sessionIdFromCtx(ctx) || deps.getSessionId());
+    if (isExempt(tool)) {
+      return guardForegroundSleep(event.input, sessionIdFromCtx(ctx) || deps.getSessionId(), tool);
     }
     if (!tool || isExempt(tool) || !deps.config.tracking) return;
     recordIntent(deps.db, { sessionId: deps.getSessionId(), tool, payload: sanitizeIntentPayload(event.input),

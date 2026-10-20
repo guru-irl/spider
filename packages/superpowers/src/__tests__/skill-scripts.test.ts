@@ -65,28 +65,39 @@ afterEach(() => {
   if (stopErrors.length) throw new Error(stopErrors.join("\n"));
 });
 
-function polluterRun(pattern: string): ReturnType<typeof spawnSync> {
+function polluterRun(pattern: string, npmScript: string | null = "#!/usr/bin/env bash\ntouch pollution.marker\n", npmMode = 0o755, preExistingPollution = false) {
   const project = freshRoot("polluter");
   fs.mkdirSync(path.join(project, "src/feature"), { recursive: true });
   fs.mkdirSync(path.join(project, "bin"), { recursive: true });
   fs.writeFileSync(path.join(project, "src/top.test.ts"), "test('top')\n");
   fs.writeFileSync(path.join(project, "src/feature/nested.test.ts"), "test('nested')\n");
-  const npmStub = path.join(project, "bin/npm");
-  fs.writeFileSync(npmStub, "#!/usr/bin/env bash\ntouch pollution.marker\n");
-  fs.chmodSync(npmStub, 0o755);
+  for (const command of ["bash", "find", "sort", "wc", "tr", "touch", "ls"]) {
+    const executable = spawnSync("bash", ["-c", 'command -v "$1"', "fixture", command], { encoding: "utf8" });
+    expect(executable.status).toBe(0);
+    fs.symlinkSync(executable.stdout.trim(), path.join(project, "bin", command));
+  }
+  if (npmScript !== null) {
+    const npmStub = path.join(project, "bin/npm");
+    fs.writeFileSync(npmStub, npmScript);
+    fs.chmodSync(npmStub, npmMode);
+  }
+  if (preExistingPollution) fs.writeFileSync(path.join(project, "pollution.marker"), "existing\n");
 
-  return spawnSync("bash", [polluterScript, "pollution.marker", pattern], {
+  const result = spawnSync("bash", [polluterScript, "pollution.marker", pattern], {
     cwd: project,
     encoding: "utf8",
-    env: { ...process.env, PATH: `${path.join(project, "bin")}:${process.env.PATH ?? ""}` },
+    env: { ...process.env, PATH: path.join(project, "bin") },
   });
+  const ranTests = path.join(project, "ran-tests");
+  return { ...result, ranTests: fs.existsSync(ranTests) ? fs.readFileSync(ranTests, "utf8").trim().split("\n") : [] };
 }
 
 describe("systematic-debugging find-polluter", () => {
   it("matches nested and top-level tests for a **/ pattern", () => {
     const result = polluterRun("src/**/*.test.ts");
     expect(result.stdout).toContain("Found 2 test files");
-    expect(result.stdout).toContain("FOUND POLLUTER");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/^Found polluter: .*\.test\.ts$/m);
   });
 
   it("accepts a leading ./ on the pattern", () => {
@@ -94,11 +105,45 @@ describe("systematic-debugging find-polluter", () => {
     expect(result.stdout).toContain("Found 2 test files");
   });
 
-  it("reports an honest zero for a non-matching pattern", () => {
+  it("is inconclusive when no tests match instead of reporting success", () => {
     const result = polluterRun("nomatch/**/*.test.ts");
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(2);
     expect(result.stdout).toContain("Found 0 test files");
-    expect(result.stdout).toContain("No polluter found");
+    expect(result.stdout).toMatch(/^Inconclusive: no tests matched/m);
+    expect(result.stdout).not.toContain("all tests clean");
+  });
+
+  it.each([
+    ["is missing", null, 0o755],
+    ["cannot execute", "#!/usr/bin/env bash\nexit 0\n", 0o644],
+    ["has a missing interpreter", "#!/nonexistent-find-polluter-interpreter\n", 0o755],
+  ] as const)("is inconclusive when the test command %s", (_label, npmScript, npmMode) => {
+    const result = polluterRun("src/**/*.test.ts", npmScript, npmMode);
+    expect(result.status, String(result.stdout)).toBe(2);
+    expect(result.stdout).toMatch(/^Inconclusive: test command could not run/m);
+    expect(result.stdout).not.toContain("all tests clean");
+  });
+
+  it.each([0, 1])("reports clean only after running every matched test (test exit %s)", (testExit) => {
+    const result = polluterRun("src/**/*.test.ts", `#!/usr/bin/env bash\nprintf '%s\\n' "$2" >> ran-tests\nexit ${testExit}\n`);
+    expect(result.status).toBe(0);
+    expect(result.ranTests).toEqual(["./src/feature/nested.test.ts", "./src/top.test.ts"]);
+    expect(result.stdout).toMatch(/^No polluter found - all tests clean!$/m);
+  });
+
+  it("still finds pollution when the test itself fails", () => {
+    const result = polluterRun("src/**/*.test.ts", "#!/usr/bin/env bash\ntouch pollution.marker\nexit 1\n");
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/^Found polluter: .*\.test\.ts$/m);
+    expect(result.stdout).not.toContain("all tests clean");
+  });
+
+  it("is inconclusive when existing pollution causes every test to be skipped", () => {
+    const result = polluterRun("src/**/*.test.ts", "#!/usr/bin/env bash\nprintf '%s\\n' \"$2\" >> ran-tests\n", 0o755, true);
+    expect(result.status).toBe(2);
+    expect(result.ranTests).toEqual([]);
+    expect(result.stdout).toMatch(/^Inconclusive: no tests ran/m);
+    expect(result.stdout).not.toContain("all tests clean");
   });
 });
 

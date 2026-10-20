@@ -34,7 +34,13 @@ fi
 echo "Found $TOTAL test files"
 echo ""
 
+if [ "$TOTAL" -eq 0 ]; then
+  echo "Inconclusive: no tests matched: $TEST_PATTERN"
+  exit 2
+fi
+
 COUNT=0
+RAN=0
 for TEST_FILE in $TEST_FILES; do
   COUNT=$((COUNT + 1))
 
@@ -47,13 +53,22 @@ for TEST_FILE in $TEST_FILES; do
 
   echo "[$COUNT/$TOTAL] Testing: $TEST_FILE"
 
-  # Run the test
-  npm test "$TEST_FILE" > /dev/null 2>&1 || true
+  # Test failures can still reveal pollution; command-start failures cannot.
+  # Disable errexit in the child so Bash 3.2 preserves startup exit codes.
+  TEST_STATUS=0
+  (set +e; npm test "$TEST_FILE" > /dev/null 2>&1) || TEST_STATUS=$?
+  case "$TEST_STATUS" in
+    126|127)
+      echo "Inconclusive: test command could not run: npm test $TEST_FILE"
+      exit 2
+      ;;
+  esac
+  RAN=$((RAN + 1))
 
   # Check if pollution appeared
   if [ -e "$POLLUTION_CHECK" ]; then
     echo ""
-    echo "🎯 FOUND POLLUTER!"
+    echo "Found polluter: $TEST_FILE"
     echo "   Test: $TEST_FILE"
     echo "   Created: $POLLUTION_CHECK"
     echo ""
@@ -68,5 +83,9 @@ for TEST_FILE in $TEST_FILES; do
 done
 
 echo ""
-echo "✅ No polluter found - all tests clean!"
+if [ "$RAN" -eq 0 ]; then
+  echo "Inconclusive: no tests ran (pollution already exists)"
+  exit 2
+fi
+echo "No polluter found - all tests clean!"
 exit 0

@@ -104,7 +104,10 @@ Use the bisection script `find-polluter.sh` in this directory:
 bash ./find-polluter.sh '.git' 'src/**/*.test.ts'
 ```
 
-Runs tests one-by-one, stops at first polluter. See script for usage.
+Runs tests one-by-one, stops at first polluter, and prints a plain result line.
+Exit codes: 0 means at least one test ran and none polluted; 1 means a polluter
+was found; 2 means inconclusive because no tests matched, no tests ran, or the
+test command could not run (shell exit 126 or 127). See script for usage.
 
 ## Real Example: Empty projectDir
 

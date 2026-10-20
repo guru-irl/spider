@@ -55,10 +55,11 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
+    if (opts.context === "fork" && !this.deps.parentSessionFile) throw new Error("Cannot fork: parent has no session file. Use context:\"fresh\" for an in-memory parent.");
     const thinking = this.deps.modelRegistry === undefined ? undefined : resolveModelThinking(this.deps.modelRegistry, opts.model, opts.thinking);
     const { id } = this.deps.store.create({
       sessionId: this.sessionId,
@@ -95,6 +96,7 @@ export class Runner {
       thinking: run.thinking ?? opts.thinking,
       context: opts.context,
       parentSessionId: this.sessionId,
+      parentSessionFile: this.deps.parentSessionFile,
       childIndex: opts.childIndex ?? 0,
       skill: opts.skill,
       dbPath: this.deps.dbPath,

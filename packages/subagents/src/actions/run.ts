@@ -121,6 +121,11 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const stages = Array.isArray(args.pipeline)
       ? args.pipeline.map((stage: any) => ({ ...stage, skill: stage.skill === undefined ? skill : resolveSkill(stage.skill) }))
       : undefined;
+    const forkRequested = stages ? stages.some((stage: any) => stage.context === "fork")
+      : Array.isArray(args.chain) ? args.chain.some((step: any) => (step.context ?? args.context) === "fork")
+      : Array.isArray(args.tasks) ? args.tasks.some((task: any) => (task.context ?? args.context) === "fork")
+      : args.context === "fork";
+    if (forkRequested && !ctx.parentSessionFile) throw new Error("Cannot fork: parent has no session file. Use context:\"fresh\" for an in-memory parent.");
     const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db, ctx.globalDb);
     const coords =
       overrides.getCoordinators?.(ctx) ??
@@ -144,7 +149,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const thinkingDiagnostics: Array<{ model?: string; requested?: string; effective?: string; notice?: string; step?: number }> = [];
     const withWarning = (details: any) => ({ ...details, ...(warning ? { warning } : {}), ...(thinkingDiagnostics.length ? { thinkingDiagnostics } : {}) });
     const orchestratorTarget = childMode === "rpc" ? process.env.PI_INTERCOM_SESSION_ID ?? ctx.sessionId : undefined;
-    const runnerDeps = { modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
+    const runnerDeps = { parentSessionFile: ctx.parentSessionFile, modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
     }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, reviewerExcludeTools: ctx.reviewerExcludeTools, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };

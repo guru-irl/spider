@@ -19,14 +19,14 @@ export function processStartTime(pid: number): string | null {
   } catch { return null; }
 }
 
-export function checkProcessIdentity(pid: number, recordedStart?: string | null, probes: { start?: (pid: number) => string | null; command?: (pid: number) => string | null } = {}): { matches: boolean; reason: string } {
+export function checkProcessIdentity(pid: number, recordedStart?: string | null, probes: { start?: (pid: number) => string | null; command?: (pid: number) => string | null; runId?: string } = {}): { matches: boolean; reason: string } {
   if (recordedStart) {
     const current = (probes.start ?? processStartTime)(pid);
     if (!current) return { matches: false, reason: "Process is missing or its start time cannot be read; no signal sent." };
     if (current !== recordedStart) return { matches: false, reason: "Process start time mismatch; pid identity was lost, no signal sent." };
     return { matches: true, reason: "Process start time matches." };
   }
-  const matches = looksLikeSubagent(pid, probes.command);
+  const matches = looksLikeSubagent(pid, probes.command, probes.runId);
   return { matches, reason: matches ? "Legacy command identity confirmed." : "Legacy process identity could not be confirmed; no signal sent." };
 }
 
@@ -56,12 +56,15 @@ export function processCommand(pid: number): string | null {
  * 
  * RPC children must run the Pi executable (or its Node CLI entry) and carry
  * a spider-owned subagent-sessions path. An arbitrary RPC Pi session is not
- * a child. Preserve the legacy `--mode json -p` signature for older launches.
+ * a child. Forks also require the expected run's --session-id and matching
+ * subagent-sessions/<run-id> directory. Without an expected ID, forks fail closed.
+ * Preserve the legacy `--mode json -p` signature for non-fork launches.
  * Unknown command lines fail closed.
  */
 export function looksLikeSubagent(
   pid: number,
   probe?: (pid: number) => string | null,
+  runId?: string,
 ): boolean {
   const cmd = probe ? probe(pid) : processCommand(pid);
   if (!cmd) return false;
@@ -71,15 +74,26 @@ export function looksLikeSubagent(
   const hasJsonMode = cmd.includes("--mode json") || cmd.includes("--mode=json");
   const hasPFlag = / -p(?:\s|$)/.test(cmd);
   
-  if (hasJsonMode && hasPFlag) return true; // Legacy print-mode launches.
-  const hasRpcMode = /(?:^|\s)--mode(?:=|\s+)rpc(?:\s|$)/.test(cmd);
   const tokens = cmd.trim().split(/\s+/);
+  const hasFork = tokens.some(token => token === "--fork" || token.startsWith("--fork="));
+  if (!hasFork && hasJsonMode && hasPFlag) return true; // Legacy print-mode launches.
+  const hasRpcMode = /(?:^|\s)--mode(?:=|\s+)rpc(?:\s|$)/.test(cmd);
   const basename = (s: string) => s.split(/[/\\]/).at(-1) ?? "";
   const directPi = /^pi(?:\.cmd|\.exe)?$/.test(basename(tokens[0]));
   const nodePi = /^node(?:\.exe)?$/.test(basename(tokens[0])) && !!tokens[1] && (
     basename(tokens[1]) === "pi" || /[/\\]@earendil-works[/\\]pi-coding-agent[/\\]dist[/\\]cli\.js$/.test(tokens[1])
   );
   const piExecutable = directPi || nodePi;
+  if (hasFork) {
+    if (!piExecutable || !(hasRpcMode || hasJsonMode && hasPFlag) || !runId) return false;
+    const flag = (name: string): string | undefined => {
+      const values = tokens.flatMap((token, index) => token === name ? [tokens[index + 1]]
+        : token.startsWith(name + "=") ? [token.slice(name.length + 1)] : []);
+      return values.length === 1 ? values[0] : undefined;
+    };
+    const dir = flag("--session-dir")?.replace(/[/\\]+$/, "").split(/[/\\]/);
+    return flag("--session-id") === runId && dir?.at(-1) === runId && dir?.at(-2) === "subagent-sessions";
+  }
   const spiderSession = /(?:^|\s)--session(?:=|\s+)[^\n]*[/\\]subagent-sessions[/\\][^\n]+\.jsonl(?:\s|$)/.test(cmd);
   return hasRpcMode && piExecutable && spiderSession;
 }

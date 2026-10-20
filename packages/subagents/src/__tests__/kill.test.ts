@@ -92,6 +92,17 @@ describe("killRun", () => {
     expect(store.get(a.id)!.status).toBe("cancelled");
   });
 
+  it.each([true, false])("pid-only fork kill requires this run's identity (matching=%s)", async matching => {
+    const { db, store, a } = seed();
+    store.setPid(a.id, 777, 4242);
+    const id = matching ? a.id : "another-run";
+    const kill = vi.fn(async () => "terminated" as const);
+    const result = await killRun({ store, db, getChild: () => undefined, kill, alive: () => true,
+      probeCommand: () => `pi --mode rpc --fork /parent.jsonl --session-id ${id} --session-dir /p/subagent-sessions/${id}` }, "s1", store.get(a.id)!);
+    expect(result.outcome).toBe(matching ? "killed" : "unconfirmed");
+    expect(kill.mock.calls).toHaveLength(matching ? 1 : 0);
+  });
+
   it("is a no-op for an already-finished run", async () => {
     const { db, store, a } = seed();
     store.finish(a.id, { status: "done", result: "ok" });

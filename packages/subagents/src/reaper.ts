@@ -24,7 +24,7 @@ export interface ReapDeps {
 export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]; error?: string }> {
   const store = deps.store ?? new RunStore(deps.db, deps.globalDb);
   const alive = deps.alive ?? isProcessAlive;
-  const identity = (row: RunRow) => checkProcessIdentity(row.pid!, row.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand });
+  const identity = (row: RunRow) => checkProcessIdentity(row.pid!, row.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand, runId: row.id });
   const selfPid = deps.selfPid ?? process.pid;
   const reaped: string[] = [];
 

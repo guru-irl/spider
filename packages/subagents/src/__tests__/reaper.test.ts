@@ -31,6 +31,19 @@ describe("reapOrphanRuns", () => {
     expect(kill).toHaveBeenCalledWith(999);
   });
 
+  it.each([true, false])("signals only the orphan's own fork (matching=%s)", async matching => {
+    const db = freshDb(), store = new RunStore(db);
+    const { id } = store.create({ sessionId: "s1", agent: "worker", task: "t" });
+    store.start(id); store.setPid(id, 999, 12345);
+    const commandId = matching ? id : "another-run";
+    const kill = vi.fn(async () => {});
+    await reapOrphanRuns({ db, alive: pid => pid === 999, kill, selfPid: 1,
+      probeCommand: () => `pi --mode rpc --fork /parent.jsonl --session-id ${commandId} --session-dir /p/subagent-sessions/${commandId}` });
+    expect(store.get(id)!.status).toBe("cancelled");
+    expect(store.get(id)!.result).toContain(matching ? "Matching child was terminated" : "no signal sent");
+    expect(kill.mock.calls).toHaveLength(matching ? 1 : 0);
+  });
+
   it("LEAVES ALONE a run whose owning host is still alive", async () => {
     const db = freshDb();
     const store = new RunStore(db);

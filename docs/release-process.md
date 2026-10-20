@@ -1,13 +1,13 @@
 # Release process
 
 This is the operational reference for cutting a release and publishing to npm.
-It exists because the pipeline depends on two pieces of manual, one-time repo
-configuration that no workflow file can create or verify for itself; get
-those wrong (or skip them) and the pipeline either cannot fire at all, or fires
-with no approval gate. See the workflow files themselves
-(`.github/workflows/release.yml`, `.github/workflows/publish.yml`,
-`.github/workflows/ci.yml`) for the mechanics; this document is the setup steps
-and the "why" that does not fit in a YAML comment.
+The pipeline depends on two pieces of repo configuration that someone has to set
+up by hand, once. No workflow file can create or check them. If they are wrong
+or missing, the pipeline either never starts, or starts and publishes with no
+approval step. The workflow files (`.github/workflows/release.yml`,
+`.github/workflows/publish.yml`, `.github/workflows/ci.yml`) show how each step
+works. This document gives the setup steps and the reasons that do not fit in a
+YAML comment.
 
 ## The flow, end to end
 
@@ -32,28 +32,26 @@ environment's required reviewers, if that environment has been configured)
 (see below; if it has not, this step runs unattended)
 ```
 
-`publish.yml` can also be run directly via `workflow_dispatch` with a tag
-input, independent of any GitHub Release, for a re-publish after a failure.
+You can also run `publish.yml` directly through `workflow_dispatch` with a tag
+input, without any GitHub Release. Use this to publish again after a failure.
 
 ### Why a draft, not a live release
 
 GitHub Actions does not start new workflow runs from events raised by the
-default `GITHUB_TOKEN`; only `workflow_dispatch` and `repository_dispatch` are
-excepted. `release.yml` authenticates its `gh release create` step with
-`github.token`, i.e. `GITHUB_TOKEN`. If that step published the release
-directly, the "release published" event it raised would never trigger
-`publish.yml`, and the only working path to npm would be a manual
-`workflow_dispatch`. That would leave `publish.yml`'s header comment ("Runs once a GitHub
-Release is PUBLISHED") describing an automation that could not happen.
+default `GITHUB_TOKEN`. The only exceptions are `workflow_dispatch` and `repository_dispatch`.
+The `gh release create` step in `release.yml` authenticates with
+`github.token`, which is the `GITHUB_TOKEN`. If that step published the release
+directly, the "release published" event would never trigger `publish.yml`.
+The only way to reach npm would then be a manual `workflow_dispatch`, and the
+header comment in `publish.yml` ("Runs once a GitHub Release is PUBLISHED")
+would describe an automation that could never happen.
 
-Creating a **draft** instead sidesteps this entirely: a draft release does not
-raise a "published" event, so nothing is expected to fire yet. The event that
-actually triggers `publish.yml` is a human (or a PAT-authenticated `gh`)
-publishing that draft. Because that action does not originate from
-`GITHUB_TOKEN`, GitHub Actions treats it as a normal event and does start
-`publish.yml`. This is why the manual "publish the draft" step below is not
-optional busywork; it is the only step that can make the automated chain fire
-at all.
+A **draft** avoids the problem. A draft release raises no "published" event, so
+nothing is expected to run yet. What triggers `publish.yml` is a human (or `gh`
+authenticated with a PAT) publishing that draft. That action does not come from
+the `GITHUB_TOKEN`, so GitHub Actions treats it as a normal event and starts
+`publish.yml`. This is why the manual "publish the draft" step below is
+required. It is the only step that can start the automated chain.
 
 ## Build and package layout
 
@@ -61,120 +59,125 @@ at all.
 `npm run build:dashboard`. It then runs `scripts/assert-bundle.mjs`. The output
 root contains `dist/extension.js` and `dist/dashboard/`. The dashboard directory
 contains `index.html` and `assets/` with hashed JavaScript and CSS files. Neither
-build removes the other's output. Unexpected old files fail the bundle guard
-instead of being silently deleted. Production dashboard output is restricted to
-`dist/dashboard/`; development and e2e builds must use an explicit absolute
-directory under `.spider/scratch/`.
+build removes the other's output. If old files are left over, the bundle guard
+fails rather than deleting them without telling you. Production dashboard output
+can go only to `dist/dashboard/`. Development and e2e builds must use an
+explicit absolute directory under `.spider/scratch/`.
 
 The npm package also contains `packages/superpowers/skills`,
 `packages/pstack/skills` and `packages/pstack/LICENSE`. Pi discovers both skill
 collections through `pi.skills`. The tarball check requires every `SKILL.md`
-from both source folders, so excluding one skill fails the release gate.
+from both source folders, so a release with any skill left out fails the gate.
 
 ## Cutting a release
 
-1. Bump `package.json`'s `version` and commit it on `main` through the normal
-   PR process (`ci.yml` gates this like any other change).
+1. Bump `version` in `package.json` and commit it on `main` through the normal
+   PR process. `ci.yml` checks this change like any other.
 2. Tag the resulting commit `vX.Y.Z`, matching `package.json` exactly, and push
    the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. Watch `release.yml` run. If it fails at "Verify tag matches package.json
-   version", the tag and the committed `package.json` disagree; fix and
-   re-tag. If it fails at "Verify package contents", the tarball is missing a
-   required file: `dist/extension.js`, `dist/dashboard/index.html`, hashed
-   JavaScript and CSS in `dist/dashboard/assets/`, every bundled `SKILL.md`,
+   version", the tag and the committed `package.json` disagree. Fix the
+   mismatch and tag again. If it fails at "Verify package contents", the
+   tarball is missing a required file: `dist/extension.js`,
+   `dist/dashboard/index.html`, hashed JavaScript and CSS in
+   `dist/dashboard/assets/`, every bundled `SKILL.md`,
    `packages/pstack/LICENSE`, `README.md`, or `LICENSE`.
-   Source maps and the development states page also cause this check to fail.
-4. On success, a **draft** release named `vX.Y.Z` exists on the repo's Releases
-   page with generated notes. Review it.
-5. Publish the draft by hand: either "Publish release" in the GitHub UI, or
-   `gh release edit vX.Y.Z --draft=false` while authenticated as yourself (not
-   as an Action). This is the step that triggers `publish.yml`.
-6. Watch `publish.yml` run. If the `npm-publish` environment is configured with
-   required reviewers (see below), it pauses for approval first.
-7. On success, `@guru-irl/spider@X.Y.Z` is live on the npm registry.
+   The check also fails if the tarball contains source maps or the development
+   states page.
+4. When the run succeeds, a **draft** release named `vX.Y.Z` appears on the
+   repo's Releases page with generated notes. Review it.
+5. Publish the draft by hand. Either click "Publish release" in the GitHub UI,
+   or run `gh release edit vX.Y.Z --draft=false` while signed in as yourself
+   (not as an Action). This step triggers `publish.yml`.
+6. Watch `publish.yml` run. If the `npm-publish` environment has required
+   reviewers (see below), the run first waits for approval.
+7. When the run succeeds, `@guru-irl/spider@X.Y.Z` is live on the npm registry.
 
 ## One-time manual repo setup
 
-Both of the following are GitHub repo *settings*, not files in this repo. They
-must be configured before the flow above behaves as documented; nothing in the
-workflows can create, verify, or fail loudly if either is missing or wrong.
+Both items below are GitHub repo *settings*, not files in this repo. Configure
+them before you rely on the flow above. If either is missing or wrong, nothing
+in the workflows can create it, check it, or fail with a clear error.
 
 ### 1. The `npm-publish` deployment environment (gates `publish.yml`)
 
-`publish.yml` sets `environment: npm-publish` on its one job. If a repo
-Settings → Environments entry literally named `npm-publish` does not already
-exist, **GitHub auto-creates one on first use, with no protection rules**; the
-job runs straight through, unattended, and `npm publish` fires with no approval
-step at all, silently defeating the gate the YAML implies exists. To make the
-gate real, before the first release:
+The one job in `publish.yml` sets `environment: npm-publish`. If the repo has no
+entry under Settings → Environments named exactly `npm-publish`, **GitHub
+creates one the first time the job runs, with no protection rules**. The job
+then runs straight through with nobody watching, and `npm publish` runs with no
+approval step. The approval gate that the YAML suggests does not exist, and
+nothing reports it. To make the gate real, do this before the first release:
 
-1. Repo Settings → Environments → New environment → name it exactly
-   `npm-publish` (must match the YAML's `environment:` value exactly).
-2. Add required reviewers (at minimum, yourself) under "Deployment protection
-   rules", so the job pauses for a manual approval before `npm publish` runs.
-3. Optionally restrict which refs can deploy to this environment (e.g. tags
-   matching `v*`) for defense in depth.
+1. Go to repo Settings → Environments → New environment and name it exactly
+   `npm-publish`. The name must match the YAML's `environment:` value exactly.
+2. Under "Deployment protection rules", add required reviewers (at least
+   yourself). The job then waits for a manual approval before `npm publish`
+   runs.
+3. Optionally, limit which refs can deploy to this environment (for example,
+   tags matching `v*`) as a second layer of protection.
 
-If you want publishes to go out unattended instead, remove the
-`environment: npm-publish` line from `publish.yml` and document that choice here.
+If you want publishes to run without approval instead, remove the
+`environment: npm-publish` line from `publish.yml` and record that choice here.
 
 ### 2. The required status check for branch protection (protects `main`)
 
-`ci.yml`'s one job is named:
+The one job in `ci.yml` is named:
 
 ```
 typecheck · test · build
 ```
 
-The two separators are **U+00B7 MIDDLE DOT** (UTF-8 bytes `C2 B7` each), not a
-hyphen, an ASCII period, a bullet (U+2022), or a slash; copy it from this file
-or from the YAML, do not retype it. It is also **not** prefixed with the
-workflow name: the GitHub UI's branch-protection search box often surfaces
-Actions checks with a `<workflow name> / <job name>` display form (e.g.
-`CI / typecheck · test · build`), but the string a required-status-check rule
-must match is the job name alone, exactly as above.
+Each of the two separators is a **U+00B7 MIDDLE DOT** (UTF-8 bytes `C2 B7`).
+They are not hyphens, ASCII periods, bullets (U+2022), or slashes. Copy the name
+from this file or from the YAML. Do not retype it. The name also has **no**
+workflow-name prefix. The branch-protection search box in the GitHub UI often
+lists Actions checks as `<workflow name> / <job name>` (for example,
+`CI / typecheck · test · build`). A required-status-check rule must match the
+job name alone, exactly as shown above.
 
 A rule saved with the wrong string (ASCII punctuation, or the `CI / ...`
-display form) does not error; it simply never matches any real check run, so
-`main` has no effective required check while the Settings UI still shows a rule
-as configured. To set this up:
+display form) gives no error. It never matches a real check run, so `main` has
+no working required check, while the Settings UI still shows the rule as
+configured. To set up the check:
 
-1. Repo Settings → Branches → branch protection rule for `main` → "Require
-   status checks to pass before merging".
-2. Add a required check and enter (paste, do not retype) `typecheck · test ·
+1. Go to repo Settings → Branches → the branch protection rule for `main`, and
+   turn on "Require status checks to pass before merging".
+2. Add a required check, and paste (do not retype) `typecheck · test ·
    build`.
-3. Confirm it: open a throwaway PR, let `ci.yml` run once, and check that the
-   *same* check name shown against that PR is the one selected as required;
-   GitHub will show it as satisfied only if the strings match exactly.
+3. Confirm it. Open a throwaway PR, let `ci.yml` run once, and check that the
+   check name shown on that PR is *the same* one you selected as required.
+   GitHub shows the check as satisfied only if the strings match exactly.
 
 ## What changed here, and what still is not exercised
 
-- `release.yml` now creates the release with `--draft` (previously it did not,
-  so it published live; see "Why a draft" above).
-- `publish.yml` now verifies the tag/ref it is publishing against
-  `package.json`'s version before doing anything else, matching the check
-  `release.yml` already had. Without this, `workflow_dispatch` with an
-  arbitrary `inputs.tag` could publish any version reachable at that ref.
-- `release.yml`'s tarball-contents check now passes `--ignore-scripts` to both
-  `npm pack` invocations. Without it, `npm pack` re-runs the `prepare` script
-  (`npm run build`), and that build's own stdout lands before `npm pack
-  --json`'s JSON on the same stream, so the `JSON.parse` gate failed on every
-  run; this was an untested, always-broken gate on the only release path.
-- None of the above has ever actually run end to end: as of this writing there
-  are no tags in this repository (`git tag` lists none) and `package.json` is
-  still at a pre-release `0.1.0`. The flow above is verified against the
-  workflow definitions and reproduced locally where it does not require
-  network access or a real GitHub Actions run (for example, the `npm pack
-  --json` parse failure was reproduced directly, not inferred); it has not
-  been verified by an actual tag push.
-- All three workflows still pin `node-version: '26.x'` only. `package.json`'s
-  `engines.node` floor of `>=22.19.0` is a declared minimum, not a tested one;
-  see the root `README.md`.
+- `release.yml` now creates the release with `--draft`. Before this change it
+  did not, so it published a live release. See "Why a draft" above.
+- `publish.yml` now checks the tag or ref it is publishing against the version
+  in `package.json` before it does anything else. `release.yml` already had the
+  same check. Without it, `workflow_dispatch` with an arbitrary `inputs.tag`
+  could publish any version reachable at that ref.
+- The tarball-contents check in `release.yml` now passes `--ignore-scripts` to
+  both `npm pack` calls. Without the flag, `npm pack` runs the `prepare` script
+  (`npm run build`) again. That build prints to stdout ahead of the JSON from `npm pack
+  --json` on the same stream, so the `JSON.parse` gate failed on
+  every run. The only release path had a gate that was never tested and always
+  broken.
+- None of the above has run end to end yet. At the time of writing, this
+  repository has no tags (`git tag` lists none), and `package.json` is still at
+  a pre-release `0.1.0`. The flow above was checked against the workflow
+  definitions. Steps that need no network access and no real GitHub Actions run
+  were reproduced locally. For example, the `npm pack
+  --json` parse failure was
+  reproduced directly, not inferred. No real tag push has tested the flow.
+- All three workflows still pin `node-version: '26.x'` only. The
+  `engines.node` floor of `>=22.19.0` in `package.json` is a declared minimum,
+  not a tested one. See the root `README.md`.
 
 ## Known gaps before the first real publish
 
 - **The ten workspace packages under `packages/*` have no `"private": true`.**
-  Each is `@spider/<name>@0.0.0`. The one `npm publish` this repo's pipeline
-  runs is unaffected (it publishes only the root package), but any future
-  workspace-aware publish step (`npm publish -ws` or similar) would attempt to
-  push ten unversioned packages with no guard against it.
+  Each one is `@spider/<name>@0.0.0`. The one `npm publish` that this repo's
+  pipeline runs is not affected, because it publishes only the root package.
+  But a future publish step that covers workspaces (`npm publish -ws` or
+  similar) would try to push ten unversioned packages, and nothing would stop
+  it.

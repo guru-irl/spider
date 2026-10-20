@@ -240,7 +240,7 @@ describe("the installed pi contract through the full spider extension", () => {
 
     f.session.newSession();
     const nextSession = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "next session" }, { customPrompt: "Base prompt", cwd: f.cwd });
-    expect(nextSession.systemPromptOptions.forceSystemPrompt).toContain("Record the failing assertion");
+    expect(nextSession.systemPromptOptions.sections.spider_memory).toContain("Record the failing assertion");
   });
 
   // Catch resetting the frozen block in either compaction lifecycle hook.
@@ -253,7 +253,7 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(sessionFile).toBeTypeOf("string");
     const options = { customPrompt: "Base prompt", cwd: f.cwd };
     const before = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "before compact" }, options);
-    expect(before.systemPromptOptions.forceSystemPrompt).toContain("Before compaction fact");
+    expect(before.systemPromptOptions.sections.spider_memory).toContain("Before compaction fact");
     addMemory(f.repoDb, "repo", { category: "convention", content: "After compaction fact", source: "user", status: "active" });
     const event = compactEvent(f.session);
     await f.runner.emit(event);
@@ -265,7 +265,7 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(f.session.getSessionFile()).toBe(sessionFile);
     const after = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "after compact" }, options);
     expect(after.systemPromptOptions).toEqual(before.systemPromptOptions);
-    expect(after.systemPromptOptions.forceSystemPrompt).not.toContain("After compaction fact");
+    expect(after.systemPromptOptions.sections.spider_memory).not.toContain("After compaction fact");
     expect(f.errors).toEqual([]);
   });
 

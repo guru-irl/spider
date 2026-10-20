@@ -52,13 +52,18 @@ router once per dispatch, then hands control to those packages.
 | `routing/tracking.ts` | Records tool intent and result rows; exempts the spider tool from its own tracking. |
 | `routing/autoindex.ts` | Sends output above the size threshold to the content store. |
 | `routing/overrides.ts` | The edit/write tool overrides (description validation, patch line counts). |
-| `hooks.ts` | Registers the pi lifecycle hooks: memory snapshot frozen per session on the first `before_agent_start`, session upsert on `session_start`, skill-path contribution on `resources_discover`, and pass-through handlers for the compact/shutdown events. |
+| `hooks.ts` | Registers the pi lifecycle hooks: frozen `spider_memory` prompt section on user and custom-message `before_agent_start`, session upsert on `session_start`, skill-path contribution on `resources_discover`, and pass-through handlers for the compact/shutdown events. |
 | `agents/agents-ui.ts` | The live agents UI: an above-editor footer widget, the alt+shift+up selector overlay, and the `/agents` command. |
 | `agents/run-source.ts` | Reads `runs` and `run_events` for the current session from the DB and subscribes to the `run_events` bus. |
 | `agents/actions.ts` | Best-effort agent interaction stubs (message/interrupt/resume/follow) for the UI. |
 | `legacy-removal.ts` | Best-effort unregister of the deprecated legacy tool names so `spider` owns the surface. |
 | `config-reload.ts` | A config reloader that re-reads the merged config and re-applies live toggles. |
 | `embeddings.ts` | Lazy fastembed loader and the embedding config defaults. |
+
+Pi saves the injected global and repo memory section in session files. Unchanged
+sections do not add another patch, but changes and compaction checkpoints can save
+more memory text. HTML and JSONL exports can include it. See
+[Data and privacy](../../README.md#data-and-privacy) before sharing transcripts.
 
 ## Public surface
 

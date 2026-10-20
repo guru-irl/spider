@@ -92,14 +92,15 @@ describe("organism's actual pi runtime contract", () => {
     ]);
   });
 
-  it("returns the approved memory snapshot through the real before_agent_start result protocol", async () => {
+  it("contributes the approved memory section through the real before_agent_start protocol", async () => {
     const f = setup();
     addMemory(f.repoDb, "repo", { category: "convention", content: "Use docs/architecture.md for module boundaries." });
     addMemory(f.repoDb, "repo", { category: "insight", content: "Unreviewed candidate must not be injected.", status: "staged" });
     registerHooks(f.pi);
     const result = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "continue" }, { customPrompt: "Base system prompt", cwd: f.cwd });
-    const prompt = result.systemPromptOptions.forceSystemPrompt;
-    expect(prompt).toContain("Base system prompt");
+    expect(result.systemPromptOptions.forceSystemPrompt).toBeUndefined();
+    expect(result.systemPromptOptions.customPrompt).toBe("Base system prompt");
+    const prompt = result.systemPromptOptions.sections.spider_memory;
     expect(prompt).toContain("Use docs/architecture.md for module boundaries.");
     expect(prompt).not.toContain("Unreviewed candidate");
   });

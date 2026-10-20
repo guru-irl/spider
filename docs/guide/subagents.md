@@ -69,7 +69,7 @@ Keep review-only instructions and use a separate frozen review copy to protect t
 - Compatibility checks read metadata for the binary launched on PATH or through `PI_SUBAGENT_PI_BINARY`.
 - RPC children require a pi binary supporting `--exclude-tools`, `--name`, the `agent_settled` event, and the `clear_queue` RPC command.
 - A pi binary older than the verified RPC minimum `0.85.1` falls back to print mode and records why. An unknown version keeps RPC with a warning.
-- The legacy fallback does not change the current pi `1.2.0` test target or the `>=0.87.0` peer compatibility range.
+- Spider requires pi `1.2.0` or later, including in children that load its extension. The binary compatibility fallback does not make older hosts supported.
 - RPC and print children follow pi's non-interactive project-trust policy. RPC does not grant extra trust.
 - Child extension dialogs are cancelled with a run-event warning.
 - Children cannot dispatch, message, or kill through spider, or use outbound `intercom` and `contact_supervisor` tools.

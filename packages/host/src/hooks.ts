@@ -9,7 +9,6 @@
 // @earendil-works/pi-coding-agent .../core/extensions/types.d.ts. We register the
 // REAL event names so Phase 0 handlers actually fire; Phase 3 fills their bodies.
 //   - before_agent_start     -> frozen per-session memory snapshot (Phase 1)
-//   - context_with_system    -> same snapshot on notification-triggered requests
 //   - session_start          -> session upsert + self-name (Phase 1/6)
 //   - session_before_compact -> organism drain (Phase 6)
 //   - session_compact        -> bookkeeping (Phase 6)
@@ -21,8 +20,7 @@
 // intentionally NOT registered here to avoid double-registration.
 import { openGlobal, openGlobalReadOnly, getBinding, appendEvent, type Db } from "@spider/db-core";
 import { openSessionRunDb } from "./session-run-db";
-import type { ContextWithSystemEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getCurrentSystemMessage, getSystemMessageText } from "@earendil-works/pi-ai";
+import type { BeforeAgentStartEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { cwdOf, sessionIdOf } from "./session-context";
 import { readInjectionSnapshot } from "./injection-snapshot";
 import { contributeSkillPaths } from "@spider/superpowers";
@@ -35,7 +33,6 @@ export interface PiLikeAPI {
 
 export const HOOK_NAMES = [
   "before_agent_start",
-  "context_with_system",
   "session_start",
   "session_before_compact",
   "session_compact",
@@ -87,41 +84,21 @@ export function registerHooks(pi: PiLikeAPI): void {
   for (const name of HOOK_NAMES) {
     if (name === "before_agent_start") {
       pi.on(name, (event: any, ctx?: unknown) => {
-        // pi consumes the RETURNED prompt patch, not mutation of event.systemPrompt.
-        if (typeof event?.systemPrompt !== "string") return undefined;
+        const options = event?.systemPromptOptions as BeforeAgentStartEvent["systemPromptOptions"] | undefined;
+        if (!options?.sections) return undefined;
         try {
           const text = memoryTextOf(ctx);
-          if (text) return { systemPrompt: event.systemPrompt + "\n\n" + text };
+          if (text) options.sections.spider_memory = text;
+          else delete options.sections.spider_memory;
+          // An earlier extension's force masks structured sections. Extend that
+          // force only; ordinary runs must leave later extensions free to compose.
+          if (text && options.forceSystemPrompt !== undefined && !options.forceSystemPrompt.includes(text)) {
+            options.forceSystemPrompt += "\n\n" + text;
+          }
         } catch {
           // Snapshot injection is best-effort; never block agent start.
         }
         return undefined;
-      });
-    } else if (name === "context_with_system") {
-      pi.on(name, (event: any, ctx?: unknown) => {
-        try {
-          const messages = (event as ContextWithSystemEvent | undefined)?.messages;
-          if (!messages) return undefined;
-          const head = getCurrentSystemMessage(messages);
-          if (!head) return undefined;
-          const text = memoryTextOf(ctx);
-          if (!text) return undefined;
-          const prompt = getSystemMessageText(head);
-          if (prompt.includes(text)) return undefined;
-          // Legacy pi 0.87 skips before_agent_start for idle triggerTurn.
-          // Pi 1.2 runs it; the includes guard above prevents double injection.
-          // Keep this public transcript fallback for the supported older hosts.
-          // Match the forced-prompt path: one head with the replayed prompt and
-          // tool loadout, followed by the conversation. Never edit stored entries.
-          return { messages: [
-            { role: "system" as const, content: prompt + "\n\n" + text,
-              ...(head.toolsAdded ? { toolsAdded: head.toolsAdded } : {}), timestamp: head.timestamp },
-            ...messages.filter(message => message.role !== "system"),
-          ] };
-        } catch {
-          // Snapshot injection is best-effort; never block a provider request.
-          return undefined;
-        }
       });
     } else if (name === "session_start") {
       pi.on(name, (event: any, ctx?: unknown) => {

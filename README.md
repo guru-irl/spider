@@ -20,7 +20,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 ## Requirements
 
 - Use Node 26 for installation and running pi so native modules use the same ABI. Development pins `26.4.0`; all CI workflows use `26.x`. The package declares `>=22.19.0`, but lower versions are not tested by those workflows.
-- Pi `1.2.0`, including `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`. Development and tests use this version; peer dependencies still allow `>=0.87.0` for older hosts.
+- Pi `1.2.0` or later, including `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai` and `@earendil-works/pi-tui`. Development and tests use `1.2.0`; older hosts are not supported.
 - Native dependencies: `better-sqlite3` (Node addon) and `sqlite-vec` (platform library). Build the addon for the Node ABI used by pi.
 - If a native prebuild is unavailable, building `better-sqlite3` requires Python and a C/C++ toolchain for `node-gyp`.
 - CI runs on Linux. Other operating systems are not covered by the workflows.
@@ -183,6 +183,7 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 - Databases, local config, logs, and scratch are machine-local state. Never commit them; this repository ignores the worktree artifacts.
 - Local storage does not mean offline operation: model calls send prompts to configured providers, fetch downloads URLs, and embedding initialization can download a model in the background. Recall and search use full-text results while the embedder initializes. They can use existing vectors once it is ready. Parent sessions drain queued embeddings in the background using an isolated fastembed child process, keeping native ORT teardown aborts out of pi. Shutdown cancels in-flight embeds and awaits child exit; parent death also stops downloads and loads. Children never drain. Set `embeddings.drain` to `false` to disable this maintenance; `/doctor` shows provider and queue health.
 - Memory and skill reviewers and background learning can send candidate text, active memory, skill guidance, or conversation excerpts to a model provider.
+- Pi saves the frozen global and repo memory block in the session's `spider_memory` system-prompt section. Unchanged sections are saved once; section changes add patches, and compaction can save another copy in its prompt checkpoint. Old values remain in the session file. Exported HTML and JSONL can include this memory, so review them before sharing.
 - Treat databases, transcripts, fetched content, and logs as potentially sensitive. Secret scanning is not a guarantee of removal.
 - See [Data model](docs/architecture/data-model.md) for path resolution, binding, and legacy migration.
 
@@ -199,7 +200,7 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 
 - The organism (background learner) runs in parent sessions only at compaction and shutdown; a drain processes accumulated session activity.
 - Background memory writes are staged; approve or reject them through `control memory`.
-- The first `before_agent_start` freezes the memory block for that session. New writes and approvals persist immediately but enter the prompt next session; use `recall` to read them sooner.
+- The first `before_agent_start` freezes the memory block in the named `spider_memory` section for that session, including runs started by completion notifications. New writes and approvals persist immediately but enter the prompt next session; use `recall` to read them sooner.
 - A different session ID or file, an extension reload, or a changed memory binding target takes a fresh snapshot. Each subagent session freezes its own block.
 - Skill proposals are reviewed and staged, never automatically activated.
 - Disable automatic work with `organism.enabled:false`; configure foreground reviewers separately.

@@ -17,7 +17,7 @@ D11 supersedes the spec's published-estimate-only display rule.
 ## Global Constraints
 
 - No new dependencies, frameworks, chart libraries or workspaces; no `package.json`/lockfile edits, `npm install` or `npm ci`. Emit only `extension.js`.
-- Preserve host -> subagents -> db-core and host -> ui; memory never imports models/host. Use pi root imports, floor 0.87.0; check installed declarations.
+- Preserve host -> subagents -> db-core and host -> ui; memory never imports models/host. Use pi root imports, minimum 1.2.0; check installed declarations.
 - Use synthetic roots, never real DB/config/auth/transcripts or model calls. Planning runs no product code/tests/builds/subagents or git mutations; leave changes uncommitted.
 - Implementation uses isolated writers/read-only reviewers and owner-reviewed shared changes, never shared source mutants. Orchestrator owns authorized integration/CI.
 - Scratch is `.spider/scratch/usage-ui`, never system temp; worker brief paths are absolute. Tracked files contain no private/account data, user paths or em-dashes.

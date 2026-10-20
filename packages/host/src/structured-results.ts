@@ -3,6 +3,9 @@ import type { SpiderArgs } from "./dispatch";
 import { toToolResult, type ToolResult } from "./result";
 import { processToolContent, scrubToolData, type SafetyConfig } from "./routing/safety";
 
+const ADAPTER_ACTIONS = ["search", "recall", "exec"] as const;
+export const STRUCTURED_TOOL_NAMES: ReadonlySet<string> = new Set(ADAPTER_ACTIONS.map(action => `spider_${action}`));
+
 const MAX_BYTES = 10_000;
 const hitSchema = Type.Object({
   id: Type.String(), kind: Type.Union([Type.Literal("memory"), Type.Literal("content"), Type.Literal("session"), Type.Literal("todo")]),
@@ -89,7 +92,7 @@ export function registerStructuredTools(
   safety: (args: SpiderArgs, ctx: unknown) => SafetyConfig,
 ): void {
   const properties = (spider.parameters as { properties: Record<string, unknown> }).properties;
-  for (const action of ["search", "recall", "exec"] as const) {
+  for (const action of ADAPTER_ACTIONS) {
     const keys = action === "search" ? ["query", "limit", "kinds", "cwd"]
       : action === "recall" ? ["query", "category", "scope", "limit", "cwd"]
       : ["language", "code", "timeout", "background", "cwd"];

@@ -2,7 +2,7 @@
 
 Use `spider loop`, `spider schedule`, or `/loop` to wait on external work such as CI, a deploy, or a timer. Do not use them to poll subagents. Subagent completion notices arrive automatically.
 
-While this session has a running subagent, `spider exec` and `spider batch` block detected foreground sleeps of two seconds or more, including `background:true` calls with or without a timeout.
+While this session has a running subagent, `spider exec`, `spider batch`, and the `spider_exec` adapter check code for waits. Shell checks cover foreground sleeps of two seconds or more, `gh run watch`, `tail -f` or `tail --follow`, `read -t` of two seconds or more, and `while` or `until` loops whose bodies sleep for any duration. The guard also checks shell code supplied to `spider exec_file`. Python `time.sleep`, Ruby and Perl `sleep`, and awaited JavaScript or TypeScript `setTimeout` waits block at two seconds or more. These checks include `background:true` calls with or without a timeout. The guard is a heuristic: it can miss a wait or block a command that only mentions sleeping.
 
 These actions work only in a persistent, top-level pi session, including a top-level RPC session. Both actions and `/loop` reject print runs, JSON runs, and subagent children because those processes exit when their work ends.
 

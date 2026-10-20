@@ -1,9 +1,10 @@
 import { appendEvent, type Db } from "@spider/db-core";
+import { STRUCTURED_TOOL_NAMES } from "../structured-results";
 
 export const SPIDER_TOOL_NAME = "spider";
 
 export function isExempt(tool: string): boolean {
-  return tool === SPIDER_TOOL_NAME;
+  return tool === SPIDER_TOOL_NAME || STRUCTURED_TOOL_NAMES.has(tool);
 }
 
 interface CallCorrelation { toolCallId?: string; parentToolCallId?: string }

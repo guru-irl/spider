@@ -163,7 +163,6 @@ describe("session foreground sleep guard", () => {
     { ...sleep, code: "sleep 30 &" },
     { ...sleep, code: "echo 'sleep 30'" },
     { ...sleep, language: "python" },
-    { ...sleep, action: "exec_file", path: "fixture.sh" },
     { action: "schedule", delaySeconds: 60, prompt: "check external work" },
     { action: "batch", commands: [] },
   ])("leaves unrelated or non-wait calls alone: %j", input => {
@@ -171,15 +170,80 @@ describe("session foreground sleep guard", () => {
     expect(call(input)).toBeUndefined();
   });
 
+  it.each([
+    ["shell", "sleep 30"],
+    ["shell", "gh run watch 123"],
+    ["shell", "timeout 600 tail -f output.log"],
+    ["shell", "tail --follow output.log"],
+    ["shell", "tail --follow=name output.log"],
+    ["shell", "read -t 2 answer"],
+    ["shell", "read -t 2.5 answer"],
+    ["shell", "while true; do sleep 1.9; done"],
+    ["shell", "until ready; do\n sleep 0.01\n done"],
+    ["shell", "while true; do sleep \"$DELAY\"; done"],
+    ["python", "import time; time.sleep(2)"],
+    ["python", "time.sleep(2.5)"],
+    ["javascript", "await new Promise(r => setTimeout(r, 2000))"],
+    ["javascript", "await new Promise(resolve => { setTimeout(() => resolve(), 2500); })"],
+    ["javascript", "await setTimeout(2000)"],
+    ["typescript", "await new Promise<void>((resolve) => setTimeout(resolve, 2000))"],
+    ["typescript", "await timers.setTimeout(2500)"],
+    ["ruby", "sleep 2"],
+    ["ruby", "sleep(2.5)"],
+    ["perl", "sleep 2;"],
+    ["perl", "sleep(3);"],
+  ])("blocks %s wait %s on every execution route only with a running child", (language, code) => {
+    const routes = [
+      { tool: "spider", input: { action: "exec", language, code } },
+      { tool: "spider", input: { action: "batch", commands: [{ language: "shell", code: "echo ready" }, { language, code }] } },
+      { tool: "spider_exec", input: { language, code } },
+      ...(language === "shell" ? [{ tool: "spider", input: { action: "exec_file", language, code, path: "fixture.txt" } }] : []),
+    ];
+    for (const route of routes) expect(call(route.input, undefined, route.tool)).toBeUndefined();
+    const running = child();
+    for (const route of routes) expect.soft(call(route.input, undefined, route.tool), JSON.stringify(route)).toMatchObject({ block: true });
+    emitStatus(db, { runId: running.row.id, sessionId: "parent", status: "done" });
+    for (const route of routes) expect(call(route.input, undefined, route.tool)).toBeUndefined();
+  });
+
+  it.each([
+    ["shell", "read -t 1.99 answer"],
+    ["shell", "while ready; do echo ready; done; sleep 1"],
+    ["shell", "tail -n 10 output.log"],
+    ["shell", "gh run list"],
+    ["python", "time.sleep(1.99)"],
+    ["python", "print('ordinary code')"],
+    ["javascript", "await new Promise(r => setTimeout(r, 1999))"],
+    ["javascript", "setTimeout(callback, 2000); console.log('not awaited')"],
+    ["typescript", "await timers.setTimeout(1999)"],
+    ["ruby", "sleep 1.99"],
+    ["perl", "sleep 1"],
+    ["go", "fmt.Println(2)"],
+    ["rust", "println!(\"ready\");"],
+    ["php", "echo 'ready';"],
+    ["r", "print('ready')"],
+    ["elixir", "IO.puts(\"ready\")"],
+    ["csharp", "Console.WriteLine(2);"],
+  ])("allows ordinary or sub-threshold %s code: %s", (language, code) => {
+    child();
+    expect(call({ action: "exec", language, code })).toBeUndefined();
+    expect(call({ language, code }, undefined, "spider_exec")).toBeUndefined();
+  });
+
+  it.each(["spider_search", "spider_recall"])("does not interpret %s input as an execution request", toolName => {
+    child();
+    expect(call(sleep, undefined, toolName)).toBeUndefined();
+  });
+
   it("does not apply this guard to another tool", () => {
     child();
     expect(call(sleep, undefined, "different-tool")).toBeUndefined();
   });
 
-  it("skips command inspection and database access when no children run", () => {
+  it.each(["spider", "spider_exec", "spider_search", "spider_recall"])("skips command inspection and database access for idle %s", toolName => {
     vi.spyOn(db, "prepare").mockImplementation(() => { throw new Error("guard must not query the database"); });
     const input = { action: "exec", get language(): string { throw new Error("guard must not inspect idle commands"); } };
-    expect(call(input)).toBeUndefined();
+    expect(call(input, undefined, toolName)).toBeUndefined();
   });
 
   it("checks running handles without reading the database", () => {

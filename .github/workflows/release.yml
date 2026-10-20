@@ -63,7 +63,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Proves the tarball npm would publish actually contains the bundle,
+      # Proves the tarball npm would publish contains the bundle and skills,
       # before anything is released. `--ignore-scripts` is required here: `npm
       # pack` otherwise re-runs the `prepare` script (`npm run build`), and that
       # build's own stdout (vite's progress output, assert-bundle's success
@@ -77,10 +77,13 @@ jobs:
           npm pack --json --ignore-scripts | node -e "
             let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
               const files=JSON.parse(s)[0].files.map(f=>f.path);
-              const need=['dist/extension.js','dist/dashboard/index.html','README.md','LICENSE'];
+              const fs=require('node:fs');
+              const skillDirs=['packages/superpowers/skills','packages/pstack/skills'];
+              const skills=skillDirs.flatMap(dir=>fs.readdirSync(dir,{recursive:true}).filter(f=>f==='SKILL.md'||f.endsWith('/SKILL.md')).map(f=>dir+'/'+f));
+              const need=['dist/extension.js','dist/dashboard/index.html','README.md','LICENSE','packages/pstack/LICENSE',...skills];
               if(!files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(f)) || !files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(f))) throw new Error('dashboard JS/CSS missing');
               if(files.some(f=>f.startsWith('dist/') && (f.endsWith('.map') || f.includes('states')))) throw new Error('development dashboard files in tarball');
-              const missing=need.filter(n=>!files.some(f=>f===n||f.startsWith(n)));
+              const missing=need.filter(n=>!files.includes(n));
               if(missing.length){console.error('::error::missing from tarball: '+missing.join(', '));process.exit(1);}
               console.log('tarball contains '+files.length+' files, required entries present');
             });"

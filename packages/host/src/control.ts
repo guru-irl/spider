@@ -6,6 +6,7 @@ import { bundleDoctorLine, type LoadedBundle } from "./build-id";
 import { openGlobal, openDbReadOnlyAt, resolveProject, paths, assertTestConfigPath, isThinkingLevel, THINKING_LEVELS, type Db } from "@spider/db-core";
 import { getVectorState, getVectorErrors, getEmbedDrainState, getEmbedderState, getEmbedLeaseState, safeReviewError } from "@spider/memory";
 import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtime";
+import { bundledSkillCollections } from "@spider/superpowers";
 
 import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } from "./usage/config.js";
@@ -279,6 +280,15 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   const lines: string[] = ["## spider doctor 🕸", ""];
   if (bundle) lines.push(bundleDoctorLine(bundle));
   let ok = true;
+  try {
+    for (const collection of bundledSkillCollections()) {
+      lines.push(`- ${collection.source} skills: ${collection.directory} (${collection.skills.length} skills)`);
+      if (collection.skills.length === 0) ok = false;
+    }
+  } catch (error) {
+    ok = false;
+    lines.push(`- bundled skills: FAILED (${safeReviewError(error)})`);
+  }
   let drainEnabled: boolean | undefined;
   let usageConfig = readUsageConfig({}, {}).value;
   try {

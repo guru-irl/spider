@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import type { Db, ProjectInfo } from "@spider/db-core";
 import { SkillStore } from "./skill-usage.js";
+import { skillInventory } from "./bundled-skills.js";
 import { reviewedStageSkill, type SkillReviewOptions } from "./skill-review.js";
 import { buildLearnPrompt } from "./learn.js";
 import { buildLearningGraph } from "./learning-graph.js";
@@ -53,8 +55,13 @@ export function skillAction(deps: Pick<OrganismActionDeps, "db" | "project" | "s
       return { display: renderDistill(prompt), details: { prompt } };
     }
     case "view": {
-      const row = args.name !== undefined ? skills.get(args.name) : undefined;
-      return { display: renderSkillView(row), details: row ?? null };
+      const rows = args.name === undefined ? [] : skillInventory(skills.list())
+        .filter(row => row.name === args.name)
+        .map(row => "id" in row ? row : { ...row, candidateBody: readFileSync(row.path, "utf8") });
+      return {
+        display: rows.length ? rows.map(row => renderSkillView(row)).join("\n\n") : renderSkillView(undefined),
+        details: rows.length > 1 ? rows : rows[0] ?? null,
+      };
     }
     case "add": {
       const name = args.name ?? "";
@@ -86,8 +93,10 @@ export function skillAction(deps: Pick<OrganismActionDeps, "db" | "project" | "s
       }
       return { display: renderSkillView(row), details: row };
     }
-    case "list":
-      return { display: renderSkillList(skills.list()), details: skills.list() };
+    case "list": {
+      const rows = skillInventory(skills.list());
+      return { display: renderSkillList(rows), details: rows };
+    }
     default: {
       const op = String((args as { op?: unknown }).op);
       return {

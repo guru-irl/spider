@@ -17,6 +17,8 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - [Compaction](docs/guide/compaction.md): opt-in per-model thresholds and managed parent summaries with bounded file lists.
 - [Loops and scheduled wakeups](docs/guide/loop-and-schedule.md): fixed or self-paced checks for external work, with idle-aware one-shot timers.
 
+Spider bundles the superpowers workflow skills and 31 skills adapted from [pstack](https://github.com/michael-denyer/pstack-claude), including `how`, `why`, `teach`, writing guidance and decision principles. `spider skill` lists and views both collections alongside project skills, with sources shown even when names overlap. Bundled skills never enter background curation.
+
 ## Requirements
 
 - Use Node 26 for installation and running pi so native modules use the same ABI. Development pins `26.4.0`; all CI workflows use `26.x`. The package declares `>=22.19.0`, but lower versions are not tested by those workflows.

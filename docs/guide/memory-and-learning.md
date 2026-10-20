@@ -82,9 +82,9 @@ spider control command:"memory" sub:"forget" uuid:"<uuid>" scope:"repo"
 - Instructions are nonempty and pass the strict memory threat scan.
 - Learner/curator-origin validation permits `500` instruction words and `8000` UTF-8 bytes. Agent-origin additions, including distill output, permit `1500` instruction words and `16384` bytes for the full text.
 - Deterministic failures reject without a model call, even when review is disabled.
-- The curator archives existing skills; it does not stage candidates itself.
+- The curator archives existing project/agent-created skills; it does not stage candidates itself. Bundled superpowers and pstack skills remain on disk outside the skill database, so decay, staleness, archive and consolidation passes never select them.
 - The reviewer uses the complete bundled `writing-skills` rubric, then checks durability, text quality, and existing coverage. Staging does not require deployment or pressure-test evidence.
-- Its catalog includes at most `150` entries, prioritizing bundled, active, pi-loaded, then recently updated staged skills. Descriptions are capped at `300` characters.
+- Its catalog includes at most `150` entries, prioritizing bundled superpowers and pstack skills, active, pi-loaded, then recently updated staged skills. Descriptions are capped at `300` characters.
 - The learner system prompt, including rubric, catalog, and active memory, is capped at `180000` UTF-8 bytes. Unavailable or oversized skill guidance is omitted without disabling memory learning.
 
 ## Learner review queue

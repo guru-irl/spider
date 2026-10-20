@@ -11,7 +11,7 @@ export {
   type UpstreamWatchReport,
 } from "./upstream-watch.js";
 
-export { baselineSkillsDir, projectSkillsDir, contributeSkillPaths } from "./skills-dir.js";
+export { baselineSkillsDir, pstackSkillsDir, bundledSkillCollections, projectSkillsDir, contributeSkillPaths, type BundledSkillCollection } from "./skills-dir.js";
 export { buildSpiderBlock, SPIDER_BLOCK_START, SPIDER_BLOCK_END, SPIDER_BLOCK_BODY } from "./agentsmd-content.js";
 export { upsertManagedBlock, isLegacyFiveToolGuide, writeAgentsMd, defaultAgentsMdPath } from "./agentsmd.js";
 

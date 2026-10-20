@@ -158,7 +158,7 @@ export async function diffUpstream(check: UpstreamCheck, repoPath: string, git: 
 // Spider's own packages; never watched or marked.
 export const FIRST_PARTY_PACKAGES: ReadonlySet<string> = new Set(["db-core"]);
 
-// Seed rows for the five vendored subsystems. These are review targets, not local
+// Seed rows for the six vendored subsystems. These are review targets, not local
 // package paths. Reachability is reported by each run; one bad URL never aborts it.
 export const DEFAULT_UPSTREAM_REFS: UpstreamCheck[] = [
   { package: "superpowers", upstreamRepo: "https://github.com/obra/superpowers", upstreamRef: "main" },
@@ -166,17 +166,18 @@ export const DEFAULT_UPSTREAM_REFS: UpstreamCheck[] = [
   { package: "context",     upstreamRepo: "https://github.com/guru-irl/context-mode", upstreamRef: "main" },
   { package: "todo",        upstreamRepo: "https://github.com/guru-irl/pi-todo-sqlite", upstreamRef: "master" },
   { package: "subagents",   upstreamRepo: "https://github.com/guru-irl/pi-subagents", upstreamRef: "main" },
+  { package: "pstack",      upstreamRepo: "https://github.com/michael-denyer/pstack-claude", upstreamRef: "main", lastReviewedCommit: "046341e3aaf2405083973a37f860d0d2ea98e18a" },
 ];
 
 export interface UpstreamWatchReport { checkedAt: number; packages: PackageResult[]; todosAdded: number; }
 
 export function seedUpstreamRefs(globalDb: Db): void {
   const stmt = globalDb.prepare(
-    `INSERT OR IGNORE INTO upstream_refs (package, upstream_repo, upstream_ref, last_checked_at)
-     VALUES (@package, @repo, @ref, 0)`,
+    `INSERT OR IGNORE INTO upstream_refs (package, upstream_repo, upstream_ref, last_reviewed_commit, last_checked_at)
+     VALUES (@package, @repo, @ref, @baseline, 0)`,
   );
   for (const c of DEFAULT_UPSTREAM_REFS) {
-    stmt.run({ package: c.package, repo: c.upstreamRepo, ref: c.upstreamRef ?? "main" });
+    stmt.run({ package: c.package, repo: c.upstreamRepo, ref: c.upstreamRef ?? "main", baseline: c.lastReviewedCommit ?? null });
   }
   // Only repair the old seeded default; do not overwrite a user-selected ref.
   globalDb.prepare("UPDATE upstream_refs SET upstream_ref='master' WHERE package='todo' AND upstream_ref='main'").run();

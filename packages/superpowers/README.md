@@ -1,6 +1,6 @@
 # @spider/superpowers
 
-Vendors the [superpowers](https://github.com/obra/superpowers) skill library into spider, retargeted for pi and the `spider` tool. This package also owns the code that writes spider's managed block in `~/.pi/agent/AGENTS.md` and the upstream-watch logic behind `spider control upstream-watch`.
+Vendors the [superpowers](https://github.com/obra/superpowers) skills into spider and discovers the 31 adapted [pstack](https://github.com/michael-denyer/pstack-claude) skills beside them. Both collections ship in npm packages. This package also writes the managed `AGENTS.md` block and implements `spider control upstream-watch`.
 
 ## Responsibility
 
@@ -64,7 +64,7 @@ Main exports from `index.ts`:
 | `runUpstreamWatch(globalDb, projectDb, sessionId, deps)` | Seeds `upstream_refs`, fetches every configured package into its mirror, records `no-baseline`, `fetch-failed`, `unreachable`, `up-to-date`, or `candidates`, writes a todo (and its FTS row) for each new commit, and returns an `UpstreamWatchReport`. |
 | `seedUpstreamRefs(globalDb)` | Inserts `DEFAULT_UPSTREAM_REFS` into `upstream_refs` where a row does not already exist. Existing configured URLs are not overwritten. |
 | `markReviewed(globalDb, pkg, ref, deps)` | Validates `ref` in that package's fetched mirror, resolves it to a full commit SHA, and records that SHA as the reviewed baseline. Unknown refs are rejected without changing the baseline. |
-| `DEFAULT_UPSTREAM_REFS` | The six vendored subsystems (`superpowers`, `memory`, `context`, `todo`, `subagents`, `db-core`) and their upstream repo URLs. |
+| `DEFAULT_UPSTREAM_REFS` | The six vendored subsystems (`superpowers`, `memory`, `context`, `todo`, `subagents`, `pstack`) and their upstream repo URLs. |
 | `GitRunner`, `UpstreamCheck`, `CherryCandidate`, `PackageResult`, `UpstreamWatchReport` | Supporting types for the upstream-watch functions. |
 
 ## How it fits
@@ -84,7 +84,7 @@ This package is not on the path of an ordinary `spider` tool call. It runs at tw
 - Every normal run fetches the `upstream_repo` stored in the global database into `~/.pi/agent/spider/upstream/<package>`. Up to four packages are checked concurrently; results and todos are published in configured insertion order (the seed list order for default packages). Git runs asynchronously with a 60-second fetch timeout and a 10-second local-plumbing timeout. Credential and SSH prompts are disabled, so an unavailable or authentication-gated source fails with a reason instead of blocking pi or intruding into its TUI. A fetch failure, timeout, or unreachable ref is reported for that package and does not stop the remaining checks.
 - `up-to-date` is emitted only when a baseline exists and the fetched upstream range is empty. A package without a baseline is `no-baseline`, even when it has zero candidates; establish one after inspecting the upstream with `spider control upstream-watch --mark <package> <ref>`.
 - `upstream-watch` never merges anything. It only fetches, diffs commit ranges, and files todos. Moving `last_reviewed_commit` forward is a separate review decision, and `--mark` stores the resolved full SHA rather than the text of a branch or tag.
-- `DEFAULT_UPSTREAM_REFS` includes `db-core` pointing at `guru-irl/spider`; this self-referential review target is not hidden or special-cased. Its real fetch/baseline/candidate state is reported like every other configured package.
+- `pstack` starts at the vendored upstream commit `046341e`. `db-core` is first-party and is not watched, even if an older installation retains its row.
 - `using-superpowers`'s `SKILL.md` and its `references/` folder are written for pi only: no other harness names appear in `SKILL.md`, and `references/` holds a single file, `pi-tools.md`, which maps skill actions to `spider` verbs. A few supplementary files bundled with other skills (for example `brainstorming/visual-companion.md`, `writing-skills/anthropic-best-practices.md`) still mention other tools in passing, as background material rather than instructions.
 
 ## See also

@@ -1,23 +1,24 @@
 import type { GraphNode, LearningGraph } from "./learning-graph.js";
-import type { SkillRow } from "./skill-usage.js";
+import type { SkillInventoryEntry } from "./bundled-skills.js";
 import type { DecayResult } from "./curator.js";
 
 /** One-line skill summary for the `skill list` panel. */
-function skillLine(s: SkillRow): string {
+function skillLine(s: SkillInventoryEntry): string {
   const flags: string[] = [s.state, s.status];
   if (s.pinned) flags.push("pinned");
   if (s.protected) flags.push("protected");
-  return `- ${s.name} (${flags.join(", ")}, use=${s.useCount})`;
+  const source = "sourceLabel" in s || s.tier === "project" ? "project/agent-created" : s.source;
+  return `- ${s.name} (${source}, ${flags.join(", ")}, use=${s.useCount})`;
 }
 
 /** Render the `skill list` result. */
-export function renderSkillList(rows: SkillRow[]): string {
+export function renderSkillList(rows: SkillInventoryEntry[]): string {
   if (rows.length === 0) return "No skills.";
   return ["## skills 🕸", ...rows.map(skillLine)].join("\n");
 }
 
 /** Render a single `skill view` result. */
-export function renderSkillView(row: SkillRow | undefined): string {
+export function renderSkillView(row: SkillInventoryEntry | undefined): string {
   if (row === undefined) return "Skill not found.";
   const body = row.candidateBody ?? "";
   const pathLine = row.path !== undefined ? [`path: ${row.path}`] : [];

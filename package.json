@@ -23,12 +23,16 @@
       "./dist/extension.js"
     ],
     "skills": [
-      "./packages/superpowers/skills"
+      "./packages/superpowers/skills",
+      "./packages/pstack/skills"
     ]
   },
   "files": [
     "dist",
     "scripts/postinstall.mjs",
+    "packages/superpowers/skills",
+    "packages/pstack/skills",
+    "packages/pstack/LICENSE",
     "README.md",
     "LICENSE",
     "NOTICE.md",

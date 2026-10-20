@@ -8,7 +8,10 @@
 
 - Load a skill before non-trivial work when its trigger applies.
 - Start with a process skill such as `brainstorming` or `systematic-debugging`, then implementation skills such as `test-driven-development` or `writing-plans`.
+- Spider bundles the superpowers workflow skills and 31 adapted pstack skills. Use pstack's `how`, `why` and `teach` for code explanations, `unslop` and `technical-writing` for prose, and `principle-*` skills when their descriptions match a decision.
 - List skills with `spider skill op:"list"`; view one with `op:"view" name:"<name>"`, or read its `SKILL.md`.
+- List and view label each source as `bundled superpowers`, `bundled pstack`, or `project/agent-created`. A shared name shows both entries. Bundled skills are read from disk, never stored as curation candidates.
+- `/doctor` reports each resolved bundled skills folder and its skill count.
 - Follow the procedure, not only its summary.
 - See [Data and privacy](../../README.md#data-and-privacy) for the global managed instructions and where to keep personal notes.
 

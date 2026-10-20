@@ -24,6 +24,53 @@ export function baselineSkillsDir(): string {
   return candidates[0];
 }
 
+/** Resolve pstack beside superpowers in source checkouts and npm bundles. */
+export function pstackSkillsDir(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(here, "..", "..", "pstack", "skills"),
+    path.resolve(here, "..", "packages", "pstack", "skills"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(path.join(candidate, "how", "SKILL.md")).isFile()) return candidate;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return candidates[0];
+}
+
+export interface BundledSkillCollection {
+  source: "bundled superpowers" | "bundled pstack";
+  directory: string;
+  skills: { name: string; path: string }[];
+}
+
+/** Filesystem-only inventory. Bundled skills never become curation records. */
+export function bundledSkillCollections(): BundledSkillCollection[] {
+  const collections: BundledSkillCollection[] = [
+    { source: "bundled superpowers", directory: baselineSkillsDir(), skills: [] },
+    { source: "bundled pstack", directory: pstackSkillsDir(), skills: [] },
+  ];
+  for (const collection of collections) {
+    try {
+      for (const entry of fs.readdirSync(collection.directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory()) continue;
+        const skillPath = path.join(collection.directory, entry.name, "SKILL.md");
+        try {
+          if (fs.statSync(skillPath).isFile()) collection.skills.push({ name: entry.name, path: skillPath });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return collections;
+}
+
 export function projectSkillsDir(cwd: string): string {
   return path.join(cwd, ".spider", "skills");
 }
@@ -33,11 +80,12 @@ export function contributeSkillPaths(cwd: string): string[] {
   // Only contribute a tier that actually exists on disk (avoids emitting a bad
   // baseline path from an unexpected bundle layout — pi also loads the baseline
   // via the package `pi.skills` manifest entry regardless).
-  const baseline = baselineSkillsDir();
-  try {
-    if (fs.statSync(baseline).isDirectory()) out.push(baseline);
-  } catch {
-    /* baseline not resolvable here; manifest still provides it */
+  for (const baseline of [baselineSkillsDir(), pstackSkillsDir()]) {
+    try {
+      if (fs.statSync(baseline).isDirectory()) out.push(baseline);
+    } catch {
+      /* baseline not resolvable here; manifest still provides it */
+    }
   }
   const proj = projectSkillsDir(cwd);
   try {

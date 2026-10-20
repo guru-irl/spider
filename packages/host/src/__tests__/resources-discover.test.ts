@@ -4,7 +4,7 @@
 // extension's registerSuperpowers skips the real ~/.pi/agent/AGENTS.md write.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setGlobalDbPathForTests } from "@spider/db-core";
 import { baselineSkillsDir } from "@spider/superpowers";
@@ -41,7 +41,7 @@ afterAll(() => {
 });
 
 describe("resources_discover", () => {
-  it("contributes the superpowers baseline skills dir", async () => {
+  it("contributes both bundled skill collections", async () => {
     const { pi, handlers } = fakePi();
     spiderExtension(pi as never);
 
@@ -58,5 +58,6 @@ describe("resources_discover", () => {
       if (r?.skillPaths) paths.push(...r.skillPaths);
     }
     expect(paths).toContain(baselineSkillsDir());
+    expect(paths).toContain(resolve("packages/pstack/skills"));
   });
 });

@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import { baselineSkillsDir } from "@spider/superpowers";
+import { baselineSkillsDir, pstackSkillsDir } from "@spider/superpowers";
 import { firstThreatMessage, safeReviewError } from "@spider/memory";
 import { SkillStore, type SkillRow } from "./skill-usage.js";
 import type { SkillCandidate, SkillReviewSummary } from "./types.js";
@@ -87,12 +87,14 @@ export function loadSkillReviewContext(store?: SkillStore, loadedSkills: readonl
   const add = (skill: ExistingSkill) => {
     if (catalog.size < 150 && !catalog.has(skill.name)) catalog.set(skill.name, { name: skill.name, description: skill.description.slice(0, 300) });
   };
-  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory()) continue;
-    let text: string;
-    try { text = readFileSync(join(dir, entry.name, "SKILL.md"), "utf8"); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    add({ name: entry.name, description: descriptionOf(text) });
+  for (const bundledDir of [dir, pstackSkillsDir()]) {
+    for (const entry of readdirSync(bundledDir, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory()) continue;
+      let text: string;
+      try { text = readFileSync(join(bundledDir, entry.name, "SKILL.md"), "utf8"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      add({ name: entry.name, description: descriptionOf(text) });
+    }
   }
   const rows = store?.list() ?? [];
   const addRow = (row: SkillRow) => {

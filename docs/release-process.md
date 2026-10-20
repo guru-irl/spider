@@ -16,8 +16,8 @@ push a "vX.Y.Z" tag
         │
         ▼
 release.yml runs: verify tag == package.json version, typecheck, test, build,
-verify the npm tarball contains the extension and dashboard assets, README.md
-and LICENSE, then create a
+verify the npm tarball contains the extension and dashboard assets, both bundled
+skill collections, README.md, LICENSE and packages/pstack/LICENSE, then create a
 DRAFT GitHub Release (never a live one; see "Why a draft" below)
         │
         ▼
@@ -66,6 +66,11 @@ instead of being silently deleted. Production dashboard output is restricted to
 `dist/dashboard/`; development and e2e builds must use an explicit absolute
 directory under `.spider/scratch/`.
 
+The npm package also contains `packages/superpowers/skills`,
+`packages/pstack/skills` and `packages/pstack/LICENSE`. Pi discovers both skill
+collections through `pi.skills`. The tarball check requires every `SKILL.md`
+from both source folders, so excluding one skill fails the release gate.
+
 ## Cutting a release
 
 1. Bump `package.json`'s `version` and commit it on `main` through the normal
@@ -76,7 +81,8 @@ directory under `.spider/scratch/`.
    version", the tag and the committed `package.json` disagree; fix and
    re-tag. If it fails at "Verify package contents", the tarball is missing a
    required file: `dist/extension.js`, `dist/dashboard/index.html`, hashed
-   JavaScript and CSS in `dist/dashboard/assets/`, `README.md`, or `LICENSE`.
+   JavaScript and CSS in `dist/dashboard/assets/`, every bundled `SKILL.md`,
+   `packages/pstack/LICENSE`, `README.md`, or `LICENSE`.
    Source maps and the development states page also cause this check to fail.
 4. On success, a **draft** release named `vX.Y.Z` exists on the repo's Releases
    page with generated notes. Review it.
@@ -167,19 +173,6 @@ as configured. To set this up:
 
 ## Known gaps before the first real publish
 
-These are real, verified facts about what the tarball would contain today.
-Fixing them requires editing `package.json`, which is out of scope for the
-docs/CI work described in this file; they are recorded here (and in more
-detail in the branch's own review notes) so a maintainer sees them before
-relying on this pipeline for a real publish, not to prescribe an editorial
-decision for `package.json`.
-
-- **The skills library is not in the tarball.** `package.json`'s
-  `pi.skills` points at `./packages/superpowers/skills`, but `files` (the
-  publish allowlist) is `["dist", "scripts/postinstall.mjs", "README.md",
-  "LICENSE"]`, which does not include it. The dashboard assets are included through `dist`, but this allowlist still
-  excludes the skills directory. A package installed from npm (as opposed to from git) would
-  advertise a skills library it does not ship.
 - **The ten workspace packages under `packages/*` have no `"private": true`.**
   Each is `@spider/<name>@0.0.0`. The one `npm publish` this repo's pipeline
   runs is unaffected (it publishes only the root package), but any future

@@ -5,7 +5,7 @@ description: Use when checking a vendored subsystem for new upstream commits to 
 
 # Upstream Watch
 
-Spider vendors five subsystems (memory, context, todo, subagents, superpowers).
+Spider vendors six subsystems (memory, context, todo, subagents, superpowers, pstack).
 Its shared db-core is first-party code, not a separate watched upstream.
 Upstream repos keep evolving. This skill is the **review-and-port** workflow.
 Spider never does live upstream merges.

@@ -44,7 +44,10 @@ it("catalog tolerates non-skill directories", () => {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true }); root = mkdtempSync(join(scratch, "rubric-"));
   mkdirSync(join(root, "writing-skills")); writeFileSync(join(root, "writing-skills", "SKILL.md"), candidate.body);
   mkdirSync(join(root, "not-a-skill")); vi.mocked(baselineSkillsDir).mockReturnValueOnce(root);
-  expect(loadSkillReviewContext().skills.map(s => s.name)).toEqual(["writing-skills"]);
+  const names = loadSkillReviewContext().skills.map(s => s.name);
+  expect(names).toContain("writing-skills");
+  expect(names).toContain("how");
+  expect(names).not.toContain("not-a-skill");
 });
 it("rubric-load failure uses a fixed reason, with details only in diagnostics", async () => {
   const store = fixture(); const diagnostic = vi.fn();

@@ -270,6 +270,25 @@ describe("own repository URL normalization", () => {
 });
 
 describe("seedUpstreamRefs", () => {
+  it("seeds pstack with its verified baseline and preserves saved upstream choices", () => {
+    const db = openDbAt(testScratchPath(`uw-pstack-${crypto.randomUUID()}.db`), "global");
+    try {
+      migrate(db, "global");
+      seedUpstreamRefs(db);
+      expect(db.prepare("SELECT package FROM upstream_refs").all()).toHaveLength(6);
+      expect(db.prepare("SELECT upstream_repo, upstream_ref, last_reviewed_commit FROM upstream_refs WHERE package='pstack'").get()).toEqual({
+        upstream_repo: "https://github.com/michael-denyer/pstack-claude",
+        upstream_ref: "main",
+        last_reviewed_commit: "046341e3aaf2405083973a37f860d0d2ea98e18a",
+      });
+      db.prepare("UPDATE upstream_refs SET upstream_repo='custom-source', upstream_ref='custom-branch', last_reviewed_commit='custom-review' WHERE package='pstack'").run();
+      seedUpstreamRefs(db);
+      expect(db.prepare("SELECT upstream_repo, upstream_ref, last_reviewed_commit FROM upstream_refs WHERE package='pstack'").get()).toEqual({
+        upstream_repo: "custom-source", upstream_ref: "custom-branch", last_reviewed_commit: "custom-review",
+      });
+    } finally { db.close(); }
+  });
+
   it("does not seed the consumer's own repository as a watched upstream", () => {
     const db = openDbAt(testScratchPath(`uw-own-repo-${process.pid}-${Math.random().toString(36).slice(2)}.db`), "global");
     try {
@@ -399,7 +418,7 @@ describe("runUpstreamWatch concurrency", () => {
   it("overlaps four blocked fetches, continues after failure, and publishes in input order", async () => {
     const gdb = configureUpstream("fixture", "baseline");
     gdb.prepare("UPDATE upstream_refs SET last_reviewed_commit='baseline'").run();
-    // Six fixture targets exercise replacement workers independently of how many defaults ship.
+    // An extra fixture target exercises replacement workers as the default set grows.
     gdb.prepare(`INSERT INTO upstream_refs (package, upstream_repo, upstream_ref, last_reviewed_commit, last_checked_at)
       VALUES ('fixture-extra', 'fixture', 'main', 'baseline', 0)`).run();
     const input = [...DEFAULT_UPSTREAM_REFS.map((ref) => ref.package), "fixture-extra"];
@@ -438,9 +457,9 @@ describe("runUpstreamWatch concurrency", () => {
       expect(started).toEqual(input.slice(0, 5));
       gates.get(input[2])!.resolve();
       await setImmediate();
-      expect(started).toEqual(input);
+      expect(started).toEqual(input.slice(0, 6));
       expect(peak).toBe(4);
-      for (const pkg of [input[5], input[4], input[1], input[0]]) {
+      for (const pkg of [...input.slice(4), input[1], input[0]]) {
         gates.get(pkg)!.resolve();
         await setImmediate();
       }
@@ -448,8 +467,8 @@ describe("runUpstreamWatch concurrency", () => {
       expect(report.packages.map((result) => result.package)).toEqual(input);
       expect(report.packages[3].state).toBe("fetch-failed");
       expect(report.packages[3].reason).toContain("60000ms");
-      expect(report.packages.filter((result) => result.state === "candidates")).toHaveLength(5);
-      expect(report.todosAdded).toBe(5);
+      expect(report.packages.filter((result) => result.state === "candidates")).toHaveLength(input.length - 1);
+      expect(report.todosAdded).toBe(input.length - 1);
       const todos = projectDb.prepare("SELECT text FROM todos ORDER BY seq").all() as Array<{ text: string }>;
       expect(todos.map((todo) => todo.text.match(/^upstream-watch\(([^)]+)\)/)![1])).toEqual(input.filter((_, index) => index !== 3));
     } finally {

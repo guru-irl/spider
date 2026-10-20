@@ -21,6 +21,8 @@ const handlers: Array<[string, string, string]> = [
   ["message", "packages/subagents/src/actions/message.ts", "messageHandler"],
   ["todo", "packages/todo/src/actions.ts", "makeTodo"],
   ["skill", "packages/organism/src/actions.ts", "skillAction"],
+  ["loop", "packages/host/src/loop/index.ts", "loop"],
+  ["schedule", "packages/host/src/loop/index.ts", "schedule"],
 ];
 
 describe("model-facing control and run parameters", () => {
@@ -47,7 +49,7 @@ describe("model-facing control and run parameters", () => {
     expect(SPIDER_PARAMETERS.properties.ttl.description).toMatch(/24 h default/i);
   });
 
-  it("declares reads from all 15 action handlers and argument-receiving helpers", () => {
+  it("declares reads from all action handlers and argument-receiving helpers", () => {
     const declared = new Set(Object.keys(SPIDER_PARAMETERS.properties));
     expect(handlers.map(([action]) => action).sort()).toEqual([...SPIDER_PARAMETERS.properties.action.enum].sort());
     const missing: string[] = [];
@@ -67,6 +69,7 @@ describe("model-facing control and run parameters", () => {
       ["control", "packages/organism/src/actions.ts", "curateAction"],
       ["remember/recall", "packages/host/src/extension.ts", "scopeOf"],
       ["remember/recall", "packages/host/src/extension.ts", "removedMemoryScope"],
+      ["loop/schedule", "packages/host/src/loop/index.ts", "scheduleWakeup"],
     ]) {
       const reads = scanHandlerArgs(readFileSync(fileURLToPath(new URL(path, root)), "utf8"), helper);
       expect(reads.size, `${helper} helper not scanned`).toBeGreaterThan(0);
@@ -87,6 +90,11 @@ describe("model-facing control and run parameters", () => {
   ])("detects undeclared reads via %s", (_form, body) => {
     const names = scanHandlerArgs(`function handle(args: any) { ${body} }`, "handle");
     expect(names.has("undeclared")).toBe(true);
+  });
+
+  it("detects undeclared reads in class-based session action handlers", () => {
+    const source = "class Scheduler { async loop(args: any) { const alias = args; return alias.undeclared; } }";
+    expect(scanHandlerArgs(source, "loop")).toEqual(new Set(["undeclared"]));
   });
 
   it("fails closed on computed args keys", () => {

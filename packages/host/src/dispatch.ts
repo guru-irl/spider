@@ -4,7 +4,7 @@ import type { InjectionSnapshot } from "./injection-snapshot";
 
 export type SpiderAction =
   | "search" | "remember" | "recall" | "exec" | "exec_file" | "batch"
-  | "index" | "fetch" | "run" | "todo" | "skill" | "import" | "message" | "control" | "kill";
+  | "index" | "fetch" | "run" | "todo" | "skill" | "import" | "message" | "control" | "kill" | "loop" | "schedule";
 
 export interface SpiderArgs { action: SpiderAction; [k: string]: unknown; }
 
@@ -55,7 +55,7 @@ export type ActionHandler = (args: SpiderArgs, ctx: ActionCtx) => Promise<unknow
 
 const VALID: ReadonlySet<string> = new Set<SpiderAction>([
   "search", "remember", "recall", "exec", "exec_file", "batch",
-  "index", "fetch", "run", "todo", "skill", "import", "message", "control", "kill",
+  "index", "fetch", "run", "todo", "skill", "import", "message", "control", "kill", "loop", "schedule",
 ]);
 
 const handlers = new Map<string, { handler: ActionHandler; activationOwned: boolean }>();

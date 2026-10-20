@@ -14,7 +14,8 @@ import { isAbsolutePathList } from "@spider/ui";
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
-import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerLoopSchedule, type SessionScheduler, type LoopArgs, type ScheduleArgs } from "./loop/index";
 import { registerUsage } from "./usage/mount.js";
 import { makeRunCostFormatter } from "./run-credits.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
@@ -101,6 +102,7 @@ const getEmbedder = async () => getReadyEmbedder();
 const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
 const usageRuntimes = new WeakMap<object, UsageAccounting>();
 const usageControllers = new WeakMap<object, ReturnType<typeof registerUsage>>();
+const sessionSchedulers = new WeakMap<object, SessionScheduler>();
 
 // A-M3 (branch-review A-architecture.md): per-pi-instance record of a `registerRouting`
 // setup failure, read by doctor so it is surfaced instead of fully swallowed. Mirrors
@@ -176,7 +178,7 @@ export const SPIDER_PARAMETERS = {
       type: "string",
       enum: [
         "search", "remember", "recall", "exec", "exec_file", "batch",
-        "index", "fetch", "run", "kill", "todo", "skill", "import", "message", "control",
+        "index", "fetch", "run", "kill", "todo", "skill", "import", "message", "control", "loop", "schedule",
       ],
       description: "The spider verb to run.",
     },
@@ -259,6 +261,13 @@ export const SPIDER_PARAMETERS = {
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
     id: { type: "string", description: "Run id/prefix (todo toggle/remove: per-session seq). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
+    // loop / schedule: session-local timers for external work, never subagent polling
+    interval: { type: "string", description: "loop: fixed interval like 5m or 1h (minimum 60 seconds, maximum 24 days). Omit for a self-paced loop re-armed with spider schedule." },
+    delaySeconds: { type: "number", description: "schedule: seconds before a one-shot wakeup, rounded and clamped to 60–3600; waits for idle. A new call replaces the pending wakeup." },
+    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without a prompt reports the loop and pending wakeup. For external work (CI, deploys, timers), not polling subagents; their completion notices arrive automatically." },
+    reason: { type: "string", description: "schedule: why this delay, in one short sentence." },
+    noop: { type: "boolean", description: "schedule: label a routine check; the wakeup is still scheduled." },
+    stop: { type: "boolean", description: "loop: end the loop and pending wakeup. schedule: cancel only the pending wakeup. Needs no other fields. Both actions are top-level persistent sessions only; shutdown and /reload end timers." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
     message: { type: "string", description: "Message body for action 'message'." },
@@ -766,6 +775,15 @@ async function dispatchWithDoctorSnapshot(
   pi: PiToolAPI, params: SpiderArgs, ctx: unknown, ownedActions: ReadonlyMap<string, ActionHandler>,
   onPartial?: (text: string) => void, signal?: AbortSignal, onSessionProject?: (project: ProjectInfo) => void,
 ): Promise<unknown> {
+  // Timers belong to the pi session, not a cwd or database binding. Refuse
+  // one-shot calls here too, before project resolution can mask the diagnostic.
+  if (params.action === "loop" || params.action === "schedule") {
+    const scheduler = sessionSchedulers.get(pi);
+    if (!scheduler) throw new Error("Session scheduler is not registered in this extension instance.");
+    return params.action === "loop"
+      ? scheduler.loop(params as LoopArgs, ctx as ExtensionContext)
+      : scheduler.schedule(params as ScheduleArgs, ctx as ExtensionContext);
+  }
   const sessionId = sessionIdOf(ctx);
   const injectionSnapshot = params.action === "control" && params.command === "doctor"
     ? readInjectionSnapshot(cwdOf(ctx) ?? String(params.cwd ?? process.cwd()), sessionId) : undefined;
@@ -801,6 +819,7 @@ async function dispatchWithDoctorSnapshot(
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
+  sessionSchedulers.set(pi, registerLoopSchedule(pi as unknown as ExtensionAPI));
   const accounting = new UsageAccounting();
   usageRuntimes.set(pi, accounting);
   const ownedActions = new Map<string, ActionHandler>();
@@ -1053,7 +1072,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
+      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; loop→{interval?,prompt} (no prompt reports state), schedule→{delaySeconds,prompt,reason?,noop?}, stop:true cancels either; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents whose completion notices arrive automatically; top-level persistent sessions only, shutdown and /reload end timers; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,

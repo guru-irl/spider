@@ -8,6 +8,7 @@ export function scanHandlerArgs(text: string, handler: string): Set<string> {
   const walk = (node: ts.Node): void => {
     if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node);
     if (ts.isFunctionExpression(node) && node.name) functions.set(node.name.text, node);
+    if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) functions.set(node.name.text, node);
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer &&
       (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))) {
       functions.set(node.name.text, node.initializer);

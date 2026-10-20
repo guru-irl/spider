@@ -17,7 +17,7 @@ document does not repeat either one.
 
 The agent has one tool, named `spider`. Every operation is an `action` on that
 tool: `search`, `remember`, `recall`, `exec`, `exec_file`, `batch`, `index`,
-`fetch`, `run`, `todo`, `skill`, `import`, `message`, and `control`. The tool
+`fetch`, `run`, `kill`, `todo`, `skill`, `import`, `message`, `control`, `loop`, and `schedule`. The tool
 definition, its parameter schema, and the list of valid actions live in
 `@spider/host` (`extension.ts` for the schema, `dispatch.ts` for the validated
 action set).
@@ -31,7 +31,11 @@ Slash commands are a thin front for the same actions. `/todos` and `/agents`
 open live overlays; `/spider`, `/search`, `/memory`, `/insights`, `/learn`,
 `/doctor`, and `/stats` forward to `dispatch` and render through the same
 renderers a tool result uses, so a slash result and the matching tool result
-look identical.
+look identical. `/loop` and the `loop` and `schedule` actions share a session-local
+scheduler in host. They wait on external work, not subagents, whose completion
+notices arrive automatically. Host routes these actions before database resolution.
+Their timers end on shutdown, including `/reload`; see
+[Loops and scheduled wakeups](../guide/loop-and-schedule.md).
 
 ## Layered package structure
 

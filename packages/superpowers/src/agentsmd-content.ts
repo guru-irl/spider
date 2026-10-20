@@ -50,6 +50,7 @@ built-ins:
   clear only removes done items unless force:true, always in the current session;
   clear rejects session selectors. Use session id/prefix/name for
   toggle/remove in another session in this project; session:"all" is rejected.
+- \`spider loop\` / \`spider schedule\` wait on external work (CI, deploys, timers), not subagents; completion notices arrive automatically. Top-level only; shutdown and /reload end timers.
 - \`spider message\` — wake a specific peer/reviewer session directly.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
   \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,

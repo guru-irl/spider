@@ -10,6 +10,7 @@ Documentation for the spider pi extension.
 - [Configuration](guide/configuration.md): layers, defaults, provenance, unset behavior, and role models.
 - [Usage dashboard](guide/usage.md): Overview, Session, and Calibration & data, with credits selected by default, an optional `usage.monthlyBudget`, a local ledger, a read-only counter and doctor diagnostics. The footer shows context percentage/window, session credits, cache-hit rate (`CH`), whole-percent `month`, input/output tokens and cache read/write tokens, separated by middle dots. The `month` item uses the budget when set, otherwise the allowance, and is omitted when neither is available.
 - [Subagents](guide/subagents.md): dispatch, thinking, shutdown, reload survival, escalation, and messaging.
+- [Loops and scheduled wakeups](guide/loop-and-schedule.md): external-work timers, `/loop`, self-paced checks, cancellation, and session lifetime.
 - [Memory and learning](guide/memory-and-learning.md): review, caps, background models, skill validation, and the review queue.
 
 ## Architecture

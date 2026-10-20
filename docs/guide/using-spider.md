@@ -86,6 +86,14 @@ spider todo op:"remove" id:"2"
 - Use `/agents` to inspect results. Use `message` only when the run's mode and delivery state allow it; a completed run cannot resume.
 - See [Subagents](subagents.md) for examples, model resolution, shutdown, reload survival, escalation, and message delivery evidence.
 
+## Loops and scheduled wakeups
+
+- Use `loop` and `schedule` to wait on external work such as CI, deploys, or timers. Do not poll subagents; their completion notices arrive automatically.
+- `/loop 5m <prompt>` runs now and every five minutes, dropping ticks while busy. `/loop <prompt>` lets the model re-arm with `spider schedule`.
+- `spider loop` without a prompt reports the active loop and pending wakeup. `/loop stop` ends both.
+- These actions require a persistent top-level session. Shutdown, `/reload`, and restarts end all loops and wakeups.
+- See [Loops and scheduled wakeups](loop-and-schedule.md) for parameters, clamping, replacement, and stop-during-run rules.
+
 ## Project setup
 
 - Keep local databases, config, logs, and scratch out of commits. Use `.spider/scratch/` for project work or `~/.pi/agent/spider/scratch/` for global work.

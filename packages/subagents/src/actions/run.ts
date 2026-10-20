@@ -1,4 +1,7 @@
 import { appendRunEvent, openDb, paths, type Db } from "@spider/db-core";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { accessSync, constants, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { RunStore } from "../run-store";
 import { runUsageSummary, sumUsage, safelyReportUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
@@ -94,6 +97,30 @@ interface RunDeps {
 /** The `run` action handler. Routes by args shape: pipeline > chain > tasks > single. */
 export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) => Promise<{ content: string; details: any }> {
   return async function runHandler(args: any, ctx: any) {
+    // Use pi's loaded catalog, including resources_discover contributions, rather
+    // than guessing skill locations or independently repeating pi's discovery rules.
+    const resolveSkill = (name: string | undefined): string | undefined => {
+      if (name === undefined) return undefined;
+      const pi = ctx.pi as Partial<Pick<ExtensionAPI, "getCommands">> | undefined;
+      const command = pi?.getCommands?.().find(command => command.source === "skill" && command.name === `skill:${name}`);
+      if (!command) throw new Error(`Unknown skill ${JSON.stringify(name)}. Choose a skill loaded in the parent session.`);
+      const skillPath = command.sourceInfo?.path;
+      if (!skillPath) throw new Error(`Skill ${JSON.stringify(name)} is unavailable: its catalog entry has no file path.`);
+      const absolutePath = resolve(ctx.cwd, skillPath);
+      try {
+        if (!statSync(absolutePath).isFile()) throw new Error("not a file");
+        accessSync(absolutePath, constants.R_OK);
+      } catch (error) {
+        throw new Error(`Skill ${JSON.stringify(name)} is unavailable at ${absolutePath}: ${String((error as Error)?.message ?? error)}`);
+      }
+      return absolutePath;
+    };
+    const skill = resolveSkill(args.skill);
+    // Preflight every pipeline stage, including future stages, before starting
+    // any child. The stage's advertised skill overrides the dispatch default.
+    const stages = Array.isArray(args.pipeline)
+      ? args.pipeline.map((stage: any) => ({ ...stage, skill: stage.skill === undefined ? skill : resolveSkill(stage.skill) }))
+      : undefined;
     const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db, ctx.globalDb);
     const coords =
       overrides.getCoordinators?.(ctx) ??
@@ -148,12 +175,12 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       return { model, thinking };
     };
 
-    if (Array.isArray(args.pipeline)) {
+    if (stages) {
       const coord = overrides.makePipeline
         ? overrides.makePipeline({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId })
         : new PipelineCoordinator({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId });
       coords.pipelines.push(coord);
-      const pipeline = args.pipeline.map((stage: any) => ({ ...stage, ...resolveMT(stage.model, stage.thinking, stage.agent ?? "worker") }));
+      const pipeline = stages.map((stage: any) => ({ ...stage, ...resolveMT(stage.model, stage.thinking, stage.agent ?? "worker") }));
       const { pipelineId, firstRunId } = coord.start({ pipeline, handoff: args.handoff ?? "intercom", async: true });
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: withWarning({ pipelineId, firstRunId }) };
     }
@@ -161,7 +188,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       // Async by design: kick the chain off in the background and report back when the last
       // step finishes (each step feeds the next). The tool returns immediately.
       const chain = args.chain.map((c: any, index: number) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker", index + 1) }));
-      void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh" })
+      void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh", skill })
         .then((rows: any[]) => {
           const last = rows[rows.length - 1];
           if (last) onComplete(last, last.status, last.result ?? undefined, rows);
@@ -172,12 +199,12 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     }
     if (Array.isArray(args.tasks)) {
       const tasks = args.tasks.map((t: any) => ({ ...t, ...resolveMT(t.model, t.thinking, t.agent) }));
-      const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", async: true });
+      const rows = await runParallel(runner, tasks, { concurrency: args.concurrency, context: args.context ?? "fresh", skill, async: true });
       const list = rows.map((r: any) => `  • ${r.name ?? r.agent} — ${r.id} (${r.status})`).join("\n");
       return { content: `parallel started: ${rows.length} run(s)\n${list}`, details: withWarning({ runs: rows }) };
     }
     const { model: singleModel, thinking: singleThinking } = resolveMT(args.model, args.thinking, args.agent ?? "worker");
-    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill: args.skill, thinking: singleThinking, context: args.context ?? "fresh", async: true });
+    const row: any = await runSingle(runner, { agent: args.agent ?? "worker", task: args.task, name: args.name as string | undefined, model: singleModel, skill, thinking: singleThinking, context: args.context ?? "fresh", async: true });
     return { content: `run "${row?.name ?? row?.agent}" — ${row?.id} (${row?.status})`, details: withWarning({ run: row }) };
   };
 }

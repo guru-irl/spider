@@ -8,7 +8,7 @@ function interpolate(tmpl: string, vars: { task: string; previous: string }): st
 export async function runChain(
   runner: Runner,
   steps: Array<{ agent?: string; task?: string; name?: string; model?: string; thinking?: string; context?: "fresh" | "fork" }>,
-  base: { task: string; context: "fresh" | "fork" }
+  base: { task: string; context: "fresh" | "fork"; skill?: string }
 ): Promise<RunRow[]> {
   const out: RunRow[] = [];
   let previous = "";
@@ -22,6 +22,7 @@ export async function runChain(
       name: s.name,
       model: s.model,
       thinking: s.thinking,
+      skill: base.skill,
       context: s.context ?? base.context,
       phase: `step-${i + 1}`,
       async: true, // Foreground within the chain, but the dispatch tool already returned.

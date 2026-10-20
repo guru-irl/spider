@@ -287,6 +287,7 @@ export interface BuildChildSpawnSpecInput {
 	context: "fresh" | "fork";
 	parentSessionId: string;
 	childIndex: number;
+	/** Absolute path to the selected skill, resolved and validated before dispatch. */
 	skill?: string;
 	dbPath: string;
 	scratchRoot: string;
@@ -310,6 +311,10 @@ export interface BuildChildSpawnSpecInput {
  */
 export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawnSpec {
 	const cwd = input.cwd ?? process.cwd();
+	// Explicit selection must be acted on, not merely listed among available skills.
+	// A file instruction also works when automatic skill discovery is disabled.
+	const task = input.skill === undefined ? input.task
+		: `Before starting the task, read and follow the skill at ${JSON.stringify(input.skill)}. Resolve the skill's relative paths against its directory.\n\n${input.task}`;
 	const sessionFile = path.join(input.scratchRoot, "subagent-sessions", input.runId, `${input.runId}.jsonl`);
 	try {
 		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
@@ -342,7 +347,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 			? ["--mode", "json", "-p", "--session", sessionFile]
 			: ["--mode", "rpc", "--session", sessionFile, "--name", sessionName, "--exclude-tools", "intercom,contact_supervisor"],
 		rpc: childMode === "rpc",
-		task: input.task,
+		task,
 		sessionEnabled: true,
 		forkFromSessionId: isFork ? input.parentSessionId : undefined,
 		model: input.model,
@@ -388,5 +393,5 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
 	}
-	return { argv, env, cwd, sessionFile, childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${input.task}` } : {}) };
+	return { argv, env, cwd, sessionFile, childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${task}` } : {}) };
 }

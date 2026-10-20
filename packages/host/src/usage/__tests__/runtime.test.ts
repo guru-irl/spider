@@ -52,6 +52,18 @@ it("child starts no worker ledger or poller", async () => {
   await vi.advanceTimersByTimeAsync(0); await f.runtime.stop();
   expect(f.factory).not.toHaveBeenCalled(); expect(f.runtime.snapshot().health).toBeNull();
 });
+it("retains independent response metadata progress for doctor and distinguishes unavailable billing sources", async () => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  const config = { calibration: "auto" as const, footer: true, counterPoll: false, alertsSessionCredits: 0, alertsRunCredits: 0 };
+  const progress = { sourcesCompleted: 2, sourcesTotal: 4, sourcesUnavailable: 1 };
+  f.worker.emit("message", { ...snapshot, progress, responseMetadataBackfill: "running", responseMetadataProgress: progress });
+  expect(f.runtime.snapshot()).toMatchObject({ responseMetadataBackfill: "running", responseMetadataProgress: progress });
+  expect(usageDoctorLines(f.runtime.snapshot(), config).lines).toContain("- usage responseMetadata=running progress=2/4 sources unavailable=1");
+  expect(usageDoctorLines(f.runtime.snapshot(), config).lines).toContain("- usage backfill=complete progress=2/4 sources unavailable=1");
+  f.worker.emit("message", { ...snapshot, responseMetadataBackfill: "complete", responseMetadataProgress: { ...progress, sourcesCompleted: 3 } });
+  expect(usageDoctorLines(f.runtime.snapshot(), config).lines).toContain("- usage responseMetadata=complete progress=3/4 sources unavailable=1");
+});
+
 it("refresh coalesces until a snapshot acknowledges it", async () => {
   const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
   for (let i = 0; i < 100; i++) f.runtime.refresh();

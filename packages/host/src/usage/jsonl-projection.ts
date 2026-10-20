@@ -2,7 +2,7 @@ import { summaryModelRef } from "./price.js";
 
 // The ingest parser consumes metadata/usage, not message bodies. Project before
 // JSON.parse, rather than after: one tool-result line can exceed the worker heap.
-const ROOT = new Set(["type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId", "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "durationMs", "api", "message", "details"]);
+const ROOT = new Set(["type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId", "thinkingLevel", "providerThinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "durationMs", "api", "message", "details"]);
 const MESSAGE = new Set(["role", "timestamp", "provider", "model", "responseModel", "thinkingLevel", "providerThinkingLevel", "responseId", "usage", "latencyMs", "durationMs", "api", "toolName", "toolCallId", "parentToolCallId"]);
 const CONTENT = new Set(["type", "text"]);
 const SUMMARY_DETAILS = new Set(["summaryModel"]);

@@ -199,7 +199,7 @@ it("upgrades a v4 fixture preserving every earlier row, rowid, index and metadat
     const before = allRows(), rowids = old.prepare("SELECT rowid,id FROM calls ORDER BY rowid").all();
     const objects = old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all();
     migrateUsageLedger(old);
-    expect(old.pragma("user_version")).toBe(6); expect(allRows()).toEqual(withV6Metadata(before));
+    expect(old.pragma("user_version")).toBe(6); expect(allRows()).toEqual({ ...withV6Metadata(before), response_metadata_import: [] });
     expect(old.prepare("SELECT rowid,id FROM calls ORDER BY rowid").all()).toEqual(rowids);
     const afterObjects = old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all() as { name: string }[];
     expect(afterObjects.filter(row => (objects as { name: string }[]).some(old => old.name === row.name))).toEqual(objects);

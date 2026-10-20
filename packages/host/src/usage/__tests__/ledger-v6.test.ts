@@ -4,10 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { openDb, type Db } from "@spider/db-core";
 import { openUsageLedger, openUsageLedgerReadOnly } from "../ledger.js";
+import { dashboardBatch, dashboardCall } from "./fixtures/dashboard-ledger.js";
 import { assertUsageSchemaVersion, migrateUsageLedger } from "../migrate.js";
 import { USAGE_SCHEMA_V4 } from "../schema-v4.js";
 import { upgradeReportedCostSchema } from "../schema.js";
 import { ingestOnce } from "../ingest.js";
+import { openDashboardReader } from "../dashboard-reader.js";
+import { backfillResponseMetadata } from "../response-backfill.js";
 
 let root: string;
 const handles: { close(): void }[] = [];
@@ -28,12 +31,14 @@ afterEach(() => { for (const handle of handles.splice(0).reverse()) handle.close
 it("upgrades a v5 fixture once while preserving call rowids, selection, counters and metadata", () => {
   const db = fixture();
   const calls = db.prepare("SELECT rowid,* FROM calls ORDER BY rowid").all() as Record<string, unknown>[];
+  const originalCursors = db.prepare("SELECT * FROM import_state").all();
   const counter = db.prepare("SELECT * FROM counter_snapshots").all();
   const selected = db.prepare("SELECT id,input,aic FROM counted_calls").all();
   expect(calls).toHaveLength(1);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   migrateUsageLedger(db);
   expect(db.pragma("user_version")).toBe(6);
+  expect(db.prepare("SELECT * FROM import_state").all()).toEqual(originalCursors);
   const upgraded = db.prepare("SELECT rowid,* FROM calls ORDER BY rowid").all();
   expect(upgraded).toEqual(calls.map(call => ({ ...call, thinking_level: null, provider_thinking_level: null, tool_call_id: null, tool_duration_ms: null })));
   expect(db.prepare("SELECT id,input,aic FROM counted_calls").all()).toEqual(selected);
@@ -71,9 +76,67 @@ it("a read-only v5 follower neither needs the new columns nor migrates the write
   expect(db.pragma("user_version")).toBe(5);
 });
 
-// Breaks if an unchanged transcript is stat-skipped after the upgrade, re-read on every open,
-// or its retained facts are deleted before the replacement scan succeeds.
-it("re-reads unchanged transcripts once after v5, retaining facts when the source is unavailable", async () => {
+// Removing the metadata-only UPDATE, its null guards or its generation fence breaks this test.
+it("fills only null response metadata on existing stable identities with an atomic checkpoint", () => {
+  const file = join(root, "usage.db"), ledger = track(openUsageLedger(file)), db = track(openDb(file));
+  ledger.apply(dashboardBatch([
+    dashboardCall("one", { sourceFile: "history", latencyMs: 7, thinkingLevel: "high" }),
+    dashboardCall("two", { sourceFile: "history" }),
+  ]));
+  const original = db.prepare("SELECT rowid,* FROM calls ORDER BY id").all() as Record<string, unknown>[];
+  const selection = db.prepare("SELECT id FROM selected_usage_calls ORDER BY id").all();
+  const checkpoint = { path: "history", generation: 0, inode: "original", mtimeMs: 10, offset: 100, size: 200, complete: false, errorCode: null };
+  const update = (entryId: string, generation = 0) => ({ sourceFile: "history", entryId, sourceGeneration: generation,
+    latencyMs: 32, thinkingLevel: "low", providerThinkingLevel: "minimal", toolCallId: null, toolDurationMs: 14 });
+  expect(ledger.apply(dashboardBatch([], { responseMetadata: [update("one"), update("two", 1), update("absent")],
+    responseMetadataCheckpoints: [checkpoint] }))).toBe(true);
+  expect(db.prepare("SELECT latency_ms,thinking_level,provider_thinking_level,tool_duration_ms FROM calls WHERE id='one'").get())
+    .toEqual({ latency_ms: 7, thinking_level: "high", provider_thinking_level: "minimal", tool_duration_ms: 14 });
+  expect(db.prepare("SELECT rowid,* FROM calls WHERE id='two'").get()).toEqual(original[1]);
+  expect(db.prepare("SELECT id FROM selected_usage_calls ORDER BY id").all()).toEqual(selection);
+  expect(ledger.getResponseMetadataCheckpoint("history")).toEqual(checkpoint);
+  const after = db.prepare("SELECT rowid,* FROM calls ORDER BY id").all() as Record<string, unknown>[];
+  for (let i = 0; i < original.length; i++) for (const key of Object.keys(original[i]!)) {
+    if (!["latency_ms", "thinking_level", "provider_thinking_level", "tool_call_id", "tool_duration_ms"].includes(key))
+      expect(after[i]![key], key).toEqual(original[i]![key]);
+  }
+  const changed = { ...checkpoint, offset: 200, complete: true };
+  expect(ledger.apply(dashboardBatch([], { responseMetadata: [update("two")], responseMetadataCheckpoints: [changed], commitGuard: () => false }))).toBe(false);
+  expect(ledger.getResponseMetadataCheckpoint("history")).toEqual(checkpoint);
+  expect(db.prepare("SELECT rowid,* FROM calls WHERE id='two'").get()).toEqual(original[1]);
+});
+
+it.each([
+  ["latencyMs", "latency_ms", 41], ["thinkingLevel", "thinking_level", "low"],
+  ["providerThinkingLevel", "provider_thinking_level", "native"], ["toolCallId", "tool_call_id", "call-identity"],
+  ["toolDurationMs", "tool_duration_ms", 12],
+] as const)("invalidates an open dashboard reader when only %s is filled", (field, column, value) => {
+  const file = join(root, "usage.db"), ledger = track(openUsageLedger(file));
+  ledger.apply(dashboardBatch([dashboardCall("duration-only")]));
+  const reader = track(openDashboardReader(file, { instanceId: "fixture", serverBuild: "fixture", now: () => 1, calibrationMode: () => "off" })!);
+  const before = reader.revision();
+  const response = { sourceFile: "synthetic/parent.jsonl", entryId: "duration-only", sourceGeneration: 0, latencyMs: null,
+    thinkingLevel: null, providerThinkingLevel: null, toolCallId: null, toolDurationMs: null, [field]: value };
+  ledger.apply(dashboardBatch([], { responseMetadata: [response] }));
+  expect(reader.revision()).not.toBe(before);
+  expect(reader.snapshot(ctx => ctx.db.prepare(`SELECT ${column} FROM calls`).get())).toEqual({ [column]: value });
+  const after = reader.revision();
+  ledger.apply(dashboardBatch([], { responseMetadata: [response] }));
+  expect(reader.revision()).toBe(after);
+});
+
+it("keeps the first tool-call identity when raw ledger batches bypass parser deduplication", () => {
+  const file = join(root, "usage.db"), ledger = track(openUsageLedger(file)), db = track(openDb(file));
+  const first = dashboardCall("tool-first", { toolCallId: "tool-shared", toolDurationMs: 5 });
+  expect(ledger.apply(dashboardBatch([first]))).toBe(true);
+  expect(() => ledger.apply(dashboardBatch([dashboardCall("tool-repeat", { toolCallId: "tool-shared" })]))).not.toThrow();
+  expect(db.prepare("SELECT id,tool_call_id,tool_duration_ms FROM calls").all())
+    .toEqual([{ id: "tool-first", tool_call_id: "tool-shared", tool_duration_ms: 5 }]);
+  expect(ledger.getProgress().calls).toBe(1);
+});
+
+// The upgrade must never invalidate billing cursors or replace old pricing/attribution.
+it("enriches unchanged v5 history in place once, retaining facts when the source is unavailable", async () => {
   const db = fixture(), path = join(root, "history.jsonl");
   const at = Date.parse("2026-10-04T12:00:00Z");
   const header = { type: "session", id: "historical-session", timestamp: new Date(at).toISOString() };
@@ -97,17 +160,18 @@ it("re-reads unchanged transcripts once after v5, retaining facts when the sourc
   const discovery = { sources: [source], runs: [], errors: [] };
   const retained = db.prepare("SELECT * FROM calls WHERE source_file=?").all(path);
   renameSync(path, `${path}.parked`);
-  await ingestOnce(ledger, discovery, at, new AbortController().signal);
+  await backfillResponseMetadata(ledger, discovery, at, new AbortController().signal, () => true, 65536);
   expect(db.prepare("SELECT * FROM calls WHERE source_file=?").all(path)).toEqual(retained);
   renameSync(`${path}.parked`, path);
-  await ingestOnce(ledger, discovery, at, new AbortController().signal);
+  await backfillResponseMetadata(ledger, discovery, at, new AbortController().signal, () => true, 65536);
   expect(ledger.getImportState(auxPath)?.inode).toBe("aux-inode");
   expect(db.prepare("SELECT latency_ms,thinking_level,provider_thinking_level FROM calls WHERE source_file=?").get(path))
     .toEqual({ latency_ms: 32, thinking_level: "low", provider_thinking_level: "minimal" });
   const cursor = ledger.getImportState(path);
-  expect(cursor).toMatchObject({ generation: 1, offset: info.size, inode: `${info.dev}:${info.ino}` });
+  expect(cursor).toMatchObject({ generation: 0, offset: info.size, inode: `${info.dev}:${info.ino}` });
   const before = db.prepare("SELECT rowid,* FROM calls WHERE source_file=?").all(path);
   const follower = track(openUsageLedger(join(root, "usage.db")));
+  expect((await backfillResponseMetadata(follower, discovery, at + 1, new AbortController().signal, () => true, 65536)).bytesRead).toBe(0);
   await ingestOnce(follower, discovery, at + 1, new AbortController().signal);
   expect(follower.getImportState(path)).toEqual(cursor);
   expect(db.prepare("SELECT rowid,* FROM calls WHERE source_file=?").all(path)).toEqual(before);

@@ -88,6 +88,10 @@ export type SessionMeta = {
 export type MetadataCheckpoint = {
   path: string; generation: number; offset: number; size: number; complete: boolean;
 };
+export type ResponseMetadataCheckpoint = MetadataCheckpoint & { inode: string; mtimeMs: number; errorCode: string | null };
+export type ResponseMetadata = Pick<CallRow, "sourceFile" | "entryId" | "sourceGeneration" | "latencyMs"> & {
+  thinkingLevel: string | null; providerThinkingLevel: string | null; toolCallId: string | null; toolDurationMs: number | null;
+};
 export type SourceContext = { header: Record<string, unknown> | null; entries: { byteOffset: number; json: unknown }[]; tailHash: string };
 export type PendingReport = { path: string; runId: string; generation: number; firstSeen: number; calls: CallRow[]; partial?: boolean };
 export type ImportState = {
@@ -113,6 +117,8 @@ export type ImportBatch = {
   calls: readonly CallRow[]; runs: readonly RunMeta[]; states: readonly ImportState[];
   sessions?: readonly SessionMeta[];
   metadataCheckpoints?: readonly MetadataCheckpoint[];
+  responseMetadata?: readonly ResponseMetadata[];
+  responseMetadataCheckpoints?: readonly ResponseMetadataCheckpoint[];
   /** Replaced sources rebuild labels/spans instead of merging stale metadata. */
   resetSessionMetadata?: readonly { path: string; sessionId: string | null }[];
   /** Worker ingest-lease fence, sampled under the same IMMEDIATE write lock. */
@@ -154,6 +160,7 @@ export interface UsageLedger {
   getRuns(): readonly RunMeta[];
   getSessions(): readonly SessionMeta[];
   getMetadataCheckpoint(path: string): MetadataCheckpoint | undefined;
+  getResponseMetadataCheckpoint(path: string): ResponseMetadataCheckpoint | undefined;
   /** With roots, load only their persisted ancestry plus the last linear node.
    * An empty roots array reads header/checkpoints only. Omitted roots is a diagnostic full read. */
   getSourceContext(path: string, roots?: readonly string[]): SourceContext | undefined;
@@ -370,6 +377,26 @@ function createLedger(db: Db): UsageLedger {
     VALUES (${callColumns.map(column => `@${column}`).join(",")})
     ON CONFLICT(source_file,entry_id) DO NOTHING
     ${hasResponseMetadata ? "ON CONFLICT(source_file,tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING" : ""}`);
+  const putResponseMetadata = hasResponseMetadata ? db.prepare(`UPDATE calls SET
+    latency_ms=COALESCE(latency_ms,@latencyMs),
+    thinking_level=COALESCE(thinking_level,@thinkingLevel),
+    provider_thinking_level=COALESCE(provider_thinking_level,@providerThinkingLevel),
+    tool_duration_ms=COALESCE(tool_duration_ms,@toolDurationMs),
+    tool_call_id=COALESCE(tool_call_id,CASE WHEN NOT EXISTS (
+      SELECT 1 FROM calls other WHERE other.source_file=@sourceFile AND other.tool_call_id=@toolCallId
+    ) THEN @toolCallId END)
+    WHERE source_file=@sourceFile AND entry_id=@entryId AND source_generation=@sourceGeneration
+      AND ((latency_ms IS NULL AND @latencyMs IS NOT NULL) OR (thinking_level IS NULL AND @thinkingLevel IS NOT NULL)
+        OR (provider_thinking_level IS NULL AND @providerThinkingLevel IS NOT NULL)
+        OR (tool_duration_ms IS NULL AND @toolDurationMs IS NOT NULL)
+        OR (tool_call_id IS NULL AND @toolCallId IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM calls other WHERE other.source_file=@sourceFile AND other.tool_call_id=@toolCallId)))`) : undefined;
+  const putResponseCheckpoint = hasResponseMetadata ? db.prepare(`INSERT INTO response_metadata_import
+    (path,generation,inode,mtime_ms,offset,size,complete,error_code) VALUES (@path,@generation,@inode,@mtimeMs,@offset,@size,@complete,@errorCode)
+    ON CONFLICT(path) DO UPDATE SET generation=excluded.generation,inode=excluded.inode,mtime_ms=excluded.mtime_ms,
+      offset=excluded.offset,size=excluded.size,complete=excluded.complete,error_code=excluded.error_code`) : undefined;
+  const getResponseCheckpoint = hasResponseMetadata ? db.prepare(`SELECT path,generation,inode,mtime_ms AS mtimeMs,
+    offset,size,complete,error_code AS errorCode FROM response_metadata_import WHERE path=?`) : undefined;
   const reset = db.prepare("DELETE FROM calls WHERE source_file = ? AND source_generation < ?");
   const putState = db.prepare(`INSERT INTO import_state
     (path, inode, size, mtime_ms, offset, parse_errors, generation, prefix_hash, last_ingest_at)
@@ -545,6 +572,9 @@ function createLedger(db: Db): UsageLedger {
           putMetadataCheckpoint?.run({ ...checkpoint, complete: Number(checkpoint.complete) });
           clearMetadataSourceError.run(`metadata:source:${checkpoint.path}`);
         }, `metadata:checkpoint:${checkpoint.path}`);
+        for (const item of batch.responseMetadata ?? []) putResponseMetadata?.run(item);
+        for (const checkpoint of batch.responseMetadataCheckpoints ?? [])
+          putResponseCheckpoint?.run({ ...checkpoint, complete: Number(checkpoint.complete) });
         for (const call of batch.calls) insertCall.run(callValues(call));
         for (const edge of batch.removeCoverageEdges ?? []) removeCoverageEdge.run(edge.reportRunId, edge.includedRunId);
         for (const edge of batch.coverageEdges ?? []) putCoverageEdge.run(edge);
@@ -636,6 +666,10 @@ function createLedger(db: Db): UsageLedger {
     getSessions() { return (getSessions?.all() ?? []) as SessionMeta[]; },
     getMetadataCheckpoint(path) {
       const row = getMetadataCheckpoint?.get(path) as (Omit<MetadataCheckpoint, "complete"> & { complete: number }) | undefined;
+      return row ? { ...row, complete: Boolean(row.complete) } : undefined;
+    },
+    getResponseMetadataCheckpoint(path) {
+      const row = getResponseCheckpoint?.get(path) as (Omit<ResponseMetadataCheckpoint, "complete"> & { complete: number }) | undefined;
       return row ? { ...row, complete: Boolean(row.complete) } : undefined;
     },
     insertCounter(snapshot) {

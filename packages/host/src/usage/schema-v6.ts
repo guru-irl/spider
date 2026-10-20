@@ -17,8 +17,14 @@ BEGIN
     ON CONFLICT(key) DO UPDATE SET value=CAST(ledger_metadata.value AS INTEGER)+1;
 END;
 
--- Force the next transcript scan through its existing generation-reset path.
--- Calls survive until a replacement scan commits, including unavailable files.
--- DB-only auxiliary events have no transcript metadata to rebuild.
-UPDATE import_state SET inode='usage-v6:' || inode WHERE inode IS NOT NULL AND path NOT LIKE '%#spider-aux';
+CREATE TABLE response_metadata_import (
+  path TEXT PRIMARY KEY NOT NULL,
+  generation INTEGER NOT NULL,
+  inode TEXT NOT NULL,
+  mtime_ms REAL NOT NULL,
+  offset INTEGER NOT NULL CHECK (offset >= 0),
+  size INTEGER NOT NULL CHECK (size >= offset),
+  complete INTEGER NOT NULL CHECK (complete IN (0,1)),
+  error_code TEXT
+);
 `;

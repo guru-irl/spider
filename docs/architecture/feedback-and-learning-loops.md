@@ -15,9 +15,9 @@ The four loops are:
 2. **The memory lifecycle.** Foreground `remember` writes require justification and
    a durability, overlap, and scope review before activation. A failed review stores
    as requested. Auto-sourced and background writes stage fail-closed for approval.
-   The active-memory snapshot is frozen at the first `before_agent_start` or
-   provider request. `before_agent_start` and `context_with_system` apply the same
-   block on every request. New sessions take a fresh snapshot.
+   The first `before_agent_start` freezes active memory in the `spider_memory`
+   prompt section. Pi keeps the section through the run's requests. New sessions
+   take a fresh snapshot.
 3. **The organism feedback and learning loop.** On before-compact and on
    shutdown the organism drains the finished session, runs passes that propose
    memory and skill candidates, stages them, records a summary and a self-name,
@@ -32,8 +32,7 @@ The four loops are:
 | Trigger | Kind | What it drives |
 | --- | --- | --- |
 | `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). |
-| `before_agent_start` | pi hook | Freeze the session's memory snapshot on first use and append it to the run's system prompt. |
-| `context_with_system` | pi hook | Apply the same frozen block on every provider request, including idle notification runs that skip `before_agent_start`; freeze on first use if needed. |
+| `before_agent_start` | pi hook | Freeze the session's memory snapshot on first use and set its `spider_memory` section for user and idle custom-message runs. |
 | `tool_call` / `tool_result` | pi hook | Record intent, scrub secrets, scan for injection, auto-index large non-spider output. |
 | `session_before_compact` | pi hook | Fire-and-forget organism drain with `reason: "before_compact"`. |
 | `session_shutdown` | pi hook | Await organism drain with `reason: "shutdown"`, then run curator decay. |
@@ -158,8 +157,9 @@ re-checks the cap at approval time, so an approval can still fail with
 Rejection sets `status: "rejected"`. Nothing is hard-deleted; rejected and
 archived rows stay in the table and are removed only from the FTS mirror.
 
-The active snapshot is frozen per session and applied on every provider request
-through `before_agent_start` and `context_with_system`. The host hooks and
+The active snapshot is frozen per session in the named `spider_memory` prompt
+section. `before_agent_start` sets that section for user and custom-message runs;
+pi 1.2.0 preserves it through the run's provider requests. The host hooks and
 `control doctor` use one `readInjectionSnapshot` function. It resolves session
 bindings from the read-only global DB, then reads active memory from the global and repo
 tiers independently using read-only DB opens. It does not register projects,
@@ -171,20 +171,25 @@ active entries are injected. An optional explicit `memory.snapshotCharCap`
 limit skips entries that do not fit and continues packing smaller entries. It
 appends `Memory snapshot: N entries omitted.` when a configured cap omits rows;
 doctor reports this as a warning without failing its check. `before_agent_start`
-returns a system-prompt patch only when the snapshot is non-empty and the system
-prompt is a string. `context_with_system` replays the transcript's system prompt
-and tool declarations into one leading system message and appends the frozen
-block if it is not already present. It leaves the stored transcript unchanged.
+sets `systemPromptOptions.sections.spider_memory` when memory is non-empty and
+deletes only that key when empty. It returns no full prompt. If an earlier
+extension already forced the prompt, spider appends the frozen block to that force
+only when absent. Later extensions must preserve the current prompt when composing.
 
-- The first `before_agent_start` or provider request freezes the memory text,
-  including an empty result. Both hooks apply byte-identical text on every request,
-  not a cached copy of another extension's prefix. Idle notification turns use
-  `context_with_system` because they skip `before_agent_start`.
+Pi persists unchanged section text once and appends patches for section changes.
+Compaction can also copy the current section into its system-prompt checkpoint.
+Session files and HTML or JSONL exports therefore contain injected global and repo
+memory, including historical values. Review them before sharing.
+
+- The first `before_agent_start` freezes the memory text, including an empty
+  result. User turns and idle completion notifications use the same hook.
+  Queued work, tool cycles, steers and follow-ups keep the byte-identical section,
+  not a cached copy of another extension's prefix.
 - New writes, approvals, supersessions and cap changes persist immediately but
   enter the prompt next session. Recall and doctor still read current rows;
   doctor's current counts need not match an existing session's frozen block.
-- A different session ID or file (new, resume or fork), an extension reload, or a
-  changed memory binding target rebuilds the block. The hook checks the read-only
+- A different session ID or file, a changed working directory, an extension
+  reload, or a changed memory binding target rebuilds the block. The hook checks the read-only
   binding on each call without rereading active memory or config on stable turns.
 - Each subagent session freezes independently. The host `session_start` hook
   inserts the session row that the organism later drains.
@@ -216,8 +221,8 @@ flowchart TD
   ACT2 --> AM
 
   AM --> SNAP["readInjectionSnapshot, global and repo read-only; no default cap"]
-  SNAP --> FREEZE["first before_agent_start or provider request freezes the block"]
-  FREEZE --> INJ["before_agent_start and context_with_system apply the same block on every request"]
+  SNAP --> FREEZE["first user or custom before_agent_start freezes the block"]
+  FREEZE --> INJ["before_agent_start sets spider_memory; pi keeps it through the run"]
   AM --> NEXT["new session, reload or changed binding takes a fresh snapshot"]
   NEXT --> SNAP
 ```

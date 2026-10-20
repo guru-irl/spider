@@ -15,7 +15,7 @@
 - No new npm dependencies and no `package.json` or lockfile change; never run npm install or npm ci.
 - Production code lives under `packages/host/src/usage/`, apart from narrow integration edits in existing host/UI files.
 - Package DAG remains host -> subagents -> db-core and host -> ui. Memory must not import models or host.
-- Import pi packages from their root, never deep paths. Inspected APIs are pi 0.87.1; retain compatibility with the declared floor 0.87.0.
+- Import pi packages from their root, never deep paths. This plan originally inspected pi 0.87.1; spider's current minimum is pi 1.2.0. Check the installed declarations.
 - All data stays local in `usage.db`. Nothing is uploaded. Counter traffic is an authenticated GET, not a billing write.
 - Test fixtures are synthetic and contain no real transcripts, accounts or counter values. Never read actual user DBs, sessions, credentials, or configs in tests.
 - No real model calls. No nested subagents from implementation workers. The orchestrator owns dispatch and each fresh read-only reviewer gate.

@@ -88,7 +88,7 @@ the default registry path and never makes a network call on its own.
 
 **recordModelStat().** Runs a single `INSERT INTO model_stats (model, ms, ok, tokens, ts)` through a raw prepared statement against whatever `Db` handle it is given (project or global). `@spider/host`'s `stats` control command reads the same table back out of the global database.
 
-**Pi contract.** The registry path targets pi 0.87.x and uses root package type
+**Pi contract.** The registry path requires pi 1.2.0 or later and uses root package type
 imports. Provider-payload tests use the real registry against fixture HTTP servers;
 no personal configuration or real provider calls are involved.
 

@@ -24,9 +24,13 @@ function fixture(name: string) {
   setGlobalDbPathForTests(globalPath);
   const handlers: Record<string, (...args: any[]) => any> = {};
   registerHooks({ on(name, fn) { handlers[name] = fn; } });
-  const inject = (sessionId?: string, sessionFile?: string, systemPrompt = "base") => handlers.before_agent_start(
-    { systemPrompt }, { cwd, sessionManager: { getSessionId: () => sessionId, getSessionFile: () => sessionFile } },
-  );
+  const inject = (sessionId?: string, sessionFile?: string, customPrompt = "base") => {
+    const systemPromptOptions = { customPrompt, sections: {} as Record<string, string> };
+    expect(handlers.before_agent_start(
+      { systemPromptOptions }, { cwd, sessionManager: { getSessionId: () => sessionId, getSessionFile: () => sessionFile } },
+    )).toBeUndefined();
+    return systemPromptOptions;
+  };
   return { cwd, repoPath, globalPath, inject };
 }
 
@@ -43,8 +47,8 @@ describe("production memory injection", () => {
             ? addMemory(db, scope, { category: "convention", content: "Later memory fact", source: "user", status: "staged" })
             : undefined;
           const first = f.inject("original-session");
-          expect(first.systemPrompt).toContain("Original memory fact");
-          expect(first.systemPrompt).not.toContain("Later memory fact");
+          expect(first.sections.spider_memory).toContain("Original memory fact");
+          expect(first.sections.spider_memory).not.toContain("Later memory fact");
           if (staged) {
             expect(approvePending(db, scope, staged.uuid)?.status).toBe("active");
           } else {
@@ -54,8 +58,8 @@ describe("production memory injection", () => {
           expect(f.inject("original-session")).toEqual(first);
           expect(f.inject("original-session")).toEqual(first);
           const next = f.inject("next-session");
-          expect(next.systemPrompt).toContain("Later memory fact");
-          if (change === "superseded") expect(next.systemPrompt).not.toContain("Original memory fact");
+          expect(next.sections.spider_memory).toContain("Later memory fact");
+          if (change === "superseded") expect(next.sections.spider_memory).not.toContain("Original memory fact");
         } finally { db.close(); }
       });
     }
@@ -74,13 +78,13 @@ describe("production memory injection", () => {
       chmodSync(failedPath, 0o000);
       try {
         const degraded = f.inject("recovery-session");
-        expect(degraded.systemPrompt).toContain(`${failedScope === "repo" ? "global" : "repo"} recovery fact`);
-        expect(degraded.systemPrompt).not.toContain(`${failedScope} recovery fact`);
+        expect(degraded.sections.spider_memory).toContain(`${failedScope === "repo" ? "global" : "repo"} recovery fact`);
+        expect(degraded.sections.spider_memory).not.toContain(`${failedScope} recovery fact`);
         expect(f.inject("recovery-session")).toEqual(degraded);
       } finally { chmodSync(failedPath, 0o600); }
       const recovered = f.inject("recovery-session");
-      expect(recovered.systemPrompt).toContain("repo recovery fact");
-      expect(recovered.systemPrompt).toContain("global recovery fact");
+      expect(recovered.sections.spider_memory).toContain("repo recovery fact");
+      expect(recovered.sections.spider_memory).toContain("global recovery fact");
       const db = openDbAt(f.repoPath, "repo");
       try { addMemory(db, "repo", { category: "convention", content: "After recovery fact", source: "user", status: "active" }); }
       finally { db.close(); }
@@ -102,8 +106,8 @@ describe("production memory injection", () => {
     finally { global.close(); }
     const file = join(root, "bound-recovery.jsonl");
     const first = a.inject("bound-recovery-session", file);
-    expect(first.systemPrompt).toContain("Bound recovery fact");
-    expect(first.systemPrompt).not.toContain("Wrong cwd fact");
+    expect(first.sections.spider_memory).toContain("Bound recovery fact");
+    expect(first.sections.spider_memory).not.toContain("Wrong cwd fact");
     const boundDb = openDbAt(b.repoPath, "repo");
     try { addMemory(boundDb, "repo", { category: "convention", content: "Later bound recovery fact", source: "user", status: "active" }); }
     finally { boundDb.close(); }
@@ -113,21 +117,21 @@ describe("production memory injection", () => {
       expect(a.inject("bound-recovery-session", file)).toEqual(first);
       // A different native session must not inherit the previous bound block.
       const other = a.inject("other-recovery-session", join(root, "other.jsonl"));
-      expect(other.systemPrompt).toContain("Wrong cwd fact");
-      expect(other.systemPrompt).not.toContain("Bound recovery fact");
+      expect(other.sections.spider_memory).toContain("Wrong cwd fact");
+      expect(other.sections.spider_memory).not.toContain("Bound recovery fact");
     } finally { chmodSync(b.globalPath, 0o600); }
     expect(a.inject("bound-recovery-session", file)).toEqual(first);
   });
 
   it("freezes an empty snapshot until the session changes", () => {
     const f = fixture("freeze-empty");
-    expect(f.inject("empty-session")).toBeUndefined();
+    expect(f.inject("empty-session").sections).toEqual({});
     const db = openDbAt(f.repoPath, "repo");
     try {
       addMemory(db, "repo", { category: "preference", content: "First memory fact", source: "user", status: "active" });
     } finally { db.close(); }
-    expect(f.inject("empty-session")).toBeUndefined();
-    expect(f.inject("new-session").systemPrompt).toContain("First memory fact");
+    expect(f.inject("empty-session").sections).toEqual({});
+    expect(f.inject("new-session").sections.spider_memory).toContain("First memory fact");
   });
 
   it("rebuilds when the session file changes even if the id stays the same", () => {
@@ -138,7 +142,7 @@ describe("production memory injection", () => {
       const first = f.inject("same-id", join(root, "first.jsonl"));
       addMemory(db, "repo", { category: "convention", content: "New file fact", source: "user", status: "active" });
       expect(f.inject("same-id", join(root, "first.jsonl"))).toEqual(first);
-      expect(f.inject("same-id", join(root, "second.jsonl")).systemPrompt).toContain("New file fact");
+      expect(f.inject("same-id", join(root, "second.jsonl")).sections.spider_memory).toContain("New file fact");
     } finally { db.close(); }
   });
 
@@ -151,13 +155,13 @@ describe("production memory injection", () => {
       finally { db.close(); }
     }
     const first = a.inject("binding-session");
-    expect(first.systemPrompt).toContain("CWD frozen fact");
+    expect(first.sections.spider_memory).toContain("CWD frozen fact");
     const global = openGlobal();
     try {
       expect(controlBind(global, "binding-session", b.cwd).ok).toBe(true);
       const bound = a.inject("binding-session");
-      expect(bound.systemPrompt).toContain("Bound frozen fact");
-      expect(bound.systemPrompt).not.toContain("CWD frozen fact");
+      expect(bound.sections.spider_memory).toContain("Bound frozen fact");
+      expect(bound.sections.spider_memory).not.toContain("CWD frozen fact");
       const db = openDbAt(b.repoPath, "repo");
       try { addMemory(db, "repo", { category: "convention", content: "Later bound fact", source: "user", status: "active" }); }
       finally { db.close(); }
@@ -170,10 +174,10 @@ describe("production memory injection", () => {
       finally { cwdDb.close(); }
       expect(controlUnbind(global, "binding-session").ok).toBe(true);
       const unbound = a.inject("binding-session");
-      expect(unbound.systemPrompt).toContain("CWD frozen fact");
-      expect(unbound.systemPrompt).toContain("Later cwd fact");
-      expect(unbound.systemPrompt).not.toContain("Bound frozen fact");
-      expect(unbound.systemPrompt).not.toContain("Later bound fact");
+      expect(unbound.sections.spider_memory).toContain("CWD frozen fact");
+      expect(unbound.sections.spider_memory).toContain("Later cwd fact");
+      expect(unbound.sections.spider_memory).not.toContain("Bound frozen fact");
+      expect(unbound.sections.spider_memory).not.toContain("Later bound fact");
       expect(a.inject("binding-session")).toEqual(unbound);
     } finally { global.close(); }
   });
@@ -187,9 +191,10 @@ describe("production memory injection", () => {
       addMemory(db, "repo", { category: "convention", content: "After reload fact", source: "user", status: "active" });
       const handlers: Record<string, (...args: any[]) => any> = {};
       registerHooks({ on(name, fn) { handlers[name] = fn; } });
-      const reloaded = handlers.before_agent_start({ systemPrompt: "base" },
+      const reloaded = { sections: {} as Record<string, string> };
+      handlers.before_agent_start({ systemPromptOptions: reloaded },
         { cwd: f.cwd, sessionManager: { getSessionId: () => "reload-session" } });
-      expect(reloaded.systemPrompt).toContain("After reload fact");
+      expect(reloaded.sections.spider_memory).toContain("After reload fact");
       expect(f.inject("reload-session")).toEqual(first);
     } finally { db.close(); }
   });
@@ -205,24 +210,30 @@ describe("production memory injection", () => {
       vi.stubEnv("PI_SPIDER_DB_PATH", join(root, "child-runs.db"));
       const handlers: Record<string, (...args: any[]) => any> = {};
       registerHooks({ on(name, fn) { handlers[name] = fn; } });
-      const injectChild = () => handlers.before_agent_start({ systemPrompt: "base" },
-        { cwd: f.cwd, sessionManager: { getSessionId: () => "child-session" } });
+      const injectChild = () => {
+        const options = { sections: {} as Record<string, string> };
+        handlers.before_agent_start({ systemPromptOptions: options },
+          { cwd: f.cwd, sessionManager: { getSessionId: () => "child-session" } });
+        return options;
+      };
       const child = injectChild();
-      expect(child.systemPrompt).toContain("Before child fact");
+      expect(child.sections.spider_memory).toContain("Before child fact");
       addMemory(db, "repo", { category: "insight", content: "After child fact", source: "user", status: "active" });
       expect(injectChild()).toEqual(child);
       expect(f.inject("parent-session")).toEqual(parent);
     } finally { db.close(); }
   });
 
-  it("appends the frozen block to the incoming prompt instead of freezing another extension's prefix", () => {
+  it("keeps memory independent of another extension's changing prompt prefix", () => {
     const f = fixture("freeze-prefix");
     const db = openDbAt(f.repoPath, "repo");
     try {
       addMemory(db, "repo", { category: "preference", content: "Prefix memory fact", source: "user", status: "active" });
-      const first = f.inject("prefix-session").systemPrompt;
+      const first = f.inject("prefix-session").sections.spider_memory;
       addMemory(db, "repo", { category: "convention", content: "Later prefix fact", source: "user", status: "active" });
-      expect(f.inject("prefix-session", undefined, "changed prefix").systemPrompt).toBe("changed prefix" + first.slice("base".length));
+      const next = f.inject("prefix-session", undefined, "changed prefix")!;
+      expect(next.customPrompt).toBe("changed prefix");
+      expect(next.sections.spider_memory).toBe(first);
     } finally { db.close(); }
   });
 
@@ -237,9 +248,9 @@ describe("production memory injection", () => {
       db.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES (?, 'preference', ?, 'active', 'user', 1)").run(label, label);
       db.close();
     }
-    const result = a.inject("bound-session") as { systemPrompt: string };
-    expect(result.systemPrompt).toContain("BOUND-FACT");
-    expect(result.systemPrompt).not.toContain("CWD-FACT");
+    const result = a.inject("bound-session");
+    expect(result.sections.spider_memory).toContain("BOUND-FACT");
+    expect(result.sections.spider_memory).not.toContain("CWD-FACT");
   });
 
   it("doctor and injection count the same bound repo, not the cwd repo", async () => {
@@ -251,7 +262,7 @@ describe("production memory injection", () => {
     const repo = openDbAt(b.repoPath, "repo");
     repo.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES ('bound-1', 'preference', 'BOUND-DOCTOR-FACT', 'active', 'user', 1)").run();
     repo.close();
-    expect((a.inject("doctor-bound") as { systemPrompt: string }).systemPrompt).toContain("BOUND-DOCTOR-FACT");
+    expect((a.inject("doctor-bound")).sections.spider_memory).toContain("BOUND-DOCTOR-FACT");
     let tool: any;
     spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
     const result = await tool.execute("bound-doc", { action: "control", command: "doctor" }, undefined, undefined,
@@ -269,7 +280,7 @@ describe("production memory injection", () => {
     repo.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES ('bound-large', 'insight', ?, 'active', 'user', 1)").run("B".repeat(700));
     repo.close();
     controlConfig("set", b.cwd, "memory.snapshotCharCap", 100);
-    expect((a.inject("cap-bound") as { systemPrompt: string } | undefined)?.systemPrompt ?? "").not.toContain("BBBB");
+    expect((a.inject("cap-bound"))?.sections.spider_memory ?? "").not.toContain("BBBB");
     let tool: any;
     spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
     const result = await tool.execute("bound-cap", { action: "control", command: "doctor" }, undefined, undefined,
@@ -287,7 +298,7 @@ describe("production memory injection", () => {
     // Partial legacy DB: valid SQLite file, but no memory table.
     const { openDb } = await import("@spider/db-core");
     openDb(f.repoPath).close();
-    expect((f.inject() as { systemPrompt: string }).systemPrompt).toContain("GLOBAL-FACT");
+    expect((f.inject()).sections.spider_memory).toContain("GLOBAL-FACT");
     let tool: any;
     spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
     const result = await tool.execute("broken", { action: "control", command: "doctor", cwd: f.cwd }, {});
@@ -303,7 +314,7 @@ describe("production memory injection", () => {
     g.close();
     mkdirSync(join(f.cwd, ".git", "spider"), { recursive: true });
     writeFileSync(f.repoPath, "not sqlite data");
-    expect((f.inject() as { systemPrompt: string }).systemPrompt).toContain("CORRUPT-FALLBACK");
+    expect((f.inject()).sections.spider_memory).toContain("CORRUPT-FALLBACK");
     let tool: any;
     spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
     const result = await tool.execute("corrupt", { action: "control", command: "doctor", cwd: f.cwd }, {});
@@ -378,7 +389,7 @@ describe("production memory injection", () => {
     const dir = join(f.cwd, ".git", "spider");
     chmodSync(dir, 0o500);
     try {
-      expect((f.inject() as { systemPrompt: string }).systemPrompt).toContain("GLOBAL-DIR-FACT");
+      expect((f.inject()).sections.spider_memory).toContain("GLOBAL-DIR-FACT");
       let tool: any;
       spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
       const result = await tool.execute("readonly", { action: "control", command: "doctor", cwd: f.cwd }, {});
@@ -390,7 +401,7 @@ describe("production memory injection", () => {
 
   it("does not create databases when none exist", () => {
     const f = fixture("absent");
-    expect(f.inject()).toBeUndefined();
+    expect(f.inject().sections).toEqual({});
     expect(existsSync(f.repoPath)).toBe(false);
     expect(existsSync(f.globalPath)).toBe(false);
   });
@@ -487,7 +498,7 @@ describe("production memory injection", () => {
     global.exec(`ALTER TABLE global_memory DROP COLUMN justification; ALTER TABLE global_memory DROP COLUMN evidence; PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
     global.close();
 
-    const prompt = (f.inject() as { systemPrompt: string }).systemPrompt;
+    const prompt = (f.inject()).sections.spider_memory;
     expect(prompt).toContain("REPO-LEGACY-FACT");
     expect(prompt).toContain("GLOBAL-LEGACY-FACT");
     for (const [path, scope, uuid, content] of [
@@ -639,7 +650,7 @@ describe("production memory injection", () => {
     let tool: any;
     spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
     controlConfig("set", f.cwd, "memory.snapshotCharCap", "100");
-    expect((f.inject() as { systemPrompt: string }).systemPrompt).not.toContain("LLLL");
+    expect((f.inject()).sections.spider_memory).not.toContain("LLLL");
     const capped = await tool.execute("string", { action: "control", command: "doctor", cwd: f.cwd }, {});
     expect((capped.details as { lines: string[] }).lines.join("\n")).toContain("memory repo: active=1 injected=0");
     controlConfig("set", f.cwd, "memory.snapshotCharCap", "not-a-number");
@@ -659,13 +670,13 @@ describe("production memory injection", () => {
     repo.close();
     controlConfig("set", f.cwd, "memory.snapshotCharCap", 160);
     const before = [statSync(f.repoPath).mtimeMs, statSync(f.globalPath).mtimeMs];
-    const result = f.inject() as { systemPrompt: string };
-    expect(result.systemPrompt).toContain("## global");
-    expect(result.systemPrompt).toContain("global directive");
-    expect(result.systemPrompt).toContain("## repo");
-    expect(result.systemPrompt).toContain("repo correction");
-    expect(result.systemPrompt).toContain("1 entry omitted");
-    expect(result.systemPrompt).not.toContain("HHHH");
+    const result = f.inject();
+    expect(result.sections.spider_memory).toContain("## global");
+    expect(result.sections.spider_memory).toContain("global directive");
+    expect(result.sections.spider_memory).toContain("## repo");
+    expect(result.sections.spider_memory).toContain("repo correction");
+    expect(result.sections.spider_memory).toContain("1 entry omitted");
+    expect(result.sections.spider_memory).not.toContain("HHHH");
     expect([statSync(f.repoPath).mtimeMs, statSync(f.globalPath).mtimeMs]).toEqual(before);
   });
 });

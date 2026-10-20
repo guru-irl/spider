@@ -170,7 +170,7 @@ capabilities. Without supplied thinking data, the standalone schema has empty
 reviewer enums and the models view omits capability lines.
 
 The package has one peer
-dependency, `@earendil-works/pi-tui` (`>=0.87.0`), for width-safe string helpers
+dependency, `@earendil-works/pi-tui` (`>=1.2.0`), for width-safe string helpers
 (`truncateToWidth`, `visibleWidth`) and key matching (`Key`, `matchesKey`). `pi-tui` is a
 display-utility library, not the pi extension host: this package has no reference to pi's tool
 registration, hooks, or slash-command APIs.

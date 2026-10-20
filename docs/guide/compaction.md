@@ -61,7 +61,7 @@ The organism's before-compaction drain returns no compaction result, so it does 
 
 With `PI_SUBAGENT_CHILD=1`, configured thresholds trigger draft compaction at completed `turn_end` boundaries with tool results. Children use their own model, thinking and pi reserves, not the parent summary settings. They never call `ctx.compact()` or compact at `agent_end`.
 
-The child path preserves recent context, merges the previous summary and appends one compaction draft. Pending context edits, small summarizable spans and existing draft compactions are skipped. Diagnostics are emitted once per reason. Failed summaries wait for `keepRecentTokens` of token growth before retrying; unknown token counts keep the back-off active. Failures do not change the history. The mirrored cut-point and file-operation logic is verified against pi 1.2.0, with legacy pi 0.87 support retained. Other versions warn that differential fuzz must be rerun.
+The child path preserves recent context, merges the previous summary and appends one compaction draft. Pending context edits, small summarizable spans and existing draft compactions are skipped. Diagnostics are emitted once per reason. Failed summaries wait for `keepRecentTokens` of token growth before retrying; unknown token counts keep the back-off active. Failures do not change the history. The mirrored cut-point and file-operation logic is verified against pi 1.2.0, spider's minimum supported version. Other unverified versions warn that differential fuzz must be rerun.
 
 ## Migrate from the standalone plugin
 

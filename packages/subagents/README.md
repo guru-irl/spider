@@ -217,8 +217,10 @@ RPC dialogs are cancelled immediately and recorded as warnings. Fire-and-forget
 UI requests are ignored. No project trust override is added: print and RPC use
 Pi's non-interactive trust resolution. Default RPC mode requires Pi 0.85.1 or
 later for `--exclude-tools`, `--name`, `agent_settled` and `clear_queue`; these
-features were verified in 0.85.1 and 0.87.0. Older child binaries automatically
-use print mode, without an orchestrator target. The compatibility reason appears in
+features were originally verified in 0.85.1 and 0.87.0. Spider now requires pi
+1.2.0 or later, including in children that load its extension. The binary detector
+still sends older child binaries to print mode, without an orchestrator target;
+that fallback does not make older hosts supported. The compatibility reason appears in
 run tool details, run events and completion output, never the persisted result or
 chain/pipeline handoff. Metadata is read from the resolved PATH binary or
 `PI_SUBAGENT_PI_BINARY`, cached by resolved path plus file mtime and size,

@@ -269,7 +269,7 @@ export const SPIDER_PARAMETERS = {
     // loop / schedule: session-local timers for external work, never subagent polling
     interval: { type: "string", description: "loop: fixed interval like 5m or 1h (minimum 60 seconds, maximum 24 days). Omit for a self-paced loop re-armed with spider schedule." },
     delaySeconds: { type: "number", description: "schedule: seconds before a one-shot wakeup, rounded and clamped to 60–3600; waits for idle. A new call replaces the pending wakeup." },
-    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without a prompt reports the loop and pending wakeup. For external work (CI, deploys, timers), not polling subagents; their completion notices arrive automatically." },
+    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without a prompt or interval reports status; an interval needs a prompt. Prompts cannot start with '/' except the self-paced /loop <prompt> re-arm. For external work (CI, deploys, timers), not polling subagents; their completion notices arrive automatically." },
     reason: { type: "string", description: "schedule: why this delay, in one short sentence." },
     noop: { type: "boolean", description: "schedule: label a routine check; the wakeup is still scheduled." },
     stop: { type: "boolean", description: "loop: end the loop and pending wakeup. schedule: cancel only the pending wakeup. Needs no other fields. Both actions are top-level persistent sessions only; shutdown and /reload end timers." },

@@ -44,6 +44,8 @@ spider schedule delaySeconds:300 prompt:"/loop watch the external build until it
 
 The scheduler handles this re-arm internally, without sending `/loop` through pi's command dispatch. It accepts only `/loop <prompt>` matching the active self-paced loop and keeps that loop's original user or model origin. Each iteration chooses its next delay. Skipping the scheduling call ends further iterations. The loop's prompt remains visible in status until a stop or replacement, even when no wakeup is pending.
 
+If a user starts a self-paced loop with a prompt template, such as `/loop /check`, the template must include `$@` to keep the appended re-arm instructions. Without `$@`, template expansion drops those instructions, so the loop may end after its first iteration.
+
 ## One-shot wakeups
 
 `spider schedule` delivers one follow-up user message after a delay:

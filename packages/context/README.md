@@ -16,12 +16,12 @@ This package does not own:
 
 - Memory's staging and approval rules, or the embedding worker that drains the embed queue. It calls into `@spider/memory` (`stageWrite`, `approvePending`, `enqueueEmbed`, `resolveEmbedder`, `knn`) instead of reimplementing any of it.
 - The todo package's API. `import.ts` inserts rows into the shared `todos` and `todos_fts` tables directly with raw SQL, instead of using `@spider/todo`'s store (see Notes).
-- The policy for when to route large tool output into the content store automatically. `@spider/host`'s routing layer makes that decision (a byte threshold, secret scrubbing, tracking). This package only supplies the mechanism that the layer calls, `ContentStore`.
+- The policy for when to route large tool output into the content store automatically. `@spider/host`'s routing layer makes that decision (a string-length threshold, secret scrubbing, tracking). This package only supplies the mechanism that the layer calls, `ContentStore`.
 - Rendering for `exec`, `exec_file`, `batch`, `index`, and `fetch`. Those renderers live in `@spider/ui`, and the host uses them. This package renders only the `search` and `import` results (`renderers.ts`).
 
 ### Why this package exists
 
-A command's full output, a fetched page, or a large file does not need to sit in the model's context window to stay useful. `exec`, `exec_file`, and `batch` run code and return a byte-capped slice of stdout and stderr, not the full transcript. `index` and `fetch` chunk full text and store it as rows in the project database instead of returning it inline. Either way, the bytes stay in the database. `search` pulls a relevant slice back out later, on demand. Only what a script prints or a query matches becomes part of the conversation.
+A command's full output, a fetched page, or a large file does not need to sit in the model's context window to stay useful. `exec`, `exec_file`, and `batch` run code and return a byte-capped slice of stdout and stderr, not the full transcript. `index` and `fetch` chunk full text and store it as rows in the project database instead of returning it inline. Only indexed text is searchable. Spider does not index exec output automatically. To search it later, save it to a file and index that file. Only what a script prints or a query matches becomes part of the conversation.
 
 ## Key modules
 
@@ -29,7 +29,7 @@ A command's full output, a fetched page, or a large file does not need to sit in
 
 | File | What it does |
 | --- | --- |
-| `actions/exec.ts` | Handles `exec`, `exec_file`, and `batch`. They run one script, run a script from a file with the file's content preloaded into a variable, or run several scripts in sequence. The handlers cap the returned text at 200,000 bytes. |
+| `actions/exec.ts` | Handles `exec`, `exec_file`, and `batch`. They run one script, run a script from a file with the file's content preloaded into a variable, or run several scripts in sequence. The handlers cap the returned text at 10,000 bytes. |
 | `actions/index-fetch.ts` | Handles `index` and `fetch`. `index` chunks and stores text, and `fetch` does the same with a fetched URL's converted markdown. Both then queue each new chunk for embedding. |
 | `actions/search.ts` | `search` runs `unifiedSearch` and formats the hits as numbered lines. |
 | `actions/import.ts` | `import` runs `importSessions` and formats the resulting counts. |
@@ -102,7 +102,7 @@ These packages depend on it:
 - `@spider/organism` calls `readTranscript` to normalize a finished session's `.jsonl` file before it runs its reflection and learning passes over that file.
 
 In a request, each action takes this path:
-- For `exec`, `exec_file`, and `batch`, dispatch reaches `actions/exec.ts`, which builds a `PolyglotExecutor` scoped to the project directory. A plain call (without `background`) writes the script under `<project>/.spider/scratch/.ctx-*`. It spawns the resolved interpreter with the project root as its working directory and a filtered environment, and returns stdout and stderr capped to 200,000 bytes. `background: true` uses a different, durable path. See "Background execution" below.
+- For `exec`, `exec_file`, and `batch`, dispatch reaches `actions/exec.ts`, which builds a `PolyglotExecutor` scoped to the project directory. A plain call (without `background`) writes the script under `<project>/.spider/scratch/.ctx-*`. It spawns the resolved interpreter with the project root as its working directory and a filtered environment, and returns stdout and stderr capped to 10,000 bytes. `background: true` uses a different, durable path. See "Background execution" below.
 - For `index` and `fetch`, dispatch reaches `actions/index-fetch.ts`. `index` chunks the given text or file directly, and `fetch` first calls `fetchAndConvert`. Either way, `ContentStore.indexContent` deletes any earlier chunks for that source and inserts the new ones into `content` and `content_fts`. Each new chunk is then queued for embedding with `enqueueEmbed`.
 - For `search`, dispatch reaches `actions/search.ts`, which calls `unifiedSearch`. `unifiedSearch` runs bm25-ranked FTS queries against content, memory, sessions, and todos. If the project has any embedded vectors at all, it adds a vector k-nearest-neighbor pass. It fuses every list with `rrfFuse` and loads the full rows for vector-only hits from the tables that own them. It then reranks the merged list with `proximityRerank` and returns snippets cut to 300 characters.
 - For `import`, dispatch reaches `actions/import.ts`, which calls `importSessions`. `importSessions` resolves one or more transcript files and runs each through a digest function (`defaultDigest` unless the caller supplies one). It stages memory and skill candidates through `@spider/memory`, writes todo rows, and indexes the transcript itself as content.
@@ -114,8 +114,10 @@ In a request, each action takes this path:
 - **File reads guard against a swap between check and read.** `indexContent` and `refreshStaleContent` open the file and `fstat` the open descriptor to confirm that it is a regular file. They then read from that same descriptor, instead of checking the path and reopening it. If the file is replaced with a symlink or FIFO in between, they reject it instead of reading it.
 - **Stale-content refresh only covers file-backed sources, and does not re-embed.** `refreshStaleContent` runs automatically on every `search` call, as a best effort and for at most 50 sources per call. It looks only at content rows indexed with a `path`, so fetched pages and raw pasted content never count as stale. When it re-chunks a changed file, it calls `indexContent` directly instead of going through `runIndex`, so it does not queue the new chunks for embedding. FTS can find the new chunks at once, but they need a fresh `index` or `fetch` call to get new vectors.
 - **`import` writes directly into another package's tables.** It inserts into `todos`, `todos_fts`, `sessions` and `sessions_fts` with raw SQL instead of calling `@spider/todo`'s store. If those tables or this code change, the insert shape has to be updated by hand to match.
+- **`digest.ts`'s default is a stand-in.** `defaultDigest` makes no model call. It returns zero memory, skill or todo candidates and a truncated summary. `importSessions` accepts a real digest function as its third argument.
+- **Fetch caching is keyed by source and URL, not URL alone.** `fetchAndConvert` caches converted markdown under `<project>/.spider/scratch/fetch-cache` for 24 hours by default. When a source is given, the cache key is a hash of `source` plus `url`. `force` bypasses the cache, and `ttl` overrides the time window.
 - **The sandbox filters the environment rather than passing it through.** `PolyglotExecutor` starts from the parent's environment and strips more than seventy individually named variables that can inject code or redirect execution. Examples are `NODE_OPTIONS`, `LD_PRELOAD`, `RUBYOPT`, `PYTHONSTARTUP`, several .NET profiler hooks, and shell startup files. It then sets `TMPDIR`, `HOME`, and a few other values to sandbox-safe settings.
-- **Two independent byte caps apply to exec output.** In the foreground (piped) path, if combined stdout and stderr exceed 100MB while streaming, the executor kills the process and appends a note to stderr. Separately, the `exec`, `exec_file`, and `batch` action handlers use `capBytes` to cap the text they return at 200,000 bytes. A background run has its own cumulative byte budget for streaming before handoff. It uses the same `hardCapBytes` number but enforces it differently. Once the combined stdout and stderr streamed through `onData` cross it, tailing stops and one bounded cap notice is emitted. The job is never killed for it, and the full log file on disk keeps growing past the cap anyway (see "Retention" above). Only `exec` accepts a `background` flag, not `exec_file` or `batch`. A process that was sent to the background when its timeout elapsed does not count as an error result.
+- **Two independent byte caps apply to exec output.** In the foreground (piped) path, if combined stdout and stderr exceed 100MB while streaming, the executor kills the process and appends a note to stderr. Separately, the `exec`, `exec_file`, and `batch` action handlers use `capBytes` to cap the text they return at 10,000 bytes. A background run has its own cumulative byte budget for streaming before handoff. It uses the same `hardCapBytes` number but enforces it differently. Once the combined stdout and stderr streamed through `onData` cross it, tailing stops and one bounded cap notice is emitted. The job is never killed for it, and the full log file on disk keeps growing past the cap anyway (see [Retention](#retention-explicit-and-non-destructive) below). Only `exec` accepts a `background` flag, not `exec_file` or `batch`. A process that was sent to the background when its timeout elapsed does not count as an error result.
 
 ## Background execution (`exec { background: true }`)
 
@@ -151,8 +153,7 @@ bg/<id>/
 ```
 
 `ExecResult.backgroundJob` returns `{ id, dir, manifest, receipt, logs }`, which is how a caller
-inspects the job. This package has no `list`, `status` or `cleanup` API. Leaving it out was a
-deliberate choice for phase 1 of background execution (see below). Read the files directly, for
+inspects the job. This package has no `list`, `status` or `cleanup` API. Read the files directly, for
 example `cat <dir>/exit.json`.
 
 ### Why a supervisor process
@@ -245,7 +246,8 @@ on every settled `ExecResult`, foreground and background alike (see
   killed. The outcome is known. `exitCode` is the `137` sentinel.
 - `"timeout"` means the process was detached on purpose at a `timeout` handoff
   (background only). The command is still running. Its outcome is not known
-  yet, but it will be (see the receipt below). `exitCode` is `null`.
+  yet. Read the [receipt](#the-receipt-is-the-only-source-of-truth-and-it-can-be-honestly-absent-forever)
+  above when it is available. The receipt may never appear. `exitCode` is `null`.
 - `"unknown"` means the outcome cannot be determined. For example, the
   supervisor died before it could write a receipt (background only).
   `exitCode` is `null`.
@@ -302,9 +304,8 @@ still unknown. `retained` exists so that this does not happen again.
   assume it (see "A supervisor exiting does not prove its process group is empty" above).
   Anything less certain is kept.
 - **The caller owns the returned job directory from the moment it is returned.** This package
-  never touches it again. In this phase there is intentionally no `list`, `status` or `cleanup`
-  helper. A helper that only tests could reach would be an unsupported, undocumented feature
-  that looks like a real one. A future `spider control background` command would be a separate,
+  never touches it again. There is no `list`, `status` or `cleanup` helper. A helper that only
+  tests could reach would be an unsupported, undocumented feature that looks like a real one. A future `spider control background` command would be a separate,
   reviewed addition, not something added quietly here.
 - **A job that finishes before handoff leaves no directory behind.** This is the "quick command
   under `background: true`" case above, provided that its process group is verifiably empty (see
@@ -343,8 +344,6 @@ still unknown. `retained` exists so that this does not happen again.
   before. **Background survival after the launching process exits is proven on POSIX only
   (macOS, Node 26). This change does not verify it on Windows.**
 - **Windows gets specific handling, not a shared code path.** Shell resolution prefers Git Bash over WSL bash. Generated shell scripts avoid the `.sh` extension to prevent a Windows file-association popup. PowerShell scripts get a UTF-8 preamble. A bare `mvn` command is rewritten to `mvn.cmd` to work around a Git Bash path-conversion bug in Maven's own launcher script.
-- **`digest.ts`'s default is a stand-in.** `defaultDigest` makes no model call. It returns zero memory, skill or todo candidates and a truncated summary. `importSessions` accepts a real digest function as its third argument.
-- **Fetch caching is keyed by source and URL, not URL alone.** `fetchAndConvert` caches converted markdown under `<project>/.spider/scratch/fetch-cache` for 24 hours by default. When a source is given, the cache key is a hash of `source` plus `url`. `force` bypasses the cache, and `ttl` overrides the time window.
 
 ## See also
 

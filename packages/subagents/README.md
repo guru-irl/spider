@@ -24,8 +24,9 @@ This package owns:
 - The child-side reporter. When the current process is itself a spawned
   subagent, the reporter hooks into that process's own tool and turn events.
   It writes the child's progress and final status back to the shared database.
-- The intercom function (`sendIntercom`). The `message` action uses it, and so
-  does pipeline handoff between stages.
+- The intercom function (`sendIntercom`). The `message` action uses it for peer
+  messages and for steering runs that another session owns. Pipeline stages pass
+  results in the next child's task instead.
 
 This package does not own:
 
@@ -303,9 +304,10 @@ subscribes to `status` events on the run event bus for the run it spawned most
 recently. When that run reaches a terminal status (`done`, `failed`, or
 `cancelled`), cancellation ends the pipeline. For `done` and `failed`,
 `onRunTerminal` reads the run's result and expands the next stage's `task`
-template. In that template, `{task}`, `{previous}`, and `{handoff}` all
-resolve to the prior stage's result. It then spawns the next stage and records
-a `handoff` row in `run_events` that links the two runs. The expanded initial
+template. In that template, `{task}` resolves to the first stage's original
+task text. Both `{previous}` and `{handoff}` resolve to the prior stage's result.
+It then spawns the next stage and records a `handoff` row in `run_events` that
+links the two runs. The expanded initial
 task is the handoff. No automatic broker message repeats it in the next
 child's conversation. This repeats until the last stage finishes, and then the
 coordinator unsubscribes. The caller does not wait synchronously for any

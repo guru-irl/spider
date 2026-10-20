@@ -1,6 +1,6 @@
 # @spider/organism
 
-This package runs spider's background feedback and learning loop. When a session compacts or shuts down, the organism reads that session's activity. It runs a set of passes that propose durable memory and candidate skills, and it stages those candidates for approval. It also records a summary and a name it picks for the session, curates the skill library, and rebuilds the learning graph, so the next session can use what this one learned.
+This package runs spider's background feedback and learning loop. When a session compacts or shuts down, the organism reads that session's activity. It runs a set of passes that propose durable memory and candidate skills. It stages memory candidates and queues skill candidates for review. It also records a summary and a name it picks for the session, curates the skill library, and rebuilds the learning graph, so the next session can use what this one learned.
 
 ## Responsibility
 
@@ -8,12 +8,12 @@ This package owns the background work that turns a finished session into durable
 
 - **Drain.** Read a session's runs, events, todos, and transcript out of the project DB into a `DigestBundle`. The drain only reads. It changes and removes nothing in the event log.
 - **Passes.** Run one or more digest passes over the bundle. Each pass asks an auxiliary model for candidate memory, todos, or skills. The reflection pass first groups memory by vector proximity.
-- **Apply.** Send every candidate through a fail-closed staged writer, under a write budget for each drain.
+- **Apply.** Stage memory and queue skills for review, under a write budget for each drain. Add follow-up todos directly.
 - **Consolidation and self-naming.** Save a short session summary and a short name slug for the ongoing task, and name the project when it has no name that a user set.
 - **Curator.** On shutdown, walk the skill library and move idle skills to stale and then to a recoverable archive. Optionally run a consolidation pass with the aux model.
 - **Learning graph and insights.** Build a graph of skills and active memory with the edges between them. Optionally save it as `insights` rows for later display.
 
-The organism does **not** approve its own writes. Every memory and skill it produces is staged and waits for a human to approve or reject it. It does not delete skills. The most destructive action it takes is archiving. It does not cancel or alter compaction. It does not write skills itself in the digest passes. The `/learn` path gives the live agent a prompt, and the agent writes the `SKILL.md`.
+The organism does **not** approve its own writes. `applyDigest` stages each memory candidate that passes the threat scan, the capture guardrail and the duplicate check. Valid skill candidates enter a review queue, and only a `new` verdict stages them. Both need human approval before activation. It does not delete skills. The most destructive action it takes is archiving. It does not cancel or alter compaction. It does not write skills itself in the digest passes. The `/learn` path gives the live agent a prompt, and the agent writes the `SKILL.md`.
 
 ## Key modules
 
@@ -22,10 +22,10 @@ The organism does **not** approve its own writes. Every memory and skill it prod
 | `index.ts` | Public exports and `registerOrganism`, which attaches the worker to the pi host lifecycle hooks. |
 | `worker.ts` | `OrganismWorker`, the single in-process worker. It owns the pipeline that drains, runs the passes, applies and persists, and it owns the curator pass. It runs all entry points one at a time, so two runs never use the DB at once. |
 | `drain.ts` | `drainSession` reads a session's runs, run events, tracked events, todos, and transcript into a `DigestBundle`. It only reads. |
-| `apply.ts` | `applyDigest`, the fail-closed staged writer. It spends a shared `WriteBudget` on memory and skill stages and counts drops and rejections. |
+| `apply.ts` | `applyDigest`, the fail-closed staged writer. It spends a shared `WriteBudget` on memory stages and skill queue inserts and counts drops and rejections. |
 | `passes/run-memory-todo.ts` | Pass 1. Turns subagent run activity into memory candidates and follow-up todo candidates. |
 | `passes/todo-memory.ts` | Pass 2. Turns completed todos into durable memory candidates. |
-| `passes/learning.ts` | Pass 3. Turns the transcript into staged memory candidates and skill candidates with equal weight. It applies the "do not capture" guardrails and the class-level skill-name rule. |
+| `passes/learning.ts` | Pass 3. Proposes memory and skill candidates from the transcript with equal weight. It applies the "do not capture" guardrails and the class-level skill-name rule. |
 | `passes/consolidation.ts` | Pass 4. Turns the transcript and runs into a session summary and a self-name slug. Emits no candidates. |
 | `passes/reflection.ts` | Pass 5. Clusters active memory by vector proximity and combines each dense cluster into one umbrella insight. |
 | `curator.ts` | The deterministic decay walk (stale or archive, by idle age), the minimum-interval gate, file archiving, and the opt-in consolidation prompt for the aux model. |
@@ -91,7 +91,7 @@ The worker runs the passes in order. Each pass runs only when its toggle in `Org
 
 1. **runMemoryTodo.** Summarizes subagent runs and their run events, and asks the aux model for durable memory candidates and follow-up todo candidates. Every memory candidate goes through the capture guardrail. Emits no skills.
 2. **todoMemory.** Turns completed todos into durable memory candidates. If no todos are done, it returns early without a model call. Emits no skills or todos.
-3. **learning.** Runs the aux model over the transcript with the combined review prompt and the "do not capture" block. It emits staged memory candidates and queued skill candidates. The guardrail filters the memory candidates. Skill strings keep their exact formatting for the counted deterministic checks. If skill guidance is missing or disabled, the pass leaves out the skill section and still learns memory.
+3. **learning.** Runs the aux model over the transcript with the combined review prompt and the "do not capture" block. It proposes memory and skill candidates. The apply step stages valid memory and queues valid skills. The guardrail filters the memory candidates. Skill strings keep their exact formatting for the counted deterministic checks. If skill guidance is missing or disabled, the pass leaves out the skill section and still learns memory.
 
 4. **consolidation.** Produces a session summary of 1 to 3 sentences and a short self-name slug for the broad ongoing task. Emits no candidates. If there is no transcript and no runs, it returns early.
 5. **reflection.** Clusters active repo memory by vector proximity and asks the model to combine each dense cluster into one umbrella `insight`. It returns an empty result when no embedder is available or no cluster qualifies.
@@ -139,7 +139,7 @@ After apply, when the `insights` pass toggle is on, the worker rebuilds the lear
 
 ### How the output feeds the next session
 
-Nothing the organism produces is active until a human approves it. Once approved, it reaches the next session:
+Memory and skill candidates need human approval before activation. Output reaches the next session as follows:
 
 - Approved staged memory becomes active. It is injected as part of the memory snapshot, which each session freezes on the first `before_agent_start`.
 - Approved staged skills become active in the skill library.
@@ -165,7 +165,7 @@ You review staged memory with `spider control memory` and staged skills through 
 ## Notes
 
 - The before-compact hook must never block or cancel compaction. It does not wait for the drain, never returns `false`, and swallows all errors. It does report a failure through `onSetupError` when the failure happens before the drain.
-- The master `org.enabled` toggle stops `runDrain` early with a zeroed summary.
+- When `organism.enabled` is `false`, `runDrain` returns early with a zeroed summary.
 - Staged writes are fail-closed and limited by the budget. Candidates over the budget are dropped and counted, not applied silently.
 - The curator never deletes. Archiving into `.spider/skills/.archive/` is the most destructive action, and it is recoverable. The deterministic decay walk never changes the state of pinned and protected skills.
 - Reflection needs vectors. With no embedder, it returns an empty result instead of failing. If the synthesis reply for a cluster cannot be parsed, the cluster is skipped, but not silently. If every cluster attempted in a pass fails, the drain records a real `reflection` error and never reports a false "completed" with zero proposals. If only some clusters fail, the pass keeps the clusters that parsed and still records the failure.

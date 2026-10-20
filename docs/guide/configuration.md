@@ -147,7 +147,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | `routing.tracking` | `true` | Track tool intents and results. |
 | `routing.secret_scrub` | `true` | Scan for and scrub secrets. |
 | `routing.injection_scan` | `true` | Scan for prompt injection. |
-| `routing.auto_index_threshold` | `10000` | Output size in bytes at or above which spider indexes the output. |
+| `routing.auto_index_threshold` | `10000` | Spider indexes non-spider tool output at or above this size, after secret scrubbing when `routing.secret_scrub` is on. Spider measures the size in UTF-16 code units. |
 
 - Warming happens only when pi knows the model's cache lifetime and idle warming is on.
 - Pi still applies its own limit on idle warming.

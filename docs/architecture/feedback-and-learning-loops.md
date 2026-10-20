@@ -7,10 +7,9 @@ the triggers are predictable and the loops do not overlap by accident.
 
 The four loops are:
 
-1. **The routing loop.** Large command output and large files go to the sandbox
-   or the content index. The bytes stay in the database. Only the printed or
-   queried slice enters the model context, and `spider search` retrieves the
-   rest later.
+1. **The routing loop.** Sandboxed commands return capped output. Explicit
+   indexing and auto-indexing of large non-spider results store text in the
+   database. `spider search` retrieves indexed text later.
 2. **The memory lifecycle.** A foreground `remember` write needs a justification
    and goes through a review of durability, overlap, and scope before it
    becomes active. If the review itself fails or is unavailable, the write is
@@ -21,19 +20,19 @@ The four loops are:
    sessions take a fresh snapshot.
 3. **The organism feedback and learning loop.** On before-compact and on
    shutdown, the organism drains the finished session. It runs passes that
-   propose memory and skill candidates and stages those candidates. It records
-   a summary and a self-name for the session, curates the skill library, and
-   rebuilds the learning graph.
+   propose memory and skill candidates. It stages memory and queues skills for
+   review. It records a summary and a self-name for the session, curates the
+   skill library, and rebuilds the learning graph.
 4. **The subagent loop.** `spider run` dispatches a child pi process and returns
    at once. The child reports completion through a `spider.subagent_done`
-   message that wakes the parent. Pipelines link each stage to the next
-   stage over an intercom handoff.
+   message that wakes the parent. Pipelines start later stages in new children
+   with the previous stage's result in their tasks.
 
 ## Trigger reference
 
 | Trigger | Kind | What it drives |
 | --- | --- | --- |
-| `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). |
+| `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). Start queued skill review in top-level sessions (organism hook). |
 | `before_agent_start` | pi hook | Freeze the session's memory snapshot on first use and set its `spider_memory` section for user and idle custom-message runs. |
 | `tool_call` / `tool_result` | pi hook | Record intent, scrub secrets, scan for injection, auto-index large non-spider output. |
 | `session_before_compact` | pi hook | Start an organism drain with `reason: "before_compact"` and do not wait for it. |
@@ -48,29 +47,29 @@ The four loops are:
 
 ## 1. The routing loop
 
-The routing loop keeps the context window small. Without it, a large `git log`,
-a wide test run, or a 5,000-line file lands whole in the model context and stays
-there for the rest of the conversation. Spider routes those bytes into the
-database instead and returns only a bounded slice.
+Sandboxed execution caps the text returned to the model. Content indexing
+stores full text for later search. Auto-indexing copies large non-spider
+output into the same store without replacing the tool result.
 
-Three paths write bytes to the database without pushing them all into context:
+The three paths handle output differently:
 
 - **Sandboxed execution.** `spider exec`, `exec_file`, and `batch` run code
   through the `PolyglotExecutor` in the project working directory. The handler
-  caps the returned text with `capBytes` at `MAX_EXEC_OUTPUT_BYTES` (200,000
+  caps the returned text with `capBytes` at `MAX_EXEC_OUTPUT_BYTES` (10,000
   bytes). The full structured result is available as `details`, but only the
   capped slice of stdout and stderr returns as the tool text that enters
-  context.
+  context. Spider does not index exec output automatically. To search it, save
+  it to a file and index that file.
 - **Content indexing.** `spider index` and `spider fetch` pass content to
   `ContentStore.indexContent`. It splits the content into chunks in the
   `content` table and copies them into `content_fts`. `enqueueEmbed` queues
   each chunk for embedding. The action returns a one-line count, not the
   content.
-- **Auto-indexing of tool output.** The host routing layer watches every
-  non-`spider` tool result. When the scrubbed text is at least
-  `autoIndexThreshold` (default 10,000) characters, `autoIndexOutput` writes it
-  into `content`/`content_fts` under a `tool:<name>` source. This path skips the
-  `spider` tool itself, because its actions already route their own output.
+- **Auto-indexing of tool output.** The host routing layer watches tool results
+  other than `spider` and its structured adapters. When the scrubbed text is at
+  least `autoIndexThreshold` (default 10,000) UTF-16 code units,
+  `autoIndexOutput` writes it into `content`/`content_fts` under a `tool:<name>`
+  source.
 
 On the same `tool_result` path, `processToolContent` runs `scrubSecrets` and a
 prompt-injection scan before anything is indexed, so secrets never enter the
@@ -95,7 +94,7 @@ The agent pulls back only the slices that match the current question.
 ```mermaid
 flowchart TD
   A["spider exec / exec_file / batch"] --> S["PolyglotExecutor runs in the sandbox"]
-  S --> CAP["capBytes caps output at 200000 bytes"]
+  S --> CAP["capBytes caps output at 10000 bytes"]
   CAP --> CTX1["capped slice returns as tool text into context"]
 
   B["spider index / fetch"] --> CS["ContentStore.indexContent chunks the bytes"]
@@ -103,8 +102,8 @@ flowchart TD
   CS --> EQ["enqueueEmbed per chunk"]
   EQ --> VM[("vector_map and vectors")]
 
-  T["non-spider tool result of 10000+ chars"] --> SCRUB["scrubSecrets and injection scan"]
-  SCRUB --> AI["autoIndexOutput writes scrubbed text"]
+  T["non-spider tool result"] --> SCRUB["scrubSecrets and injection scan"]
+  SCRUB --> AI["autoIndexOutput writes scrubbed text of 10000+ UTF-16 code units"]
   AI --> DBC
 
   Q["later: spider search"] --> US["unifiedSearch, FTS and vector, RRF fused"]
@@ -257,12 +256,14 @@ flowchart TD
 ## 3. The organism feedback and learning loop
 
 The organism turns a finished session into durable knowledge. It never runs on
-the foreground request path. `registerOrganism` attaches two lifecycle hooks and
+the foreground request path. `registerOrganism` attaches three lifecycle hooks
+(`session_start`, `session_before_compact` and `session_shutdown`) and
 builds one `OrganismWorker`. The host skips registration when
-`PI_SUBAGENT_CHILD=1`. In children, manual organism actions and worker execution
-refuse to run, before any model call or drain receipt. Children can still use
-`skill list`, `view`, and `add` directly against the repo DB, with no worker
-or model. `distill`, `approve`, and `reject` refuse.
+`PI_SUBAGENT_CHILD=1`. In children, worker execution and the manual `distill`,
+`approve`, `reject`, curation and insights actions refuse to run. Children can
+still use `skill list`, `view`, and `add` directly against the repo DB, without
+an organism worker. An `add` runs the foreground skill reviewer, which can
+call a model.
 
 By default, background completions use `github-copilot/gpt-6-luna` with `low`
 thinking, never the session model. Explicit `auxiliary.background_review.model`
@@ -279,8 +280,8 @@ or change compaction. `session_shutdown` waits for a drain with
 `reason: "shutdown"` and then runs `runCurate`. The `OrganismWorker` runs every
 entry point through one in-flight chain. Two drains, such as a before-compact
 drain and a shutdown drain, never run against the database at the same time,
-and neither do a drain and a curate. The master `org.enabled` toggle makes
-`runDrain` return a zeroed summary at once.
+and neither do a drain and a curate. When `organism.enabled` is `false`,
+`runDrain` returns a zeroed summary at once.
 
 **Drain.** `drainSession` reads the session's `runs`, `run_events`, `events`,
 and `todos`, its stored name, and the normalized conversation when a transcript
@@ -297,10 +298,10 @@ report. The passes are:
   for durable memory and follow-up todo candidates. Emits no skills.
 - **todoMemory.** Turns completed todos into durable memory candidates.
 - **learning.** Runs the aux model over the transcript with the combined review
-  prompt and the "do not capture" block. It emits staged memory candidates and
-  staged skill candidates with equal weight, and proposes nothing by default.
-  It keeps typed skill names and bodies verbatim, so the apply step can run
-  counted deterministic validation and the durability review on them. The
+  prompt and the "do not capture" block. It proposes memory and skill
+  candidates with equal weight, and proposes nothing by default. It keeps
+  typed skill names and bodies verbatim. The apply step validates and queues
+  skill candidates, and the live-session runner reviews them later. The
   learner does not patch existing skills.
 - **consolidation.** Writes a session summary of one to three sentences and a
   short self-name slug for the ongoing task. Emits no candidates.
@@ -397,11 +398,11 @@ The graph carries a `linkedPct` statistic. Spider stores the graph as node and
 edge rows in an `insights` table on the global database. `control insights` builds
 the same graph without storing it.
 
-**Feeding the next session and AGENTS.md.** Nothing the organism produces is
-active until a human approves it. Approved output carries forward like this:
+**Feeding the next session and AGENTS.md.** Memory and skill candidates need
+human approval before activation. Output carries forward like this:
 
 - Approved staged memory becomes active at once. It enters the frozen
-  snapshot at the next session's first `before_agent_start` or provider request (loop 2, the memory lifecycle).
+  snapshot at the next session's first `before_agent_start` (loop 2, the memory lifecycle).
 - Approved staged skills become active in the skill library.
 - The session summary and self-name are indexed into `sessions_fts`, so past
   sessions are searchable and the ongoing task keeps a stable name.
@@ -432,11 +433,15 @@ flowchart TD
   MG --> AP["applyDigest, fail-closed staged writes, budget 20"]
   P4 --> PC["persistConsolidation, session and project names, summary"]
 
-  AP --> STG[("staged memory and skills await approval")]
+  AP --> STG[("staged memory awaits approval")]
+  AP --> SQ[("skill review queue")]
+  SQ --> SR["live-session reviewer"]
+  SR -->|new verdict| SK[("staged skills await approval")]
   AP --> LG["buildLearningGraph writes insights rows"]
   CU --> DECAY["runCuratorDecay, stale 30d, archive 90d, never delete"]
 
   STG --> FEED["human approve, active memory and skill library"]
+  SK --> FEED
   PC --> FEED
   LG --> FEED
   DECAY --> FEED
@@ -491,25 +496,24 @@ sequenceDiagram
 ```
 
 **Pipeline handoff.** For a `pipeline`, `PipelineCoordinator.start` spawns stage
-0 async and subscribes to the run-events bus. When the run of the current stage
-reaches a terminal status (`done`, `failed`, or `cancelled`), `onRunTerminal`
-does three things. It spawns the next stage with the prior result already
-substituted for `{previous}` and `{handoff}`. It records a `handoff` run-event
-edge. It wakes the next stage over intercom with `sendIntercom`. Nothing blocks
-and waits. The coordinator moves on one stage at a time as each stage finishes,
-and drops its bus subscription when the last stage completes.
+0 async and subscribes to the run-events bus. When the current stage finishes
+with `done` or `failed`, `onRunTerminal` substitutes its result for `{previous}`
+and `{handoff}` in the next stage's task. It starts that stage in a new child,
+then records a `handoff` run-event edge. `{task}` resolves to the first stage's
+original task text. The expanded task is the handoff. No intercom message is
+sent, and nothing blocks and waits. Cancellation ends the pipeline without
+starting another stage. The coordinator drops its bus subscription when the
+pipeline ends.
 
 ```mermaid
 flowchart LR
-  S0["stage 0 runAsync"] --> B{"terminal status on bus?"}
-  B -->|no| B
-  B -->|yes| ON["onRunTerminal"]
-  ON --> HE["record handoff run-event edge"]
-  ON --> S1["spawn next stage with {previous}"]
-  ON --> IC["sendIntercom wakes next stage"]
-  S1 --> B2{"more stages?"}
-  B2 -->|yes| B
-  B2 -->|no| D["dispose bus subscription"]
+  S0["stage 0 runAsync"] --> B["terminal status on bus"]
+  B --> ON["onRunTerminal"]
+  ON --> END{"cancelled or last stage?"}
+  END -->|yes| D["dispose bus subscription"]
+  END -->|no| S1["spawn next child with {previous} and {handoff}"]
+  S1 --> HE["record handoff run-event edge"]
+  HE --> B
 ```
 
 ---
@@ -519,11 +523,11 @@ flowchart LR
 The four loops share the project and global databases, so the output of one
 loop becomes input to another:
 
-- The routing loop and the subagent loop both write `run_events` and `events`.
-  The organism drain reads them on before-compact and shutdown.
+- The routing loop writes `events`, and the subagent loop writes `run_events`.
+  The organism drain reads both tables on before-compact and shutdown.
 - The organism stages memory candidates through the same `stageWrite` pipeline
   that the memory lifecycle uses. Once approved, they feed the snapshot frozen
-  at the next session's first `before_agent_start` or provider request.
+  at the next session's first `before_agent_start`.
 - `spider search` can retrieve both the content the routing loop indexes and
   the summaries the organism writes, so a later session can find what an
   earlier one produced.

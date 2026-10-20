@@ -424,9 +424,9 @@ The current version history is as follows:
   repo database is created fresh from `REPO_SCHEMA`. v8 creates `memory_fts` if
   it is missing and fills it again from `memory`. That repairs repo databases
   that an earlier build stamped as v7 without creating the FTS table.
-- **Worktree.** v2 adds `runs.thinking`. v3 is the point where skills moved out
-  to the repo tier, with no DDL for worktree scope at v3. v4 adds `runs.pid` and
-  `runs.host_pid`. v7 is this side of the tiering split. `sessions`, `content`,
+- **Worktree.** v2 adds `runs.thinking`. v3 has no DDL for worktree scope.
+  v4 adds `runs.pid` and `runs.host_pid`. v7 is this side of the tiering split.
+  `sessions`, `content`,
   `todos`, `runs`, and `events` stay, and `memory` and `skills` leave. No DDL
   runs at v7 for worktree scope either, for the same reason as the repo v7.
 

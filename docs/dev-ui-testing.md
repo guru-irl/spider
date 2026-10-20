@@ -7,7 +7,7 @@ This page describes a live loop for working on the subagents UI (the footer and 
   directly from the TS source. `npm run dev` runs `vite build --watch`, which rebuilds on save (about 40 ms).
 - A global dev shim at `~/.pi/agent/extensions/spider-dev.ts` loads the bundle. Pi discovers it on its own,
   and because it is global, pi shows no project-trust prompt. The shim imports the built bundle dynamically
-  **with a cache-buster**, so pi's `/reload` always runs the latest build. It points at `/mnt/data/src/spider/dist/extension.js`.
+  **with a cache-buster**, so pi's `/reload` always runs the latest build. It points at `dist/extension.js` in the checkout where you ran `npm run dev:link`.
 - After you save and vite rebuilds, type `/reload` in pi. You do not need to restart.
 
 > The shim is for development only, and it is global, so spider loads in every pi session. Remove it when you finish:

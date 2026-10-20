@@ -175,9 +175,10 @@ configured. To set up the check:
 
 ## Known gaps before the first real publish
 
-- **The ten workspace packages under `packages/*` have no `"private": true`.**
-  Each one is `@spider/<name>@0.0.0`. The one `npm publish` that this repo's
-  pipeline runs is not affected, because it publishes only the root package.
+- **Ten of the eleven workspace packages under `packages/*` have no `"private": true`.**
+  Only `@spider/pstack` is private. Each workspace is `@spider/<name>@0.0.0`.
+  The one `npm publish` that this repo's pipeline runs is not affected, because
+  it publishes only the root package.
   But a future publish step that covers workspaces (`npm publish -ws` or
   similar) would try to push ten unversioned packages, and nothing would stop
   it.

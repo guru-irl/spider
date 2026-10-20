@@ -58,6 +58,7 @@ npm run build
 | [`@spider/subagents`](packages/subagents/README.md) | Dispatch, process lifecycle, RPC, and messaging. |
 | [`@spider/organism`](packages/organism/README.md) | Background passes, skill review, curation, insights. |
 | [`@spider/superpowers`](packages/superpowers/README.md) | Bundled skills, managed instructions, upstream watch. |
+| [`@spider/pstack`](packages/pstack/README.md) | Bundled pstack skills. |
 | [`@spider/host`](packages/host/README.md) | Tool schema, action wiring, slash commands, hooks. |
 
 - Package dependencies form a DAG (a graph with no cycles): `host -> subagents -> db-core`, and `host -> ui`. The host also brings in the other feature packages.

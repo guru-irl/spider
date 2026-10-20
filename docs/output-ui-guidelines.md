@@ -37,7 +37,7 @@ breaking them causes the double-header bug (`🕸 spider · todo` **and** `🕸 
   `renderStats`, `renderInsights`, `renderModels` (all body-only, using `sectionRule`).
 - **`sectionRule` / `card`:** `packages/ui/src/renderers/types.ts`.
 - **Overlay:** `packages/todo/src/command.ts` (`/todos`). It has a rule and spacing driven by the theme,
-  counts and a footer, and it follows the model of `/mnt/data/src/pi-todo-sqlite`.
+  counts and a footer.
 
 ## Test contract
 

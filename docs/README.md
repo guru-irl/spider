@@ -27,6 +27,6 @@ Documentation for the spider pi extension.
 ## Contributor notes
 
 - [Release process](release-process.md): tagged builds and publishing.
-- [Output UI guidelines](output-ui-guidelines.md): the rules every renderer follows. Output is body-only, glyph-free, and safe for the terminal width.
+- [Output UI guidelines](output-ui-guidelines.md): the rules every renderer follows. Output is body-only and safe for the terminal width. It uses status glyphs but does not repeat the title glyph.
 - [Dev UI testing](dev-ui-testing.md): how to try out the parts of the TUI during development.
 - [Superpowers plans and specs](superpowers/): the plans and specs, written phase by phase, that the project was built from.

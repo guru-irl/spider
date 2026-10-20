@@ -24,7 +24,7 @@
 
 - The [README](../../README.md#install-update-and-remove) covers stable installation and updates. [Contributing](../../CONTRIBUTING.md#setup) covers linking for watch builds.
 - Do not load a linked shim and the package directly at the same time. Both activate spider, and the tool is registered twice.
-- Both shims point to a fixed checkout path. If you move the checkout, link again.
+- `npm run link` writes the stable `spider.ts` shim, and `npm run dev:link` writes the development `spider-dev.ts` shim. Both point to the checkout where you ran the command. If you move the checkout, link again.
 - The shim uses `runInThisContext` and `USE_MAIN_CONTEXT_DEFAULT_LOADER` to import the bundle natively in the main context. This bypasses the way jiti rewrites dynamic imports.
 - The shim's cache key is the bundle's mtime and size. After a changed build completes, `/reload` loads it fresh. An unchanged file reuses the module already loaded.
 - During the synchronous compile and import calls, the shim suppresses only the loader-specific `ExperimentalWarning`. It restores normal warning handling before it awaits anything.

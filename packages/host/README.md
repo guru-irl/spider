@@ -50,7 +50,7 @@ router once per dispatch, then hands control to those packages.
 | `routing/index.ts` | Registers the `tool_call` and `tool_result` handlers and the edit and write tool overrides. Records intent, removes secrets, scans for prompt injection, and indexes large output automatically. |
 | `routing/safety.ts` | Removes secrets from tool content and scans it for prompt injection. |
 | `routing/tracking.ts` | Records rows for tool intent and results. Skips the spider tool itself. |
-| `routing/autoindex.ts` | Sends output above the size threshold to the content store. |
+| `routing/autoindex.ts` | Writes tool output at or above the size threshold to the content store. |
 | `routing/overrides.ts` | The edit and write tool overrides (description checks, patch line counts). |
 | `hooks.ts` | Registers the pi lifecycle hooks. These add the frozen `spider_memory` prompt section on user and custom-message `before_agent_start`, upsert the session on `session_start`, add skill paths on `resources_discover`, and pass through the compact and shutdown events. |
 | `agents/agents-ui.ts` | The live agents UI. It has a footer widget above the editor, the alt+shift+up selector overlay, and the `/agents` command. |

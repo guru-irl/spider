@@ -16,8 +16,9 @@
 - If a run finishes while another session is active, its usage is counted when the owning session is next active or makes its next spider call. It is never counted in the other session.
 - On hosts without usage entries attributed to a model, run usage attaches to the owner's next spider tool result, under tools and in summaries. With this fallback, usage can be lost if the host crashes before it saves the result.
 - Parallel dispatch defaults to a concurrency of `4`. Give tasks short names for the UI.
-- A chain passes `{previous}` to the next step. Pipeline templates also accept `{task}`, `{handoff}` and `{outputs.<as>}`.
-- After a stage is done or has failed, the pipeline starts the next stage in a fresh child. Cancellation ends the pipeline.
+- A chain passes `{previous}` to the next step.
+- Pipeline templates use `{task}` for the first stage's original task text. Both `{previous}` and `{handoff}` use the prior stage's result. Spider does not expand `{outputs.<as>}`, so it stays in the task as literal text.
+- After a stage is done or has failed, the pipeline starts the next stage in a new child. Cancellation ends the pipeline.
 - `handoff:"intercom"` and `handoff:"wait"` are kept for compatibility and do nothing. Neither one sends a mailbox message or creates a blocking wait.
 - Give review-only children `context:"fresh"` and tell them explicitly not to edit source.
 - Do not poll subagents with `spider loop`, `spider schedule` or sleeps. Completion notices arrive on their own. To wait on external work such as CI or deploys, use [Loops and scheduled wakeups](loop-and-schedule.md).

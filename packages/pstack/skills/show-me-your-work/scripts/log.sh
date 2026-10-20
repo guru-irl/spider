@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Append a well-formed row to a show-me-your-work decision log (TSV).
 # Usage: log.sh <logfile> <phase> <decision> <why> <evidence> <result>
+# The log lives under .spider/scratch/ at the root of the current git
+# repository (or the current directory outside one). A relative <logfile>
+# resolves there; an absolute <logfile> must already be inside it.
+
+# The rest of this script needs bash (printf -v, local, pipefail). When it is
+# run as `zsh log.sh` or `sh log.sh`, hand it to bash before anything else.
+if [ -z "${BASH_VERSION:-}" ]; then
+	exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 if [ "$#" -ne 6 ]; then
@@ -10,6 +19,31 @@ fi
 
 logfile="$1"
 shift
+
+case "/$logfile/" in
+	*/../*)
+		printf 'log.sh: %s has a .. component; keep the log under .spider/scratch/\n' "$logfile" >&2
+		exit 1
+		;;
+esac
+
+root="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+case "$logfile" in
+	"$root"/.spider/scratch/*) ;;
+	/*)
+		printf 'log.sh: %s is outside %s/.spider/scratch/; pass a relative name or a path under it\n' "$logfile" "$root" >&2
+		exit 1
+		;;
+	*)
+		case "$logfile" in
+			./*) logfile="${logfile#./}" ;;
+		esac
+		case "$logfile" in
+			.spider/scratch/*) logfile="$root/$logfile" ;;
+			*) logfile="$root/.spider/scratch/$logfile" ;;
+		esac
+		;;
+esac
 
 logdir="$(dirname "$logfile")"
 if [ -n "$logdir" ] && [ "$logdir" != "." ] && [ ! -d "$logdir" ]; then

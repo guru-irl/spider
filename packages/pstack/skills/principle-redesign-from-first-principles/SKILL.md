@@ -1,7 +1,6 @@
 ---
 name: principle-redesign-from-first-principles
 description: "Apply when integrating a new requirement into an existing design."
-user-invocable: false
 ---
 
 # Redesign From First Principles

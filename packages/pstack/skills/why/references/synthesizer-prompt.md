@@ -4,7 +4,7 @@ Fill in the placeholders.
 
 ---
 
-You are answering a "why" question about a piece of code by synthesizing findings from investigators who searched different historical sources (source control, issue / ticket tracker, long-form documents, real-time team chat, infrastructure observability, error / exception tracking, product analytics warehouse, and code comments). Produce a confidence-weighted, evidence-cited narrative that says honestly what the evidence supports, and just as honestly what it doesn't.
+You are answering a "why" question about a piece of code by synthesizing findings from investigators who searched different historical sources (source control, issue tracker on GitHub, past agent sessions and memory, web pages and external docs, and code comments). Produce a confidence-weighted, evidence-cited narrative that says honestly what the evidence supports, and just as honestly what it doesn't.
 
 ## The Question
 
@@ -29,7 +29,7 @@ You are answering a "why" question about a piece of code by synthesizing finding
 You MUST follow `references/epistemics.md`. Read it in full before writing. The key rules:
 
 1. Every claim must sit in one tier: **Direct**, **Supported**, **Inferred**, **Speculative**, **Unknown**. The tier sets its section and its phrasing.
-2. Every Direct/Supported claim must have a citation (PR #, ticket ID, doc URL, chat permalink, commit hash, or file:line).
+2. Every Direct/Supported claim must have a citation (PR #, issue number, URL, session id, memory id, commit hash, or file:line).
 3. Inferred and Speculative claims must use hedged language ("appears to", "likely", "suggests", "one possibility is").
 4. Never cite code as evidence for its own intent.
 5. Document gaps. Don't fill them with plausible-sounding guesses.
@@ -42,7 +42,7 @@ You MUST follow `references/epistemics.md`. Read it in full before writing. The 
 3. **Merge overlaps.** When several investigators cite the same PR, ticket, or doc, give it one authoritative reference.
 4. **Surface contradictions.** When two items disagree, show both. Don't pick one.
 5. **Calibrate each claim.** Find its evidence and tier. Direct: cite it and state it plainly. Inferred: hedge it and show the inference. Speculative: mark it. No evidence: put it in the gaps.
-6. **Verify citations by spot-checking.** If you're uncertain a cited item exists or says what the investigator claims, check it by reading the codebase or calling MCP tools. Don't propagate errors. Do not write files, commit, or modify external state.
+6. **Verify citations by spot-checking.** If you're uncertain a cited item exists or says what the investigator claims, check it by reading the codebase, running `git` or `gh` through `spider exec`, `spider search`, or `spider fetch`. Don't propagate errors. Do not write files, commit, or modify external state.
 7. **Don't overreach.** The user will act on this. Leave an open question open rather than fill it with a confident guess.
 
 ## Output Format
@@ -92,26 +92,24 @@ Specific gaps: "We searched the issue tracker for [query1], [query2], [query3] a
 
 - Questions that went unanswered
 - Searches that returned nothing
-- Sources that were unavailable, and why (such as a missing real-time team chat MCP)
+- Sources that were unavailable, and why (such as team chat, which spider cannot reach)
 - People who would likely know but whom you can't ask
 
 ### Sources Consulted
 
 What was actually searched, so the user can judge coverage and redirect:
 
-- **Source control history**: {file paths}, {number of commits reviewed}, PRs #{numbers}, and code comments searched. Or "Not searched. This should not happen because git and `gh` are always expected."
-- **Issue / ticket tracker**: {ticket IDs and keyword searches}. Or "Not searched. No matching MCP available in this environment."
-- **Long-form documents**: {page titles and search queries}. Or "Not searched. No matching MCP available in this environment."
-- **Real-time team chat**: {channels searched, date ranges, queries}. Or "Not searched. No matching MCP available in this environment."
-- **Infrastructure observability**: {dashboards, monitors, metrics, logs, traces, or incidents searched}. Or "Not searched. No matching MCP available in this environment."
-- **Error / exception tracking**: {issues, events, or releases searched}. Or "Not searched. No matching MCP available in this environment."
-- **Product analytics warehouse**: {fully-qualified tables queried, the time windows, and the numeric summaries (counts, percentiles, first/last-seen timestamps) that bore on the question}. Or "Not searched. No matching MCP available in this environment."
+- **Source control history**: {file paths}, {number of commits reviewed}, PRs #{numbers}, and code comments searched. Or "Not searched. This should not happen because git is always expected."
+- **Issue tracker on GitHub**: {issue numbers and keyword searches}. Or "Not searched. {reason, such as no GitHub remote}."
+- **Past agent sessions and memory**: {`spider search` queries and the sessions or memories that matched}. Or "Not searched. {reason}."
+- **Web pages and external docs**: {URLs fetched}. Or "Not searched. {reason}."
+- **Out of reach**: any of team chat, long-form docs behind a login, infrastructure observability, error tracking, or product analytics that the question turns on. "Not searched. Spider cannot reach it."
 
 ### Confidence Summary
 
 One or two sentences on overall confidence, e.g.:
 
-> "The core rationale (A) is well-supported by direct PR and ticket evidence. The specific threshold value (100) is inferred from the surrounding context but not explicitly documented. The question of whether this was driven by a customer request could not be answered. No relevant issue tracker or long-form doc content surfaced, and real-time team chat search was unavailable."
+> "The core rationale (A) is well-supported by direct PR and ticket evidence. The specific threshold value (100) is inferred from the surrounding context but not explicitly documented. The question of whether this was driven by a customer request could not be answered. No relevant issue or past-session content surfaced, and team chat was out of reach."
 
 ---
 

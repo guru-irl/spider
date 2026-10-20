@@ -44,6 +44,8 @@ built-ins:
   is no blocking wait. For multi-phase work use
   \`pipeline:[worker, reviewer], handoff:"intercom"\`. Give review-only children
   \`context:"fresh"\` and tell them not to edit source.
+  While a child runs, \`spider exec\` and \`spider batch\` block foreground sleeps,
+  even with \`background:true\`; use \`spider schedule\` for external waits.
 - \`spider todo\` — durable, per-project + per-session task tracking
   (\`list\`/\`add\`/\`toggle\`/\`remove\`/\`clear\`/\`sessions\`/\`view\`). One todo per
   checklist item; toggle as you complete each. Remove obsolete items with op=remove;

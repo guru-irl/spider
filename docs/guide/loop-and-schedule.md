@@ -2,6 +2,8 @@
 
 Use `spider loop`, `spider schedule`, or `/loop` to wait on external work such as CI, a deploy, or a timer. Do not use them to poll subagents. Subagent completion notices arrive automatically.
 
+While this session has a running subagent, `spider exec` and `spider batch` block detected foreground sleeps of two seconds or more, including `background:true` calls with or without a timeout.
+
 These actions work only in a persistent, top-level pi session, including a top-level RPC session. Both actions and `/loop` reject print runs, JSON runs, and subagent children because those processes exit when their work ends.
 
 ## Fixed intervals

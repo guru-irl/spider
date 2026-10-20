@@ -43,6 +43,8 @@ export interface ActionCtx {
    *  `model:` on a call -> configured or shipped modelDefaults[<agent role>] -> inherit the parent's model. */
   modelDefaults?: Record<string, string>;
   childMode?: "rpc" | "print";
+  /** User-global reviewer exclusions; run arguments cannot widen this profile. */
+  reviewerExcludeTools?: readonly string[];
   subagentOnlyExtensions?: string[];
   /** AbortSignal for the in-flight tool call. pi's real `ToolDefinition.execute(toolCallId,
    *  params, signal, onUpdate, ctx)` supplies this as its 3rd positional arg (Escape mid-run

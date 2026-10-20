@@ -147,7 +147,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const runnerDeps = { modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
-    }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };
+    }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, reviewerExcludeTools: ctx.reviewerExcludeTools, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };
     const runner = overrides.makeRunner
       ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
       : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);

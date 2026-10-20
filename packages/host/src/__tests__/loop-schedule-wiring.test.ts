@@ -56,7 +56,7 @@ describe("host loop and schedule wiring", () => {
     expect(result.details).toMatchObject({ delaySeconds: 60, noop: true });
     expect(result.content[0].text).toContain("Wakeup scheduled");
     vi.advanceTimersByTime(60_000);
-    expect(h.messages).toEqual([{ prompt: "check CI", options: { deliverAs: "followUp", expandPromptTemplates: true } }]);
+    expect(h.messages).toEqual([{ prompt: "check CI", options: { deliverAs: "followUp", expandPromptTemplates: false } }]);
     expect(existsSync(resolve(scratch, ".spider", "project.db"))).toBe(false);
   });
 
@@ -79,7 +79,7 @@ describe("host loop and schedule wiring", () => {
     await h.run({ action: "loop", prompt: "watch CI" });
     await h.emit("agent_start");
     await h.commands.get("loop").handler("stop", h.ctx);
-    expect((await h.run({ action: "schedule", delaySeconds: 60, prompt: "re-arm old loop" })).details).toEqual({ refused: true });
+    await expect(h.run({ action: "schedule", delaySeconds: 60, prompt: "re-arm old loop" })).rejects.toThrow(/a loop was ended or replaced during this run/i);
     await h.emit("agent_settled");
     expect((await h.run({ action: "schedule", delaySeconds: 60, prompt: "new timer" })).details).toMatchObject({ delaySeconds: 60 });
   });

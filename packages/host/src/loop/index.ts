@@ -18,6 +18,13 @@ const MIN_DELAY_S = 60;
 const MAX_DELAY_S = 3600;
 const IDLE_RETRY_MS = 1000;
 type Result = { text: string; details: Record<string, unknown> };
+type PromptOrigin = "user" | "model";
+
+function assertModelPrompt(prompt: string): void {
+  if (prompt.trimStart().startsWith("/")) {
+    throw new Error("Slash commands are user-only; a loop or schedule prompt cannot start with '/'.");
+  }
+}
 interface LoopState { mode: "fixed" | "self-paced"; intervalSeconds: number | null; nextFireAt: string | null; prompt: string }
 interface WakeupState { delaySeconds: number; fireAt: string; prompt: string; reason?: string; noop: boolean }
 
@@ -51,6 +58,7 @@ export class SessionScheduler {
   // A self-paced loop has no timer of its own while its iteration runs, so
   // this is what /loop stop finds then.
   private loopState?: LoopState;
+  private loopOrigin: PromptOrigin = "model";
   // Set by a /loop command that ends or replaces the loop while a run is in
   // flight, until that run settles. A spider schedule call names no loop, so
   // nothing tells that run's re-arm of the old loop from any other wakeup. It
@@ -62,11 +70,11 @@ export class SessionScheduler {
 
   constructor(private readonly pi: ExtensionAPI) {}
 
-  private fire(prompt: string): void {
-    this.pi.sendUserMessage(prompt, { deliverAs: "followUp", expandPromptTemplates: true });
+  private fire(prompt: string, origin: PromptOrigin): void {
+    this.pi.sendUserMessage(prompt, { deliverAs: "followUp", expandPromptTemplates: origin === "user" });
   }
 
-  private scheduleWakeup(seconds: number, prompt: string, ctx: ExtensionContext, args?: ScheduleArgs): void {
+  private scheduleWakeup(seconds: number, prompt: string, ctx: ExtensionContext, origin: PromptOrigin, args?: ScheduleArgs, rearm?: LoopCommand): void {
     this.cancelWakeup();
     this.wakeupState = {
       delaySeconds: seconds, fireAt: new Date(Date.now() + seconds * 1000).toISOString(), prompt,
@@ -81,7 +89,8 @@ export class SessionScheduler {
       }
       this.wakeup = undefined;
       this.wakeupState = undefined;
-      this.fire(prompt);
+      if (rearm) void this.command(rearm, ctx, origin);
+      else this.fire(prompt, origin);
     };
     this.wakeup = setTimeout(deliver, seconds * 1000).unref();
   }
@@ -94,7 +103,7 @@ export class SessionScheduler {
     return had;
   }
 
-  private startLoop(seconds: number, prompt: string, ctx: ExtensionContext): void {
+  private startLoop(seconds: number, prompt: string, ctx: ExtensionContext, origin: PromptOrigin): void {
     const state: LoopState = {
       mode: "fixed", intervalSeconds: seconds,
       nextFireAt: new Date(Date.now() + seconds * 1000).toISOString(), prompt,
@@ -103,7 +112,7 @@ export class SessionScheduler {
     // A tick that lands mid-run is dropped, so a slow iteration cannot pile up a backlog.
     this.loopTimer = setInterval(() => {
       state.nextFireAt = new Date(Date.now() + seconds * 1000).toISOString();
-      if (ctx.isIdle()) this.fire(prompt);
+      if (ctx.isIdle()) this.fire(prompt, origin);
     }, seconds * 1000).unref();
   }
 
@@ -134,18 +143,22 @@ export class SessionScheduler {
   async loop(args: LoopArgs, ctx: ExtensionContext): Promise<Result> {
     assertPersistentSession("loop", ctx);
     if (args.stop) return this.command({ kind: "stop" }, ctx);
-    if (!args.prompt?.trim()) return this.status();
+    if (!args.prompt?.trim()) {
+      if (args.interval !== undefined) throw new Error("A prompt is required when spider loop has an interval.");
+      return this.status();
+    }
+    assertModelPrompt(args.prompt);
     if (args.interval !== undefined) {
       const cmd = parseLoop(`${args.interval} ${args.prompt}`);
       if (cmd.kind !== "fixed") {
         throw new Error(cmd.kind === "usage" && cmd.reason ? cmd.reason : "spider loop interval must be a whole number with unit s, m, h or d (at most 24 days).");
       }
-      return this.command(cmd, ctx);
+      return this.command(cmd, ctx, "model");
     }
-    return this.command({ kind: "dynamic", prompt: args.prompt.trim() }, ctx);
+    return this.command({ kind: "dynamic", prompt: args.prompt.trim() }, ctx, "model");
   }
 
-  async command(cmd: LoopCommand, ctx: ExtensionContext): Promise<Result> {
+  async command(cmd: LoopCommand, ctx: ExtensionContext, origin: PromptOrigin = "user"): Promise<Result> {
     assertPersistentSession("loop", ctx);
     if (cmd.kind === "usage") {
       return { text: `${cmd.reason ? `${cmd.reason} ` : ""}Usage: /loop [interval like 5m or 1h] <prompt>, or /loop stop`, details: { usage: true } };
@@ -154,15 +167,17 @@ export class SessionScheduler {
       const stopped = this.stopAll(this.running);
       return { text: stopped ? "Loop stopped." : "No loop was running.", details: { stopped } };
     }
+    if (origin === "model") assertModelPrompt(cmd.prompt);
     // Also true during a manual compaction, which no run is behind: the first
     // prompt then waits for idle, but only a run in flight seals the slot.
     const midRun = !ctx.isIdle();
     this.stopAll(this.running);
+    this.loopOrigin = origin;
     let prompt: string;
     let text: string;
     if (cmd.kind === "fixed") {
       const seconds = Math.max(MIN_DELAY_S, cmd.seconds);
-      this.startLoop(seconds, cmd.prompt, ctx);
+      this.startLoop(seconds, cmd.prompt, ctx, origin);
       prompt = cmd.prompt;
       text = `Looping every ${seconds}s. /loop stop ends it.`;
     } else {
@@ -174,10 +189,10 @@ export class SessionScheduler {
     // prompt takes the slot and runs once that run has settled. Its own
     // re-arm then comes from a later run and is not refused.
     if (midRun) {
-      this.scheduleWakeup(0, prompt, ctx);
+      this.scheduleWakeup(0, prompt, ctx, origin);
       text += " The loop starts once the session is idle.";
     } else {
-      this.fire(prompt);
+      this.fire(prompt, origin);
     }
     return { text, details: this.status().details };
   }
@@ -193,14 +208,19 @@ export class SessionScheduler {
       throw new Error("spider schedule needs finite delaySeconds and prompt unless stop is true.");
     }
     if (this.sealed) {
-      ctx.ui.notify("A wakeup this run asked for was not scheduled: /loop ended or replaced the loop while it ran.", "warning");
-      return {
-        text: "Not scheduled: the user ended or replaced the loop with a /loop command or spider loop during this run. Do not schedule another wakeup in this run.",
-        details: { refused: true },
-      };
+      const message = "A wakeup this run asked for was not scheduled: a loop was ended or replaced during this run. Do not schedule another wakeup in this run.";
+      ctx.ui.notify(message, "warning");
+      throw new Error(message);
     }
+    // Only the active self-paced loop's own re-arm is a scheduler command.
+    // Never pass it to pi, and never let a model borrow a user loop's origin
+    // for a different prompt. Capture the origin for this pending firing.
+    const rearm = this.loopState?.mode === "self-paced" && args.prompt.trim() === `/loop ${this.loopState.prompt}`
+      ? parseLoop(args.prompt.trim().slice("/loop".length)) : undefined;
+    if (!rearm) assertModelPrompt(args.prompt);
+    const origin = rearm ? this.loopOrigin : "model";
     const seconds = Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, Math.round(args.delaySeconds)));
-    this.scheduleWakeup(seconds, args.prompt, ctx, args);
+    this.scheduleWakeup(seconds, args.prompt, ctx, origin, args, rearm);
     const fireAt = this.wakeupState!.fireAt;
     const clamped = seconds !== args.delaySeconds ? ` (clamped from ${args.delaySeconds})` : "";
     return {

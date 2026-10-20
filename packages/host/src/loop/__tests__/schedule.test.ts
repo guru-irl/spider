@@ -16,7 +16,7 @@ describe("spider schedule", () => {
     vi.advanceTimersByTime(seconds * 1000 - 1);
     expect(h.prompts()).toEqual([]);
     vi.advanceTimersByTime(1);
-    expect(h.messages).toEqual([{ prompt: "check CI", options: { deliverAs: "followUp", expandPromptTemplates: true } }]);
+    expect(h.messages).toEqual([{ prompt: "check CI", options: { deliverAs: "followUp", expandPromptTemplates: false } }]);
     vi.advanceTimersByTime(3_600_000);
     expect(h.prompts()).toEqual(["check CI"]);
   });

@@ -34,7 +34,7 @@ describe("npm skill packaging", () => {
 });
 
 describe("release tarball check", () => {
-  const base = ["dist/extension.js", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "README.md", "LICENSE", "packages/pstack/LICENSE"];
+  const base = ["dist/extension.js", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
   function check(files: string[]) {
     const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
     const code = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\n/)?.[1];
@@ -47,7 +47,7 @@ describe("release tarball check", () => {
     const result = check([...base, ...skillFiles()]);
     expect(result.status, result.stderr).toBe(0);
   });
-  it.each(["packages/superpowers/skills/using-superpowers/SKILL.md", "packages/pstack/skills/how/SKILL.md", "packages/pstack/LICENSE", "dist/extension.js", "dist/dashboard/assets/index-abcdefgh.css"])("rejects a tarball missing %s", missing => {
+  it.each(["packages/superpowers/skills/using-superpowers/SKILL.md", "packages/pstack/skills/how/SKILL.md", "packages/pstack/LICENSE", "NOTICE.md", "packages/context/LICENSE", "dist/extension.js", "dist/dashboard/assets/index-abcdefgh.css"])("rejects a tarball missing %s", missing => {
     const result = check([...base, ...skillFiles()].filter(file => file !== missing));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(missing.endsWith(".css") ? "dashboard JS/CSS missing" : missing);

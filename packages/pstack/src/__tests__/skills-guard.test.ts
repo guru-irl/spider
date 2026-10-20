@@ -46,13 +46,16 @@ const RULES: Rule[] = [
   { name: "host-control-tool", pattern: /\b(?:AskUserQuestion|TodoWrite|EnterPlanMode|ExitPlanMode|EnterWorktree|WebFetch|WebSearch|ScheduleWakeup|schedule_wakeup)\b/ },
   { name: "host-file-tool", pattern: /\b(?:Bash|Glob|Grep)\b|\b(?:Read|Write|Edit|Bash|Glob|Grep) tool\b|\bUse Read\b/ },
   { name: "host-slash-loop", pattern: /(?:^|[\s`(])\/loop\b/ },
-  { name: "host-name-or-path", pattern: /\bClaude\b|\bCLAUDE(?:\.md|_[A-Z0-9_]+)\b|\.claude(?:-plugin)?\/|\bmcp__|\bclaude mcp\b|\b(?:Codex|Copilot|Cursor|Gemini|OpenCode|Antigravity)\b/ },
+  { name: "host-name-or-path", pattern: /\bClaude\b|\bCLAUDE(?:\.md|_[A-Z0-9_]+)\b|\.claude(?:-plugin)?\/|\bmcp__|\bclaude mcp\b|\b(?:Codex|Copilot|Cursor|Gemini|OpenCode|Antigravity)\b/i },
   { name: "pstack-machinery", pattern: /\bpstack\b|\bpoteto\b|\bmodels\.json\b|tools\/generate\.mjs/i },
   { name: "unshipped-skill", pattern: new RegExp(String.raw`\b(?:${UNSHIPPED_HYPHENATED.join("|")})\b`) },
-  { name: "unshipped-skill-ref", pattern: new RegExp(String.raw`(?:\*\*|\x60|\/)(?:${UNSHIPPED_WORDS.join("|")})(?:\*\*|\x60)|\.\.\/(?:${UNSHIPPED_WORDS.join("|")})\/`) },
-  { name: "model-name", pattern: /\b(?:opus|sonnet|haiku|codex|gpt-?\d[\w.-]*|o[134](?:-mini)?|gemini|llama|mistral|grok)\b/i },
-  { name: "system-temp", pattern: /(?:\/var\/tmp|\/tmp)(?:\/|\b)|\$\{?(?:TMPDIR|TMP|TEMP)\}?(?![A-Za-z0-9_])|\bmktemp\b|tmpdir\(\)|\/var\/folders\// },
+  { name: "unshipped-skill-ref", pattern: new RegExp(String.raw`(?:\*\*|\x60|\/)(?:${UNSHIPPED_WORDS.join("|")})(?:\*\*|\x60)|\.\.\/(?:${UNSHIPPED_WORDS.join("|")})\/|(?:^|[\s\x60(])\/recall(?=\s)`) },
+  { name: "model-name", pattern: /\b(?:opus|sonnet|haiku|codex|gpt-?\d[\w.-]*|o[134](?:-mini)?|gemini|llama|mistral|grok|(?:deepseek|qwen|kimi)[\w.-]*)\b/i },
+  { name: "system-temp", pattern: /(?:\/var\/tmp|\/tmp)(?:\/|\b)|\$\{?(?:TMPDIR|TMP|TEMP)\}?(?![A-Za-z0-9_])|\bTMPDIR\b|\bos\.tmpdir\b|%TEMP%|\bmktemp\b|tmpdir\(\)|\/var\/folders\// },
 ];
+
+// This exact sentence uses "cursor" as an editor position, not a vendor.
+const WHY_CURSOR_SENTENCE = 'If the target is vague ("why do we do it this way?" with no clear referent), make your best guess from conversation context (open files, recent edits, cursor location, what was just discussed). State your interpretation briefly so the user can redirect if you\'re off, then proceed.';
 
 function scan(root: string): string[] {
   const hits: string[] = [];
@@ -60,7 +63,9 @@ function scan(root: string): string[] {
     const rel = path.relative(root, file).split(path.sep).join("/");
     fs.readFileSync(file, "utf8").split(/\r?\n/).forEach((line, i) => {
       for (const rule of RULES) {
-        if (rule.pattern.test(line)) hits.push(`${rel}:${i + 1} [${rule.name}] ${line.trim().slice(0, 200)}`);
+        const checked = rule.name === "host-name-or-path" && rel === "why/SKILL.md" && line === WHY_CURSOR_SENTENCE
+          ? line.replace("cursor location", "caret location") : line;
+        if (rule.pattern.test(checked)) hits.push(`${rel}:${i + 1} [${rule.name}] ${line.trim().slice(0, 200)}`);
       }
     });
   }
@@ -108,6 +113,57 @@ describe("pstack skills: spider terms only", () => {
     if (hits.length > 0) throw new Error(`Found ${hits.length} forbidden term(s):\n${hits.join("\n")}`);
   });
 
+  it.each([
+    ...["claude", "codex", "copilot", "cursor", "gemini", "opencode", "antigravity"]
+      .flatMap(vendor => [vendor, vendor.toUpperCase()].map(term => [`Ask ${term} to do it.`, "host-name-or-path"])),
+    ["Read ~/.CLAUDE/projects/x.", "host-name-or-path"],
+    ["Set TMPDIR to a scratch directory.", "system-temp"],
+    ["Use os.tmpdir as the directory provider.", "system-temp"],
+    ["Write under %TEMP%.", "system-temp"],
+    ["Use deepseek for this.", "model-name"],
+    ["Use qwen for this.", "model-name"],
+    ["Use kimi for this.", "model-name"],
+    ["Use DeepSeek-V3 for this.", "model-name"],
+    ["Use Qwen3 for this.", "model-name"],
+    ["Use Kimi-K2 for this.", "model-name"],
+    ["Run /recall previous decisions.", "unshipped-skill-ref"],
+  ])("catches the review regression fixture %s", (text, rule) => {
+    const root = testScratchPath(`pstack-guard-review-${process.pid}`);
+    fs.mkdirSync(root, { recursive: true });
+    try {
+      fs.writeFileSync(path.join(root, "fixture.md"), text);
+      expect(scan(root).some(hit => hit.includes(`[${rule}]`)), `${rule}: ${text}`).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows only the existing why skill cursor-location sentence", () => {
+    const root = testScratchPath(`pstack-guard-cursor-${process.pid}`);
+    const original = fs.readFileSync(path.join(skillsDir, "why/SKILL.md"), "utf8")
+      .split(/\r?\n/).find(line => line.includes("cursor location"))!;
+    expect(original).toBeTruthy();
+    fs.mkdirSync(path.join(root, "why"), { recursive: true });
+    const file = path.join(root, "why/SKILL.md");
+    try {
+      fs.writeFileSync(file, original);
+      expect(scan(root)).toEqual([]);
+      for (const altered of [
+        `${original} Ask claude.`,
+        original.replace("cursor location", "Cursor location"),
+        `${original}\nAsk cursor to do it.`,
+      ]) {
+        fs.writeFileSync(file, altered);
+        expect(scan(root).some(hit => hit.includes("[host-name-or-path]"))).toBe(true);
+      }
+      fs.unlinkSync(file);
+      fs.writeFileSync(path.join(root, "other.md"), original);
+      expect(scan(root).some(hit => hit.includes("[host-name-or-path]"))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("catches each forbidden term in a fixture", () => {
     const root = testScratchPath(`pstack-guard-${Date.now()}`);
     fs.mkdirSync(root, { recursive: true });
@@ -152,7 +208,7 @@ describe("pstack skills: spider terms only", () => {
         "Use the **show-me-your-work** skill and the `how` skill.",
         "Write it under .spider/scratch/decisions.tsv.",
         "Pick a capable model for the reviewer role.",
-        "the text cursor location",
+        "the text caret location",
         "Keep general-purpose mechanism inside.",
       ].join("\n"));
       expect(scan(root)).toEqual([]);

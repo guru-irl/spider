@@ -1,6 +1,8 @@
 Derived from context-mode (https://github.com/mksglu/context-mode).
 Copyright 2026 Mert Koseoglu
 Modified for spider.
+Spider's port on 2026-07-03 postdates context-mode's switch to ELv2 at
+a4829808 on 2026-03-03, so ELv2 applies.
 
 Elastic License 2.0 (ELv2)
 

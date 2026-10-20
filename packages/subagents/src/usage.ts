@@ -8,6 +8,8 @@ export interface UsageLike {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
 }
 export interface ModelUsage { provider: string; model: string; usage: UsageLike }
+/** Accounting labels, not billing attribution: rolled-up tool usage can span models/providers. */
+export const TOOL_USAGE_BUCKET = { provider: "tools", model: "unattributed" } as const;
 export function sumUsage(items: readonly UsageLike[]): UsageLike {
   const total: UsageLike = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };

@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
-import { sumUsage } from "./usage";
+import { sumUsage, TOOL_USAGE_BUCKET } from "./usage";
 
 /** Accept pi 1.x dispositions and legacy pi 0.87 replies without the field. */
 interface RpcInputResponse {
@@ -81,6 +81,9 @@ export function createEventGate(initial?: (event: Record<string, any>) => void, 
   let latest = slash > 0 ? { provider: requestedModel!.slice(0, slash), model: requestedModel!.slice(slash + 1) }
     : requestedModel ? { provider: "unknown", model: requestedModel } : undefined;
   const persisted: Buffered[] = [], other: Buffered[] = [];
+  // Survives unbind/rebind alongside the gate. Pi rolls every nested call into
+  // the final top-level result; execution-end usage must never be added too.
+  const countedToolResults = new Set<string>();
   // Usage has O(provider/model/purpose) storage, separate from both evictable lanes.
   const bufferedUsage = new Map<string, Buffered>();
   let persistedBytes = 0, otherBytes = 0, lostPersisted = 0, droppedOther = 0;
@@ -91,6 +94,13 @@ export function createEventGate(initial?: (event: Record<string, any>) => void, 
       const message = event.message;
       if (message.provider && (message.responseModel ?? message.model)) latest = { provider: message.provider, model: message.responseModel ?? message.model };
       if (event.type === "message_end" && message.usage && latest) report({ type: "spider_usage", ...latest, usage: message.usage });
+    } else if (event.type === "message_end" && event.message?.role === "toolResult") {
+      const message = event.message;
+      const id = typeof message.toolCallId === "string" && message.toolCallId.trim() ? message.toolCallId : undefined;
+      if (message.usage && id && !message.parentToolCallId && !countedToolResults.has(id)) {
+        countedToolResults.add(id);
+        report({ type: "spider_usage", ...TOOL_USAGE_BUCKET, usage: message.usage, purpose: "tools" });
+      }
     } else if (event.type === "compaction_end" && event.aborted === false && event.result) {
       // pi 0.87 built-in compactions emit only compaction_end. Boundary drafts emit
       // only entry_appended, so these two paths cannot count the same compaction twice.

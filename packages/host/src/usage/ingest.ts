@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
+import { isToolUsageBucket, parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
 import { UsageJsonLine } from "./jsonl-projection.js";
 import { SessionMetadataCapture, forgetSessionMetadata } from "./session-metadata.js";
 import { normalizeRunStatus } from "./ledger.js";
@@ -84,14 +84,14 @@ function compact(entry: unknown): unknown {
   const pick = (input: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter(k => k in input).map(k => [k, input[k]]));
   const result = pick(record, [
     "type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId",
-    "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "api"
+    "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "durationMs", "api"
   ]);
   if (record.type === "compaction" || record.type === "branch_summary")
     result.details = pick(object(record.details), ["summaryModel"]);
   if (record.type === "message")
     result.message = pick(object(record.message), [
       "role", "timestamp",
-      "provider", "model", "responseModel", "providerThinkingLevel", "responseId", "usage", "latencyMs", "api", "toolName"
+      "provider", "model", "responseModel", "thinkingLevel", "providerThinkingLevel", "responseId", "usage", "latencyMs", "durationMs", "api", "toolName", "toolCallId", "parentToolCallId"
     ]);
   return result;
 }
@@ -370,7 +370,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       if (!text(payload.provider) || !text(payload.model))
         continue;
       const group = expectedGroups.get(event.runId) ?? new Set<string>();
-      group.add(JSON.stringify([payload.provider, payload.model]));
+      group.add(JSON.stringify(isToolUsageBucket(payload.provider, payload.model) ? [null, null] : [payload.provider, payload.model]));
       expectedGroups.set(event.runId, group);
     }
     // Small headers suffice for fork origin traversal. No scan/body survives its source.
@@ -543,7 +543,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       purpose: string;
       count: number;
     }>();
-    const transcriptPurposes = new Set(["compaction", "branch_summary", "subagent", "spider-subagent", "cache_warm"]);
+    const transcriptPurposes = new Set(["compaction", "branch_summary", "subagent", "spider-subagent", "cache_warm", "tools"]);
     for (const event of discovery.runEvents ?? []) {
       if (event.type !== "spider_usage")
         continue;

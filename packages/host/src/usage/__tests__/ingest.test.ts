@@ -29,6 +29,56 @@ function event(id: number, r: RunMeta, purpose: string | undefined, ts = at): Ru
 beforeEach(async () => { actualOpen = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).open; vi.mocked(fs.open).mockImplementation(actualOpen); root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-ingest-")); ledger = openUsageLedger(join(root, "ledger.db")); ({ ingestOnce: ingest } = await import("../ingest.js")); });
 afterEach(() => { vi.restoreAllMocks(); ledger.close(); rmSync(root, { recursive: true, force: true }); });
 
+it("keeps appended response/tool metadata equal to a full parse and counts repeated toolCallIds once", async () => {
+  const s = source("timed");
+  const first = [header(), { type: "thinking_level_change", id: "effort", thinkingLevel: "high" },
+    message("first", { durationMs: 0, thinkingLevel: "off" })];
+  const tool = { type: "message", id: "tool", timestamp: new Date(at).toISOString(), message: {
+    role: "toolResult", toolName: "codemode", toolCallId: "outer", durationMs: 80, usage,
+    content: [{ type: "text", text: "not retained" }], isError: false, timestamp: at,
+  } };
+  const appended = [message("routed", { durationMs: 125, latencyMs: 99, thinkingLevel: "low", providerThinkingLevel: "minimal" }), tool];
+  write(s, first); await scan(discovery([s]));
+  ledger.close(); ledger = openUsageLedger(join(root, "ledger.db"));
+  appendFileSync(s.path, appended.map(e => JSON.stringify(e)).join("\n") + "\n"); await scan(discovery([s]));
+  const repeated = { ...tool, id: "tool-repeat" };
+  appendFileSync(s.path, JSON.stringify(repeated) + "\n"); await scan(discovery([s]));
+  expect(ledger.getSourceErrors()).toEqual([]);
+  const got = rows().map(r => [r.entry_id, r.latency_ms, r.thinking_level, r.provider_thinking_level, r.tool_call_id, r.tool_duration_ms]);
+  expect(got).toEqual([
+    ["first", 0, "off", null, null, null], ["routed", 125, "low", "minimal", null, null], ["tool", null, null, null, "outer", 80],
+  ]);
+  const { parseTranscript } = await import("../parse.js");
+  const full = parseTranscript([...first, ...appended, repeated].map((json, i) => ({ byteOffset: i, json })), { ...s, run: null });
+  expect(got).toEqual(full.calls.map(c => [c.entryId, c.latencyMs, c.thinkingLevel, c.providerThinkingLevel, c.toolCallId, c.toolDurationMs]));
+  expect(rows("SELECT SUM(input) AS input FROM counted_calls")).toEqual([{ input: 3000 }]);
+});
+
+it("releases unattributed tools report groups and does not infer their labels as summary providers", async () => {
+  const r = run("tool-worker", { endedAt: null }), s = source("tool-reports");
+  write(s, [header(), message("chat"), { ...report("tools", r.id), provider: "tools", model: "unattributed" }]);
+  const d = discovery([s], [r], { runEvents: [{ ...event(1, r, "tools"),
+    payload: JSON.stringify({ provider: "tools", model: "unattributed", purpose: "tools", usage }) }] });
+  await scan(d);
+  expect(rows().find(row => row.entry_id === "tools")).toMatchObject({ provider: null, raw_provider: null, model: null,
+    requested_model: null, aux_purpose: "tools", is_report: 1 });
+  expect(ledger.getPendingReports()).toEqual([]);
+  expect(ledger.getSourceErrors()).toEqual([]);
+  appendFileSync(s.path, JSON.stringify({ type: "compaction", id: "summary", timestamp: new Date(at).toISOString(), usage: {
+    ...usage, cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+  } }) + "\n");
+  await scan(d);
+  expect(rows().find(row => row.entry_id === "summary")).toMatchObject({ provider: "github-copilot", aic: 10 });
+  const child = source("tool-detail", r);
+  write(child, [header("child-tools"), { type: "message", id: "tool-final", timestamp: new Date(at).toISOString(), message: {
+    role: "toolResult", toolName: "codemode", toolCallId: "outer", usage, durationMs: 80, timestamp: at,
+  } }]);
+  await scan({ ...d, sources: [s, child] });
+  expect(selected().map(row => row.entry_id).sort()).toEqual(["chat", "summary", "tool-final"]);
+  expect(rows("SELECT SUM(input) AS input FROM counted_calls")).toEqual([{ input: 3000 }]);
+  expect(rows("SELECT COUNT(*) AS n FROM calls WHERE source_kind='run-db-aux'")).toEqual([{ n: 0 }]);
+});
+
 it("resumes only through complete UTF8 newline boundaries", async () => {
   const s = source("parent"); write(s, [header(), message("one")]); await scan(discovery([s])); const offset = statSync(s.path).size;
   const bytes = Buffer.from(JSON.stringify(message("two", { label: "猫" })) + "\n"); const split = bytes.indexOf(Buffer.from("猫")) + 1;

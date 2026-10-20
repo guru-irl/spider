@@ -3,6 +3,7 @@ import { USAGE_SCHEMA, USAGE_SCHEMA_V2, USAGE_SCHEMA_VERSION, USAGE_SCHEMA_LAYOU
 
 import { USAGE_SCHEMA_V3 } from "./schema-v3.js";
 import { USAGE_SCHEMA_V4 } from "./schema-v4.js";
+import { USAGE_SCHEMA_V6 } from "./schema-v6.js";
 
 // Never rewrite shipped migration SQL. Append additive versions here.
 export const USAGE_MIGRATIONS: readonly { version: number; sql: string; apply?: typeof upgradeReportedCostSchema }[] = [
@@ -11,6 +12,7 @@ export const USAGE_MIGRATIONS: readonly { version: number; sql: string; apply?: 
   { version: 3, sql: USAGE_SCHEMA_V3 },
   { version: 4, sql: USAGE_SCHEMA_V4 },
   { version: 5, sql: "-- v5: preserve calls and dependencies while allowing reported-cost component nulls", apply: upgradeReportedCostSchema },
+  { version: 6, sql: USAGE_SCHEMA_V6 },
 ];
 
 const normalizedDdl = (sql: string) => sql

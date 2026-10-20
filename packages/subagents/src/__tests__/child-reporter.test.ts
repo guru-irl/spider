@@ -86,6 +86,38 @@ describe("child reporter", () => {
       }
     }
 
+    // Breaks if reporter payloads drop timing/response effort, or estimate durations from event order.
+    it.each([
+      { durationMs: 125.5, want: 125.5 }, { durationMs: 0, want: 0 },
+      { durationMs: undefined, want: undefined }, { durationMs: -1, want: undefined },
+    ])("records response and concurrent tool durations without fabricating missing values: $durationMs", ({ durationMs, want }) => {
+      const dbFile = scratchDbPath("child-reporter-timings");
+      const seed = openDbAt(dbFile, "project");
+      const { id: runId } = new RunStore(seed).create({ sessionId: "child-sess", agent: "worker" });
+      seed.close();
+      withChildEnv(dbFile, runId, handlers => {
+        handlers.tool_execution_start({ toolName: "codemode", toolCallId: "outer", args: {} });
+        handlers.tool_execution_start({ toolName: "read", toolCallId: "outer/1", parentToolCallId: "outer", args: { path: "fixture.ts" } });
+        handlers.tool_execution_end({ toolName: "read", toolCallId: "outer/1", parentToolCallId: "outer", result: { content: [] }, isError: false, durationMs });
+        handlers.tool_execution_end({ toolName: "codemode", toolCallId: "outer", result: { content: [] }, isError: false, durationMs: 800 });
+        handlers.message_end({ message: { role: "assistant", content: [{ type: "text", text: "Report" }], stopReason: "stop",
+          durationMs, thinkingLevel: "low", providerThinkingLevel: "minimal" } });
+        handlers.session_shutdown();
+        const verify = openDbAt(dbFile, "project");
+        try {
+          const events = (verify.prepare("SELECT type,payload FROM run_events WHERE run_id=? ORDER BY id").all(runId) as { type: string; payload: string }[])
+            .map(e => ({ type: e.type, payload: JSON.parse(e.payload) }));
+          expect(events.find(e => e.type === "tool_intent" && e.payload.id === "outer/1")?.payload.parentToolCallId).toBe("outer");
+          const tool = events.find(e => e.type === "tool_result" && e.payload.id === "outer/1")!.payload;
+          expect(tool.durationMs).toBe(want);
+          expect(tool.parentToolCallId).toBe("outer");
+          expect(events.find(e => e.type === "tool_result" && e.payload.id === "outer")?.payload.durationMs).toBe(800);
+          expect(events.find(e => e.type === "message")?.payload).toMatchObject({ thinkingLevel: "low", providerThinkingLevel: "minimal" });
+          expect(events.find(e => e.type === "message")?.payload.durationMs).toBe(want);
+        } finally { verify.close(); }
+      });
+    });
+
     // Genuine repro for the reported bug: "a child itself currently calls
     // onShutdown('done') regardless of provider errors/escalation". `stopReason` is the
     // documented, structural field on the finalized assistant message (session-format.md)

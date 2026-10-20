@@ -48,11 +48,17 @@ export type ParsedCall = {
   /** Inferred tree/run selection for display only, not billing or requested-model grouping. */
   displayModel?: string | null;
   thinking: string | null;
+  /** Pi's requested level on this response, never inferred from session selection. */
+  thinkingLevel: string | null;
+  /** Provider-native effort, which need not use Pi's level names. */
+  providerThinkingLevel: string | null;
   api: string | null;
   usage: UsageTokens;
   price: PriceResult;
   piCost: number | null;
   latencyMs: number | null;
+  toolCallId: string | null;
+  toolDurationMs: number | null;
   aggregate: boolean;
 };
 
@@ -76,6 +82,11 @@ function object(value: unknown): ObjectValue | undefined {
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/** Run-report wire labels from subagents/usage, not a real billing provider/model. */
+export function isToolUsageBucket(provider: unknown, model: unknown): boolean {
+  return provider === "tools" && model === "unattributed";
 }
 
 function nonnegative(value: unknown): value is number {
@@ -184,6 +195,7 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
   for (const node of nodes) displayState(node);
 
   const reportedCosts = new Map<ParsedCall, ObjectValue | undefined>();
+  const toolResults = new Set<string>();
   for (const node of nodes) {
     const { entry, entryId, byteOffset } = node;
     let record = entry;
@@ -191,6 +203,8 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
     let aggregate = false;
     let auxPurpose: string | null = null;
     let reportedRun = false;
+    let toolCallId: string | null = null;
+    let toolResult = false;
     if (entry.type === "message") {
       const message = object(entry.message);
       if (!message || !text(message.role)) {
@@ -200,7 +214,10 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
       if (message.role !== "assistant" && message.role !== "toolResult") continue;
       record = message;
       if (message.role === "toolResult") {
-        if (message.usage == null) continue;
+        if (message.usage == null || text(message.parentToolCallId)) continue;
+        toolResult = true;
+        toolCallId = text(message.toolCallId);
+        if (toolCallId && toolResults.has(toolCallId)) continue;
         // Explicit summary provenance is safe. Model-less summaries may use
         // provider state for reported cost; tool details/content never attribute models.
         const summary = object(message.usage)?.source;
@@ -238,14 +255,19 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
     // Display/request context cannot fill in a missing billing model or provider.
     const plugin = actor === "compaction" && (entry.type === "compaction" || entry.type === "branch_summary")
       ? summaryModelRef(object(entry.details)?.summaryModel) : undefined;
-    const rawProvider = plugin?.provider ?? text(record.provider);
-    const model = plugin?.id ?? text(record.responseModel) ?? text(record.model);
+    const reportedTools = reportedRun && isToolUsageBucket(record.provider, record.model);
+    if (reportedTools) auxPurpose = "tools";
+    const unattributedTool = reportedTools || toolResult && actor !== "compaction";
+    const rawProvider = unattributedTool ? null : plugin?.provider ?? text(record.provider);
+    const model = unattributedTool ? null : plugin?.id ?? text(record.responseModel) ?? text(record.model);
     const reportedSummary = actor === "compaction" && model === null;
     const provider = rawProvider ?? (reportedSummary ? state.provider : null);
-    const requestedModel = plugin?.id ?? text(record.model);
+    const requestedModel = unattributedTool ? null : plugin?.id ?? text(record.model);
     const report = reportedRun ? text(entry.note)?.match(/^([\s\S]*?)\s*\(([A-Za-z0-9][A-Za-z0-9_-]*)\)\s*$/) : undefined;
     const cost = object(rawUsage.cost)?.total;
-    const latency = record.latencyMs ?? entry.latencyMs;
+    const latency = record.durationMs ?? entry.durationMs ?? record.latencyMs ?? entry.latencyMs;
+    const thinkingLevel = record.role === "assistant" ? text(record.thinkingLevel) : null;
+    const providerThinkingLevel = text(record.providerThinkingLevel);
     const call: ParsedCall = {
       id: createHash("sha256").update(JSON.stringify([source.path, entryId])).digest("hex"),
       ts, sourceFile: source.path, entryId, project: source.project, repo: source.repo,
@@ -259,13 +281,16 @@ export function parseTranscript(lines: readonly { byteOffset: number; json: unkn
       phase: reportedRun ? null : source.run?.phase ?? null,
       parentRunId: reportedRun ? source.run?.id ?? null : source.run?.parentRunId ?? null,
       auxPurpose, provider, rawProvider, model, requestedModel, displayModel: reportedRun ? null : state.model,
-      thinking: reportedRun ? null : text(record.providerThinkingLevel) ?? state.thinking, api: text(record.api), usage,
+      thinking: reportedRun ? null : thinkingLevel ?? providerThinkingLevel ?? state.thinking,
+      thinkingLevel, providerThinkingLevel, api: text(record.api), usage,
       price: reportedSummary ? priceReportedCost(provider, object(rawUsage.cost), usage, ts)
         : priceCall({ provider, id: model }, usage, ts, { aggregate: plugin ? false : aggregate }),
       piCost: nonnegative(cost) ? cost : null,
-      latencyMs: nonnegative(latency) ? latency : null, aggregate,
+      latencyMs: !toolResult && nonnegative(latency) ? latency : null,
+      toolCallId, toolDurationMs: toolResult && nonnegative(record.durationMs) ? record.durationMs : null, aggregate,
     };
     calls.push(call);
+    if (toolCallId) toolResults.add(toolCallId);
     if (reportedSummary && provider === null) reportedCosts.set(call, object(rawUsage.cost));
   }
   // Unknown state may use only unanimous recorded call attribution, never an

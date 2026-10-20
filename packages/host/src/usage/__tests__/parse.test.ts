@@ -107,6 +107,17 @@ describe("parseTranscript", () => {
     expect(notTerminal.runId).toBeNull();
   });
 
+  it("keeps reported tools in an unattributed bucket without poisoning summary provider evidence", () => {
+    const result = parseTranscript(lines(HEADER,
+      entry("message", "chat", { message: assistant() }),
+      entry("usage", "tools", { kind: "subagent", provider: "tools", model: "unattributed", usage: usage(), note: "worker (run-reported)" }),
+      entry("compaction", "summary", { usage: usage() }),
+    ), SOURCE);
+    expect(result.calls[1]).toMatchObject({ actor: "subagent", aggregate: true, runId: "run-reported", auxPurpose: "tools",
+      provider: null, rawProvider: null, model: null, requestedModel: null, price: { status: "unpriced", reason: "missing-attribution" } });
+    expect(result.calls[2]).toMatchObject({ provider: "github-copilot", price: { status: "priced", rateVersion: "pi-reported-cost-v1" } });
+  });
+
   it("walks ancestor model and thinking changes rather than latest linear selections", () => {
     const result = parseTranscript(lines(HEADER,
       entry("model_change", "a", { provider: "github-copilot", modelId: "gpt-6.1-sol" }),
@@ -182,6 +193,61 @@ describe("parseTranscript", () => {
     expect(result.calls[0].latencyMs).toBe(42);
     expect(result.calls[1].latencyMs).toBeNull();
     expect(result.errors).toEqual([{ byteOffset: 200, code: "invalid-timestamp" }, { byteOffset: 300, code: "invalid-timestamp" }]);
+  });
+
+  it.each([
+    { fields: { durationMs: 125.5, latencyMs: 42 }, want: 125.5 },
+    { fields: { durationMs: 0, latencyMs: 42 }, want: 0 },
+    { fields: { latencyMs: 42 }, want: 42 },
+    { fields: { latencyMs: 0 }, want: 0 },
+    { fields: {}, want: null },
+    { fields: { durationMs: -1 }, want: null },
+    { fields: { durationMs: Infinity }, want: null },
+    { fields: { durationMs: "125" }, want: null },
+  ])("uses recorded response timing without inventing unknowns: $fields", ({ fields, want }) => {
+    const call = parseTranscript(lines(entry("message", "timed", { message: assistant(fields) })), SOURCE).calls[0];
+    expect(call.latencyMs).toBe(want);
+  });
+
+  it("keeps the routed response's requested thinking separate from provider-native effort and session selection", () => {
+    const result = parseTranscript(lines(
+      entry("thinking_level_change", "selected", { thinkingLevel: "high" }),
+      entry("message", "routed", { parentId: "selected", message: assistant({ thinkingLevel: "low", providerThinkingLevel: "minimal" }) }),
+      entry("message", "legacy", { parentId: "selected", message: assistant({ providerThinkingLevel: "medium" }) }),
+      entry("message", "unknown", { parentId: "selected", message: assistant() }),
+    ), SOURCE);
+    expect(result.calls.map(call => [call.thinkingLevel, call.providerThinkingLevel, call.thinking])).toEqual([
+      ["low", "minimal", "low"], [null, "medium", "medium"], [null, null, "high"],
+    ]);
+  });
+
+  it("counts only final top-level tool usage once per toolCallId without chat-model attribution", () => {
+    const tool = { role: "toolResult", toolCallId: "outer", toolName: "codemode", usage: usage(), durationMs: 90,
+      timestamp: AT, provider: "github-copilot", model: "gpt-6.1-sol", content: [],
+      nestedCalls: { calls: [{ id: "outer/1", name: "classify", status: "ok", durationMs: 60 }], complete: true } };
+    const result = parseTranscript(lines(
+      entry("tool_execution_end", "nested-event", { toolCallId: "outer/1", parentToolCallId: "outer", result: { usage: usage() }, durationMs: 60 }),
+      entry("message", "nested-result", { message: { ...tool, toolCallId: "outer/1", parentToolCallId: "outer" } }),
+      entry("message", "final", { message: tool }),
+      entry("message", "repeated", { message: tool }),
+      entry("message", "other", { message: { ...tool, toolCallId: "other", durationMs: 0 } }),
+    ), SOURCE);
+    expect(result.errors).toEqual([]);
+    expect(result.calls.map(call => [call.entryId, call.toolCallId, call.toolDurationMs])).toEqual([
+      ["final", "outer", 90], ["other", "other", 0],
+    ]);
+    expect(result.calls[0]).toMatchObject({ actor: "aux", auxPurpose: "tool:codemode", aggregate: true,
+      provider: null, model: null, requestedModel: null, latencyMs: null,
+      price: { status: "unpriced", reason: "missing-attribution" } });
+    expect(result.calls.reduce((sum, call) => sum + call.usage.input, 0)).toBe(200);
+  });
+
+  it("keeps missing tool timings unknown", () => {
+    const call = parseTranscript(lines(entry("message", "tool", { message: {
+      role: "toolResult", toolCallId: "untimed", toolName: "codemode", usage: usage(), timestamp: AT,
+    } })), SOURCE).calls[0];
+    expect(call.toolDurationMs).toBeNull();
+    expect(call.latencyMs).toBeNull();
   });
 
   it("keeps pre-rate and foreign-provider calls unpriced with their original metadata", () => {

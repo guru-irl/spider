@@ -9,6 +9,10 @@ export function isSubagentChild(): boolean {
   return process.env.PI_SUBAGENT_CHILD === "1";
 }
 
+function recordedDuration(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function firstString(...vals: unknown[]): string | undefined {
   for (const v of vals) if (typeof v === "string" && v.trim()) return v;
   return undefined;
@@ -107,7 +111,8 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     },
     /** Preserve the full prose even when it carries an escalation. The final report
      *  used to disappear whenever one warning line was present, exposing an old preamble. */
-    onMessage(text: string, metadata?: { stopReason?: string; errorMessage?: string }): void {
+    onMessage(text: string, metadata?: { stopReason?: string; errorMessage?: string; durationMs?: number;
+      thinkingLevel?: string; providerThinkingLevel?: string }): void {
       if (isForeignRow(store.get(ctx.runId))) return;
       const lines = text.split('\n');
       const nonBlank = lines.filter(line => line.trim());
@@ -234,8 +239,12 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
   // final outcome; only the LAST turn before shutdown decides.
   let lastTurnOutcome: "ok" | "error" | "aborted" = "ok";
   let lastTurnErrorMessage: string | undefined;
-  wire("tool_execution_start", (e) => rep.onToolStart(e?.toolName, summarizeToolArgs(e?.toolName, e?.args), { id: e?.toolCallId }));
-  wire("tool_execution_end", (e) => rep.onToolEnd(e?.toolName, summarizeResult(e?.toolName, e?.result, !!e?.isError), { id: e?.toolCallId, isError: !!e?.isError }));
+  wire("tool_execution_start", (e) => rep.onToolStart(e?.toolName, summarizeToolArgs(e?.toolName, e?.args), {
+    id: e?.toolCallId, parentToolCallId: e?.parentToolCallId,
+  }));
+  wire("tool_execution_end", (e) => rep.onToolEnd(e?.toolName, summarizeResult(e?.toolName, e?.result, !!e?.isError), {
+    id: e?.toolCallId, parentToolCallId: e?.parentToolCallId, isError: !!e?.isError, durationMs: recordedDuration(e?.durationMs),
+  }));
   wire("message_end", (e) => {
     const msg = e?.message;
     if (msg?.role !== "assistant") return;
@@ -243,6 +252,8 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
     rep.onMessage(text, {
       stopReason: typeof msg.stopReason === "string" ? msg.stopReason : "unknown",
       errorMessage: typeof msg.errorMessage === "string" ? msg.errorMessage : undefined,
+      durationMs: recordedDuration(msg.durationMs ?? msg.latencyMs),
+      thinkingLevel: firstString(msg.thinkingLevel), providerThinkingLevel: firstString(msg.providerThinkingLevel),
     });
     if (msg.stopReason === "error") {
       lastTurnOutcome = "error";

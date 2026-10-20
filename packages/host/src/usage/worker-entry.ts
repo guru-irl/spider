@@ -8,6 +8,7 @@ import type { MessagePort } from "node:worker_threads";
 import { discoverUsageSources } from "./discovery.js";
 import { ingestOnce } from "./ingest.js";
 import { backfillSessionMetadata, METADATA_BACKFILL_BYTES_PER_PASS } from "./session-backfill.js";
+import { backfillResponseMetadata, RESPONSE_METADATA_BYTES_PER_PASS } from "./response-backfill.js";
 import { openUsageLedger, openUsageLedgerReadOnly, type UsageLedger, type ImportBatch } from "./ledger.js";
 import { acquireUsageLease, UsageLeaseError, type Lease } from "./lease.js";
 import { CounterPoller, counterSnapshotIsFresh } from "./counter.js";
@@ -56,9 +57,11 @@ export async function bootUsageWorker(
   let pendingRelease: { lease: Lease; ledger: UsageLedger } | undefined;
   let backfill: BackfillState = "pending";
   let metadataBackfill: BackfillState = "pending", monthDirty = true;
+  let responseMetadataBackfill: BackfillState = "pending";
+  let responseMetadataProgress = { sourcesCompleted: 0, sourcesUnavailable: 0, sourcesTotal: 0 };
   let repriceIncomplete = false;
-  const passDelay = () => metadataBackfill === "running" || repriceIncomplete ? SNAPSHOT_MS : CYCLE_MS;
-  let progress = { sourcesCompleted: 0, sourcesTotal: 0 };
+  const passDelay = () => backfill === "running" || metadataBackfill === "running" || responseMetadataBackfill === "running" || repriceIncomplete ? SNAPSHOT_MS : CYCLE_MS;
+  let progress = { sourcesCompleted: 0, sourcesUnavailable: 0, sourcesTotal: 0 };
   let metadataProgress = { sourcesCompleted: 0, sourcesTotal: 0 };
   let monthCounterKey: string | undefined;
   let cachedSnapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
@@ -177,7 +180,7 @@ export async function bootUsageWorker(
       } catch { monthUsed = null; /* Footer data must never fail ingestion. */ }
       monthDirty = false;
     }
-    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", metadataBackfill, metadataProgress: { ...metadataProgress }, monthUsed, monthPeriod, collector: { kind: command.dashboardMode ? "dashboard" : "pi", sessionId: command.dashboardMode ? null : command.sessionId ?? null, owner: command.owner }, sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
+    const snapshot: Extract<UsageWorkerEvent, { type: "snapshot" }> = { type: "snapshot", responseMetadataBackfill, responseMetadataProgress: { ...responseMetadataProgress }, metadataBackfill, metadataProgress: { ...metadataProgress }, monthUsed, monthPeriod, collector: { kind: command.dashboardMode ? "dashboard" : "pi", sessionId: command.dashboardMode ? null : command.sessionId ?? null, owner: command.owner }, sourceErrorDiagnostics: ledger.getSourceErrorDiagnostics(20), calibration: ledger.getCalibration(calibrationMode), ingestRole: "owner", health, counter: counterState, backfill, reconciliation: comparison, progress: { ...progress } };
     if (!ledger.apply({ ...stateBatch(backfill), publishedSnapshot: snapshot })) return;
     cachedSnapshot = snapshot; lastPublish = performance.now(); post(snapshot);
   }
@@ -247,27 +250,37 @@ export async function bootUsageWorker(
       if (!(state && persistedContexts.has(source.path) && state.inode === `${info.dev}:${info.ino}` && state.size === info.size
         && state.mtimeMs === info.mtimeMs && state.offset === info.size)) changed.push(source.path);
     }
-    progress = { sourcesCompleted: discovery.sources.length - changed.length, sourcesTotal: discovery.sources.length };
+    progress = { sourcesCompleted: discovery.sources.length - changed.length, sourcesUnavailable: 0, sourcesTotal: discovery.sources.length };
+    if (changed.length) { backfill = "running"; ledger!.apply(stateBatch(backfill)); }
     let firstCall = true;
     if (!changed.length) { await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: [], skipHealth: true, commitGuard: guard, onCallsAdded: () => { monthDirty = true; } }); firstCall = false; }
     for (let i = 0; i < changed.length && guard(); i += BATCH_SOURCES) {
       let remaining = changed.slice(i, i + BATCH_SOURCES);
       while (remaining.length && guard()) {
-        const offsets = new Map(remaining.map(path => [path, ledger!.getImportState(path)?.offset ?? -1]));
+        const previous = new Map(remaining.map(path => [path, ledger!.getImportState(path)]));
         await ingest(ledger!, discovery, now(), controller.signal, { sourcePaths: remaining, maxBytes: BATCH_BYTES, commitGuard: guard, skipHealth: true, skipShared: !firstCall, onCallsAdded: () => { monthDirty = true; } });
         firstCall = false;
-        remaining = remaining.filter(path => { const state = ledger!.getImportState(path); return state && state.offset < state.size && state.offset > offsets.get(path)!; });
+        remaining = remaining.filter(path => {
+          const state = ledger!.getImportState(path), before = previous.get(path);
+          return state && state.offset < state.size && state.offset > (state.generation === before?.generation ? before.offset : 0);
+        });
         if (guard() && performance.now() - lastPublish >= SNAPSHOT_MS) publish(false);
         // Stop, heartbeat and counter timers also run between slices of one file.
         await new Promise<void>(resolve => setImmediate(resolve));
       }
-      progress.sourcesCompleted += Math.min(BATCH_SOURCES, changed.length - i);
+      for (const path of changed.slice(i, i + BATCH_SOURCES)) {
+        let info;
+        try { info = statSync(path); } catch { progress.sourcesUnavailable++; continue; }
+        const state = ledger!.getImportState(path);
+        if (state && state.inode === `${info.dev}:${info.ino}` && state.size === info.size
+          && state.mtimeMs === info.mtimeMs && state.offset === info.size) progress.sourcesCompleted++;
+      }
       if (guard() && (performance.now() - lastPublish >= SNAPSHOT_MS || first && progress.sourcesCompleted % 32 === 0)) publish(false);
     }
     if (!guard()) return;
     // Billing freshness must not wait for the separate metadata backfill. Once the
     // backfill is complete the metadata step is a no-op, so the final publish suffices.
-    backfill = "complete";
+    backfill = progress.sourcesCompleted + progress.sourcesUnavailable === progress.sourcesTotal ? "complete" : "running";
     if (metadataBackfill !== "complete") publish();
     if (!guard()) return;
     const reprice = ledger!.repriceUnpriced(guard, dependencies.repriceBatchSize);
@@ -291,6 +304,12 @@ export async function bootUsageWorker(
           checkpoint.generation === imported.generation && checkpoint.size === imported.size);
       }).length };
     metadataBackfill = metadataProgress.sourcesCompleted === metadataProgress.sourcesTotal ? "complete" : "running";
+    const response = await backfillResponseMetadata(ledger!, discovery, now(), controller.signal, guard,
+      command.responseMetadataBytesPerPass ?? RESPONSE_METADATA_BYTES_PER_PASS);
+    if (!guard()) return;
+    responseMetadataProgress = { sourcesCompleted: response.sourcesCompleted, sourcesUnavailable: response.sourcesUnavailable,
+      sourcesTotal: discovery.sources.length };
+    responseMetadataBackfill = response.complete ? "complete" : "running";
     publish();
   }
   function schedule(): void {

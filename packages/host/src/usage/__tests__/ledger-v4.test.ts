@@ -87,7 +87,7 @@ it("v3 upgrades once without changing selected calls or shipped SQL", () => {
   migrateUsageLedger(db);
   expect(db.pragma("user_version")).toBe(6);
   expect(selected(db)).toEqual(selectedBefore);
-  expect(allFacts(db)).toEqual({ ...withV6Metadata(facts), sessions: [], session_metadata_import: [] });
+  expect(allFacts(db)).toEqual({ ...withV6Metadata(facts), sessions: [], session_metadata_import: [], response_metadata_import: [] });
   expect(db.prepare("SELECT status FROM runs_meta").get()).toEqual({ status: null });
   expect(layout(db).filter(row => (row as { name: string }).name !== "runs_meta" && (row as { name: string }).name !== "calls" && before.some(old => (old as { name: string }).name === (row as { name: string }).name)))
     .toEqual(before.filter(row => !["runs_meta", "calls"].includes((row as { name: string }).name)));
@@ -123,7 +123,7 @@ it("an upgrade interrupted after v4 SQL rolls back all rows and upgrades on next
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   const reopened = track(openUsageLedger(file));
   expect(reopened.health().schemaVersion).toBe(6);
-  expect(allFacts(db)).toEqual({ ...withV6Metadata(beforeFacts), sessions: [], session_metadata_import: [] });
+  expect(allFacts(db)).toEqual({ ...withV6Metadata(beforeFacts), sessions: [], session_metadata_import: [], response_metadata_import: [] });
 });
 
 it("frozen v3 fixture matches the shipped migration path", () => {

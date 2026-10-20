@@ -51,8 +51,11 @@ function relativeFailureTime(ageMs: number): string {
 export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>, config: UsageConfig, diagnostics?: UsageDoctorDiagnostics): { ok: boolean; lines: readonly string[] } {
   const { health, counter, reconciliation, progress } = snapshot;
   const lines = [`- usage: footer=${config.footer ? "enabled" : "disabled"} poll=${config.counterPoll ? "enabled" : "disabled"}; alerts not implemented`,
-    `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources` : " progress=unavailable"}`];
+    `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources${progress.sourcesUnavailable !== undefined ? ` unavailable=${progress.sourcesUnavailable}` : ""}` : " progress=unavailable"}`];
   lines.push(`- usage metadata backfill=${snapshot.metadataBackfill ?? "pending"}${snapshot.metadataProgress ? ` progress=${snapshot.metadataProgress.sourcesCompleted}/${snapshot.metadataProgress.sourcesTotal} sources` : " progress=unavailable"}`);
+  const response = snapshot.responseMetadataProgress;
+  lines.push(`- usage responseMetadata=${snapshot.responseMetadataBackfill ?? "pending"}${response
+    ? ` progress=${response.sourcesCompleted}/${response.sourcesTotal} sources unavailable=${response.sourcesUnavailable ?? 0}` : " progress=unavailable"}`);
   const followerNotice = snapshot.errorCode === "usage-ingest-lease-lost" || snapshot.errorCode === "usage-ingest-lease-busy";
   const role = followerNotice ? "follower" : snapshot.ingestRole;
   lines.push(`- usage ingest: ${role === "follower" ? "follower (another ingest participant owns ingestion)" : role ?? "not published yet"}`);

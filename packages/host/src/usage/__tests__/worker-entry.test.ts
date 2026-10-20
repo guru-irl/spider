@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import type { MessagePort } from "node:worker_threads";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { join } from "node:path";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { openDb } from "@spider/db-core";
 import * as sessionBackfill from "../session-backfill.js";
 import { bootUsageWorker } from "../worker-entry.js";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
@@ -165,6 +166,59 @@ it("multi-MiB sources do not pay fixed work once per tiny slice", async () => {
   await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"), { timeout: 10000 });
   expect(calls).toBeLessThanOrEqual(2); expect(snapshots(p).at(-1)?.health.calls).toBe(8000);
 });
+// Comparing against the old generation's EOF drops this source after its first slice.
+// Counting attempted sources or assigning complete unconditionally also breaks the stalled case.
+it.each([false, true])("a reset larger than one slice reports actual EOF progress (stalled=%s)", async stalled => {
+  const c = command(), p = port(), path = join(root, "reset.jsonl"), missing = join(root, "unavailable.jsonl");
+  const lines = Array.from({ length: 12 }, (_, i) => ({ type: "message", id: `reset-${i}`, timestamp: new Date(at).toISOString(), message: {
+    role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", content: "x".repeat(800000),
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+  } }));
+  writeFileSync(path, lines.map(line => JSON.stringify(line)).join("\n") + "\n");
+  const source = { path, project: null, repo: null, run: null };
+  const d = { sources: [source, { ...source, path: missing }], runs: [], errors: [] };
+  const seed = openUsageLedger(c.roots.ledgerFile);
+  await ingestOnce(seed, { ...d, sources: [source] }, at, new AbortController().signal); seed.close();
+  const db = openDb(c.roots.ledgerFile);
+  try { db.prepare("UPDATE import_state SET inode='previous-generation' WHERE path=?").run(path); } finally { db.close(); }
+  let calls = 0;
+  await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => d, now: () => at, ingest: async (...args) => {
+    calls++; if (!stalled || calls === 1) return ingestOnce(...args);
+  } });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("complete"), { timeout: 10000 });
+  const check = openUsageLedger(c.roots.ledgerFile);
+  try {
+    const state = check.getImportState(path)!;
+    expect(state.generation).toBe(1);
+    expect(snapshots(p).at(-1)).toMatchObject({ backfill: stalled ? "running" : "complete",
+      progress: { sourcesCompleted: stalled ? 0 : 1, sourcesUnavailable: 1, sourcesTotal: 2 } });
+    expect(check.getBackfillState()).toBe(stalled ? "running" : "complete");
+    if (stalled) expect(state.offset).toBeLessThan(statSync(path).size);
+    else { expect(state.offset).toBe(statSync(path).size); expect(check.getProgress().calls).toBe(12); }
+    expect(calls).toBeGreaterThan(1);
+  } finally { check.close(); }
+});
+
+it("publishes independent response metadata catch-up and continues bounded passes after session metadata completes", async () => {
+  const c = { ...command(), responseMetadataBytesPerPass: 128 }, p = port(), path = join(root, "response-history.jsonl");
+  writeFileSync(path, JSON.stringify({ type: "message", id: "old", timestamp: new Date(at).toISOString(), message: {
+    role: "assistant", thinkingLevel: "low", durationMs: 37, content: "x".repeat(400),
+    provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+  } }) + "\n");
+  const d = { sources: [{ path, project: null, repo: null, run: null }], runs: [], errors: [] };
+  const seed = openUsageLedger(c.roots.ledgerFile); await ingestOnce(seed, d, at, new AbortController().signal); seed.close();
+  const db = openDb(c.roots.ledgerFile);
+  try { db.exec("UPDATE calls SET latency_ms=NULL,thinking_level=NULL"); } finally { db.close(); }
+  await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => d, now: () => at });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", responseMetadataBackfill: "running",
+    responseMetadataProgress: { sourcesCompleted: 0, sourcesTotal: 1, sourcesUnavailable: 0 } }));
+  // The owner must choose its short retry cadence for response work alone.
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.responseMetadataBackfill).toBe("complete"), { timeout: 22000 });
+  const check = openDb(c.roots.ledgerFile);
+  try { expect(check.prepare("SELECT latency_ms,thinking_level FROM calls").get()).toEqual({ latency_ms: 37, thinking_level: "low" }); }
+  finally { check.close(); }
+}, 25000);
+
 it.each(["stale", "unavailable", "disabled"])("%s counter cannot reconcile against an old stored snapshot", async mode => {
   const c = command(false, mode !== "disabled");
   const ledger = openUsageLedger(c.roots.ledgerFile);
@@ -425,11 +479,13 @@ it("normal worker ingestion precedes bounded historical metadata in every pass",
   expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", metadataBackfill: "running", health: { lastIngestAt: clock } });
 });
 
-it("torn tails finish call and metadata backfill independently",async()=>{
+it("torn tails keep billing and response backfill partial until the line reaches EOF",async()=>{
  const c=command(),p=port(),path=join(root,"torn.jsonl");
  writeFileSync(path,JSON.stringify({type:"session",id:"torn"})+"\n"+'{"type":"session_info","name":"torn');
  await bootUsageWorker(p as unknown as MessagePort,c,{now:()=>at,discover:async()=>({sources:[{path,project:null,repo:null,run:null}],runs:[],errors:[]})});
- await vi.waitFor(()=>expect(snapshots(p).at(-1)).toMatchObject({backfill:"complete",metadataBackfill:"complete"}));
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)).toMatchObject({backfill:"running",metadataBackfill:"complete",responseMetadataBackfill:"running",progress:{sourcesCompleted:0,sourcesTotal:1}}));
+ appendFileSync(path,'"}\n');p.emit("message",{type:"refresh"});
+ await vi.waitFor(()=>expect(snapshots(p).at(-1)).toMatchObject({backfill:"complete",responseMetadataBackfill:"complete",progress:{sourcesCompleted:1,sourcesTotal:1}}));
 });
 it("month totals recompute for committed calls and period changes, not idle metadata",async()=>{
  const c=command(),p=port(),path=join(root,"month-calls.jsonl");let clock=at;

@@ -296,7 +296,7 @@ describe("usage ledger", () => {
     const before = spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
     const ledger = track(openUsageLedger(file));
     expect(reader().prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([
-      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "dimension_values" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "leases" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "runs_meta" }, { name: "session_metadata_import" }, { name: "sessions" }, { name: "source_context" }, { name: "source_entries" },
+      { name: "call_ancestry_edges" }, { name: "calls" }, { name: "counter_snapshots" }, { name: "coverage_edges" }, { name: "dimension_values" }, { name: "import_state" }, { name: "incomplete_reports" }, { name: "leases" }, { name: "ledger_metadata" }, { name: "ledger_totals" }, { name: "pending_reports" }, { name: "response_metadata_import" }, { name: "runs_meta" }, { name: "session_metadata_import" }, { name: "sessions" }, { name: "source_context" }, { name: "source_entries" },
     ]);
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });

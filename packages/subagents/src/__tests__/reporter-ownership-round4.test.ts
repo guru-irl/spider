@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildSync } from "esbuild";
+import { buildFixture } from "../../../../scripts/test-bundle";
 import { openDbAt } from "@spider/db-core";
 import { freshDb } from "./helpers/testutil";
 import { makeChildReporter } from "../child-reporter";
@@ -51,7 +51,7 @@ it("claims rows on legacy tables without the optional start-time column", () => 
     expect(store.get(id)).toMatchObject({status:"done",result:"legacy report"});
   } finally {db.close()}
 });
-it("a real grandchild inheriting identity cannot write or finalize the child's run", () => {
+it("a real grandchild inheriting identity cannot write or finalize the child's run", async () => {
   const scratch=resolve(".spider/scratch/reporter-round4");mkdirSync(scratch,{recursive:true});const root=mkdtempSync(join(scratch,"case-"));
   const dbPath=join(root,"fixture.db"), entry=join(root,"child.mjs");
   const db=openDbAt(dbPath,"worktree"); const store=new RunStore(db);const {id}=store.create({sessionId:"owner",agent:"worker"});store.start(id);
@@ -73,7 +73,7 @@ it("a real grandchild inheriting identity cannot write or finalize the child's r
       rep.onMessage('real child report');rep.onShutdown('done');db.close();
     }`;
   try {
-    buildSync({stdin:{contents:source,resolveDir:process.cwd(),sourcefile:"reporter-fixture.ts",loader:"ts"},bundle:true,platform:"node",format:"esm",banner:{js:"import { createRequire as fixtureRequire } from 'node:module'; const require = fixtureRequire(import.meta.url);"},external:["better-sqlite3","sqlite-vec"],outfile:entry});
+    await buildFixture({stdin:{contents:source,resolveDir:process.cwd(),sourcefile:"reporter-fixture.ts",loader:"ts"},bundle:true,platform:"node",format:"esm",external:["better-sqlite3","sqlite-vec"],outfile:entry});
     const env={...process.env,PI_SUBAGENT_CHILD:"1",PI_SUBAGENT_RUN_ID:id,PI_SPIDER_DB_PATH:dbPath,PI_SPIDER_SESSION_ID:"owner"};
     const child=spawnSync(process.execPath,[entry],{cwd:root,env,encoding:"utf8",timeout:10000});
     expect(child.status,child.stderr).toBe(0);

@@ -43,14 +43,14 @@ spider kill id:"<run-id>"
 
 ## Child modes and trust
 
-- Default: `pi --mode rpc`, owned by the dispatching session, with one initial task prompt.
+- Default: `pi --mode rpc`, owned by the dispatching session, with one initial task prompt. The current verified host is pi `1.2.0`.
 - If a child extension consumes the initial task (`handled`), the run fails with that reason and the child is closed.
 - Set `subagents.childMode` to `"print"` for legacy `--mode json -p` launches.
 - Only the user can configure [`subagents.extensions`](configuration.md#child-extensions), by editing the global config file. The fully absolute paths load in RPC and print children for single, parallel, chain and pipeline runs. Local values are ignored; missing files are skipped with one warning run event per path.
 - Compatibility checks read metadata for the binary launched on PATH or through `PI_SUBAGENT_PI_BINARY`.
 - RPC children require a pi binary supporting `--exclude-tools`, `--name`, the `agent_settled` event, and the `clear_queue` RPC command.
 - A pi binary older than the verified RPC minimum `0.85.1` falls back to print mode and records why. An unknown version keeps RPC with a warning.
-- This fallback does not lower spider's own pi `>=0.87.0` peer requirement.
+- The legacy fallback does not change the current pi `1.2.0` test target or the `>=0.87.0` peer compatibility range.
 - RPC and print children follow pi's non-interactive project-trust policy. RPC does not grant extra trust.
 - Child extension dialogs are cancelled with a run-event warning.
 - Children cannot dispatch, message, or kill through spider, or use outbound `intercom` and `contact_supervisor` tools.
@@ -70,6 +70,7 @@ spider kill id:"<run-id>"
 
 - RPC shutdown sends `clear_queue`, then `abort`, then stdin EOF. Process-group `SIGTERM` and `SIGKILL` are fallbacks after a grace period.
 - Cancelled runs record the shutdown reason without starting a model turn.
+- On pi 1.2.0, an unexpected `agent_settled.aborted` fails the child run even if its process exits cleanly. Parent-owned kills keep their existing cancellation reason.
 - A kill initiated here reports through its tool result, without another completion notification unless unresolved accepted/unknown steers need reporting.
 - Owned handles remain killable when spawn identity capture fails. PID-only kill and orphan-reaper paths require identity checks.
 - After a hard host kill, the next session start reaps orphan runs only when the owning host is dead. PID start time must match; legacy rows use a command check to avoid signalling an unrelated process.

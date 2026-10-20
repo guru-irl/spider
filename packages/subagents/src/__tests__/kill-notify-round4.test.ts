@@ -49,7 +49,7 @@ it.each(["quit","reload"])("shutdown on %s records its cause without starting a 
 it("pi's real message method queues shutdown for nextTurn instead of invoking its model-turn path", async () => {
   let modelTurnRequests = 0;
   const boundary = { _pendingNextTurnMessages: [] as any[], isStreaming: false,
-    _runAgentPrompt: async () => { modelTurnRequests++; } };
+    _startRun: async () => { modelTurnRequests++; } };
   const dispatch = (message: any, options: any) => AgentSession.prototype.sendCustomMessage.call(boundary as any, message, options);
   // This is the pre-fix shutdown option while the old runner is still valid.
   await dispatch({customType:"probe",content:"old shutdown",display:false}, {triggerTurn:true});

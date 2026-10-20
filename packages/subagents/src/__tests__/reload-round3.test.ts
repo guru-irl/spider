@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { buildSync } from "esbuild";
+import { buildFixture } from "../../../../scripts/test-bundle";
 import { appendRunEvent, openDbAt, type Db } from "@spider/db-core";
 import { RunStore } from "../run-store";
 import { adoptReloadedChildren } from "../actions/run";
@@ -197,8 +197,8 @@ it.skipIf(process.platform === "win32")("m6: parking installs the production exi
       child.stdout.destroy(); child.unref();
     });`;
   try {
-    buildSync({ stdin: { contents: source, resolveDir: process.cwd(), sourcefile: "exit-fixture.ts", loader: "ts" }, bundle: true, platform: "node", format: "esm",
-      banner: { js: "import { createRequire as fixtureRequire } from 'node:module'; const require = fixtureRequire(import.meta.url);" }, external: ["better-sqlite3", "sqlite-vec"], outfile: entry });
+    await buildFixture({ stdin: { contents: source, resolveDir: process.cwd(), sourcefile: "exit-fixture.ts", loader: "ts" }, bundle: true, platform: "node", format: "esm",
+      external: ["better-sqlite3", "sqlite-vec"], outfile: entry });
     const env = { ...process.env, SPIDER_GLOBAL_ROOT: join(root, "global"), TMPDIR: root };
     for (const key of Object.keys(env)) if (key.startsWith("PI_")) delete (env as Record<string, string | undefined>)[key];
     const host = spawnSync(process.execPath, [entry], { env, cwd: root, encoding: "utf8", timeout: 10_000 });

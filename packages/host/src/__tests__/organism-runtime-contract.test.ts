@@ -97,7 +97,7 @@ describe("organism's actual pi runtime contract", () => {
     addMemory(f.repoDb, "repo", { category: "convention", content: "Use docs/architecture.md for module boundaries." });
     addMemory(f.repoDb, "repo", { category: "insight", content: "Unreviewed candidate must not be injected.", status: "staged" });
     registerHooks(f.pi);
-    const result = await f.runner.emitBeforeAgentStart("continue", undefined, { customPrompt: "Base system prompt", cwd: f.cwd });
+    const result = await f.runner.emitBeforeAgentStart({ messageType: "user", prompt: "continue" }, { customPrompt: "Base system prompt", cwd: f.cwd });
     const prompt = result.systemPromptOptions.forceSystemPrompt;
     expect(prompt).toContain("Base system prompt");
     expect(prompt).toContain("Use docs/architecture.md for module boundaries.");

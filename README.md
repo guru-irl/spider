@@ -19,7 +19,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 ## Requirements
 
 - Use Node 26 for installation and running pi so native modules use the same ABI. Development pins `26.4.0`; all CI workflows use `26.x`. The package declares `>=22.19.0`, but lower versions are not tested by those workflows.
-- `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` `>=0.87.0`.
+- Pi `1.2.0`, including `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`. Development and tests use this version; peer dependencies still allow `>=0.87.0` for older hosts.
 - Native dependencies: `better-sqlite3` (Node addon) and `sqlite-vec` (platform library). Build the addon for the Node ABI used by pi.
 - If a native prebuild is unavailable, building `better-sqlite3` requires Python and a C/C++ toolchain for `node-gyp`.
 - CI runs on Linux. Other operating systems are not covered by the workflows.

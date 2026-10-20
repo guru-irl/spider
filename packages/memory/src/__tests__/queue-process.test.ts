@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, utimesSync, existsSync, rmSync } from "node:f
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { build } from "esbuild";
+import { buildFixture as build } from "../../../../scripts/test-bundle";
 import { openDbAt, paths, commandEnv, type Db } from "@spider/db-core";
 import { addMemory } from "../store";
 import { drainEmbedQueue } from "../embeddings/queue";

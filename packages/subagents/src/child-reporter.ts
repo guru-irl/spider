@@ -255,6 +255,14 @@ export function attachChildReporter(pi: any): (() => void) | undefined {
       lastTurnErrorMessage = undefined;
     }
   });
+  wire("agent_settled", (e) => {
+    // Pi 1.2 can abort before an assistant message or between tool turns.
+    // The previous terminal report then describes an earlier run, not this one.
+    if (e?.aborted === true) {
+      lastTurnOutcome = "aborted";
+      lastTurnErrorMessage ??= "Child run was aborted before completion.";
+    }
+  });
   wire("turn_start", (e, ctx) => { rep.onTurn((e?.turnIndex ?? 0) + 1); captureModel(ctx); });
   wire("agent_start", (_e, ctx) => { rep.onStatus("running"); captureModel(ctx); });
   wire("session_shutdown", () => {

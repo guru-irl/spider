@@ -1,3 +1,8 @@
+Spider's own code is licensed under the MIT License below.
+Code in packages/context, and the portions of dist/extension.js built from it,
+are licensed under the Elastic License 2.0. See packages/context/LICENSE.
+See NOTICE.md for upstream attribution.
+
 MIT License
 
 Copyright (c) 2026 Gurupungav Narayanan

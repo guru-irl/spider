@@ -232,4 +232,6 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 
 ## License
 
-- [MIT](LICENSE).
+Spider's own code is licensed under [MIT](LICENSE).
+`packages/context`, and the portions of `dist/extension.js` built from it, are licensed under the [Elastic License 2.0](packages/context/LICENSE).
+See [NOTICE.md](NOTICE.md) for upstream attribution.

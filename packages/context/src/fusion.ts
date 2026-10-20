@@ -1,3 +1,9 @@
+/*
+ * Derived from context-mode by Mert Koseoglu.
+ * Copyright 2026 Mert Koseoglu. Licensed under the Elastic License 2.0.
+ * Modified for spider. See ../LICENSE for the license terms.
+ */
+
 // ─────────────────────────────────────────────────────────
 // Generalized RRF fusion + proximity rerank (ported from
 // context-mode's store.ts). Pure — no DB/executor/store imports.

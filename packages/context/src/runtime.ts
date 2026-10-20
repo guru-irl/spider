@@ -1,3 +1,9 @@
+/*
+ * Derived from context-mode by Mert Koseoglu.
+ * Copyright 2026 Mert Koseoglu. Licensed under the Elastic License 2.0.
+ * Modified for spider. See ../LICENSE for the license terms.
+ */
+
 import { commandEnv } from "@spider/db-core";
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";

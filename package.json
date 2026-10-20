@@ -1,7 +1,7 @@
 {
   "name": "@guru-irl/spider",
   "version": "0.1.0",
-  "license": "MIT",
+  "license": "MIT AND Elastic-2.0",
   "description": "spider \u2014 all-in-one pi coding-agent extension (memory, context, todos, subagents, skills) on one shared SQLite database.",
   "type": "module",
   "workspaces": [
@@ -30,7 +30,9 @@
     "dist",
     "scripts/postinstall.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE.md",
+    "packages/context/LICENSE"
   ],
   "scripts": {
     "build": "vite build && npm run build:dashboard && node scripts/assert-bundle.mjs",

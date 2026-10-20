@@ -1,3 +1,9 @@
+/*
+ * Derived from context-mode by Mert Koseoglu.
+ * Copyright 2026 Mert Koseoglu. Licensed under the Elastic License 2.0.
+ * Modified for spider. See ../LICENSE for the license terms.
+ */
+
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import {

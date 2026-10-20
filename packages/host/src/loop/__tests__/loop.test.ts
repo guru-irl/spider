@@ -72,7 +72,7 @@ describe("spider loop and /loop", () => {
     expect(h.prompts()).toHaveLength(2);
     await h.runtime.schedule({ delaySeconds: 120, prompt: "/loop watch new" }, h.ctx);
     vi.advanceTimersByTime(120_000);
-    expect(h.prompts()).toEqual([expect.stringContaining("watch old\n"), expect.stringContaining("watch new\n"), "/loop watch new"]);
+    expect(h.prompts()).toEqual([expect.stringContaining("watch old\n"), expect.stringContaining("watch new\n"), expect.stringContaining("watch new\n")]);
   });
 
   it.each(["/loop watch PR 42", "watch PR 42", "/loop 5m watch PR 42"])("stop during a run refuses every re-arm including %s", async prompt => {
@@ -80,8 +80,7 @@ describe("spider loop and /loop", () => {
     await h.runtime.loop({ prompt: "watch PR 42" }, h.ctx);
     h.setIdle(false); await h.emit("agent_start");
     await h.runtime.loop({ stop: true }, h.ctx);
-    const result = await h.runtime.schedule({ delaySeconds: 60, prompt }, h.ctx);
-    expect(result.details).toEqual({ refused: true });
+    await expect(h.runtime.schedule({ delaySeconds: 60, prompt }, h.ctx)).rejects.toThrow(/a loop was ended or replaced during this run/i);
     expect(h.notifications.at(-1)).toMatchObject({ text: expect.stringContaining("was not scheduled"), level: "warning" });
     h.setIdle(true); vi.advanceTimersByTime(3_600_000);
     expect(h.prompts()).toHaveLength(1);
@@ -91,7 +90,7 @@ describe("spider loop and /loop", () => {
     const h = setup(); h.setIdle(false); await h.emit("agent_start");
     expect((await h.runtime.loop({ stop: true }, h.ctx)).details).toEqual({ stopped: false });
     await h.emit("agent_end");
-    expect((await h.runtime.schedule({ delaySeconds: 60, prompt: "later" }, h.ctx)).details).toEqual({ refused: true });
+    await expect(h.runtime.schedule({ delaySeconds: 60, prompt: "later" }, h.ctx)).rejects.toThrow(/a loop was ended or replaced during this run/i);
     h.setIdle(true); await h.emit("agent_settled");
     await h.runtime.schedule({ delaySeconds: 60, prompt: "later" }, h.ctx);
     vi.advanceTimersByTime(60_000);
@@ -103,7 +102,7 @@ describe("spider loop and /loop", () => {
     await h.slash("watch old");
     h.setIdle(false); await h.emit("agent_start");
     await h.slash("watch new");
-    expect((await h.runtime.schedule({ delaySeconds: 60, prompt: "old" }, h.ctx)).details).toEqual({ refused: true });
+    await expect(h.runtime.schedule({ delaySeconds: 60, prompt: "old" }, h.ctx)).rejects.toThrow(/a loop was ended or replaced during this run/i);
     expect((await h.runtime.schedule({ stop: true }, h.ctx)).details).toEqual({ cancelled: false });
     vi.advanceTimersByTime(60_000);
     expect(h.prompts()).toHaveLength(1);
@@ -115,7 +114,7 @@ describe("spider loop and /loop", () => {
     await h.runtime.schedule({ delaySeconds: 120, prompt: "/loop watch new" }, h.ctx);
     h.setIdle(true); await h.emit("agent_settled");
     vi.advanceTimersByTime(120_000);
-    expect(h.prompts().at(-1)).toBe("/loop watch new");
+    expect(h.prompts().at(-1)).toContain("watch new\n");
   });
 
   it.each([false, true])("a first fixed prompt waits for idle with live run=%s", async running => {
@@ -140,12 +139,13 @@ describe("spider loop and /loop", () => {
     expect((await h.runtime.schedule({ delaySeconds: 60, prompt: "/loop watch deploy" }, h.ctx)).details).not.toHaveProperty("refused");
   });
 
-  it("does not infer re-arm intent from a prompt when nothing sealed the run", async () => {
+  it("refuses a slash re-arm without a matching active self-paced loop", async () => {
     const h = setup(); h.setIdle(false); await h.emit("agent_start");
-    await h.runtime.schedule({ delaySeconds: 60, prompt: "/loop Watch PR 42." }, h.ctx);
+    await expect(h.runtime.schedule({ delaySeconds: 60, prompt: "/loop Watch PR 42." }, h.ctx)).rejects.toThrow(/slash commands are user-only/i);
     h.setIdle(true); await h.emit("agent_settled");
     vi.advanceTimersByTime(60_000);
-    expect(h.prompts()).toEqual(["/loop Watch PR 42."]);
+    expect(h.prompts()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("replacing fixed with dynamic and dynamic with fixed removes the old timers", async () => {
@@ -230,6 +230,13 @@ describe("spider loop and /loop", () => {
     for (const args of ["", "5m", "25d bad"]) await h.slash(args);
     expect(h.notifications.slice(-3).map(n => n.text)).toEqual([expect.stringContaining("Usage"), expect.stringContaining("Usage"), expect.stringContaining("24 days")]);
     vi.advanceTimersByTime(300_000);
+    expect(h.prompts()).toEqual(["current", "current"]);
+  });
+
+  it.each([undefined, "", " \n\t"])("an interval without a prompt (%j) errors and preserves the active loop", async prompt => {
+    const h = setup(); await h.slash("1m current");
+    await expect(h.runtime.loop({ interval: "5m", prompt }, h.ctx)).rejects.toThrow(/prompt is required/i);
+    vi.advanceTimersByTime(60_000);
     expect(h.prompts()).toEqual(["current", "current"]);
   });
 

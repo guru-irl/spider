@@ -42,7 +42,7 @@ The prompt runs once with instructions to call `spider schedule` when that itera
 spider schedule delaySeconds:300 prompt:"/loop watch the external build until it completes" reason:"The build usually takes another five minutes"
 ```
 
-The wakeup invokes `/loop` again through pi's command expansion. Each iteration chooses its next delay. Skipping the scheduling call ends further iterations. The loop's prompt remains visible in status until a stop or replacement, even when no wakeup is pending.
+The scheduler handles this re-arm internally, without sending `/loop` through pi's command dispatch. It accepts only `/loop <prompt>` matching the active self-paced loop and keeps that loop's original user or model origin. Each iteration chooses its next delay. Skipping the scheduling call ends further iterations. The loop's prompt remains visible in status until a stop or replacement, even when no wakeup is pending.
 
 ## One-shot wakeups
 
@@ -56,10 +56,12 @@ spider schedule delaySeconds:300 prompt:"check the deploy" noop:true
 | Parameter | Behavior |
 | --- | --- |
 | `delaySeconds` | Required unless `stop:true`. Rounded to the nearest whole second and clamped to 60 through 3600. Must be finite. |
-| `prompt` | Required unless `stop:true`. Delivered as a follow-up user message with slash-command and prompt-template expansion enabled. |
+| `prompt` | Required unless `stop:true`. Delivered as a follow-up user message without command or template expansion. A leading `/`, even after whitespace, is refused except for the matching self-paced re-arm described above. |
 | `reason` | Optional short explanation of the delay. |
 | `noop` | Optional routine-check label. The wakeup still runs. |
 | `stop` | Cancels the pending wakeup without requiring any other field. Does not end a fixed-interval loop. |
+
+Slash commands are user-only because they can change settings that tools cannot. Prompts supplied through `spider loop` or `spider schedule` cannot start with `/` and never enter pi's command or template dispatch. The matching self-paced re-arm is handled by the scheduler, not pi. User-typed `/loop` prompts remain trusted and keep command and prompt-template expansion. Later firings, including self-paced re-arms, keep the loop's original trust level.
 
 A session has one pending wakeup. A new scheduling call replaces it. When its delay expires, the wakeup waits until pi is idle and then fires once. A wakeup due during manual compaction stays pending until compaction finishes. The scheduling result includes the effective delay and its due time as an ISO timestamp.
 
@@ -74,9 +76,9 @@ spider loop
 
 `/loop stop` and `spider loop stop:true` end the active loop and cancel any pending wakeup. A new loop replaces the old loop and pending wakeup.
 
-If a stop or replacement happens during a run, that run cannot schedule another wakeup before it settles. This applies to every prompt, so rewording a re-arm cannot restart the old loop. The user receives a warning when a re-arm is refused. The old run also cannot use `spider schedule stop:true` to cancel the replacement loop's first prompt. A later run can schedule normally. Manual compaction alone does not trigger this restriction.
+If a stop or replacement happens during a run, that run cannot schedule another wakeup before it settles. This applies to every prompt, so rewording a re-arm cannot restart the old loop. A refused re-arm returns a tool error, and the user receives a warning. The old run also cannot use `spider schedule stop:true` to cancel the replacement loop's first prompt. A later run can schedule normally. Manual compaction alone does not trigger this restriction.
 
-`spider loop` without a prompt reports the active loop and any pending wakeup. Status includes the prompt, interval in seconds, next fixed tick, and wakeup due time. A self-paced loop has no fixed interval or next tick. A wakeup waiting for idle retains its original due time and prompt. `/loop` without arguments shows usage.
+`spider loop` without a prompt or interval reports the active loop and any pending wakeup. Supplying an interval without a prompt is an error. Status includes the prompt, interval in seconds, next fixed tick, and wakeup due time. A self-paced loop has no fixed interval or next tick. A wakeup waiting for idle retains its original due time and prompt. `/loop` without arguments shows usage.
 
 ## Session lifetime
 

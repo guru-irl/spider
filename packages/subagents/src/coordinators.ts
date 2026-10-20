@@ -106,6 +106,16 @@ export function activeChildCount(sessionId: string): number {
   return count;
 }
 
+/** Session-local liveness for tool guards. Unlike cache warming, a silent
+ * child is still running, so there is no inactivity cutoff or DB query. */
+export function hasRunningChildren(sessionId: string): boolean {
+  for (const handle of registry.get(sessionId)?.children?.values() ?? []) {
+    const status = handle.runStatus;
+    if (!handle.cancellationReason && (status === undefined || status === "queued" || status === "running")) return true;
+  }
+  return false;
+}
+
 export function listChildSessions(): string[] {
   return [...registry.keys()];
 }

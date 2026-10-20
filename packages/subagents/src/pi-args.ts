@@ -240,7 +240,9 @@ export interface ChildSpawnSpec {
 	argv: string[];
 	env: Record<string, string>;
 	cwd: string;
-	sessionFile: string;
+	/** Fresh children use a fixed file; pi chooses the filename for forks. */
+	sessionFile?: string;
+	sessionDir?: string;
 	childMode?: "rpc" | "print";
 	/** Model attribution before the child emits its first assistant message. */
 	model?: string;
@@ -288,6 +290,8 @@ export interface BuildChildSpawnSpecInput {
 	thinking?: string;
 	context: "fresh" | "fork";
 	parentSessionId: string;
+	/** Actual calling session file from pi's session manager, required for forks. */
+	parentSessionFile?: string;
 	childIndex: number;
 	/** Absolute path to the selected skill, resolved and validated before dispatch. */
 	skill?: string;
@@ -312,12 +316,14 @@ export interface BuildChildSpawnSpecInput {
  * under the spider scratch root (never the system temp dir).
  */
 export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawnSpec {
+	if (input.context === "fork" && !input.parentSessionFile) throw new Error("Cannot fork: parent has no session file. Use context:\"fresh\" for an in-memory parent.");
 	const cwd = input.cwd ?? process.cwd();
 	// Explicit selection must be acted on, not merely listed among available skills.
 	// A file instruction also works when automatic skill discovery is disabled.
 	const task = input.skill === undefined ? input.task
 		: `Before starting the task, read and follow the skill at ${JSON.stringify(input.skill)}. Resolve the skill's relative paths against its directory.\n\n${input.task}`;
-	const sessionFile = path.join(input.scratchRoot, "subagent-sessions", input.runId, `${input.runId}.jsonl`);
+	const sessionDir = path.join(input.scratchRoot, "subagent-sessions", input.runId);
+	const sessionFile = path.join(sessionDir, `${input.runId}.jsonl`);
 	try {
 		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
 	} catch {
@@ -328,9 +334,9 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	// Disable extension discovery. Load the spider reporter plus only explicitly
 	// resolved, enabled intercom resources for RPC children.
 	const spiderExtension = input.childExtensionPath ?? fileURLToPath(import.meta.url);
-	// --session is threaded through baseArgs (not the sessionFile input) so
-	// buildPiArgs does not hard-mkdir the session dir; buildChildSpawnSpec owns
-	// that best-effort mkdir above.
+	// Pi rejects --fork with --session. Forks select their own ID and directory;
+	// pi writes a timestamped filename there. Fresh children retain the fixed path.
+	// Session flags stay in baseArgs so directory creation remains best-effort.
 	const spawnCommand = getPiSpawnCommand([]);
 	const compatibility = input.childMode === "print" ? undefined : piRpcCompatibility(spawnCommand, cwd);
 	const launchWarning = compatibility?.warning;
@@ -348,16 +354,17 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		...(childMode === "rpc" ? ["intercom", "contact_supervisor"] : []),
 		...(input.agent === "reviewer" ? input.reviewerExcludeTools ?? ["edit", "write"] : []),
 	])];
+	const sessionArgs = isFork ? ["--session-dir", sessionDir, "--session-id", input.runId] : ["--session", sessionFile];
 	const modeArgs = childMode === "print"
-		? ["--mode", "json", "-p", "--session", sessionFile]
-		: ["--mode", "rpc", "--session", sessionFile, "--name", sessionName];
+		? ["--mode", "json", "-p", ...sessionArgs]
+		: ["--mode", "rpc", ...sessionArgs, "--name", sessionName];
 	if (excludedTools.length) modeArgs.push("--exclude-tools", excludedTools.join(","));
 	const { args, env: builtEnv } = buildPiArgs({
 		baseArgs: modeArgs,
 		rpc: childMode === "rpc",
 		task,
 		sessionEnabled: true,
-		forkFromSessionId: isFork ? input.parentSessionId : undefined,
+		forkFromSessionId: isFork ? input.parentSessionFile : undefined,
 		model: input.model,
 		thinking: input.thinking,
 		inheritProjectContext: true,
@@ -401,5 +408,5 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
 	}
-	return { argv, env, cwd, sessionFile, childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${task}` } : {}) };
+	return { argv, env, cwd, sessionDir, ...(!isFork ? { sessionFile } : {}), childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${task}` } : {}) };
 }

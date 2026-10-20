@@ -179,6 +179,29 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
           // Keep actionable IO errors, but emit a single missing-source diagnostic below.
           const attempted = errors.splice(errorStart);
           errors.push(...attempted.filter(e => e.code !== "missing-source"));
+          // Forks use --session-id <run id>; pi chooses a timestamped filename.
+          // Only inspect matching filenames in this registered run directory.
+          const directory = join(scratch, "subagent-sessions", id);
+          try {
+            for (const file of (await list(directory)).sort((a, b) => a.name.localeCompare(b.name))) {
+              if (!file.isFile() || !file.name.endsWith(`_${id}.jsonl`)) continue;
+              const forkPath = join(directory, file.name);
+              checkedPaths.push(forkPath);
+              const handle = await open(forkPath, "r");
+              let matches = false;
+              try {
+                const buffer = Buffer.alloc(64 * 1024);
+                const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+                const end = buffer.subarray(0, bytesRead).indexOf(10);
+                if (end >= 0) {
+                  try { const header = JSON.parse(buffer.subarray(0, end).toString("utf8")); matches = header?.type === "session" && header.id === id; }
+                  catch { /* a malformed header cannot establish run ownership */ }
+                }
+              } finally { await handle.close(); }
+              if (matches && await add(forkPath, candidate.project, candidate.repo, run)) { found = true; break; }
+            }
+          } catch (error) { if (code(error) !== "ENOENT") errors.push({ path: directory, code: code(error) }); }
+          if (found) break;
         }
         if (!found) errors.push({ path: checkedPaths[0], code: "missing-source", checkedPaths });
       }

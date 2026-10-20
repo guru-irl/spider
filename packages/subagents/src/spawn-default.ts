@@ -21,6 +21,7 @@ export const defaultSpawner: Spawner = (spec) => {
   // Warnings go through a rebindable gate, never straight to spec.onRpcEvent: after a /reload that
   // callback belongs to the previous activation (its Runner, db and pi).
   let rpc: ReturnType<typeof ownRpcChild> | undefined;
+  let stderrTail = "";
   const printGate = createEventGate(spec.onRpcEvent, spec.model);
   const warn = (event: Record<string, any>) => { try { (rpc ? rpc.report : printGate.report)(event); } catch { /* diagnostics must not leak a spawned child */ } };
   const startTime = child.pid === undefined ? null : processStartTime(child.pid);
@@ -35,13 +36,23 @@ export const defaultSpawner: Spawner = (spec) => {
   const exit = new Promise<{ exitCode: number; result?: string }>((res) => { settle = res; });
   child.on("close", (code, signal) => {
     const failure = rpc?.failureReason();
-    settle({ exitCode: failure ? code || 1 : code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1), ...(failure ? { result: failure } : {}) });
+    const exitCode = failure ? code || 1 : code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1);
+    const result = failure ?? (!rpc && exitCode !== 0 && stderrTail.trim()
+      ? `Child process exited with code ${exitCode}.\nStderr tail:\n${stderrTail.trim()}` : undefined);
+    settle({ exitCode, ...(result ? { result } : {}) });
   });
   child.on("error", (error) => settle({ exitCode: 1, ...(spec.childMode === "rpc" ? { result: `Child launch failed: ${error.message}` } : {}) }));
   rpc = spec.childMode === "rpc" ? ownRpcChild(child, spec.prompt ?? "", spec.onRpcEvent, spec.model) : undefined;
   if (!rpc) {
     if (child.stdout) attachRpcReader(child.stdout, printGate.report, error => warn({ type: "warning", message: `Invalid child JSONL record: ${error.message}` }));
-    child.stderr?.resume(); // Drain diagnostics without retaining arbitrary child output.
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      const bytes = Buffer.from(stderrTail + chunk);
+      let start = Math.max(0, bytes.length - 4096);
+      // Discard any leading UTF-8 continuation bytes, never half a character.
+      while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+      stderrTail = bytes.subarray(start).toString("utf8");
+    });
   }
   const killAsync = async (graceMs?: number) => {
     if (child.pid === undefined) return;

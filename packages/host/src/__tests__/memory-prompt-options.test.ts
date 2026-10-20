@@ -16,6 +16,8 @@ import { bindSession, openDbAt, openGlobal, setGlobalDbPathForTests, unbindSessi
 import { addMemory } from "@spider/memory";
 import spiderExtension from "../extension";
 import { registerHooks } from "../hooks";
+import * as injectionSnapshot from "../injection-snapshot";
+import { openSessionRunDb } from "../session-run-db";
 
 const root = join(process.cwd(), ".spider", "scratch", `memory-sections-${process.pid}`);
 const hosts: AgentSessionRuntime[] = [];
@@ -23,6 +25,7 @@ const dbs: Db[] = [];
 afterEach(async () => {
   for (const host of hosts.splice(0)) await host.dispose();
   for (const db of dbs.splice(0)) db.close();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   setGlobalDbPathForTests(null);
   rmSync(root, { recursive: true, force: true });
@@ -142,6 +145,40 @@ describe("named frozen memory through the real pi SDK", () => {
         expect(file.split("Stable SDK memory fact")).toHaveLength(2);
       });
     }
+  }
+
+  // A thrown snapshot read must not persist a removal or log on every retry.
+  for (const firstTurn of [false, true]) {
+    it(`keeps ${firstTurn ? "the section unset on first-turn" : "the previous section on later"} memory failures and logs once per session`, async () => {
+      const f = fixture(`load-failure-${firstTurn}`);
+      const bound = fixture(`load-failure-bound-${firstTurn}`);
+      f.add("Last successful memory fact");
+      bound.add("Recovered bound memory fact");
+      const s = await sdk(f.cwd);
+      if (!firstTurn) await s.host.session.prompt("Load memory successfully");
+      const global = openGlobal();
+      dbs.push(global);
+      bindSession(global, s.host.session.sessionId, bound.cwd);
+      const snapshot = vi.spyOn(injectionSnapshot, "readInjectionSnapshot").mockImplementation(() => { throw new Error("Snapshot fixture failure"); });
+      await wake(s.host, "First failing read");
+      await s.host.session.prompt("Second failing read");
+      for (const request of s.requests) {
+        expect(rawCopies(request, "Last successful memory fact")).toBe(firstTurn ? 0 : 1);
+        expect(getCurrentSystemPrompt(request.messages).includes("Last successful memory fact")).toBe(!firstTurn);
+      }
+      expect(savedSections(s.host.session.sessionManager)).toHaveLength(firstTurn ? 0 : 1);
+      const fileEntries = readFileSync(s.host.session.sessionFile!, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(fileEntries.filter(entry => entry.type === "message" && entry.message.role === "system" && entry.message.sections?.spider_memory === null)).toEqual([]);
+      const runDb = openSessionRunDb(f.cwd, s.host.session.sessionId).db;
+      try {
+        const failures = runDb.prepare("SELECT description FROM events WHERE session_id = ? AND tool = 'memory'").all(s.host.session.sessionId);
+        expect(failures).toEqual([{ description: expect.stringContaining("Snapshot fixture failure") }]);
+      } finally { runDb.close(); }
+      snapshot.mockRestore();
+      await wake(s.host, "Read recovered");
+      expect(rawCopies(s.requests.at(-1)!, "Recovered bound memory fact")).toBe(1);
+      expect(savedSections(s.host.session.sessionManager)).toHaveLength(firstTurn ? 1 : 2);
+    });
   }
 
   // An earlier extension can carry a previously composed prompt into another run.

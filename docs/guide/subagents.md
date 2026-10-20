@@ -30,6 +30,8 @@ spider run agent:"reviewer" task:"Review the parser diff; do not edit source" mo
 spider kill id:"<run-id>"
 ```
 
+The optional `skill` parameter selects a skill by name. Spider checks the name before dispatch and fails if it is unknown. The child receives an instruction to read and follow the resolved `SKILL.md` file, so the child's transcript contains that local file path.
+
 ## Reviewer tool profile
 
 Runs with `agent:"reviewer"` launch without pi's `edit` and `write` tools. This applies to single runs, parallel tasks, chain steps and pipeline stages, in RPC and print mode. Other agents keep their existing tool selection. A stage's optional `role` label does not select this profile.

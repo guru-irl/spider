@@ -28,6 +28,22 @@ it("lists only session directories and registry-derived runs", async () => {
   expect(result.sources.find(s => s.path === child)).toMatchObject({ project, repo, run: { id: "repo", sessionId: "owner", agent: null } });
   expect(result.runs).toHaveLength(2);
 });
+it.each(["fresh", "fork", "unrelated", "wrong-header"])("discovers only this run's transcript: %s", async kind => {
+  const project = join(root, "project"), file = join(project, ".spider/project.db");
+  registry(`('${project}','${project}',NULL,'${file}')`); runs(file, "child");
+  const directory = join(project, ".spider/scratch/subagent-sessions/child");
+  const fresh = join(directory, "child.jsonl"), fork = join(directory, "2026-10-20T00-00-00-000Z_child.jsonl");
+  const unrelated = join(directory, "other.jsonl");
+  touch(unrelated); writeFileSync(unrelated, JSON.stringify({ type: "session", id: "other", cwd: project }) + "\n");
+  if (kind === "fresh") touch(fresh);
+  if (kind === "fork" || kind === "wrong-header") {
+    touch(fork); writeFileSync(fork, JSON.stringify({ type: "session", id: kind === "fork" ? "child" : "other", cwd: project }) + "\n");
+  }
+  const result = await discover(roots());
+  expect(result.sources.map(source => source.path)).toEqual(kind === "fresh" ? [fresh] : kind === "fork" ? [fork] : []);
+  expect(result.errors.filter(error => error.code === "missing-source")).toHaveLength(kind === "fresh" || kind === "fork" ? 0 : 1);
+});
+
 it("does not scan repositories or migrate source DBs", async () => {
   const project = join(root, "project"), file = join(project, ".spider/project.db"); registry(`('${project}','${project}',NULL,'${file}')`); runs(file, "child");
   touch(join(roots().sessionsDir, "encoded", "p.jsonl"));

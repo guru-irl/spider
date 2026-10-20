@@ -60,11 +60,15 @@ export function registerHooks(pi: PiLikeAPI): void {
   // Instance-local: reloads and subagent processes get independent snapshots.
   // Empty snapshots are frozen too, so the first write cannot change the prefix.
   let frozenMemory: { key: string; target: string; text: string } | undefined;
-  const memoryTextOf = (ctx?: unknown): string => {
+  let deliveredMemory: { key: string; text: string } | undefined;
+  const memoryFailures = new Set<string>();
+  const memoryKeyOf = (ctx?: unknown): string => {
+    const sessionFile = (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.();
+    return JSON.stringify([sessionIdOf(ctx), sessionFile ?? null, cwdOf(ctx) ?? process.cwd()]);
+  };
+  const memoryTextOf = (key: string, ctx?: unknown): string => {
     const cwd = cwdOf(ctx) ?? process.cwd();
     const sessionId = sessionIdOf(ctx);
-    const sessionFile = (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.();
-    const key = JSON.stringify([sessionId, sessionFile ?? null, cwd]);
     const resolvedTarget = memoryTargetOf(cwd, sessionId);
     const target = resolvedTarget ?? (frozenMemory?.key === key ? frozenMemory.target : cwd);
     let text = frozenMemory?.text ?? "";
@@ -87,7 +91,28 @@ export function registerHooks(pi: PiLikeAPI): void {
         const options = event?.systemPromptOptions as BeforeAgentStartEvent["systemPromptOptions"] | undefined;
         if (!options?.sections) return undefined;
         try {
-          const text = memoryTextOf(ctx);
+          const key = memoryKeyOf(ctx);
+          let text = deliveredMemory?.key === key ? deliveredMemory.text : "";
+          try {
+            text = memoryTextOf(key, ctx);
+            deliveredMemory = { key, text };
+          } catch (error) {
+            if (!memoryFailures.has(key)) {
+              memoryFailures.add(key);
+              let db: Db | undefined;
+              try {
+                const sessionId = sessionIdOf(ctx);
+                if (sessionId) {
+                  db = openSessionRunDb(cwdOf(ctx) ?? process.cwd(), sessionId).db;
+                  appendEvent(db, {
+                    sessionId, ts: Date.now(), phase: "after", tool: "memory",
+                    description: `memory injection failed: ${String((error as Error)?.message ?? error)}`,
+                  });
+                }
+              } catch { /* a diagnostic must not block agent start */ }
+              finally { db?.close(); }
+            }
+          }
           if (text) options.sections.spider_memory = text;
           else delete options.sections.spider_memory;
           // An earlier extension's force masks structured sections. Extend that

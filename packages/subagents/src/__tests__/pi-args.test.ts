@@ -52,14 +52,31 @@ describe("buildChildSpawnSpec", () => {
 
   it("places the session file under the scratch root as a .jsonl, never in /tmp", () => {
     const spec = buildChildSpawnSpec({ ...base, scratchRoot });
-    expect(spec.sessionFile.startsWith(scratchRoot)).toBe(true);
-    expect(spec.sessionFile.endsWith(".jsonl")).toBe(true);
-    expect(spec.sessionFile.includes("/tmp")).toBe(false);
+    expect(spec.sessionFile!.startsWith(scratchRoot)).toBe(true);
+    expect(spec.sessionFile!.endsWith(".jsonl")).toBe(true);
+    expect(spec.sessionFile!.includes("/tmp")).toBe(false);
   });
 
-  it("references the parent session in argv when forking", () => {
-    const spec = buildChildSpawnSpec({ ...base, scratchRoot, context: "fork" });
-    expect(spec.argv.includes("s1")).toBe(true);
+  it.each(["rpc", "print"] as const)("defaults reviewer exclusions without a host list in %s mode", childMode => {
+    const spec = buildChildSpawnSpec({ ...base, scratchRoot, agent: "reviewer", childMode });
+    const index = spec.argv.indexOf("--exclude-tools");
+    expect(index).toBeGreaterThan(-1);
+    expect(spec.argv[index + 1].split(",")).toEqual(childMode === "rpc"
+      ? ["intercom", "contact_supervisor", "edit", "write"] : ["edit", "write"]);
+  });
+
+  it("references the parent's actual file and reserves the fork's own ID and directory", () => {
+    const parentSessionFile = path.join(scratchRoot, "parent.jsonl");
+    const spec = buildChildSpawnSpec({ ...base, scratchRoot, context: "fork", parentSessionFile });
+    expect(spec.argv[spec.argv.indexOf("--fork") + 1]).toBe(parentSessionFile);
+    expect(spec.argv[spec.argv.indexOf("--session-id") + 1]).toBe("r1");
+    expect(spec.argv[spec.argv.indexOf("--session-dir") + 1]).toBe(path.join(scratchRoot, "subagent-sessions", "r1"));
+    expect(spec.argv).not.toContain("--session");
+    expect(spec.sessionFile).toBeUndefined();
+  });
+
+  it("refuses to build a fork for a parent with no session file", () => {
+    expect(() => buildChildSpawnSpec({ ...base, scratchRoot, context: "fork" })).toThrow(/fork.*parent.*session file/i);
   });
 
   it("propagates intercom/orchestrator env when provided", () => {

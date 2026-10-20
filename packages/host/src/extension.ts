@@ -810,8 +810,12 @@ async function dispatchWithDoctorSnapshot(
       if (!params.cwd) onSessionProject?.(actionCtx.project);
       return await handleControl(params, actionCtx);
     }
-    const actionCtx = buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
-      (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx));
+    const actionCtx = {
+      ...buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
+        (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx)),
+      parentSessionFile: params.action === "run"
+        ? (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() : undefined,
+    };
     if (!params.cwd) onSessionProject?.(actionCtx.project);
     return await dispatch(params, actionCtx, ownedActions);
   } catch (e) {

@@ -105,7 +105,7 @@ export async function killRun(deps: KillDeps, sessionId: string, run: RunRow): P
 
   // Only pid-only paths require a persisted start identity. An owned process
   // object cannot have its live pid reused before Node reaps it.
-  const identity = () => checkProcessIdentity(run.pid!, run.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand });
+  const identity = () => checkProcessIdentity(run.pid!, run.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand, runId: run.id });
   if (run.pid != null) {
     const checked = identity();
     if (!checked.matches) {

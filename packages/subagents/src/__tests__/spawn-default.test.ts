@@ -23,6 +23,29 @@ describe("defaultSpawner", () => {
     }
   });
 
+  it("keeps only the last 4 KB of print failure stderr without splitting a character", async () => {
+    const handle = defaultSpawner({ argv: [process.execPath, "-e", 'process.stderr.write("discarded prefix" + "🙂".repeat(1500) + "πtail"); process.exitCode = 1;'],
+      cwd: process.cwd(), env: {}, childMode: "print" });
+    const result = await handle.wait();
+    expect(result.exitCode).toBe(1);
+    expect(result.result).toContain("Stderr tail:\n");
+    const tail = result.result!.split("Stderr tail:\n")[1];
+    expect(Buffer.byteLength(tail)).toBeLessThanOrEqual(4096);
+    expect(tail).toMatch(/^🙂+πtail$/u);
+    expect(tail).not.toContain("discarded prefix");
+  });
+
+  it("decodes multibyte stderr characters split across child writes", async () => {
+    const handle = defaultSpawner({ argv: [process.execPath, "-e", 'const b = Buffer.from("🙂"); process.stderr.write(b.subarray(0, 2)); setTimeout(() => { process.stderr.write(b.subarray(2)); process.exitCode = 2; }, 20);'],
+      cwd: process.cwd(), env: {}, childMode: "print" });
+    expect(await handle.wait()).toEqual({ exitCode: 2, result: "Child process exited with code 2.\nStderr tail:\n🙂" });
+  });
+
+  it("does not put stderr into a successful print result", async () => {
+    const handle = defaultSpawner({ argv: [process.execPath, "-e", 'process.stderr.write("success diagnostic");'], cwd: process.cwd(), env: {}, childMode: "print" });
+    expect(await handle.wait()).toEqual({ exitCode: 0 });
+  });
+
   it("spawns unix children detached so they own a process group", async () => {
     const calls: any[] = [];
     vi.doMock("node:child_process", () => ({

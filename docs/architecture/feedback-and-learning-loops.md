@@ -2,9 +2,8 @@
 
 Spider runs four loops on top of one shared SQLite database. Together they keep
 the model context window small and carry knowledge from one session to the next.
-Each loop is driven either by an explicit `spider` action or by a specific pi
-lifecycle hook, so the triggers are predictable and the loops do not overlap by
-accident.
+An explicit `spider` action or a specific pi lifecycle hook starts each loop, so
+the triggers are predictable and the loops do not overlap by accident.
 
 The four loops are:
 
@@ -12,20 +11,23 @@ The four loops are:
    or the content index. The bytes stay in the database. Only the printed or
    queried slice enters the model context, and `spider search` retrieves the
    rest later.
-2. **The memory lifecycle.** Foreground `remember` writes require justification and
-   a durability, overlap, and scope review before activation. A failed review stores
-   as requested. Auto-sourced and background writes stage fail-closed for approval.
+2. **The memory lifecycle.** A foreground `remember` write needs a justification
+   and goes through a review of durability, overlap, and scope before it
+   becomes active. If the review itself fails or is unavailable, the write is
+   stored as requested. Auto-sourced and background writes are staged
+   fail-closed and wait for approval.
    The first `before_agent_start` freezes active memory in the `spider_memory`
-   prompt section. Pi keeps the section through the run's requests. New sessions
-   take a fresh snapshot.
+   prompt section. Pi keeps the section for all requests in the run. New
+   sessions take a fresh snapshot.
 3. **The organism feedback and learning loop.** On before-compact and on
-   shutdown the organism drains the finished session, runs passes that propose
-   memory and skill candidates, stages them, records a summary and a self-name,
-   curates the skill library, and rebuilds the learning graph.
-4. **The subagent loop.** `spider run` dispatches a child pi process, returns
-   immediately, and reports completion through a `spider.subagent_done` message
-   that wakes the parent. Pipelines chain a stage to the next stage over an
-   intercom handoff.
+   shutdown, the organism drains the finished session. It runs passes that
+   propose memory and skill candidates and stages those candidates. It records
+   a summary and a self-name for the session, curates the skill library, and
+   rebuilds the learning graph.
+4. **The subagent loop.** `spider run` dispatches a child pi process and returns
+   at once. The child reports completion through a `spider.subagent_done`
+   message that wakes the parent. Pipelines link each stage to the next
+   stage over an intercom handoff.
 
 ## Trigger reference
 
@@ -34,9 +36,9 @@ The four loops are:
 | `session_start` | pi hook | Insert a row into the project `sessions` table (host hook). |
 | `before_agent_start` | pi hook | Freeze the session's memory snapshot on first use and set its `spider_memory` section for user and idle custom-message runs. |
 | `tool_call` / `tool_result` | pi hook | Record intent, scrub secrets, scan for injection, auto-index large non-spider output. |
-| `session_before_compact` | pi hook | Fire-and-forget organism drain with `reason: "before_compact"`. |
-| `session_shutdown` | pi hook | Await organism drain with `reason: "shutdown"`, then run curator decay. |
-| `spider exec` / `exec_file` / `batch` | action | Run code in the sandbox; return a capped slice. |
+| `session_before_compact` | pi hook | Start an organism drain with `reason: "before_compact"` and do not wait for it. |
+| `session_shutdown` | pi hook | Wait for an organism drain with `reason: "shutdown"`, then run curator decay. |
+| `spider exec` / `exec_file` / `batch` | action | Run code in the sandbox and return a capped slice. |
 | `spider index` / `fetch` | action | Chunk content into the `content` table and enqueue embeddings. |
 | `spider search` | action | Fused full-text and vector retrieval over the database. |
 | `spider remember` / `recall` | action | Write or read structured memory. |
@@ -46,11 +48,10 @@ The four loops are:
 
 ## 1. The routing loop
 
-The routing loop exists to keep the context window small. The default cost of a
-large `git log`, a wide test run, or a 5,000-line file is that the whole output
-lands in the model context and stays there for the rest of the conversation.
-Spider routes those bytes into the database instead and returns only a bounded
-slice.
+The routing loop keeps the context window small. Without it, a large `git log`,
+a wide test run, or a 5,000-line file lands whole in the model context and stays
+there for the rest of the conversation. Spider routes those bytes into the
+database instead and returns only a bounded slice.
 
 Three paths write bytes to the database without pushing them all into context:
 
@@ -58,31 +59,38 @@ Three paths write bytes to the database without pushing them all into context:
   through the `PolyglotExecutor` in the project working directory. The handler
   caps the returned text with `capBytes` at `MAX_EXEC_OUTPUT_BYTES` (200,000
   bytes). The full structured result is available as `details`, but only the
-  capped stdout and stderr slice returns as the tool text that enters context.
+  capped slice of stdout and stderr returns as the tool text that enters
+  context.
 - **Content indexing.** `spider index` and `spider fetch` pass content to
-  `ContentStore.indexContent`, which splits it into chunks in the `content`
-  table and mirrors them into `content_fts`. Each chunk is queued for embedding
-  with `enqueueEmbed`. The action returns a one-line count, not the content.
+  `ContentStore.indexContent`. It splits the content into chunks in the
+  `content` table and copies them into `content_fts`. `enqueueEmbed` queues
+  each chunk for embedding. The action returns a one-line count, not the
+  content.
 - **Auto-indexing of tool output.** The host routing layer watches every
   non-`spider` tool result. When the scrubbed text is at least
   `autoIndexThreshold` (default 10,000) characters, `autoIndexOutput` writes it
-  into `content`/`content_fts` under a `tool:<name>` source. The `spider` tool
-  itself is exempt from this path, because its actions already route their own
-  output.
+  into `content`/`content_fts` under a `tool:<name>` source. This path skips the
+  `spider` tool itself, because its actions already route their own output.
 
 On the same `tool_result` path, `processToolContent` runs `scrubSecrets` and a
 prompt-injection scan before anything is indexed, so secrets never enter the
 recall corpus. The `tool_call` path records intent through
-`sanitizeIntentPayload`, which replaces content-bearing fields with size and
-count metadata (a `content` string becomes `contentBytes`), so the `events` log
-stores what ran and where, never the full bytes.
+`sanitizeIntentPayload`. That function replaces fields that carry content with
+size and count metadata. For example, a `content` string becomes
+`contentBytes`. The `events` log therefore stores what ran and where, never the
+full bytes.
 
-Retrieval closes the loop. `spider search` calls `unifiedSearch`, which runs
-full-text queries across `memory`, `content`, `session`, and `todo`, adds vector
-KNN results for `memory`, `content`, and `session` when an embedder is
-available, fuses the lists with reciprocal-rank fusion, reranks by query
-proximity, and returns each hit as a snippet capped at 300 characters. The agent
-pulls back only the slices that match the current question.
+Retrieval closes the loop. `spider search` calls `unifiedSearch`, which does
+the following:
+
+1. Runs full-text queries across `memory`, `content`, `session`, and `todo`.
+2. Adds vector KNN results for `memory`, `content`, and `session` when an
+   embedder is available.
+3. Merges the lists with reciprocal-rank fusion.
+4. Reranks the results by query proximity.
+5. Returns each hit as a snippet of at most 300 characters.
+
+The agent pulls back only the slices that match the current question.
 
 ```mermaid
 flowchart TD
@@ -112,86 +120,103 @@ flowchart TD
 Memory holds structured, categorized notes at repo or global scope. A record
 has one of six categories (`preference`, `convention`, `tool-quirk`, `failure`,
 `correction`, `insight`), content, an optional link, a status, and a source. The
-lifecycle differs by how a write originates.
+lifecycle depends on where a write comes from.
 
 **Foreground writes are reviewed before insertion.** `spider remember` requires
-`justification` explaining durability after the task, usefulness to other agents,
-and the requested scope. The host `remember` action injects an authenticated
+a `justification`. It must explain why the fact stays true after the task, how
+it helps other agents, and why the requested scope is right. The host `remember` action passes an authenticated
 `@spider/models` `complete()` reviewer into `reviewedWrite` in the memory package.
-The deterministic justification, strict threat scan, background-only guardrail,
-and exact duplicate checks run before any model call. The reviewer sees the
-candidate and relevant active entries from both scopes (repo via sanitized FTS;
-global via sanitized token matching because its table has no FTS). Its verdict
-can insert as requested (`new`), reuse an active UUID (`already_present`), atomically
-insert and archive active entries in the same scope via the FTS-aware path
-(`supersedes`), insert
-under a corrected scope (`wrong_scope`), or leave task-only facts in the
-conversation without insertion (`not_durable`). An invalid verdict, timeout,
-abort, unavailable model or disabled reviewer stores as requested and reports
-`review skipped` with the reason. A supersedes verdict for an auto-sourced write
-stages the new entry and reports pending supersessions without archiving anything;
-entries in the other scope are related but never archived. Justification is stored on inserted
-memory rows, including staged writes and wrong-scope redirects; verdicts that insert nothing
-store no justification.
+Four checks run before any model call: the deterministic justification check,
+the strict threat scan, the background-only guardrail, and the exact-duplicate
+check. The reviewer sees the candidate and relevant active entries from both
+scopes. It finds repo entries through sanitized FTS. It finds global entries
+through sanitized token matching, because the global table has no FTS. Its
+verdict can do one of the following:
 
-`stageWrite` remains the synchronous insert path used by background callers;
-reviewed writes use it after validation. A user write with no `autoStage` inserts
-as `status: "active"`, subject to the per-scope character cap. If the write
-would push the scope's active content over `DEFAULT_MEMORY_CHAR_CAP` (8,000
-characters), `assertWithinCap` throws `MemoryOverflowError` and no row is
+- Insert as requested (`new`).
+- Reuse an active UUID (`already_present`).
+- Insert the entry and archive active entries in the same scope, atomically,
+  through the FTS-aware path (`supersedes`).
+- Insert under a corrected scope (`wrong_scope`).
+- Leave a task-only fact in the conversation and insert nothing (`not_durable`).
+
+If the verdict is invalid, the review times out or is aborted, the model is
+unavailable, or the reviewer is disabled, the write is stored as requested. The
+result reports `review skipped` with the reason. A supersedes verdict for an
+auto-sourced write stages the new entry and reports the pending supersessions,
+but archives nothing. Entries in the other scope can be related to the new
+entry but are never archived. Inserted memory rows store the justification.
+That includes staged writes and wrong-scope redirects. Verdicts that insert
+nothing store no justification.
+
+`stageWrite` is still the synchronous insert path for background callers.
+Reviewed writes call it after validation. A user write with no `autoStage` is
+inserted as `status: "active"`, subject to the per-scope character cap. If the
+write would push the scope's active content over `DEFAULT_MEMORY_CHAR_CAP`
+(8,000 characters), `assertWithinCap` throws `MemoryOverflowError` and no row is
 written.
 
-**Background and auto writes stage fail-closed.** Any write with
+**Background and auto writes stage fail-closed.** A write with
 `source: "auto"`, `source: "import"`, or the `autoStage` option is always
-inserted as `status: "staged"`, no matter what the caller asked for. The scan
-still runs first, and the guardrail rejects background writes that describe
-negative tool claims, transient errors, or environment-specific failures. A
-staged insert bypasses the character cap by design, because nothing staged is
-active yet. Staged rows do not appear in `listActive`, `recall`, or the
-snapshot, all of which read `status = 'active'` only.
+inserted as `status: "staged"`, whatever the caller asked for. The scan still
+runs first. The guardrail rejects background writes that describe negative tool
+claims, transient errors, or failures specific to one environment. A staged
+insert skips the character cap on purpose, because nothing staged is active
+yet. Staged rows do not appear in `listActive`, `recall`, or the snapshot. All
+three read only rows with `status = 'active'`.
 
 **Approval promotes a staged write.** A human reviews staged writes with
 `spider control memory` (`pending`, `approve`, `reject`). `approvePending`
-re-checks the cap at approval time, so an approval can still fail with
-`MemoryOverflowError` if the scope filled up while the write was staged.
-Rejection sets `status: "rejected"`. Nothing is hard-deleted; rejected and
-archived rows stay in the table and are removed only from the FTS mirror.
+checks the cap again at approval time. An approval can therefore still fail
+with `MemoryOverflowError` if the scope filled up while the write was staged.
+Rejection sets `status: "rejected"`. Nothing is hard-deleted. Rejected and
+archived rows stay in the table, and spider removes them only from the FTS
+mirror.
 
 The active snapshot is frozen per session in the named `spider_memory` prompt
-section. `before_agent_start` sets that section for user and custom-message runs;
-pi 1.2.0 preserves it through the run's provider requests. The host hooks and
-`control doctor` use one `readInjectionSnapshot` function. It resolves session
-bindings from the read-only global DB, then reads active memory from the global and repo
-tiers independently using read-only DB opens. It does not register projects,
-migrate schemas, or write memory. A broken tier cannot hide the other tier's
-entries; doctor reports the failing tier as unreadable. Snapshot assembly orders
-preference and correction directives before observations, then groups by tier
-and category within each priority band. There is no default snapshot cap: all
-active entries are injected. An optional explicit `memory.snapshotCharCap`
-limit skips entries that do not fit and continues packing smaller entries. It
-appends `Memory snapshot: N entries omitted.` when a configured cap omits rows;
-doctor reports this as a warning without failing its check. `before_agent_start`
-sets `systemPromptOptions.sections.spider_memory` when memory is non-empty and
-deletes only that key when empty. It returns no full prompt. If an earlier
-extension already forced the prompt, spider appends the frozen block to that force
-only when absent. Later extensions must preserve the current prompt when composing.
+section. `before_agent_start` sets that section for user and custom-message
+runs, and pi 1.2.0 keeps it for all provider requests in the run. The host
+hooks and `control doctor` use one `readInjectionSnapshot` function. It
+resolves session bindings from the global DB, opened read-only. It then reads
+active memory from the global and repo tiers separately, again with read-only
+opens. It does not register projects, migrate schemas, or write memory. A
+broken tier cannot hide the entries of the other tier, and doctor reports the
+failing tier as unreadable.
 
-Pi persists unchanged section text once and appends patches for section changes.
-Compaction can also copy the current section into its system-prompt checkpoint.
-Session files and HTML or JSONL exports therefore contain injected global and repo
-memory, including historical values. Review them before sharing.
+Snapshot assembly puts preference and correction directives before
+observations. Within each priority band it groups entries by tier and category.
+There is no default snapshot cap, so every active entry is injected. An
+optional explicit `memory.snapshotCharCap` limit skips entries that do not fit
+and keeps packing smaller ones. When a configured cap omits rows, snapshot
+assembly appends `Memory snapshot: N entries omitted.` Doctor reports this as a warning
+and does not fail its check.
 
-- The first `before_agent_start` freezes the memory text, including an empty
-  result. User turns and idle completion notifications use the same hook.
-  Queued work, tool cycles, steers and follow-ups keep the byte-identical section,
-  not a cached copy of another extension's prefix.
-- New writes, approvals, supersessions and cap changes persist immediately but
-  enter the prompt next session. Recall and doctor still read current rows;
-  doctor's current counts need not match an existing session's frozen block.
-- A different session ID or file, a changed working directory, an extension
-  reload, or a changed memory binding target rebuilds the block. The hook checks the read-only
-  binding on each call without rereading active memory or config on stable turns.
-- Each subagent session freezes independently. The host `session_start` hook
+`before_agent_start` sets `systemPromptOptions.sections.spider_memory` when
+memory is non-empty. When memory is empty, it deletes only that key. It returns
+no full prompt. If an earlier extension already forced the prompt, spider
+appends the frozen block to that forced prompt, but only when the block is not
+already there. Later extensions must keep the current prompt when they compose
+theirs.
+
+Pi stores unchanged section text once and appends patches when the section
+changes. Compaction can also copy the current section into its system-prompt
+checkpoint. Session files and HTML or JSONL exports therefore contain the
+injected global and repo memory, including older values. Review them before
+you share them.
+
+- The first `before_agent_start` freezes the memory text, even when the text is
+  empty. User turns and idle completion notifications use the same hook.
+  Queued work, tool cycles, steers and follow-ups keep the byte-identical
+  section. They do not keep a cached copy of another extension's prefix.
+- New writes, approvals, supersessions and cap changes are stored at once, but
+  they enter the prompt in the next session. Recall and doctor still read the
+  current rows, so doctor's current counts can differ from an existing
+  session's frozen block.
+- Spider rebuilds the block when the session ID or file changes, the working
+  directory changes, the extension reloads, or the memory binding target
+  changes. The hook checks the read-only binding on each call. On turns where
+  nothing changed, it does not read active memory or config again.
+- Each subagent session freezes its own block. The host `session_start` hook
   inserts the session row that the organism later drains.
 
 ```mermaid
@@ -234,133 +259,156 @@ flowchart TD
 The organism turns a finished session into durable knowledge. It never runs on
 the foreground request path. `registerOrganism` attaches two lifecycle hooks and
 builds one `OrganismWorker`. The host skips registration when
-`PI_SUBAGENT_CHILD=1`; manual organism actions and worker execution refuse in
-children before model calls or drain receipts. Children can still use
-`skill list`, `view`, and `add` directly against the repo DB without a worker
-or model; `distill`, `approve`, and `reject` refuse.
+`PI_SUBAGENT_CHILD=1`. In children, manual organism actions and worker execution
+refuse to run, before any model call or drain receipt. Children can still use
+`skill list`, `view`, and `add` directly against the repo DB, with no worker
+or model. `distill`, `approve`, and `reject` refuse.
 
-Background completions use `github-copilot/gpt-6-luna` with `low` thinking by
-default, never the session model. Explicit `auxiliary.background_review.model`
-and `.provider` settings override the default. A provider-only override selects
-`<provider>/gpt-6-luna`. A bare model id must match exactly one available catalog
-entry, under the configured provider if supplied, without using the session
-provider. If the selected model is unavailable, the drain records a model error
-and fails without a fallback.
+By default, background completions use `github-copilot/gpt-6-luna` with `low`
+thinking, never the session model. Explicit `auxiliary.background_review.model`
+and `.provider` settings override the default. An override that sets only the
+provider selects `<provider>/gpt-6-luna`. A bare model id must match exactly one
+available catalog entry, under the configured provider if one is set. The
+session provider is not used for this match. If the selected model is not
+available, the drain records a model error and fails with no fallback.
 
-**Triggers.** `session_before_compact` fires a fire-and-forget drain with
-`reason: "before_compact"`: it never returns `false`, never calls a cancel API,
-and swallows every error, so it cannot block or alter compaction.
-`session_shutdown` awaits a drain with `reason: "shutdown"` and then runs
-`runCurate`. The `OrganismWorker` serializes every entry point through a single
-in-flight chain, so a before-compact drain and a shutdown drain (or a drain and
-a curate) never run against the database at the same time. The master
-`org.enabled` toggle short-circuits `runDrain` to a zeroed summary.
+**Triggers.** `session_before_compact` starts a drain with
+`reason: "before_compact"` and does not wait for it. The hook never returns
+`false`, never calls a cancel API, and swallows every error, so it cannot block
+or change compaction. `session_shutdown` waits for a drain with
+`reason: "shutdown"` and then runs `runCurate`. The `OrganismWorker` runs every
+entry point through one in-flight chain. Two drains, such as a before-compact
+drain and a shutdown drain, never run against the database at the same time,
+and neither do a drain and a curate. The master `org.enabled` toggle makes
+`runDrain` return a zeroed summary at once.
 
 **Drain.** `drainSession` reads the session's `runs`, `run_events`, `events`,
-and `todos`, its stored name, and, when a transcript path exists, the normalized
-conversation, into a `DigestBundle`. It reads only; the event log is left
-intact.
+and `todos`, its stored name, and the normalized conversation when a transcript
+path exists. It collects them into a `DigestBundle`. It only reads, and leaves
+the event log intact.
 
-**Passes.** The worker runs a set of passes, each gated by its per-pass toggle
-in `OrganismConfig.passes`. Model resolution errors fail the drain with a
-recorded error. Each pass runs inside its own try/catch so one throwing pass
-does not stop the remaining passes; its error remains in the drain report:
+**Passes.** The worker runs a set of passes. A per-pass toggle in
+`OrganismConfig.passes` turns each one on or off. An error while resolving the
+model fails the drain and is recorded. Each pass runs inside its own try/catch,
+so a pass that throws does not stop the others. Its error stays in the drain
+report. The passes are:
 
-- **runMemoryTodo**: summarize subagent run activity, ask the aux model for
-  durable memory and follow-up todo candidates. Emits no skills.
-- **todoMemory**: digest completed todos into durable memory candidates.
-- **learning**: drive the aux model over the transcript with the combined
-  review prompt and the "do not capture" block, emitting staged memory and
-  staged skill candidates co-equally, with zero proposals as the default.
-  Typed skill names and bodies are preserved verbatim for counted deterministic
-  validation and durability review at apply. The learner does not patch existing skills.
-- **consolidation**: produce a one to three sentence session summary and a short
-  self-name slug for the ongoing task. Emits no candidates.
-- **reflection**: cluster active repo memory by vector proximity and ask the
-  model to synthesize each dense cluster into one umbrella `insight`. Degrades
-  to an empty result when no embedder is available.
+- **runMemoryTodo.** Summarizes subagent run activity and asks the aux model
+  for durable memory and follow-up todo candidates. Emits no skills.
+- **todoMemory.** Turns completed todos into durable memory candidates.
+- **learning.** Runs the aux model over the transcript with the combined review
+  prompt and the "do not capture" block. It emits staged memory candidates and
+  staged skill candidates with equal weight, and proposes nothing by default.
+  It keeps typed skill names and bodies verbatim, so the apply step can run
+  counted deterministic validation and the durability review on them. The
+  learner does not patch existing skills.
+- **consolidation.** Writes a session summary of one to three sentences and a
+  short self-name slug for the ongoing task. Emits no candidates.
+- **reflection.** Clusters active repo memory by vector proximity and asks the
+  model to combine each dense cluster into one umbrella `insight`. Returns an
+  empty result when no embedder is available.
 
-Every memory candidate from these passes is filtered through `shouldCapture`,
-which enforces the six-category taxonomy and the anti-poisoning rules.
+`shouldCapture` filters every memory candidate from these passes. It enforces
+the six-category taxonomy and the anti-poisoning rules.
 
 **Staging versus curation.** These are two different mechanisms.
 
 Staging is what `applyDigest` does to the merged candidates. Nothing becomes
-active directly. A shared `WriteBudget` (default 20 per drain) is spent one unit
-per memory stage and one unit per accepted skill queue insert, memory first.
-Skills pass deterministic checks and `organism.maxSkillProposals` (default 1)
-before entering the repo `skill_review_queue`. The drain never calls the skill
-reviewer; its receipt counts `skillsQueued`. Only a live top-level session starts
-the asynchronous runner, at session start and after a before-compact drain.
-Shutdown cancels existing reviewers before closing DBs, never starting new ones.
-Children cannot run the queue; explicit child `skill op=add` uses inline review.
+active directly. A shared `WriteBudget` (default 20 per drain) pays for writes.
+Each memory stage costs one unit, and each skill accepted into the queue costs
+one unit. Memory goes first. Skills must pass deterministic checks and the
+`organism.maxSkillProposals` limit (default 1) before they enter the repo
+`skill_review_queue`. The drain never calls the skill reviewer, and its receipt
+counts `skillsQueued`. Only a live top-level session starts the asynchronous
+runner, at session start and after a before-compact drain. Shutdown cancels
+reviewers that are running before it closes DBs, and never starts new ones.
+Children cannot run the queue. An explicit child `skill op=add` uses inline
+review.
 
 A repo DB lease allows only one queued review at a time, across handles and
-processes. The review uses its own timeout (180000 ms by default, configurable
-1000-600000) and thinking (`xhigh` by default). Both reviewers accept the shared
-`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` levels. The authenticated
-pi `streamSimple(...).result()` path maps provider-neutral reasoning. Per-model
-capabilities follow pi's upward-first hole filling, then downward fallback;
-non-reasoning models use off. Requested/effective levels and plain cap or
-adjustment notices are recorded in `.spider/logs/reviewer-thinking.jsonl`.
-Only `new` stages with review_reason.
-Other verdicts are removed and recorded in the bounded recent-results table.
-Reviewer failures keep the candidate with attempts++ and last_error; the third
-failure drops it with a recorded reason. Doctor shows queue length and recent
-verdicts. Unavailable rubric/catalog omits learner skill guidance without losing
-memory proposals; disabled skill review also omits it. Raw failures are restricted
-to the local diagnostics log, rotated at 1 MiB with a 2 KiB raw-reply limit.
+processes. The review has its own timeout (180000 ms by default, configurable
+from 1000 to 600000) and its own thinking level (`xhigh` by default). Both
+reviewers accept the shared levels `off`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`. The authenticated pi `streamSimple(...).result()` path maps
+reasoning in a provider-neutral way. Per-model capabilities follow pi's rule:
+fill a missing level from the next level up first, then fall back downward.
+Models without reasoning use off. Spider records the requested and effective
+levels, and plain notices about caps or adjustments, in
+`.spider/logs/reviewer-thinking.jsonl`.
+Only a `new` verdict stages the skill, with its review_reason.
+Spider removes candidates with any other verdict and records them in the
+bounded table of recent results. If the reviewer fails, the candidate stays,
+its attempt count goes up by one, and last_error is set. The third failure
+drops it and records the reason. Doctor shows the queue length and recent
+verdicts. If the rubric or catalog is not available, the learner prompt leaves
+out skill guidance, but memory proposals still go through. Disabling skill
+review also leaves the guidance out. Raw failures go only to the local
+diagnostics log, which rotates at 1 MiB and keeps at most 2 KiB of each raw
+reply.
 
-Both reviewer catalogs and learner guidance are bounded: 150 skills ordered
-bundled, active, pi-loaded, newest staged; 300-character descriptions; a total
-learner system prompt ceiling of 180000 UTF-8 bytes including the full runtime
-rubric. Oversized guidance is omitted while memory learning continues. The
-reviewer judges structure, discovery triggers, token efficiency and anti-patterns,
-not deployment evidence. Agent-origin skills allow 1500 words/16 KB; learner and
-curator validation retains 500 words/8000 bytes. Frontmatter is exactly name and
-a Use when description for all origins. Todos are not budget-limited.
+Both reviewer catalogs and the learner guidance have limits:
+
+- At most 150 skills, ordered bundled first, then active, then loaded by pi,
+  then the newest staged.
+- Descriptions of at most 300 characters.
+- A total learner system prompt of at most 180000 UTF-8 bytes, including the
+  full runtime rubric.
+
+If the guidance is too large, spider leaves it out and memory learning
+continues. The reviewer judges structure, discovery triggers, token efficiency
+and anti-patterns. It does not judge evidence from deployment. Skills that
+agents write may have up to 1500 words and 16 KB. Learner and curator
+validation keeps the limit of 500 words and 8000 bytes. For skills of every
+origin, the frontmatter is exactly a name and a "Use when" description. Todos
+have no budget limit.
 
 Curation is what `runCurate` does to skills that already exist. On shutdown it
-runs `runCuratorDecay`, gated by `curatorShouldRun` (paused state, or less than
-`minIntervalHours` since the last run, blocks it) unless forced. The walk anchors
-each skill's idle age on its most recent real activity and applies two cutoffs:
-past `staleAfterDays` (default 30) a skill becomes `stale`; past
-`archiveAfterDays` (default 90) it becomes `archived` and its directory is moved
-into `.spider/skills/.archive/`. Pinned and protected skills are never
-transitioned, a never-used skill is not archived before it is at least stale-age
-old, and nothing is ever deleted. When `curator.consolidate` is on and a model
-is available, `consolidateSkills` runs an umbrella-building pass that archives
-absorbed or pruned agent-created skills. It only archives existing skills and
-never stages candidates; unsolicited `skills` reply fields are ignored.
+runs `runCuratorDecay`, unless `curatorShouldRun` blocks it. A paused curator,
+or less than `minIntervalHours` since the last run, blocks it unless the run is
+forced. The walk measures each skill's idle age from its most recent real
+activity and applies two cutoffs. Past `staleAfterDays` (default 30), a skill
+becomes `stale`. Past `archiveAfterDays` (default 90), it becomes `archived`
+and its directory moves into `.spider/skills/.archive/`. Pinned and protected
+skills never change state. A skill that was never used is not archived until it
+is at least as old as the stale cutoff. Nothing is ever deleted. When
+`curator.consolidate` is on and a model is available, `consolidateSkills` runs
+a pass that builds umbrella skills and archives the agent-created skills they
+absorb or prune. This pass only archives existing skills and never stages
+candidates. It ignores any `skills` fields the model returns unasked.
 
-**Self-naming.** After apply, `persistConsolidation` writes the self-name slug
-to `sessions.name` and the summary to `sessions.summary`, keeps `sessions_fts`
-in sync, and, only when `selfNaming` is on, sets `projects.name` if that name is
-currently null or empty. It never clobbers a user-set project name. Every write
-is guarded so a missing table or column cannot throw on the drain path.
+**Self-naming.** After the apply step, `persistConsolidation` writes the
+self-name slug to `sessions.name` and the summary to `sessions.summary`, and
+keeps `sessions_fts` in sync. Only when `selfNaming` is on, it also sets
+`projects.name` if that name is null or empty. It never overwrites a project
+name the user set. A guard wraps every write, so a missing table or column
+cannot throw on the drain path.
 
 **Learning graph and insights.** When the `insights` pass toggle is on, the
-worker rebuilds the learning graph with `buildLearningGraph`. Nodes are the
-non-archived skills and the active repo memories. Edges are skill-to-skill
-links from each skill's declared `related` list plus memory-to-skill links
-scored by lexical token overlap (with a bonus when a skill name appears verbatim
-in a memory), keeping the top four scoring skills per memory. The graph carries
-a `linkedPct` statistic and is persisted as node and edge rows in an `insights`
-table on the global database. `control insights` assembles the same graph
-without persisting it.
+worker rebuilds the learning graph with `buildLearningGraph`. The nodes are the
+skills that are not archived and the active repo memories. There are two kinds
+of edge:
+
+- Skill-to-skill links from each skill's declared `related` list.
+- Memory-to-skill links scored by lexical token overlap, with a bonus when a
+  skill name appears verbatim in a memory. Each memory keeps its top four
+  scoring skills.
+
+The graph carries a `linkedPct` statistic. Spider stores the graph as node and
+edge rows in an `insights` table on the global database. `control insights` builds
+the same graph without storing it.
 
 **Feeding the next session and AGENTS.md.** Nothing the organism produces is
-active until a human approves it. Once approved, it flows forward:
+active until a human approves it. Approved output carries forward like this:
 
-- Approved staged memory becomes active immediately and enters the frozen
-  snapshot at the next session's first `before_agent_start` or provider request (loop 2).
+- Approved staged memory becomes active at once. It enters the frozen
+  snapshot at the next session's first `before_agent_start` or provider request (loop 2, the memory lifecycle).
 - Approved staged skills become active in the skill library.
 - The session summary and self-name are indexed into `sessions_fts`, so past
   sessions are searchable and the ongoing task keeps a stable name.
 - The project name is set when it had none.
 - The `@spider/superpowers` managed block in `AGENTS.md` tells the agent to load
-  skills before acting, so the curated library shapes the next session's
-  behavior.
+  skills before it acts, so the curated library guides the agent in the next
+  session.
 
 ```mermaid
 flowchart TD
@@ -400,26 +448,27 @@ flowchart TD
 ## 4. The subagent loop
 
 `spider run` dispatches work to a child pi process and returns before the child
-finishes. The `run` handler routes by argument shape: `pipeline`, then `chain`,
-then `tasks` (parallel), then a single run. Every mode runs async by design.
+finishes. The `run` handler picks the mode from the arguments, checking in this
+order: `pipeline`, then `chain`, then `tasks` (parallel), then a single run.
+Every mode runs async by design.
 
 **Dispatch and background run.** For a single run, `Runner.runAsync` creates a
-run row with `status: "running"`, spawns a detached child through
-`buildChildSpawnSpec` (with `PI_SUBAGENT_CHILD=1`, the database path, the run
-id, and the parent session id in the environment), and returns the run row
-immediately. The handler stamps the parent's current model and thinking level on
-runs that do not name one, and `qualifyModelProvider` resolves a bare model id
-to a provider that the child can authenticate against.
+run row with `status: "running"` and spawns a detached child through
+`buildChildSpawnSpec`. The child's environment has `PI_SUBAGENT_CHILD=1`, the
+database path, the run id, and the parent session id. `Runner.runAsync` then
+returns the run row at once. For runs that do not name a model or thinking
+level, the handler sets the parent's current ones. `qualifyModelProvider`
+resolves a bare model id to a provider that the child can authenticate with.
 
-**Reporting back.** Inside the child, `attachChildReporter` wires the child's pi
-events (`tool_execution_start`, `tool_execution_end`, `message_end`,
-`turn_start`, `agent_start`, `session_shutdown`) and writes `run_events` and
-progress into the shared database, which the parent tails onto its live feed.
-When the child process exits, `Runner.runAsync` finalizes the run row if the
-child did not, then calls the async notifier exactly once. The notifier sends a
-`spider.subagent_done` message with the curated output and `triggerTurn: true`.
-That flag wakes an idle parent so the conversation continues automatically
-instead of waiting for the user.
+**Reporting back.** Inside the child, `attachChildReporter` listens to the
+child's pi events (`tool_execution_start`, `tool_execution_end`, `message_end`,
+`turn_start`, `agent_start`, `session_shutdown`). It writes `run_events` and
+progress into the shared database, and the parent tails them onto its live
+feed. When the child process exits, `Runner.runAsync` finalizes the run row if
+the child did not, then calls the async notifier exactly once. The notifier
+sends a `spider.subagent_done` message with the curated output and
+`triggerTurn: true`. That flag wakes an idle parent, so the conversation
+continues without waiting for the user.
 
 ```mermaid
 sequenceDiagram
@@ -442,13 +491,13 @@ sequenceDiagram
 ```
 
 **Pipeline handoff.** For a `pipeline`, `PipelineCoordinator.start` spawns stage
-0 async and subscribes to the run-events bus. When the current stage's run
+0 async and subscribes to the run-events bus. When the run of the current stage
 reaches a terminal status (`done`, `failed`, or `cancelled`), `onRunTerminal`
-spawns the next stage pre-wired with the prior result substituted for `{previous}`
-and `{handoff}`, records a `handoff` run-event edge, and wakes the next stage
-over intercom with `sendIntercom`. There is no blocking wait: the coordinator
-advances stage by stage as each stage finishes, and disposes of its bus
-subscription when the last stage completes.
+does three things. It spawns the next stage with the prior result already
+substituted for `{previous}` and `{handoff}`. It records a `handoff` run-event
+edge. It wakes the next stage over intercom with `sendIntercom`. Nothing blocks
+and waits. The coordinator moves on one stage at a time as each stage finishes,
+and drops its bus subscription when the last stage completes.
 
 ```mermaid
 flowchart LR
@@ -467,16 +516,16 @@ flowchart LR
 
 ## How the loops connect
 
-The four loops share the project and global databases, so output from one
-becomes input to another:
+The four loops share the project and global databases, so the output of one
+loop becomes input to another:
 
-- The routing loop and the subagent loop both write `run_events` and `events`
-  that the organism drain reads on before-compact and shutdown.
+- The routing loop and the subagent loop both write `run_events` and `events`.
+  The organism drain reads them on before-compact and shutdown.
 - The organism stages memory candidates through the same `stageWrite` pipeline
-  the memory lifecycle uses; approving them feeds the snapshot frozen at the
-  next session's first `before_agent_start` or provider request.
-- The content the routing loop indexes and the summaries the organism writes are
-  both retrievable through `spider search`, so a later session can find what an
+  that the memory lifecycle uses. Once approved, they feed the snapshot frozen
+  at the next session's first `before_agent_start` or provider request.
+- `spider search` can retrieve both the content the routing loop indexes and
+  the summaries the organism writes, so a later session can find what an
   earlier one produced.
 
 ## See also

@@ -2,41 +2,41 @@
 
 ## Dispatch and records
 
-- `spider run` supports single, parallel (`tasks`), sequential (`chain`), and pipeline dispatch.
-- Every run needs a concrete task. Children run in the background and report through `spider.subagent_done`.
-- `subagents.keepCacheWarm` defaults to `true` and asks pi to keep the parent prompt cache warm while that session has starting or running subagents. Set it to `false` to leave pi's warming decision unchanged. Child sessions do not override warming.
-- Warming only happens when pi knows the model's cache lifetime and idle warming is enabled.
-- Pi still applies its own idle warming limit.
-- A subagent silent for 60 minutes stops holding warming. Any child event resets this clock without changing the run status.
-- Child model calls, compactions, cache warming, and spider reviewer calls inside children count toward the dispatching session's pi footer, `/session`, and RPC totals after the run finishes, including failed or killed runs.
-- Run cards, completion messages, and `/agents` run details show tokens and cost.
-- Optional [per-model compaction](compaction.md#children) uses each child's model and thinking at tool-turn boundaries, never at `agent_end`.
-- The usage line appends `1 compaction` or `N compactions` when successful compactions are recorded. Aborted compactions do not count. Successful compactions still count when model usage accounting is unavailable.
-- Zero compactions or runs without compaction records keep the usage line unchanged. Reload preserves accounting and compaction counts.
-- A run finishing while another session is active is counted when its owner is next active or makes its next spider call, never in the other session.
-- On hosts without model-attributed usage entries, run usage attaches to the owner's next spider tool result under tools and summaries. This fallback can lose usage if the host crashes before persisting the result.
-- Parallel dispatch defaults to concurrency `4`. Give tasks short names for the UI.
-- Chains pass `{previous}` to the next step. Pipeline templates also accept `{task}`, `{handoff}`, and `{outputs.<as>}`.
-- Pipeline stages start fresh children after a done or failed stage. Cancellation ends the pipeline.
-- `handoff:"intercom"` and `handoff:"wait"` are compatibility values with no effect: neither sends a mailbox message nor creates a blocking wait.
-- Give review-only children `context:"fresh"` and explicitly forbid source edits.
-- Do not poll subagents with `spider loop`, `spider schedule`, or sleeps. Completion notices arrive automatically. Use [Loops and scheduled wakeups](loop-and-schedule.md) to wait on external work such as CI or deploys.
-- Run rows and events stay in the dispatching session's worktree database, or its `/bind` target. `/agents` reads that database.
-- A run's `cwd` selects the child's directory and model defaults, not the run-record database. Child scratch and transcripts live in the target project's `.spider/scratch`.
-- Other actions with `cwd`, including `todo`, use that directory's project database.
+- `spider run` supports four dispatch modes: single, parallel (`tasks`), sequential (`chain`), and pipeline.
+- Every run needs a concrete task. Children run in the background and report back through `spider.subagent_done`.
+- `subagents.keepCacheWarm` defaults to `true`. It asks pi to keep the parent prompt cache warm while the session has subagents that are starting or running. Set it to `false` to leave pi's warming decision as it is. Child sessions do not override warming.
+- Warming happens only when pi knows the model's cache lifetime and idle warming is on.
+- Pi still applies its own limit on idle warming.
+- A subagent that sends nothing for 60 minutes stops holding warming. Any child event resets this clock and leaves the run status unchanged.
+- Model calls, compactions, cache warming and spider reviewer calls inside a child count toward the dispatching session's pi footer, `/session` and RPC totals once the run finishes. Failed and killed runs count too.
+- Run cards, completion messages and run details in `/agents` show tokens and cost.
+- Optional [per-model compaction](compaction.md#children) uses each child's own model and thinking level at tool-turn boundaries, never at `agent_end`.
+- When successful compactions are recorded, the usage line ends with `1 compaction` or `N compactions`. Aborted compactions do not count. Successful compactions still count when model usage accounting is unavailable.
+- With zero compactions, or no compaction records for the run, the usage line stays the same. Reload keeps the accounting and the compaction counts.
+- If a run finishes while another session is active, its usage is counted when the owning session is next active or makes its next spider call. It is never counted in the other session.
+- On hosts without usage entries attributed to a model, run usage attaches to the owner's next spider tool result, under tools and in summaries. With this fallback, usage can be lost if the host crashes before it saves the result.
+- Parallel dispatch defaults to a concurrency of `4`. Give tasks short names for the UI.
+- A chain passes `{previous}` to the next step. Pipeline templates also accept `{task}`, `{handoff}` and `{outputs.<as>}`.
+- After a stage is done or has failed, the pipeline starts the next stage in a fresh child. Cancellation ends the pipeline.
+- `handoff:"intercom"` and `handoff:"wait"` are kept for compatibility and do nothing. Neither one sends a mailbox message or creates a blocking wait.
+- Give review-only children `context:"fresh"` and tell them explicitly not to edit source.
+- Do not poll subagents with `spider loop`, `spider schedule` or sleeps. Completion notices arrive on their own. To wait on external work such as CI or deploys, use [Loops and scheduled wakeups](loop-and-schedule.md).
+- Run rows and events stay in the database of the dispatching session's worktree, or in its `/bind` target. `/agents` reads that database.
+- A run's `cwd` sets the child's directory and model defaults. It does not change which database holds the run record. Child scratch files and transcripts go in the target project's `.spider/scratch`.
+- Other actions that take `cwd`, such as `todo`, use the project database of that directory.
 
 ```text
 spider run agent:"reviewer" task:"Review the parser diff; do not edit source" model:"github-copilot/claude-opus-5.5" thinking:"high" context:"fresh"
 spider kill id:"<run-id>"
 ```
 
-The optional `skill` parameter selects a skill by name. Spider checks the name before dispatch and fails if it is unknown. The child receives an instruction to read and follow the resolved `SKILL.md` file, so the child's transcript contains that local file path.
+The optional `skill` parameter picks a skill by name. Spider checks the name before dispatch and fails if the skill is unknown. The child is told to read and follow the resolved `SKILL.md` file, so the child's transcript contains that local file path.
 
 ## Reviewer tool profile
 
-Runs with `agent:"reviewer"` launch without pi's `edit` and `write` tools. This applies to single runs, parallel tasks, chain steps and pipeline stages, in RPC and print mode. Other agents keep their existing tool selection. A stage's optional `role` label does not select this profile.
+Runs with `agent:"reviewer"` start without pi's `edit` and `write` tools. This applies to single runs, parallel tasks, chain steps and pipeline stages, in RPC mode and print mode. Other agents keep their usual tools. A stage's optional `role` label does not select this profile.
 
-The global-only key `subagents.profiles.reviewer.excludeTools` defaults to `["edit", "write"]`. Only the user can change it by editing the [global config file](configuration.md#files-and-precedence). For example, preserve the file's other properties and add:
+The global-only key `subagents.profiles.reviewer.excludeTools` defaults to `["edit", "write"]`. Only the user can change it, by editing the [global config file](configuration.md#files-and-precedence). For example, keep the file's other properties and add:
 
 ```json
 {
@@ -44,104 +44,104 @@ The global-only key `subagents.profiles.reviewer.excludeTools` defaults to `["ed
 }
 ```
 
-The list replaces the profile default and accepts nonempty tool names or `*` patterns, without whitespace or commas. `[]` removes the profile exclusions; deleting the property restores the default. Repository overrides are ignored and diagnosed. Tool config set/unset calls and run arguments cannot change the profile. Changes apply to new dispatches only. RPC's existing `intercom` and `contact_supervisor` exclusions are always retained, with duplicates removed.
+The list replaces the profile default. It accepts nonempty tool names or `*` patterns, with no whitespace or commas. `[]` removes the profile's exclusions, and deleting the property restores the default. Spider ignores repository overrides and reports them in diagnostics. Tool config set and unset calls cannot change the profile, and neither can run arguments. Changes apply only to new dispatches. RPC children always keep their existing `intercom` and `contact_supervisor` exclusions, without duplicates.
 
-**This is not a sandbox.** Available spider actions are unchanged: `spider exec` can still write files, as can other commands or explicitly configured extensions. Children use `--no-extensions`, which disables discovered, configured and built-in extensions, including pi's MCP and codemode support; spider and explicitly supplied child extensions still load. Tool exclusions do not constrain those extensions' own filesystem access.
+**This is not a sandbox.** The spider actions stay available, so `spider exec` can still write files, and so can other commands or extensions you configured on purpose. Children run with `--no-extensions`. That flag turns off discovered, configured and built-in extensions, including pi's MCP and codemode support. Spider and any child extensions you supply explicitly still load. Tool exclusions do not limit what those extensions can do to the file system.
 
-Keep review-only instructions and use a separate frozen review copy to protect the working tree from accidental reviewer edits. Do not share a tree between a reviewer doing mutation tests and another running job.
+To protect the working tree from accidental edits by a reviewer, keep the review-only instructions and give the reviewer a separate frozen copy to review. Do not let a reviewer that runs mutation tests share a tree with another running job.
 
 ## Models and thinking
 
-- Qualify model references with their provider and use a model for which pi has credentials.
-- For a single run, use top-level `model` and `thinking`. For tasks, chain steps, and pipeline stages, set them on each item.
-- Thinking levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
-- A suffix such as `provider/model:max` also selects thinking. An explicit thinking field overrides the suffix; children receive the resolved level through `--thinking`.
-- Model role defaults and their precedence are in [Configuration](configuration.md#model-role-defaults).
-- The models card lists supported levels from pi's `reasoning` and `thinkingLevelMap`. Explicit `null` mappings, and omitted `xhigh` or `max`, are unsupported.
-- Pi fills a missing level with the next supported higher level first, then a lower one. Run details and completion notices report `thinking adjusted` or `thinking capped`.
-- A request on a non-reasoning model reports thinking off. Unknown models leave the effective level unverified.
-- Diagnostics name provider mappings when different from the pi level. Honored aliases remain in structured receipt metadata without a warning.
+- Prefix each model reference with its provider, and use a model that pi has credentials for.
+- For a single run, set `model` and `thinking` at the top level. For tasks, chain steps and pipeline stages, set them on each item.
+- The thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`.
+- A suffix such as `provider/model:max` also sets the thinking level. An explicit thinking field overrides the suffix. Children receive the resolved level through `--thinking`.
+- [Configuration](configuration.md#model-role-defaults) lists the model role defaults and their precedence.
+- The models card lists the levels each model supports, based on pi's `reasoning` and `thinkingLevelMap`. A level mapped to an explicit `null` is unsupported, and so is an omitted `xhigh` or `max`.
+- If a level is missing, pi uses the next supported higher level, or a lower one if there is no higher one. Run details and completion notices report `thinking adjusted` or `thinking capped`.
+- A thinking request on a model without reasoning reports thinking as off. For unknown models, the effective level stays unverified.
+- When a provider's mapping differs from the pi level, diagnostics name the mapping. Aliases that the provider honors stay in the structured receipt metadata and raise no warning.
 
 ## Child modes and trust
 
-- Default: `pi --mode rpc`, owned by the dispatching session, with one initial task prompt. The current verified host is pi `1.2.0`.
-- If a child extension consumes the initial task (`handled`), the run fails with that reason and the child is closed.
-- Set `subagents.childMode` to `"print"` for legacy `--mode json -p` launches.
-- Only the user can configure [`subagents.extensions`](configuration.md#child-extensions), by editing the global config file. The fully absolute paths load in RPC and print children for single, parallel, chain and pipeline runs. Local values are ignored; missing files are skipped with one warning run event per path.
-- Compatibility checks read metadata for the binary launched on PATH or through `PI_SUBAGENT_PI_BINARY`.
-- RPC children require a pi binary supporting `--exclude-tools`, `--name`, the `agent_settled` event, and the `clear_queue` RPC command.
-- A pi binary older than the verified RPC minimum `0.85.1` falls back to print mode and records why. An unknown version keeps RPC with a warning.
-- Spider requires pi `1.2.0` or later, including in children that load its extension. The binary compatibility fallback does not make older hosts supported.
-- RPC and print children follow pi's non-interactive project-trust policy. RPC does not grant extra trust.
-- Child extension dialogs are cancelled with a run-event warning.
-- Children cannot dispatch, message, or kill through spider, or use outbound `intercom` and `contact_supervisor` tools.
-- `spider loop` and `spider schedule` refuse subagent children, print runs and JSON runs; they require a persistent top-level session.
+- By default a child runs as `pi --mode rpc`, owned by the dispatching session, with one initial task prompt. The host version currently verified is pi `1.2.0`.
+- If a child extension consumes the initial task (`handled`), the run fails with that reason and spider closes the child.
+- To use the legacy `--mode json -p` launch, set `subagents.childMode` to `"print"`.
+- Only the user can configure [`subagents.extensions`](configuration.md#child-extensions), by editing the global config file. These fully absolute paths load in RPC and print children, for single, parallel, chain and pipeline runs. Spider ignores local values. It skips missing files with one warning run event per path.
+- Compatibility checks read the metadata of the binary that is launched, from PATH or from `PI_SUBAGENT_PI_BINARY`.
+- RPC children need a pi binary that supports `--exclude-tools`, `--name`, the `agent_settled` event and the `clear_queue` RPC command.
+- If the pi binary is older than `0.85.1`, the minimum verified for RPC, spider falls back to print mode and records why. If the version is unknown, spider keeps RPC and warns.
+- Spider requires pi `1.2.0` or later, and that includes children that load its extension. The fallback for older binaries does not make older hosts supported.
+- RPC and print children follow pi's project-trust policy for non-interactive runs. RPC does not grant extra trust.
+- Spider cancels dialogs opened by child extensions and adds a warning to the run events.
+- Children cannot dispatch, message or kill through spider. They also cannot use the outbound `intercom` and `contact_supervisor` tools.
+- `spider loop` and `spider schedule` refuse subagent children, print runs and JSON runs. They need a persistent top-level session.
 
 ## Kill and shutdown
 
-- Kill accepts a full ID, unique prefix, run name, or `"all"` for this session's active runs.
-- Process-group termination also stops descendant processes. Cancellation cannot later be overwritten as done by `cancel()` or `finish()`.
-- In the run details UI, press `k` twice within the confirmation interval to kill.
-- Later parent-turn Escape does not cancel background children.
-- Shutdown acts on the ending session only. In a multi-session SDK host, shutting down session A does not stop session B's children.
+- Kill accepts a full ID, a unique prefix, a run name, or `"all"` for the active runs of this session.
+- Spider stops the whole process group, so descendant processes stop too. Once a run is cancelled, a later `cancel()` or `finish()` cannot mark it as done.
+- To kill from the run details UI, press `k` twice within the confirmation interval.
+- Pressing Escape in a later parent turn does not cancel background children.
+- Shutdown affects only the session that is ending. In an SDK host with several sessions, shutting down session A does not stop session B's children.
 
 | Shutdown reason | Result |
 | --- | --- |
 | `reload` | Eligible single, parallel, and pipeline-stage children survive in RPC or print mode; chain steps stop. |
 | `quit`, `new`, `resume`, `fork` | Session-owned children stop, including detached children from an earlier reload. |
 
-- Loops and wakeups always end on shutdown, including `/reload`. Eligible child survival does not preserve timers.
+- Loops and wakeups always end on shutdown, `/reload` included. Timers do not survive, even when eligible children do.
 
-- RPC shutdown sends `clear_queue`, then `abort`, then stdin EOF. Process-group `SIGTERM` and `SIGKILL` are fallbacks after a grace period.
-- Cancelled runs record the shutdown reason without starting a model turn.
-- On pi 1.2.0, an unexpected `agent_settled.aborted` fails the child run even if its process exits cleanly. Parent-owned kills keep their existing cancellation reason.
-- A kill initiated here reports through its tool result, without another completion notification unless unresolved accepted/unknown steers need reporting.
-- Owned handles remain killable when spawn identity capture fails. PID-only kill and orphan-reaper paths require identity checks.
-- After a hard host kill, the next session start reaps orphan runs only when the owning host is dead. PID start time must match; legacy rows use a command check to avoid signalling an unrelated process.
+- On RPC shutdown, spider sends `clear_queue`, then `abort`, then closes stdin. If the child is still running after a grace period, spider sends `SIGTERM` and then `SIGKILL` to the process group.
+- A cancelled run records the shutdown reason and does not start a model turn.
+- On pi 1.2.0, an unexpected `agent_settled.aborted` fails the child run, even if the process exits cleanly. Kills by the parent keep their existing cancellation reason.
+- A kill started from this session reports through its tool result. It sends no separate completion notice, unless steers that were accepted or have an unknown outcome still need a report.
+- If spider fails to capture a child's identity at spawn, the session's own handles can still kill it. Killing by PID alone and the orphan reaper both require an identity check.
+- After a hard kill of the host, the next session start reaps orphan runs, but only when the owning host is dead. The PID's start time must match. Legacy rows use a command check instead, so spider does not signal an unrelated process.
 
 ## Reload survival internals
 
-- Live handles are parked in `globalThis[Symbol.for("spider.childRegistry.v1")]`, a versioned process-wide registry.
-- Entries retain process, pipes, run and session IDs, database path, intercom name, PID, and start time.
-- Reload detaches old listeners, keeping processes and pipes open. RPC events buffer within count and byte limits.
-- Streaming partials are not buffered; persisted history events have a separate buffer. Overflow adds an events-lost warning to history and the final result. Usage aggregates separately by provider, model, and purpose and cannot be evicted.
-- Session start adopts only that session's entries, restoring event handling, completion reporting, kill, and steering. Escalations from the gap are replayed.
-- A child that finishes during the gap is finalized and reported once after adoption.
-- A chain cannot survive because its continuation belongs to the old activation.
-- A pipeline's in-flight stage survives, but its coordinator does not. Later stages are not started; the run and completion notice warn that they need redispatch.
-- Unadopted entries expire after `60` seconds. A running child is stopped and marked cancelled; one already finished keeps its real result.
-- Failed adoption notifies the user and adds a warning, then restarts the timer.
-- Different registry versions cannot adopt each other. Timers clean up old entries; quit asks all registry versions to dispose of their children.
-- A best-effort exit hook stops detached children and finalizes rows if adoption never occurs. It cannot run after a hard kill.
-- `node scripts/probe-child-survival.mjs` checks real-pi reload survival, one completion notice, and quit-after-reload cleanup using fixtures.
+- Live handles are parked in `globalThis[Symbol.for("spider.childRegistry.v1")]`, a versioned registry shared by the whole process.
+- Each entry keeps the process, the pipes, the run and session IDs, the database path, the intercom name, the PID and the start time.
+- On reload, spider detaches the old listeners and leaves processes and pipes open. RPC events are buffered up to a count limit and a byte limit.
+- Streaming partial output is not buffered. Saved history events have their own buffer. If a buffer overflows, spider adds an events-lost warning to the history and to the final result. Usage is totalled separately by provider, model and purpose, and is never evicted.
+- At session start, a session adopts only its own entries. It restores event handling, completion reporting, kill and steering, and it replays escalations sent during the gap.
+- If a child finishes during the gap, spider finalizes it and reports it once after adoption.
+- A chain cannot survive, because the code that continues it belongs to the old activation.
+- A pipeline's running stage survives, but its coordinator does not. Spider does not start the later stages. The run and its completion notice warn that those stages need to be dispatched again.
+- Entries that no session adopts expire after `60` seconds. A child that is still running is stopped and marked cancelled. A child that already finished keeps its real result.
+- If adoption fails, spider notifies the user, adds a warning and restarts the timer.
+- Registries of different versions cannot adopt each other's entries. Timers clean up old entries, and quitting asks every registry version to dispose of its children.
+- A best-effort exit hook stops detached children and finalizes their rows if adoption never happens. The hook cannot run after a hard kill.
+- `node scripts/probe-child-survival.mjs` uses fixtures to check, against real pi, that children survive reload, that one completion notice arrives, and that quitting after a reload cleans up.
 
 ## Escalation
 
-- A child emits `ESCALATION[blocked|question|warning]: <message>` to raise an issue.
-- The parent displays a card while the child is still running, not only at completion.
-- Use `blocked` when work cannot proceed, `question` when an outcome-changing decision is needed, and `warning` for risks or a false premise.
+- To raise an issue, a child emits `ESCALATION[blocked|question|warning]: <message>`.
+- The parent shows a card while the child is still running, not only when it completes.
+- Use `blocked` when work cannot go on, `question` when you need a decision that changes the outcome, and `warning` for risks or a false premise.
 
 ## Messaging and delivery evidence
 
-- `spider message to:"<run-id>" message:"<text>"` steers a running RPC child through its owning session's pipe.
-- Completed, queued, paused, and print-mode runs refuse steering. A message cannot resume a completed run; redispatch with a corrected brief.
-- Slash-prefixed steers are refused because pi can expand skills/templates or reject extension commands; RPC steer has no literal-text option.
-- If a successful RPC reply has `data.disposition: "handled"`, the tool returns **consumed by an extension, not delivered** immediately. The child extension consumed the input, and it was not delivered to the model. There is no observed-delivery wait for that input.
-- For queued input or a legacy reply without a disposition, the tool waits for a correlated user `message_start` until `10` seconds from the send. It returns **delivered** as soon as entry is observed. This confirms entry, not model consumption.
-- At the deadline, accepted input without observed entry returns **accepted but not confirmed**. If still queued in the child, the result says pi delivers it at the child's next turn boundary unless the run ends first, and "do not resend". The final state appears in run events and the completion summary.
-- Exact text is preferred among additions in the serialized acceptance window. Different text counts as transformed delivery only after a successful reply and a sole addition.
-- Several additions without an exact match remain unconfirmed. Pi input handlers can swallow or transform text, and these events have no request IDs. A swallowed steer and one unrelated injection can resemble a transformation, including in the immediate tool result.
-- An in-flight steer survives reload tracking and is resolved by the adopting activation.
-- After `10` seconds without a reply, the result is **no reply yet, delivery unknown**. Tracking continues until settlement, exit, or stop. Do not resend while delivery remains possible.
-- A later steer waits up to `10` seconds for an earlier reply, then is refused as not sent. A written steer gets its own send deadline for acceptance and observed entry; a late reply can release the next waiter.
-- Settlement finalizes unanswered writes as unknown, refuses unwritten waiters, and closes stdin. Without a reply before settlement/exit/stop, only exact-text conversation entry counts as delivered.
-- Observed delivery is never downgraded. Completion reports delivered, accepted-unconfirmed, extension-consumed, unknown, and refused counts. Refused means rejection or no write.
+- `spider message to:"<run-id>" message:"<text>"` steers a running RPC child through the pipe of the session that owns it.
+- Spider refuses to steer completed, queued, paused and print-mode runs. A message cannot resume a completed run. Dispatch it again with a corrected brief.
+- Spider refuses steers that start with a slash, because pi might expand them as skills or templates, or reject them as extension commands. An RPC steer has no option to send literal text.
+- If a successful RPC reply has `data.disposition: "handled"`, the tool returns **consumed by an extension, not delivered** at once. A child extension took the input, and the model never got it. Spider does not wait to observe delivery of that input.
+- For queued input, or a legacy reply without a disposition, the tool waits up to `10` seconds from the send for a matching user `message_start`. It returns **delivered** as soon as it sees the input enter the conversation. That confirms entry, not that the model used the input.
+- If accepted input has not been seen entering the conversation by the deadline, the result is **accepted but not confirmed**. If the input is still queued in the child, the result says that pi delivers it at the child's next turn boundary unless the run ends first, and says "do not resend". The final state appears in the run events and the completion summary.
+- Among the additions seen in the serialized acceptance window, spider prefers one with exactly the sent text. Different text counts as a transformed delivery only after a successful reply, and only when it is the sole addition.
+- Several additions without an exact match stay unconfirmed. Pi input handlers can swallow or rewrite text, and these events carry no request IDs. So a swallowed steer plus one unrelated injected message can look like a transformation, in the immediate tool result too.
+- A steer that is in flight during a reload stays tracked, and the new activation resolves it.
+- After `10` seconds without a reply, the result is **no reply yet, delivery unknown**. Tracking continues until the run settles, exits or stops. Do not resend while the message might still be delivered.
+- A later steer waits up to `10` seconds for the reply to an earlier one. If none comes, spider refuses it as not sent. Once a steer is written, it gets its own send deadline for acceptance and observed entry. A late reply can release the next waiting steer.
+- When the run settles, spider marks unanswered writes as unknown, refuses steers that were never written, and closes stdin. If no reply came before the run settled, exited or stopped, only an entry with exactly the sent text counts as delivered.
+- Spider never downgrades an observed delivery. Completion reports the counts of delivered, accepted-unconfirmed, extension-consumed, unknown and refused steers. Refused means rejected or never written.
 
 ## Peer sessions and optional intercom
 
-- An installed, enabled `pi-intercom` package lets RPC children register named peers as `<run-name>-<short-id>`.
-- Another session can target a run ID through its persisted route and intercom target. Without intercom, steer from the dispatching session.
-- Optional intercom resolution failure does not prevent launch; dispatch details report its availability.
-- Peer messages are stored durably before broker delivery. Unconfirmed messages remain queued and retry when the target session starts.
-- Broker acceptance does not prove recipient acknowledgement or conversation entry and is reported as unconfirmed.
-- Run steers are ephemeral, unlike peer messages; they are not durably retried.
+- If the `pi-intercom` package is installed and enabled, RPC children register as named peers, `<run-name>-<short-id>`.
+- Another session can target a run ID through its saved route and intercom target. Without intercom, steer from the dispatching session.
+- If optional intercom fails to resolve, the launch still goes ahead, and the dispatch details report whether intercom is available.
+- Peer messages are saved durably before the broker delivers them. Unconfirmed messages stay queued and are retried when the target session starts.
+- Broker acceptance does not prove that the recipient acknowledged the message or that it entered the conversation, so spider reports it as unconfirmed.
+- Unlike peer messages, run steers are not saved, and spider does not retry them.

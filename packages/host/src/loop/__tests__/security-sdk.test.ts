@@ -172,6 +172,73 @@ it.each(["user", "model"])("re-arms a %s self-paced loop internally and preserve
   expect(h.dispatchedLoops).toEqual(origin === "user" ? ["transform me"] : []);
 });
 
+it.each(["5m /user-only off", "5m check", "stop", "5m", "30d x"])("keeps the model prompt %j self-paced across re-arms", async prompt => {
+  const h = await setup();
+  expect((await h.call({ action: "loop", prompt })).isError).toBe(false);
+  await h.advance(1000);
+  const rearm = { action: "schedule", delaySeconds: 60, prompt: `/loop ${prompt}` };
+  expect((await h.call(rearm)).isError).toBe(false);
+  await h.advance();
+  // A second re-arm proves that status describes a live, repeatable loop,
+  // rather than stale self-paced state left behind by a usage response.
+  expect((await h.call(rearm)).isError).toBe(false);
+  await h.advance();
+  const status = await h.call({ action: "loop" });
+  expect(status.details).toEqual({
+    loop: { mode: "self-paced", intervalSeconds: null, nextFireAt: null, prompt },
+    wakeup: null,
+  });
+  const iterations = h.users().filter(text => text !== "Run the scheduler fixture");
+  expect(iterations).toHaveLength(3);
+  for (const iteration of iterations) {
+    expect(iteration.startsWith(`${prompt}\n\n[/loop, self-paced]`)).toBe(true);
+    expect(iteration).toContain(JSON.stringify(`/loop ${prompt}`));
+  }
+  expect(h.ran).toEqual([]);
+  expect(h.dispatchedLoops).toEqual([]);
+});
+
+it("resets a user loop's origin when a model replaces it with the same prompt", async () => {
+  const h = await setup();
+  await h.user("/loop transform me");
+  // Pin the stored user origin before the model replacement as well.
+  expect((await h.call({ action: "schedule", delaySeconds: 60, prompt: "/loop transform me" })).isError).toBe(false);
+  await h.advance();
+  expect((await h.call({ action: "loop", prompt: "transform me" })).isError).toBe(false);
+  await h.advance(1000);
+  expect((await h.call({ action: "schedule", delaySeconds: 60, prompt: "/loop transform me" })).isError).toBe(false);
+  await h.advance();
+  const iterations = h.users().filter(text => text !== "Run the scheduler fixture");
+  expect(iterations).toEqual(["EXPANDED trusted template", "EXPANDED trusted template", "/check", "/check"]);
+  expect(h.ran).toEqual([]);
+});
+
+it("keeps template expansion for a user /loop first run deferred by an active run", async () => {
+  const h = await setup();
+  let command: Promise<void> | undefined;
+  const unsubscribe = h.session.subscribe(event => {
+    if (event.type === "agent_start") {
+      unsubscribe();
+      command = h.session.prompt("/loop /check");
+    }
+  });
+  await h.user("Start a run");
+  await command;
+  await h.advance(1000);
+  expect(h.users()).toEqual(["Start a run", "EXPANDED trusted template"]);
+  expect(h.dispatchedLoops).toEqual(["/check"]);
+});
+
+it("refuses a model slash prompt smuggled through the loop interval field", async () => {
+  const h = await setup();
+  const result = await h.call({ action: "loop", interval: "1m /user-only off", prompt: "x" });
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toMatch(/slash commands are user-only.*cannot start with/i);
+  await h.advance();
+  expect(h.users()).toEqual(["Run the scheduler fixture"]);
+  expect(h.ran).toEqual([]);
+});
+
 it("returns a native tool error when a loop ended during the same run", async () => {
   const h = await setup();
   const result = await h.call({ action: "schedule", delaySeconds: 60, prompt: "later" }, { action: "loop", stop: true });

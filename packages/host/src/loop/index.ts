@@ -89,7 +89,7 @@ export class SessionScheduler {
       }
       this.wakeup = undefined;
       this.wakeupState = undefined;
-      if (rearm) void this.command(rearm, ctx, origin);
+      if (rearm) void this.command(rearm, ctx, origin).catch(err => ctx.ui.notify(String(err), "error"));
       else this.fire(prompt, origin);
     };
     this.wakeup = setTimeout(deliver, seconds * 1000).unref();
@@ -202,7 +202,11 @@ export class SessionScheduler {
     if (args.stop) {
       // What is pending in a sealed slot is a loop start the user asked for, not this run's.
       const cancelled = !this.sealed && this.cancelWakeup();
-      return { text: cancelled ? "Pending wakeup cancelled." : "No wakeup was pending.", details: { cancelled } };
+      const text = cancelled ? "Pending wakeup cancelled."
+        : this.sealed && this.wakeupState
+          ? "The pending wakeup belongs to a loop started during this run and was not cancelled."
+          : "No wakeup was pending.";
+      return { text, details: { cancelled } };
     }
     if (typeof args.delaySeconds !== "number" || !Number.isFinite(args.delaySeconds) || !args.prompt?.trim()) {
       throw new Error("spider schedule needs finite delaySeconds and prompt unless stop is true.");
@@ -215,8 +219,8 @@ export class SessionScheduler {
     // Only the active self-paced loop's own re-arm is a scheduler command.
     // Never pass it to pi, and never let a model borrow a user loop's origin
     // for a different prompt. Capture the origin for this pending firing.
-    const rearm = this.loopState?.mode === "self-paced" && args.prompt.trim() === `/loop ${this.loopState.prompt}`
-      ? parseLoop(args.prompt.trim().slice("/loop".length)) : undefined;
+    const rearm: LoopCommand | undefined = this.loopState?.mode === "self-paced" && args.prompt.trim() === `/loop ${this.loopState.prompt}`
+      ? { kind: "dynamic", prompt: this.loopState.prompt } : undefined;
     if (!rearm) assertModelPrompt(args.prompt);
     const origin = rearm ? this.loopOrigin : "model";
     const seconds = Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, Math.round(args.delaySeconds)));

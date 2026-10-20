@@ -65,12 +65,14 @@ afterEach(() => {
   if (stopErrors.length) throw new Error(stopErrors.join("\n"));
 });
 
-function polluterRun(pattern: string, npmScript: string | null = "#!/usr/bin/env bash\ntouch pollution.marker\n", npmMode = 0o755, preExistingPollution = false) {
+function polluterRun(pattern: string, npmScript: string | null = "#!/usr/bin/env bash\ntouch pollution.marker\n", npmMode = 0o755, preExistingPollution = false, packageJson: object | null = { scripts: { test: "fixture-runner" } }) {
   const project = freshRoot("polluter");
   fs.mkdirSync(path.join(project, "src/feature"), { recursive: true });
   fs.mkdirSync(path.join(project, "bin"), { recursive: true });
   fs.writeFileSync(path.join(project, "src/top.test.ts"), "test('top')\n");
   fs.writeFileSync(path.join(project, "src/feature/nested.test.ts"), "test('nested')\n");
+  if (packageJson !== null) fs.writeFileSync(path.join(project, "package.json"), JSON.stringify(packageJson));
+  fs.symlinkSync(process.execPath, path.join(project, "bin/node"));
   for (const command of ["bash", "find", "sort", "wc", "tr", "touch", "ls"]) {
     const executable = spawnSync("bash", ["-c", 'command -v "$1"', "fixture", command], { encoding: "utf8" });
     expect(executable.status).toBe(0);
@@ -93,6 +95,30 @@ function polluterRun(pattern: string, npmScript: string | null = "#!/usr/bin/env
 }
 
 describe("systematic-debugging find-polluter", () => {
+  it.each([
+    ["package.json is missing", null],
+    ["the test script is missing", { scripts: { build: "fixture-build" } }],
+  ] as const)("is inconclusive when %s", (_label, packageJson) => {
+    const result = polluterRun("src/**/*.test.ts", "#!/usr/bin/env bash\nprintf '%s\\n' \"$2\" >> ran-tests\n", 0o755, false, packageJson);
+    expect(result.status, String(result.stdout)).toBe(2);
+    expect(result.stdout).toMatch(/^Inconclusive: no npm test script$/m);
+    expect(result.ranTests).toEqual([]);
+    expect(result.stdout).not.toContain("all tests clean");
+  });
+
+  it("is inconclusive when npm reports a missing script despite the preflight", () => {
+    const result = polluterRun("src/**/*.test.ts", '#!/usr/bin/env bash\nprintf \'npm error Missing script: "test"\\n\' >&2\nexit 1\n');
+    expect(result.status, String(result.stdout)).toBe(2);
+    expect(result.stdout).toMatch(/^Inconclusive: no npm test script$/m);
+    expect(result.stdout).not.toContain("all tests clean");
+  });
+
+  it.each([{ args: [] }, { args: ["pollution.marker"] }, { args: ["pollution.marker", "src/**/*.test.ts", "extra"] }])("uses exit 64 for invalid arguments $args", ({ args }) => {
+    const result = spawnSync("bash", [polluterScript, ...args], { encoding: "utf8" });
+    expect(result.status).toBe(64);
+    expect(result.stdout).toContain("Usage:");
+  });
+
   it("matches nested and top-level tests for a **/ pattern", () => {
     const result = polluterRun("src/**/*.test.ts");
     expect(result.stdout).toContain("Found 2 test files");

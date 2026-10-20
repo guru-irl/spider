@@ -8,7 +8,7 @@ set -e
 if [ $# -ne 2 ]; then
   echo "Usage: $0 <file_to_check> <test_pattern>"
   echo "Example: $0 '.git' 'src/**/*.test.ts'"
-  exit 1
+  exit 64
 fi
 
 POLLUTION_CHECK="$1"
@@ -39,6 +39,19 @@ if [ "$TOTAL" -eq 0 ]; then
   exit 2
 fi
 
+# npm exits 1 for a missing test script too, which is not a test failure.
+if [ ! -f package.json ] || ! node -e '
+  const fs = require("fs");
+  try {
+    const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+    const test = pkg && pkg.scripts && pkg.scripts.test;
+    process.exit(typeof test === "string" && test.trim() ? 0 : 1);
+  } catch { process.exit(1); }
+' > /dev/null 2>&1; then
+  echo "Inconclusive: no npm test script"
+  exit 2
+fi
+
 COUNT=0
 RAN=0
 for TEST_FILE in $TEST_FILES; do
@@ -56,10 +69,16 @@ for TEST_FILE in $TEST_FILES; do
   # Test failures can still reveal pollution; command-start failures cannot.
   # Disable errexit in the child so Bash 3.2 preserves startup exit codes.
   TEST_STATUS=0
-  (set +e; npm test "$TEST_FILE" > /dev/null 2>&1) || TEST_STATUS=$?
+  TEST_OUTPUT=$(set +e; npm test "$TEST_FILE" 2>&1) || TEST_STATUS=$?
   case "$TEST_STATUS" in
     126|127)
       echo "Inconclusive: test command could not run: npm test $TEST_FILE"
+      exit 2
+      ;;
+  esac
+  case "$TEST_OUTPUT" in
+    *"Missing script"*)
+      echo "Inconclusive: no npm test script"
       exit 2
       ;;
   esac

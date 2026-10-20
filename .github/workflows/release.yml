@@ -80,7 +80,7 @@ jobs:
               const fs=require('node:fs');
               const skillDirs=['packages/superpowers/skills','packages/pstack/skills'];
               const skills=skillDirs.flatMap(dir=>fs.readdirSync(dir,{recursive:true}).filter(f=>f==='SKILL.md'||f.endsWith('/SKILL.md')).map(f=>dir+'/'+f));
-              const need=['dist/extension.js','dist/dashboard/index.html','README.md','LICENSE','packages/pstack/LICENSE',...skills];
+              const need=['dist/extension.js','dist/dashboard/index.html','README.md','LICENSE','NOTICE.md','packages/context/LICENSE','packages/pstack/LICENSE',...skills];
               if(!files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(f)) || !files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(f))) throw new Error('dashboard JS/CSS missing');
               if(files.some(f=>f.startsWith('dist/') && (f.endsWith('.map') || f.includes('states')))) throw new Error('development dashboard files in tarball');
               const missing=need.filter(n=>!files.includes(n));

@@ -30,6 +30,24 @@ spider run agent:"reviewer" task:"Review the parser diff; do not edit source" mo
 spider kill id:"<run-id>"
 ```
 
+## Reviewer tool profile
+
+Runs with `agent:"reviewer"` launch without pi's `edit` and `write` tools. This applies to single runs, parallel tasks, chain steps and pipeline stages, in RPC and print mode. Other agents keep their existing tool selection. A stage's optional `role` label does not select this profile.
+
+The global-only key `subagents.profiles.reviewer.excludeTools` defaults to `["edit", "write"]`. Only the user can change it by editing the [global config file](configuration.md#files-and-precedence). For example, preserve the file's other properties and add:
+
+```json
+{
+  "subagents.profiles.reviewer.excludeTools": ["edit", "write", "bash"]
+}
+```
+
+The list replaces the profile default and accepts nonempty tool names or `*` patterns, without whitespace or commas. `[]` removes the profile exclusions; deleting the property restores the default. Repository overrides are ignored and diagnosed. Tool config set/unset calls and run arguments cannot change the profile. Changes apply to new dispatches only. RPC's existing `intercom` and `contact_supervisor` exclusions are always retained, with duplicates removed.
+
+**This is not a sandbox.** Available spider actions are unchanged: `spider exec` can still write files, as can other commands or explicitly configured extensions. Children use `--no-extensions`, which disables discovered, configured and built-in extensions, including pi's MCP and codemode support; spider and explicitly supplied child extensions still load. Tool exclusions do not constrain those extensions' own filesystem access.
+
+Keep review-only instructions and use a separate frozen review copy to protect the working tree from accidental reviewer edits. Do not share a tree between a reviewer doing mutation tests and another running job.
+
 ## Models and thinking
 
 - Qualify model references with their provider and use a model for which pi has credentials.

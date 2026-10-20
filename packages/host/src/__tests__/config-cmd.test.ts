@@ -88,9 +88,10 @@ describe("applyConfigEdit round-trip", () => {
       for (const key of productionReaders(resolve("packages"))) {
         expect(declared.has(key), key).toBe(true);
         const field = getField(key, UI_CONFIG_SCHEMA)!;
-        const raw = field.type === "model-ref" ? "fixture/model" : field.type === "model-map" ? "{}" : field.type === "absolute-path-list" ? "[]" : field.type === "number" ? String(field.exclusiveMin !== undefined ? field.exclusiveMin + 1 : field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
-        if (["exec.enforce", "subagents.extensions"].includes(key)) {
+        const raw = field.type === "model-ref" ? "fixture/model" : field.type === "model-map" ? "{}" : ["absolute-path-list", "tool-selector-list"].includes(field.type) ? "[]" : field.type === "number" ? String(field.exclusiveMin !== undefined ? field.exclusiveMin + 1 : field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
+        if (["exec.enforce", "subagents.extensions", "subagents.profiles.reviewer.excludeTools"].includes(key)) {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
+          expect(applyConfigEdit(dir, key, raw, "global").ok, key).toBe(false);
         } else if (field.scope === "global") {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
           expect(applyConfigEdit(dir, key, raw, "global"), key).toMatchObject({ ok: true, scope: "global", file: join(paths.globalRoot, "config.json") });

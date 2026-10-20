@@ -4,7 +4,7 @@
 
 - Store keys as literal dotted JSON properties, not nested objects.
 - Built-in defaults are overridden by global config, then worktree-local config.
-- `subagents.extensions`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.monthlyBudget`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
+- `subagents.extensions`, `subagents.profiles.reviewer.excludeTools`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.monthlyBudget`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Hand-written local usage values are ignored and diagnosed, not treated as config failures.
 - Global file: `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
 - Local file: `<worktree>/.spider/config.json`.
 - For config writes, `scope:"repo"` means the local file, not the shared repository database. Omitted scope is local; `scope:"global"` selects global.
@@ -27,7 +27,7 @@ spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"re
 - Only `memory.snapshotCharCap` supports the `"unlimited"` sentinel. Unsetting the snapshot cap writes `"unlimited"` in the chosen layer when the global file has a cap; this applies to global and local unset.
 - Setting the snapshot cap to `"unlimited"` or an empty string follows that unset path.
 - Other numeric keys and model references do not receive the sentinel.
-- The model-facing action rejects `exec.enforce` and `subagents.extensions` for both set and unset at every scope. Use the [user-only slash command](../../README.md#slash-commands-and-overlays) for `exec.enforce`, or the global file edit described below for child extensions.
+- The model-facing action rejects `exec.enforce`, `subagents.extensions` and `subagents.profiles.reviewer.excludeTools` for both set and unset at every scope. Use the [user-only slash command](../../README.md#slash-commands-and-overlays) for `exec.enforce`, or the global file edit described below for child extensions.
 
 ## Validation
 
@@ -58,6 +58,10 @@ spider control command:"config" op:"set" key:"subagents.extensions" value:"[\"/p
 Local values are ignored and reported with their file in `config get` and `doctor`. Non-global sets are rejected. To clean up, remove the local property by hand. Invalid values in either layer are diagnosed with their file. An invalid global list blocks new run dispatches until repaired.
 
 Every new RPC or print child loads these files after spider's own extensions. Paths are normalized and deduplicated by realpath when available, keeping the first spelling. Missing paths and paths that are not files are skipped with one warning run event per path; the run still starts.
+
+### Reviewer tool exclusions
+
+`subagents.profiles.reviewer.excludeTools` defaults to `["edit", "write"]`. It is global-only and user-managed, like child extensions. Edit the global file; repository overrides are ignored and diagnosed. Invalid global values block new run dispatches. See [Reviewer tool profile](subagents.md#reviewer-tool-profile) for examples and limits. This is not a sandbox: `spider exec` can still write files.
 
 ## Monthly usage budget
 
@@ -98,6 +102,7 @@ The live footer shows corrected credits without basis markers, then cache hit ra
 | `subagents.childMode` | `"rpc"` | RPC children; `"print"` selects one-shot children. |
 | `subagents.keepCacheWarm` | `true` | Ask pi to keep the parent cache warm while its subagents start or run, within the limits below; applies at the next warming decision. |
 | `subagents.extensions` | `[]` | Global-only, user-managed array of absolute extension file paths for every child. |
+| `subagents.profiles.reviewer.excludeTools` | `["edit", "write"]` | Global-only, user-managed tool exclusions for `agent:"reviewer"` children. Not a sandbox. |
 | `exec.enforce` | `true` | Block the built-in bash tool. |
 | `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory; not a storage cap. |
 | `models.defaults` | `{}` | Explicit agent-role overrides; shipped defaults resolve from the catalog. |
@@ -130,7 +135,7 @@ The live footer shows corrected credits without basis markers, then cache hit ra
 - The organism refreshes configuration when resolving its runtime for a request or drain.
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
 - `usage.footer`, `usage.counter.poll`, `usage.calibration` and `usage.monthlyBudget` apply live. Usage alert thresholds are registered but inactive.
-- `subagents.childMode` and `subagents.extensions` apply to new dispatches; existing runs keep their launch settings.
+- `subagents.childMode`, `subagents.extensions` and `subagents.profiles.reviewer.excludeTools` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.
 - `memory.snapshotCharCap` is captured with the frozen memory block at the first agent start. Changes apply next session, after an extension reload, or when the memory binding target changes. Doctor uses the current value.
 - Rebuilding a linked bundle and reloading it is separate from editing config; see [Runtime lifecycle](../architecture/runtime-lifecycle.md).

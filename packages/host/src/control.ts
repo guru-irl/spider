@@ -7,7 +7,7 @@ import { openGlobal, openDbReadOnlyAt, resolveProject, paths, assertTestConfigPa
 import { getVectorState, getVectorErrors, getEmbedDrainState, getEmbedderState, getEmbedLeaseState, safeReviewError } from "@spider/memory";
 import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtime";
 
-import { isAbsolutePathList } from "@spider/ui";
+import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } from "./usage/config.js";
 import { usageDoctorLines } from "./usage/doctor.js";
 import { COMPACTION_DEFAULTS, compactionConfigError } from "./compaction/config.js";
@@ -24,6 +24,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "subagents.childMode": "rpc",
   "subagents.keepCacheWarm": true,
   "subagents.extensions": Object.freeze([]),
+  "subagents.profiles.reviewer.excludeTools": Object.freeze(["edit", "write"]),
   "memory.reviewer.enabled": true,
   "memory.reviewer.model": "github-copilot/gpt-6-luna",
   "memory.reviewer.timeoutMs": 45000,
@@ -92,6 +93,12 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
         errors.push(`invalid subagents.extensions in ${file}: expected a JSON array of absolute file paths`);
       }
       if (layer === local) errors.push(`subagents.extensions in ${file} is ignored: global scope only`);
+    }
+    if (Object.hasOwn(layer.config, "subagents.profiles.reviewer.excludeTools")) {
+      if (!isToolSelectorList(layer.config["subagents.profiles.reviewer.excludeTools"])) {
+        errors.push(`invalid subagents.profiles.reviewer.excludeTools in ${file}: expected a JSON array of nonempty tool selectors without whitespace or commas`);
+      }
+      if (layer === local) errors.push(`subagents.profiles.reviewer.excludeTools in ${file} is ignored: global scope only`);
     }
     if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
@@ -170,8 +177,10 @@ export function configValues(cwd: string, localRoot?: string): {
     all[key] = localValid ? p[key] : globalValid ? g[key] : fallback;
     sources[key] = localValid ? "local" : globalValid ? "global" : "default";
   }
-  all["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? g["subagents.extensions"] : DEFAULTS["subagents.extensions"];
-  sources["subagents.extensions"] = Object.hasOwn(g, "subagents.extensions") ? "global" : "default";
+  for (const key of ["subagents.extensions", "subagents.profiles.reviewer.excludeTools"]) {
+    all[key] = Object.hasOwn(g, key) ? g[key] : DEFAULTS[key];
+    sources[key] = Object.hasOwn(g, key) ? "global" : "default";
+  }
   const usage = readUsageConfig(g, p).value;
   for (const [key, value] of Object.entries({
     "usage.calibration": usage.calibration, "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
@@ -205,8 +214,8 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   }
   if (scope !== "local" && scope !== "global") throw new Error("control config: scope must be global or local");
   if (key === undefined) throw new Error(`control config ${op}: key required`);
-  if (op === "set" && key === "subagents.extensions" && scope !== "global") {
-    throw new Error('subagents.extensions is global-only; use scope:"global"');
+  if (op === "set" && ["subagents.extensions", "subagents.profiles.reviewer.excludeTools"].includes(key) && scope !== "global") {
+    throw new Error(`${key} is global-only; use scope:"global"`);
   }
   if (isUsageConfigKey(key)) {
     if (op === "set" && scope !== "global") throw new Error(`${key} is global-only; use scope:"global"`);
@@ -235,6 +244,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     !isAbsolutePathList(value)) {
     throw new Error("subagents.extensions must be a JSON array of absolute file paths");
   }
+  if (op === "set" && key === "subagents.profiles.reviewer.excludeTools" && !isToolSelectorList(value)) {
+    throw new Error(`${key} must be a JSON array of nonempty tool selectors without whitespace or commas`);
+  }
   if (op === "set" && key === "subagents.childMode" && value !== "rpc" && value !== "print") {
     throw new Error("subagents.childMode must be rpc or print");
   }
@@ -245,7 +257,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     if (Object.hasOwn(global, key)) cur[key] = "unlimited";
     else delete cur[key];
   } else cur[key] = value;
-  const shadowed = !isUsageConfigKey(key) && key !== "subagents.extensions" && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
+  const shadowed = !isUsageConfigKey(key) && !["subagents.extensions", "subagents.profiles.reviewer.excludeTools"].includes(key) && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   assertTestConfigPath(temp);
   try {

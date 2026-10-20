@@ -55,7 +55,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -86,6 +86,7 @@ export class Runner {
       role: opts.role,
       name: run.name ?? undefined,
       childMode: this.deps.childMode,
+      reviewerExcludeTools: this.deps.reviewerExcludeTools,
       subagentOnlyExtensions: this.deps.subagentOnlyExtensions,
       intercomExtensions: this.deps.intercomExtensions,
       task: opts.task,

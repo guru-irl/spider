@@ -1,6 +1,6 @@
 import { isAbsolutePathList } from "./absolute-paths.js";
 
-export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list" | "model-ref";
+export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list" | "tool-selector-list" | "model-ref";
 export interface ConfigField {
 	key: string; label: string; type: ConfigFieldType; default: unknown;
 	enum?: readonly string[]; min?: number; max?: number; optional?: boolean; exclusiveMin?: number; description: string; restart?: boolean; scope?: "global"; integer?: boolean;
@@ -60,6 +60,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	{ id: "subagents", label: "Subagents", fields: [
 		{ key: "subagents.keepCacheWarm", label: "Keep parent cache warm", type: "boolean", default: true, description: "Override pi's cache-warming decision while this parent session has starting or running subagents. Applies at the next decision." },
 		{ key: "subagents.extensions", label: "Child extensions", type: "absolute-path-list", default: [], description: "Global-only JSON array of fully absolute extension file paths. Only the user can edit it in the global config file. Missing files are skipped with a run warning." },
+		{ key: "subagents.profiles.reviewer.excludeTools", label: "Reviewer excluded tools", type: "tool-selector-list", default: ["edit", "write"], scope: "global", description: "User-only global JSON array of excluded tool names or patterns. Applies to new reviewer children. Not a sandbox: spider exec can still write files." },
 		{ key: "subagents.childMode", label: "Child mode", type: "enum", enum: ["rpc", "print"], default: "rpc", description: "RPC permits steering. Print retains legacy one-shot behavior. Applies to new runs." },
 	]},
 	{ id: "exec", label: "Exec enforcement", fields: [
@@ -88,6 +89,11 @@ export function createConfigSchema(thinkingLevels: readonly string[]): ConfigGro
 export function getField(key: string, schema: ConfigGroup[] = CONFIG_SCHEMA): ConfigField | undefined {
 	for (const g of schema) for (const f of g.fields) if (f.key === key) return f;
 	return undefined;
+}
+
+/** CLI exclusions are comma-delimited selectors; reject ambiguous or empty entries. */
+export function isToolSelectorList(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every(tool => typeof tool === "string" && tool.length > 0 && !/[\s,]/.test(tool));
 }
 
 export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: unknown; error?: string } {
@@ -119,6 +125,13 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 				if (isAbsolutePathList(value)) return { ok: true, value };
 			} catch { /* invalid JSON */ }
 			return { ok: false, error: "expected a JSON array of absolute file paths" };
+		}
+		case "tool-selector-list": {
+			try {
+				const value: unknown = JSON.parse(raw);
+				if (isToolSelectorList(value)) return { ok: true, value };
+			} catch { /* invalid JSON */ }
+			return { ok: false, error: "expected a JSON array of nonempty tool selectors without whitespace or commas" };
 		}
 		case "model-map": {
 			try {

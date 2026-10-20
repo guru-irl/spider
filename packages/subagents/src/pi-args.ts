@@ -279,6 +279,8 @@ export interface BuildChildSpawnSpecInput {
 	role?: string;
 	name?: string;
 	childMode?: "rpc" | "print";
+	/** User-global reviewer profile, never taken from run arguments. */
+	reviewerExcludeTools?: readonly string[];
 	intercomExtensions?: string[];
 	subagentOnlyExtensions?: string[];
 	task: string;
@@ -342,10 +344,16 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		return false;
 	});
 	const sessionName = `${input.name ?? input.agent}-${input.runId.slice(0, 8)}`;
+	const excludedTools = [...new Set([
+		...(childMode === "rpc" ? ["intercom", "contact_supervisor"] : []),
+		...(input.agent === "reviewer" ? input.reviewerExcludeTools ?? ["edit", "write"] : []),
+	])];
+	const modeArgs = childMode === "print"
+		? ["--mode", "json", "-p", "--session", sessionFile]
+		: ["--mode", "rpc", "--session", sessionFile, "--name", sessionName];
+	if (excludedTools.length) modeArgs.push("--exclude-tools", excludedTools.join(","));
 	const { args, env: builtEnv } = buildPiArgs({
-		baseArgs: childMode === "print"
-			? ["--mode", "json", "-p", "--session", sessionFile]
-			: ["--mode", "rpc", "--session", sessionFile, "--name", sessionName, "--exclude-tools", "intercom,contact_supervisor"],
+		baseArgs: modeArgs,
 		rpc: childMode === "rpc",
 		task,
 		sessionEnabled: true,

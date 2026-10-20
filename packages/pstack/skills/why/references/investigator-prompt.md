@@ -1,6 +1,6 @@
 # Investigator Prompt Template
 
-Fill in the placeholders. Append the one category playbook `sources/<source>.md` for this investigator's evidence category (index: `source-playbook.md`). If the target code looks defensive (null checks, retry logic, timeout handling, rate limiting, feature flags, egress guards, OOM handlers), also append `sources/incident-postmortem.md` so the investigator runs incident-flavored queries inside its own source.
+Fill in the placeholders. Append this investigator's category playbook from `source-playbook.md` (for source control, the full guide `sources/code-archaeology.md`). If the target code looks defensive (null checks, retry logic, timeout handling, rate limiting, feature flags, egress guards, OOM handlers), also append `sources/incident-postmortem.md` so the investigator runs incident-flavored queries inside its own source.
 
 ---
 
@@ -57,7 +57,7 @@ Before reporting a finding as strong, ask whether you would expect to find it if
 Return your findings in this structure. The synthesizer reads it directly.
 
 ### Source
-Which source you investigated (source control, issue / ticket tracker, long-form documents, real-time team chat, infrastructure observability, error / exception tracking, product analytics warehouse, code comments, etc.).
+Which source you investigated (source control, issue tracker on GitHub, past agent sessions and memory, web pages and external docs, code comments, etc.).
 
 ### What I Searched
 The queries you ran, items you opened, and places you looked. Be specific. This shows how thorough the search was and what is still unsearched.
@@ -65,7 +65,7 @@ The queries you ran, items you opened, and places you looked. Be specific. This 
 ### Direct Evidence Found
 For each item that explicitly addresses the question:
 - **What it says**: verbatim quote or accurate paraphrase
-- **Where it's from**: PR #123, ticket ID, doc URL, chat permalink, commit hash, or file:line
+- **Where it's from**: PR #123, issue number, URL, session id, memory id, commit hash, or file:line
 - **Author and date** (if available)
 - **Relevance**: one sentence on how it bears on the question
 

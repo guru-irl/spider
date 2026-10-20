@@ -28,13 +28,40 @@ export function processToolContent(content: string, cfg: SafetyConfig): SafetyRe
       );
       if (injectionIds.length) {
         for (const id of injectionIds) flagged.add(id);
-        out = `${INJECTION_NOTE}\n\n${out}`;
+        if (!out.startsWith(INJECTION_NOTE)) out = `${INJECTION_NOTE}\n\n${out}`;
       }
     }
   } catch {
     return { content, changed: false, flagged: [...flagged] };
   }
   return { content: out, changed: out !== content, flagged: [...flagged] };
+}
+
+/** Scrub JSON data as well as text, withholding data that cannot be safely copied. */
+export function scrubToolData(value: unknown, enabled: boolean): { value: any; changed: boolean } {
+  if (!enabled || value === undefined) return { value, changed: false };
+  try {
+    const json = JSON.stringify(value);
+    if (json === undefined) return { value: null, changed: true };
+    let changed = false;
+    const cleanString = (text: string) => {
+      const clean = scrubSecrets(text).text;
+      if (clean !== text) changed = true;
+      return clean;
+    };
+    const clean = (data: any, depth: number): any => {
+      if (depth > 128) throw new Error("Tool data is too deeply nested");
+      if (typeof data === "string") return cleanString(data);
+      if (Array.isArray(data)) return data.map(item => clean(item, depth + 1));
+      if (data && typeof data === "object") return Object.fromEntries(Object.entries(data)
+        .map(([key, item]) => [cleanString(key), clean(item, depth + 1)]));
+      return data;
+    };
+    const scrubbed = clean(JSON.parse(json), 0);
+    return { value: scrubbed, changed };
+  } catch {
+    return { value: null, changed: true };
+  }
 }
 
 /**

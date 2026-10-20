@@ -6,7 +6,6 @@ import spiderExtension from "../extension";
 import { getAction, registerAction, clearActions } from "../dispatch";
 import * as context from "@spider/context";
 import { loadEmbedder, isEmbedderLoaded } from "../embeddings";
-import { consumeToolCallError } from "../result";
 import { startEmbedderSession } from "@spider/memory";
 
 // Replace only model initialization. Real factories, registrations, recall, DBs,
@@ -196,19 +195,17 @@ it("falls back to externally registered actions absent from the activation's own
   expect(result.details).toBe("external fixture action");
 });
 
-it("shutdown clears only the activation's pending tool error marks, including edit/write", async () => {
+it("native errors remain independent across activations and shutdown", async () => {
   const a = host(); const b = host();
   for (const pi of [a, b]) {
-    const id = pi === a ? "a" : "b";
-    await pi.tools.get("spider")!.execute(id + "-spider", { action: "recall", scope: "project", cwd: scratch }, undefined, undefined, toolCtx(id));
-    await pi.tools.get("edit")!.execute(id + "-edit", {}, undefined, undefined, toolCtx(id));
-    await pi.tools.get("write")!.execute(id + "-write", {}, undefined, undefined, toolCtx(id));
+    for (const tool of ["spider", "edit", "write"]) {
+      const result = await pi.tools.get(tool)!.execute("reused-id", { action: "recall", scope: "project", cwd: scratch }, undefined, undefined, toolCtx("native"));
+      expect(result.isError).toBe(true);
+    }
   }
   await a.emit("session_shutdown");
-  for (const tool of ["spider", "edit", "write"]) {
-    expect(consumeToolCallError("a-" + tool)).toBe(false);
-    expect(consumeToolCallError("b-" + tool)).toBe(true);
-  }
+  const result = await b.tools.get("spider")!.execute("reused-id", { action: "todo", op: "list" }, undefined, undefined, toolCtx("survivor"));
+  expect(result.isError).toBe(false);
 });
 
 it("cleanup runs in finally when a routing db.close throws", async () => {
@@ -226,7 +223,6 @@ it("cleanup runs in finally when a routing db.close throws", async () => {
   try {
     await expect(pi.emit("session_shutdown")).rejects.toThrow("fixture db close failed");
     expect(getAction("todo")).toBeUndefined();
-    expect(consumeToolCallError("throw-close-mark")).toBe(false);
   } finally { close.mockRestore(); routingDb.close(); }
 });
 

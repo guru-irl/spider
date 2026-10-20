@@ -19,6 +19,7 @@ export { controlMigrate } from "./control/migrate-cmd";
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
+  "tools.structured": false,
   ...USAGE_DEFAULTS,
   ...COMPACTION_DEFAULTS,
   "embeddings.drain": true,

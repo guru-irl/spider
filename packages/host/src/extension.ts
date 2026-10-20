@@ -30,7 +30,10 @@ import { UsageAccounting } from "./usage-accounting";
 import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
 import { registerContextActions, runImport } from "@spider/context";
-import { toToolResult, markToolCallError, clearToolCallErrors, rethrowWithMessage, repairBlankToolResults } from "./result";
+import { toToolResult, rethrowWithMessage, repairBlankToolResults } from "./result";
+import { registerStructuredTools, type AdapterTool } from "./structured-results";
+import { piSettingsDoctorLines } from "./pi-settings";
+import { processToolContent } from "./routing/safety";
 import { controlDoctor, controlConfig, embeddingDrainEnabled, controlMigrate, modelDefaultLayers, configValues, execEnforcement } from "./control";
 import { LOADED_BUILD, type LoadedBundle } from "./build-id";
 import { collectStats } from "./control/stats-cmd";
@@ -159,6 +162,8 @@ interface PiToolAPI {
     label?: string;
     description: string;
     parameters: unknown;
+    outputSchema?: unknown;
+    exposure?: "codemode";
     renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => unknown;
     renderCall?: (args: unknown, theme: unknown, context: unknown) => unknown;
     renderShell?: "default" | "self";
@@ -364,20 +369,16 @@ function renderUpstreamReport(report: {
 
 type DoctorActionCtx = Omit<ActionCtx, "repoDb"> & { repoDb?: Db };
 
-async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string, usageController?: ReturnType<typeof registerUsage>): Promise<unknown> {
+async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string, usageController?: ReturnType<typeof registerUsage>, doctorPi?: PiToolAPI): Promise<unknown> {
   const command = String(args.command ?? "");
   const cwd = String(args.cwd ?? ctx?.cwd ?? process.cwd());
   const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
       const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
+      report.lines.push(...piSettingsDoctorLines((ctx?.pi ?? doctorPi) as ExtensionAPI, ctx?.parentModel));
       if (ctx) {
-        // A-M3: `registerRouting`'s failure used to be fully swallowed ("routing
-        // registration must not break extension load") with NOTHING anywhere
-        // reporting it — markToolCallError kept adding to result.ts's erroredCalls Set
-        // with no consumer ever draining it, and doctor said nothing. Independent of
-        // (and checked before) the organism diagnostics below, so a failure in one
-        // never hides the other.
+        // Routing setup failures remain visible independently of organism diagnostics.
         const routingError = routingSetupErrors.get(ctx.pi as object);
         if (routingError) {
           report.ok = false;
@@ -815,7 +816,7 @@ async function dispatchWithDoctorSnapshot(
     return await dispatch(params, actionCtx, ownedActions);
   } catch (e) {
     if (!injectionSnapshot) throw e;
-    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId, usageControllers.get(pi)) as { ok: boolean; lines: string[] };
+    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId, usageControllers.get(pi), pi) as { ok: boolean; lines: string[] };
     report.ok = false;
     report.lines.push(`- action context unavailable: ${safeError(e)}`);
     return report;
@@ -834,7 +835,6 @@ export default function spiderExtension(pi: PiToolAPI): void {
     ownedActions.set(name, ownedHandler);
     registerGlobalAction(name, ownedHandler, true);
   };
-  const errorOwner = {};
   const agentsUI = registerAgentsUI(pi as any);
   // Only error results need this backstop: empty successful reads are valid, and rewriting
   // them makes pi replace the message list, disrupting prompt caching for ordinary sessions.
@@ -1072,7 +1072,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // Embedding maintenance starts lazily on parent session_start, not registration.
   // It is independent of optional organism learning and never runs in children.
 
-  pi.registerTool({
+  const spiderTool: Parameters<PiToolAPI["registerTool"]>[0] = {
     name: "spider",
     label: "🕸 spider",
     description:
@@ -1093,7 +1093,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
       if (emit && streams) emit({ content: [], details: undefined });
       const onPartial = emit && streams
         ? (text: string) => {
-            try { emit({ content: [{ type: "text", text }], details: undefined, isPartial: true }); } catch { /* UI only */ }
+            try {
+              const config = readRoutingConfig(String(args.cwd ?? cwdOf(ctx) ?? process.cwd()));
+              const safe = processToolContent(text, { ...config, injectionScan: false });
+              emit({ content: [{ type: "text", text: safe.content }], details: undefined, isPartial: true });
+            } catch { /* UI only */ }
           }
         : undefined;
 
@@ -1116,12 +1120,6 @@ export default function spiderExtension(pi: PiToolAPI): void {
         rethrowWithMessage(error, `spider ${action || "call"}`);
       }
       const result = toToolResult(r);
-      // Mechanism (B) (pi-tool-error-contract-report.md §3): pi's AgentToolResult has no
-      // isError field of its own — returning one here does nothing. Hand the
-      // already-computed signal off, keyed by this exact toolCallId, for the
-      // tool_result hook (routing/index.ts) to pick up and flip isError on, without
-      // altering content/details returned to pi below.
-      if (result.isError) markToolCallError(toolCallId, errorOwner);
       const sessionId = sessionIdOf(ctx);
       if (sessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
         try {
@@ -1135,7 +1133,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
       }
       return result;
     },
-  });
+  };
+  pi.registerTool(spiderTool);
+  let structuredToolsRegistered = false;
 
   try {
     removeLegacyTools(pi as any);
@@ -1165,6 +1165,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
   );
 
   registerHooks(pi);
+  pi.on("session_start", (_event: unknown, ctx: unknown) => {
+    if (structuredToolsRegistered || controlConfig("get", cwdOf(ctx) ?? process.cwd(), "tools.structured") !== true) return;
+    registerStructuredTools(pi, spiderTool as AdapterTool, (args, callCtx) =>
+      readRoutingConfig(String(args.cwd ?? cwdOf(callCtx) ?? process.cwd())));
+    structuredToolsRegistered = true;
+  });
   registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
   const usageController = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url);
   usageControllers.set(pi, usageController);
@@ -1248,7 +1254,6 @@ export default function spiderExtension(pi: PiToolAPI): void {
   let routingSetupError: { message: string } | undefined;
   try {
     registerRouting(pi as any, {
-      toolErrorOwner: errorOwner,
       get db() { return routingDb(); },
       getSessionId: () => sessionIdOf(currentContext) || currentSessionId,
       getCwd: () => routingProject().realPath,
@@ -1288,7 +1293,6 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // references only after the earlier organism shutdown handler has drained.
       clearActions(ownedActions);
       ownedActions.clear();
-      clearToolCallErrors(errorOwner);
       if (organismRuntimes.get(pi) === organism) organismRuntimes.delete(pi);
       if (usageRuntimes.get(pi) === accounting) usageRuntimes.delete(pi);
       if (usageControllers.get(pi) === usageController) usageControllers.delete(pi);

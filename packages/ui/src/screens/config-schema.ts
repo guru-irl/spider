@@ -48,6 +48,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "skills.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "xhigh", enum: [], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
 		{ key: "skills.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 180000, min: 1000, max: 600000, description: "Maximum skill review wait. Deterministic failures always reject." },
 	]},
+	{ id: "tools", label: "Tools", fields: [
+		{ key: "tools.structured", label: "Structured results", type: "boolean", default: false, restart: true, description: "Register optional typed search, recall and exec adapters after reload. Leaves the interactive spider tool unchanged." },
+	]},
 	{ id: "routing", label: "Routing / safety", fields: [
 		{ key: "routing.tracking", label: "Universal tracking", type: "boolean", default: true, description: "Log all tool intents/results." },
 		{ key: "routing.secret_scrub", label: "Secret scrub", type: "boolean", default: true, description: "Scrub secrets from tool results." },

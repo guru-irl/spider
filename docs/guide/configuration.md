@@ -63,6 +63,34 @@ Every new RPC or print child loads these files after spider's own extensions. Pa
 
 `subagents.profiles.reviewer.excludeTools` defaults to `["edit", "write"]`. It is global-only and user-managed, like child extensions. Edit the global file; repository overrides are ignored and diagnosed. Invalid global values block new run dispatches. See [Reviewer tool profile](subagents.md#reviewer-tool-profile) for examples and limits. This is not a sandbox: `spider exec` can still write files.
 
+## Structured results
+
+`tools.structured` defaults to `false`. Enable it locally or globally, then run pi's `/reload`:
+
+```text
+spider control command:"config" op:"set" key:"tools.structured" value:true
+```
+
+This registers `spider_search`, `spider_recall` and `spider_exec` with output schemas. They use the same actions as `spider`, without an `action` argument. They have pi's `codemode` exposure, so nested callers can use them without adding direct tool declarations. An explicit tool allowlist must permit these names. The normal `spider` declaration and text stay unchanged. With the setting off, no adapters are registered.
+
+| Adapter | Arguments | Structured result |
+| --- | --- | --- |
+| `spider_search` | `query`, `limit`, `kinds`, `cwd` | `outcome`, `hits`, `truncated` |
+| `spider_recall` | `query`, `category`, `scope`, `limit`, `cwd` | `outcome`, `hits`, `truncated` |
+| `spider_exec` | `language`, `code`, `timeout`, `background`, `cwd` | `outcome`, `exitCode`, `output`, `truncated` |
+
+Each hit has `id`, `kind`, `source`, `title` and `snippet`. Source references use the indexed source or memory link when present. Otherwise they use `kind:id`, or `memory:scope:id` for recall. Raw database rows are not part of the contract.
+
+Search and recall use `outcome:"ok"` or `"error"`. Missing or malformed action data returns `"unavailable"` and a native error result. Exec preserves `"exited"`, `"signal"`, `"spawn-error"`, `"aborted"`, `"timeout"` and `"unknown"`, with `"error"` for action or thrown failures and `"unavailable"` for missing data. A successful command requires `outcome:"exited"` and `exitCode:0`. A null code never means success. Pi can resolve a structured failure to a script, so callers must inspect these fields.
+
+Structured JSON is limited to 10000 UTF-8 bytes. Search and recall omit complete trailing hits when needed. Exec shortens its `output` at a complete Unicode character. `truncated:true` reports either limit or the existing exec text limit. Text, rendering details and structured values follow the same secret-scrubbing setting. Data that cannot be safely copied is withheld rather than returned untouched.
+
+This setting does not enable codemode, MCP or additional child tools. It takes effect after `/reload`, including when turning it off.
+
+## Pi settings in doctor
+
+`spider control command:"doctor"` reads pi's effective settings through `pi.getSettings()`. It reports compaction values, cache warming, codemode mode and inline budget, TUI mode, and install telemetry. Compaction token values include an override for the active model when present. The report excludes credentials and unrelated settings. Codemode settings describe configuration, not which tools are currently active.
+
 ## Monthly usage budget
 
 `usage.monthlyBudget` is unset by default. Set a positive finite number of credits per billing month. Positive fractions are valid; zero does not mean unset. The config screen accepts a blank field to clear it.
@@ -104,6 +132,7 @@ The live footer shows corrected credits without basis markers, then cache hit ra
 | `subagents.extensions` | `[]` | Global-only, user-managed array of absolute extension file paths for every child. |
 | `subagents.profiles.reviewer.excludeTools` | `["edit", "write"]` | Global-only, user-managed tool exclusions for `agent:"reviewer"` children. Not a sandbox. |
 | `exec.enforce` | `true` | Block the built-in bash tool. |
+| `tools.structured` | `false` | Register typed search, recall and exec adapters after `/reload`. |
 | `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory; not a storage cap. |
 | `models.defaults` | `{}` | Explicit agent-role overrides; shipped defaults resolve from the catalog. |
 | `organism.enabled` | `true` | Parent-session background work. |
@@ -134,6 +163,7 @@ The live footer shows corrected credits without basis markers, then cache hit ra
 - Configuration readers use merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads that same flat map.
 - The organism refreshes configuration when resolving its runtime for a request or drain.
 - `ui.footer` is read when the agents UI mounts at session start, not during an existing session.
+- `tools.structured` changes require `/reload`. The setting does not alter the interactive `spider` tool.
 - `usage.footer`, `usage.counter.poll`, `usage.calibration` and `usage.monthlyBudget` apply live. Usage alert thresholds are registered but inactive.
 - `subagents.childMode`, `subagents.extensions` and `subagents.profiles.reviewer.excludeTools` apply to new dispatches; existing runs keep their launch settings.
 - Reviewer settings apply to new reviews; they do not restart a review already in flight.

@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { recordResult } from "./tracking";
 import type { Db } from "@spider/db-core";
-import { ensureNonEmptyToolContent, markToolCallError, rethrowWithMessage } from "../result";
+import { ensureNonEmptyToolContent, rethrowWithMessage } from "../result";
 
 export function validateDescription(desc: unknown): string | null {
   if (typeof desc !== "string" || desc.trim() === "")
@@ -24,16 +24,11 @@ export function countPatchLines(patch: string): { added: number; removed: number
   return { added, removed };
 }
 
-function errorResult(toolCallId: string, message: string, owner?: object) {
-  // Pi 1.x honors returned isError directly. Keep the tool_result marking hook
-  // too, because supported pi 0.87 hosts require it to mark resolved failures.
-  // Both paths preserve the model-facing content and structured details.
-  markToolCallError(toolCallId, owner);
+function errorResult(message: string) {
   return { content: [{ type: "text", text: message }], details: {}, isError: true };
 }
 
 export interface OverrideDeps {
-  toolErrorOwner?: object;
   db: Db;
   getSessionId: () => string;
   getCwd: () => string;
@@ -55,7 +50,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
       const err = validateDescription(params?.description);
-      if (err) return errorResult(toolCallId, err, deps.toolErrorOwner);
+      if (err) return errorResult(err);
       const { description, ...rest } = params;
       let result: any;
       try {
@@ -66,7 +61,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       }
       if (!result?.isError) {
         const { added, removed } = countPatchLines(result?.details?.patch ?? "");
-        recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "edit", description, added, removed });
+        recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "edit", toolCallId, description, added, removed });
       }
       return ensureNonEmptyToolContent(result);
     },
@@ -82,7 +77,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
       const err = validateDescription(params?.description);
-      if (err) return errorResult(toolCallId, err, deps.toolErrorOwner);
+      if (err) return errorResult(err);
       const { description, ...rest } = params;
       const cwd = deps.getCwd();
       const abs = isAbsolute(rest.path) ? rest.path : join(cwd, rest.path);
@@ -98,7 +93,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       } catch (error) {
         rethrowWithMessage(error, "write delegate");
       }
-      if (!result?.isError) recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "write", description, added, removed });
+      if (!result?.isError) recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "write", toolCallId, description, added, removed });
       return ensureNonEmptyToolContent(result);
     },
   });

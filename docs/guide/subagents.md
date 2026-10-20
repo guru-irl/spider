@@ -20,6 +20,7 @@
 - Pipeline stages start fresh children after a done or failed stage. Cancellation ends the pipeline.
 - `handoff:"intercom"` and `handoff:"wait"` are compatibility values with no effect: neither sends a mailbox message nor creates a blocking wait.
 - Give review-only children `context:"fresh"` and explicitly forbid source edits.
+- Do not poll subagents with `spider loop`, `spider schedule`, or sleeps. Completion notices arrive automatically. Use [Loops and scheduled wakeups](loop-and-schedule.md) to wait on external work such as CI or deploys.
 - Run rows and events stay in the dispatching session's worktree database, or its `/bind` target. `/agents` reads that database.
 - A run's `cwd` selects the child's directory and model defaults, not the run-record database. Child scratch and transcripts live in the target project's `.spider/scratch`.
 - Other actions with `cwd`, including `todo`, use that directory's project database.
@@ -54,6 +55,7 @@ spider kill id:"<run-id>"
 - RPC and print children follow pi's non-interactive project-trust policy. RPC does not grant extra trust.
 - Child extension dialogs are cancelled with a run-event warning.
 - Children cannot dispatch, message, or kill through spider, or use outbound `intercom` and `contact_supervisor` tools.
+- `spider loop` and `spider schedule` refuse subagent children, print runs and JSON runs; they require a persistent top-level session.
 
 ## Kill and shutdown
 
@@ -67,6 +69,8 @@ spider kill id:"<run-id>"
 | --- | --- |
 | `reload` | Eligible single, parallel, and pipeline-stage children survive in RPC or print mode; chain steps stop. |
 | `quit`, `new`, `resume`, `fork` | Session-owned children stop, including detached children from an earlier reload. |
+
+- Loops and wakeups always end on shutdown, including `/reload`. Eligible child survival does not preserve timers.
 
 - RPC shutdown sends `clear_queue`, then `abort`, then stdin EOF. Process-group `SIGTERM` and `SIGKILL` are fallbacks after a grace period.
 - Cancelled runs record the shutdown reason without starting a model turn.

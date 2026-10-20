@@ -15,6 +15,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - Skills: bundled procedures, staged proposals, and explicit approval.
 - Background learning: propose memory and skills from session activity.
 - [Compaction](docs/guide/compaction.md): opt-in per-model thresholds and managed parent summaries with bounded file lists.
+- [Loops and scheduled wakeups](docs/guide/loop-and-schedule.md): fixed or self-paced checks for external work, with idle-aware one-shot timers.
 
 ## Requirements
 
@@ -104,6 +105,8 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 | `skill` | `list`, `view`, `distill`, `add`, `approve`, or `reject`. |
 | `import` | Import local pi session transcripts. |
 | `message` | Send text to a peer session or steer an owned RPC child. |
+| `loop` | Run a prompt now and on an `interval`, or self-paced without one. Omit `prompt` for state; `stop:true` ends the loop and wakeup. |
+| `schedule` | Deliver a one-shot prompt after `delaySeconds`, clamped to 60 through 3600. Replaces the pending wakeup; `stop:true` cancels it. |
 | `control` | Run the administrative commands below. |
 
 ### `spider control` commands
@@ -130,6 +133,8 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 - `/exec-enforce on|off`: user-controlled bash enforcement in worktree-local config, not other repos; no argument reports the current state.
 - `/todos`: live todo overlay.
 - `/agents` or `alt+shift+up`: run selector; `Enter` opens details, `k` twice confirms killing a run.
+- `/loop [5m|1h] <prompt>`: check external work now and on a cadence, or self-paced without an interval. `/loop stop` ends the loop and wakeup.
+- Loops and wakeups require persistent top-level sessions and end on shutdown, including `/reload`. Do not use them to poll subagents; completion notices arrive automatically.
 - `ui.footer=false` disables the agents widget and run selector from the next session, not the usage footer.
 - [Usage dashboard](docs/guide/usage.md): credits footer, local ledger, account counter, collection health and doctor diagnostics. The footer shows context percentage/window, session credits, cache-hit rate (`CH`), whole-percent `month`, input/output tokens and cache read/write tokens, separated by middle dots.
 

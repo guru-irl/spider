@@ -1,12 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Db } from "@spider/db-core";
 import { sessionIdFromCtx } from "@spider/subagents";
-import { recordIntent, recordResult, isExempt, SPIDER_TOOL_NAME } from "./tracking";
+import { recordIntent, recordResult, correlateResult, isExempt, SPIDER_TOOL_NAME } from "./tracking";
 import { guardForegroundSleep } from "./sleep-guard";
-import { processToolContent, sanitizeIntentPayload } from "./safety";
+import { processToolContent, sanitizeIntentPayload, scrubToolData } from "./safety";
 import { autoIndexOutput } from "./autoindex";
 import { registerEditWriteOverrides } from "./overrides";
-import { consumeToolCallError } from "../result";
 
 export interface RoutingConfig {
   tracking: boolean;
@@ -16,7 +15,6 @@ export interface RoutingConfig {
 }
 
 export interface RoutingDeps {
-  toolErrorOwner?: object;
   db: Db;
   getSessionId: () => string;
   getCwd: () => string;
@@ -47,29 +45,22 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
       return guardForegroundSleep(event.input, sessionIdFromCtx(ctx) || deps.getSessionId());
     }
     if (!tool || isExempt(tool) || !deps.config.tracking) return;
-    recordIntent(deps.db, { sessionId: deps.getSessionId(), tool, payload: sanitizeIntentPayload(event.input) });
+    recordIntent(deps.db, { sessionId: deps.getSessionId(), tool, payload: sanitizeIntentPayload(event.input),
+      toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId });
     return;
   });
 
   pi.on("tool_result", (event: any) => {
     const tool = event?.toolName;
-    // Mechanism (B) (pi-tool-error-contract-report.md §2b/§3): a genuinely failed
-    // spider action already computed a correct isError (exec/exec_file/batch/kill/
-    // message; see extension.ts's execute()), which extension.ts marked against this
-    // exact toolCallId. A-M1: the SAME mechanism now ALSO covers overrides.ts's edit/
-    // write validation failures (routing/overrides.ts) — so this is no longer gated to
-    // `tool === SPIDER_TOOL_NAME`; any tool whose toolCallId was marked gets flagged,
-    // regardless of which tool it was. Consume the mark FIRST, before the isExempt
-    // early-return below, so the flag actually reaches pi. One-shot
-    // (consumeToolCallError deletes on read): does not fire again for the same call,
-    // and never fires at all for the ordinary (unmarked) case, which keeps falling
-    // through to the unchanged isExempt branch immediately below.
-    if (consumeToolCallError(event?.toolCallId, deps.toolErrorOwner)) {
-      return { isError: true, content: event.content, details: event.details };
-    }
-    if (!tool || isExempt(tool)) return;
+    if (!tool) return;
     const text = textOf(event.content);
-    const safe = processToolContent(text, deps.config);
+    const safe = processToolContent(text, isExempt(tool) ? { ...deps.config, injectionScan: false } : deps.config);
+    const details = scrubToolData(event.details, deps.config.secretScrub);
+    const structured = scrubToolData(event.structuredContent, deps.config.secretScrub);
+    if (isExempt(tool)) {
+      if (safe.changed || details.changed || structured.changed) return { content: [{ type: "text", text: safe.content }], details: details.value, structuredContent: structured.value };
+      return;
+    }
     // Auto-index the SCRUBBED content (never the raw output) so secrets never enter
     // the recall corpus (content/content_fts/embeddings).
     if (safe.content.length >= deps.config.autoIndexThreshold) {
@@ -78,10 +69,16 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
         indexLargeOutput: deps.indexLargeOutput,
       });
     }
-    if (!OVERRIDDEN.has(tool) && deps.config.tracking) {
-      recordResult(deps.db, { sessionId: deps.getSessionId(), tool, flagged: safe.flagged });
+    if (deps.config.tracking) {
+      const activity = { sessionId: deps.getSessionId(), tool, flagged: safe.flagged,
+        toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId };
+      if (OVERRIDDEN.has(tool)) correlateResult(deps.db, activity);
+      else recordResult(deps.db, activity);
     }
-    if (safe.changed) return { content: [{ type: "text", text: safe.content }] };
+    if (safe.changed || details.changed || structured.changed) return {
+      content: safe.changed ? [{ type: "text", text: safe.content }] : event.content,
+      details: details.value, structuredContent: structured.value,
+    };
     return;
   });
 }

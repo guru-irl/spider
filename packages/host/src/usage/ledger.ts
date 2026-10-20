@@ -58,6 +58,8 @@ export type CallRow = {
   parentRunId: string | null; auxPurpose: string | null; provider: string | null; model: string | null;
   rawProvider?: string | null;
   requestedModel: string | null; thinking: string | null; api: string | null;
+  thinkingLevel?: string | null; providerThinkingLevel?: string | null;
+  toolCallId?: string | null; toolDurationMs?: number | null;
   usage: UsageTokens; price: PriceResult; piCost: number | null; latencyMs: number | null;
   aggregate: boolean; counted: boolean; originKey: string | null;
   /** Preserved assistant response identity, when the transcript supplies one. */
@@ -182,6 +184,7 @@ const CALL_COLUMNS = [
   "price_status", "unpriced_reason", "rate_version", "tier", "confidence", "pi_cost", "latency_ms",
   "aggregate", "counted", "origin_key", "response_id", "copied", "fingerprint",
 ];
+const RESPONSE_COLUMNS = ["thinking_level", "provider_thinking_level", "tool_call_id", "tool_duration_ms"];
 type FingerprintCall = Pick<CallRow, "actor" | "aggregate" | "runId" | "provider" | "model" | "responseId" | "entryId" | "ts" | "usage">;
 function fingerprint(call: FingerprintCall): string {
   // forkFrom preserves these identities verbatim; source/run/actor can change.
@@ -214,6 +217,8 @@ function callValues(call: CallRow): Record<string, string | number | null> {
     rate_version: price.status === "priced" ? price.rateVersion : null,
     tier: price.status === "priced" ? price.tier : null, confidence: price.status === "priced" ? price.confidence : null,
     pi_cost: call.piCost, latency_ms: call.latencyMs, aggregate: Number(call.aggregate), counted: Number(call.counted),
+    thinking_level: call.thinkingLevel ?? null, provider_thinking_level: call.providerThinkingLevel ?? null,
+    tool_call_id: call.toolCallId ?? null, tool_duration_ms: call.toolDurationMs ?? null,
     origin_key: call.originKey, response_id: call.responseId ?? null, copied: Number(call.copied ?? false),
     // Repricing cannot change historical identity. Infer billing provider without
     // changing the raw attribution used to recognize copied transcript entries.
@@ -359,9 +364,12 @@ function createLedger(db: Db): UsageLedger {
   const getState = db.prepare(`SELECT path, inode, size, mtime_ms AS mtimeMs, offset,
     parse_errors AS parseErrors, generation, prefix_hash AS prefixHash FROM import_state WHERE path = ? AND inode IS NOT NULL`);
   const getFence = db.prepare("SELECT generation, offset FROM import_state WHERE path = ?");
-  const insertCall = db.prepare(`INSERT INTO calls (${CALL_COLUMNS.join(",")})
-    VALUES (${CALL_COLUMNS.map(column => `@${column}`).join(",")})
-    ON CONFLICT(source_file, entry_id) DO NOTHING`);
+  const hasResponseMetadata = Number(db.pragma("user_version")) >= 6;
+  const callColumns = hasResponseMetadata ? [...CALL_COLUMNS, ...RESPONSE_COLUMNS] : CALL_COLUMNS;
+  const insertCall = db.prepare(`INSERT INTO calls (${callColumns.join(",")})
+    VALUES (${callColumns.map(column => `@${column}`).join(",")})
+    ON CONFLICT(source_file,entry_id) DO NOTHING
+    ${hasResponseMetadata ? "ON CONFLICT(source_file,tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING" : ""}`);
   const reset = db.prepare("DELETE FROM calls WHERE source_file = ? AND source_generation < ?");
   const putState = db.prepare(`INSERT INTO import_state
     (path, inode, size, mtime_ms, offset, parse_errors, generation, prefix_hash, last_ingest_at)

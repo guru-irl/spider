@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { withV6Metadata } from "./fixtures/usage-v6-expectations.js";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -185,7 +186,7 @@ it("projects plugin summaryModel into ingested rows without retaining other deta
 });
 
 // Mutants: drop a column, rowid, index, trigger or metadata during the v4 rebuild.
-it("upgrades a v4 fixture to v5 preserving every row, rowid, index and metadata key", () => {
+it("upgrades a v4 fixture preserving every earlier row, rowid, index and metadata key", () => {
   const old = openDb(join(root, "v4.db"));
   try {
     old.exec(readFileSync(new URL("./fixtures/usage-v3.sql", import.meta.url), "utf8")); old.exec(USAGE_SCHEMA_V4); old.pragma("user_version=4");
@@ -198,9 +199,10 @@ it("upgrades a v4 fixture to v5 preserving every row, rowid, index and metadata 
     const before = allRows(), rowids = old.prepare("SELECT rowid,id FROM calls ORDER BY rowid").all();
     const objects = old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all();
     migrateUsageLedger(old);
-    expect(old.pragma("user_version")).toBe(5); expect(allRows()).toEqual(before);
+    expect(old.pragma("user_version")).toBe(6); expect(allRows()).toEqual(withV6Metadata(before));
     expect(old.prepare("SELECT rowid,id FROM calls ORDER BY rowid").all()).toEqual(rowids);
-    expect(old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all()).toEqual(objects);
+    const afterObjects = old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all() as { name: string }[];
+    expect(afterObjects.filter(row => (objects as { name: string }[]).some(old => old.name === row.name))).toEqual(objects);
     expect(() => assertUsageSchemaVersion(old)).not.toThrow();
     old.prepare(`UPDATE calls SET provider='github-copilot',aic=10,price_status='priced',unpriced_reason=NULL,rate_version='pi-reported-cost-v1',tier='reported-cost',confidence='estimated' WHERE id='summary'`).run();
     expect(old.prepare("SELECT aic,aic_input,aic_output,aic_cache_read,aic_cache_write FROM calls WHERE id='summary'").get()).toEqual({ aic: 10, aic_input: null, aic_output: null, aic_cache_read: null, aic_cache_write: null });
@@ -248,7 +250,7 @@ it("rolls back an interrupted v5 rebuild before allowing a clean retry", () => {
     try { expect(() => migrateUsageLedger(old)).toThrow("synthetic-interruption"); } finally { old.raw.exec = exec; }
     expect(old.pragma("user_version")).toBe(4); expect(layout()).toEqual(before);
     expect(old.prepare("SELECT rowid,* FROM calls").all()).toEqual(facts);
-    migrateUsageLedger(old); expect(old.pragma("user_version")).toBe(5);
+    migrateUsageLedger(old); expect(old.pragma("user_version")).toBe(6);
   } finally { old.close(); }
 });
 

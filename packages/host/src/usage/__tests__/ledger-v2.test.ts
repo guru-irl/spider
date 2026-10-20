@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import * as migrations from "../migrate.js";
+import { withV6Metadata } from "./fixtures/usage-v6-expectations.js";
 import { assertUsageSchemaVersion, migrateUsageLedger, USAGE_MIGRATIONS } from "../migrate.js";
 import { USAGE_LEASE_SCHEMA } from "../schema.js";
 import { type CallRow, type ImportBatch, type ImportState, type RunMeta, openUsageLedger, openUsageLedgerReadOnly } from "../ledger.js";
@@ -50,9 +51,9 @@ it("v1 upgrades additively and twice is harmless", () => {
   expect(revision(db)).toBe(-1);
   migrateUsageLedger(db);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(5);
+  expect(db.pragma("user_version")).toBe(6);
   expect(revision(db)).toBe(0);
-  expect(facts(db)).toEqual(before);
+  expect(facts(db)).toEqual(withV6Metadata(before));
   const afterDdl = db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").all();
   const stripStatus = (row: unknown) => {
     const object = row as { name: string; sql: string };
@@ -66,16 +67,18 @@ it("v1 upgrades additively and twice is harmless", () => {
   const stripSelection = (sql: string) => sql.replace(/,\s*selection_(?:shadowed|undercount) INTEGER NOT NULL DEFAULT 0 CHECK \(selection_(?:shadowed|undercount) IN \(0,1\)\)/g, "");
   const stripReportedCost = (sql: string) => sql.replace('CREATE TABLE "calls"', "CREATE TABLE calls")
     .replace("AND (rate_version = 'pi-reported-cost-v1' OR (", "AND ").replace("AND aic_output IS NOT NULL))", "AND aic_output IS NOT NULL");
-  expect(stripReportedCost(stripSelection(callsSql))).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
+  const stripResponseMetadata = (sql: string) => sql.replace(", thinking_level TEXT", "").replace(", provider_thinking_level TEXT", "")
+    .replace(", tool_call_id TEXT", "").replace(", tool_duration_ms REAL CHECK (tool_duration_ms >= 0)", "");
+  expect(stripResponseMetadata(stripReportedCost(stripSelection(callsSql)))).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
   expect(db.prepare("PRAGMA index_info(runs_meta_session)").all().map(row => (row as { name: string }).name))
     .toEqual(["session_id", "db_path", "id"]);
   expect(db.prepare("SELECT * FROM ledger_metadata WHERE key != 'call-selection-revision' ORDER BY key").all()).toEqual(metadata);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   const writable = track(openUsageLedger(file));
-  expect(writable.health().schemaVersion).toBe(5);
+  expect(writable.health().schemaVersion).toBe(6);
   expect(writable.leases.inspect("ingest", 2000)).toMatchObject({ owner: "fixture-owner", role: "follower", expiresAt: 121000 });
   expect(writable.leases.acquire("ingest", "other-owner", 2000, 120000)).toBeUndefined();
-  expect(facts(db)).toEqual(before);
+  expect(facts(db)).toEqual(withV6Metadata(before));
   db.prepare("UPDATE ledger_metadata SET value='17' WHERE key='call-selection-revision'").run();
   migrateUsageLedger(db);
   expect(revision(db)).toBe(17);
@@ -83,9 +86,9 @@ it("v1 upgrades additively and twice is harmless", () => {
   const shipped = v1();
   const shippedFacts = facts(shipped);
   const writer = track(openUsageLedger(file));
-  expect(writer.health().schemaVersion).toBe(5);
+  expect(writer.health().schemaVersion).toBe(6);
   expect(revision(shipped)).toBe(0);
-  expect(facts(shipped)).toEqual(shippedFacts);
+  expect(facts(shipped)).toEqual(withV6Metadata(shippedFacts));
 });
 
 // Catches v2 silently blessing a changed durable table even with a known marker,

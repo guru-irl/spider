@@ -9,6 +9,12 @@ import type { AgentStore } from "./store";
 
 const KILL_ARM_MS = 3000;
 
+function recordedTime(payload: unknown): string | undefined {
+  const ms = (payload as { durationMs?: unknown } | undefined)?.durationMs;
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return undefined;
+  return ms < 1000 ? `${Math.round(ms)}ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : formatDuration(ms);
+}
+
 export class AgentDetail implements Component {
   private now: () => number;
   private back?: () => void;
@@ -67,13 +73,15 @@ export class AgentDetail implements Component {
     // Full live conversation: assistant prose + tool calls + results, chronological.
     const convo: string[] = [];
     for (const e of events) {
-      if (e.type === "message" && e.summary) {
-        for (const l of wrapText(e.summary, Math.max(1, inner - 2), 60)) convo.push(fit("  " + t.fg("text", l)));
+      const time = recordedTime(e.payload);
+      if (e.type === "message" && (e.summary || time !== undefined)) {
+        if (e.summary) for (const l of wrapText(e.summary, Math.max(1, inner - 2), 60)) convo.push(fit("  " + t.fg("text", l)));
+        if (time !== undefined) convo.push(fit("  " + t.fg("dim", `response time ${time}`)));
         convo.push("");
       } else if (e.type === "tool_intent") {
         convo.push(fit("  " + t.fg("accent", "→ " + (e.summary ?? e.tool ?? "tool"))));
-      } else if (e.type === "tool_result" && e.summary) {
-        convo.push(fit("    " + t.fg("muted", e.summary)));
+      } else if (e.type === "tool_result" && (e.summary || time !== undefined)) {
+        convo.push(fit("    " + t.fg("muted", `${time === undefined ? "" : `tool time ${time} · `}${e.summary ?? e.tool ?? "tool"}`)));
       } else if (e.type === "handoff" && e.summary) {
         convo.push(fit("  " + t.fg("accent", "⇢ " + e.summary)));
       }

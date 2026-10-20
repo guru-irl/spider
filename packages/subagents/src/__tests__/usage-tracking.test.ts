@@ -67,6 +67,36 @@ it.each(["rpc", "print"] as const)("persists %s assistant usage, excludes other 
   f.finish({ exitCode: 0, result: "report" }); await tick();
 });
 
+// Breaks if nested execution usage is added beside the rolled-up result, repeated
+// results count twice, or tool model calls are attributed to the last chat response.
+it.each(["live", "reload"])("counts final tool usage once in an unattributed tools bucket (%s)", async mode => {
+  const f = fixture(), row = f.runner.runAsync({ agent: "worker", model: "fixture/requested", task: "fixture", context: "fresh" });
+  f.event(message);
+  const result = { type: "message_end", message: { role: "toolResult", toolCallId: "outer", toolName: "codemode",
+    content: [], details: {}, isError: false, timestamp: 2, durationMs: 100, usage,
+    nestedCalls: { calls: [{ id: "outer/1", name: "classify", status: "ok", durationMs: 80 }], complete: true } } };
+  f.event({ type: "tool_execution_end", toolCallId: "outer/1", parentToolCallId: "outer", toolName: "classify", result: { usage }, durationMs: 80 });
+  f.event({ type: "tool_execution_end", toolCallId: "outer", toolName: "codemode", result: { usage }, durationMs: 100 });
+  if (mode === "reload") await detachShared("owner");
+  f.event(result); f.event(result);
+  f.event({ ...result, message: { ...result.message, toolCallId: "outer/1", parentToolCallId: "outer" } });
+  f.event({ ...result, message: { ...result.message, toolCallId: "error-tool", isError: true } });
+  if (mode === "reload") {
+    for (let i = 0; i < MAX_BUFFERED_PERSISTED + 10; i++) f.event({ type: "warning", message: "noise" });
+    f.bind(f.sink);
+    f.event(result); // Rebinding must not forget already counted tool-call identities.
+  }
+  expect(f.store.get(row.id)?.token_count).toBe(60);
+  expect(runUsageSummary(f.db, row.id).usage).toEqual([
+    { provider: "fixture", model: "actual", usage },
+    { provider: "tools", model: "unattributed", usage: {
+      input: 20, output: 6, cacheRead: 10, cacheWrite: 4, cacheWrite1h: 2, reasoning: 4, totalTokens: 40,
+      cost: { input: 0.2, output: 0.4, cacheRead: 0.06, cacheWrite: 0.08, total: 0.74 },
+    } },
+  ]);
+  f.finish({ exitCode: 0, result: "report" }); await tick();
+});
+
 it("reports partial usage from a failed launch", () => {
   const f = fixture("rpc", true), row = f.runner.runAsync({ agent: "worker", task: "fixture", context: "fresh" });
   expect(row).toMatchObject({ status: "failed", token_count: 20 });

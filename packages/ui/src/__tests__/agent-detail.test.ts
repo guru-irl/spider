@@ -23,6 +23,58 @@ describe("AgentDetail", () => {
     expect(joined).toContain("review");
     for (const l of out) expect(visibleWidth(l)).toBeLessThanOrEqual(70);
   });
+  it("shows known response and individual concurrent tool times without summing elapsed time", () => {
+    const src = new Src();
+    const events: RunEvent[] = [
+      { runId: "r1", sessionId: "s", ts: 0, type: "message", summary: "Report", payload: { durationMs: 1250 } },
+      { runId: "r1", sessionId: "s", ts: 1, type: "message", summary: "", payload: { durationMs: 250 } },
+      { runId: "r1", sessionId: "s", ts: 2, type: "tool_result", tool: "read", summary: "read a", payload: { id: "a", durationMs: 800 } },
+      { runId: "r1", sessionId: "s", ts: 2, type: "tool_result", tool: "read", summary: "read b", payload: { id: "b", durationMs: 800 } },
+      { runId: "r1", sessionId: "s", ts: 3, type: "tool_result", tool: "read", summary: "read empty", payload: { id: "c", durationMs: 0 } },
+    ];
+    const store = new AgentStore({ listActive: () => src.listActive(), getRun: id => src.getRun(id), subscribe: () => () => {}, listEvents: () => events });
+    store.start();
+    try {
+      const d = new AgentDetail(store, "r1", id, { now: () => 1000 });
+      const lines = d.render(100), text = lines.join("\n");
+      expect(text).toContain("response time 1.3s");
+      expect(text).toContain("response time 250ms");
+      expect(lines.filter(line => line.includes("tool time 800ms"))).toHaveLength(2);
+      expect(text).toContain("tool time 0ms");
+      expect(text).not.toContain("1.6s");
+      expect(lines.find(line => line.includes("4 turns"))).toContain("1s");
+      for (const width of [30, 60, 100]) for (const line of d.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+    } finally { store.stop(); }
+  });
+
+  it("keeps known tool timing visible when its result summary is truncated", () => {
+    const src = new Src();
+    const events: RunEvent[] = [{ runId: "r1", sessionId: "s", ts: 0, type: "tool_result", tool: "read",
+      summary: "A long tool result ".repeat(20), payload: { durationMs: 750 } }];
+    const store = new AgentStore({ listActive: () => src.listActive(), getRun: id => src.getRun(id), subscribe: () => () => {}, listEvents: () => events });
+    store.start();
+    try {
+      const d = new AgentDetail(store, "r1", id, { now: () => 1000 });
+      for (const width of [30, 60, 100]) expect(d.render(width).join("\n")).toContain("tool time 750ms");
+    } finally { store.stop(); }
+  });
+
+  it("does not show timing for legacy or invalid event payloads", () => {
+    const src = new Src();
+    const events: RunEvent[] = [
+      { runId: "r1", sessionId: "s", ts: 0, type: "message", summary: "Legacy" },
+      ...[undefined, -1, Infinity, "5"].map((durationMs, i) => ({ runId: "r1", sessionId: "s", ts: i + 1,
+        type: "tool_result", summary: "Legacy tool", payload: { durationMs } })),
+    ];
+    const store = new AgentStore({ listActive: () => src.listActive(), getRun: id => src.getRun(id), subscribe: () => () => {}, listEvents: () => events });
+    store.start();
+    try {
+      const text = new AgentDetail(store, "r1", id).render(100).join("\n");
+      expect(text).toContain("Legacy tool");
+      expect(text).not.toContain("response time"); expect(text).not.toContain("tool time");
+    } finally { store.stop(); }
+  });
+
   it("Esc returns to grid", () => {
     const store = new AgentStore(new Src()); store.start();
     const d = new AgentDetail(store, "r1", id); const back = vi.fn(); d.onBack(back);

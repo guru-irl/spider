@@ -115,9 +115,9 @@ Delivery more than two minutes late appends the original scheduled time in UTC a
 
 Triggers survive `/reload` and resuming the same saved session after restart. A new session or fork starts empty. Shutdown clears in-memory timers but does not erase saved definitions. Nothing fires while pi is closed or the machine is asleep.
 
-On return, missed once and cron occurrences fire once when idle. Intervals resume at the first future anchored time without catching up. An interval's immediate first prompt still waiting at reload is dropped. A pending self-paced re-arm survives; a consumed iteration does not repeat.
+Missed one-shot and cron triggers fire once, late, when the session is idle. Intervals resume at the first future anchored time without catching up. An interval's immediate first prompt still waiting at reload is dropped. A pending self-paced re-arm survives; a consumed iteration does not repeat.
 
-Spider appends a full `spider-triggers` snapshot in pi session entries after each changed definition, re-arm, and non-interval fire. Successful interval ticks do not write snapshots. Each snapshot copies every full prompt, so session files grow with non-interval activity. Restore selects the newest matching snapshot in file order, even across tree branches. Print, JSON, and child starts do not read, consume, or write this state.
+Spider appends a full `spider-triggers` snapshot in pi session entries after each changed definition, re-arm, and non-interval fire. It also saves a snapshot after a fire that fails its checks or cannot advance, including an interval. Successful interval ticks do not write snapshots. Each snapshot copies every full prompt, so session files grow with non-interval activity. Restore selects the newest matching snapshot in file order, even across tree branches. Print, JSON, and child starts do not read, consume, or write this state.
 
 A snapshot is saved before delivery. A crash between the save and the send can lose an occurrence. If a write fails, spider keeps the change in memory and warns once. A failed fire snapshot suppresses that send without retrying it. Restart may recover the older durable snapshot. Opening the same session in two pi processes makes both fire its triggers. There is no cross-process coordination.
 

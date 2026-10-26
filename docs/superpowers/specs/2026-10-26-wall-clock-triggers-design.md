@@ -204,7 +204,7 @@ On restore:
 - A self-paced loop with a pending re-arm retains that time. One with `nextAt:null` is dropped.
 - Shutdown clears timers and state, including the dispatch gate and saved context. It never appends a snapshot. No timer armed before shutdown can deliver afterward. A later call on the same scheduler object behaves like a fresh activation. A new activation restores only through `session_start`.
 
-Triggers survive `/reload` and resuming the same session. A new session or a fork starts with none. Nothing fires while pi is closed or the machine is asleep, and missed once and cron runs fire once late. Opening the same session in two pi processes makes both fire its triggers. There is no cross-process coordination. The write-before-send order can lose an occurrence during a crash, and a failed snapshot write can leave an older durable occurrence.
+Triggers survive `/reload` and resuming the same session. A new session or a fork starts with none. Nothing fires while pi is closed or the machine is asleep, and missed one-shot and cron triggers fire once, late. Opening the same session in two pi processes makes both fire its triggers. There is no cross-process coordination. The write-before-send order can lose an occurrence during a crash, and a failed snapshot write can leave an older durable occurrence.
 
 ## Listing and slash command
 

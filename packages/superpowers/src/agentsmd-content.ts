@@ -83,8 +83,8 @@ built-ins:
   \`/loop stop\` stops both defaults, \`/loop stop <name>\` stops one, and
   \`/loop stop all\` stops all. Extra stop words are not a self-paced prompt.
   Definitions survive \`/reload\` and same-session resume; new and fork start empty.
-  Nothing fires while closed or asleep. Missed once and cron run once late;
-  intervals resume from their anchor without catch-up.
+  Nothing fires while closed or asleep. Missed one-shot and cron triggers fire once, late.
+  Intervals resume from their anchor without catch-up.
 - \`spider message\` — wake a specific peer/reviewer session directly.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
   \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,

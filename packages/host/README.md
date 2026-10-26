@@ -26,7 +26,7 @@ Host implements the session-local `loop` and `schedule` actions and `/loop`.
 They wait on external work, not on subagent completion, and need no database.
 Named definitions survive `/reload` and same-session resume through full pi
 session-entry snapshots. New sessions and forks start empty. Nothing fires while
-closed or asleep. Missed once and cron run once late; intervals resume from their
+closed or asleep. Missed one-shot and cron triggers fire once, late. Intervals resume from their
 anchor without catch-up. See
 [Loops and scheduled wakeups](../../docs/guide/loop-and-schedule.md).
 

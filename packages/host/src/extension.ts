@@ -215,7 +215,7 @@ export const SPIDER_PARAMETERS = {
     supersedes: { type: "array", items: { type: "string" }, description: "Remember: active memory UUIDs or unique UUID prefixes in the write scope to replace. Credit their size against the cap and archive atomically with the new entry, including when review is unavailable. Unknown, ambiguous, inactive or cross-scope targets reject without a write. Explicit supersedes is not supported for staged/auto writes." },
     // run / subagents
     agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
-    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task); also the skill name for action='skill' (op add/view/approve/reject)." },
+    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task); loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject)." },
     task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
     tasks: {
       type: "array",
@@ -267,13 +267,16 @@ export const SPIDER_PARAMETERS = {
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
     id: { type: "string", description: "Run id/prefix (todo toggle/remove: per-session seq). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
-    // loop / schedule: session-local timers for external work, never subagent polling
-    interval: { type: "string", description: "loop: fixed interval like 5m or 1h (minimum 60 seconds, maximum 24 days). Omit for a self-paced loop re-armed with spider schedule." },
-    delaySeconds: { type: "number", description: "schedule: seconds before a one-shot wakeup, rounded and clamped to 60–3600; waits for idle. A new call replaces the pending wakeup." },
-    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without a prompt or interval reports status; an interval needs a prompt. Prompts cannot start with '/' except the self-paced /loop <prompt> re-arm. For external work (CI, deploys, timers), not polling subagents; their completion notices arrive automatically." },
+    // loop / schedule: persistent named session triggers for external work, never subagent polling
+    interval: { type: "string", description: "loop: fixed interval like 5m or 1h (minimum 60 seconds, maximum 24 days), mutually exclusive with cron. Runs immediately, then keeps one busy occurrence due until idle. Omit both for a self-paced loop." },
+    at: { type: "string", description: "schedule: strictly future absolute time YYYY-MM-DDTHH:mm[:ss[.fff]] with Z or ±HH:MM offset; exactly one of at and delaySeconds. Also accepts a matching named self-paced re-arm." },
+    cron: { type: "string", description: "loop: five numeric cron fields (minute hour day-of-month month weekday), mutually exclusive with interval. Starts at its next occurrence, not immediately. Supports stars, ranges, lists and steps." },
+    tz: { type: "string", description: "loop cron: IANA time zone such as Asia/Kolkata. Defaults to the captured machine zone. Applies only with cron and keeps its spelling across reload and resume." },
+    delaySeconds: { type: "number", description: "schedule: seconds before a one-shot wakeup, rounded and clamped to 60–3600; waits for idle. Exactly one of delaySeconds and at. Replaces only the same name, default wakeup." },
+    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without prompt, interval or cron lists all triggers; timing fields need a prompt. Prompts cannot start with '/' except an exact self-paced /loop <prompt> re-arm with the same name (pass name:\"loop\" for the default loop). For external work (CI, deploys, timers), not polling subagents; their completion notices arrive automatically." },
     reason: { type: "string", description: "schedule: why this delay, in one short sentence." },
     noop: { type: "boolean", description: "schedule: label a routine check; the wakeup is still scheduled." },
-    stop: { type: "boolean", description: "loop: end the loop and pending wakeup. schedule: cancel only the pending wakeup. Needs no other fields. Both actions are top-level persistent sessions only; shutdown and /reload end timers." },
+    stop: { type: "boolean", description: "loop: stop only the named loop and its re-arm, not an independent one-shot. schedule: cancel only the named one-shot. Defaults: loop and wakeup. No other fields required. Persistent top-level sessions only. Triggers survive /reload and same-session resume; new and fork start empty. Nothing fires during closure or sleep." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
     message: { type: "string", description: "Message body for action 'message'." },
@@ -1081,7 +1084,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; loop→{interval?,prompt} (no prompt reports state), schedule→{delaySeconds,prompt,reason?,noop?}, stop:true cancels either; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents whose completion notices arrive automatically; top-level persistent sessions only, shutdown and /reload end timers; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
+      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
@@ -1126,7 +1129,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       }
       const result = toToolResult(r);
       const sessionId = sessionIdOf(ctx);
-      if (sessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
+      if (action !== "loop" && action !== "schedule" && sessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
         try {
           const { db } = openSessionRunDb(cwdOf(ctx) ?? process.cwd(), sessionId,
             sessionProject && existsSync(sessionProject.projectKey) ? sessionProject : undefined);

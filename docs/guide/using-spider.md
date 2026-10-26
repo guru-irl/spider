@@ -92,9 +92,9 @@ spider todo op:"remove" id:"2"
 ## Loops and scheduled wakeups
 
 - Use `loop` and `schedule` to wait on external work such as CI, deploys, or timers. Do not poll subagents. Their completion notices arrive on their own.
-- `/loop 5m <prompt>` runs the prompt now and then every five minutes, skipping ticks while the session is busy. `/loop <prompt>` lets the model schedule its own next run with `spider schedule`.
-- `spider loop` without a prompt reports the active loop and the pending wakeup. `/loop stop` ends both.
-- These actions need a persistent top-level session. Shutdown, `/reload` and restarts end all loops and wakeups.
+- `/loop 5m <prompt>` runs now, then keeps one occurrence due while busy and advances to the next anchored time after delivery. `/loop <prompt>` is self-paced; its re-arm must pass `name:"loop"`. Named cron triggers, such as `cron:"0 8 * * *" tz:"Asia/Kolkata"`, start at their next occurrence, not immediately.
+- Names replace only themselves. Defaults are `loop` and `wakeup`. `spider schedule` accepts a relative `delaySeconds` or offset-bearing `at`. `spider loop` without definition fields lists all triggers. Tool loop stop leaves the independent `wakeup` intact. `/loop stop` stops both defaults; `/loop stop <name>` stops one and `/loop stop all` stops every trigger. Extra stop words are never a self-paced prompt.
+- These actions need a persistent top-level session. Definitions survive `/reload` and same-session resume; new sessions and forks start empty. Nothing fires while closed or asleep. Once and cron run once late; intervals resume from their anchor without catch-up.
 - [Loops and scheduled wakeups](loop-and-schedule.md) covers the parameters, how delays are clamped, replacement, and what happens when a loop stops during a run.
 
 ## Project setup

@@ -54,6 +54,7 @@ function intervalTiming(value: string, prompt: string): { seconds: number; promp
   // Parsing the whole interval field preserves the slash-smuggling check.
   if (cmd.kind === "fixed") {
     assertModelPrompt(cmd.prompt);
+    if (!/^\d+[smhd]$/.test(value)) throw new Error("spider loop interval must be a whole number with unit s, m, h or d (at most 24 days).");
     return { seconds: Math.max(MIN_DELAY_S, cmd.seconds), prompt: cmd.prompt, interval: value };
   }
   throw new Error(cmd.kind === "usage" && cmd.reason ? cmd.reason : "spider loop interval must be a whole number with unit s, m, h or d (at most 24 days).");
@@ -300,13 +301,22 @@ export class SessionScheduler {
   }
   async command(cmd: LoopCommand, ctx: ExtensionContext, origin: PromptOrigin = "user"): Promise<Result> {
     assertPersistentSession("loop", ctx); this.context(ctx);
-    if (cmd.kind === "usage") return { text: `${cmd.reason ? `${cmd.reason} ` : ""}Usage: /loop [interval like 5m or 1h] <prompt>, or /loop stop`, details: { usage: true } };
+    const usage = "Usage: /loop [interval like 5m or 1h] <prompt>, /loop stop [name|all], or /loop to list triggers";
+    if (cmd.kind === "list") {
+      const status = this.status(); return { text: `${status.text}\n${usage}`, details: status.details };
+    }
+    if (cmd.kind === "usage") return { text: `${cmd.reason ? `${cmd.reason} ` : ""}${usage}`, details: { usage: true } };
     if (cmd.kind === "stop") {
-      if (this.running) this.seals.add("loop");
-      const stopped = this.triggers.delete("loop") || false;
-      const wakeup = this.triggers.delete("wakeup"); this.arm();
-      const result = { text: stopped || wakeup ? "Loop stopped." : "No loop was running.", details: { stopped: stopped || wakeup } };
-      return stopped || wakeup ? this.changed(result, ctx) : result;
+      const names = cmd.target === "defaults" ? ["loop", "wakeup"] : cmd.target === "all" ? [...this.triggers.keys()] : [validName(cmd.name)];
+      let stopped = false;
+      for (const name of names) {
+        const trigger = this.triggers.get(name);
+        if (this.running && (trigger ? trigger.kind !== "once" : cmd.target !== "all" && name !== "wakeup")) this.seals.add(name);
+        stopped = this.triggers.delete(name) || stopped;
+      }
+      this.arm();
+      const result = { text: stopped ? "Loop stopped." : "No loop was running.", details: { stopped } };
+      return stopped ? this.changed(result, ctx) : result;
     }
     if (origin === "model") assertModelPrompt(cmd.prompt);
     const base = { name: "loop", prompt: cmd.prompt, origin, tz: this.time.resolveTimeZone() };
@@ -322,11 +332,10 @@ export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath):
   pi.on("agent_settled", () => { scheduler.settled(); });
   pi.on("session_shutdown", () => { scheduler.shutdown(); });
   pi.registerCommand("loop", {
-    description: "Run external-work checks (CI, deploys, timers): /loop [5m|1h] <prompt> or /loop stop. Not for polling subagents; completion notices arrive automatically.",
+    description: "Run external-work checks (CI, deploys, timers): /loop [5m|1h] <prompt>, /loop to list, or /loop stop [name|all]. Not for polling subagents; completion notices arrive automatically.",
     async handler(args, ctx) {
       const result = await scheduler.command(parseLoop(args), ctx);
-      const listing = !args.trim() ? (await scheduler.loop({}, ctx)).text + "\n" : "";
-      ctx.ui.notify(listing + result.text, "info");
+      ctx.ui.notify(result.text, "info");
     },
   });
   return scheduler;

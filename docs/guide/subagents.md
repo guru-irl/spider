@@ -91,7 +91,7 @@ To protect the working tree from accidental edits by a reviewer, keep the review
 | `reload` | Eligible single, parallel, and pipeline-stage children survive in RPC or print mode; chain steps stop. |
 | `quit`, `new`, `resume`, `fork` | Session-owned children stop, including detached children from an earlier reload. |
 
-- Loops and wakeups always end on shutdown, `/reload` included. Timers do not survive, even when eligible children do.
+- Named loop and schedule triggers have a separate lifetime. Their timers stop on shutdown, but saved definitions survive `/reload` and same-session resume. New sessions and forks start empty. Nothing fires while closed or asleep. Missed once and cron runs fire once late; intervals resume from their anchor without catch-up. See [Loops and scheduled wakeups](loop-and-schedule.md).
 
 - On RPC shutdown, spider sends `clear_queue`, then `abort`, then closes stdin. If the child is still running after a grace period, spider sends `SIGTERM` and then `SIGKILL` to the process group.
 - A cancelled run records the shutdown reason and does not start a model turn.

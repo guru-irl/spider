@@ -7,7 +7,10 @@
 const MAX_LOOP_S = 24 * 86400;
 
 export type LoopCommand =
-  | { kind: "stop" }
+  | { kind: "list" }
+  | { kind: "stop"; target: "defaults" }
+  | { kind: "stop"; target: "all" }
+  | { kind: "stop"; target: "name"; name: string }
   | { kind: "usage"; reason?: string }
   | { kind: "fixed"; seconds: number; prompt: string }
   | { kind: "dynamic"; prompt: string };
@@ -16,8 +19,13 @@ const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
 
 export function parseLoop(args: string): LoopCommand {
   const text = args.trim();
-  if (!text) return { kind: "usage" };
-  if (text === "stop") return { kind: "stop" };
+  if (!text) return { kind: "list" };
+  if (/^stop(?:\s|$)/.test(text)) {
+    const tokens = text.split(/\s+/);
+    if (tokens.length === 1) return { kind: "stop", target: "defaults" };
+    if (tokens.length !== 2 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(tokens[1])) return { kind: "usage" };
+    return tokens[1] === "all" ? { kind: "stop", target: "all" } : { kind: "stop", target: "name", name: tokens[1] };
+  }
   const m = /^(\d+)([smhd])(?:\s+([\s\S]+))?$/.exec(text);
   if (m) {
     const seconds = Number(m[1]) * UNIT_SECONDS[m[2]];

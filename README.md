@@ -15,7 +15,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - Skills: bundled procedures, plus proposed skills that wait in a staging queue until someone approves them.
 - Background learning: proposes memory and skills from session activity.
 - [Compaction](docs/guide/compaction.md): opt-in thresholds per model, and spider-managed summaries of the parent session, with a limit on how many files they list.
-- [Loops and scheduled wakeups](docs/guide/loop-and-schedule.md): checks on external work at a fixed interval or at a pace the agent sets, plus one-shot timers that wait until the session is idle.
+- [Loops and scheduled wakeups](docs/guide/loop-and-schedule.md): named interval, cron, self-paced, and one-shot triggers that keep wall-clock due times across reload and same-session resume.
 
 Spider bundles the superpowers workflow skills and 31 skills adapted from [pstack](https://github.com/michael-denyer/pstack-claude). The pstack set includes `how`, `why`, `teach`, writing guidance and decision principles. `spider skill` lists and views both collections next to project skills, and shows each skill's source even when names overlap. Background curation never touches bundled skills.
 
@@ -107,8 +107,8 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 | `skill` | `list`, `view`, `distill`, `add`, `approve`, or `reject`. |
 | `import` | Import local pi session transcripts. |
 | `message` | Send text to a peer session, or steer an RPC child that this session owns. |
-| `loop` | Run a prompt now and then on an `interval`, or at the agent's own pace if there is no interval. Omit `prompt` to see the loop's state. `stop:true` ends the loop and its wakeup. |
-| `schedule` | Deliver a prompt once after `delaySeconds`, clamped to 60 through 3600. It replaces any pending wakeup. `stop:true` cancels it. |
+| `loop` | Define a named interval, zoned `cron`, or self-paced trigger. Cron has no immediate first prompt. No definition fields lists all triggers. `stop:true` stops only the named loop and re-arm, not an independent one-shot. |
+| `schedule` | Define a named one-shot with `delaySeconds` or offset-bearing `at`. Relative delays clamp to 60 through 3600. Replace or cancel only that name. Re-arm a self-paced loop with its exact name and prompt. |
 | `control` | Run the administrative commands below. |
 
 ### `spider control` commands
@@ -135,8 +135,8 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 - `/exec-enforce on|off`: the user's switch for bash enforcement. It writes worktree-local config and does not affect other repos. With no argument it reports the current state.
 - `/todos`: live todo overlay.
 - `/agents` or `alt+shift+up`: run selector. `Enter` opens details, and pressing `k` twice confirms killing a run.
-- `/loop [5m|1h] <prompt>`: checks external work right away and then at a fixed interval, or at the agent's own pace if you give no interval. `/loop stop` ends the loop and its wakeup.
-- Loops and wakeups need a persistent top-level session. They end when the session shuts down, and `/reload` counts as a shutdown. Do not use them to poll subagents, because completion notices arrive on their own.
+- `/loop [5m|1h] <prompt>`: checks external work right away and then at a fixed interval, or at the agent's own pace if you give no interval. `/loop` lists all triggers and usage. `/loop stop` stops default `loop` and `wakeup`; `/loop stop <name>` stops one name and `/loop stop all` stops all. `/loop stop <words>` is a stop request or usage error, not a prompt.
+- Loops and wakeups need a persistent top-level session. They survive `/reload` and same-session resume; new sessions and forks start empty. Nothing fires while closed or asleep. Missed once and cron runs fire once late; intervals resume from their anchor without catch-up. Do not use them to poll subagents, because completion notices arrive on their own.
 - `ui.footer=false` turns off the agents widget and the run selector from the next session on. It does not turn off the usage footer.
 - [Usage dashboard](docs/guide/usage.md): the credits footer, the local ledger, the account counter, collection health and doctor diagnostics. The footer shows, separated by middle dots: context percentage and window size, session credits, cache-hit rate (`CH`), `month` as a whole percentage, input and output tokens, and cache read and write tokens.
 

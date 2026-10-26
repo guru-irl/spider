@@ -33,8 +33,11 @@ tool result, so a slash result looks the same as the matching tool result.
 `/loop` and the `loop` and `schedule` actions share a session-local scheduler in
 host. They wait on external work. They do not wait on subagents, because
 subagent completion notices arrive automatically. Host routes these actions
-before it resolves the database. Their timers end on shutdown, including
-`/reload`. See [Loops and scheduled wakeups](../guide/loop-and-schedule.md).
+before it resolves the database. One short timeout reconciles wall-clock due
+times and gates delivery across agent start and settled events. Timers stop on
+shutdown; full snapshots in pi session entries restore definitions on `/reload`
+and same-session resume. New and fork start empty. Nothing fires while closed or
+asleep. Missed once and cron run once late; intervals resume from their anchor. See [Loops and scheduled wakeups](../guide/loop-and-schedule.md).
 
 ## Layered package structure
 
@@ -62,6 +65,14 @@ host. The action and service packages do not call each other to fetch data.
 They read and write shared tables through the `Db` handle that `db-core`
 returns. That makes the database, not any one package, the place where the
 packages meet.
+
+The scheduler in `host/src/loop/index.ts` owns named triggers, per-name seals,
+listing, delivery, and persistence. `parser.ts` owns slash syntax. `zoned.ts` and
+`cron.ts` calculate pure civil-time occurrences, injected through `time-math.ts`.
+The scheduler never opens a database. It appends complete `spider-triggers`
+snapshots through pi and restores the last matching entry in file order, across
+branches. Changed definitions, re-arms, non-interval fires, and consumed failures
+write snapshots. Successful interval ticks derive from their anchor without writes.
 
 ## The shared database
 
@@ -175,7 +186,9 @@ back out through a renderer. The steps below follow `execute` in
 `packages/host/src/dispatch.ts`.
 
 1. pi calls the tool's `execute(toolCallId, args, signal, onUpdate, ctx)`.
-2. `execute` reads the session id and working directory from the pi context
+2. For `loop` and `schedule`, host calls the session scheduler directly without
+   project resolution or usage-fallback database work. For other actions,
+   `execute` reads the session id and working directory from the pi context
    (`sessionIdOf`, `cwdOf`) and calls `buildActionCtx`. `buildActionCtx`
    resolves the project, opens the per-project and global databases through
    `db-core`, and attaches the `@spider/models` router. The result is one

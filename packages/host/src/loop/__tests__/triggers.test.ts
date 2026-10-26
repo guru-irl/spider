@@ -76,6 +76,13 @@ describe("named trigger definitions", () => {
     expect(await h.runtime.loop({}, h.ctx)).toEqual(before);
   });
 
+  it.each(["watch", "all"])("gives name-specific stop instructions for self-paced loop %s", async name => {
+    const h = setup(); h.setIdle(false);
+    const result = await h.runtime.loop({ name, prompt: "watch" }, h.ctx);
+    expect(result.text).toContain(`spider loop name:${JSON.stringify(name)} stop:true`);
+    expect(result.text).not.toContain("/loop stop ends it");
+  });
+
   it("formats the complete listing", async () => {
     const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 180_000]);
     const h = setup(time);

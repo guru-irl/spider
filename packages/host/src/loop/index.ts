@@ -265,7 +265,7 @@ export class SessionScheduler {
       trigger = { ...base, prompt: timing.prompt, kind: "interval", interval: args.interval, intervalSeconds: timing.seconds, anchor: Date.now(), nextAt: Date.now() };
     } else trigger = { ...base, kind: "self-paced", nextAt: Date.now() };
     const warning = this.put(trigger, ctx);
-    return { text: (warning ? `Warning: ${warning} ` : "") + (trigger.kind === "self-paced" ? "Self-paced loop started. Re-arm with spider schedule; /loop stop ends it." : `Loop ${name} scheduled.`), details: { ...this.status().details, ...(warning ? { warning } : {}) } };
+    return { text: (warning ? `Warning: ${warning} ` : "") + (trigger.kind === "self-paced" ? `Self-paced loop started. Re-arm with spider schedule; stop it with spider loop name:${JSON.stringify(name)} stop:true.` : `Loop ${name} scheduled.`), details: { ...this.status().details, ...(warning ? { warning } : {}) } };
   }
   async schedule(args: ScheduleArgs, ctx: ExtensionContext): Promise<Result> {
     assertPersistentSession("schedule", ctx); this.context(ctx);

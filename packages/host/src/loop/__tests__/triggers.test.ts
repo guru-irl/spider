@@ -122,7 +122,7 @@ describe("ticker reconciliation", () => {
     const h = setup();
     await h.runtime.schedule({ name: "b", delaySeconds: 60, prompt: "b" }, h.ctx);
     await h.runtime.schedule({ name: "a", delaySeconds: equal ? 60 : 120, prompt: "a" }, h.ctx);
-    vi.setSystemTime(NOW + 180_000); await vi.advanceTimersToNextTimerAsync();
+    vi.setSystemTime(NOW + 120_000); await vi.advanceTimersToNextTimerAsync();
     expect(h.prompts()).toEqual([equal ? "a" : "b"]);
     await vi.advanceTimersByTimeAsync(4999);
     expect(h.prompts()).toHaveLength(1);
@@ -217,5 +217,79 @@ describe("ticker reconciliation", () => {
     await h.runtime.schedule({ delaySeconds: 60, prompt: "session context" }, preStart);
     await h.settleDelivery(); await vi.advanceTimersByTimeAsync(60_000);
     expect(h.prompts()).toEqual(["old context", "latest", "session context"]);
+  });
+});
+
+
+describe("named re-arms and prompt security", () => {
+  it("keeps named one-shots separate from loop re-arms", async () => {
+    const h = setup();
+    await h.runtime.schedule({ name: "build", delaySeconds: 60, prompt: "build" }, h.ctx);
+    await h.runtime.schedule({ name: "deploy", delaySeconds: 120, prompt: "deploy" }, h.ctx);
+    await h.runtime.loop({ name: "watch", prompt: "watch check" }, h.ctx);
+    expect(h.prompts()[0]).toContain('name:"watch"');
+    await h.settleDelivery();
+    await h.runtime.schedule({ name: "watch", delaySeconds: 180, prompt: "/loop watch check" }, h.ctx);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual(expect.arrayContaining([expect.objectContaining({ name: "watch", kind: "self-paced", nextAt: NOW + 180_000 })]));
+    await vi.advanceTimersByTimeAsync(60_000); expect(h.prompts().at(-1)).toBe("build"); await h.settleDelivery();
+    await vi.advanceTimersByTimeAsync(60_000); expect(h.prompts().at(-1)).toBe("deploy"); await h.settleDelivery();
+    await vi.advanceTimersByTimeAsync(60_000); expect(h.prompts().at(-1)).toContain("watch check\n");
+    expect(h.prompts()).toHaveLength(4);
+    await h.settleDelivery();
+    await h.runtime.schedule({ name: "watch", delaySeconds: 60, prompt: "ordinary replacement" }, h.ctx);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ name: "watch", kind: "once" })]);
+  });
+
+  it.each([false, true])("seals only the stopped or replaced name until settled, absent=%s", async absent => {
+    const h = setup(); h.setIdle(false);
+    if (!absent) await h.runtime.loop({ name: "a", prompt: "a" }, h.ctx);
+    await h.runtime.loop({ name: "b", prompt: "b" }, h.ctx);
+    h.setIdle(true); await h.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
+    await h.settleDelivery(); await h.settleDelivery();
+    await h.emit("agent_start"); h.setIdle(false);
+    await h.runtime.loop({ name: "a", stop: true }, h.ctx);
+    for (const prompt of ["plain", "/loop a", " /loop reworded"]) {
+      await expect(h.runtime.schedule({ name: "a", delaySeconds: 60, prompt }, h.ctx)).rejects.toThrow(/a loop was ended or replaced/);
+    }
+    await h.runtime.schedule({ name: "b", delaySeconds: 60, prompt: "/loop b" }, h.ctx);
+    await h.runtime.schedule({ name: "c", delaySeconds: 60, prompt: "c" }, h.ctx);
+    await h.emit("agent_end");
+    await expect(h.runtime.schedule({ name: "a", prompt: "/bad" }, h.ctx)).rejects.toThrow(/a loop was ended or replaced/);
+    await h.emit("agent_settled");
+    await h.runtime.schedule({ name: "a", delaySeconds: 60, prompt: "allowed" }, h.ctx);
+    await h.emit("agent_start");
+    await h.runtime.loop({ name: "a", prompt: "replacement" }, h.ctx);
+    await expect(h.runtime.schedule({ name: "a", delaySeconds: 60, prompt: "/reworded" }, h.ctx)).rejects.toThrow(/a loop was ended or replaced/);
+    expect((await h.runtime.schedule({ name: "a", stop: true }, h.ctx)).details).toEqual({ cancelled: false });
+    h.setIdle(true); await h.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
+    expect(h.prompts().at(-1)).toContain("replacement\n");
+  });
+
+  it("manual compaction does not create per-name seals", async () => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ name: "a", stop: true }, h.ctx);
+    await h.runtime.loop({ name: "a", prompt: "a" }, h.ctx);
+    await h.runtime.schedule({ name: "a", at: "2026-10-20T12:02Z", prompt: "/loop a" }, h.ctx);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ name: "a", kind: "self-paced", nextAt: NOW + 120_000 })]);
+  });
+
+  it.each([120_000, 120_001])("adds a late note only beyond two minutes: %s", async late => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ name: "watch", prompt: "watch" }, h.ctx);
+    vi.setSystemTime(NOW + late); h.setIdle(true);
+    await h.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
+    const prompt = h.prompts()[0] as string;
+    expect(prompt.startsWith("watch\n\n[/loop, self-paced]")).toBe(true);
+    if (late === 120_000) expect(prompt).not.toContain("Running late");
+    else {
+      const note = "[spider schedule] Scheduled for 2026-10-20 12:00:00.000 Test/Zone (2026-10-20T12:00:00.000Z UTC). Running late because the session was busy, pi was closed or the machine was asleep.";
+      expect(prompt.endsWith(note)).toBe(true);
+      expect(prompt.indexOf("Skip the call")).toBeLessThan(prompt.indexOf(note));
+    }
+    const slash = setup(); slash.setIdle(false);
+    await slash.slash("/user-only unchanged");
+    vi.setSystemTime(Date.now() + 180_000); slash.setIdle(true);
+    await slash.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
+    expect(slash.prompts()[0]).not.toContain("Running late");
   });
 });

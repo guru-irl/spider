@@ -13,7 +13,7 @@ export interface ZonedMinute extends LocalMinute { weekday: number }
 export const zoneSource: {
   environment(): string | undefined;
   readLink(): string;
-  defaultZone(): string;
+  defaultZone(): string | undefined;
 } = {
   environment: () => process.env.TZ,
   readLink: () => readlinkSync("/etc/localtime"),
@@ -28,7 +28,7 @@ function formatter(tz: string): Intl.DateTimeFormat {
   let result = formatters.get(tz);
   if (!result) {
     // Intl also accepts numeric offset strings on newer runtimes. These are not IANA names.
-    if (!/^[A-Za-z][A-Za-z0-9._+-]*(?:\/[A-Za-z0-9._+-]+)*$/.test(tz))
+    if (typeof tz !== "string" || !/^[A-Za-z][A-Za-z0-9._+-]*(?:\/[A-Za-z0-9._+-]+)*$/.test(tz))
       throw new Error(`Invalid IANA time zone: ${tz}`);
     try {
       result = new Intl.DateTimeFormat("en-US", {
@@ -57,16 +57,23 @@ export function resolveTimeZone(tz?: string): string {
   const environment = zoneSource.environment();
   if (environment && canonicalZone(environment)) return environment;
   const fallback = zoneSource.defaultZone();
+  const fallbackZone = typeof fallback === "string" ? canonicalZone(fallback) : undefined;
   try {
     const link = zoneSource.readLink();
     const marker = "zoneinfo/";
     const index = link.lastIndexOf(marker);
     const candidate = index < 0 ? "" : link.slice(index + marker.length);
-    if (candidate && canonicalZone(candidate) === canonicalZone(fallback)
-      && canonicalZone(candidate) !== undefined) return candidate;
-  } catch { /* Missing, unreadable, or non-symlink localtime: use Intl. */ }
-  formatter(fallback);
-  return fallback;
+    const candidateZone = canonicalZone(candidate);
+    if (candidateZone && (!fallbackZone || candidateZone === fallbackZone)) return candidate;
+  } catch { /* Missing, unreadable, or non-symlink localtime: try the remaining fallbacks. */ }
+  if (typeof fallback === "string" && fallbackZone) return fallback;
+  const hoursEast = -new Date().getTimezoneOffset() / 60;
+  if (Number.isInteger(hoursEast)) {
+    // Etc/GMT signs are inverted: UTC+3 is Etc/GMT-3.
+    const offsetZone = `Etc/GMT${hoursEast === 0 ? "" : hoursEast > 0 ? `-${hoursEast}` : `+${-hoursEast}`}`;
+    if (canonicalZone(offsetZone)) return offsetZone;
+  }
+  return "UTC";
 }
 
 // setUTCFullYear avoids Date.UTC's special interpretation of years 00 through 99.

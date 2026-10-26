@@ -86,6 +86,30 @@ describe("absolute and zoned times", () => {
     }
   });
 
+  it.each([undefined, "Etc/Unknown"])("uses a valid localtime link when Intl reports %s", fallback => {
+    vi.spyOn(zoneSource, "environment").mockReturnValue("UTC0");
+    vi.spyOn(zoneSource, "defaultZone").mockReturnValue(fallback!);
+    vi.spyOn(zoneSource, "readLink").mockReturnValue("/usr/share/zoneinfo/Asia/Kolkata");
+    vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(300);
+    expect(resolveTimeZone()).toBe("Asia/Kolkata");
+  });
+
+  it.each([
+    [0, "Etc/GMT"], [300, "Etc/GMT+5"], [-180, "Etc/GMT-3"],
+    [-330, "UTC"], [NaN, "UTC"], [-900, "UTC"],
+  ])("uses an offset-derived zone or UTC when no named zone is valid: %s", (offset, expected) => {
+    vi.spyOn(zoneSource, "environment").mockReturnValue("EST5");
+    vi.spyOn(zoneSource, "defaultZone").mockReturnValue("Etc/Unknown");
+    vi.spyOn(zoneSource, "readLink").mockImplementation(() => { throw new Error("ENOENT"); });
+    vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(offset);
+    expect(resolveTimeZone()).toBe(expected);
+    expect(() => formatInZone(now, resolveTimeZone())).not.toThrow();
+  });
+
+  it.each([undefined, null, 3])("rejects a non-string zone rather than using the machine default: %s", tz => {
+    expect(() => formatInZone(now, tz as unknown as string)).toThrow(/Invalid IANA time zone/);
+  });
+
   it("uses Gregorian h23 fields at midnight", () => {
     expect(zonedMinute(ms("2026-12-31T18:30Z"), "Asia/Kolkata"))
       .toEqual({ year: 2027, month: 1, day: 1, hour: 0, minute: 0, weekday: 5 });

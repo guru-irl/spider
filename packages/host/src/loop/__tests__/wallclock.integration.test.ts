@@ -6,6 +6,7 @@ import spiderExtension from "../../extension";
 import { clearActions } from "../../dispatch";
 import { registerLoopSchedule, type SchedulerTimeMath, type TriggerListing } from "../index";
 import { createTimeMath } from "../time-math";
+import { zoneSource } from "../zoned";
 import { setup, type Harness } from "./harness";
 
 const ms = Date.parse;
@@ -14,7 +15,7 @@ async function rows(h: Harness): Promise<TriggerListing[]> {
   return (await h.runtime.loop({}, h.ctx)).details.triggers as TriggerListing[];
 }
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-26T02:29:00Z")); vi.stubEnv("PI_SUBAGENT_CHILD", "0"); });
-afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); clearActions(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); clearActions(); });
 
 describe("real wall-clock triggers", () => {
   it("delivers consecutive daily Kolkata 08:00 occurrences without drifting", async () => {
@@ -115,6 +116,27 @@ describe("real wall-clock triggers", () => {
     vi.stubEnv("TZ", "America/New_York");
     const row = (await scheduler.loop({}, ctx)).details.triggers as TriggerListing[];
     expect(row).toEqual([expect.objectContaining({ tz: "Asia/Kolkata", nextAtUtc: "2026-10-26T02:30:00.000Z", nextAtLocal: "2026-10-26 08:00:00 Asia/Kolkata" })]);
+  });
+
+  it.each(["", "UTC0", "EST5", "UTC+3"])("creates and restores a plain schedule under TZ=%j", async tz => {
+    vi.stubEnv("TZ", tz);
+    // Exercise the real Intl default and Date offset without relying on the host symlink.
+    vi.spyOn(zoneSource, "readLink").mockImplementation(() => { throw new Error("ENOENT"); });
+    let h = real();
+    await h.runtime.loop({ name: "morning", cron: "0 8 * * *", tz: "Asia/Kolkata", prompt: "daily" }, h.ctx);
+    await h.runtime.schedule({ delaySeconds: 120, prompt: "plain wakeup" }, h.ctx);
+    const created = await rows(h);
+    expect(created).toHaveLength(2);
+    expect(typeof created[1].tz).toBe("string");
+    expect(() => new Intl.DateTimeFormat("en-US", { timeZone: created[1].tz })).not.toThrow();
+    h = await h.restart("reload");
+    expect(await rows(h)).toEqual(created);
+    expect(h.notifications).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual(["daily"]);
+    await h.settleDelivery();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual(["daily", "plain wakeup"]);
   });
 
   it.each(["reload", "resume", "new", "fork"] as const)("applies real-math named listing and restore lifetime on %s", async reason => {

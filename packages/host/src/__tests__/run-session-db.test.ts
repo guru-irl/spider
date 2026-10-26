@@ -330,8 +330,8 @@ describe("session-owned run records with an explicit child cwd", () => {
       const ownerDb = openDbAt(dbPath, "project"); handles.push(ownerDb);
       ownerDb.prepare("INSERT INTO runs (id, session_id, agent, name, status, host_pid) VALUES (?, ?, ?, ?, ?, ?)")
         .run("orphan-row", f.sessionId, "worker", "orphan", "running", 2147483647);
-      // The first session_start handler is the orphan reaper.
-      await f.hooks.session_start[0]({ reason: "startup" }, ctx);
+      // Emit every session_start handler in registration order, as pi does.
+      for (const fn of f.hooks.session_start) await fn({ reason: "startup" }, ctx);
       expect(ownerDb.prepare("SELECT status FROM runs WHERE id = ?").get("orphan-row"))
         .toEqual({ status: "cancelled" });
 

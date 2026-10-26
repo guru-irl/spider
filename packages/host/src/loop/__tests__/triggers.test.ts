@@ -93,3 +93,129 @@ describe("named trigger definitions", () => {
     expect(result.text).toContain('cron "0 8 * * *" Asia/Kolkata');
   });
 });
+
+
+describe("ticker reconciliation", () => {
+  it("uses one wall-clock ticker and preserves due work", async () => {
+    const h = setup();
+    await h.runtime.loop({ interval: "1m", prompt: "tick" }, h.ctx);
+    expect(h.prompts()).toEqual(["tick"]);
+    await h.settleDelivery();
+    expect(vi.getTimerCount()).toBe(1);
+    h.setIdle(false);
+    vi.setSystemTime(NOW + 600_000);
+    await vi.advanceTimersToNextTimerAsync();
+    expect(h.prompts()).toEqual(["tick"]);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ nextAt: NOW + 60_000 })]);
+    vi.setSystemTime(NOW + 610_000);
+    h.setIdle(true); await h.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
+    expect(h.prompts()).toHaveLength(2);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ nextAt: NOW + 660_000 })]);
+    await h.settleDelivery();
+    vi.setSystemTime(NOW - 60_000); await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toHaveLength(2);
+    await h.runtime.loop({ stop: true }, h.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([false, true])("orders simultaneous due triggers without duplicate pending fires, equal=%s", async equal => {
+    const h = setup();
+    await h.runtime.schedule({ name: "b", delaySeconds: 60, prompt: "b" }, h.ctx);
+    await h.runtime.schedule({ name: "a", delaySeconds: equal ? 60 : 120, prompt: "a" }, h.ctx);
+    vi.setSystemTime(NOW + 180_000); await vi.advanceTimersToNextTimerAsync();
+    expect(h.prompts()).toEqual([equal ? "a" : "b"]);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(h.prompts()).toHaveLength(1);
+    await h.emit("agent_start"); await h.emit("agent_end");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.prompts()).toHaveLength(1);
+    await h.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
+    expect(h.prompts()).toEqual(equal ? ["a", "b"] : ["b", "a"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([false, true])("opens a no-start gate at five seconds only when idle, busy=%s", async busy => {
+    const h = setup();
+    await h.runtime.schedule({ name: "a", delaySeconds: 60, prompt: "/handled-slash" }, h.ctx).catch(() => {});
+    // User slash delivery exercises the same no-start fallback as ordinary prompts.
+    await h.slash("1m /handled-slash");
+    await h.runtime.schedule({ name: "b", delaySeconds: 60, prompt: "b" }, h.ctx);
+    vi.setSystemTime(NOW + 60_000); await vi.advanceTimersToNextTimerAsync();
+    const count = h.prompts().length;
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(h.prompts()).toHaveLength(count);
+    h.setIdle(!busy);
+    await vi.advanceTimersByTimeAsync(1);
+    if (busy) {
+      expect(h.prompts()).toHaveLength(count);
+      h.setIdle(true); await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(h.prompts()).toHaveLength(count + 1);
+  });
+
+  it("an immediate first prompt waits behind a closed gate", async () => {
+    const h = setup();
+    await h.runtime.loop({ name: "first", prompt: "first" }, h.ctx);
+    expect(h.prompts()).toHaveLength(1);
+    await h.runtime.loop({ name: "second", prompt: "second" }, h.ctx);
+    expect(h.prompts()).toHaveLength(1);
+    await h.settleDelivery();
+    expect(h.prompts()).toEqual([expect.stringContaining("first\n"), expect.stringContaining("second\n")]);
+  });
+
+  it.each(["once", "self-paced", "interval", "cron", "cron-failed", "interval-failed"])("consumes an occurrence whose delivery check fails and notifies once: %s", async kind => {
+    const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 60_000, NOW + 120_000]);
+    const h = setup(time); h.setIdle(false);
+    if (kind === "once") await h.runtime.schedule({ delaySeconds: 60, prompt: "check" }, h.ctx);
+    else await h.runtime.loop({ prompt: "check", ...(kind.startsWith("cron") ? { cron: "0 8 * * *" } : kind.startsWith("interval") ? { interval: "1m" } : {}) }, h.ctx);
+    if (kind === "cron-failed") time.occurrences.set("0 8 * * *", []);
+    if (kind === "interval-failed") vi.spyOn(Math, "floor").mockImplementationOnce(() => { throw new Error("Cannot advance interval"); });
+    h.ctx.mode = "print"; h.setIdle(true);
+    vi.setSystemTime(NOW + 60_000); await vi.advanceTimersToNextTimerAsync();
+    expect(h.prompts()).toEqual([]);
+    expect(h.notifications).toHaveLength(1);
+    h.ctx.mode = "tui";
+    const rows = (await h.runtime.loop({}, h.ctx)).details.triggers;
+    if (kind === "once" || kind.endsWith("failed")) expect(rows).toEqual([]);
+    else expect(rows).toEqual([expect.objectContaining({ nextAt: kind === "self-paced" ? null : NOW + 120_000 })]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.notifications).toHaveLength(1);
+    expect(h.prompts()).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it.each(["cron", "interval"])("delivers the current occurrence when only advancement fails: %s", async kind => {
+    const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 60_000]);
+    const h = setup(time); h.setIdle(false);
+    await h.runtime.loop({ prompt: "last", ...(kind === "cron" ? { cron: "0 8 * * *" } : { interval: "1m" }) }, h.ctx);
+    if (kind === "interval") vi.spyOn(Math, "floor").mockImplementationOnce(() => { throw new Error("Cannot advance interval"); });
+    h.setIdle(true); vi.setSystemTime(NOW + 60_000); await vi.advanceTimersToNextTimerAsync();
+    expect(h.prompts()).toEqual(["last"]);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([]);
+    expect(h.notifications).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.notifications).toHaveLength(1); expect(h.prompts()).toHaveLength(1);
+    vi.restoreAllMocks();
+  });
+
+  it("uses the latest activation context for fire-time checks", async () => {
+    const h = setup();
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "old context" }, h.ctx);
+    const latest = { ...h.ctx, mode: "print" as const };
+    await expect(h.runtime.loop({}, latest)).rejects.toThrow();
+    // Rejected calls must not replace the context of an eligible activation.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual(["old context"]);
+    await h.settleDelivery();
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "latest" }, h.ctx);
+    const preStart = { ...h.ctx, isIdle: () => false };
+    await h.runtime.loop({}, preStart);
+    await vi.advanceTimersByTimeAsync(60_000); expect(h.prompts()).toHaveLength(1);
+    await h.emit("session_start", { reason: "startup" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.prompts()).toEqual(["old context", "latest"]);
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "session context" }, preStart);
+    await h.settleDelivery(); await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual(["old context", "latest", "session context"]);
+  });
+});

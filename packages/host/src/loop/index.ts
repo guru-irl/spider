@@ -63,11 +63,15 @@ export class SessionScheduler {
   private readonly triggers = new Map<string, Trigger>();
   private timer?: NodeJS.Timeout;
   private ctx?: ExtensionContext;
+  private activated = false;
+  private gate?: { sentAt: number; started: boolean };
   running = false;
 
   constructor(private readonly pi: ExtensionAPI, private readonly time: SchedulerTimeMath) {}
 
-  private context(ctx: ExtensionContext): void { this.ctx = ctx; }
+  private context(ctx: ExtensionContext): void { if (!this.activated) this.ctx = ctx; }
+  start(ctx: ExtensionContext): void { this.activated = true; this.ctx = ctx; this.arm(); }
+  agentStart(): void { this.running = true; if (this.gate) this.gate.started = true; }
   private status(): Result {
     const triggers: TriggerListing[] = [...this.triggers.values()].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).map(t => ({
       ...t, state: t.nextAt === null ? "waiting-for-rearm" : t.nextAt <= Date.now() ? "due" : "scheduled",
@@ -86,27 +90,56 @@ export class SessionScheduler {
     this.triggers.set(trigger.name, trigger);
     this.reconcile();
   }
-  private arm(): void {
+  private arm(immediate = false): void {
     clearTimeout(this.timer); this.timer = undefined;
     const times = [...this.triggers.values()].flatMap(t => t.nextAt === null ? [] : [t.nextAt]);
     if (!times.length) return;
-    const delay = Math.min(30_000, Math.max(1000, Math.min(...times) - Date.now()));
-    this.timer = setTimeout(() => { this.timer = undefined; this.reconcile(); }, delay).unref();
+    const now = Date.now();
+    const next = Math.min(...times);
+    let delay = next <= now ? 1000 : Math.min(30_000, next - now);
+    if (next <= now && this.gate && !this.gate.started && now < this.gate.sentAt + 5000) delay = Math.min(delay, this.gate.sentAt + 5000 - now);
+    this.timer = setTimeout(() => { this.timer = undefined; this.reconcile(); }, immediate ? 0 : delay).unref();
   }
   private reconcile(): void {
     const ctx = this.ctx;
-    const due = [...this.triggers.values()].filter(t => t.nextAt !== null && t.nextAt <= Date.now()).sort((a, b) => a.nextAt! - b.nextAt! || a.name.localeCompare(b.name))[0];
-    if (due && ctx?.isIdle() && !this.running) {
-      if (due.kind === "once") this.triggers.delete(due.name);
-      else if (due.kind === "self-paced") due.nextAt = null;
-      else if (due.kind === "cron") due.nextAt = this.time.nextCronAt(due.cron, due.tz, Date.now());
-      else due.nextAt = due.anchor + (Math.floor((Date.now() - due.anchor) / (due.intervalSeconds * 1000)) + 1) * due.intervalSeconds * 1000;
-      this.pi.sendUserMessage(due.kind === "self-paced" ? dynamicPrompt(due.prompt) : due.prompt, { deliverAs: "followUp", expandPromptTemplates: due.origin === "user" });
+    const now = Date.now();
+    if (this.gate && !this.gate.started && now - this.gate.sentAt >= 5000 && !this.running && ctx?.isIdle()) this.gate = undefined;
+    const due = [...this.triggers.values()].filter(t => t.nextAt !== null && t.nextAt <= now).sort((a, b) => a.nextAt! - b.nextAt! || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))[0];
+    if (due && ctx?.isIdle() && !this.running && !this.gate) {
+      this.gate = { sentAt: now, started: false };
+      const errors: string[] = [];
+      let canSend = true;
+      try { assertPersistentSession(due.kind === "once" ? "schedule" : "loop", ctx); }
+      catch (error) { canSend = false; errors.push(String(error)); }
+      try {
+        if (due.kind === "once") this.triggers.delete(due.name);
+        else if (due.kind === "self-paced") due.nextAt = null;
+        else if (due.kind === "cron") due.nextAt = this.time.nextCronAt(due.cron, due.tz, now);
+        else {
+          const period = due.intervalSeconds * 1000;
+          const next = due.anchor + (Math.floor((now - due.anchor) / period) + 1) * period;
+          if (!Number.isFinite(next) || next <= now) throw new Error("Cannot advance interval to a future instant.");
+          due.nextAt = next;
+        }
+      } catch (error) { this.triggers.delete(due.name); errors.push(String(error)); }
+      if (canSend) {
+        try { this.pi.sendUserMessage(due.kind === "self-paced" ? dynamicPrompt(due.prompt) : due.prompt, { deliverAs: "followUp", expandPromptTemplates: due.origin === "user" }); }
+        catch (error) { canSend = false; errors.push(String(error)); }
+      }
+      if (!canSend) this.gate = undefined;
+      if (errors.length) ctx.ui.notify(errors.join("; "), "error");
     }
     this.arm();
   }
-  settled(): void { this.running = false; clearTimeout(this.timer); this.timer = setTimeout(() => this.reconcile(), 0).unref(); }
-  shutdown(): void { clearTimeout(this.timer); this.timer = undefined; this.triggers.clear(); this.ctx = undefined; this.running = false; }
+  settled(): void {
+    this.running = false;
+    if (this.gate?.started) this.gate = undefined;
+    this.arm(true);
+  }
+  shutdown(): void {
+    clearTimeout(this.timer); this.timer = undefined; this.triggers.clear(); this.ctx = undefined;
+    this.running = false; this.gate = undefined; this.activated = false;
+  }
 
   async loop(args: LoopArgs, ctx: ExtensionContext): Promise<Result> {
     assertPersistentSession("loop", ctx); this.context(ctx);
@@ -171,7 +204,8 @@ export class SessionScheduler {
 
 export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath): SessionScheduler {
   const scheduler = new SessionScheduler(pi, time);
-  pi.on("agent_start", () => { scheduler.running = true; });
+  pi.on("session_start", (_event, ctx) => { scheduler.start(ctx); });
+  pi.on("agent_start", () => { scheduler.agentStart(); });
   pi.on("agent_settled", () => { scheduler.settled(); });
   pi.on("session_shutdown", () => { scheduler.shutdown(); });
   pi.registerCommand("loop", {

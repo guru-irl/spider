@@ -180,6 +180,39 @@ describe("trigger persistence", () => {
     expect(vi.getTimerCount()).toBe(0); expect(h.snapshots()).toHaveLength(2);
   });
 
+  it.each(["Bad/Zone", "", undefined, 5])("skips only an invalid-zone trigger and reports it: %s", async tz => {
+    const data = saved([once]);
+    data.entries.push(entry({ version: 1, sessionId: "test-session", triggers: [
+      { ...once, name: "bad-zone", tz }, { ...once, name: "valid" },
+    ] }, "latest"));
+    const time = fakeTime();
+    const resolveZone = time.resolveTimeZone;
+    vi.spyOn(time, "resolveTimeZone").mockImplementation(tz => {
+      if (tz === "") throw new Error("Invalid time zone");
+      return resolveZone(tz);
+    });
+    const h = setup(time, data);
+    await h.emit("session_start", { reason: "reload" });
+    expect(await rows(h)).toEqual([expect.objectContaining({ name: "valid" })]);
+    expect(h.notifications).toHaveLength(1);
+    expect(h.notifications[0].text).toMatch(/bad-zone.*zone/i);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual(["once"]);
+  });
+
+  it("rejects other malformed data even on a trigger whose zone is invalid", async () => {
+    const data = saved([once]);
+    data.entries.push(entry({ version: 1, sessionId: "test-session", triggers: [
+      { ...once, name: "valid" }, { ...once, name: "bad-zone", tz: "Bad/Zone", noop: "bad" },
+    ] }, "latest"));
+    const h = setup(fakeTime(), data);
+    await h.emit("session_start", { reason: "reload" });
+    expect(await rows(h)).toEqual([]);
+    expect(h.notifications).toHaveLength(1);
+    expect(h.notifications[0].text).toMatch(/snapshot/i);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(["0 0 29 2 *", "0 0 30 2 *"])("restores other triggers alongside a cron with no future occurrence: %s", async cron => {
     const time = fakeTime(); const search = vi.spyOn(time, "nextCronAt");
     const old = Date.parse("2096-02-29T00:00Z"); vi.setSystemTime(Date.parse("2096-03-01T00:00Z"));

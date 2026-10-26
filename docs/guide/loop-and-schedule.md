@@ -39,6 +39,8 @@ This runs at 08:00 Kolkata time each day. It keeps that local time after long ru
 
 `tz` applies only to cron. It accepts an IANA zone, not a numeric offset. If omitted, spider captures the machine's zone once. Existing triggers never move when the machine's zone changes. Explicit spelling such as `Asia/Kolkata` is preserved. Non-cron triggers also capture the machine's zone for display.
 
+If `TZ` is a POSIX rule rather than an IANA name, pass `tz` explicitly.
+
 Cron has five numeric fields, in order: minute, hour, day of month, month, and weekday. Fields accept `*`, integers, inclusive ranges, comma-separated lists, and positive integer steps. `5/10` starts at 5 and steps through the field's upper bound. Weekdays 0 and 7 both mean Sunday. Names, macros, seconds, `?`, `L`, `W`, and `#` are not supported.
 
 Bounds are 0–59, 0–23, 1–31, 1–12, and 0–7. Ranges cannot wrap. Empty list items, reversed ranges, fractions, zero steps, and out-of-range values are errors.

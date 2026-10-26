@@ -36,8 +36,12 @@ Every trigger stores its name, kind, prompt, origin, explicit time zone, and `ne
 The machine's IANA zone is captured at creation for non-cron triggers and for cron triggers without `tz`. Resolve it in this order:
 
 1. Use `process.env.TZ` if it is a valid IANA name, not a numeric offset.
-2. Otherwise, read the `/etc/localtime` symlink target after `zoneinfo/`. Use that name if it validates and `Intl` resolves it to the same zone as the machine default.
-3. Otherwise, use `Intl.DateTimeFormat().resolvedOptions().timeZone`.
+2. Otherwise, validate `Intl.DateTimeFormat().resolvedOptions().timeZone` and read the `/etc/localtime` symlink target after `zoneinfo/`. Prefer a valid link name when Intl reports the same canonical zone, or when Intl reports no valid zone.
+3. Otherwise, use the Intl zone if it validates.
+4. Otherwise, derive an `Etc/GMT` zone from `-new Date().getTimezoneOffset()` when the offset is a whole number of hours and the resulting zone validates. Etc/GMT signs are inverted: three hours east of UTC uses `Etc/GMT-3`, and five hours west uses `Etc/GMT+5`. Zero uses `Etc/GMT`.
+5. Otherwise, use `UTC`.
+
+Every selected zone must be a valid string. An empty or POSIX-rule `TZ`, such as `UTC0`, `EST5`, or `UTC+3`, must not prevent a plain schedule from being created or restored.
 
 Preserve the selected spelling. For example, a valid `Asia/Kolkata` link target takes precedence over `Intl`'s `Asia/Calcutta` alias. An absolute `at` selects an instant through its offset. The one-shot's display zone remains the captured machine zone. A machine-zone change does not change existing definitions.
 
@@ -187,7 +191,7 @@ On `session_start`, reset activation-local state and use the new context. If `ct
 
 For `startup`, `reload`, or `resume` in a persistent top-level session, read `ctx.sessionManager.getEntries()`. Select the last `custom` entry in file order with `customType:"spider-triggers"` and `data.sessionId === ctx.sessionManager.getSessionId()`. Triggers are session state, not branch state. Tree navigation does not change them, and restore uses the newest snapshot on any branch. For `new` or `fork`, restore nothing, even if copied entries contain snapshots.
 
-Validate the selected snapshot at this boundary. Unknown versions or malformed snapshots produce a clear notification and restore no triggers. Reject a snapshot containing a model-origin prompt that starts with `/`, including after whitespace. Do not fall back to an older definition that could revive a cancelled trigger. Session-file origin is trusted like the user's other local files. Do not downgrade user origin on restore.
+Validate the selected snapshot at this boundary. If a trigger has an invalid or missing zone, skip and report only that trigger and restore the valid triggers beside it. For any other malformed data, including other malformed fields on a trigger whose zone is invalid, reject the whole snapshot with a clear notification and restore no triggers. Unknown versions also reject the whole snapshot. Reject a snapshot containing a model-origin prompt that starts with `/`, including after whitespace. Never fall back to an older snapshot that could revive a cancelled trigger. Session-file origin is trusted like the user's other local files. Do not downgrade user origin on restore.
 
 Snapshot validation checks cron syntax and bounds with `parseCron` only. A restored cron keeps its stored `nextAt`. Do not search for its next occurrence during validation. A later failed advance follows the fire-time failure rule, so one cron with no future occurrence does not discard the other restored triggers.
 

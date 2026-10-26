@@ -72,17 +72,18 @@ function nextInterval(trigger: Extract<Trigger, { kind: "interval" }>, now: numb
   if (!instant(next) || next <= now) throw new Error("Cannot advance interval to a future instant.");
   return next;
 }
-function parseSnapshot(value: unknown, time: SchedulerTimeMath): TriggerSnapshot {
+type UnvalidatedZone<T> = T extends Trigger ? Omit<T, "tz"> & { tz: unknown } : never;
+type SnapshotCandidate = Omit<TriggerSnapshot, "triggers"> & { triggers: UnvalidatedZone<Trigger>[] };
+function parseSnapshot(value: unknown, time: SchedulerTimeMath): SnapshotCandidate {
   const fail = (): never => { throw new Error("Invalid spider triggers snapshot."); };
   if (!record(value) || value.version !== 1 || typeof value.sessionId !== "string" || !Array.isArray(value.triggers) || value.triggers.length > 20) return fail();
   const names = new Set<string>();
-  const triggers = value.triggers.map((raw: unknown): Trigger => {
+  const triggers = value.triggers.map((raw: unknown): UnvalidatedZone<Trigger> => {
     if (!record(raw) || typeof raw.name !== "string" || !NAME.test(raw.name) || names.has(raw.name)
-      || typeof raw.prompt !== "string" || !raw.prompt.trim() || (raw.origin !== "model" && raw.origin !== "user") || typeof raw.tz !== "string") return fail();
+      || typeof raw.prompt !== "string" || !raw.prompt.trim() || (raw.origin !== "model" && raw.origin !== "user")) return fail();
     names.add(raw.name);
     if (raw.origin === "model") assertModelPrompt(raw.prompt);
-    time.resolveTimeZone(raw.tz);
-    const base: TriggerBase = { name: raw.name, prompt: raw.prompt, origin: raw.origin, tz: raw.tz };
+    const base: Omit<TriggerBase, "tz"> & { tz: unknown } = { name: raw.name, prompt: raw.prompt, origin: raw.origin, tz: raw.tz };
     if (raw.kind === "self-paced") {
       if (raw.nextAt !== null && !instant(raw.nextAt)) return fail();
       return { ...base, kind: "self-paced", nextAt: raw.nextAt };
@@ -141,7 +142,17 @@ export class SessionScheduler {
       }
       if (latest === undefined) return;
       const snapshot = parseSnapshot(latest, this.time);
-      for (const trigger of snapshot.triggers) {
+      for (const candidate of snapshot.triggers) {
+        let tz: string;
+        try {
+          if (typeof candidate.tz !== "string") throw new Error("Time zone must be a string.");
+          tz = candidate.tz;
+          this.time.resolveTimeZone(tz);
+        } catch (error) {
+          ctx.ui.notify(`Cannot restore spider trigger ${JSON.stringify(candidate.name)} from snapshot: invalid time zone ${String(candidate.tz)}. ${String(error)}`, "error");
+          continue;
+        }
+        const trigger: Trigger = { ...candidate, tz };
         if (trigger.kind === "self-paced" && trigger.nextAt === null) continue;
         if (trigger.kind === "interval") trigger.nextAt = nextInterval(trigger, Date.now());
         this.triggers.set(trigger.name, trigger);

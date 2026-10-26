@@ -1,0 +1,95 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fakeTime, setup } from "./harness";
+
+const NOW = Date.parse("2026-10-20T12:00:00Z");
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); vi.stubEnv("PI_SUBAGENT_CHILD", "0"); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); });
+
+describe("named trigger definitions", () => {
+  it("validates names and preserves case-sensitive independence", async () => {
+    const h = setup();
+    for (const name of ["a", "A", "a".repeat(40), "a._-9"]) await h.runtime.schedule({ name, delaySeconds: 60, prompt: name }, h.ctx);
+    const before = await h.runtime.loop({}, h.ctx);
+    expect(before.details.triggers).toHaveLength(4);
+    for (const name of ["a".repeat(41), ".a", "-a", "_a", "a b", ""]) {
+      await expect(h.runtime.schedule({ name, delaySeconds: 60, prompt: "bad" }, h.ctx)).rejects.toThrow(/name/i);
+      expect(await h.runtime.loop({}, h.ctx)).toEqual(before);
+    }
+  });
+
+  it("limits new names to twenty but validates replacements atomically", async () => {
+    const h = setup();
+    for (let i = 0; i < 20; i++) await h.runtime.schedule({ name: `n${i}`, delaySeconds: 60, prompt: "old" }, h.ctx);
+    const before = await h.runtime.loop({}, h.ctx);
+    await expect(h.runtime.schedule({ name: "new", delaySeconds: 60, prompt: "new" }, h.ctx)).rejects.toThrow(/20/);
+    await expect(h.runtime.schedule({ name: "n0", at: "past", prompt: "bad" }, h.ctx)).rejects.toThrow();
+    expect(await h.runtime.loop({}, h.ctx)).toEqual(before);
+    await h.runtime.schedule({ name: "n0", delaySeconds: 120, prompt: "replacement" }, h.ctx);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual(expect.arrayContaining([expect.objectContaining({ name: "n0", prompt: "replacement", nextAt: NOW + 120_000 })]));
+  });
+
+  it("validates argument combinations without mutating old state", async () => {
+    const time = fakeTime(), h = setup(time);
+    await h.runtime.schedule({ name: "old", delaySeconds: 60, prompt: "old" }, h.ctx);
+    const before = await h.runtime.loop({}, h.ctx);
+    for (const args of [
+      { delaySeconds: 60, at: "2026-10-21T12:00Z", prompt: "bad" }, { prompt: "bad" },
+      { at: "2026-10-19T12:00Z", prompt: "bad" }, { delaySeconds: 60, prompt: " \n" },
+    ]) {
+      await expect(h.runtime.schedule({ ...args, name: "old" }, h.ctx)).rejects.toThrow();
+      expect(await h.runtime.loop({}, h.ctx)).toEqual(before);
+    }
+    for (const args of [
+      { interval: "1m", cron: "0 8 * * *", prompt: "bad" }, { tz: "UTC", prompt: "bad" },
+      { cron: "invalid", prompt: "bad" }, { prompt: " \n" }, { cron: "0 8 * * *", tz: "Bad/Zone", prompt: "bad" },
+    ]) {
+      await expect(h.runtime.loop({ ...args, name: "old" }, h.ctx)).rejects.toThrow();
+      expect(await h.runtime.loop({}, h.ctx)).toEqual(before);
+    }
+    time.zone = "Changed/Zone";
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ tz: "Test/Zone" })]);
+  });
+
+  it("ignores legacy cross-action fields and rejects new ones", async () => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ prompt: "loop", delaySeconds: 42, reason: "ignored", noop: true }, h.ctx);
+    await h.runtime.schedule({ prompt: "once", delaySeconds: 60, interval: "ignored" }, h.ctx);
+    for (const args of [{ at: "2026-10-21T00:00Z" }, { stop: true, at: "2026-10-21T00:00Z" }, { prompt: "loop", at: "2026-10-21T00:00Z" }]) {
+      await expect(h.runtime.loop(args, h.ctx)).rejects.toThrow("spider loop does not accept at; use spider schedule");
+    }
+    for (const stop of [undefined, true]) {
+      await expect(h.runtime.schedule({ stop, cron: "* * * * *" }, h.ctx)).rejects.toThrow("spider schedule does not accept cron; use spider loop");
+      await expect(h.runtime.schedule({ stop, tz: "UTC" }, h.ctx)).rejects.toThrow("spider schedule does not accept tz; use spider loop with cron");
+    }
+    await expect(h.runtime.loop({ prompt: "/bad", at: "bad" }, h.ctx)).rejects.toThrow(/Slash commands are user-only/);
+    await expect(h.runtime.schedule({ prompt: "/bad", cron: "bad" }, h.ctx)).rejects.toThrow(/Slash commands are user-only/);
+    h.ctx.mode = "print";
+    await expect(h.runtime.loop({ prompt: "/bad", at: "bad" }, h.ctx)).rejects.toThrow(/print run/);
+    await expect(h.runtime.schedule({ prompt: "/bad", cron: "bad" }, h.ctx)).rejects.toThrow(/print run/);
+  });
+
+  it("formats the complete listing", async () => {
+    const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 180_000]);
+    const h = setup(time);
+    expect(await h.runtime.loop({}, h.ctx)).toEqual({ text: "No triggers are active.", details: { triggers: [] } });
+    await h.runtime.loop({ name: "z-self", prompt: "watch" }, h.ctx);
+    await h.settleDelivery();
+    await h.runtime.schedule({ name: "a-once", at: "2026-10-21T12:00Z", prompt: "x".repeat(90) + "\nsecond line" }, h.ctx);
+    h.setIdle(false);
+    await h.slash("1m user interval");
+    await h.runtime.loop({ name: "cron", cron: "0 8 * * *", tz: "Asia/Kolkata", prompt: "daily" }, h.ctx);
+    const result = await h.runtime.loop({}, h.ctx);
+    expect(result.details.triggers).toEqual([
+      expect.objectContaining({ name: "a-once", kind: "once", origin: "model", tz: "Test/Zone", state: "scheduled", prompt: "x".repeat(90) + "\nsecond line", nextAtUtc: "2026-10-21T12:00:00.000Z", nextAtLocal: "2026-10-21 12:00:00.000 Test/Zone" }),
+      expect.objectContaining({ name: "cron", kind: "cron", cron: "0 8 * * *", tz: "Asia/Kolkata", state: "scheduled", nextAt: NOW + 180_000 }),
+      expect.objectContaining({ name: "loop", kind: "interval", origin: "user", interval: "1m", intervalSeconds: 60, anchor: NOW, nextAt: NOW, state: "due" }),
+      expect.objectContaining({ name: "z-self", kind: "self-paced", nextAt: null, state: "waiting-for-rearm", nextAtUtc: null, nextAtLocal: null }),
+    ]);
+    expect(result.text.split("\n")).toHaveLength(4);
+    expect(result.text).toContain("x".repeat(80));
+    expect(result.text).not.toContain("x".repeat(81));
+    expect(result.text).toContain("due, waiting for idle");
+    expect(result.text).toContain("waiting for re-arm");
+    expect(result.text).toContain('cron "0 8 * * *" Asia/Kolkata');
+  });
+});

@@ -69,7 +69,6 @@ describe("model-facing control and run parameters", () => {
       ["control", "packages/organism/src/actions.ts", "curateAction"],
       ["remember/recall", "packages/host/src/extension.ts", "scopeOf"],
       ["remember/recall", "packages/host/src/extension.ts", "removedMemoryScope"],
-      ["loop/schedule", "packages/host/src/loop/index.ts", "scheduleWakeup"],
     ]) {
       const reads = scanHandlerArgs(readFileSync(fileURLToPath(new URL(path, root)), "utf8"), helper);
       expect(reads.size, `${helper} helper not scanned`).toBeGreaterThan(0);

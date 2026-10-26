@@ -10,6 +10,7 @@ import {
   InMemoryModelsStore, Type, type JsonObject,
 } from "@earendil-works/pi-ai";
 import { registerLoopSchedule, type SessionScheduler } from "../index";
+import { fakeTime } from "./harness";
 
 const root = join(process.cwd(), ".spider", "scratch", `loop-security-${process.pid}`);
 const sessions: AgentSession[] = [];
@@ -57,7 +58,7 @@ async function setup() {
           } });
         },
       };
-      scheduler = registerLoopSchedule(observed);
+      scheduler = registerLoopSchedule(observed, fakeTime());
       pi.registerCommand("user-only", {
         description: "A user-only security setting", async handler(args) { ran.push(args); },
       });
@@ -90,7 +91,8 @@ async function setup() {
   sessions.push(session);
   // SDK defaults to print. Exercise the persistent interactive path instead.
   await session.bindExtensions({ mode: "tui" });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
   const okResponses = () => faux.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("OK")));
   okResponses();
   return {

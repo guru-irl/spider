@@ -7,10 +7,10 @@ import { parseLoop } from "../parser";
 
 describe("loop grammar", () => {
   it.each([
-    ["", { kind: "usage" }],
-    ["  ", { kind: "usage" }],
-    ["stop", { kind: "stop" }],
-    [" stop  ", { kind: "stop" }],
+    ["", { kind: "list" }],
+    ["  ", { kind: "list" }],
+    ["stop", { kind: "stop", target: "defaults" }],
+    [" stop  ", { kind: "stop", target: "defaults" }],
     ["5m check CI", { kind: "fixed", seconds: 300, prompt: "check CI" }],
     ["1h check deploy", { kind: "fixed", seconds: 3600, prompt: "check deploy" }],
     ["10s poll", { kind: "fixed", seconds: 10, prompt: "poll" }],
@@ -24,9 +24,15 @@ describe("loop grammar", () => {
     ["1.5m check", { kind: "dynamic", prompt: "1.5m check" }],
     ["5M check", { kind: "dynamic", prompt: "5M check" }],
     ["-5m check", { kind: "dynamic", prompt: "-5m check" }],
-    ["stop now", { kind: "dynamic", prompt: "stop now" }],
+    ["stop now", { kind: "stop", target: "name", name: "now" }],
+    ["stop all", { kind: "stop", target: "all" }],
+    ["stop build", { kind: "stop", target: "name", name: "build" }],
   ])("parses %j", (input, expected) => {
     expect(parseLoop(input as string)).toEqual(expected);
+  });
+
+  it.each(["stop bad name", "stop .bad", "stop -bad", "stop " + "a".repeat(41)])("rejects invalid stop grammar %j", input => {
+    expect(parseLoop(input).kind).toBe("usage");
   });
 
   it.each(["25d check", "2073601s check", "999999999999999999999999h check"])("refuses unsafe timer interval %s", input => {

@@ -71,7 +71,20 @@ built-ins:
   clear only removes done items unless force:true, always in the current session;
   clear rejects session selectors. Use session id/prefix/name for
   toggle/remove in another session in this project; session:"all" is rejected.
-- \`spider loop\` / \`spider schedule\` wait on external work (CI, deploys, timers), not subagents; completion notices arrive automatically. Top-level only; shutdown and /reload end timers.
+- \`spider loop\` / \`spider schedule\` wait on external work (CI, deploys,
+  timers), never subagents; completion notices arrive automatically. Persistent
+  top-level sessions only, including RPC. Named triggers replace only the same
+  name, with defaults \`loop\` and \`wakeup\`. Loop accepts \`interval\` or numeric
+  \`cron\` with an IANA \`tz\`; cron has no immediate first prompt. Schedule accepts
+  \`delaySeconds\` or an offset-bearing \`at\`. Self-paced re-arms require the same
+  name and exact \`/loop <prompt>\`; pass \`name:"loop"\` for the default loop.
+  Busy interval occurrences stay due and fire once, then advance from the anchor.
+  Tool loop stop leaves an independent one-shot intact. \`/loop\` lists all triggers;
+  \`/loop stop\` stops both defaults, \`/loop stop <name>\` stops one, and
+  \`/loop stop all\` stops all. Extra stop words are not a self-paced prompt.
+  Definitions survive \`/reload\` and same-session resume; new and fork start empty.
+  Nothing fires while closed or asleep. Missed once and cron run once late;
+  intervals resume from their anchor without catch-up.
 - \`spider message\` — wake a specific peer/reviewer session directly.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
   \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,

@@ -24,7 +24,10 @@ the rest of the monorepo. That boundary has these parts:
 
 Host implements the session-local `loop` and `schedule` actions and `/loop`.
 They wait on external work, not on subagent completion, and need no database.
-Shutdown, including `/reload`, ends their timers. See
+Named definitions survive `/reload` and same-session resume through full pi
+session-entry snapshots. New sessions and forks start empty. Nothing fires while
+closed or asleep. Missed once and cron run once late; intervals resume from their
+anchor without catch-up. See
 [Loops and scheduled wakeups](../../docs/guide/loop-and-schedule.md).
 
 Other actions live in sibling packages. Search, exec, memory, todos,
@@ -40,8 +43,11 @@ router once per dispatch, then hands control to those packages.
 | `dispatch.ts` | The action registry (`registerAction`, `getAction`, `dispatch`) and the `ActionCtx` type. `dispatch` checks the action name and calls the registered handler. |
 | `result.ts` | `toToolResult` turns a handler return into pi's `AgentToolResult`. The result has a text block for the model and the structured `details` payload, with ANSI codes removed. |
 | `render-result.ts` | pi `renderResult` and `renderCall` for the tool, plus the `spider.subagent_done` and `spider.command` message renderers. Maps each action's `details` to a `@spider/ui` renderer. |
-| `loop/index.ts` | Session-local fixed and self-paced loops, one-shot wakeups, sealing a loop that is stopped during a run, status, and `/loop`. |
-| `loop/parser.ts` | The grammar for `/loop [interval] <prompt>` and `/loop stop`. |
+| `loop/index.ts` | Named once, interval, cron, and self-paced trigger state, one wall-clock ticker, dispatch gate, per-name seals, listing, snapshots, and restore. Time calculations are injected. |
+| `loop/parser.ts` | The grammar for `/loop [interval] <prompt>`, listing, and default, named, or all stop targets. |
+| `loop/time-math.ts` | Injects the real `zoned.ts` and `cron.ts` calculations into production registration. |
+| `loop/zoned.ts` | Strict offset-bearing absolute times, IANA zones, local-minute resolution, and display. |
+| `loop/cron.ts` | Five-field numeric cron parsing and civil-time occurrence search, including gaps and overlaps. |
 | `slash.ts` | Registers the thin slash commands. Each one forwards to `dispatch` and emits a `spider.command` transcript message. `/learn` is different. It forwards to `skill` `op:"distill"` and sends the full distilled prompt as a real queued turn through `sendUserMessage` or `sendMessage`, never as only a display card. |
 | `control.ts` | Reads and writes scoped config (defaults first, then global, then local), reports where each effective value comes from, and runs the `doctor` health check. |
 | `control/stats-cmd.ts` | `collectStats` builds the token-savings and row-count summary for `control stats`. |
@@ -97,7 +103,9 @@ monorepo depends on host. Pi loads it.
 A single tool call goes through these steps:
 
 1. pi calls the tool's `execute(toolCallId, args, signal, onUpdate, ctx)`.
-2. `execute` reads the session id and cwd from `ctx`. It then calls
+2. `loop` and `schedule` go directly to the session scheduler without opening
+   a project database, including usage fallback. For other actions, `execute`
+   reads the session id and cwd from `ctx`. It then calls
    `buildActionCtx` to open both databases, resolve the project, and attach the
    model router.
 3. `dispatch(args, ctx)` looks up the handler registered for `args.action` and

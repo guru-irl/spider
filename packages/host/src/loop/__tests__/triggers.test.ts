@@ -68,6 +68,14 @@ describe("named trigger definitions", () => {
     await expect(h.runtime.schedule({ prompt: "/bad", cron: "bad" }, h.ctx)).rejects.toThrow(/print run/);
   });
 
+  it("rejects extra text in the interval field without replacing a trigger", async () => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ interval: "1m", prompt: "old" }, h.ctx);
+    const before = await h.runtime.loop({}, h.ctx);
+    await expect(h.runtime.loop({ interval: "1m extra", prompt: "new" }, h.ctx)).rejects.toThrow(/interval/);
+    expect(await h.runtime.loop({}, h.ctx)).toEqual(before);
+  });
+
   it("formats the complete listing", async () => {
     const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 180_000]);
     const h = setup(time);
@@ -291,5 +299,52 @@ describe("named re-arms and prompt security", () => {
     vi.setSystemTime(Date.now() + 180_000); slash.setIdle(true);
     await slash.emit("agent_settled"); await vi.advanceTimersByTimeAsync(0);
     expect(slash.prompts()[0]).not.toContain("Running late");
+  });
+});
+
+
+describe("slash trigger controls", () => {
+  it("lists before usage without changing definitions", async () => {
+    const h = setup(); await h.runtime.schedule({ delaySeconds: 60, prompt: "once" }, h.ctx);
+    const state = await h.runtime.loop({}, h.ctx), writes = h.snapshots().length;
+    await h.slash("");
+    expect(h.notifications.at(-1)!.text).toMatch(/wakeup:[\s\S]*Usage/);
+    expect(await h.runtime.loop({}, h.ctx)).toEqual(state); expect(h.snapshots()).toHaveLength(writes);
+  });
+  it("default slash stop removes only loop and wakeup", async () => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ prompt: "loop" }, h.ctx);
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "wakeup" }, h.ctx);
+    await h.runtime.schedule({ name: "other", delaySeconds: 60, prompt: "other" }, h.ctx);
+    await h.slash("stop");
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ name: "other" })]);
+  });
+  it.each(["once", "interval", "cron", "self-paced"])("named slash stop removes one %s trigger", async kind => {
+    const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 60_000]);
+    const h = setup(time); h.setIdle(false);
+    if (kind === "once") await h.runtime.schedule({ name: "target", delaySeconds: 60, prompt: "once" }, h.ctx);
+    else await h.runtime.loop({ name: "target", prompt: "loop", ...(kind === "cron" ? { cron: "0 8 * * *" } : kind === "interval" ? { interval: "1m" } : {}) }, h.ctx);
+    await h.runtime.schedule({ name: "other", delaySeconds: 60, prompt: "other" }, h.ctx);
+    const count = h.snapshots().length;
+    await h.emit("agent_start"); await h.slash("stop target");
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ name: "other" })]);
+    expect(h.snapshots()).toHaveLength(count + 1);
+    if (kind !== "once") await expect(h.runtime.schedule({ name: "target", delaySeconds: 60, prompt: "old" }, h.ctx)).rejects.toThrow(/ended or replaced/);
+  });
+  it("stop all seals removed loop names but all remains a tool name", async () => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ name: "all", prompt: "all" }, h.ctx);
+    await h.runtime.loop({ name: "b", prompt: "b" }, h.ctx);
+    await h.runtime.schedule({ name: "once", delaySeconds: 60, prompt: "once" }, h.ctx);
+    await h.emit("agent_start"); const count = h.snapshots().length;
+    await h.slash("stop all");
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([]);
+    expect(h.snapshots()).toHaveLength(count + 1);
+    for (const name of ["all", "b"]) await expect(h.runtime.schedule({ name, delaySeconds: 60, prompt: "old" }, h.ctx)).rejects.toThrow(/ended or replaced/);
+    await h.runtime.schedule({ name: "once", delaySeconds: 60, prompt: "allowed" }, h.ctx);
+    await h.emit("agent_settled");
+    await h.runtime.loop({ name: "all", prompt: "all" }, h.ctx);
+    await h.runtime.loop({ name: "all", stop: true }, h.ctx);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ name: "once" })]);
   });
 });

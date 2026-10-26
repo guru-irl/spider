@@ -16,6 +16,7 @@ import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 // attach action handlers via registerAction (re-exported below).
 import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopSchedule, type SessionScheduler, type LoopArgs, type ScheduleArgs } from "./loop/index";
+import { createTimeMath } from "./loop/time-math";
 import { registerUsage } from "./usage/mount.js";
 import { makeRunCostFormatter } from "./run-credits.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
@@ -828,7 +829,7 @@ async function dispatchWithDoctorSnapshot(
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
-  sessionSchedulers.set(pi, registerLoopSchedule(pi as unknown as ExtensionAPI));
+  sessionSchedulers.set(pi, registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath()));
   const accounting = new UsageAccounting();
   usageRuntimes.set(pi, accounting);
   const ownedActions = new Map<string, ActionHandler>();

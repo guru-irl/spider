@@ -48,7 +48,7 @@ describe("spider schedule", () => {
   it("reports an internal re-arm rejection through the UI instead of leaving it unhandled", async () => {
     const h = setup();
     await h.runtime.loop({ prompt: "watch CI" }, h.ctx);
-    await h.runtime.schedule({ delaySeconds: 60, prompt: "/loop watch CI" }, h.ctx);
+    await h.runtime.schedule({ name: "loop", delaySeconds: 60, prompt: "/loop watch CI" }, h.ctx);
     // A real command rejection after scheduling, without replacing command().
     h.ctx.mode = "print";
     await vi.advanceTimersByTimeAsync(60_000);
@@ -63,12 +63,12 @@ describe("spider schedule", () => {
     h.setIdle(false);
     await h.emit("agent_start");
     await h.slash("watch replacement");
-    const result = await h.runtime.schedule({ stop: true }, h.ctx);
+    const result = await h.runtime.schedule({ name: "loop", stop: true }, h.ctx);
     expect(result.details).toEqual({ cancelled: false });
-    expect(result.text).toBe("The pending wakeup belongs to a loop started during this run and was not cancelled.");
-    expect((await h.runtime.loop({}, h.ctx)).details.wakeup).toMatchObject({
-      prompt: expect.stringContaining("watch replacement"),
-    });
+    expect(result.text).toBe("No named one-shot was pending.");
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({
+      name: "loop", kind: "self-paced", state: "due", prompt: expect.stringContaining("watch replacement"),
+    })]);
     h.setIdle(true);
     await h.emit("agent_settled");
     await vi.advanceTimersByTimeAsync(1000);

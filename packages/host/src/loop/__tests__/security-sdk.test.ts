@@ -39,6 +39,9 @@ async function setup() {
   const ran: string[] = [];
   const dispatchedLoops: string[] = [];
   let scheduler!: SessionScheduler;
+  let lastIdle: (() => boolean) | undefined;
+  let blocked: { text: string; entered(): void; wait: Promise<void> } | undefined;
+  const trace: string[] = [];
   const templatePath = join(root, "check.md");
   const loader = new DefaultResourceLoader({
     cwd: root, agentDir: process.env.PI_CODING_AGENT_DIR!, settingsManager: settings,
@@ -62,6 +65,9 @@ async function setup() {
       pi.registerCommand("user-only", {
         description: "A user-only security setting", async handler(args) { ran.push(args); },
       });
+      pi.on("input", async event => {
+        if (blocked && event.text === blocked.text) { blocked.entered(); await blocked.wait; }
+      });
       // Transform an innocuous model prompt after scheduling to exercise the
       // delivery flag independently of leading-slash validation.
       pi.on("input", event => event.text.startsWith("transform me")
@@ -73,9 +79,12 @@ async function setup() {
         parameters: Type.Object({
           action: Type.Union([Type.Literal("loop"), Type.Literal("schedule")]),
           prompt: Type.Optional(Type.String()), interval: Type.Optional(Type.String()),
+          name: Type.Optional(Type.String()), at: Type.Optional(Type.String()),
+          cron: Type.Optional(Type.String()), tz: Type.Optional(Type.String()),
           delaySeconds: Type.Optional(Type.Number()), stop: Type.Optional(Type.Boolean()),
         }),
         async execute(_id, args, _signal, _update, ctx) {
+          lastIdle = ctx.isIdle;
           const result = await scheduler[args.action](args, ctx);
           return { content: [{ type: "text", text: result.text }], details: result.details };
         },
@@ -89,6 +98,7 @@ async function setup() {
     sessionManager: SessionManager.inMemory(root), tools: ["spider"],
   });
   sessions.push(session);
+  session.subscribe(event => { if (event.type === "agent_start" || event.type === "agent_settled") trace.push(event.type); });
   // SDK defaults to print. Exercise the persistent interactive path instead.
   await session.bindExtensions({ mode: "tui" });
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -96,7 +106,15 @@ async function setup() {
   const okResponses = () => faux.setResponses(Array.from({ length: 20 }, () => fauxAssistantMessage("OK")));
   okResponses();
   return {
-    session, scheduler, ran, dispatchedLoops,
+    session, scheduler, ran, dispatchedLoops, trace,
+    isIdle: () => lastIdle!(),
+    blockInput(text: string) {
+      let release!: () => void, entered!: () => void;
+      const wait = new Promise<void>(resolve => { release = resolve; });
+      const entry = new Promise<void>(resolve => { entered = resolve; });
+      blocked = { text, entered, wait };
+      return { release, entered: entry };
+    },
     users: () => session.messages.filter(m => m.role === "user").map(m => typeof m.content === "string"
       ? m.content : m.content.filter(b => b.type === "text").map(b => b.text).join("\n")),
     async user(prompt: string) {
@@ -165,7 +183,7 @@ it.each(["user", "model"])("re-arms a %s self-paced loop internally and preserve
     expect((await h.call({ action: "loop", prompt: "transform me" })).isError).toBe(false);
     await h.advance(1000);
   }
-  const result = await h.call({ action: "schedule", delaySeconds: 60, prompt: "/loop transform me" });
+  const result = await h.call({ action: "schedule", name: "loop", delaySeconds: 60, prompt: "/loop transform me" });
   expect(result.isError).toBe(false);
   await h.advance();
   const iterations = h.users().filter(text => text !== "Run the scheduler fixture");
@@ -178,7 +196,7 @@ it.each(["5m /user-only off", "5m check", "stop", "5m", "30d x"])("keeps the mod
   const h = await setup();
   expect((await h.call({ action: "loop", prompt })).isError).toBe(false);
   await h.advance(1000);
-  const rearm = { action: "schedule", delaySeconds: 60, prompt: `/loop ${prompt}` };
+  const rearm = { action: "schedule", name: "loop", delaySeconds: 60, prompt: `/loop ${prompt}` };
   expect((await h.call(rearm)).isError).toBe(false);
   await h.advance();
   // A second re-arm proves that status describes a live, repeatable loop,
@@ -187,8 +205,7 @@ it.each(["5m /user-only off", "5m check", "stop", "5m", "30d x"])("keeps the mod
   await h.advance();
   const status = await h.call({ action: "loop" });
   expect(status.details).toEqual({
-    loop: { mode: "self-paced", intervalSeconds: null, nextFireAt: null, prompt },
-    wakeup: null,
+    triggers: [expect.objectContaining({ name: "loop", kind: "self-paced", nextAt: null, state: "waiting-for-rearm", prompt })],
   });
   const iterations = h.users().filter(text => text !== "Run the scheduler fixture");
   expect(iterations).toHaveLength(3);
@@ -204,11 +221,11 @@ it("resets a user loop's origin when a model replaces it with the same prompt", 
   const h = await setup();
   await h.user("/loop transform me");
   // Pin the stored user origin before the model replacement as well.
-  expect((await h.call({ action: "schedule", delaySeconds: 60, prompt: "/loop transform me" })).isError).toBe(false);
+  expect((await h.call({ action: "schedule", name: "loop", delaySeconds: 60, prompt: "/loop transform me" })).isError).toBe(false);
   await h.advance();
   expect((await h.call({ action: "loop", prompt: "transform me" })).isError).toBe(false);
   await h.advance(1000);
-  expect((await h.call({ action: "schedule", delaySeconds: 60, prompt: "/loop transform me" })).isError).toBe(false);
+  expect((await h.call({ action: "schedule", name: "loop", delaySeconds: 60, prompt: "/loop transform me" })).isError).toBe(false);
   await h.advance();
   const iterations = h.users().filter(text => text !== "Run the scheduler fixture");
   expect(iterations).toEqual(["EXPANDED trusted template", "EXPANDED trusted template", "/check", "/check"]);
@@ -243,7 +260,7 @@ it("refuses a model slash prompt smuggled through the loop interval field", asyn
 
 it("returns a native tool error when a loop ended during the same run", async () => {
   const h = await setup();
-  const result = await h.call({ action: "schedule", delaySeconds: 60, prompt: "later" }, { action: "loop", stop: true });
+  const result = await h.call({ action: "schedule", name: "loop", delaySeconds: 60, prompt: "later" }, { action: "loop", stop: true });
   expect(result.isError).toBe(true);
   expect(JSON.stringify(result.content)).toMatch(/a loop was ended or replaced during this run/i);
   expect(JSON.stringify(result.content)).not.toContain("the user ended");
@@ -263,9 +280,33 @@ it("returns a native tool error for an interval without a prompt", async () => {
 it("does not let a model use a trusted self-paced loop to schedule a different slash prompt", async () => {
   const h = await setup();
   await h.user("/loop watch CI");
-  const result = await h.call({ action: "schedule", delaySeconds: 60, prompt: "/loop /user-only off" });
+  const result = await h.call({ action: "schedule", name: "loop", delaySeconds: 60, prompt: "/loop /user-only off" });
   await h.advance();
   expect(result.isError).toBe(true);
   expect(h.ran).toEqual([]);
   expect(h.dispatchedLoops).toEqual(["watch CI"]);
+});
+
+
+it("delivers two simultaneously due triggers as separate ordered runs", async () => {
+  const h = await setup();
+  expect((await h.call(
+    { action: "schedule", name: "b", delaySeconds: 60, prompt: "FIRING b" },
+    { action: "schedule", name: "a", delaySeconds: 60, prompt: "FIRING a" },
+  )).isError).toBe(false);
+  h.trace.length = 0;
+  const blocked = h.blockInput("FIRING a");
+  await vi.advanceTimersByTimeAsync(60_000);
+  await blocked.entered;
+  expect(h.isIdle()).toBe(true);
+  await vi.advanceTimersByTimeAsync(4999);
+  expect(h.isIdle()).toBe(true);
+  expect(h.users().filter(text => text.startsWith("FIRING"))).toEqual([]);
+  expect(h.trace).toEqual([]);
+  blocked.release();
+  await h.session.waitForIdle();
+  await vi.advanceTimersByTimeAsync(0);
+  await h.session.waitForIdle();
+  expect(h.users().filter(text => text.startsWith("FIRING"))).toEqual(["FIRING a", "FIRING b"]);
+  expect(h.trace).toEqual(["agent_start", "agent_settled", "agent_start", "agent_settled"]);
 });

@@ -46,8 +46,8 @@ function validName(name: string): string {
   if (!NAME.test(name)) throw new Error("Trigger name must be 1 to 40 characters, start with a letter or digit, and contain only letters, digits, '.', '_' or '-'.");
   return name;
 }
-function dynamicPrompt(prompt: string): string {
-  return `${prompt}\n\n[/loop, self-paced] When this iteration is done, call spider schedule with prompt ${JSON.stringify(`/loop ${prompt}`)} and a delaySeconds that fits what you are waiting for (${MIN_DELAY_S} to ${MAX_DELAY_S} seconds) to run it again. Skip the call to end the loop.`;
+function dynamicPrompt(prompt: string, name: string): string {
+  return `${prompt}\n\n[/loop, self-paced] When this iteration is done, call spider schedule with name:${JSON.stringify(name)} and prompt ${JSON.stringify(`/loop ${prompt}`)} and a delaySeconds that fits what you are waiting for (${MIN_DELAY_S} to ${MAX_DELAY_S} seconds) to run it again. Skip the call to end the loop.`;
 }
 function intervalTiming(value: string, prompt: string): { seconds: number; prompt: string; interval: string } {
   const cmd = parseLoop(`${value} ${prompt}`);
@@ -61,6 +61,7 @@ function intervalTiming(value: string, prompt: string): { seconds: number; promp
 
 export class SessionScheduler {
   private readonly triggers = new Map<string, Trigger>();
+  private readonly seals = new Set<string>();
   private timer?: NodeJS.Timeout;
   private ctx?: ExtensionContext;
   private activated = false;
@@ -87,6 +88,7 @@ export class SessionScheduler {
   }
   private put(trigger: Trigger): void {
     if (!this.triggers.has(trigger.name) && this.triggers.size >= 20) throw new Error("A session can hold at most 20 triggers.");
+    if (this.running && trigger.kind !== "once") this.seals.add(trigger.name);
     this.triggers.set(trigger.name, trigger);
     this.reconcile();
   }
@@ -106,6 +108,7 @@ export class SessionScheduler {
     if (this.gate && !this.gate.started && now - this.gate.sentAt >= 5000 && !this.running && ctx?.isIdle()) this.gate = undefined;
     const due = [...this.triggers.values()].filter(t => t.nextAt !== null && t.nextAt <= now).sort((a, b) => a.nextAt! - b.nextAt! || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))[0];
     if (due && ctx?.isIdle() && !this.running && !this.gate) {
+      const scheduledAt = due.nextAt!;
       this.gate = { sentAt: now, started: false };
       const errors: string[] = [];
       let canSend = true;
@@ -123,7 +126,11 @@ export class SessionScheduler {
         }
       } catch (error) { this.triggers.delete(due.name); errors.push(String(error)); }
       if (canSend) {
-        try { this.pi.sendUserMessage(due.kind === "self-paced" ? dynamicPrompt(due.prompt) : due.prompt, { deliverAs: "followUp", expandPromptTemplates: due.origin === "user" }); }
+        try {
+          let prompt = due.kind === "self-paced" ? dynamicPrompt(due.prompt, due.name) : due.prompt;
+          if (now - scheduledAt > 120_000 && !due.prompt.trimStart().startsWith("/")) prompt += `\n\n[spider schedule] Scheduled for ${this.time.formatInZone(scheduledAt, due.tz)} (${new Date(scheduledAt).toISOString()} UTC). Running late because the session was busy, pi was closed or the machine was asleep.`;
+          this.pi.sendUserMessage(prompt, { deliverAs: "followUp", expandPromptTemplates: due.origin === "user" });
+        }
         catch (error) { canSend = false; errors.push(String(error)); }
       }
       if (!canSend) this.gate = undefined;
@@ -132,13 +139,13 @@ export class SessionScheduler {
     this.arm();
   }
   settled(): void {
-    this.running = false;
+    this.running = false; this.seals.clear();
     if (this.gate?.started) this.gate = undefined;
     this.arm(true);
   }
   shutdown(): void {
     clearTimeout(this.timer); this.timer = undefined; this.triggers.clear(); this.ctx = undefined;
-    this.running = false; this.gate = undefined; this.activated = false;
+    this.running = false; this.gate = undefined; this.activated = false; this.seals.clear();
   }
 
   async loop(args: LoopArgs, ctx: ExtensionContext): Promise<Result> {
@@ -147,6 +154,7 @@ export class SessionScheduler {
     if (args.at !== undefined) throw new Error("spider loop does not accept at; use spider schedule");
     const name = validName(args.name ?? "loop");
     if (args.stop) {
+      if (this.running) this.seals.add(name);
       const old = this.triggers.get(name);
       const stopped = old !== undefined && old.kind !== "once" && this.triggers.delete(name);
       this.arm();
@@ -168,10 +176,16 @@ export class SessionScheduler {
   }
   async schedule(args: ScheduleArgs, ctx: ExtensionContext): Promise<Result> {
     assertPersistentSession("schedule", ctx); this.context(ctx);
-    if (args.prompt !== undefined) assertModelPrompt(args.prompt);
+    const name = validName(args.name ?? "wakeup");
+    if (!args.stop && this.seals.has(name)) {
+      const message = "A wakeup this run asked for was not scheduled: a loop was ended or replaced during this run. Do not schedule another wakeup in this run.";
+      ctx.ui.notify(message, "warning"); throw new Error(message);
+    }
+    const current = this.triggers.get(name);
+    const rearm = current?.kind === "self-paced" && args.prompt?.trim() === `/loop ${current.prompt}` ? current : undefined;
+    if (!rearm && args.prompt !== undefined) assertModelPrompt(args.prompt);
     if (args.cron !== undefined) throw new Error("spider schedule does not accept cron; use spider loop");
     if (args.tz !== undefined) throw new Error("spider schedule does not accept tz; use spider loop with cron");
-    const name = validName(args.name ?? "wakeup");
     if (args.stop) {
       const cancelled = this.triggers.get(name)?.kind === "once" && this.triggers.delete(name);
       this.arm(); return { text: cancelled ? "Pending wakeup cancelled." : "No named one-shot was pending.", details: { cancelled: !!cancelled } };
@@ -179,6 +193,10 @@ export class SessionScheduler {
     if ((args.at !== undefined) === (args.delaySeconds !== undefined) || !args.prompt?.trim() || (args.delaySeconds !== undefined && !Number.isFinite(args.delaySeconds))) throw new Error("spider schedule needs delaySeconds or at, and a prompt, unless stop is true; delaySeconds must be finite");
     const seconds = args.delaySeconds === undefined ? undefined : Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, Math.round(args.delaySeconds)));
     const nextAt = args.at === undefined ? Date.now() + seconds! * 1000 : this.time.parseAt(args.at, Date.now());
+    if (rearm) {
+      rearm.nextAt = nextAt; this.arm();
+      return { text: `Wakeup scheduled for ${name}, at ${new Date(nextAt).toISOString()}.`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true } };
+    }
     const trigger: Trigger = {
       name, kind: "once", prompt: args.prompt.trim(), origin: "model", tz: this.time.resolveTimeZone(), nextAt,
       ...(args.at === undefined ? { delaySeconds: seconds! } : { at: args.at }),
@@ -191,6 +209,7 @@ export class SessionScheduler {
     assertPersistentSession("loop", ctx); this.context(ctx);
     if (cmd.kind === "usage") return { text: `${cmd.reason ? `${cmd.reason} ` : ""}Usage: /loop [interval like 5m or 1h] <prompt>, or /loop stop`, details: { usage: true } };
     if (cmd.kind === "stop") {
+      if (this.running) this.seals.add("loop");
       const stopped = this.triggers.delete("loop") || false;
       const wakeup = this.triggers.delete("wakeup"); this.arm();
       return { text: stopped || wakeup ? "Loop stopped." : "No loop was running.", details: { stopped: stopped || wakeup } };
@@ -210,7 +229,11 @@ export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath):
   pi.on("session_shutdown", () => { scheduler.shutdown(); });
   pi.registerCommand("loop", {
     description: "Run external-work checks (CI, deploys, timers): /loop [5m|1h] <prompt> or /loop stop. Not for polling subagents; completion notices arrive automatically.",
-    async handler(args, ctx) { const result = await scheduler.command(parseLoop(args), ctx); ctx.ui.notify(result.text, "info"); },
+    async handler(args, ctx) {
+      const result = await scheduler.command(parseLoop(args), ctx);
+      const listing = !args.trim() ? (await scheduler.loop({}, ctx)).text + "\n" : "";
+      ctx.ui.notify(listing + result.text, "info");
+    },
   });
   return scheduler;
 }

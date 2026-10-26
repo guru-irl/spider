@@ -317,7 +317,7 @@ describe("session-owned run records with an explicit child cwd", () => {
       const dbPath = join(owner, ".spider", "project.db");
       const ctx = {
         cwd: sessionCwd, hasUI: true,
-        sessionManager: { getSessionId: () => f.sessionId, getBranch: () => [] },
+        sessionManager: { getSessionId: () => f.sessionId, getBranch: () => [], getEntries: () => [] },
         ui: { setWidget: vi.fn(), custom: vi.fn(), notify: vi.fn() },
       };
       await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" }, sessionCwd);

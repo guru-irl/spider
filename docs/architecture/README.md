@@ -37,7 +37,7 @@ before it resolves the database. One short timeout reconciles wall-clock due
 times and gates delivery across agent start and settled events. Timers stop on
 shutdown; full snapshots in pi session entries restore definitions on `/reload`
 and same-session resume. New and fork start empty. Nothing fires while closed or
-asleep. Missed once and cron run once late; intervals resume from their anchor. See [Loops and scheduled wakeups](../guide/loop-and-schedule.md).
+asleep. Missed one-shot and cron triggers fire once, late. Intervals resume from their anchor. See [Loops and scheduled wakeups](../guide/loop-and-schedule.md).
 
 ## Layered package structure
 

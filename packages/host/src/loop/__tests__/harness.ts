@@ -1,6 +1,6 @@
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry, SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import { vi, type Mock } from "vitest";
-import { registerLoopSchedule, type SchedulerTimeMath, type SessionScheduler } from "../index";
+import { registerLoopSchedule, type SchedulerTimeMath, type SessionScheduler, type TriggerSnapshot } from "../index";
 
 export interface FakeTime extends SchedulerTimeMath { zone: string; occurrences: Map<string, number[]> }
 
@@ -20,7 +20,7 @@ export function fakeTime(): FakeTime {
       return at;
     },
     parseCron(expression: string) {
-      if (expression === "invalid" || expression.split(/\s+/).length !== 5) throw new Error("Invalid cron syntax");
+      if (["invalid", "60 * * * *"].includes(expression) || expression.split(/\s+/).length !== 5) throw new Error("Invalid cron syntax");
       return { parsed: expression };
     },
     nextCronAt(expression: string, _tz: string, after: number) {
@@ -43,6 +43,8 @@ export interface Harness {
   getEntries(): SessionEntry[];
   getSessionId(): string;
   branch(id: string | null): void;
+  snapshots(): TriggerSnapshot[];
+  restart(reason: SessionStartEvent["reason"], start?: { mode?: ExtensionContext["mode"]; child?: boolean }): Promise<Harness>;
   prompts(): unknown[];
   setIdle(value: boolean): void;
   emit(name: string, event?: unknown): Promise<void>;
@@ -86,6 +88,15 @@ export function setup(time: SchedulerTimeMath = fakeTime(), saved?: { sessionId:
     runtime, ctx, messages, notifications, entries, appendEntry,
     getEntries: () => structuredClone(entries), getSessionId: () => sessionId,
     branch: id => { leafId = id; },
+    snapshots: () => structuredClone(entries.filter(e => e.type === "custom" && e.customType === "spider-triggers").map(e => e.type === "custom" ? e.data as TriggerSnapshot : undefined) as TriggerSnapshot[]),
+    async restart(reason, start) {
+      await emit("session_shutdown", { reason });
+      const h = setup(time, { sessionId, entries, leafId });
+      h.ctx.mode = start?.mode ?? "tui";
+      vi.stubEnv("PI_SUBAGENT_CHILD", start?.child ? "1" : "0");
+      await h.emit("session_start", { reason });
+      return h;
+    },
     prompts: () => messages.map(message => message.prompt),
     setIdle: value => { idle = value; }, emit,
     settleDelivery: async () => { await emit("agent_start"); await emit("agent_settled"); await vi.advanceTimersByTimeAsync(0); },

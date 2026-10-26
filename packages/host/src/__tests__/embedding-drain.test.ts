@@ -64,7 +64,7 @@ afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers();
   setGlobalDbPathForTests(null); rmSync(root, { recursive: true, force: true });
 });
-const context = () => ({ cwd: root, hasUI: false, sessionManager: { getSessionId: () => "fixture-session" } });
+const context = () => ({ cwd: root, hasUI: false, ui: { notify() {} }, sessionManager: { getSessionId: () => "fixture-session", getEntries: () => [] } });
 function tierDbs() {
   const info = resolveProject(root);
   const repo = openRepo(info.repoKey!); const worktree = openProject(info.projectKey);

@@ -39,7 +39,7 @@ const tick = async () => { for (let i = 0; i < 5; i++) await new Promise(r => se
 
 it("session_start adopts a detached child despite invalid childMode config and notifies once", async () => {
   const sessionId = `${scratch}:reload`;
-  const ctx = { cwd: scratch, sessionManager: { getSessionId: () => sessionId } };
+  const ctx = { cwd: scratch, ui: { notify() {} }, sessionManager: { getSessionId: () => sessionId, getEntries: () => [] } };
   const { db, dbPath } = openSessionRunDb(scratch, sessionId);
   const store = new RunStore(db);
   const { id } = store.create({ sessionId, agent: "worker", name: "bg", task: "t" });
@@ -74,14 +74,14 @@ it("session_start does nothing when no child is waiting", async () => {
   const pi = fakePi(); hosts.push(pi);
   spiderExtension(pi as never);
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
-  await pi.emit("session_start", { type: "session_start", reason: "startup" }, { cwd: scratch, sessionManager: { getSessionId: () => "none" } });
+  await pi.emit("session_start", { type: "session_start", reason: "startup" }, { cwd: scratch, ui: { notify() {} }, sessionManager: { getSessionId: () => "none", getEntries: () => [] } });
   expect(pi.sendMessage).not.toHaveBeenCalled();
 });
 
 it("an adoption that fails is reported to the user instead of failing silently, and the child keeps a TTL", async () => {
   const sessionId = `${scratch}:refused`;
   const notify = vi.fn();
-  const ctx = { cwd: scratch, ui: { notify }, sessionManager: { getSessionId: () => sessionId } };
+  const ctx = { cwd: scratch, ui: { notify }, sessionManager: { getSessionId: () => sessionId, getEntries: () => [] } };
   openSessionRunDb(scratch, sessionId); // the session's DB exists, but holds no row for this run
   const handle: SharedHandle = { wait: () => new Promise(() => {}), kill: () => {}, killAsync: async () => {} };
   registerShared({ runId: "ghost-run", sessionId, dbPath: "/nowhere/project.db", mode: "rpc", handle, survivable: true });

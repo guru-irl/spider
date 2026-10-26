@@ -83,6 +83,33 @@ describe("named trigger definitions", () => {
     expect(result.text).not.toContain("/loop stop ends it");
   });
 
+  it("keeps line breaks inside a short prompt preview on one listing line", async () => {
+    const h = setup();
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "a\nb" }, h.ctx);
+    const result = await h.runtime.loop({}, h.ctx);
+    expect(result.text.split("\n")).toHaveLength(1);
+    expect(result.text).toContain("a b");
+  });
+
+  it.each([
+    ["30s", "every 1m (requested 30s)", 60],
+    ["120s", "every 2m", 120], ["2h", "every 2h", 7200], ["1d", "every 1d", 86400],
+  ])("lists the effective cadence for requested interval %s", async (interval, label, seconds) => {
+    const h = setup(); h.setIdle(false);
+    await h.runtime.loop({ interval, prompt: "tick" }, h.ctx);
+    const result = await h.runtime.loop({}, h.ctx);
+    expect(result.text).toContain(`loop: ${label};`);
+    expect(result.details.triggers).toEqual([expect.objectContaining({ interval, intervalSeconds: seconds })]);
+  });
+
+  it("claims a one-shot replacement only when the name was already active", async () => {
+    const h = setup();
+    const created = await h.runtime.schedule({ delaySeconds: 60, prompt: "first" }, h.ctx);
+    expect(created.text).not.toMatch(/replac/i);
+    const replaced = await h.runtime.schedule({ delaySeconds: 120, prompt: "second" }, h.ctx);
+    expect(replaced.text).toContain("It replaced the trigger named wakeup.");
+  });
+
   it("formats the complete listing", async () => {
     const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 180_000]);
     const h = setup(time);
@@ -111,6 +138,47 @@ describe("named trigger definitions", () => {
 
 
 describe("ticker reconciliation", () => {
+  it("retries busy due work once per second instead of spinning", async () => {
+    const h = setup();
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "wait" }, h.ctx);
+    const idle = vi.fn(() => false);
+    h.ctx.isIdle = idle;
+    vi.setSystemTime(NOW + 60_000);
+    await vi.advanceTimersToNextTimerAsync();
+    idle.mockClear();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(idle.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(idle.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(h.prompts()).toEqual([]);
+    h.ctx.isIdle = () => true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.prompts()).toEqual(["wait"]);
+  });
+
+  it("releases the dispatch gate after failed preparation so the next trigger fires within one second", async () => {
+    const h = setup();
+    await h.runtime.schedule({ name: "a", delaySeconds: 60, prompt: "lost write" }, h.ctx);
+    await h.runtime.schedule({ name: "b", delaySeconds: 60, prompt: "next" }, h.ctx);
+    h.appendEntry.mockImplementationOnce(() => { throw new Error("disk full"); });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual([]);
+    expect(h.notifications).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.prompts()).toEqual(["next"]);
+  });
+
+  it("blocks delivery during a run even when the context reports idle and no gate exists", async () => {
+    const h = setup();
+    await h.runtime.schedule({ delaySeconds: 60, prompt: "after run" }, h.ctx);
+    await h.emit("agent_start");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.prompts()).toEqual([]);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ state: "due" })]);
+    await h.emit("agent_settled");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.prompts()).toEqual(["after run"]);
+  });
+
   it("uses one wall-clock ticker and preserves due work", async () => {
     const h = setup();
     await h.runtime.loop({ interval: "1m", prompt: "tick" }, h.ctx);
@@ -180,15 +248,18 @@ describe("ticker reconciliation", () => {
 
   it.each(["once", "self-paced", "interval", "cron", "cron-failed", "interval-failed"])("consumes an occurrence whose delivery check fails and notifies once: %s", async kind => {
     const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 60_000, NOW + 120_000]);
+    // At the Date boundary, the next anchored minute is outside the representable range.
+    const anchor = kind === "interval-failed" ? 8.64e15 - 90_000 : NOW;
+    vi.setSystemTime(anchor);
     const h = setup(time); h.setIdle(false);
     if (kind === "once") await h.runtime.schedule({ delaySeconds: 60, prompt: "check" }, h.ctx);
     else await h.runtime.loop({ prompt: "check", ...(kind.startsWith("cron") ? { cron: "0 8 * * *" } : kind.startsWith("interval") ? { interval: "1m" } : {}) }, h.ctx);
     if (kind === "cron-failed") time.occurrences.set("0 8 * * *", []);
-    if (kind === "interval-failed") vi.spyOn(Math, "floor").mockImplementationOnce(() => { throw new Error("Cannot advance interval"); });
     h.ctx.mode = "print"; h.setIdle(true);
-    vi.setSystemTime(NOW + 60_000); await vi.advanceTimersToNextTimerAsync();
+    vi.setSystemTime(anchor + 60_000); await vi.advanceTimersToNextTimerAsync();
     expect(h.prompts()).toEqual([]);
     expect(h.notifications).toHaveLength(1);
+    if (kind === "interval-failed") expect(h.notifications[0].text).toContain("Cannot advance interval");
     h.ctx.mode = "tui";
     const rows = (await h.runtime.loop({}, h.ctx)).details.triggers;
     if (kind === "once" || kind.endsWith("failed")) expect(rows).toEqual([]);
@@ -201,13 +272,15 @@ describe("ticker reconciliation", () => {
 
   it.each(["cron", "interval"])("delivers the current occurrence when only advancement fails: %s", async kind => {
     const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 60_000]);
+    const anchor = kind === "interval" ? 8.64e15 - 90_000 : NOW;
+    vi.setSystemTime(anchor);
     const h = setup(time); h.setIdle(false);
     await h.runtime.loop({ prompt: "last", ...(kind === "cron" ? { cron: "0 8 * * *" } : { interval: "1m" }) }, h.ctx);
-    if (kind === "interval") vi.spyOn(Math, "floor").mockImplementationOnce(() => { throw new Error("Cannot advance interval"); });
-    h.setIdle(true); vi.setSystemTime(NOW + 60_000); await vi.advanceTimersToNextTimerAsync();
+    h.setIdle(true); vi.setSystemTime(anchor + 60_000); await vi.advanceTimersToNextTimerAsync();
     expect(h.prompts()).toEqual(["last"]);
     expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([]);
     expect(h.notifications).toHaveLength(1);
+    if (kind === "interval") expect(h.notifications[0].text).toContain("Cannot advance interval");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(h.notifications).toHaveLength(1); expect(h.prompts()).toHaveLength(1);
     vi.restoreAllMocks();
@@ -237,6 +310,15 @@ describe("ticker reconciliation", () => {
 
 
 describe("named re-arms and prompt security", () => {
+  it("does not seal a one-shot when tool loop stop leaves it untouched during a run", async () => {
+    const h = setup();
+    await h.runtime.schedule({ name: "ci", delaySeconds: 60, prompt: "first" }, h.ctx);
+    await h.emit("agent_start");
+    expect((await h.runtime.loop({ name: "ci", stop: true }, h.ctx)).details).toEqual({ stopped: false });
+    await h.runtime.schedule({ name: "ci", delaySeconds: 120, prompt: "retimed" }, h.ctx);
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ name: "ci", prompt: "retimed", nextAt: NOW + 120_000 })]);
+  });
+
   it("keeps named one-shots separate from loop re-arms", async () => {
     const h = setup();
     await h.runtime.schedule({ name: "build", delaySeconds: 60, prompt: "build" }, h.ctx);
@@ -311,6 +393,24 @@ describe("named re-arms and prompt security", () => {
 
 
 describe("slash trigger controls", () => {
+  it.each(["5m check", "stop", "stop all"])("notifies once when a slash %s snapshot write fails", async command => {
+    const h = setup(); h.setIdle(false);
+    if (command.startsWith("stop")) await h.slash("5m old");
+    h.notifications.length = 0;
+    h.appendEntry.mockImplementationOnce(() => { throw new Error("disk full"); });
+    await h.slash(command);
+    expect(h.notifications).toHaveLength(1);
+    expect(h.notifications[0].text).toContain("disk full");
+  });
+
+  it.each(["1h", "2h", "1d", "30s"])("preserves the slash interval token %s in snapshots and after reload", async interval => {
+    let h = setup(); h.setIdle(false);
+    await h.slash(`${interval} check`);
+    expect(h.snapshots().at(-1)!.triggers).toEqual([expect.objectContaining({ interval })]);
+    h = await h.restart("reload");
+    expect((await h.runtime.loop({}, h.ctx)).details.triggers).toEqual([expect.objectContaining({ interval })]);
+  });
+
   it("lists before usage without changing definitions", async () => {
     const h = setup(); await h.runtime.schedule({ delaySeconds: 60, prompt: "once" }, h.ctx);
     const state = await h.runtime.loop({}, h.ctx), writes = h.snapshots().length;

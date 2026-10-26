@@ -60,6 +60,14 @@ function intervalTiming(value: string, prompt: string): { seconds: number; promp
   throw new Error(cmd.kind === "usage" && cmd.reason ? cmd.reason : "spider loop interval must be a whole number with unit s, m, h or d (at most 24 days).");
 }
 
+function intervalLabel(trigger: Extract<Trigger, { kind: "interval" }>): string {
+  const [unit, seconds] = ([["d", 86400], ["h", 3600], ["m", 60], ["s", 1]] as const)
+    .find(([, seconds]) => trigger.intervalSeconds % seconds === 0)!;
+  const amount = Number(trigger.interval.slice(0, -1));
+  const clamped = amount === 0 || (trigger.interval.endsWith("s") && amount < MIN_DELAY_S);
+  return `every ${trigger.intervalSeconds / seconds}${unit}${clamped ? ` (requested ${trigger.interval})` : ""}`;
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -136,12 +144,13 @@ export class SessionScheduler {
     if (process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode === "print" || ctx.mode === "json" || event.reason === "new" || event.reason === "fork") return;
     try {
       const sessionId = ctx.sessionManager.getSessionId();
-      let latest: unknown;
+      let latest: { data?: unknown } | undefined;
       for (const entry of ctx.sessionManager.getEntries()) {
-        if (entry.type === "custom" && entry.customType === "spider-triggers" && record(entry.data) && entry.data.sessionId === sessionId) latest = entry.data;
+        if (entry.type === "custom" && entry.customType === "spider-triggers"
+          && (!record(entry.data) || typeof entry.data.sessionId !== "string" || entry.data.sessionId === sessionId)) latest = entry;
       }
-      if (latest === undefined) return;
-      const snapshot = parseSnapshot(latest, this.time);
+      if (!latest) return;
+      const snapshot = parseSnapshot(latest.data, this.time);
       for (const candidate of snapshot.triggers) {
         let tz: string;
         try {
@@ -170,7 +179,7 @@ export class SessionScheduler {
       nextAtLocal: t.nextAt === null ? null : this.time.formatInZone(t.nextAt, t.tz),
     }));
     const text = triggers.map(t => {
-      const spec = t.kind === "cron" ? `cron ${JSON.stringify(t.cron)} ${t.tz}` : t.kind === "interval" ? `every ${t.interval}` : t.kind;
+      const spec = t.kind === "cron" ? `cron ${JSON.stringify(t.cron)} ${t.tz}` : t.kind === "interval" ? intervalLabel(t) : t.kind;
       const state = t.state === "due" ? "due, waiting for idle" : t.state === "waiting-for-rearm" ? "waiting for re-arm" : `${t.nextAtUtc} UTC (${t.nextAtLocal})`;
       return `${t.name}: ${spec}; ${state}; ${t.origin}; ${t.prompt.replace(/[\r\n]+/g, " ").slice(0, 80)}`;
     }).join("\n") || "No triggers are active.";
@@ -180,19 +189,19 @@ export class SessionScheduler {
     const data: TriggerSnapshot = { version: 1, sessionId: ctx.sessionManager.getSessionId(), triggers: structuredClone([...this.triggers.values()]) };
     this.pi.appendEntry("spider-triggers", data);
   }
-  private changed(result: Result, ctx: ExtensionContext): Result {
+  private changed(result: Result, ctx: ExtensionContext, notify = true): Result {
     try { this.snapshot(ctx); return result; }
     catch (error) {
       const warning = `Trigger state changed in memory but could not be saved: ${String(error)}`;
-      ctx.ui.notify(warning, "warning");
+      if (notify) ctx.ui.notify(warning, "warning");
       return { text: `${result.text} Warning: ${warning}`, details: { ...result.details, warning } };
     }
   }
-  private put(trigger: Trigger, ctx: ExtensionContext): string | undefined {
+  private put(trigger: Trigger, ctx: ExtensionContext, notify = true): string | undefined {
     if (!this.triggers.has(trigger.name) && this.triggers.size >= 20) throw new Error("A session can hold at most 20 triggers.");
     if (this.running && trigger.kind !== "once") this.seals.add(trigger.name);
     this.triggers.set(trigger.name, trigger);
-    const result = this.changed({ text: "", details: {} }, ctx);
+    const result = this.changed({ text: "", details: {} }, ctx, notify);
     this.reconcile();
     return result.details.warning as string | undefined;
   }
@@ -257,8 +266,8 @@ export class SessionScheduler {
     if (args.at !== undefined) throw new Error("spider loop does not accept at; use spider schedule");
     const name = validName(args.name ?? "loop");
     if (args.stop) {
-      if (this.running) this.seals.add(name);
       const old = this.triggers.get(name);
+      if (this.running && old?.kind !== "once") this.seals.add(name);
       const stopped = old !== undefined && old.kind !== "once" && this.triggers.delete(name);
       this.arm();
       const result = { text: stopped ? "Loop stopped." : "No loop was running.", details: { stopped } };
@@ -307,8 +316,9 @@ export class SessionScheduler {
       ...(args.at === undefined ? { delaySeconds: seconds! } : { at: args.at }),
       ...(args.reason === undefined ? {} : { reason: args.reason }), noop: args.noop === true,
     };
+    const replaced = this.triggers.has(name);
     const warning = this.put(trigger, ctx);
-    return { text: `Wakeup scheduled${seconds === undefined ? "" : ` in ${seconds}s`}, at ${new Date(nextAt).toISOString()}. It replaces the trigger named ${name}.${warning ? ` Warning: ${warning}` : ""}`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true, ...(warning ? { warning } : {}) } };
+    return { text: `Wakeup scheduled${seconds === undefined ? "" : ` in ${seconds}s`}, at ${new Date(nextAt).toISOString()}.${replaced ? ` It replaced the trigger named ${name}.` : ""}${warning ? ` Warning: ${warning}` : ""}`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true, ...(warning ? { warning } : {}) } };
   }
   async command(cmd: LoopCommand, ctx: ExtensionContext, origin: PromptOrigin = "user"): Promise<Result> {
     assertPersistentSession("loop", ctx); this.context(ctx);
@@ -327,11 +337,11 @@ export class SessionScheduler {
       }
       this.arm();
       const result = { text: stopped ? "Loop stopped." : "No loop was running.", details: { stopped } };
-      return stopped ? this.changed(result, ctx) : result;
+      return stopped ? this.changed(result, ctx, false) : result;
     }
     if (origin === "model") assertModelPrompt(cmd.prompt);
     const base = { name: "loop", prompt: cmd.prompt, origin, tz: this.time.resolveTimeZone() };
-    const warning = this.put(cmd.kind === "fixed" ? { ...base, kind: "interval", interval: cmd.seconds % 60 === 0 ? `${cmd.seconds / 60}m` : `${cmd.seconds}s`, intervalSeconds: Math.max(60, cmd.seconds), anchor: Date.now(), nextAt: Date.now() } : { ...base, kind: "self-paced", nextAt: Date.now() }, ctx);
+    const warning = this.put(cmd.kind === "fixed" ? { ...base, kind: "interval", interval: cmd.token, intervalSeconds: Math.max(60, cmd.seconds), anchor: Date.now(), nextAt: Date.now() } : { ...base, kind: "self-paced", nextAt: Date.now() }, ctx, false);
     return { text: `Loop started.${warning ? ` Warning: ${warning}` : ""}`, details: { ...this.status().details, ...(warning ? { warning } : {}) } };
   }
 }

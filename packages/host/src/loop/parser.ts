@@ -12,7 +12,7 @@ export type LoopCommand =
   | { kind: "stop"; target: "all" }
   | { kind: "stop"; target: "name"; name: string }
   | { kind: "usage"; reason?: string }
-  | { kind: "fixed"; seconds: number; prompt: string }
+  | { kind: "fixed"; seconds: number; token: string; prompt: string }
   | { kind: "dynamic"; prompt: string };
 
 const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
@@ -31,7 +31,7 @@ export function parseLoop(args: string): LoopCommand {
     const seconds = Number(m[1]) * UNIT_SECONDS[m[2]];
     if (!m[3]) return { kind: "usage" };
     if (seconds > MAX_LOOP_S) return { kind: "usage", reason: "Intervals over 24 days are not supported." };
-    return { kind: "fixed", seconds, prompt: m[3].trim() };
+    return { kind: "fixed", seconds, token: m[1] + m[2], prompt: m[3].trim() };
   }
   return { kind: "dynamic", prompt: text };
 }

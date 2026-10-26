@@ -180,6 +180,18 @@ describe("trigger persistence", () => {
     expect(vi.getTimerCount()).toBe(0); expect(h.snapshots()).toHaveLength(2);
   });
 
+  it.each([null, [], "str", undefined, { version: 2 }, { version: 1, sessionId: 5 }].map(data => ({ data })))("does not revive an older snapshot when the latest data is %j", async ({ data: malformed }) => {
+    const data = saved([once]);
+    data.entries.push(entry(malformed, "latest"));
+    data.entries.push(entry({ version: 1, sessionId: "foreign", triggers: [once] }, "foreign"));
+    const h = setup(fakeTime(), data);
+    await h.emit("session_start", { reason: "reload" });
+    expect(await rows(h)).toEqual([]);
+    expect(h.notifications).toHaveLength(1);
+    expect(h.notifications[0].text).toMatch(/snapshot/i);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(["Bad/Zone", "", undefined, 5])("skips only an invalid-zone trigger and reports it: %s", async tz => {
     const data = saved([once]);
     data.entries.push(entry({ version: 1, sessionId: "test-session", triggers: [
@@ -229,14 +241,19 @@ describe("trigger persistence", () => {
 
   it.each(["once", "self-paced", "interval", "cron", "interval-advance", "cron-advance"])("saves consumed check or advance failures once: %s", async kind => {
     const time = fakeTime(); time.occurrences.set("0 8 * * *", [NOW + 60_000, NOW + 120_000]);
+    const anchor = kind === "interval-advance" ? 8.64e15 - 90_000 : NOW;
+    vi.setSystemTime(anchor);
     const h = setup(time); h.setIdle(false);
     if (kind === "once") await h.runtime.schedule({ delaySeconds: 60, prompt: "fire" }, h.ctx);
     else await h.runtime.loop({ prompt: "fire", ...(kind.startsWith("cron") ? { cron: "0 8 * * *" } : kind.startsWith("interval") ? { interval: "1m" } : {}) }, h.ctx);
     expect(h.snapshots()).toHaveLength(1);
     if (kind === "cron-advance") time.occurrences.clear();
-    if (kind === "interval-advance") vi.spyOn(Math, "floor").mockImplementationOnce(() => { throw new Error("advance failed"); });
-    h.ctx.mode = "print"; h.setIdle(true); vi.setSystemTime(NOW + 60_000); await vi.advanceTimersToNextTimerAsync();
+    h.ctx.mode = "print"; h.setIdle(true); vi.setSystemTime(anchor + 60_000); await vi.advanceTimersToNextTimerAsync();
     expect(h.snapshots()).toHaveLength(2); expect(h.notifications).toHaveLength(1); expect(h.prompts()).toEqual([]);
+    if (kind === "interval-advance") {
+      expect(h.notifications[0].text).toContain("Cannot advance interval");
+      expect(h.snapshots().at(-1)!.triggers).toEqual([]);
+    }
     await vi.advanceTimersByTimeAsync(10_000); expect(h.snapshots()).toHaveLength(2); expect(h.notifications).toHaveLength(1);
   });
 

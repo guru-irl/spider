@@ -80,7 +80,7 @@ export function setup(time: SchedulerTimeMath = fakeTime(), saved?: { sessionId:
     sessionManager: { getEntries: () => structuredClone(entries), getSessionId: () => sessionId },
     ui: { notify: (text: string, level?: string) => { notifications.push({ text, level }); } },
   } as ExtensionContext;
-  const runtime = registerLoopSchedule(pi as unknown as ExtensionAPI, time);
+  const { scheduler: runtime } = registerLoopSchedule(pi as unknown as ExtensionAPI, time);
   const emit = async (name: string, event: unknown = {}) => {
     for (const handler of hooks.get(name) ?? []) await handler(event, ctx);
   };

@@ -34,7 +34,7 @@ const dbs: Db[] = [];
 let repo: Db;
 let global: Db;
 let worktree: Db;
-let shutdown: Array<() => Promise<unknown>> = [];
+let shutdown: Array<(event: { reason: 'quit' }) => Promise<unknown>> = [];
 
 beforeEach(() => {
   startEmbedderSession();
@@ -49,11 +49,11 @@ beforeEach(() => {
   dbs.push(repo, global, worktree);
   vi.stubEnv("PI_SUBAGENT_CHILD", "1"); // No background organism or model calls.
   spiderExtension({ registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
-    on(name: string, fn: () => Promise<unknown>) { if (name === "session_shutdown") shutdown.push(fn); },
+    on(name: string, fn: (event: { reason: 'quit' }) => Promise<unknown>) { if (name === "session_shutdown") shutdown.push(fn); },
   } as never);
 });
 afterEach(async () => {
-  for (const hook of shutdown) await hook();
+  for (const hook of shutdown) await hook({ reason: 'quit' });
   clearActions();
   for (const db of dbs.splice(0)) db.close();
   delete cache[key];

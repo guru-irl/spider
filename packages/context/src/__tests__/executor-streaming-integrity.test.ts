@@ -196,8 +196,8 @@ describe("I-1: foreground rows get the SAME truthful discriminator as background
   it("the executor's own foreground `timeout` kill is a real signal death (killTree → SIGKILL), never a fabricated outcome:'exited'", async () => {
     const exec = new PolyglotExecutor({ projectRoot: () => process.cwd() });
     const r = await exec.execute({
-      language: "shell",
-      code: "echo BEFORE_TIMEOUT; sleep 10",
+      language: "javascript",
+      code: "process.stdout.write('BEFORE_TIMEOUT\\n'); setInterval(() => {}, 1000);",
       timeout: 300,
     });
     expect(r.stdout).toContain("BEFORE_TIMEOUT");
@@ -211,8 +211,9 @@ describe("I-1: foreground rows get the SAME truthful discriminator as background
   it("the executor's own foreground hardCapBytes kill is a real signal death, never a fabricated outcome:'exited'", async () => {
     const exec = new PolyglotExecutor({ projectRoot: () => process.cwd(), hardCapBytes: 1024 });
     const r = await exec.execute({
-      language: "shell",
-      code: "yes AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | head -c 5000000",
+      language: "javascript",
+      // Never exits on its own or on a closed pipe. Only the executor can stop it.
+      code: "process.stdout.on('error', () => {}); setInterval(() => process.stdout.write('A'.repeat(8192)), 1);",
     });
     expect(r.outcome).not.toBe("exited");
     expect(r.outcome).toBe("signal");

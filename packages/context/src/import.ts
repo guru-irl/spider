@@ -9,6 +9,8 @@ export interface ImportCtx {
   repoDb: Db;     // repo DB: memory, skills
   cwd: string;
   sessionId: string;
+  sessionDirectory?: string;
+  sessionDirectoryCwd?: string;
   project?: unknown;
   auxModel?: string;
 }
@@ -48,7 +50,7 @@ export async function importSessions(
     : opts.sessions
       ? opts.sessions
       : opts.select
-        ? selectSessionFiles({ ...opts.select, cwd: ctx.cwd })
+        ? selectSessionFiles({ ...opts.select, cwd: ctx.cwd, sessionDirectory: ctx.sessionDirectory, sessionDirectoryCwd: ctx.sessionDirectoryCwd })
         : [];
 
   const summary: ImportSummary = { imported: 0, skipped: 0, staged: 0, committed: 0, perSession: [] };

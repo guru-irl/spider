@@ -16,6 +16,7 @@ export const ROLE_POLICY: Record<string, { tier: Tier; thinking: ThinkingLevel }
   oracle: { tier: "heavy", thinking: thinking.medium },
   reviewer: { tier: "heavy", thinking: thinking.high },
   scout: { tier: "light", thinking: thinking.low },
+  watcher: { tier: "light", thinking: thinking.low },
   digest: { tier: "light", thinking: thinking.low },
   self_name: { tier: "light", thinking: thinking.low },
   upstream_watch: { tier: "light", thinking: thinking.low },

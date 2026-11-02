@@ -1,4 +1,5 @@
 import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
+import { createFixtureHerdr, fixtureHerdrBoundary } from "./fixtures/herdr-assets.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { build, createServer, resolveConfig } from "vite";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
@@ -24,7 +25,7 @@ it("two independent builds preserve each other", async () => {
   const copy = join(root, "synthetic-checkout"); mkdirSync(join(copy, "scripts"), { recursive: true }); mkdirSync(join(copy, "packages/host/src"), { recursive: true });
   cpSync(resolve("vite.config.mjs"), join(copy, "vite.config.mjs")); cpSync(resolve("scripts/build-id.mjs"), join(copy, "scripts/build-id.mjs"));
   writeFileSync(join(copy, "package.json"), '{"type":"module","version":"0.0.0"}');
-  const source = join(copy, "packages/host/src/extension.ts"); writeFileSync(source, 'export default function fixture() { return "first"; }');
+  const source = join(copy, "packages/host/src/extension.ts"); writeFileSync(source, fixtureHerdrBoundary + 'export default function fixture() { return "first"; }');
   const watcher = await build({ configFile: join(copy, "vite.config.mjs"), root: copy, logLevel: "silent", build: { outDir, watch: {} } }) as import("vite").Rolldown.RolldownWatcher;
   const next = () => new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => { watcher.off("event", onEvent); reject(new Error("fixture-watch-deadline")); }, 60_000);
@@ -35,10 +36,11 @@ it("two independent builds preserve each other", async () => {
   try {
     await next(); expect(readFileSync(join(outDir, "extension.js"), "utf8")).toContain("first");
     expect(names.map(n => readFileSync(join(dashboard, "assets", n)))).toEqual(bytes);
-    const rebuilt = next(); writeFileSync(source, 'export default function fixture() { return "second"; }'); await rebuilt;
+    const rebuilt = next(); writeFileSync(source, fixtureHerdrBoundary + 'export default function fixture() { return "second"; }'); await rebuilt;
     expect(readFileSync(join(outDir, "extension.js"), "utf8")).toContain("second");
     expect(names.map(n => readFileSync(join(dashboard, "assets", n)))).toEqual(bytes);
   } finally { await watcher.close(); }
+  createFixtureHerdr(root);
   const guard = () => execFileSync(process.execPath, [resolve("scripts/assert-bundle.mjs")], { cwd: root, encoding: "utf8", stdio: "pipe" });
   expect(guard()).toContain("assert-bundle: OK");
   for (const file of ["dist/extra.js", "dist/dashboard/states.html", "dist/dashboard/assets/app-12345678.js.map", "dist/dashboard/assets/extra.bin"]) {

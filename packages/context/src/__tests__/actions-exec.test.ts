@@ -102,9 +102,15 @@ describe("exec actions", () => {
     });
   });
 
-  // Reachability note (matches A-probe's own finding): `executeFile` never forwards
-  // `background` to `execute()` (see executor.ts), so `runExecFile`/`runBatch` cannot
-  // reach `outcome: "timeout"`/`"unknown"` through a REAL invocation today — only
+  it('a local foreground timeout remains an error even if the observed numeric exit is zero', () => {
+    expect(isExecError({ outcome: 'exited', exitCode: 0, timedOut: true, backgrounded: false })).toBe(true);
+    expect(isExecError({ outcome: 'timeout', exitCode: null, timedOut: true, backgrounded: true })).toBe(false);
+    expect(isExecError({ outcome: 'unknown', exitCode: null, timedOut: true })).toBe(false);
+  });
+
+  // Local reachability note: without `on`, `executeFile` still does not forward
+  // `background` to `execute()` (see executor.ts), so local `runExecFile`/`runBatch`
+  // cannot reach `outcome: "timeout"`/`"unknown"` through a real invocation — only
   // `runExec` can. The tests below therefore prove two REAL, reachable things instead:
   // (1) all three functions genuinely agree on the SAME real signal-death command (not
   // just a coincidental match), and (2) the already-working numeric-exit/clean-exit cases

@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { readPanelUsage } from "./panel-usage.js";
 import { openDashboardReader } from "./dashboard-reader.js";
 import type { DashboardReader } from "./dashboard-contract.js";
 import { billingPeriod } from "./billing-pace.js";
@@ -44,7 +45,7 @@ export async function bootUsageWorker(
   let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
   let poll = !command.dashboardMode && command.poll;
   let calibrationMode = command.calibration ?? "auto";
-  let reopen = false;
+  let reopen = false, leaseBusy = false;
   let opened = false, openFailures = 0, retryOpenAt = 0;
   function failedFirstOpen(failure: unknown): void {
     if (opened) return;
@@ -71,10 +72,14 @@ export async function bootUsageWorker(
   let controller = new AbortController();
   const error = (_failure: unknown, code = "usage-ingest-failed") => post({ type: "error", code });
   function follow(code: "usage-ingest-lease-lost" | "usage-ingest-lease-busy"): void {
-    controller.abort(); lease = undefined; reopen = true;
-    // A normal ownership transition, not a failed import. Reopen only after the
-    // current ingest settles so its native connection is not closed underneath it.
+    controller.abort();
+    // Contention is not revocation. Keep the token and connection so renewal can
+    // retry; discarding them would make us follow our own live row until TTL.
+    leaseBusy = code === "usage-ingest-lease-busy" && !!lease;
+    if (!leaseBusy) { lease = undefined; reopen = true; }
+    // Reopen only after the current ingest settles, never underneath its I/O.
     post({ type: "error", code });
+    if (leaseBusy && !task) schedule();
   }
   const guard = () => !stopped && !controller.signal.aborted && !!lease?.isCurrent(now);
   const stateBatch = (state: BackfillState): ImportBatch => ({ calls: [], runs: [], states: [], resetSources: [], sourceErrors: [], detailedRunIds: [], restoreAggregateRunIds: [], at: now(), commitGuard: guard, backfillState: state });
@@ -192,7 +197,7 @@ export async function bootUsageWorker(
     controller.abort(); reopen = true;
     await stopCounter();
     const release = lease ?? dashboardLease;
-    lease = dashboardLease = undefined;
+    lease = dashboardLease = undefined; leaseBusy = false;
     if (release && ledger) {
       monthReader?.close(); monthReader = undefined;
       pendingRelease = { lease: release, ledger }; ledger = undefined;
@@ -213,7 +218,7 @@ export async function bootUsageWorker(
     if (reopen) {
       await stopCounter(); closeLedger();
       controller = new AbortController(); reopen = false;
-    }
+    } else if (leaseBusy) controller = new AbortController();
     if (!ledger) open();
     // Capture a recovery acquisition before its first fallible renewal.
     if (command.dashboardMode && lease) { dashboardPass = true; dashboardLease = lease; }
@@ -222,6 +227,7 @@ export async function bootUsageWorker(
       await stopCounter(); closeLedger();
       controller = new AbortController(); open();
     }
+    leaseBusy = false;
     if (command.dashboardMode && !lease) {
       const owner = ledger!.leases.inspect("ingest", now(), command.owner);
       // Once another participant owns the lease, its departure is takeover,
@@ -317,7 +323,7 @@ export async function bootUsageWorker(
     clearTimeout(timer);
     // New followers observe the initial owner's completion promptly, read-only.
     const at = monotonicNow();
-    const delay = !opened ? Math.max(0, retryOpenAt - at) : pendingRelease ? SNAPSHOT_MS : command.dashboardMode && at < standbyUntil ? standbyUntil - at
+    const delay = !opened ? Math.max(0, retryOpenAt - at) : pendingRelease || leaseBusy ? SNAPSHOT_MS : command.dashboardMode && at < standbyUntil ? standbyUntil - at
       : command.dashboardMode && !lease && nextPassAt > at ? Math.min(SNAPSHOT_MS, nextPassAt - at)
       : !lease ? SNAPSHOT_MS : passDelay();
     timer = setTimeout(request, delay);
@@ -370,6 +376,10 @@ export async function bootUsageWorker(
   function onMessage(message: UsageWorkerCommand): void {
     if (message?.type === "stop") { void stop(); return; }
     if (stopped) return;
+    if (message?.type === "panel-usage") {
+      post({ type: "panel-usage", requestId: message.requestId, data: readPanelUsage(command.roots.ledgerFile, message.now, message.sessionId, message.budget, calibrationMode) });
+      return;
+    }
     if (message?.type === "refresh") request();
     else if (message?.type === "configure") {
       poll = !command.dashboardMode && message.poll;

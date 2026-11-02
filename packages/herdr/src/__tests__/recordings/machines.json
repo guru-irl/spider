@@ -1,0 +1,15 @@
+{
+  "machines": [
+    {
+      "host": "fixture-host.invalid",
+      "id": "core-2",
+      "name": "remote.invalid",
+      "session": "remote",
+      "state": "connecting",
+      "target": "/fixture/file",
+      "temporary": false,
+      "version": "0.1.16",
+      "via": true
+    }
+  ]
+}

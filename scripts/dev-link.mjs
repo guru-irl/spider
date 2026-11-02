@@ -5,14 +5,14 @@
 // project-trust prompt). Its native import bypasses jiti's import rewrite and keys
 // the cache on bundle mtime and size, so /reload picks up a completed watch rebuild.
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionShim } from "./extension-shim.mjs";
+import { piAgentDir } from "./pi-agent-dir.mjs";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const bundle = join(repoRoot, "dist", "extension.js");
-const extDir = join(homedir(), ".pi", "agent", "extensions");
+const extDir = join(piAgentDir(), "extensions");
 const shim = join(extDir, "spider-dev.ts");
 
 if (process.argv.includes("--unlink")) {

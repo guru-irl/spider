@@ -16,6 +16,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - Background learning: proposes memory and skills from session activity.
 - [Compaction](docs/guide/compaction.md): opt-in thresholds per model, and spider-managed summaries of the parent session, with a limit on how many files they list.
 - [Loops and scheduled wakeups](docs/guide/loop-and-schedule.md): named interval, cron, self-paced, and one-shot triggers that keep wall-clock due times across reload and same-session resume.
+- [Herdr integration](docs/guide/herdr.md): remote execution with agent consoles, subagent viewers, and the spider panel when pi runs inside the Herdr terminal workspace.
 
 Spider bundles the superpowers workflow skills and 31 skills adapted from [pstack](https://github.com/michael-denyer/pstack-claude). The pstack set includes `how`, `why`, `teach`, writing guidance and decision principles. `spider skill` lists and views both collections next to project skills, and shows each skill's source even when names overlap. Background curation never touches bundled skills.
 
@@ -213,6 +214,16 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 - Use `spider exec`, `exec_file`, or `batch` and print only the output you need.
 - Bash enforcement redirects the agent to spider execution. It is not an OS security boundary.
 - See [Using spider](docs/guide/using-spider.md#execution) for examples, background receipts, exit status, and cleanup cautions.
+
+## Herdr
+
+- When pi runs in a [Herdr](docs/guide/herdr.md) terminal, spider shows its work in the Herdr window. It never types into the pi editor. Outside Herdr, or with the global setting `herdr.enabled` set to `false`, spider runs as usual.
+- `spider exec`, `exec_file`, and `batch` take an `on` machine name. The command runs on that machine, each agent gets one console per machine, and the full output returns to pi. Subagents can use `on` too.
+- Plain `ssh` and other SSH transports to managed machines are refused with a pointer to `on`. An audited admin command covers repairs that need SSH.
+- The left sidebar lists sessions, subagent runs, consoles, and live commands, and shows each configured machine's status. Each subagent run gets a viewer with a separate message box for steering.
+- The spider panel shows what needs you in the selected space, each session's todos, triggers, and credits this month, and the month's credit pace.
+- Setup runs once from a plain shell with a configuration file you keep outside the repository. It needs `hc` `0.1.16` and `herdr-app` `0.1.11`. Run `/herdr-setup` in pi to print the exact commands.
+- See [Herdr integration](docs/guide/herdr.md) for setup, configuration, the sidebar, shortcuts, resume, and the doctor.
 
 ## Troubleshooting
 

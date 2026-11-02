@@ -42,7 +42,7 @@ function host() {
   const hooks = new Map<string, Array<(...args: any[]) => unknown>>();
   const pi = { registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
     on(name: string, fn: (...args: any[]) => unknown) { hooks.set(name, [...hooks.get(name) ?? [], fn]); },
-    async emit(name: string, ctx?: unknown) { for (const fn of hooks.get(name) ?? []) await fn({}, ctx); } };
+    async emit(name: string, ctx?: unknown) { for (const fn of hooks.get(name) ?? []) await fn(name === 'session_shutdown' ? { reason: 'quit' } : {}, ctx); } };
   spiderExtension(pi as never);
   return pi;
 }
@@ -64,7 +64,7 @@ afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers();
   setGlobalDbPathForTests(null); rmSync(root, { recursive: true, force: true });
 });
-const context = () => ({ cwd: root, hasUI: false, ui: { notify() {} }, sessionManager: { getSessionId: () => "fixture-session", getEntries: () => [] } });
+const context = () => ({ cwd: root, hasUI: false, ui: { notify() {} }, sessionManager: { getSessionId: () => "fixture-session", getSessionFile: () => undefined, getEntries: () => [] } });
 function tierDbs() {
   const info = resolveProject(root);
   const repo = openRepo(info.repoKey!); const worktree = openProject(info.projectKey);

@@ -17,7 +17,7 @@ const candidateColumns = ["id", "ts", "session_id", "run_id", "actor", "model", 
 
 /** Discover identities from the small durable dictionary and metadata, not an
  * all-history raw-call pass. The shared resolver fails closed on ambiguous evidence. */
-function scopeFor(ctx: DashboardQueryContext, id: string): Scope {
+export function scopeFor(ctx: DashboardQueryContext, id: string): Scope {
   if (!supportedDetailId(id)) throw new DashboardQueryError("not-found");
   const unattributed = id === UNATTRIBUTED_SESSION_ID;
   const sessions = ctx.db.prepare("SELECT id,name,project FROM sessions").all() as Session[];
@@ -210,7 +210,7 @@ function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionDa
   return data;
 }
 
-function scopedRange(scope: Scope, range: SessionRange): Scope {
+export function scopedRange(scope: Scope, range: SessionRange): Scope {
   // Time filtering follows global canonical selection, so out-of-range reports and copies cannot reappear.
   return { ...scope, bindings: { ...scope.bindings, ...range },
     sql: `${scope.sql.replace(", session_candidates AS MATERIALIZED (", ", whole_session_candidates AS MATERIALIZED (")},

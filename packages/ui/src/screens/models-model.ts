@@ -3,7 +3,7 @@ import type { ModelEntry, Tier } from "@spider/models";
 /** Subagent roles that carry a configurable model default (models.defaults.<role>). */
 export const MODEL_ROLES: string[] = [
   "reviewer", "worker", "scout", "planner", "researcher",
-  "oracle", "digest", "self_name", "upstream_watch",
+  "oracle", "digest", "self_name", "upstream_watch", "watcher",
 ];
 
 /** Tier render order — light → standard → heavy. */

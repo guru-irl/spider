@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { controlDoctor } from "../control";
 import { createFixtureDashboard, cleanupFixtureDashboards } from "../usage/__tests__/fixtures/dashboard-assets.js";
+import { createFixtureHerdr, fixtureHerdrBoundary } from "../usage/__tests__/fixtures/herdr-assets.js";
 import * as build from "../../../../scripts/build-id.mjs";
 import * as runtime from "../build-id";
 
@@ -163,7 +164,8 @@ describe("assert-bundle marker gate", () => {
     const dir = join(scratch, "non-function-export", "dist");
     mkdirSync(dir, { recursive: true });
     createFixtureDashboard(undefined, join(dir, "dashboard"));
-    writeFileSync(join(dir, "extension.js"), `// ${marker}\nexport default { fixture: true };\n`);
+    createFixtureHerdr(join(dir, ".."));
+    writeFileSync(join(dir, "extension.js"), `// ${marker}\n${fixtureHerdrBoundary}export default { fixture: true };\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
     expect(result.stderr).toContain("default export is not a function");
@@ -172,7 +174,8 @@ describe("assert-bundle marker gate", () => {
     const dir = join(scratch, "native-link-failure", "dist");
     mkdirSync(dir, { recursive: true });
     createFixtureDashboard(undefined, join(dir, "dashboard"));
-    writeFileSync(join(dir, "extension.js"), `// ${marker}\nimport { missing } from 'node:fs';\nexport default function spiderExtension() { return missing; }\n`);
+    createFixtureHerdr(join(dir, ".."));
+    writeFileSync(join(dir, "extension.js"), `// ${marker}\n${fixtureHerdrBoundary}import { missing } from 'node:fs';\nexport default function spiderExtension() { return missing; }\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
     expect(result.stderr).toContain("native import failed");
@@ -187,7 +190,8 @@ describe("assert-bundle marker gate", () => {
     const dir = join(scratch, name, "dist");
     mkdirSync(dir, { recursive: true });
     createFixtureDashboard(undefined, join(dir, "dashboard"));
-    writeFileSync(join(dir, "extension.js"), `${banner}export default function spiderExtension() {}\n`);
+    createFixtureHerdr(join(dir, ".."));
+    writeFileSync(join(dir, "extension.js"), `${banner}${fixtureHerdrBoundary}export default function spiderExtension() {}\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(exitCode);
     if (exitCode) expect(result.stderr).toContain("build marker");

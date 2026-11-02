@@ -8,6 +8,10 @@ export interface ConfigField {
 export interface ConfigGroup { id: string; label: string; fields: ConfigField[]; }
 
 export const CONFIG_SCHEMA: ConfigGroup[] = [
+	{ id: "herdr", label: "Herdr", fields: [
+		{ key: "herdr.enabled", label: "Enable Herdr", type: "enum", default: "auto", enum: ["auto", "true", "false"], description: "Auto activates inside Herdr only when the installed assets are present. Changes apply on the next session.", restart: true },
+		{ key: "herdr.config", label: "Herdr user config", type: "string", default: "", description: "Absolute path to the user-owned Herdr configuration file. Changes apply on the next session.", restart: true },
+	]},
 	{ id: "compaction", label: "Compaction", fields: [
 		{ key: "compaction.summaryModel", label: "Summary model", type: "model-ref", default: null, description: "Optional provider/model for parent summaries. Null leaves pi in charge. Changes apply on the next compaction." },
 		{ key: "compaction.summaryThinking", label: "Summary thinking", type: "enum", default: "high", enum: [], description: "Reasoning level for managed parent summaries. Children retain their own thinking." },
@@ -144,6 +148,7 @@ export function coerce(field: ConfigField, raw: string): { ok: boolean; value?: 
 			return { ok: false, error: "expected a JSON object of role-to-model strings" };
 		}
 		case "enum": {
+			if (field.key === "herdr.enabled" && (raw === "true" || raw === "false")) return { ok: true, value: raw === "true" };
 			if (!field.enum?.length) return { ok: false, error: "host must inject supported enum levels before editing this field" };
 			if (!field.enum.includes(raw)) return { ok: false, error: `one of ${field.enum?.join("|")}` };
 			return { ok: true, value: raw };

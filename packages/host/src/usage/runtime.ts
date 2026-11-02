@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { calibrationFallback } from "./calibration.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { UsageRoots } from "./discovery.js";
-import type { SourceErrorDiagnostics, UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
+import type { PanelUsage, SourceErrorDiagnostics, UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
 
 export type UsageWorker = Pick<Worker, "on" | "off" | "postMessage" | "terminate" | "unref">;
 export type UsageRuntimeOptions = {
@@ -53,6 +53,8 @@ export class UsageRuntime {
   private workerFailed = false;
   private stopping: Promise<void> | undefined;
   private stoppedAck: (() => void) | undefined;
+  private nextPanelRequest = 0;
+  private readonly panelRequests = new Map<number, { settle(value: PanelUsage | null): void }>();
   private current: UsageRuntimeSnapshot = { health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null };
   constructor(private readonly options: UsageRuntimeOptions) {}
 
@@ -89,6 +91,20 @@ export class UsageRuntime {
     }, 0);
     this.startup.unref?.();
   }
+  readPanel(now: number, sessionId: string, budget?: number): Promise<PanelUsage | null> {
+    if (!this.worker || this.stopped || this.workerFailed || this.panelRequests.size >= 8) return Promise.resolve(null);
+    const requestId = ++this.nextPanelRequest;
+    return new Promise(resolve => {
+      const timer = setTimeout(() => settle(null), 10000);
+      timer.unref?.();
+      const settle = (value: PanelUsage | null) => { clearTimeout(timer); this.panelRequests.delete(requestId); resolve(value); };
+      this.panelRequests.set(requestId, { settle });
+      this.send({ type: 'panel-usage', requestId, now, sessionId, budget });
+    });
+  }
+  private clearPanelRequests(): void {
+    for (const request of this.panelRequests.values()) request.settle(null);
+  }
   refresh(): void {
     if (!this.worker || this.stopped || this.refreshPending) return;
     this.refreshPending = true; this.send({ type: "refresh" });
@@ -108,11 +124,12 @@ export class UsageRuntime {
       : this.current.calibration ?? calibrationFallback() });
   }
   private notify(): void { try { this.options.onSnapshot?.(this.snapshot()); } catch { /* UI errors do not escape the lifecycle */ } }
-  private fail(code: string): void { this.refreshPending = false; this.current = { ...this.current, backfill: "failed", errorCode: code }; this.notify(); }
+  private fail(code: string): void { this.clearPanelRequests(); this.refreshPending = false; this.current = { ...this.current, backfill: "failed", errorCode: code }; this.notify(); }
   private send(command: UsageWorkerCommand): void { try { this.worker?.postMessage(command); } catch (error) { if (!this.stopped) this.fail(failureCode(error)); } }
   private readonly onMessage = (event: UsageWorkerEvent): void => {
     if (event?.type === "stopped") { this.gracefulStop = event.released !== false; this.stoppedAck?.(); return; }
     if (this.stopped) return;
+    if (event?.type === 'panel-usage') { this.panelRequests.get(event.requestId)?.settle(event.data); return; }
     if (event?.type === "snapshot") {
       this.refreshPending = false;
       const diagnostics = validSourceDiagnostics(event.sourceErrorDiagnostics) ? event.sourceErrorDiagnostics : undefined;
@@ -135,7 +152,7 @@ export class UsageRuntime {
   private readonly onExit = (): void => { const failed = this.workerFailed; this.workerFailed = true; if (!this.stopped && !failed && !this.current.errorCode) this.fail("usage-worker-failed"); this.stoppedAck?.(); };
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
-    this.stopped = true;
+    this.stopped = true; this.clearPanelRequests();
     if (this.startup) clearTimeout(this.startup);
     this.startup = undefined;
     const worker = this.worker;

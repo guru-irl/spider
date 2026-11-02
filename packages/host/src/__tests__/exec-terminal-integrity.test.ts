@@ -284,7 +284,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
           action: "batch",
           commands: [
             { language: "shell", code: "echo one" },
-            { language: "shell", code: "sleep 5", timeout: 300 },
+            { language: "javascript", code: "setInterval(() => {}, 1000)", timeout: 300 },
           ],
         };
         const res = await runBatch(args as any, { cwd: root } as any);
@@ -318,7 +318,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
           action: "batch",
           commands: [
             { language: "shell", code: "echo one" },
-            { language: "shell", code: "sleep 5", timeout: 300 },
+            { language: "javascript", code: "setInterval(() => {}, 1000)", timeout: 300 },
           ],
         };
         const res = await runBatch(args as any, { cwd: root } as any);

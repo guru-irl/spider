@@ -108,13 +108,17 @@ if (isUsageServerMain(import.meta.url)) {
       processGroup: Number(group.stdout.trim()), ignoredStdio: [0, 1, 2].every(fd => fstatSync(fd).isCharacterDevice()) }));
   }
   if (process.env.SPIDER_FIXTURE_DELAY) await new Promise(resolve => setTimeout(resolve, Number(process.env.SPIDER_FIXTURE_DELAY)));
+  // Pin the clock origin across the detached process boundary. Keep it advancing
+  // so HTTP reader-retry cooldowns still elapse; startup uses the real clock.
+  const dashboardNow = process.env.SPIDER_FIXTURE_DASHBOARD_NOW, startedAt = Date.now();
+  const now = dashboardNow === undefined ? undefined : () => Number(dashboardNow) + Date.now() - startedAt;
   if (process.env.SPIDER_FIXTURE_PARTICIPANT) {
     const record = JSON.parse(await readFile(process.argv[3], "utf8"));
     const lease = join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "fixture-lease");
     const stopped = join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "participant-stopped");
     await runUsageServerEntry(import.meta.url, {
       dashboardDir: fileURLToPath(new URL("./dashboard/", import.meta.url)),
-      testHook: { idleMs: process.env.SPIDER_FIXTURE_IDLE ? 300 : undefined },
+      testHook: { now, idleMs: process.env.SPIDER_FIXTURE_IDLE ? 300 : undefined },
       startParticipant: () => {
         const keepAlive = setInterval(() => {}, 1000);
         writeFileSync(lease, "synthetic-lease"); let stops = 0;
@@ -127,7 +131,7 @@ if (isUsageServerMain(import.meta.url)) {
             clearInterval(keepAlive);
           } };
       } });
-  } else await runUsageServerEntry(import.meta.url, { dashboardDir: fileURLToPath(new URL("./dashboard/", import.meta.url)) });
+  } else await runUsageServerEntry(import.meta.url, { dashboardDir: fileURLToPath(new URL("./dashboard/", import.meta.url)), testHook: { now } });
   if (process.env.SPIDER_FIXTURE_IGNORE_TERM) { process.removeAllListeners("SIGTERM"); process.on("SIGTERM", () => {}); }
   if (process.env.SPIDER_FIXTURE_CRASH) setTimeout(() => { throw new Error("synthetic-token-private-path"); }, 700);
 } else if (process.argv[2] === "observe-publication") {

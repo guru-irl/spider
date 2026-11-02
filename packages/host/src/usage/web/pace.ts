@@ -1,11 +1,10 @@
 import type { Pace } from "../dashboard-v4-contract.js";
 import { element } from "./dom.js";
 import { renderTable } from "./tables.js";
+import { formatCompact as number, formatExact as exact, formatMonthTitle } from "./format.js";
 const NS = "http://www.w3.org/2000/svg";
 const cleanups = new WeakMap<HTMLElement, () => void>();
 let sequence = 0;
-const number = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { notation: n >= 1000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(n).replace("K", "k");
-const exact = (n: number | null) => n === null ? "unavailable" : new Intl.NumberFormat("en-US", { maximumFractionDigits: n < 10 ? 1 : 0 }).format(n);
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 export function disposePace(root: HTMLElement): void { cleanups.get(root)?.(); cleanups.delete(root); }
 export function renderPace(document: Document, pace: Pace, _now: number, initiallyOpen = false): HTMLElement {
@@ -43,7 +42,7 @@ export function renderPace(document: Document, pace: Pace, _now: number, initial
   const foreign = node("foreignObject", { x: Math.max(0, Math.min(630, ringPosition(1000) - 185)), y: 8, width: 370, height: 470 });
   const popover = element(document, "div", undefined, "pace-popover"); popover.id = id; popover.hidden = true;
   popover.setAttribute("role", "region"); popover.setAttribute("aria-label", "Credit pace details");
-  popover.append(element(document, "h3", `${months[start.getUTCMonth()]} ${start.getUTCFullYear()}`));
+  popover.append(element(document, "h3", formatMonthTitle(pace.period.start)));
   const rows: string[][] = [["Used", exact(pace.used)]];
   if (extent !== null) {
     if (pace.budget !== null) rows.push(["Budget", exact(pace.budget)], ["Even pace", exact(pace.evenPace)]);

@@ -1,4 +1,5 @@
 import { seedCalibrationEvidence } from "./fixtures/calibration-evidence.js";
+import { DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 import { USAGE_REPLACEMENT_GRACE_MS, USAGE_LAUNCH_DEADLINE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { readFile, rm, stat, writeFile, symlink, access, mkdir, chmod, utimes, open, readdir } from "node:fs/promises";
@@ -45,18 +46,19 @@ it("caller calibration reload reaches initial and retry readers", async () => {
   // Hardcoding the mode, omitting the reader callback, or omitting it on retry would keep auto/off stale.
   const { h } = await helpers();
   for (const initiallyMissing of [false, true]) {
-    const f = await fixtures.fixture(); const configFile = join(f.root, "config.json");
+    // Pin both reader paths and evidence to a month with days before the first fit.
+    const f = await fixtures.fixture({ SPIDER_FIXTURE_DASHBOARD_NOW: String(DASHBOARD_NOW) }); const configFile = join(f.root, "config.json");
     f.options.calibrationConfigFile = configFile;
     await writeFile(configFile, JSON.stringify({ "usage.calibration": "off" }));
     await writeFile(join(f.root, "launcher-options.json"), JSON.stringify(f.options));
-    if (!initiallyMissing) seedCalibrationEvidence(f.options.roots.ledgerFile);
+    if (!initiallyMissing) seedCalibrationEvidence(f.options.roots.ledgerFile, DASHBOARD_NOW);
     const launched = await f.start("launch").exited; expect(launched.code, launched.stderr).toBe(0);
     const running = JSON.parse(launched.stdout); f.pids.add(running.pid);
     const bootstrap = await h.reply(running.port, new URL(running.bootstrapUrl).pathname + new URL(running.bootstrapUrl).search);
     const headers = { Cookie: bootstrap.headers["set-cookie"][0].split(";")[0] };
     if (initiallyMissing) {
       expect((await h.reply(running.port, "/api/calibration", headers)).status).toBe(503);
-      seedCalibrationEvidence(f.options.roots.ledgerFile);
+      seedCalibrationEvidence(f.options.roots.ledgerFile, DASHBOARD_NOW);
     }
     const off = await h.waitFor(async () => { const r = await h.reply(running.port, "/api/calibration", headers); return r.status === 200 ? r : undefined; });
     expect(JSON.parse(off.body).data.correction).toMatchObject({ status: "published-only", factor: null });

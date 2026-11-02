@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { aroundAll } from "vitest";
+import { globalConfigFixture } from "./packages/db-core/src/__tests__/global-config.testutil.js";
 
 // Every test file starts as a parent, even when launched by a subagent.
 // Child-mode tests explicitly set their own identity and restore it locally.
@@ -37,7 +38,11 @@ const pidScratchRoots = {
 const ownedPidScratch = Object.values(pidScratchRoots)
   .map((root) => resolve(root, String(process.pid)))
   .filter((dir) => !existsSync(dir));
+// The root is fixed at module load and shared by every file in this fork.
+// Preserve the file's starting state even when a test overrides the env later.
+const globalConfig = globalConfigFixture(testGlobalRoot);
 mkdirSync(testGlobalRoot, { recursive: true });
+fenceHerdrTestEnvironment(checkout, testGlobalRoot);
 process.env.SPIDER_TEST_FIXTURE_CHECKOUT = checkout;
 process.env.SPIDER_GLOBAL_ROOT = testGlobalRoot;
 // Pi's public trust reader takes a filesystem lock. Its agent directory must be
@@ -60,5 +65,19 @@ aroundAll(async (runSuite) => {
         // best effort
       }
     }
+    globalConfig.restore();
   }
 });
+
+export function fenceHerdrTestEnvironment(checkout: string, root: string): void {
+  for (const key of Object.keys(process.env)) if (key.startsWith("HC_") || key.startsWith("HERDR_")) delete process.env[key];
+  const bin = resolve(root, "bin"); mkdirSync(bin, { recursive: true });
+  for (const name of ["hc", "herdr-app", "ssh", "scp", "sftp"]) {
+    const path = resolve(bin, name);
+    const message = `real ${name === 'herdr-app' ? 'hc' : name} is disabled in tests; install an explicit test fixture`;
+    writeFileSync(path, `#!/bin/sh\nprintf "%s\\n" "${message}" >&2\nexit 91\n`);
+    chmodSync(path, 0o700);
+    writeFileSync(`${path}.cmd`, `@echo ${message} 1>&2\r\n@exit /b 91\r\n`);
+  }
+  process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`;
+}

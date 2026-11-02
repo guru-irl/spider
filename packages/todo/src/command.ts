@@ -78,6 +78,7 @@ function notifyText(db: Db, sessionId: string): string {
  * When the pi UI exposes an interactive surface (`ctx.ui.custom`), the handler opens
  * an overlay Component that lists the current session's todos and supports:
  *   - `a`        toggle between this-session and ALL-sessions view (re-query + re-render)
+ *   - arrows / Page Up / Page Down scroll when the list is taller than the terminal
  *   - `q`/Esc/^C close the overlay (`done()`)
  * When `ctx.ui.custom` is absent (non-interactive/RPC modes), it degrades to the
  * previous fire-once `ctx.ui.notify` behavior so nothing breaks.
@@ -93,13 +94,14 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
 
       // Interactive overlay when available.
       if (typeof ctx?.ui?.custom === "function") {
+        // A non-overlay custom view makes pi restore the editor's text without its cursor.
         await ctx.ui.custom((tui: any, theme: any, _kb: any, done: () => void) => {
           let allSessions = false;
+          let scrollOffset = 0;
+          let maxScroll = 0;
+          let pageSize = 1;
           const fg = fgOf(theme);
-          // force:true so a shrinking view (all→this) or closing the overlay triggers pi's
-          // clearOnShrink — freed rows are cleared and the chat flows back down with the editor
-          // pinned at the bottom, instead of stranding the chat bar in the middle (mirrors the
-          // agents drilled-detail fix in agents-ui.ts).
+          // Force a redraw when the view shrinks or closes so freed rows are cleared.
           const requestRender = () => tui?.requestRender?.(true);
           return {
             render(width: number): string[] {
@@ -127,6 +129,19 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
                 }
               }
               const hint = `Press "a" to toggle ${allSessions ? "current session" : "all sessions"} · "q"/Esc to close`;
+              const height = tui?.terminal?.rows;
+              if (typeof height === "number" && Number.isFinite(height) && height >= 1) {
+                const rows = Math.floor(height);
+                pageSize = Math.max(1, rows - 1);
+                maxScroll = Math.max(0, lines.length - pageSize);
+                scrollOffset = Math.min(scrollOffset, maxScroll);
+                if (lines.length + 3 > rows) {
+                  const footer = truncateToWidth(`  ${fg("dim", maxScroll > 0 ? `${hint} · ↑/↓, PgUp/PgDn scroll` : hint)}`, w, "");
+                  return [...lines.slice(scrollOffset, scrollOffset + pageSize), ...(rows > 1 ? [footer] : [])];
+                }
+              } else {
+                maxScroll = 0;
+              }
               lines.push("", truncateToWidth(`  ${fg("dim", hint)}`, w, ""), "");
               return lines;
             },
@@ -134,8 +149,18 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
             handleInput(data: string): boolean {
               if (data === "a" || data === "A") {
                 allSessions = !allSessions;
+                scrollOffset = 0;
                 requestRender();
                 return true;
+              }
+              if (maxScroll > 0) {
+                const delta = matchesKey(data, Key.up) ? -1 : matchesKey(data, Key.down) ? 1
+                  : matchesKey(data, Key.pageUp) ? -pageSize : matchesKey(data, Key.pageDown) ? pageSize : 0;
+                if (delta) {
+                  scrollOffset = Math.max(0, Math.min(maxScroll, scrollOffset + delta));
+                  requestRender();
+                  return true;
+                }
               }
               // Esc / Ctrl+C / q close. Use matchesKey (not a raw "\x1b" compare) so pi's
               // normalized escape key actually matches — the raw compare silently missed it.
@@ -147,7 +172,7 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
             },
             dispose() { requestRender(); },
           };
-        });
+        }, { overlay: true, overlayOptions: { anchor: "bottom-center", width: "100%" } });
         return;
       }
 

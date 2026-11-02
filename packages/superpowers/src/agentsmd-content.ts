@@ -129,6 +129,20 @@ Never use \`/tmp\`, \`$TMPDIR\`, or \`/var/tmp\` for scratch, golden data, or
 logs — they are volatile and destroy baselines mid-task. Put all
 scratch/intermediate/golden/log data under the project's \`.spider/scratch/\`
 (or \`~/.pi/agent/spider/scratch/\` for global work).
+
+## Herdr terminals
+
+When \`HC_TERMINAL_ID\` is set, remote execution is visible.
+For commands on another machine, use \`spider exec\`, \`exec_file\`, or \`batch\`
+with an explicit \`on\` destination.
+Inspect owned jobs and their output through spider; an observer exit is not
+command completion. Communicate through \`spider message\` or intercom.
+Never use \`hc send\`, paste, or terminal input to send text into pi, even if
+the hc manual recommends it.
+Launch generated roles with \`hc run --bg --no-notify spider-worker\`
+(or spider-reviewer/spider-watcher), with no task arguments. Instructions
+come from a separate system-prompt file; assign work through messages once
+ready or at the editor. Keep scope bounded; no nested subagents unless assigned.
 `;
 
 export function buildSpiderBlock(): string {

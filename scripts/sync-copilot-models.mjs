@@ -11,10 +11,11 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { execSync } from "node:child_process";
 import https from "node:https";
+import { piAgentDir } from "./pi-agent-dir.mjs";
 
 const HOME = homedir();
-const AUTH_PATH = join(HOME, ".pi/agent/auth.json");
-const MODELS_PATH = join(HOME, ".pi/agent/models.json");
+const AUTH_PATH = join(piAgentDir(), "auth.json");
+const MODELS_PATH = join(piAgentDir(), "models.json");
 const COPILOT_HEADERS = {
   "User-Agent": "GitHubCopilotChat/0.35.0",
   "Editor-Version": "vscode/1.107.0",

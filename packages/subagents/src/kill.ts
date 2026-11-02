@@ -1,6 +1,6 @@
 import { appendRunEvent, type Db } from "@spider/db-core";
 import { RunStore, type RunRow } from "./run-store";
-import { killProcessGroup, isProcessAlive, type KillOpts } from "./kill-process";
+import { killProcessGroup, isProcessAlive, isProcessOrGroupAlive, type KillOpts } from "./kill-process";
 import { getChild, unregisterChild } from "./coordinators";
 import { checkProcessIdentity } from "./process-identity";
 
@@ -106,17 +106,18 @@ export async function killRun(deps: KillDeps, sessionId: string, run: RunRow): P
   // Only pid-only paths require a persisted start identity. An owned process
   // object cannot have its live pid reused before Node reaps it.
   const identity = () => checkProcessIdentity(run.pid!, run.pid_start_time, { start: deps.probeStartTime, command: deps.probeCommand, runId: run.id });
+  // A positive pid probe also succeeds for an unreaped zombie leader.
+  const aliveFn = deps.alive ?? ((pid: number) => isProcessAlive(pid) && (process.platform === "win32" || isProcessOrGroupAlive(pid)));
   if (run.pid != null) {
     const checked = identity();
     if (!checked.matches) {
       deps.store.cancel(run.id, `Run lost: ${checked.reason}`);
-      const alive = (deps.alive ?? isProcessAlive)(run.pid);
+      const alive = aliveFn(run.pid);
       return { runId: run.id, name, outcome: alive ? "unconfirmed" : "no-process", via: "none", lastActivity, error: checked.reason };
     }
   }
 
   const pid = run.pid ?? undefined;
-  const aliveFn = deps.alive ?? isProcessAlive;
   if (pid === undefined || !aliveFn(pid)) {
     // No process to signal (never spawned, or already gone) — reconcile the row.
     deps.store.cancel(run.id, `Run lost: no live process (was: ${lastActivity ?? "no recorded activity"}).`);

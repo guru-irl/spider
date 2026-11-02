@@ -17,14 +17,11 @@ permissions:
 
 jobs:
   build:
-    # NOTE: the two dots below are U+00B7 MIDDLE DOT, not hyphens or slashes.
-    # This exact string (workflow name "CI" is NOT part of it) is what a branch
-    # protection required-status-check rule must match byte-for-byte. Retyping
-    # it with ASCII punctuation, or copying the GitHub UI's "CI / ..." display
-    # form, produces a rule that never matches and leaves `main` unprotected
-    # while the settings UI still shows a rule as configured. Full detail and
-    # the exact byte sequence: docs/release-process.md.
-    name: typecheck · test · build
+    name: Node ${{ matrix.node }} · typecheck · test · build
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '26.x']
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -32,14 +29,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # Matches the version the extension is developed against. better-sqlite3
-          # has no prebuild for this ABI yet, so node-gyp compiles it from source;
-          # that is why this job is slower than a pure-JS one.
-          node-version: '26.x'
+          node-version: ${{ matrix.node }}
           cache: npm
 
-      - name: Check lockfile registry
-        run: node scripts/check-lockfile-registry.mjs
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/packaging"
+
+      - name: Check lockfile registry and Herdr workspace
+        run: |
+          node scripts/check-lockfile-registry.mjs
+          npm ls --package-lock-only @spider/herdr
 
       # `npm ci` runs the `prepare` script, which already builds. We still run an
       # explicit build step below so a build failure is reported as its own step
@@ -50,8 +49,23 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      # Tests keep hc sockets inside their own state homes, as on macOS. With
+      # XDG_RUNTIME_DIR empty, hc falls back to /run/user/<uid> when it exists,
+      # so remove the runner's copy for the rest of the job.
+      - name: Remove the runner's runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      # Many Herdr tests spawn processes. Two workers leave the 4-vCPU hosted runner
+      # enough headroom for their timing, without changing any test.
+      - name: Test (fake Herdr conformance and acceptance; opt-in modes skip visibly)
+        run: |
+          echo '::notice::Real hc tests require SPIDER_HERDR_E2E=1 and hc; app tests require the separately approved app opt-in. Both are disabled in CI.'
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npm test -- --reporter=verbose --maxWorkers=2
 
       - name: Build
         run: npm run build
@@ -60,6 +74,14 @@ jobs:
       # published artifact's shape an explicit, named gate.
       - name: Verify bundle shape
         run: node scripts/assert-bundle.mjs
+
+      - name: Verify package contents
+        run: |
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          # npm 10 may still run prepare; keep its stdout separate from pack JSON.
+          npm pack --json --ignore-scripts --foreground-scripts=false --pack-destination .spider/scratch/packaging > .spider/scratch/packaging/pack.json
+          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
+          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
 
       - name: Installed Chrome smoke
         timeout-minutes: 15
@@ -76,8 +98,21 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-failures
+          name: playwright-failures-node-${{ matrix.node }}
           path: |
             playwright-results/
             playwright-report/
           if-no-files-found: ignore
+
+  required:
+    # Preserve the exact required status-check name across the Node matrix.
+    # These are U+00B7 MIDDLE DOT characters, not hyphens or slashes.
+    # Branch protection matches this name without the CI workflow prefix.
+    # See docs/release-process.md.
+    name: typecheck · test · build
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every supported Node version to pass
+        run: test "${{ needs.build.result }}" = success

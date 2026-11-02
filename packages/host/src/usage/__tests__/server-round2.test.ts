@@ -1,4 +1,5 @@
 import { seedCalibrationEvidence } from "./fixtures/calibration-evidence.js";
+import { DASHBOARD_NOW } from "./fixtures/dashboard-ledger.js";
 import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
 import { USAGE_LAUNCH_DEADLINE_MS } from "../server-lifecycle.js";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
@@ -166,8 +167,9 @@ it("boot rejects old startup before consuming it or starting a participant", asy
 });
 
 it("calibration reload follows pi's config reader for symlink large and unreadable files", async () => {
-  const { h, f } = await setup();
-  seedCalibrationEvidence(f.options.roots.ledgerFile);
+  // Back-applied requires evidence days before the first fit in this billing period.
+  const { h, f } = await setup({ SPIDER_FIXTURE_DASHBOARD_NOW: String(DASHBOARD_NOW) });
+  seedCalibrationEvidence(f.options.roots.ledgerFile, DASHBOARD_NOW);
   const config = join(f.root, "config.json"), target = join(f.root, "target.json");
   await writeFile(target, JSON.stringify({ "usage.calibration": "off", padding: "x".repeat(70000) })); await symlink(target, config);
   const row = await launched(f, { calibrationConfigFile: config, calibrationMode: "off" });

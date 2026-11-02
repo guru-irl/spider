@@ -12,7 +12,13 @@ import { freshDb } from "./helpers/testutil";
 import { Runner } from "../runner";
 import { RunEventTailer } from "../event-tailer";
 
-const state = vi.hoisted(() => ({ nullStart: false, fakeChild: undefined as any, identityMatches: false }));
+const state = vi.hoisted(() => ({ nullStart: false, fakeChild: undefined as any, identityMatches: false,
+  liveGroupProbe: undefined as ((pgid: number) => boolean) | undefined }));
+vi.mock("../kill-process", async original => {
+  const actual = await original<typeof import("../kill-process")>();
+  return { ...actual, killProcessGroup: (pid: number, opts: import("../kill-process").KillOpts = {}) =>
+    actual.killProcessGroup(pid, { ...opts, hasLiveGroupMembers: state.liveGroupProbe ?? opts.hasLiveGroupMembers }) };
+});
 vi.mock("../process-identity", async original => {
   const actual = await original<typeof import("../process-identity")>();
   return { ...actual, processStartTime: (pid: number) => state.nullStart || state.fakeChild ? null : actual.processStartTime(pid),
@@ -25,7 +31,7 @@ vi.mock("node:child_process", async original => {
 const roots: string[] = [], pids: number[] = [];
 afterEach(async () => {
   await teardownAllAsync({ graceMs: 25 });
-  vi.restoreAllMocks(); state.fakeChild = undefined; state.nullStart = false;
+  vi.restoreAllMocks(); state.fakeChild = undefined; state.nullStart = false; state.liveGroupProbe = undefined;
   for (const pid of pids.splice(0)) { try { process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL"); } catch {} }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -97,6 +103,7 @@ it("a launched run persists the spawner's start identity", async () => {
   } finally { db.close(); }
 });
 it("the spawner propagates permission failures to its awaitable kill caller", async () => {
+  state.liveGroupProbe = () => true;
   state.fakeChild = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null, signalCode: null, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), unref() {} });
   vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("permission denied"), {code:"EPERM"}); });
   const h = defaultSpawner({ argv: ["fake"], env: {}, cwd: process.cwd(), sessionFile: "unused", childMode: "print" });

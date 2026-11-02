@@ -1,0 +1,8 @@
+{
+  "address": "remote.invalid/t3",
+  "agent": "sh",
+  "cwd": "/fixture/file",
+  "parent": "t2",
+  "state": "live",
+  "turn": 0
+}

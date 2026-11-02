@@ -110,7 +110,7 @@ describe("real wall-clock triggers", () => {
     vi.stubEnv("TZ", "Asia/Kolkata");
     const time: SchedulerTimeMath = createTimeMath();
     const pi = { on() {}, registerCommand() {}, appendEntry() {}, sendUserMessage() {} };
-    const scheduler = registerLoopSchedule(pi as unknown as ExtensionAPI, time);
+    const { scheduler } = registerLoopSchedule(pi as unknown as ExtensionAPI, time);
     const ctx = { mode: "rpc", isIdle: () => true, sessionManager: { getSessionId: () => "zone", getEntries: () => [] }, ui: { notify() {} } } as unknown as ExtensionContext;
     await scheduler.loop({ cron: "0 8 * * *", prompt: "zone" }, ctx);
     vi.stubEnv("TZ", "America/New_York");

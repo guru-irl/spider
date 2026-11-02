@@ -1,8 +1,12 @@
 import { PolyglotExecutor, type ExecResult } from "../executor";
+import type { Owner, RemoteExecutionPort, ExecutionEnvironmentPolicy } from "../../../herdr/src/contracts.js";
 import { capBytes } from "../truncate";
 
 export interface ExecCtx {
   cwd: string;
+  owner?: Owner;
+  remote?: RemoteExecutionPort;
+  environmentPolicy?: ExecutionEnvironmentPolicy;
   /**
    * Called with a cumulative, capped snapshot of output while the command is
    * still running. The host forwards this to pi's `onUpdate`, which makes the
@@ -32,7 +36,7 @@ const TRUNCATION_NOTE =
   "under .spider/scratch/ and analyse it there (grep/head/wc/awk), or narrow the command " +
   "itself. For session/run history, query the DB rather than dumping logs.]";
 
-const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd });
+const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd, remote: ctx.remote, owner: ctx.owner, environmentPolicy: ctx.environmentPolicy });
 
 /** Throttle interval for partial updates. pi's bash tool throttles for the same reason:
  *  a chatty command emits hundreds of chunks a second and repainting on each one costs
@@ -151,13 +155,14 @@ export function makeStreamer(ctx: ExecCtx): ExecStreamer | undefined {
 
 /** Cap to the budget. When it truncates, say what to do instead — a bare "..." tells the
  *  agent nothing and it re-runs the same command, paying the same cost twice. */
-function capExecOutput(text: string): string {
+function capExecOutput(text: string, logs?: { stdout: string; stderr: string }): string {
   if (Buffer.byteLength(text) <= MAX_EXEC_OUTPUT_BYTES) return text;
-  const budget = MAX_EXEC_OUTPUT_BYTES - Buffer.byteLength(TRUNCATION_NOTE);
-  return capBytes(text, budget) + TRUNCATION_NOTE;
+  const note = TRUNCATION_NOTE + (logs ? `\nPayload logs: stdout ${logs.stdout}; stderr ${logs.stderr}` : "");
+  const budget = Math.max(0, MAX_EXEC_OUTPUT_BYTES - Buffer.byteLength(note));
+  return capBytes(text, budget) + capBytes(note, MAX_EXEC_OUTPUT_BYTES - budget);
 }
 
-const shape = (r: any) => {
+const shape = (r: ExecResult) => {
   let text = r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : "");
 
   // Structured discriminator (see executor.ts's ExecOutcome). Fall back to a
@@ -189,7 +194,12 @@ const shape = (r: any) => {
     // receipt): never claim it "returned before finishing" (that may already
     // be false) and never infer the receipt's absence/presence from a
     // nullable exit code.
-    text += `\n\n[outcome unknown — the supervisor process is gone and no exit receipt was ever written; whether the real command succeeded, failed, or is still running cannot be determined from here.\n${receiptLine}${logsLines}]`;
+    if (r.evidenceConflict) {
+      const native = r.exitEvidence?.native, receipt = r.exitEvidence?.receipt;
+      text += `\n\n[outcome unknown. Exit uncertain: native exit ${native ? native.exitCode : 'unavailable'}, signal ${native ? native.signal : 'unavailable'}; receipt exit ${receipt ? receipt.exitCode : 'unavailable'}, signal ${receipt ? receipt.signal : 'unavailable'}. No trusted exit code is available.\n${receiptLine}${logsLines}]`;
+    } else {
+      text += `\n\n[outcome unknown — the supervisor process is gone and no exit receipt was ever written; whether the real command succeeded, failed, or is still running cannot be determined from here.\n${receiptLine}${logsLines}]`;
+    }
   } else if (r.retained) {
     // C-1/I-3: a KNOWN terminal outcome (exited/signal/spawn-error/aborted)
     // whose job directory was retained because its process group could not
@@ -203,7 +213,7 @@ const shape = (r: any) => {
       `finished (exit ${r.exitCode})`;
     text += `\n\n[the command ${what}, but its job directory was retained — ${r.retainedReason ?? "possible live descendants"}.\n${logsLines}${receiptLine}Further output, if any, keeps landing in the logs above.]`;
   }
-  return capExecOutput(text);
+  return capExecOutput(text, r.remote ? r.backgroundLogs : undefined);
 };
 
 /** A-H1 (branch-review A-architecture.md): the classification of a raw exec outcome as a
@@ -226,8 +236,9 @@ export function isKnownFailureOutcome(outcome: string | undefined): boolean {
  *  which reported an unknowable `null` as a hard failure and, for `runExecFile`,
  *  self-contradicted the very text (`shape()`) returned alongside it ("outcome
  *  unknown… cannot be determined from here" with `isError: true` on the SAME result). */
-export function isExecError(res: { outcome?: string; exitCode: number | null }): boolean {
-  return isKnownFailureOutcome(res.outcome) || (res.exitCode !== null && res.exitCode !== 0);
+export function isExecError(res: { outcome?: string; exitCode: number | null; timedOut?: boolean; backgrounded?: boolean }): boolean {
+  const foregroundTimeout = res.timedOut === true && res.backgrounded !== true && res.outcome !== "timeout" && res.outcome !== "unknown";
+  return foregroundTimeout || isKnownFailureOutcome(res.outcome) || (res.exitCode !== null && res.exitCode !== 0);
 }
 
 export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
@@ -242,6 +253,7 @@ export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; 
       // happens at the deadline (killed, or detached + backgrounded to a file).
       timeout: args.timeout,
       background: args.background,
+      on: args.on,
       onData,
       signal: ctx.signal,
     });
@@ -264,6 +276,8 @@ export async function runExecFile(args: any, ctx: ExecCtx): Promise<{ text: stri
   try {
     res = await mk(ctx).executeFile({
       path: args.path,
+      on: args.on,
+      background: args.background,
       language: args.language,
       code: args.code,
       timeout: args.timeout,
@@ -296,6 +310,9 @@ function batchStatus(res: ExecResult): string {
 }
 
 export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string; details: any[]; isError: boolean }> {
+  if ((args.commands ?? []).some((command: { on?: unknown }) => Object.hasOwn(command, "on"))) {
+    throw Object.assign(new Error("A batch destination belongs at the top level"), { code: "batch-entry-on" });
+  }
   const ex = mk(ctx);
   const parts: string[] = [];
   let anyErr = false;
@@ -307,7 +324,7 @@ export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string;
   const onData = makeStreamer(ctx);
   try {
     for (const [i, cmd] of (args.commands ?? []).entries()) {
-      const res = await ex.execute({ language: cmd.language, code: cmd.code, timeout: cmd.timeout, onData, signal: ctx.signal });
+      const res = await ex.execute({ kind: 'batch', language: cmd.language, code: cmd.code, timeout: cmd.timeout, background: cmd.background, on: args.on, onData, signal: ctx.signal });
       // A-H1: same shared rule as runExec/runExecFile — was `res.exitCode !== 0` per entry.
       if (isExecError(res)) anyErr = true;
       all.push(res);

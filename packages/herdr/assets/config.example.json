@@ -1,0 +1,36 @@
+{
+  "enabled": "auto",
+  "app": { "binary": "/path/to/herdr-app", "home": "/path/to/herdr-app-home" },
+  "core": { "binary": "/path/to/hc", "config": "/path/to/herdr-core/config.toml" },
+  "agentDirectory": "/path/to/pi-agent",
+  "globalRoot": "/path/to/spider-global",
+  "shellRc": "/path/to/shell-rc",
+  "spaces": [
+    {
+      "name": "Example space",
+      "sessions": [
+        { "name": "Example session", "sessionId": "exact-session-id" },
+        { "file": "/path/to/session.jsonl" }
+      ]
+    }
+  ],
+  "machines": [
+    {
+      "name": "example-machine",
+      "aliases": [],
+      "nodePath": "/path/to/node",
+      "runtime": {
+        "cwd": null,
+        "directory": "/path/to/private-runtime",
+        "commands": { "shell": ["/bin/sh"] }
+      }
+    }
+  ],
+  "limits": { "auxiliaryPanes": 2, "completedRows": 50, "completedHours": 24 },
+  "retention": { "foregroundDays": 7 },
+  "admin": {
+    "wrappers": [
+      { "path": "/path/to/reviewed-admin-wrapper", "sha256": "0000000000000000000000000000000000000000000000000000000000000000" }
+    ]
+  }
+}

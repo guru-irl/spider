@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Db } from "@spider/db-core";
 import { sessionIdFromCtx } from "@spider/subagents";
 import { recordIntent, recordResult, correlateResult, isExempt } from "./tracking";
@@ -39,7 +39,7 @@ function textOf(content: unknown): string {
 export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
   registerEditWriteOverrides(pi as unknown as { registerTool: Function }, deps);
 
-  pi.on("tool_call", (event: any, ctx) => {
+  const routeToolCall = (event: any, ctx: ExtensionContext) => {
     const tool = event?.toolName;
     if (isExempt(tool)) {
       return guardForegroundSleep(event.input, sessionIdFromCtx(ctx) || deps.getSessionId(), tool);
@@ -48,7 +48,8 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
     recordIntent(deps.db, { sessionId: deps.getSessionId(), tool, payload: sanitizeIntentPayload(event.input),
       toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId });
     return;
-  });
+  };
+  pi.on("tool_call", routeToolCall);
 
   pi.on("tool_result", (event: any) => {
     const tool = event?.toolName;

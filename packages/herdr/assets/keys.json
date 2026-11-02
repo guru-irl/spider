@@ -1,0 +1,9 @@
+{
+  "terminal": {
+    "cmd-shift-a": "send:\u001b[97;6u",
+    "cmd-shift-o": "send:\u001b[111;6u",
+    "cmd-shift-u": "send:\u001b[117;6u",
+    "cmd-shift-m": "send:\u001b[109;6u",
+    "cmd-shift-k": "send:\u001b[107;6u"
+  }
+}

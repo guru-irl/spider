@@ -4,6 +4,7 @@ import type { Spawner, ChildHandle } from "./runner";
 import { killProcessGroup, isProcessAlive, isProcessGroupAlive } from "./kill-process";
 import { ownRpcChild, createEventGate, attachRpcReader } from "./rpc-child";
 import { processStartTime, checkProcessIdentity } from "./process-identity";
+import { finalChildEnvironment } from "@spider/herdr/ssh/shim";
 
 const isWin = process.platform === "win32";
 
@@ -11,7 +12,7 @@ const isWin = process.platform === "win32";
 export const defaultSpawner: Spawner = (spec) => {
   const child = spawn(spec.argv[0], spec.argv.slice(1), {
     cwd: spec.cwd,
-    env: { ...process.env, ...spec.env },
+    env: { ...finalChildEnvironment(process.env, spec.env) },
     stdio: spec.childMode === "rpc" ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
     // On Unix give the child its OWN process group, so killing it also kills every
     // tool subprocess IT spawned. Without this, kill() signals only `pi` and orphans

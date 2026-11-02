@@ -6,6 +6,8 @@ interface ActionCtx {
   repoDb: Db;     // repo DB
   cwd: string;
   sessionId: string;
+  sessionDirectory?: string;
+  sessionDirectoryCwd?: string;
   project?: unknown;
   auxModel?: string;
 }

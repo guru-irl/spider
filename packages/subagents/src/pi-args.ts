@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist";
 import { getPiSpawnCommand } from "./pi-spawn";
 import { piRpcCompatibility } from "./pi-version";
+import { finalChildEnvironment } from "@spider/herdr/ssh/shim";
+import type { ExecutionEnvironmentPolicy } from "@spider/herdr";
 
 // Vendored locally from pi-subagents' structured-output module: these are just
 // the two env-name constants (the full structured-output runtime is not ported).
@@ -25,6 +27,7 @@ const TASK_ARG_LIMIT = 8000;
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
 export const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
+export const SUBAGENT_RUN_NAME_ENV = "PI_SUBAGENT_RUN_NAME";
 export const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 export const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 export const SUBAGENT_FANOUT_CHILD_ENV = "PI_SUBAGENT_FANOUT_CHILD";
@@ -36,6 +39,8 @@ export const SPIDER_DB_PATH_ENV = "PI_SPIDER_DB_PATH";
 // the PARENT session (headless children can't resolve getSessionName() and would
 // otherwise fall back to the runId, which the UI's per-session bus filter drops).
 export const SPIDER_SESSION_ID_ENV = "PI_SPIDER_SESSION_ID";
+/** Stable remote-job owner across child and grandchild sessions. */
+export const SPIDER_TOP_SESSION_ID_ENV = "PI_SPIDER_TOP_SESSION_ID";
 
 interface BuildPiArgsInput {
 	baseArgs: string[];
@@ -275,6 +280,8 @@ Example: ESCALATION[blocked]: Cannot proceed without approval for production del
 }
 
 export interface BuildChildSpawnSpecInput {
+	/** Apply after the child-specific merge; defaults to the inherited ordinary SSH policy. */
+	executionEnvironmentPolicy?: ExecutionEnvironmentPolicy;
 	runId: string;
 	sessionId: string;
 	agent: string;
@@ -390,7 +397,11 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	env[SUBAGENT_CHILD_ENV] = "1";
 	env[SPIDER_DB_PATH_ENV] = input.dbPath;
 	env[SPIDER_SESSION_ID_ENV] = input.sessionId;
+	env[SPIDER_TOP_SESSION_ID_ENV] = process.env[SUBAGENT_CHILD_ENV] === "1"
+		? process.env[SPIDER_TOP_SESSION_ID_ENV] || process.env[SPIDER_SESSION_ID_ENV] || input.sessionId
+		: input.sessionId;
 	env[SUBAGENT_RUN_ID_ENV] = input.runId;
+	env[SUBAGENT_RUN_NAME_ENV] = input.name ?? input.agent;
 	env[SUBAGENT_CHILD_AGENT_ENV] = input.agent;
 	env[SUBAGENT_CHILD_INDEX_ENV] = String(input.childIndex);
 	if (childMode === "rpc" && input.orchestratorTarget) {
@@ -408,5 +419,6 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
 	}
-	return { argv, env, cwd, sessionDir, ...(!isFork ? { sessionFile } : {}), childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${task}` } : {}) };
+	const finalEnv = finalChildEnvironment(process.env, env, input.executionEnvironmentPolicy);
+	return { argv, env: Object.fromEntries(Object.entries(finalEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)), cwd, sessionDir, ...(!isFork ? { sessionFile } : {}), childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${task}` } : {}) };
 }

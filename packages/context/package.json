@@ -4,11 +4,14 @@
   "license": "Elastic-2.0",
   "type": "module",
   "main": "./src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "dependencies": {
     "@spider/db-core": "0.0.0",
     "@spider/memory": "0.0.0",
     "@spider/ui": "0.0.0",
-    "turndown": "^7.2.0"
+    "turndown": "^7.2.0",
+    "@spider/herdr": "0.0.0"
   }
 }

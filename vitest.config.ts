@@ -5,12 +5,13 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     setupFiles: ["./vitest.setup.ts"],
+    globalSetup: ["./vitest.herdr-global-setup.ts"],
     include: ["packages/**/src/**/*.test.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,
     pool: "forks",
     maxWorkers: 3,
-    teardownTimeout: 5_000,
+    teardownTimeout: 15_000,
     coverage: {
       provider: "v8",
       // Measure only shipped source, not tests/fixtures/generated output.

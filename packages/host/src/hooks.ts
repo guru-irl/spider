@@ -26,6 +26,7 @@ import { readInjectionSnapshot } from "./injection-snapshot";
 import { contributeSkillPaths } from "@spider/superpowers";
 import { reapOrphanRuns, pollPendingMessages } from "@spider/subagents";
 import { execEnforcement } from "./control";
+import type { HerdrToolGuard } from "@spider/herdr/ssh/register";
 
 export interface PiLikeAPI {
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -56,7 +57,7 @@ function memoryTargetOf(cwd: string, sessionId: string): string | undefined {
   }
 }
 
-export function registerHooks(pi: PiLikeAPI): void {
+export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard): void {
   // Instance-local: reloads and subagent processes get independent snapshots.
   // Empty snapshots are frozen too, so the first write cannot change the prefix.
   let frozenMemory: { key: string; target: string; text: string } | undefined;
@@ -184,6 +185,7 @@ export function registerHooks(pi: PiLikeAPI): void {
       // Mechanically enforce spider exec over bash. Unknown enforcement state
       // must block bash, not silently permit it.
       pi.on(name, (event: any) => {
+        const enforce = () => {
         try {
           const tool = event?.toolName;
           if (tool !== "bash") return undefined;
@@ -208,6 +210,10 @@ Replace this call with:
           // A lookup or event failure must not make bash available.
           return { block: true, reason: "bash is disabled in this project; use spider exec" };
         }
+        };
+        // Await an injected routing policy before either bash opt-out or dispatch.
+        if (!herdrGuard) return enforce();
+        return herdrGuard(event).then(refusal => refusal ?? enforce()).catch(() => ({ block: true, reason: "SSH policy failed; use spider exec with on:<machine>" }));
       });
     } else {
       pi.on(name, () => undefined);

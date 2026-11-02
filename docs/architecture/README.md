@@ -41,8 +41,8 @@ asleep. Missed one-shot and cron triggers fire once, late. Intervals resume from
 
 ## Layered package structure
 
-The ten packages have a dependency order, leaves first. A package imports only
-from packages below it.
+The eleven packages in this table have a dependency order, leaves first. A package imports only
+from packages below it. `@spider/herdr` is involved in the only exceptions, described after the table.
 
 | Layer | Package | Role |
 | --- | --- | --- |
@@ -55,13 +55,27 @@ from packages below it.
 | Action and service | `@spider/subagents` | Subagent dispatch in single, chain, parallel, and pipeline modes, plus intercom. Depends on `db-core`. |
 | Action and service | `@spider/organism` | The drain, passes, curator, and learning graph. Depends on `db-core`, `memory`, `todo`, `subagents`, `context`, and `ui`. |
 | Action and service | `@spider/superpowers` | The vendored skills library, the managed `AGENTS.md` block, and upstream-watch. Depends on `db-core`. |
+| Integration | `@spider/herdr` | The [Herdr](../guide/herdr.md) terminal workspace integration. It covers `hc` and app clients, status, session feeds and IPC, remote execution and agent consoles, jobs, SSH routing and the admin command, subagent viewers, sessions and resume, spaces, templates, shortcuts, setup, and the doctor. Imports from `db-core`, `models`, and the `Language` type from `context`. Registers its handlers through the pi extension API that host passes in. |
 | Entry point | `@spider/host` | The pi extension that pi loads. Registers the `spider` tool, dispatches each action, renders results, and wires up slash commands, hooks, routing, and the agents UI. Depends on every other package. |
+
+`@spider/herdr` sits between the service packages and host, with two
+exceptions to the import order. `@spider/context` imports type-only contracts
+from it for remote execution. `@spider/subagents` imports its SSH `PATH` shim,
+so children run with the same environment as the parent. Host composes it:
+every `register*` function in `@spider/herdr` takes pi's `ExtensionAPI` and
+port adapters that host supplies from `host/src/herdr/`. Herdr's mods, the
+viewer program, and the remote runtime run outside pi, so they reach spider
+only through files under the global `herdr` directory and the owning session's
+IPC socket.
 
 Two rules keep this structure sound. First, `@spider/ui` is a set of pure
 functions. It never opens a database and never calls the pi API, so any package
-can render output without pulling in storage or the host. Second, `@spider/host`
-is the only package that depends on pi, and nothing in the monorepo depends on
-host. The action and service packages do not call each other to fetch data.
+can render output without pulling in storage or the host. Second, pi loads only
+`@spider/host`, and nothing in the monorepo depends on host. Other packages
+import pi libraries for types and helpers. `ui` uses `pi-tui` display helpers,
+`models` uses pi model types, `organism` and `subagents` use `pi-coding-agent`
+helpers, and `@spider/herdr` registers its handlers through the `ExtensionAPI`
+that host passes in. The action and service packages do not call each other to fetch data.
 They read and write shared tables through the `Db` handle that `db-core`
 returns. That makes the database, not any one package, the place where the
 packages meet.
@@ -106,7 +120,7 @@ and the `run_events` bus.
 
 ## Master interaction diagram
 
-The diagram shows the ten packages, the three database tiers, and the pi runtime. Solid
+The diagram shows the ten packages that predate the Herdr integration, the three database tiers, and the pi runtime. It leaves out `@spider/herdr`. Solid
 arrows are dependency edges: a package imports the package its arrow points to.
 The dotted edges are the data path. `db-core` opens and migrates all three
 databases, and every package that touches storage reaches them through the
@@ -273,6 +287,7 @@ before you share transcripts.
 - [`../../packages/context/README.md`](../../packages/context/README.md)
 - [`../../packages/subagents/README.md`](../../packages/subagents/README.md)
 - [`../../packages/organism/README.md`](../../packages/organism/README.md)
+- [`../../packages/herdr/README.md`](../../packages/herdr/README.md)
 - [`../../packages/superpowers/README.md`](../../packages/superpowers/README.md)
 - [`../../packages/ui/README.md`](../../packages/ui/README.md)
 - [`../../packages/host/README.md`](../../packages/host/README.md)

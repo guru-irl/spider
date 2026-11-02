@@ -4,7 +4,7 @@
 
 - Store keys as literal dotted JSON properties, not as nested objects.
 - Global config overrides the built-in defaults, and worktree-local config overrides both.
-- `subagents.extensions`, `subagents.profiles.reviewer.excludeTools`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.monthlyBudget`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Spider ignores hand-written local usage values and reports them in diagnostics. They are not config failures.
+- `subagents.extensions`, `subagents.profiles.reviewer.excludeTools`, `herdr.config`, `herdr.enabled`, `usage.footer`, `usage.counter.poll`, `usage.calibration`, `usage.monthlyBudget`, `usage.alerts.sessionCredits` and `usage.alerts.runCredits` are global-only. Spider ignores hand-written local usage values and reports them in diagnostics. They are not config failures. A local `herdr.config` or `herdr.enabled` is ignored too, and spider warns once for each key.
 - The global file is `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`.
 - The local file is `<worktree>/.spider/config.json`.
 - For config writes, `scope:"repo"` means the local file, not the shared repository database. If you omit the scope, the write goes to the local file. `scope:"global"` selects the global file.
@@ -131,6 +131,8 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | `subagents.keepCacheWarm` | `true` | Ask pi to keep the parent cache warm while its subagents start or run, within the limits below. Applies at the next warming decision. |
 | `subagents.extensions` | `[]` | Global-only, managed by the user. Absolute extension file paths that every child loads. |
 | `subagents.profiles.reviewer.excludeTools` | `["edit", "write"]` | Global-only, managed by the user. Tools removed from `agent:"reviewer"` children. Not a sandbox. |
+| `herdr.enabled` | `"auto"` | Global-only. `"auto"`, `true`, or `false`. Turns the [Herdr integration](herdr.md#turn-the-integration-on-or-off) on or off. |
+| `herdr.config` | `""` | Global-only. Path of the Herdr configuration file. Empty means the standard location. A relative path resolves against the spider global root. Setup records it when you pass `--config`. |
 | `exec.enforce` | `true` | Block the built-in bash tool. |
 | `tools.structured` | `false` | Register typed search, recall and exec adapters after `/reload`. |
 | `memory.snapshotCharCap` | `"unlimited"` | Inject all active memory. This is not a storage cap. |

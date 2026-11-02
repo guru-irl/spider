@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "upstreamVersion": "0.1.11",
+  "mods": {
+    "agents": [
+      {
+        "id": "style-2",
+        "anchor": "    if (a.status === \"blocked\" && compact) ",
+        "replacement": "    const core = a.status === \"blocked\" ? terminals().find((x) => x.address === a.address) : null;\n    const coreState = core && (typeof core.status === \"string\" ? core.status : core.status?.state);\n    if (a.status === \"error\" || coreState === \"error\") {\n      const red = t.ansi1, label = a.outcome ?? (compact ? null : \"Error\");\n      return h_flex().flex_none().gap(4).items_center().tooltip(a.outcome ?? \"Failed\")\n        .when(Boolean(label), el => el.child(div().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_size(10.5).text_color(red).child(label)))\n        .child(svg(\"mods/workspace-chrome/x.svg\").size(12).mx(1).flex_none().text_color(red));\n    }\n    if (a.status === \"done\") return svg(\"mods/workspace-chrome/check.svg\").size(12).mx(1).flex_none().text_color(t.dim);\n    if (a.status === \"blocked\" && compact) "
+      },
+      {
+        "id": "style-3",
+        "anchor": ".flex_none().px(6).h(18).rounded(5).bg(t.blocked + \"26\")",
+        "replacement": ".flex_none().px(8).h(18).rounded(999).bg(t.blocked + \"26\")"
+      },
+      {
+        "id": "style-4",
+        "anchor": "return div().size(14).flex_none().rounded(4).bg(t.blocked + \"26\")",
+        "replacement": "return div().size(14).flex_none().rounded(999).bg(t.blocked + \"26\")"
+      },
+      {
+        "id": "children-imports",
+        "anchor": "import { View, div, image, svg } from \"gpui-kit\";",
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentFilterOptions, createAgentFilters, projectMachineRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { parseFeed, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nfunction spiderProps() { return props() ?? {}; }"
+      },
+      {
+        "id": "combined-tree",
+        "anchor": "  tree(all, addr, lead = []) {\n    const kids = all.filter((k) => k.parent === addr && k.state === \"live\");\n    return kids.flatMap((k, i) => {\n      const last = i === kids.length - 1;\n      return [\n        { t: k, lines: [...lead, last ? \"\u2514\" : \"\u251c\"] },\n        ...this.tree(all, k.address, [...lead, last ? \"\" : \"\u2502\"]),\n      ];\n    });\n  }\n\n",
+        "replacement": "  tree(all, addr, lead = []) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return [];\n    const rows = this.projectChildren(all, addr);\n    const filters = this.filters()?.get() ?? { machine: null, agent: null };\n    const visible = selectAgentChildren(rows, filters, [...(this.expandedConsoles ?? [])]);\n    const remaining = new Map(), stems = [];\n    for (const row of visible) remaining.set(row.parentKey, (remaining.get(row.parentKey) ?? 0) + 1);\n    return visible.map(row => {\n      const siblings = remaining.get(row.parentKey) - 1; remaining.set(row.parentKey, siblings);\n      const lines = [...lead, ...stems.slice(0, row.depth), siblings ? \"\u251c\" : \"\u2514\"];\n      stems[row.depth] = siblings ? \"\u2502\" : \"\"; stems.length = row.depth + 1;\n      return { t: { ...row.terminal, ...row, spider: row.kind !== \"native\" }, lines };\n    });\n  }\n\n"
+      },
+      {
+        "id": "filter-replay",
+        "anchor": "    let list = agents();",
+        "replacement": "    let list = filterTopLevelAgents(agents(), terminals(), spiderProps().labelContract);"
+      },
+      {
+        "id": "child-status",
+        "anchor": "    const st = kidStatus(k, this.listed);",
+        "replacement": "    const st = k.spider ? (k.status === \"error\" ? \"blocked\" : k.status) : kidStatus(k, this.listed);"
+      },
+      {
+        "id": "live-child-priority",
+        "anchor": "this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)",
+        "replacement": "this.tree(all, a.address).filter((s) => !s.t.retained).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)"
+      },
+      {
+        "id": "live-child-fold-color",
+        "anchor": "const sts = subs.map((s) => kidStatus(s.t, this.listed));",
+        "replacement": "const sts = subs.filter((s) => !s.t.retained).map((s) => kidStatus(s.t, this.listed));"
+      },
+      {
+        "id": "child-id",
+        "anchor": ".id(`sub-${k.address}`)",
+        "replacement": ".id(`sub-${k.key}`)"
+      },
+      {
+        "id": "child-chip",
+        "anchor": ".child(this.status(t, { status: st }, compact));",
+        "replacement": ".child(this.status(t, { status: k.status === \"error\" ? \"error\" : st, address: k.address, outcome: /^(exit|signal) /.test(k.outcome ?? \"\") ? k.outcome : null }, compact));"
+      },
+      {
+        "id": "child-details",
+        "anchor": ".child(k.name || k.template || k.program?.name || k.address))",
+        "replacement": ".child(k.name || k.template || k.program?.name || k.address).tooltip([k.outcome, k.retained ? \"Saved output\" : null, k.completeness === \"unknown\" ? \"Output completeness unknown\" : null, !k.action ? \"No live endpoint\" : null, k.originalAddress].filter(Boolean).join(\" \u00b7 \")))"
+      },
+      {
+        "id": "deferred-chips",
+        "anchor": "    const color = t[a.status] ?? t.dim;",
+        "replacement": "    const color = t[a.status] ?? t.dim;\n    const deferred = { queued: \"Queued\", paused: \"Paused\", disconnected: \"Disconnected\", cancelled: \"Cancelled\", unknown: \"Unknown\" }[a.status];\n    if (deferred) return div().flex_none().px(8).h(18).rounded(999).bg(t.hover).text_size(10.5).text_color(t.muted).flex().items_center().child(deferred);"
+      },
+      {
+        "id": "feed-host-imports",
+        "anchor": "import { agents, terminals, panes,",
+        "replacement": "import { readTextFile, exec, watchFolder, hc, agents, terminals, panes,"
+      },
+      {
+        "id": "feed-lifecycle",
+        "anchor": "    this.folded = new Set();",
+        "replacement": "    this.folded = new Set();\n    this.spiderFeeds = [];\n    this.expandedConsoles = new Set();\n    const root = spiderProps().feedRoot;\n    if (root) {\n      const watchFeeds = cx => {\n        if (this.spiderWatching) return;\n        this.spiderWatching = true; this.spiderWatchFailed = false;\n        cx.spawn(async cx => {\n          try {\n            let next = watchFolder(root + \"/sessions\"); next.catch(() => {});\n            await this.reloadSpiderFeeds(); cx.notify();\n            for (;;) {\n              await next;\n              next = watchFolder(root + \"/sessions\"); next.catch(() => {});\n              this.spiderPendingReload = true;\n            }\n          } catch { this.spiderWatchFailed = true; this.spiderFeedError = \"Feed watch unavailable; retrying\"; cx.notify(); }\n          finally { this.spiderWatching = false; }\n        });\n      };\n      watchFeeds(cx);\n      cx.timer.every(5000, cx => {\n        const fallback = this.spiderWatchFailed && Date.now() - (this.spiderReloadAt ?? 0) >= 30000;\n        if (!this.spiderLoading) {\n          if (fallback) watchFeeds(cx);\n          else if (this.spiderPendingReload) cx.spawn(async cx => { await this.reloadSpiderFeeds(); cx.notify(); });\n        }\n      });\n    }\n    // The global Machines section: Herdr's connection list, on Herdr's own 15-second cadence.\n    if ((spiderProps().machines ?? []).length) {\n      const pollMachines = cx => cx.spawn(async cx => {\n        let next = null;\n        try { const reply = await hc([\"machine\", \"ls\", \"--json\"]); if (reply.code === 0) next = JSON.parse(reply.stdout).machines ?? null; } catch { next = null; }\n        if (JSON.stringify(next) !== JSON.stringify(this.spiderMachineInventory ?? null)) { this.spiderMachineInventory = next; cx.notify(); }\n      });\n      pollMachines(cx);\n      cx.timer.every(15000, pollMachines);\n    }"
+      },
+      {
+        "id": "feed-and-actions",
+        "anchor": "  peek(addr) {\n",
+        "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, p.retention ?? {});\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  filters() {\n    const id = spiderProps().modId;\n    if (!id) return null;\n    return createAgentFilters(id, { read: shared, write: setShared });\n  }\n\n  reconcileFilters(all, list) {\n    const state = this.filters(); if (!state) return;\n    if (list.length) this.spiderSeenAgents = true;\n    if (!this.spiderSeenAgents) return;\n    const selected = state.get(), p = spiderProps();\n    if (p.feedRoot && !this.spiderFeedsLoaded) return;\n    if (!selected.machine && !selected.agent) return;\n    const rows = list.flatMap(a => this.projectChildren(all, a.address));\n    const next = { ...selected };\n    // A configured machine stays selected from the Machines section even with no jobs there.\n    const configured = new Set(projectMachineRows(p.machines, null).map(machine => machine.name));\n    if (next.machine && !configured.has(next.machine) && !rows.some(row => row.machine === next.machine)) next.machine = null;\n    if (next.agent && !rows.some(row => row.agentKey === next.agent)) next.agent = null;\n    if (next.machine && next.agent && !rows.some(row => row.machine === next.machine && row.agentKey === next.agent)) next.agent = null;\n    if (next.machine !== selected.machine || next.agent !== selected.agent) state.set(next);\n  }\n\n  clearFilters(t) {\n    const state = this.filters(), selected = state?.get();\n    if (!selected?.machine && !selected?.agent) return null;\n    return div().id(\"agents-clear-filters\").h(26).px(8).rounded(999).text_size(11).text_color(t.muted)\n      .cursor_pointer().hover(el => el.bg(\"#ffffff14\")).tooltip(\"Clear machine and agent filters\")\n      .on_click(() => state.set({ machine: null, agent: null })).child(\"Clear\");\n  }\n\n  filterControls(t, list = (this.spiderFeeds ?? []).map(feed => ({ address: feed.owner.terminal.address })), all = terminals()) {\n    const state = this.filters(); if (!state) return null;\n    const selected = state.get(), p = spiderProps();\n    const rows = list.flatMap(a => this.projectChildren(all, a.address));\n    const options = agentFilterOptions(all, this.spiderFeeds ?? [], p.labelContract);\n    options.machines = options.machines.filter(value => rows.some(row => row.machine === value.id && (!selected.agent || row.agentKey === selected.agent)));\n    options.agents = options.agents.filter(value => rows.some(row => row.agentKey === value.id && (!selected.machine || row.machine === selected.machine)));\n    if (selected.machine && !options.machines.some(value => value.id === selected.machine)) options.machines.unshift({ id: selected.machine, label: selected.machine });\n    const chip = (kind, allLabel, values) => {\n      const label = values.find(value => value.id === selected[kind])?.label ?? allLabel;\n      return h_flex().id(`agents-filter-${kind}`).h(24).px(8).gap(5).rounded(999).min_w(0).items_center()\n        .bg(selected[kind] ? \"#ffffff14\" : \"#00000000\").text_size(11).text_color(t.muted)\n        .hover(el => el.bg(\"#ffffff1f\").text_color(t.foreground)).cursor_pointer()\n        .tooltip(`Filter by ${kind}`)\n        .on_click(() => openOverlay({ mod: p.modId, kind: \"popup\", width: 240, height: Math.min(400, 44 + (values.length + 1) * 30),\n          props: { modId: p.modId, filterMenu: kind, filterOptions: options } }))\n        .child(div().truncate().child(label))\n        .when(!selected[kind], el => el.child(svg(\"mods/workspace-chrome/chevron-down.svg\").size(11).flex_none()))\n        // A set filter shows an x that clears it.\n        .when(Boolean(selected[kind]), el => el.child(div().id(`agents-filter-${kind}-clear`).flex_none().rounded(999).hover(el => el.text_color(t.foreground)).tooltip(`Clear the ${kind} filter`)\n          .on_click((_event, cx) => { cx?.stop_propagation?.(); state.set({ ...state.get(), [kind]: null }); cx?.notify?.(); })\n          .child(svg(\"mods/workspace-chrome/x.svg\").size(10))));\n    };\n    return h_flex().px(12).pb(6).gap(4).min_w(0)\n      .child(chip(\"machine\", \"All machines\", options.machines)).child(chip(\"agent\", \"All agents\", options.agents));\n  }\n\n  /** The global Machines section under Agents: every configured machine and its status. */\n  withMachines(el, t) {\n    const rows = projectMachineRows(spiderProps().machines, this.spiderMachineInventory);\n    if (!rows.length) return el;\n    const state = this.filters(), selected = state?.get() ?? { machine: null, agent: null };\n    const mono = spiderProps().fonts?.paths ?? \"JetBrains Mono\";\n    const tip = { connected: \"Connected\", disconnected: \"Disconnected\", unavailable: \"Stopped or unavailable\" };\n    return el.child(v_flex().id(\"spider-machines\").flex_none().pb(8).border_t(1).border_color(\"#2f2f32\")\n      .child(h_flex().px(16).h(41).pt(14).pb(5).flex_none().items_center().child(div().text_size(11.5).font_medium().text_color(t.dim).child(\"Machines\")))\n      .child(v_flex().px(8).children(rows.map(machine => {\n        const on = selected.machine === machine.name;\n        return h_flex().id(`machine-row-${machine.name}`).h(28).flex_none().px(8).gap(9).items_center().rounded(8).cursor_pointer()\n          .when(on, el => el.bg(t.selected)).when(!on, el => el.hover(s => s.bg(t.hover)))\n          .when(machine.status === \"unavailable\", el => el.opacity(0.5))\n          .tooltip(`${tip[machine.status]}. ${on ? \"Clear the machine filter\" : \"Show only this machine's jobs\"}`)\n          .on_click((_event, cx) => { if (state) state.set({ ...state.get(), machine: on ? null : machine.name }); cx?.notify?.(); })\n          .child(svg(\"mods/workspace-chrome/server.svg\").size(13).flex_none().text_color(t.dim))\n          .child(div().flex_1().min_w(0).truncate().font_family(mono).text_color(t.foreground).child(machine.name))\n          .when(machine.status === \"disconnected\", el => el.child(svg(\"mods/workspace-chrome/x.svg\").size(11).flex_none().text_color(t.ansi1 ?? \"#ff5555\")));\n      }))));\n  }\n\n  filterMenu(t) {\n    const p = spiderProps(), state = this.filters(); if (!state) return div().child(\"Filter persistence unavailable; run doctor\");\n    const kind = p.filterMenu, selected = state.get();\n    const values = [{ id: null, label: kind === \"machine\" ? \"All machines\" : \"All agents\" }, ...(kind === \"machine\" ? (p.filterOptions?.machines ?? []) : (p.filterOptions?.agents ?? []))];\n    return v_flex().w_full().max_h(400).p(5).overflow_y_scrollbar().bg(\"#161618f0\").text_size(12.8)\n      .children(values.map(value => h_flex().id(`agent-filter-${kind}-${value.id ?? \"all\"}`).h(30).px(8).gap(8).rounded(999).items_center()\n        .bg(selected[kind] === value.id ? \"#ffffff14\" : \"#00000000\").text_color(t.foreground).cursor_pointer()\n        .hover(el => el.bg(\"#ffffff1f\"))\n        .on_click(() => { state.set({ ...selected, [kind]: value.id }); closeOverlay(p.overlay); })\n        .child(div().flex_1().truncate().child(value.label))\n        .when(selected[kind] === value.id, el => el.child(svg(\"mods/workspace-chrome/check.svg\").size(12).flex_none()))));\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < 5000) { this.spiderPendingReload = true; return; }\n    this.spiderLoading = true;\n    this.spiderPendingReload = false;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      const loaded = await loadAgentFeeds(p.feedRoot + \"/sessions\", {\n        listSessionIds: async root => {\n          const reply = await exec(p.nodePath, [\"-e\", \"const fs = require(\\\"node:fs\\\"); const path = require(\\\"node:path\\\"); const root = process.argv[1]; let ids = []; try { ids = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && /^[a-zA-Z0-9_-]+$/.test(e.name)).map(e => e.name).sort().slice(0, 257).filter(id => { try { const s = fs.lstatSync(path.join(root, id, \\\"session.json\\\")); return s.isFile() && !s.isSymbolicLink(); } catch { return false; } }); } catch (e) { if (e.code !== \\\"ENOENT\\\") throw e; } process.stdout.write(JSON.stringify(ids));\", root]);\n          if (reply.code !== 0) throw new Error(\"Feed listing failed\");\n          const ids = JSON.parse(reply.stdout); if (!Array.isArray(ids) || !ids.every(id => typeof id === \"string\")) throw new Error(\"Invalid feed listing\");\n          return ids;\n        }, readTextFile, parseFeed,\n      });\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.truncated ? \"Session feed list truncated; run doctor\" : loaded.errors[0] ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
+      },
+      {
+        "id": "child-action",
+        "anchor": ".on_click(() => this.peek(k.address))",
+        "replacement": ".on_click((_e, cx) => cx.spawn(async cx => { await this.openChild(k); cx.notify(); }))"
+      },
+      {
+        "id": "feed-diagnostic",
+        "anchor": ".child(v_flex().id(\"ag-list\")",
+        "replacement": ".when(!collapsed, el => el.child(this.filterControls(t, list, all)))\n      .when(collapsed, el => el.child(this.clearFilters(t)))\n      .when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .child(v_flex().id(\"ag-list\")"
+      },
+      {
+        "id": "machines-section",
+        "anchor": ".overflow_y_scrollbar().mode(\"always\").children(rows))",
+        "replacement": ".overflow_y_scrollbar().mode(\"always\").children(rows))\n      .when(!collapsed, el => this.withMachines(el, t))"
+      },
+      {
+        "id": "filter-popup-init",
+        "anchor": "    if (props()?.sortMenu) return;",
+        "replacement": "    if (spiderProps()?.sortMenu || spiderProps()?.filterMenu) return;"
+      },
+      {
+        "id": "filter-popup-render",
+        "anchor": "    if (props()?.sortMenu) return this.sortMenu(t);",
+        "replacement": "    if (spiderProps()?.sortMenu) return this.sortMenu(t);\n    if (spiderProps()?.filterMenu) return this.filterMenu(t);"
+      },
+      {
+        "id": "console-fold",
+        "anchor": "      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))",
+        "replacement": "      .when(k.kind === \"console\", el => el.child(div().id(`console-fold-${k.key}`).w(18).h(22).rounded(999).items_center().flex().cursor_pointer()\n        .hover(el => el.bg(\"#ffffff14\"))\n        .tooltip(this.expandedConsoles?.has(k.key) ? \"Hide commands\" : \"Show commands\")\n        .on_click((_e, cx) => { cx.stop_propagation(); this.expandedConsoles ??= new Set(); this.expandedConsoles.has(k.key) ? this.expandedConsoles.delete(k.key) : this.expandedConsoles.add(k.key); cx.notify(); })\n        .child(svg(`mods/workspace-chrome/chevron-${this.expandedConsoles?.has(k.key) ? \"down\" : \"right\"}.svg`).size(11).flex_none())))\n      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))"
+      },
+      {
+        "id": "standalone-empty-state",
+        "anchor": "    const collapsed = narrow();",
+        "replacement": "    if (!spiderProps().labelContract) return v_flex().w_full().p(12).gap(4)\n      .child(div().text_size(13).text_color(t.foreground).child(\"Agents unavailable\"))\n      .child(div().text_size(11.5).text_color(t.muted).child(\"Open a configured workspace or run doctor.\"));\n    const collapsed = narrow();"
+      },
+      {
+        "id": "child-filter-validation",
+        "anchor": "    const all = terminals();",
+        "replacement": "    const all = terminals();\n    this.spiderRenderRows = new Map();\n    try {\n    this.reconcileFilters(all, list);"
+      },
+      {
+        "id": "render-projection-end",
+        "anchor": "                .child(\"\u00bb\"),\n            ),\n        ),\n      );\n  }",
+        "replacement": "                .child(\"\u00bb\"),\n            ),\n        ),\n      );\n    } finally { this.spiderRenderRows = null; }\n  }"
+      },
+      {
+        "id": "copy-sort-popup",
+        "anchor": "mod: \"agents\",",
+        "replacement": "mod: spiderProps().modId ?? \"agents\","
+      },
+      {
+        "id": "child-icon",
+        "anchor": "const pic = icon(k.program, 14, t.foreground);",
+        "replacement": "const own = `mods/${spiderProps().modId ?? \"spider-agents\"}`;\n    const kindIcon = { subagent: `${own}/bot.svg`, remote: \"mods/workspace-chrome/server.svg\", console: `${own}/list.svg` }[k.kind];\n    const pic = kindIcon ? svg(kindIcon).size(14).flex_none().text_color(t.muted) : (icon(k.program, 14, t.muted) ?? svg(\"mods/workspace-chrome/terminal.svg\").size(14).flex_none().text_color(t.muted));"
+      },
+      {
+        "id": "thread-keylines",
+        "anchor": ".children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()\n        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))\n        .when(l === \"\u2514\" || l === \"\u251c\", el => el.border_b(1.5).rounded_bl(6))))",
+        "replacement": ".children(s.lines.map(l => div().relative().w(16).h(26).flex_none()\n        .when(l === \"\u2502\" || l === \"\u251c\", el => el.child(div().absolute().left(7).top(-4).bottom(0).w(0).border_l(1.5).border_color(\"#3a3a3d\")))\n        .when(l === \"\u2514\" || l === \"\u251c\", el => el.child(div().absolute().left(7).top(-4).w(7).h(17).border_l(1.5).border_b(1.5).rounded_bl(6).border_color(\"#3a3a3d\")))))"
+      },
+      {
+        "id": "thread-indent",
+        "anchor": ".pl(39)",
+        "replacement": ".pl(9)"
+      },
+      {
+        "id": "section-divider",
+        "anchor": ".border_t(1)\n      .border_color(t.border)",
+        "replacement": ".border_t(1)\n      .border_color(\"#2f2f32\")"
+      },
+      {
+        "id": "one-list",
+        "anchor": ": groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);",
+        "replacement": ": byPriority ? list.flatMap(withKids) : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);"
+      },
+      {
+        "id": "mono-agent-name",
+        "anchor": ".child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))",
+        "replacement": ".child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name))"
+      },
+      {
+        "id": "mono-machine",
+        "anchor": ".when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))",
+        "replacement": ".when(Boolean(machine), el => el.child(div().text_size(10).font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(t.dim).child(machine)))"
+      },
+      {
+        "id": "mono-child-name",
+        "anchor": ".child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted)",
+        "replacement": ".child(div().flex_1().truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(on ? t.foreground : t.muted)"
+      }
+    ],
+    "spaces": [
+      {
+        "id": "props-import",
+        "anchor": "import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";",
+        "replacement": "import { props, spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";"
+      },
+      {
+        "id": "style-1",
+        "anchor": ".when(!collapsed, el => el.child(\"Spaces\"))",
+        "replacement": ".when(!collapsed, el => el.child(\"Spaces\"))\n        .child(h_flex().gap(2).items_center()\n          .child(div().id(\"spider-panel\").px(collapsed ? 2 : 6).h(26).rounded(999).text_size(10.5).items_center().flex().hover(el => el.bg(t.hover).text_color(t.foreground))\n            .tooltip(\"Open Spider panel\").on_click(() => { run(\"layout.show\", { id: \"panel\" }); run(\"layout.select\", { stack: \"panel-body\", child: \"spider\" }); }).when(!collapsed, el => el.child(\"Spider\")).when(collapsed, el => el.child(svg(\"mods/workspace-chrome/layers.svg\").size(14)))))"
+      },
+      {
+        "id": "compact-dock-header",
+        "anchor": ".child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)",
+        "replacement": ".child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)\n        .when(collapsed, el => el.h(56).px(0).flex_col().justify_center().gap(2))"
+      },
+      {
+        "id": "workspace-empty-state",
+        "anchor": "      .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode(\"always\")",
+        "replacement": "      .when(sp.length === 0 && !collapsed, el => el.child(div().px(16).py(12).text_size(11.5).text_color(t.muted).child(\"No spaces yet\")))\n      .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode(\"always\")"
+      },
+      {
+        "id": "space-badge",
+        "anchor": ".rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color(\"#ffffff\")",
+        "replacement": ".rounded(5).bg(on ? \"#e6e6e8\" : \"#2c2c2f\").items_center().justify_center().text_size(10.5).font_bold().text_color(on ? \"#141416\" : \"#d9d9db\")"
+      },
+      {
+        "id": "mono-space-name",
+        "anchor": ".child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))",
+        "replacement": ".child(div().flex_shrink(0).max_w(150).truncate().font_family(props()?.fonts?.paths ?? \"JetBrains Mono\").text_color(t.foreground).child(w.name))"
+      },
+      {
+        "id": "mono-machine-name",
+        "anchor": ".when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? \"This computer\"))",
+        "replacement": ".when(!collapsed, el => el.child(div().flex_1().truncate().when(Boolean(m), el => el.font_family(props()?.fonts?.paths ?? \"JetBrains Mono\")).child(m ?? \"This computer\"))"
+      }
+    ],
+    "pane": [
+      {
+        "id": "style-1",
+        "anchor": "      .bg(t.background)\n      .border_b(1)\n      .border_color(t.border)\n",
+        "replacement": "      .bg(p.focused ? \"#ffffff14\" : \"#00000000\")\n"
+      },
+      {
+        "id": "style-2",
+        "anchor": ".child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))",
+        "replacement": ".when(Boolean(spiderParent), el => el.child(div().flex_none().min_w(0).max_w(180).truncate().px(8).h(18).flex().items_center().rounded(999).bg(\"#ffffff14\").font_family(mono).text_size(11).text_color(t.muted ?? t.dim).tooltip(spiderParent).child(spiderParent)))\n      // The cwd is cut in the middle to fit the measured width (about 7 px per monospace character); the full path shows on hover.\n      .child(div().id(\"spider-path\").flex_1().min_w(0).overflow_hidden().whitespace_nowrap().text_ellipsis_middle().font_family(props()?.pathFont ?? \"JetBrains Mono\").text_size(11.5).text_color(t.dim).tooltip(folder(p.cwd))\n        .on_size_change((size, cx) => { if (size.width !== this.spiderPathWidth) { this.spiderPathWidth = size.width; cx.notify(); } })\n        .child(middlePath(folder(p.cwd), this.spiderPathWidth === undefined ? 80 : Math.max(1, Math.floor(this.spiderPathWidth / 7)))))\n      .when(Boolean(spiderSteer), el => el.child(div().flex_none().px(8).h(18).flex().items_center().rounded(999).bg(\"#ffffff0f\").text_size(10.5).text_color(t.dim).child(spiderSteer)))"
+      },
+      {
+        "id": "style-3",
+        "anchor": ".flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + \"26\")",
+        "replacement": ".flex_none().px(8).h(18).flex().items_center().rounded(999).bg(t.blocked + \"26\")"
+      },
+      {
+        "id": "style-4",
+        "anchor": "import { panes, props, run, theme, home } from \"herdr\";",
+        "replacement": "import { panes, props, run, theme, home, terminals } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";"
+      },
+      {
+        "id": "style-5",
+        "anchor": "    const st = p.status;\n",
+        "replacement": "    const core = p.status === \"blocked\" ? terminals().find((x) => x.address === p.terminal) : null;\n    const st = core && (typeof core.status === \"string\" ? core.status : core.status?.state) === \"error\" ? \"error\" : p.status;\n"
+      },
+      {
+        "id": "style-6",
+        "anchor": "      .when(st === \"done\",",
+        "replacement": "      .when(st === \"error\", el => el.child(div().flex_none().px(8).h(18).flex().items_center().rounded(999).bg(t.ansi1 + \"26\").text_size(10.5).font_semibold().text_color(t.ansi1).child(\"Error\")))\n      .when(st === \"done\","
+      },
+      {
+        "id": "spider-header-facts",
+        "anchor": "    const pic = icon(p.program, 14, t.dim);",
+        "replacement": "    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = terminals().find((x) => x.address === p.terminal)?.labels ?? {};\n    const spiderKind = own[spiderLabels.kind ?? \"spider.kind\"];\n    const spiderRow = [\"subagent-viewer\", \"remote-observer\", \"remote-console\"].includes(spiderKind);\n    const spiderParent = spiderRow ? own[spiderLabels.parentName ?? \"spider.parent-name\"] ?? null : null;\n    const steerMode = spiderKind === \"subagent-viewer\" ? own[spiderLabels.steer ?? \"spider.steer\"] : undefined;\n    const spiderSteer = steerMode === undefined ? null : steerMode === \"rpc\" ? \"Can steer\" : \"Read-only\";\n    // hc only takes slug names; the readable name rides on a display-only label.\n    const spiderDisplay = own[spiderLabels.displayName ?? \"spider.display-name\"];\n    const spiderName = spiderDisplay ? spiderDisplay : spiderRow ? (name.replace(/(?:\\s*\\u00b7\\s*)?\\b(?:viewer|observer|console)\\b(?:\\s*\\u00b7\\s*)?/gi, \" \").trim() || name) : name;\n    const mono = props()?.pathFont ?? \"JetBrains Mono\";\n    const pic = icon(p.program, 14, t.dim);"
+      },
+      {
+        "id": "spider-header-name",
+        "anchor": ".child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))",
+        "replacement": ".child(div().flex_none().truncate().max_w(260).font_medium().when(spiderRow, el => el.font_family(mono)).text_color(t.foreground).child(spiderName))"
+      }
+    ],
+    "tabs": [
+      {
+        "id": "spider-enabled",
+        "anchor": "const enabled = shared(\"workspace.panels\") ?? [\"files\", \"changes\"];",
+        "replacement": "const enabled = [...(shared(\"workspace.panels\") ?? [\"files\", \"changes\"]), \"spider\"];"
+      },
+      {
+        "id": "spider-button",
+        "anchor": "      .when(enabled.includes(\"changes\"), el => el.child(panelButton(\"changes\", \"Changes\", \"mods/changes/changes.svg\")))",
+        "replacement": "      .when(enabled.includes(\"changes\"), el => el.child(panelButton(\"changes\", \"Changes\", \"mods/changes/changes.svg\")))\n      .child(panelButton(\"spider\", \"Spider\", \"mods/spider-tabs/spider.svg\"))"
+      }
+    ]
+  }
+}

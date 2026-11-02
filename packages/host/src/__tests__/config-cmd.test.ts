@@ -89,7 +89,7 @@ describe("applyConfigEdit round-trip", () => {
         expect(declared.has(key), key).toBe(true);
         const field = getField(key, UI_CONFIG_SCHEMA)!;
         const raw = field.type === "model-ref" ? "fixture/model" : field.type === "model-map" ? "{}" : ["absolute-path-list", "tool-selector-list"].includes(field.type) ? "[]" : field.type === "number" ? String(field.exclusiveMin !== undefined ? field.exclusiveMin + 1 : field.min ?? field.default) : field.type === "enum" ? String(field.enum?.[0]) : field.type === "boolean" ? "false" : "example";
-        if (["exec.enforce", "subagents.extensions", "subagents.profiles.reviewer.excludeTools"].includes(key)) {
+        if (["exec.enforce", "subagents.extensions", "subagents.profiles.reviewer.excludeTools", "herdr.config", "herdr.enabled"].includes(key)) {
           expect(applyConfigEdit(dir, key, raw).ok, key).toBe(false);
           expect(applyConfigEdit(dir, key, raw, "global").ok, key).toBe(false);
         } else if (field.scope === "global") {

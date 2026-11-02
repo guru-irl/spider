@@ -58,7 +58,7 @@ function run(models: object[], config: object, write = true, nativeHome = false)
   writeFileSync(modelsPath, JSON.stringify(config));
   return spawnSync(process.execPath, ["--import", join(fixture, "boundary.mjs"), join(root, "scripts/sync-copilot-models.mjs"), ...(write ? ["--write"] : [])], {
     cwd: fixture, encoding: "utf8",
-    env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture,
+    env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture, PI_CODING_AGENT_DIR: undefined,
       FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", SPIDER_PIAI_MODELS: join(fixture, "builtins.mjs") },
   });
 }

@@ -5,6 +5,9 @@
  */
 
 import { spawn, execSync, execFileSync } from "node:child_process";
+import { wrapWithFileContent } from "./remote-plan.js";
+export { prepareRemoteProgram } from "./remote-plan.js";
+import type { RemoteExecutionPort, ExecutionEnvironmentPolicy, Owner, MachineName, RemoteSource, RemoteResult } from "../../herdr/src/contracts.js";
 import { StringDecoder } from "node:string_decoder";
 import {
   mkdtempSync,
@@ -70,6 +73,9 @@ import {
 export type ExecOutcome = "exited" | "signal" | "spawn-error" | "aborted" | "timeout" | "unknown";
 
 export interface ExecResult {
+  remote?: RemoteResult["remote"];
+  evidenceConflict?: RemoteResult["evidenceConflict"];
+  exitEvidence?: RemoteResult["exitEvidence"];
   stdout: string; stderr: string;
   /**
    * A real number when `outcome === "exited"` (the ordinary case) OR
@@ -420,6 +426,9 @@ export function readCappedFile(path: string, maxBytes: number): { text: string; 
 }
 
 export interface ExecuteOptions {
+  on?: string;
+  /** Internal remote attribution, not a tool parameter. */
+  kind?: 'exec' | 'exec-file' | 'batch';
   language: Language;
   code: string;
   /**
@@ -491,7 +500,11 @@ export class PolyglotExecutor {
    * to preserve constructor backward compatibility.
    */
   #projectRootResolver: () => string;
-  #runtimes: RuntimeMap;
+  #runtimeMap: RuntimeMap | undefined;
+  #remote?: RemoteExecutionPort;
+  #owner?: Owner;
+  #environmentPolicy?: ExecutionEnvironmentPolicy;
+  get #runtimes(): RuntimeMap { return this.#runtimeMap ??= detectRuntimes(); }
   /** Injectable only for deterministic process-launch tests. */
   #spawnProcess: typeof spawn;
 
@@ -500,6 +513,9 @@ export class PolyglotExecutor {
     projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
     spawn?: typeof spawn;
+    remote?: RemoteExecutionPort;
+    owner?: Owner;
+    environmentPolicy?: ExecutionEnvironmentPolicy;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     const pr = opts?.projectRoot;
@@ -510,7 +526,10 @@ export class PolyglotExecutor {
     } else {
       this.#projectRootResolver = () => process.cwd();
     }
-    this.#runtimes = opts?.runtimes ?? detectRuntimes();
+    this.#runtimeMap = opts?.runtimes;
+    this.#remote = opts?.remote;
+    this.#owner = opts?.owner;
+    this.#environmentPolicy = opts?.environmentPolicy;
     this.#spawnProcess = opts?.spawn ?? spawn;
   }
 
@@ -523,6 +542,7 @@ export class PolyglotExecutor {
   }
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
+    if (opts.on !== undefined) return this.#executeRemote({ kind: "code", language: opts.language, code: opts.code }, opts);
     const { language, code, timeout, background = false, cwd: cwdOverride } = opts;
     const scratchBase = paths.scratch("project", this.#projectRoot);
     mkdirSync(scratchBase, { recursive: true });
@@ -560,7 +580,8 @@ export class PolyglotExecutor {
     }
 
     try {
-      const filePath = this.#writeScript(tmpDir, code, language);
+      const environment = this.#buildSafeEnv(job ? job.tmpDir : tmpDir);
+      const filePath = this.#writeScript(tmpDir, code, language, environment.PATH);
       const cmd = buildCommand(this.#runtimes, language, filePath);
 
       // Rust: compile then run
@@ -581,7 +602,7 @@ export class PolyglotExecutor {
       // cwd without mutating process-wide state.
       const cwd = cwdOverride ?? this.#projectRoot;
       const result = await this.#spawn(
-        cmd, cwd, job ? job.tmpDir : tmpDir, timeout, background, opts.onData, opts.signal, job,
+        cmd, cwd, job ? job.tmpDir : tmpDir, timeout, background, opts.onData, opts.signal, job, environment,
       );
 
       // Skip cleanup if the process was actually handed off (backgrounded) OR its
@@ -604,23 +625,19 @@ export class PolyglotExecutor {
     }
   }
 
-  async executeFile(opts: ExecuteFileOptions): Promise<ExecResult> {
-    const { path: filePath, language, code, timeout, onData, signal } = opts;
-    const absolutePath = resolve(this.#projectRoot, filePath);
-    const wrappedCode = this.#wrapWithFileContent(
-      absolutePath,
-      language,
-      code,
-    );
-    // A-H2 (branch-review A-architecture.md): this used to destructure only
-    // {path, language, code, timeout} and silently drop `onData`/`signal` even though
-    // `ExecuteFileOptions extends ExecuteOptions` declares both — so ANY caller passing
-    // them (streaming output, or an abort signal) got neither, one level below
-    // actions/exec.ts's runExecFile.
-    return this.execute({ language, code: wrappedCode, timeout, onData, signal });
+  async #executeRemote(source: RemoteSource, opts: ExecuteOptions): Promise<ExecResult> {
+    if (!this.#remote) throw Object.assign(new Error("Herdr remote execution is unavailable; on never falls back to local execution"), { code: "herdr-unavailable" });
+    if (!this.#owner) throw Object.assign(new Error("Remote execution requires a validated owner"), { code: "owner-unavailable" });
+    return this.#remote.execute({ source, kind: opts.kind ?? (source.kind === 'file' ? 'exec-file' : 'exec'), on: opts.on as MachineName, owner: this.#owner, timeout: opts.timeout, background: opts.background, signal: opts.signal, onData: opts.onData });
   }
 
-  #writeScript(tmpDir: string, code: string, language: Language): string {
+  async executeFile(opts: ExecuteFileOptions): Promise<ExecResult> {
+    if (opts.on !== undefined) return this.#executeRemote({ kind: "file", path: opts.path, language: opts.language, code: opts.code }, opts);
+    const absolutePath = resolve(this.#projectRoot, opts.path);
+    return this.execute({ language: opts.language, code: wrapWithFileContent(absolutePath, opts.language, opts.code), timeout: opts.timeout, onData: opts.onData, signal: opts.signal });
+  }
+
+  #writeScript(tmpDir: string, code: string, language: Language, inheritedPath?: string): string {
     // Go needs a main package wrapper if not present
     if (language === "go" && !code.includes("package ")) {
       code = `package main\n\nimport "fmt"\n\nfunc main() {\n${code}\n}\n`;
@@ -656,7 +673,7 @@ export class PolyglotExecutor {
         : rewritten;
       writeFileSync(
         fp,
-        buildShellScriptContent(shellCode, process.env.PATH, process.platform),
+        buildShellScriptContent(shellCode, inheritedPath, process.platform),
         { encoding: "utf-8", mode: 0o700 },
       );
     } else {
@@ -678,7 +695,7 @@ export class PolyglotExecutor {
     // caller is fine with a long-running binary afterwards).
     try {
       execFileSync(this.#runtimes.rust!, [srcPath, "-o", binPath], {
-        env: commandEnv(),
+        env: this.#buildSafeEnv(cwd),
         cwd,
         timeout: timeout === undefined ? 60_000 : Math.min(timeout, 60_000),
         encoding: "utf-8",
@@ -707,6 +724,7 @@ export class PolyglotExecutor {
     onData?: (chunk: string) => void,
     signal?: AbortSignal,
     job?: BackgroundJobPaths,
+    environment?: Readonly<NodeJS.ProcessEnv>,
   ): Promise<ExecResult> {
     // Escape (or any other abort source) may already have fired before we get here —
     // e.g. the user hit it while the tool call was still being dispatched. Never spawn
@@ -807,7 +825,7 @@ export class PolyglotExecutor {
         stdio: (background
           ? ["ignore", outFd!, errFd!]
           : ["ignore", "pipe", "pipe"]) as ["ignore", "pipe" | number, "pipe" | number],
-        env: this.#buildSafeEnv(sandboxTmpDir),
+        env: environment ?? this.#buildSafeEnv(sandboxTmpDir),
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
         // Hide the spawned-process console window on Windows. Without this,
@@ -1434,45 +1452,8 @@ export class PolyglotExecutor {
       }
     }
 
-    return commandEnv(env) as Record<string, string>;
+    const normalized = Object.freeze({ ...commandEnv(env) });
+    return { ...(this.#environmentPolicy?.(normalized) ?? normalized) } as Record<string, string>;
   }
 
-  #wrapWithFileContent(
-    absolutePath: string,
-    language: Language,
-    code: string,
-  ): string {
-    const escaped = JSON.stringify(absolutePath);
-    switch (language) {
-      case "javascript":
-      case "typescript":
-        return `const FILE_CONTENT_PATH = ${escaped};\nconst file_path = FILE_CONTENT_PATH;\nconst FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
-      case "python":
-        return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nwith open(FILE_CONTENT_PATH, "r", encoding="utf-8") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
-      case "shell": {
-        // Single-quote the path to prevent $, backtick, and ! expansion
-        const sq = "'" + absolutePath.replace(/'/g, "'\\''") + "'";
-        return `FILE_CONTENT_PATH=${sq}\nfile_path=${sq}\nFILE_CONTENT=$(cat ${sq})\n${code}`;
-      }
-      case "ruby":
-        return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nFILE_CONTENT = File.read(FILE_CONTENT_PATH, encoding: "utf-8")\n${code}`;
-      case "go":
-        return `package main\n\nimport (\n\t"fmt"\n\t"os"\n)\n\nvar FILE_CONTENT_PATH = ${escaped}\nvar file_path = FILE_CONTENT_PATH\n\nfunc main() {\n\tb, _ := os.ReadFile(FILE_CONTENT_PATH)\n\tFILE_CONTENT := string(b)\n\t_ = FILE_CONTENT\n\t_ = fmt.Sprint()\n${code}\n}\n`;
-      case "rust":
-        return `#![allow(unused_variables)]\nuse std::fs;\n\nfn main() {\n    let file_content_path = ${escaped};\n    let file_path = file_content_path;\n    let file_content = fs::read_to_string(file_content_path).unwrap();\n${code}\n}\n`;
-      case "php":
-        return `<?php\n$FILE_CONTENT_PATH = ${escaped};\n$file_path = $FILE_CONTENT_PATH;\n$FILE_CONTENT = file_get_contents($FILE_CONTENT_PATH);\n${code}`;
-      case "perl":
-        return `my $FILE_CONTENT_PATH = ${escaped};\nmy $file_path = $FILE_CONTENT_PATH;\nopen(my $fh, '<:encoding(UTF-8)', $FILE_CONTENT_PATH) or die "Cannot open: $!";\nmy $FILE_CONTENT = do { local $/; <$fh> };\nclose($fh);\n${code}`;
-      case "r":
-        return `FILE_CONTENT_PATH <- ${escaped}\nfile_path <- FILE_CONTENT_PATH\nFILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE, encoding="UTF-8")\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
-      case "elixir":
-        return `file_content_path = ${escaped}\nfile_path = file_content_path\nfile_content = File.read!(file_content_path)\n${code}`;
-      case "csharp":
-        // .csx forbids `using` directives after any other top-level statement
-        // (CS1529). User code inside executeFile must use fully-qualified type
-        // names (e.g. `System.Text.Json.JsonDocument`) instead of `using`.
-        return `var FILE_CONTENT_PATH = ${escaped};\nvar file_path = FILE_CONTENT_PATH;\nvar FILE_CONTENT = System.IO.File.ReadAllText(FILE_CONTENT_PATH);\n${code}`;
-    }
-  }
 }

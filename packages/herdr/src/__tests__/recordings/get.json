@@ -1,0 +1,33 @@
+{
+  "address": "remote.invalid/t3",
+  "argv": [
+    "sh",
+    "-c",
+    "sleep 30"
+  ],
+  "cols": 200,
+  "created_ms": 1710000000000,
+  "cwd": "/fixture/file",
+  "die_with_parent": true,
+  "exit_code": null,
+  "finished_ms": null,
+  "identity": "fixture-terminal",
+  "keep": false,
+  "labels": {},
+  "name": null,
+  "notify": false,
+  "parent": "t2",
+  "pid": 42,
+  "reason": null,
+  "reported": false,
+  "rm": false,
+  "rows": 120,
+  "screen": "exact",
+  "signal": null,
+  "state": "live",
+  "status": null,
+  "status_ms": null,
+  "template": null,
+  "title": "",
+  "turn": 0
+}

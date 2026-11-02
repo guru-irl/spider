@@ -1,6 +1,8 @@
-import { readFileSync, statSync, readdirSync } from "node:fs";
-import { join, basename } from "node:path";
+import { readFileSync, statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
+import { join, basename, resolve } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { NormalizedTranscript } from "./digest";
 
 function extractText(content: unknown): string {
@@ -91,20 +93,51 @@ export function readTranscript(sourcePath: string): NormalizedTranscript {
   return { sessionId, sourcePath, messages: normalizeTranscriptEntries(activeBranch(entries)) };
 }
 
-function walk(dir: string): string[] {
+function walk(dir: string, recursive = true): string[] {
   const out: string[] = [];
   let entries: string[];
   try {
-    entries = readdirSync(dir, { recursive: true } as any) as unknown as string[];
+    entries = readdirSync(dir, { recursive } as any) as unknown as string[];
   } catch {
     return out;
   }
   for (const rel of entries) {
     if (typeof rel === "string" && rel.endsWith(".jsonl")) {
-      out.push(join(dir, rel));
+      const file = join(dir, rel);
+      try { if (recursive || statSync(file).isFile()) out.push(file); } catch { /* unreadable entry */ }
     }
   }
   return out;
+}
+
+// Pi normalizes session-dir and cwd paths before it uses them.
+function piPath(input: string): string {
+  if (input === "~") return homedir();
+  if (input.startsWith("~/") || (process.platform === "win32" && input.startsWith("~\\"))) return join(homedir(), input.slice(2));
+  if (input.startsWith("file://")) return fileURLToPath(input);
+  return input;
+}
+
+function sessionMatchesCwd(file: string, cwd: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const buffer = Buffer.alloc(1024 * 1024);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    const line = buffer.subarray(0, bytes).toString("utf8").split("\n", 1)[0];
+    const header = JSON.parse(line) as { type?: unknown; cwd?: unknown };
+    return header.type === "session" && typeof header.cwd === "string" && header.cwd !== ""
+      && resolve(piPath(header.cwd)) === resolve(piPath(cwd));
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function defaultProjectDir(base: string, cwd: string): string {
+  const encoded = "--" + resolve(piPath(cwd)).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-") + "--";
+  return join(resolve(base), encoded);
 }
 
 export function selectSessionFiles(opts: {
@@ -113,30 +146,39 @@ export function selectSessionFiles(opts: {
   since?: number;
   glob?: string;
   cwd: string;
+  sessionDirectory?: string;
+  sessionDirectoryCwd?: string;
 }): string[] {
-  const base = join(homedir(), ".pi", "agent", "sessions");
+  const base = join(getAgentDir(), "sessions");
+  const selected = opts.sessionDirectory;
+  const customDir = selected
+    ? resolve(piPath(selected)) === defaultProjectDir(base, opts.sessionDirectoryCwd ?? opts.cwd) ? undefined : selected
+    : process.env.PI_CODING_AGENT_SESSION_DIR;
+  const cwd = opts.project ?? opts.cwd;
 
   let dirs: string[] = [];
-  if (opts.all) {
+  if (customDir) {
+    dirs = [piPath(customDir)];
+  } else if (opts.all) {
     try {
       dirs = readdirSync(base).map((d) => join(base, d));
     } catch {
       dirs = [];
     }
   } else {
-    const cwd = opts.project ?? opts.cwd;
-    const encoded = "--" + cwd.replace(/\//g, "-") + "--";
-    dirs = [join(base, encoded)];
+    dirs = [defaultProjectDir(base, cwd)];
   }
 
   let files: string[] = [];
   for (const dir of dirs) {
     try {
-      files = files.concat(walk(dir));
+      files = files.concat(walk(dir, !customDir));
     } catch {
       // ignore unreadable dir
     }
   }
+
+  if (customDir && !opts.all) files = files.filter((f) => sessionMatchesCwd(f, cwd));
 
   if (opts.since !== undefined) {
     files = files.filter((f) => {

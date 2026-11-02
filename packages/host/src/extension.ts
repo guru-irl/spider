@@ -5,6 +5,7 @@ import { isUsageServerMain, runUsageServerEntry } from "./usage/server-entry.js"
 import { startUsageServerIngest } from "./usage/server-ingest.js";
 export { runUsageServerEntry } from "./usage/server-entry.js";
 export { UsageRuntime } from "./usage/runtime.js";
+import { mountHerdr, effectiveHerdrConfigPath, standardHerdrConfigPath, type HerdrMount } from "./herdr/mount.js";
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError } from "@spider/memory";
@@ -199,6 +200,7 @@ export const SPIDER_PARAMETERS = {
     value: { description: "control config value (for op='set')." },
     sub: { type: "string", description: "control memory sub-command (pending|approve|reject|status|forget; consolidate is deprecated -> status + forget)." },
     uuid: { type: "string", description: "memory uuid for approve/reject/forget." },
+    on: { type: "string", description: "Destination machine name for exec, exec_file and batch. Remote execution never falls back to local execution." },
     // scope / cwd (most actions)
     scope: { type: "string", enum: ["global", "repo", "worktree", "project"], description: "control config set/unset: global writes the global config; repo or omitted writes the worktree-local config. Other config scopes are rejected. Memory scope (default repo). \"Is this true in every repo?\" → **global**; otherwise → **repo**. Worktree/project memory was removed; use repo." },
     cwd: { type: "string", description: "Working-directory override. For run: sets the child's working directory and which project's model defaults apply; the run is still recorded in this session's database (or its /bind target), so kill and message find it without a cwd. Other actions use the override's project database." },
@@ -819,6 +821,9 @@ async function dispatchWithDoctorSnapshot(
         (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx)),
       parentSessionFile: params.action === "run"
         ? (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() : undefined,
+      sessionDirectory: params.action === "import"
+        ? (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionDir?.() : undefined,
+      sessionDirectoryCwd: params.action === "import" ? cwdOf(ctx) : undefined,
     };
     if (!params.cwd) onSessionProject?.(actionCtx.project);
     return await dispatch(params, actionCtx, ownedActions);
@@ -832,14 +837,19 @@ async function dispatchWithDoctorSnapshot(
 }
 
 export default function spiderExtension(pi: PiToolAPI): void {
-  sessionSchedulers.set(pi, registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath()));
+  const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath());
+  sessionSchedulers.set(pi, loopCommand.scheduler);
+  let herdr: HerdrMount | undefined;
   const accounting = new UsageAccounting();
   usageRuntimes.set(pi, accounting);
   const ownedActions = new Map<string, ActionHandler>();
   const registerAction = (name: string, handler: ActionHandler) => {
     // Context packages reuse module-level functions. Wrap even those handlers so
     // registry identity always identifies one activation, not a shared function.
-    const ownedHandler: ActionHandler = (args, ctx) => handler(args, ctx);
+    const ownedHandler: ActionHandler = (args, ctx) => {
+      if (args.on !== undefined && !herdr?.enabled()) throw new Error('herdr-disabled: on requires an enabled live Herdr owner');
+      return handler(args, { ...ctx, ...herdr?.execution() });
+    };
     ownedActions.set(name, ownedHandler);
     registerGlobalAction(name, ownedHandler, true);
   };
@@ -877,6 +887,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // in-process exec/exec_file/batch handlers (Phase 2 Task 4).
   // Strangler: spider owns exec/exec_file/batch/index/fetch/search/import in-process; legacy context-mode ctx_* MCP tools are deprecated (spider does not register them).
   registerContextActions(registerAction);
+  // End owner streams before child cancellation can look like ordinary run completion.
+  // Quit keeps its final feed publication after cancellation; reload keeps its handoff.
+  (pi as unknown as ExtensionAPI).on('session_shutdown', async event => {
+    if (event?.reason === 'quit') await herdr?.prepareSessionQuit?.();
+    else if (event?.reason === 'new' || event?.reason === 'resume' || event?.reason === 'fork') await herdr?.prepareSessionReplacement?.();
+  });
   // subagents runtime: run/message (child-guard + shutdown teardown handled inside).
   registerSubagentActions({ registerAction }, pi);
 
@@ -955,17 +971,15 @@ export default function spiderExtension(pi: PiToolAPI): void {
     }
     return skillAction(buildOrganismDeps(ctx), args as SkillActionArgs);
   });
-  pi.registerCommand?.(
-    "todos",
-    makeTodosCommand({
+  const todosCommand = makeTodosCommand({
       getDb: (ctx) => {
         const sessionId = sessionIdOf(ctx);
         const cwd = cwdOf(ctx) ?? process.cwd();
         return openProject(resolveProject(cwd, { sessionId, explicitCwd: false }).projectKey);
       },
       getSessionId: (ctx) => sessionIdOf(ctx),
-    })
-  );
+    });
+  pi.registerCommand?.("todos", todosCommand);
 
   registerSlashCommands(pi as any, {
     run: (a, ctx) =>
@@ -1172,14 +1186,26 @@ export default function spiderExtension(pi: PiToolAPI): void {
     renderEscalationMessage(message, options, theme),
   );
 
-  registerHooks(pi);
+  const herdrPackageRoot = path.resolve(path.dirname(new URL(loadedBundle.url).pathname), loadedBundle.url.includes('/packages/host/src/') ? '../../..' : '..');
+  pi.registerCommand?.("herdr-setup", {
+    description: "Herdr setup hint (run setup from a plain shell)",
+    handler: async (args: string, ctx: unknown) => {
+      const cwd = cwdOf(ctx) ?? process.cwd();
+      const file = args.trim() ? path.resolve(cwd, args.trim()) : effectiveHerdrConfigPath(cwd) ?? standardHerdrConfigPath();
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+      const cli = quote(path.join(herdrPackageRoot, 'dist/herdr/cli.mjs')), node = quote(process.execPath), config = quote(file);
+      const content = `From a plain shell:\n1. Save selected sessions. /reload old pi sessions so setup can identify them.\n2. Close selected sessions and any unknown PIDs reported by setup.\n3. Run: ${node} ${cli} setup --config ${config}\n4. Setup disables core notes and opens fresh leased terminals; never reuse retired terminals.\n5. Run: ${node} ${cli} doctor --config ${config}\nThis command only prints instructions; it never launches or writes.`;
+      (pi as unknown as ExtensionAPI).sendMessage?.({ customType: "spider.command", content, display: true });
+    },
+  });
+  registerHooks(pi, event => herdr?.guard(event) ?? Promise.resolve(undefined));
   pi.on("session_start", (_event: unknown, ctx: unknown) => {
     if (structuredToolsRegistered || controlConfig("get", cwdOf(ctx) ?? process.cwd(), "tools.structured") !== true) return;
     registerStructuredTools(pi, spiderTool as AdapterTool, (args, callCtx) =>
       readRoutingConfig(String(args.cwd ?? cwdOf(callCtx) ?? process.cwd())));
     structuredToolsRegistered = true;
   });
-  registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
+  const usageCommand = registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
   const usageController = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url);
   usageControllers.set(pi, usageController);
 
@@ -1282,6 +1308,45 @@ export default function spiderExtension(pi: PiToolAPI): void {
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
   }
+
+  try {
+    herdr = mountHerdr(pi as unknown as ExtensionAPI, {
+      ...(process.env.PI_SUBAGENT_CHILD === '1' ? { reportError: (error: unknown) => { process.stderr.write(`Herdr child: ${safeError(error).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024)}\n`); } } : {}),
+      packageRoot: herdrPackageRoot,
+      actionContext: ctx => buildActionCtx(pi, { action: "message" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)),
+      views: { agents: agentsUI, todos: todosCommand, usage: usageCommand,
+        memory: async ctx => {
+          const actionCtx = buildActionCtx(pi, { action: "control", command: "memory", sub: "pending" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx));
+          const result = await handleControl({ action: "control", command: "memory", sub: "pending" }, actionCtx);
+          ctx.ui.notify(toToolResult(result).content.filter(block => block.type === "text").map(block => (block as { text: string }).text).join("\n"), "info");
+        },
+        loop: loopCommand,
+      },
+      dataSource: {
+        resolveRunDb: owner => openSessionRunDb(owner.cwd, owner.sessionId),
+        openApprovalDbs: owner => { const project = resolveProject(owner.cwd); return { global: openGlobal(), repo: project.repoKey ? { db: openRepo(project.repoKey), repoKey: project.repoKey } : null }; },
+        scheduler: sessionSchedulers.get(pi)!,
+        readUsage: async (now, owner) => {
+          const budget = controlConfig("get", cwdOf(currentContext) ?? process.cwd(), "usage.monthlyBudget") as number | undefined;
+          const reading = await usageControllers.get(pi)?.readPanel(now, owner.sessionId, budget);
+          if (!reading) throw new Error('usage-panel-unavailable');
+          return reading;
+        },
+      },
+    });
+  } catch (error) {
+    // Herdr is optional: a mount failure must leave the rest of spider loaded.
+    const reason = safeError(error).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024);
+    let reported = false;
+    (pi as unknown as ExtensionAPI).on('session_start', (_event, ctx) => {
+      if (reported) return;
+      reported = true;
+      const message = `Herdr inactive: ${reason}. Regular spider remains available.`;
+      if (ctx.hasUI) ctx.ui.notify(message, 'warning');
+      else process.stderr.write(`${message}\n`);
+    });
+  }
+
   // Pi keeps the last truthy before-compact result. The organism returns undefined;
   // register the managed summary after it, for both parent and child activations.
   registerCompaction(pi as unknown as ExtensionAPI, { readConfig: cwd => configValues(cwd).config });

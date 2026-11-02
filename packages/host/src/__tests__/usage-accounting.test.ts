@@ -33,7 +33,7 @@ function root() {
 }
 function setup(cwd: string, fallback = false, response?: () => Promise<any>, priorSession?: SessionManager) {
   const session = priorSession ?? SessionManager.inMemory(cwd), handlers = new Map<string, Array<(...a: any[]) => any>>(); let tool: any;
-  const ctx: any = { cwd, hasUI: false, sessionManager: fallback ? { getSessionId: () => session.getSessionId(), getEntries: () => session.getEntries(), getBranch: () => session.getBranch() } : session,
+  const ctx: any = { cwd, hasUI: false, sessionManager: fallback ? { getSessionId: () => session.getSessionId(), getSessionFile: () => session.getSessionFile(), getEntries: () => session.getEntries(), getBranch: () => session.getBranch() } : session,
     modelRegistry: { find: () => ({ reasoning: false }), streamSimple: (_model: any, context: any) => ({ result: response ?? (async () => ({ role: "assistant", provider: "fixture", model: "requested", responseModel: "actual", api: "openai-responses", timestamp: 1, stopReason: "stop", usage,
       content: [{ type: "text", text: context.systemPrompt.startsWith("Review a skill candidate.") ? '{"verdict":"new","reason":"reusable"}' : '{"verdict":"new","reason":"durable"}' }] })) }) } };
   spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, registerCommand() {},

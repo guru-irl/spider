@@ -77,6 +77,7 @@ To protect the working tree from accidental edits by a reviewer, keep the review
 - Spider cancels dialogs opened by child extensions and adds a warning to the run events.
 - Children cannot dispatch, message or kill through spider. They also cannot use the outbound `intercom` and `contact_supervisor` tools.
 - `spider loop` and `spider schedule` refuse subagent children, print runs and JSON runs. They need a persistent top-level session.
+- Inside [Herdr](herdr.md#remote-commands-from-subagents), children can pass `on` to run a command on a configured machine. Each child runs it through its own `hc` connection, and its jobs belong to the top-level session. A child finds the Herdr configuration file the same way as its session. Children follow the same SSH rule as their parent, and ordinary shell commands still work.
 
 ## Kill and shutdown
 
@@ -146,3 +147,7 @@ To protect the working tree from accidental edits by a reviewer, keep the review
 - Peer messages are saved durably before the broker delivers them. Unconfirmed messages stay queued and are retried when the target session starts.
 - Broker acceptance does not prove that the recipient acknowledged the message or that it entered the conversation, so spider reports it as unconfirmed.
 - Unlike peer messages, run steers are not saved, and spider does not retry them.
+
+## Viewers in Herdr
+
+Inside [Herdr](herdr.md#watch-and-steer-subagents), each run gets a viewer terminal under its session's agent pane, and a row in the left sidebar. The viewer's message box sends a steer through the same owning-session message action as `spider message`, so the same refusals and delivery states apply. Viewers do not change how a child runs, and the run keeps working when its viewer is parked, closed, or in a tab you close. A viewer stays open after its owning session quits and shows the saved log read-only. A run's machine consoles appear under its row and close when the run ends.

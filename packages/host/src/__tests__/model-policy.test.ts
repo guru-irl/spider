@@ -22,6 +22,7 @@ const expected = {
   oracle: "github-copilot/claude-opus-5.5:medium",
   reviewer: "github-copilot/claude-opus-5.5:high",
   scout: "github-copilot/gpt-6-luna:low",
+  watcher: "github-copilot/gpt-6-luna:low",
   digest: "github-copilot/gpt-6-luna:low",
   self_name: "github-copilot/gpt-6-luna:low",
   upstream_watch: "github-copilot/gpt-6-luna:low",
@@ -63,6 +64,18 @@ describe("host model policy", () => {
       expect(ctx.modelDefaults?.worker).toBe("github-copilot/gpt-5.4:xhigh");
       expect(ctx.modelDefaults?.reviewer).toBe(expected.reviewer);
     } finally { controlConfig("unset", cwd, "models.defaults"); }
+  });
+
+  it("accepts and reports control models set watcher", async () => {
+    const { tool } = toolFixture();
+    const ctx = { cwd, sessionId: "policy-watcher", modelRegistry: registry };
+    try {
+      const set = await tool.execute("watcher-set", { action: "control", command: "models", op: "set", key: "watcher", value: "github-copilot/gpt-6-luna:low" }, undefined, undefined, ctx);
+      expect(set.details).toMatchObject({ ok: true });
+      const listed = await tool.execute("watcher-list", { action: "control", command: "models" }, undefined, undefined, ctx);
+      expect(listed.details.defaults.watcher).toBe("github-copilot/gpt-6-luna:low");
+      expect(listed.details.sources.watcher).toBe("global");
+    } finally { controlConfig("unset", cwd, "models.defaults", undefined, "global"); }
   });
 
   it("keeps skill review on Luna xhigh and memory review on Luna medium", () => {

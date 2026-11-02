@@ -20,13 +20,17 @@ interface Deps { db: Db; sessionId: string; width?: () => number; actions?: Agen
 const WIDGET = "spider-agents";
 
 export interface AgentsUIRegistration {
+  open(): Promise<void>;
   activate(openOverlay: () => void | Promise<void>): () => void;
 }
 
 /** Call once per extension factory, not per module or session_start. */
 export function registerAgentsUI(pi: HostPi): AgentsUIRegistration {
   let current: (() => void | Promise<void>) | undefined;
-  const open = () => { void current?.(); };
+  const open = async () => {
+    if (!current) throw new Error('Spider agents view is unavailable in this session.');
+    await current();
+  };
   // Command first: a shortcut failure must not cost the user /agents.
   pi.registerCommand?.("agents", {
     description: "Open the spider agents selector",
@@ -40,6 +44,7 @@ export function registerAgentsUI(pi: HostPi): AgentsUIRegistration {
     });
   } catch { /* shortcut is a convenience; /agents already works */ }
   return {
+    open,
     activate(openOverlay) {
       current = openOverlay;
       return () => { if (current === openOverlay) current = undefined; };

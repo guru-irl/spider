@@ -1,6 +1,14 @@
 Spider's own code is licensed under the MIT License below.
 Code in packages/context, and the portions of dist/extension.js built from it,
 are licensed under the Elastic License 2.0. See packages/context/LICENSE.
+Bundled Google Sans Flex and Glass Label fonts in packages/herdr/assets/fonts
+are licensed under the SIL Open Font License 1.1. The complete font licence
+and trademark notice are shipped beside those binaries as GoogleSansFlex-OFL.txt
+and GoogleSansFlex-TRADEMARKS.md. The MIT licence below does not cover fonts.
+The Dracula+ palette carries the MIT notice reproduced in NOTICE.md.
+Modified Herdr built-in mod excerpts in packages/herdr/assets/look/patches.json
+are licensed under Apache-2.0. See licenses/herdr-apache-2.0.txt for the complete
+licence and packages/herdr/assets/look/NOTICE for the modification notice.
 See NOTICE.md for upstream attribution.
 
 MIT License

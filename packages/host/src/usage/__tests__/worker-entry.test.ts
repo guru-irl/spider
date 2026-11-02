@@ -355,6 +355,63 @@ it.each(["lost", "busy"])("a %s heartbeat lease becomes a follower without faili
     p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
   } finally { if (db.inTransaction) db.exec("ROLLBACK"); db.close(); }
 });
+it.each(["first cycle", "heartbeat"])("ingestion resumes after a busy %s without waiting for its own lease to expire", async phase => {
+  vi.useFakeTimers();
+  const c = command(), p = port();
+  const source = { path: join(root, "busy.jsonl"), project: null, repo: null, run: null };
+  const entry = (id: string) => JSON.stringify({ type: "message", id, timestamp: new Date(at).toISOString(), message: {
+    role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
+  } }) + "\n";
+  writeFileSync(source.path, entry("first"));
+  await bootUsageWorker(p as unknown as MessagePort, c, {
+    now: () => at, discover: async () => ({ sources: [source], runs: [], errors: [] }),
+  });
+  if (phase === "heartbeat") {
+    await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+    expect(snapshots(p).at(-1)?.health.calls).toBe(1);
+    appendFileSync(source.path, entry("second"));
+  }
+  const Database = (await import("better-sqlite3")).default;
+  const writer = new Database(c.roots.ledgerFile);
+  try {
+    writer.exec("BEGIN IMMEDIATE");
+    await vi.advanceTimersByTimeAsync(phase === "heartbeat" ? 40000 : 0);
+    expect(p.events).toContainEqual({ type: "error", code: "usage-ingest-lease-busy" });
+    writer.exec("ROLLBACK");
+    // The writer is gone, but the original lease is still live for two minutes.
+    // Recovery must use the short retry timer, without a refresh or TTL expiry.
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({
+      ingestRole: "owner", backfill: "complete", health: { calls: phase === "heartbeat" ? 2 : 1 },
+    }));
+    const check = openUsageLedger(c.roots.ledgerFile);
+    try { expect(check.leases.inspect("ingest", at).owner).toBe(c.owner); }
+    finally { check.close(); }
+    p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+    expect(p.closed).toBe(true);
+    expect(writer.prepare("SELECT owner FROM leases WHERE name='ingest'").get()).toEqual({ owner: null });
+  } finally { if (writer.inTransaction) writer.exec("ROLLBACK"); writer.close(); }
+});
+it("a busy owner follows a successor instead of resuming with its retained token", async () => {
+  vi.useFakeTimers();
+  const c = command(), p = port();
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  const Database = (await import("better-sqlite3")).default;
+  const writer = new Database(c.roots.ledgerFile);
+  try {
+    writer.exec("BEGIN IMMEDIATE");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.events).toContainEqual({ type: "error", code: "usage-ingest-lease-busy" });
+    writer.prepare("UPDATE leases SET owner=?, token=?, expires_at=? WHERE name='ingest'")
+      .run("successor", "successor-token", at + 120000);
+    writer.exec("COMMIT");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(snapshots(p).at(-1)).toMatchObject({ ingestRole: "follower", backfill: "pending", health: { calls: 0 } });
+    p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+    expect(p.closed).toBe(true);
+    expect(writer.prepare("SELECT owner FROM leases WHERE name='ingest'").get()).toEqual({ owner: "successor" });
+  } finally { if (writer.inTransaction) writer.exec("ROLLBACK"); writer.close(); }
+});
 it.each(["exception", "storage"])("an ingest %s failure after ledger open reports usage-ingest-failed", async mode => {
   const c = command(), p = port();
   await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, discover: async () => ({ sources: [], runs: [], errors: [] }),

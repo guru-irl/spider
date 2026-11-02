@@ -7,6 +7,17 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 const [mode, bundle, root, shim] = process.argv.slice(2);
+const startedAt = performance.now();
+const phases = [];
+const phase = (name, detail = {}) => {
+  const event = { elapsedMs: Math.round(performance.now() - startedAt), name, ...detail };
+  phases.push(event);
+  if (phases.length > 160) phases.splice(40, 1);
+  process.stderr.write(`[bundle-smoke] ${JSON.stringify(event)}\n`);
+};
+const stateEvidence = state => ({ backfill: state.backfill, calls: state.health?.calls, ingestRole: state.ingestRole, errorCode: state.errorCode });
+const deadlineError = name => new Error(`${name}: ${JSON.stringify({ phases, snapshots: runtimes.map(runtime => stateEvidence(runtime.snapshot())) })}`);
+phase("fixture-start");
 const roots = { registryDb: join(root, "registry.db"), sessionsDir: join(root, "sessions"), ledgerFile: join(root, "usage.db"), authPath: join(root, "missing-auth.json"), leaseDir: join(root, "leases") };
 // Trap actual main-thread fixture I/O and DB calls, not just file creation.
 // The worker has a separate module realm, so its authorized backfill is untracked.
@@ -41,7 +52,9 @@ if (mode === "shim") {
   const stat = statSync(bundle, { bigint: true });
   url.searchParams.set("build", stat.mtimeNs.toString() + "-" + stat.size.toString());
 }
+phase("bundle-import-start");
 const mod = await import(url.href);
+phase("bundle-import-end");
 assert.deepEqual(accesses, [], "import/registration touched fixture filesystem or SQLite on the main thread");
 for (const restore of restores) restore();
 syncBuiltinESMExports();
@@ -72,16 +85,48 @@ if (mode === "oom") {
   process.exit(0);
 }
 const workers = [], runtimes = [], snapshots = [[], []], readers = new Set();
+const fixtureCycleGate = mode === "contended" ? new Int32Array(new SharedArrayBuffer(8)) : undefined;
+let lockWriter, lockDeadline, contentionSeen = false;
+const releaseLock = () => {
+  if (!lockWriter) return;
+  lockWriter.exec("ROLLBACK"); lockWriter.close(); lockWriter = undefined;
+  clearTimeout(lockDeadline);
+  phase("writer-lock-released");
+};
 const factory = (entry, options) => {
   assert.equal(entry.href, mod.loadedBundle.url);
-  const worker = new Worker(entry, { ...options, execArgv: ["--import", new URL("./worker-probe.mjs", import.meta.url).href] });
-  worker.on("message", event => { if (event?.type === "fixture-source-read") readers.add(worker); });
+  const index = workers.length;
+  phase("worker-create", { index });
+  const worker = new Worker(entry, { ...options, workerData: { ...options.workerData, fixtureCycleGate }, execArgv: ["--import", new URL("./worker-probe.mjs", import.meta.url).href] });
+  worker.on("online", () => phase("worker-online", { index }));
+  worker.on("error", error => phase("worker-error", { index, code: error.code }));
+  worker.on("exit", code => phase("worker-exit", { index, code }));
+  worker.on("message", event => {
+    if (event?.type === "fixture-source-read") readers.add(worker);
+    if (event?.type === "fixture-phase") {
+      const { type: _type, name, ...detail } = event;
+      phase(name, { index, ...detail });
+      if (name === "before-first-cycle") {
+        lockWriter = new Database(roots.ledgerFile);
+        assert.equal(lockWriter.prepare("SELECT owner FROM leases WHERE name='ingest'").get().owner, options.workerData.command.owner);
+        lockWriter.exec("BEGIN IMMEDIATE");
+        phase("writer-lock-held", { index });
+        lockDeadline = setTimeout(releaseLock, 5000);
+        Atomics.store(fixtureCycleGate, 1, 1); Atomics.notify(fixtureCycleGate, 1);
+      }
+    }
+    if (event?.type === "error") {
+      phase("worker-notice", { index, code: event.code });
+      if (lockWriter && event.code === "usage-ingest-lease-busy") { contentionSeen = true; releaseLock(); }
+    }
+  });
   workers.push(worker);
   return worker;
 };
 const waiters = new Map();
 const wait = (index, predicate) => new Promise((resolve, reject) => {
-  const deadline = setTimeout(() => { waiters.delete(index); reject(new Error("live snapshot deadline")); }, 10000);
+  phase("live-wait-start", { index });
+  const deadline = setTimeout(() => { waiters.delete(index); reject(deadlineError("live snapshot deadline")); }, 10000);
   waiters.set(index, state => {
     if (state.errorCode) { clearTimeout(deadline); waiters.delete(index); reject(new Error(state.errorCode)); }
     else if (predicate(state)) { clearTimeout(deadline); waiters.delete(index); resolve(state); }
@@ -93,8 +138,9 @@ try {
   for (let i = 0; i < 2; i++) {
     let notify;
     const readyPromise = new Promise((resolve, reject) => {
-      const deadline = setTimeout(() => reject(new Error("backfill deadline")), 20000);
+      const deadline = setTimeout(() => reject(deadlineError("backfill deadline")), 20000);
       notify = state => {
+        phase("snapshot", { index: i, ...stateEvidence(state) });
         snapshots[i].push(state);
         waiters.get(i)?.(state);
         if (state.errorCode) { clearTimeout(deadline); reject(new Error(state.errorCode)); }
@@ -102,10 +148,12 @@ try {
       };
     });
     const runtime = new mod.UsageRuntime({ bundleUrl: mod.loadedBundle.url, roots, child: false, workerFactory: factory, onSnapshot: notify });
-    runtimes.push(runtime); ready.push(readyPromise); runtime.start(false);
+    runtimes.push(runtime); ready.push(readyPromise); phase("runtime-start", { index: i }); runtime.start(false);
     assert.equal(workers.length, 0, "startup must defer resource creation");
   }
   const states = await Promise.all(ready);
+  phase("backfill-ready");
+  if (mode === "contended") assert.equal(contentionSeen, true, "the bundle must recover from a real busy lease renewal");
   assert.equal(states[0].counter.availability, "disabled");
   assert.equal(states[1].counter.availability, "disabled");
   assert.equal(readers.size, 1, "exactly one ingest owner reads/backfills transcripts");
@@ -150,6 +198,8 @@ try {
   assert(workers.every(w => w.threadId === -1), "no live fixture workers after shutdown");
   console.log(JSON.stringify({ mode, workers: workers.length, calls: 40, liveCalls: 42, ownerBackfills: 1, readOnlyCounter: true, takeover: true, inertImport: true, stopped: true }));
 } finally {
+  releaseLock();
+  phase("shutdown-start");
   await Promise.all(runtimes.map(r => r.stop()));
   await Promise.all(workers.map(w => w.terminate()));
 }

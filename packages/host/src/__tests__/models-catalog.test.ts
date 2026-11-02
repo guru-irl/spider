@@ -87,11 +87,11 @@ describe("control models is wired through the real tool", () => {
       planner: "github-copilot/claude-sonnet-5:high", researcher: "github-copilot/claude-sonnet-5:high",
       oracle: "github-copilot/claude-sonnet-5:medium", scout: "github-copilot/claude-sonnet-5:low",
       digest: "github-copilot/claude-sonnet-5:low", self_name: "github-copilot/claude-sonnet-5:low",
-      upstream_watch: "github-copilot/claude-sonnet-5:low",
+      upstream_watch: "github-copilot/claude-sonnet-5:low", watcher: "github-copilot/claude-sonnet-5:low",
     });
     expect(r.details.sources).toEqual({
       worker: "local", reviewer: "global", planner: "default", researcher: "default", oracle: "default",
-      scout: "default", digest: "default", self_name: "default", upstream_watch: "default",
+      scout: "default", digest: "default", self_name: "default", upstream_watch: "default", watcher: "default",
     });
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });

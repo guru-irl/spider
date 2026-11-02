@@ -138,6 +138,23 @@ export class SessionScheduler {
 
   constructor(private readonly pi: ExtensionAPI, private readonly time: SchedulerTimeMath) {}
 
+  private readonly listeners = new Set<() => void>();
+  private lastListing = "[]";
+  listTriggers(): TriggerListing[] {
+    return [...this.triggers.values()].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).map(t => ({
+      ...t, state: t.nextAt === null ? "waiting-for-rearm" : t.nextAt <= Date.now() ? "due" : "scheduled",
+      nextAtUtc: t.nextAt === null ? null : new Date(t.nextAt).toISOString(),
+      nextAtLocal: t.nextAt === null ? null : this.time.formatInZone(t.nextAt, t.tz),
+    }));
+  }
+  subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  private publishChange(): void {
+    const listing = JSON.stringify(this.listTriggers());
+    if (listing === this.lastListing) return;
+    this.lastListing = listing;
+    for (const listener of this.listeners) { try { listener(); } catch { /* readers cannot change scheduler delivery */ } }
+  }
+
   private context(ctx: ExtensionContext): void { if (!this.activated) this.ctx = ctx; }
   start(event: SessionStartEvent, ctx: ExtensionContext): void {
     this.shutdown(); this.activated = true; this.ctx = ctx;
@@ -166,18 +183,14 @@ export class SessionScheduler {
         if (trigger.kind === "interval") trigger.nextAt = nextInterval(trigger, Date.now());
         this.triggers.set(trigger.name, trigger);
       }
-      this.arm(true);
+      this.arm(true); this.publishChange();
     } catch (error) {
-      this.triggers.clear(); ctx.ui.notify(`Cannot restore spider triggers snapshot: ${String(error)}`, "error");
+      this.triggers.clear(); this.publishChange(); ctx.ui.notify(`Cannot restore spider triggers snapshot: ${String(error)}`, "error");
     }
   }
   agentStart(): void { this.running = true; if (this.gate) this.gate.started = true; }
   private status(): Result {
-    const triggers: TriggerListing[] = [...this.triggers.values()].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).map(t => ({
-      ...t, state: t.nextAt === null ? "waiting-for-rearm" : t.nextAt <= Date.now() ? "due" : "scheduled",
-      nextAtUtc: t.nextAt === null ? null : new Date(t.nextAt).toISOString(),
-      nextAtLocal: t.nextAt === null ? null : this.time.formatInZone(t.nextAt, t.tz),
-    }));
+    const triggers = this.listTriggers();
     const text = triggers.map(t => {
       const spec = t.kind === "cron" ? `cron ${JSON.stringify(t.cron)} ${t.tz}` : t.kind === "interval" ? intervalLabel(t) : t.kind;
       const state = t.state === "due" ? "due, waiting for idle" : t.state === "waiting-for-rearm" ? "waiting for re-arm" : `${t.nextAtUtc} UTC (${t.nextAtLocal})`;
@@ -195,7 +208,7 @@ export class SessionScheduler {
       const warning = `Trigger state changed in memory but could not be saved: ${String(error)}`;
       if (notify) ctx.ui.notify(warning, "warning");
       return { text: `${result.text} Warning: ${warning}`, details: { ...result.details, warning } };
-    }
+    } finally { this.publishChange(); }
   }
   private put(trigger: Trigger, ctx: ExtensionContext, notify = true): string | undefined {
     if (!this.triggers.has(trigger.name) && this.triggers.size >= 20) throw new Error("A session can hold at most 20 triggers.");
@@ -248,7 +261,7 @@ export class SessionScheduler {
       if (!canSend) this.gate = undefined;
       if (errors.length) ctx.ui.notify(errors.join("; "), "error");
     }
-    this.arm();
+    this.arm(); this.publishChange();
   }
   settled(): void {
     this.running = false; this.seals.clear();
@@ -257,7 +270,7 @@ export class SessionScheduler {
   }
   shutdown(): void {
     clearTimeout(this.timer); this.timer = undefined; this.triggers.clear(); this.ctx = undefined;
-    this.running = false; this.gate = undefined; this.activated = false; this.seals.clear();
+    this.running = false; this.gate = undefined; this.activated = false; this.seals.clear(); this.publishChange();
   }
 
   async loop(args: LoopArgs, ctx: ExtensionContext): Promise<Result> {
@@ -346,18 +359,18 @@ export class SessionScheduler {
   }
 }
 
-export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath): SessionScheduler {
+export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath): { scheduler: SessionScheduler; handler(args: string, ctx: ExtensionContext): Promise<void> } {
   const scheduler = new SessionScheduler(pi, time);
   pi.on("session_start", (event, ctx) => { scheduler.start(event, ctx); });
   pi.on("agent_start", () => { scheduler.agentStart(); });
   pi.on("agent_settled", () => { scheduler.settled(); });
   pi.on("session_shutdown", () => { scheduler.shutdown(); });
+  const handler = async (args: string, ctx: ExtensionContext) => {
+    const result = await scheduler.command(parseLoop(args), ctx);
+    ctx.ui.notify(result.text, "info");
+  };
   pi.registerCommand("loop", {
-    description: "Run external-work checks (CI, deploys, timers): /loop [5m|1h] <prompt>, /loop to list, or /loop stop [name|all]. Not for polling subagents; completion notices arrive automatically.",
-    async handler(args, ctx) {
-      const result = await scheduler.command(parseLoop(args), ctx);
-      ctx.ui.notify(result.text, "info");
-    },
+    description: "Run external-work checks (CI, deploys, timers): /loop [5m|1h] <prompt>, /loop to list, or /loop stop [name|all]. Not for polling subagents; completion notices arrive automatically.", handler,
   });
-  return scheduler;
+  return { scheduler, handler };
 }

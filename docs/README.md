@@ -12,6 +12,7 @@ Documentation for the spider pi extension.
 - [Subagents](guide/subagents.md): dispatch, thinking, shutdown, which runs survive a reload, escalation, and messaging.
 - [Loops and scheduled wakeups](guide/loop-and-schedule.md): timers for external work, `/loop`, checks the agent paces itself, cancellation, and how long they last in a session.
 - [Memory and learning](guide/memory-and-learning.md): review, caps, background models, skill validation, and the review queue.
+- [Herdr](guide/herdr.md): running spider inside the Herdr terminal workspace. It covers the `herdr.enabled` switch and the fallback to ordinary spider, setup and how setup opens your sessions, the configuration file, remote commands with `on` and agent consoles, the left sidebar, its Machines section, and panes, the SSH rule and the admin command, subagent viewers, the spider panel, shortcuts, role templates, resume, and the doctor.
 
 ## Architecture
 

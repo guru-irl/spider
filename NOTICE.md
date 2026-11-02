@@ -1,8 +1,61 @@
 # Upstream notices
 
-Spider includes code and skills from the following projects. The context-mode
-code is licensed under the Elastic License 2.0. The other upstreams listed here
-are licensed under MIT.
+Spider includes code, assets, and skills from the following projects.
+Context-mode uses Elastic License 2.0, the bundled fonts use OFL-1.1, and the
+modified Herdr excerpts use Apache-2.0. The remaining upstreams use MIT.
+
+## Herdr fonts and themes
+
+- `packages/herdr/assets/fonts/GoogleSansFlex.ttf` is Google Sans Flex.
+- `packages/herdr/assets/fonts/GlassLabel-Bold.ttf` is a renamed, bold condensed
+  derivative of Google Sans Flex. Its font name table records that provenance.
+- Copyright 2015 The Google Sans Flex Authors
+  (<https://github.com/googlefonts/googlesans-flex>).
+- Both fonts are licensed under the SIL Open Font License 1.1, not MIT.
+  The complete notice is shipped as `GoogleSansFlex-OFL.txt` beside the fonts.
+  `GoogleSansFlex-TRADEMARKS.md` retains the upstream trademark terms.
+- The Dracula+ ANSI palette used by `dracula-plus-glass.json` and
+  `spider-glass.json` comes from the MIT-licensed iTerm2 Color Schemes collection:
+  <https://github.com/mbadolato/iTerm2-Color-Schemes/blob/master/ghostty/Dracula%2B>.
+  Spider supplies the neutral glass surfaces and theme mappings.
+- Current Herdr built-in mods are cloned during explicit setup. No frozen
+  built-in mods, icons, or spinner assets are redistributed in this package.
+
+### Herdr built-in mod excerpts
+
+Portions of `packages/herdr/assets/look/patches.json` are derived from the
+built-in mods of Herdr 0.1.11 by the Herdr authors, licensed under the Apache
+License, Version 2.0, and were modified for spider.
+
+The complete licence is shipped at [licenses/herdr-apache-2.0.txt](licenses/herdr-apache-2.0.txt).
+The adjacent `packages/herdr/assets/look/NOTICE` prominently identifies the
+modified portions; the JSON patch anchors and replacements are unchanged.
+
+### iTerm2 Color Schemes
+
+```text
+MIT License
+
+Copyright (c) 2011 to Present Mark Badolato
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## pstack
 

@@ -3,6 +3,7 @@ import { RunStore, type RunRow, type RunStatus } from "./run-store";
 import { RunEventTailer } from "./event-tailer";
 import { emitStatus } from "./run-events";
 import { buildChildSpawnSpec, type ChildSpawnSpec } from "./pi-args";
+import type { ExecutionEnvironmentPolicy } from '@spider/herdr';
 import { registerChild, unregisterChild } from "./coordinators";
 import { resolveModelThinking } from "./model-resolve";
 import { registerShared, releaseShared, setSink, type CompletionSink, type SharedChildEntry, type SharedHandle } from "./child-registry";
@@ -55,7 +56,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { environmentPolicy?: ExecutionEnvironmentPolicy; parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -81,6 +82,7 @@ export class Runner {
 
   private spawnFor(run: RunRow, opts: RunOpts): { handle: ChildHandle; mode: "rpc" | "print"; intercomSession?: string } {
     const spec = buildChildSpawnSpec({
+      executionEnvironmentPolicy: this.deps.environmentPolicy,
       runId: run.id,
       sessionId: this.sessionId,
       agent: opts.agent,
@@ -108,6 +110,10 @@ export class Runner {
     const intercomSession = spec.childMode === "rpc" && this.deps.intercomExtensions?.length
       ? spec.env.PI_SUBAGENT_INTERCOM_SESSION_NAME : undefined;
     this.deps.store.setLaunch(run.id, { childMode: spec.childMode ?? "print", intercomSession });
+    // Keep this locator with the run after its live route is removed. Existing
+    // runs without this event retain the legacy transcript-root lookup.
+    if (spec.sessionDir) appendRunEvent(this.db, { runId: run.id, sessionId: this.sessionId, ts: Date.now(),
+      type: "child_transcript", payload: { version: 1, directory: spec.sessionDir } });
     this.deps.globalDb?.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
       .run(run.id, this.sessionId, this.deps.dbPath);
     spec.onRpcEvent = this.rpcSink(run);

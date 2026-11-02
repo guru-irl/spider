@@ -32,6 +32,7 @@ spider batch commands:[{language:"shell",code:"node -v"},{language:"shell",code:
 - `batch` runs commands one after another and combines their results, each capped.
 - Use a plain `read` before an edit that must match exact text. For inspection that needs filtering, use execution or indexed search.
 - Exec action output is capped at `10000` bytes, so printing a whole log does not get around context limits.
+- Inside [Herdr](herdr.md#run-commands-on-a-remote-machine), `exec`, `exec_file`, and `batch` also take an `on` machine name to run on a configured remote machine. The command appears in the agent's console for that machine. Plain `ssh` and other SSH transports to those machines are refused. Without `on`, execution stays local. When the integration is off, a call with `on` fails instead of running locally.
 
 ### Background execution
 
@@ -88,6 +89,7 @@ spider todo op:"remove" id:"2"
 - When several writers run at once, give each its own worktree and its own dependencies.
 - Use `/agents` to inspect results. Use `message` only when the run's mode and delivery state allow it. A completed run cannot resume.
 - [Subagents](subagents.md) covers examples, model resolution, shutdown, survival across reloads, escalation and evidence of message delivery.
+- Inside [Herdr](herdr.md#watch-and-steer-subagents), each run also gets a viewer terminal, and the session's Herdr status stays working while its runs are pending.
 
 ## Loops and scheduled wakeups
 
@@ -109,6 +111,7 @@ spider todo op:"remove" id:"2"
 ## See also
 
 - [Documentation index](../README.md).
+- [Herdr integration](herdr.md).
 - [Architecture overview](../architecture/README.md).
 - [Feedback and learning loops](../architecture/feedback-and-learning-loops.md).
 - [Contributing](../../CONTRIBUTING.md).

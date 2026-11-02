@@ -61,7 +61,7 @@ async function setup() {
           } });
         },
       };
-      scheduler = registerLoopSchedule(observed, fakeTime());
+      scheduler = registerLoopSchedule(observed, fakeTime()).scheduler;
       pi.registerCommand("user-only", {
         description: "A user-only security setting", async handler(args) { ran.push(args); },
       });

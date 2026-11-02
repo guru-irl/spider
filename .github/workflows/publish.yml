@@ -92,6 +92,13 @@ jobs:
           echo "$NAME@$VER is not yet published"
 
       - name: Publish
-        run: npm publish --access public --provenance
+        run: |
+          mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/packaging"
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          export npm_config_foreground_scripts=false npm_config_pack_destination="$PWD/.spider/scratch/packaging"
+          npm pack --json --ignore-scripts | node -e "require('./scripts/check-package-files.cjs')"
+          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
+          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+          npm publish ".spider/scratch/packaging/$TARBALL" --ignore-scripts --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -44,7 +44,7 @@ try {
       mkdirSync(join(install, "scripts"), { recursive: true });
       mkdirSync(join(install, "dist"), { recursive: true });
       mkdirSync(cwd, { recursive: true });
-      for (const script of ["link.mjs", "dev-link.mjs", "extension-shim.mjs"]) {
+      for (const script of ["link.mjs", "dev-link.mjs", "extension-shim.mjs", "pi-agent-dir.mjs"]) {
         const source = join(root, "scripts", script);
         if (existsSync(source)) copyFileSync(source, join(install, "scripts", script));
       }

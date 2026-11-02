@@ -5,14 +5,14 @@
 // use Node's native import with a bundle-metadata cache key for /reload.
 // Removes any dev shim to avoid a double load.
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionShim } from "./extension-shim.mjs";
+import { piAgentDir } from "./pi-agent-dir.mjs";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const bundle = join(repoRoot, "dist", "extension.js");
-const extDir = join(homedir(), ".pi", "agent", "extensions");
+const extDir = join(piAgentDir(), "extensions");
 const shim = join(extDir, "spider.ts");
 const devShim = join(extDir, "spider-dev.ts");
 

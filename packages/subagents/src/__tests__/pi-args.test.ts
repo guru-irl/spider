@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+afterEach(() => vi.unstubAllEnvs());
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -42,6 +43,24 @@ const base = {
 };
 
 describe("buildChildSpawnSpec", () => {
+  it('threads top-level session and terminal identity through children and grandchildren', () => {
+    vi.stubEnv('PI_SUBAGENT_CHILD', ''); vi.stubEnv('HC_TERMINAL_ID', 't-owner');
+    const child = buildChildSpawnSpec({ ...base, name: 'first worker', scratchRoot });
+    expect(child.env.PI_SUBAGENT_RUN_NAME).toBe('first worker');
+    expect(child.env.PI_SPIDER_TOP_SESSION_ID).toBe('s1');
+    expect(child.env.HC_TERMINAL_ID).toBe('t-owner');
+    vi.stubEnv('PI_SUBAGENT_CHILD', '1'); vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', child.env.PI_SPIDER_TOP_SESSION_ID);
+    vi.stubEnv('PI_SPIDER_SESSION_ID', 'child-session');
+    const grandchild = buildChildSpawnSpec({ ...base, sessionId: 'child-session', runId: 'r2', name: 'nested worker', scratchRoot });
+    expect(grandchild.env.PI_SUBAGENT_RUN_NAME).toBe('nested worker');
+    expect(grandchild.env.PI_SPIDER_TOP_SESSION_ID).toBe('s1');
+    expect(grandchild.env.PI_SUBAGENT_RUN_ID).toBe('r2');
+    expect(grandchild.env.HC_TERMINAL_ID).toBe('t-owner');
+  });
+  it('upgrades an inherited legacy parent session id for a grandchild', () => {
+    vi.stubEnv('PI_SUBAGENT_CHILD', '1'); vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', ''); vi.stubEnv('PI_SPIDER_SESSION_ID', 's-owner');
+    expect(buildChildSpawnSpec({ ...base, scratchRoot, sessionId: 'child-session' }).env.PI_SPIDER_TOP_SESSION_ID).toBe('s-owner');
+  });
   it("marks the child and threads the shared DB path + run id through env", () => {
     const dbPath = path.join(scratchRoot, "test.db");
     const spec = buildChildSpawnSpec({ ...base, scratchRoot, dbPath });

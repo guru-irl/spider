@@ -1,0 +1,7 @@
+{
+  "error": {
+    "kind": "not_found",
+    "message": "no file /fixture/missing-file",
+    "hint": "check the path, or hc exec ls"
+  }
+}

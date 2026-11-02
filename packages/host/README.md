@@ -65,6 +65,12 @@ router once per dispatch, then hands control to those packages.
 | `legacy-removal.ts` | Tries to unregister the deprecated legacy tool names so that `spider` replaces them. Failures are ignored. |
 | `config-reload.ts` | A config reloader that re-reads the merged config and applies the live toggles again. |
 | `embeddings.ts` | Loads fastembed on first use, and holds the embedding config defaults. |
+| `herdr/data-source.ts` | `createHerdrDataSource` builds each session's Herdr feed rows from the run store, todos, triggers, usage pace, and pending approvals. `budgetNotifications` turns a pace summary into the 80 percent, 100 percent, and projected budget notices. |
+| `herdr/run-transcript.ts` | `createRunTranscriptSource` pages committed run events and child transcript files by cursor, from the owning session's run database, for subagent viewers. |
+| `herdr/views.ts` | `createHerdrViews` maps the five Herdr shortcuts to the existing agents, todos, usage, memory, and loop handlers. It refuses when no interactive owning session exists. |
+| `herdr/mount.ts` | `mountHerdr` reads `herdr.enabled` and the configuration file, checks for a live core and owner, and composes the `@spider/herdr` registrations with host's adapters for a top-level session. It also records process presence and reports once when the integration is off. |
+| `herdr/child.ts` | `mountChildHerdr` composes remote execution, agent consoles, and the SSH check for a subagent child. |
+| `herdr/ports.ts` | Production ports for the setup CLI, the viewer and observer programs, process inventory, and job journals. |
 
 Pi saves the injected global and repo memory section in session files. An
 unchanged section does not add another patch. Changes and compaction
@@ -96,9 +102,16 @@ these fields: `db` (project DB), `globalDb`, `project`, `sessionId`, `cwd`,
 
 `@spider/host` sits at the top of the dependency graph. It depends on every
 other `@spider/*` package (`db-core`, `models`, `memory`, `todo`, `context`,
-`subagents`, `organism`, `superpowers`, `ui`) and on the pi peer packages
+`subagents`, `organism`, `superpowers`, `ui`, `herdr`) and on the pi peer packages
 (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`). Nothing in the
 monorepo depends on host. Pi loads it.
+
+For the [Herdr integration](../../docs/guide/herdr.md), host supplies the pi
+lifecycle and database adapters, and `@spider/herdr` owns everything else.
+`hooks.ts` and `routing/index.ts` accept an optional `HerdrToolGuard`. When it
+is present, the guard checks each tool call for raw SSH to a managed machine
+before bash enforcement and normal routing run. It also refuses a call with
+`on` when the integration is off.
 
 A single tool call goes through these steps:
 
@@ -153,4 +166,5 @@ Slash commands use the same `dispatch` path. They render through the same
 - [`@spider/memory`](../memory/README.md): staging and the active-memory snapshot.
 - [`@spider/subagents`](../subagents/README.md): the run and message handlers.
 - [`@spider/organism`](../organism/README.md): drain, curate, and insights.
+- [`@spider/herdr`](../herdr/README.md): the Herdr integration.
 - [Architecture overview](../../docs/architecture/README.md)

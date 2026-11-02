@@ -50,8 +50,8 @@ it("keeps the ready embedder for shutdown reflection, then terminates it without
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, api: "openai-responses" };
   const entries = [{ type: "message", id: "user", timestamp: new Date().toISOString(), message: { role: "user", content: "fixture shutdown input", timestamp: Date.now() } }];
   const ctx = { cwd: root, hasUI: false, modelRegistry: { find: () => model, getAll: () => [model], getAvailable: () => [model], streamSimple() { throw new Error("real model call forbidden"); } },
-    sessionManager: { getSessionId: () => "shutdown-fixture", getEntries: () => entries, getBranch: () => entries, buildContextEntries: () => entries } };
-  const emit = async (name: string) => { for (const fn of hooks.get(name) ?? []) await fn({}, ctx); };
+    sessionManager: { getSessionId: () => "shutdown-fixture", getSessionFile: () => undefined, getEntries: () => entries, getBranch: () => entries, buildContextEntries: () => entries } };
+  const emit = async (name: string) => { for (const fn of hooks.get(name) ?? []) await fn(name === 'session_shutdown' ? { reason: 'quit' } : {}, ctx); };
   spiderExtension(pi as never); shutdown = () => emit("session_shutdown");
   await emit("session_start");
   const ready = await resolveEmbedder(); expect(ready).not.toBeNull();

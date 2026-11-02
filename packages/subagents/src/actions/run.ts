@@ -149,7 +149,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const thinkingDiagnostics: Array<{ model?: string; requested?: string; effective?: string; notice?: string; step?: number }> = [];
     const withWarning = (details: any) => ({ ...details, ...(warning ? { warning } : {}), ...(thinkingDiagnostics.length ? { thinkingDiagnostics } : {}) });
     const orchestratorTarget = childMode === "rpc" ? process.env.PI_INTERCOM_SESSION_ID ?? ctx.sessionId : undefined;
-    const runnerDeps = { parentSessionFile: ctx.parentSessionFile, modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
+    const runnerDeps = { environmentPolicy: ctx.environmentPolicy, parentSessionFile: ctx.parentSessionFile, modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
     }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, reviewerExcludeTools: ctx.reviewerExcludeTools, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };

@@ -18,6 +18,8 @@ export { controlMigrate } from "./control/migrate-cmd";
 
 // ── config (plain JSON; precedence defaults < global < project) ──
 export const DEFAULTS: Readonly<Record<string, unknown>> = {
+  "herdr.enabled": "auto",
+  "herdr.config": "",
   "ui.footer": true,
   "tools.structured": false,
   ...USAGE_DEFAULTS,
@@ -36,6 +38,10 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "skills.reviewer.timeoutMs": 180000,
   "skills.reviewer.thinking": "xhigh",
 };
+
+export const GLOBAL_ONLY_CONFIG_KEYS: readonly string[] = Object.freeze([
+  "subagents.extensions", "subagents.profiles.reviewer.excludeTools", "herdr.config", "herdr.enabled",
+]);
 
 function configFile(scopeRoot: string): string {
   return join(scopeRoot, "config.json");
@@ -73,11 +79,12 @@ export function embeddingDrainEnabled(projectRoot: string): boolean {
   return { ...DEFAULTS, ...global.config, ...local.config }["embeddings.drain"] !== false;
 }
 
-function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
-  const globalFile = configFile(paths.globalRoot);
+function configLayers(cwd: string, localRoot = paths.projectRoot(cwd), globalRoot = paths.globalRoot) {
+  const globalFile = configFile(globalRoot);
   const localFile = configFile(localRoot);
   const global = readLayer(globalFile);
-  const local = readLayer(localFile);
+  assertTestConfigPath(localFile);
+  const local = existsSync(localFile) ? readLayer(localFile) : { config: {}, error: undefined };
   const errors = [global.error, local.error].filter((s): s is string => s !== undefined);
   for (const [layer, file] of [[global, globalFile], [local, localFile]] as const) {
     for (const key of Object.keys(COMPACTION_DEFAULTS)) {
@@ -94,13 +101,11 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
       if (!isAbsolutePathList(extensions)) {
         errors.push(`invalid subagents.extensions in ${file}: expected a JSON array of absolute file paths`);
       }
-      if (layer === local) errors.push(`subagents.extensions in ${file} is ignored: global scope only`);
     }
     if (Object.hasOwn(layer.config, "subagents.profiles.reviewer.excludeTools")) {
       if (!isToolSelectorList(layer.config["subagents.profiles.reviewer.excludeTools"])) {
         errors.push(`invalid subagents.profiles.reviewer.excludeTools in ${file}: expected a JSON array of nonempty tool selectors without whitespace or commas`);
       }
-      if (layer === local) errors.push(`subagents.profiles.reviewer.excludeTools in ${file} is ignored: global scope only`);
     }
     if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
@@ -108,6 +113,10 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd)) {
   }
   errors.push(...readUsageConfig(global.config, local.config).errors);
   const warnings = [...readUsageConfig({}, local.config).errors];
+  for (const key of GLOBAL_ONLY_CONFIG_KEYS) if (Object.hasOwn(local.config, key)) {
+    const warning = `${key} in ${localFile} is ignored: global scope only`;
+    errors.push(warning); warnings.push(warning);
+  }
   return { global, local, globalFile, localFile, errors, warnings };
 }
 
@@ -164,10 +173,10 @@ export function modelDefaultLayerForEdit(cwd: string, scope: "local" | "global")
 type ConfigSource = "default" | "global" | "local" | Record<string, "global" | "local">;
 
 /** Effective config and its provenance come from the same read of both layers. */
-export function configValues(cwd: string, localRoot?: string): {
+export function configValues(cwd: string, localRoot?: string, globalRoot: string = paths.globalRoot): {
   config: Record<string, unknown>; sources: Record<string, ConfigSource>; errors: string[]; warnings: string[]; globalFile: string;
 } {
-  const layers = configLayers(cwd, localRoot);
+  const layers = configLayers(cwd, localRoot, globalRoot);
   const g = layers.global.config;
   const p = layers.local.config;
   const all = { ...DEFAULTS, ...g, ...p };
@@ -179,7 +188,7 @@ export function configValues(cwd: string, localRoot?: string): {
     all[key] = localValid ? p[key] : globalValid ? g[key] : fallback;
     sources[key] = localValid ? "local" : globalValid ? "global" : "default";
   }
-  for (const key of ["subagents.extensions", "subagents.profiles.reviewer.excludeTools"]) {
+  for (const key of GLOBAL_ONLY_CONFIG_KEYS) {
     all[key] = Object.hasOwn(g, key) ? g[key] : DEFAULTS[key];
     sources[key] = Object.hasOwn(g, key) ? "global" : "default";
   }
@@ -216,7 +225,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   }
   if (scope !== "local" && scope !== "global") throw new Error("control config: scope must be global or local");
   if (key === undefined) throw new Error(`control config ${op}: key required`);
-  if (op === "set" && ["subagents.extensions", "subagents.profiles.reviewer.excludeTools"].includes(key) && scope !== "global") {
+  if (op === "set" && GLOBAL_ONLY_CONFIG_KEYS.includes(key) && scope !== "global") {
     throw new Error(`${key} is global-only; use scope:"global"`);
   }
   if (isUsageConfigKey(key)) {
@@ -259,7 +268,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
     if (Object.hasOwn(global, key)) cur[key] = "unlimited";
     else delete cur[key];
   } else cur[key] = value;
-  const shadowed = !isUsageConfigKey(key) && !["subagents.extensions", "subagents.profiles.reviewer.excludeTools"].includes(key) && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
+  const shadowed = !isUsageConfigKey(key) && !GLOBAL_ONLY_CONFIG_KEYS.includes(key) && scope === "global" && Object.hasOwn(readLayer(configFile(paths.projectRoot(cwd))).config, key);
   const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   assertTestConfigPath(temp);
   try {

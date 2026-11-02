@@ -4,7 +4,18 @@ import { CONFIG_SCHEMA, createConfigSchema, getField, coerce } from "../config-s
 describe("config schema", () => {
 	it("declares groups with working or explicitly reserved settings", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["auxiliary", "compaction", "curator", "embeddings", "exec", "memory", "models", "organism", "routing", "skills", "subagents", "tools", "ui", "usage"]);
+		expect(ids).toEqual(["auxiliary", "compaction", "curator", "embeddings", "exec", "herdr", "memory", "models", "organism", "routing", "skills", "subagents", "tools", "ui", "usage"]);
+	});
+	it("coerces Herdr activation to booleans or auto and exposes its config path", () => {
+		const enabled = getField("herdr.enabled")!;
+		expect(enabled.default).toBe("auto");
+		expect(enabled.restart).toBe(true);
+		for (const [raw, value] of [["false", false], ["true", true], ["auto", "auto"]] as const)
+			expect(coerce(enabled, raw)).toEqual({ ok: true, value });
+		expect(coerce(enabled, "invalid").ok).toBe(false);
+		const config = getField("herdr.config")!;
+		expect(config).toMatchObject({ type: "string", default: "", restart: true });
+		expect(coerce(config, "/path/to/herdr.json")).toEqual({ ok: true, value: "/path/to/herdr.json" });
 	});
 	it("offers Luna xhigh as the skill-reviewer UI defaults", () => {
 		expect(getField("skills.reviewer.model")?.default).toBe("github-copilot/gpt-6-luna");

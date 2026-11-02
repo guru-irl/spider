@@ -1,4 +1,5 @@
 import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
+import { createFixtureHerdr } from "./fixtures/herdr-assets.js";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -22,12 +23,13 @@ beforeAll(async () => {
   // Use the real repo config, but never read or overwrite the checkout's dist.
   await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", outDir], options);
   await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--config", prepareDashboardBuild(buildRoot)], options);
+  createFixtureHerdr(buildRoot);
   // The real post-build gate resolves dist relative to cwd, including its native import.
   await run(process.execPath, [resolve("scripts/assert-bundle.mjs")], { ...options, cwd: buildRoot });
 }, 150_000);
 afterAll(() => { if (buildRoot) rmSync(buildRoot, { recursive: true, force: true }); });
 afterEach(() => { for (const p of children) p.kill("SIGKILL"); children.clear(); for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); dirs.length = 0; });
-it.each(["direct", "shim", "oom"])("fresh single-file bundle through %s keeps pi alive and owns its workers", async mode => {
+it.each(["direct", "shim", "oom", "contended"])("fresh single-file bundle through %s keeps pi alive and owns its workers", async mode => {
   const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-bundle-")); dirs.push(root);
   mkdirSync(join(root, "packaged", "dist"), { recursive: true });
   const bundle = join(root, "packaged", "dist", "extension.js"); cpSync(built, bundle);
@@ -47,7 +49,7 @@ it.each(["direct", "shim", "oom"])("fresh single-file bundle through %s keeps pi
     const child = spawn(process.execPath, ["--import", fileURLToPath(new URL("./fixtures/no-network.mjs", import.meta.url)), fileURLToPath(new URL("./fixtures/bundle-smoke.mjs", import.meta.url)), mode, bundle, root, shim], { env, stdio: ["ignore", "pipe", "pipe"] }); children.add(child);
     let stdout = "", stderr = "";
     child.stdout!.on("data", b => { stdout += b; }); child.stderr!.on("data", b => { stderr += b; });
-    const timeout = setTimeout(() => { child.kill("SIGKILL"); rej(new Error("bundle smoke deadline")); }, 25000);
+    const timeout = setTimeout(() => { child.kill("SIGKILL"); rej(new Error(`bundle smoke deadline\n${stderr}\n${stdout}`)); }, 25000);
     child.on("error", error => { clearTimeout(timeout); rej(error); });
     child.on("exit", code => { clearTimeout(timeout); children.delete(child); res({ code, stdout, stderr }); });
   });

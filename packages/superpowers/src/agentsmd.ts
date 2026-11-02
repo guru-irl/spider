@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { SPIDER_BLOCK_START, SPIDER_BLOCK_END, buildSpiderBlock } from "./agentsmd-content.js";
 
 export function isLegacyFiveToolGuide(existing: string): boolean {
@@ -22,7 +22,7 @@ export function upsertManagedBlock(existing: string | null, block: string): stri
 }
 
 export function defaultAgentsMdPath(): string {
-  return path.join(os.homedir(), ".pi", "agent", "AGENTS.md");
+  return path.join(getAgentDir(), "AGENTS.md");
 }
 
 export function writeAgentsMd(agentsMdPath: string): { path: string; action: "created" | "updated" | "unchanged" } {

@@ -188,7 +188,7 @@ describe("session-owned run records with an explicit child cwd", () => {
     await f.invoke({ action: "run", agent: "worker", task: "inspect" });
     vi.stubEnv("PI_SUBAGENT_CHILD", child);
     const setWidget = vi.fn();
-    const ctx = { cwd: f.repoA, sessionManager: { getSessionId: () => f.sessionId }, hasUI: true, mode: "rpc",
+    const ctx = { cwd: f.repoA, sessionManager: { getSessionFile: () => undefined, getSessionId: () => f.sessionId }, hasUI: true, mode: "rpc",
       ui: { setWidget, custom: vi.fn(), notify: vi.fn() } };
     try {
       // Hook order varies with organism wiring. Always invoke every registered hook.
@@ -197,7 +197,7 @@ describe("session-owned run records with an explicit child cwd", () => {
       else expect(setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });
     } finally {
       vi.stubEnv("PI_SUBAGENT_CHILD", "0");
-      for (const hook of f.hooks.session_shutdown ?? []) await hook();
+      for (const hook of f.hooks.session_shutdown ?? []) await hook({ reason: 'quit' });
     }
   });
 
@@ -214,13 +214,13 @@ describe("session-owned run records with an explicit child cwd", () => {
     expect(dbFile(actionCtx.db)).toBe(dbFile(mountDb.db));
     await dispatch(args, actionCtx);
     const setWidget = vi.fn();
-    const ctx = { cwd: f.repoA, sessionManager: { getSessionId: () => f.sessionId }, hasUI: true,
+    const ctx = { cwd: f.repoA, sessionManager: { getSessionFile: () => undefined, getSessionId: () => f.sessionId }, hasUI: true,
       ui: { setWidget, custom: vi.fn(), notify: vi.fn() } };
     // The agents session_start handler mounts the production view, which reads
     // existing runs immediately and creates a widget only when it sees one.
     for (const fn of f.hooks.session_start) await fn({}, ctx);
     expect(setWidget).toHaveBeenCalledWith("spider-agents", expect.any(Function), { placement: "aboveEditor" });
-    for (const fn of f.hooks.session_shutdown ?? []) await fn();
+    for (const fn of f.hooks.session_shutdown ?? []) await fn({ reason: 'quit' });
   });
 
   it("keeps explicit-cwd todo in repoB while a run from the same session lives in repoA", async () => {
@@ -243,7 +243,7 @@ describe("session-owned run records with an explicit child cwd", () => {
     expect(f.sessionRows(f.repoB)).toEqual([{ id: f.sessionId }]);
     expect(f.sessionRows(f.repoC)).toEqual([]);
     expect(getBinding(globalDb, f.sessionId)).toEqual(before);
-    for (const fn of f.hooks.session_shutdown ?? []) await fn();
+    for (const fn of f.hooks.session_shutdown ?? []) await fn({ reason: 'quit' });
   });
 
   it("an unbound session's explicit non-git skill cwd does not bind later runs", async () => {
@@ -259,7 +259,7 @@ describe("session-owned run records with an explicit child cwd", () => {
     await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" });
     expect(f.specs[0].env.PI_SPIDER_DB_PATH).toBe(join(f.repoA, ".spider", "project.db"));
     expect(f.rows(f.repoA)).toHaveLength(1);
-    for (const fn of f.hooks.session_shutdown ?? []) await fn();
+    for (const fn of f.hooks.session_shutdown ?? []) await fn({ reason: 'quit' });
   });
 
   it.each(["nested", "bound"] as const)("%s session writes setup-failure receipts to its session run DB", mode => {
@@ -273,7 +273,7 @@ describe("session-owned run records with an explicit child cwd", () => {
     }
     const organism = new HostOrganismRuntime(async () => null);
     organism.recordSetupFailure("resolve", new Error("fixture failure"), {
-      cwd: sessionCwd, sessionManager: { getSessionId: () => f.sessionId },
+      cwd: sessionCwd, sessionManager: { getSessionFile: () => undefined, getSessionId: () => f.sessionId },
     } as never);
     expect(f.setupReceipts(owner)).toEqual([{ summary: "organism drain (shutdown): failed (setup)" }]);
     expect(f.setupReceipts(sessionCwd)).toEqual([]);
@@ -317,7 +317,7 @@ describe("session-owned run records with an explicit child cwd", () => {
       const dbPath = join(owner, ".spider", "project.db");
       const ctx = {
         cwd: sessionCwd, hasUI: true,
-        sessionManager: { getSessionId: () => f.sessionId, getBranch: () => [], getEntries: () => [] },
+        sessionManager: { getSessionFile: () => undefined, getSessionId: () => f.sessionId, getBranch: () => [], getEntries: () => [] },
         ui: { setWidget: vi.fn(), custom: vi.fn(), notify: vi.fn() },
       };
       await f.invoke({ action: "run", cwd: f.repoB, agent: "worker", task: "inspect" }, sessionCwd);
@@ -335,18 +335,14 @@ describe("session-owned run records with an explicit child cwd", () => {
       expect(ownerDb.prepare("SELECT status FROM runs WHERE id = ?").get("orphan-row"))
         .toEqual({ status: "cancelled" });
 
-      // The shutdown drain reads those runs and persists its receipt in that file.
-      // The penultimate shutdown handler is the organism drain.
-      await f.hooks.session_shutdown.at(-2)!({ reason: "quit" }, ctx);
+      // Run production shutdown order; hook positions change as integrations register.
+      // The organism drain must persist its receipt in the same session run DB.
+      for (const fn of f.hooks.session_shutdown ?? []) await fn({ reason: "quit" }, ctx);
       const receipt = ownerDb.prepare(
         "SELECT payload FROM run_events WHERE session_id = ? AND summary LIKE 'organism drain%' ORDER BY id DESC LIMIT 1",
       ).get(f.sessionId) as { payload: string } | undefined;
       expect(receipt).toBeDefined();
       expect(JSON.parse(receipt!.payload).inputs.runs).toBeGreaterThan(0);
-      for (const fn of f.hooks.session_shutdown ?? []) {
-        if (fn === f.hooks.session_shutdown.at(-2)) continue;
-        await fn();
-      }
     },
   );
 });

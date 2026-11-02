@@ -1,6 +1,6 @@
 import { UI_CONFIG_SCHEMA } from "../ui-thinking.js";
 import { coerce, getField } from "@spider/ui";
-import { controlConfig, type ConfigWriteResult } from "../control.js";
+import { controlConfig, GLOBAL_ONLY_CONFIG_KEYS, type ConfigWriteResult } from "../control.js";
 import { isUsageConfigKey } from "../usage/config.js";
 
 type ConfigEditResult = (ConfigWriteResult & { error?: undefined }) | { ok: false; error: string };
@@ -10,7 +10,7 @@ function keyError(key: string, scope: "local" | "global", op: "set" | "unset"): 
 	if (key === "exec.enforce") {
 		return "exec.enforce is protected and can only be changed by the user via the /exec-enforce slash command";
 	}
-	if (key === "subagents.extensions" || key === "subagents.profiles.reviewer.excludeTools") {
+	if (GLOBAL_ONLY_CONFIG_KEYS.includes(key)) {
 		return `${key} is protected and can only be changed by the user in ~/.pi/agent/spider/config.json, or config.json under SPIDER_GLOBAL_ROOT`;
 	}
 	if (getField(key, UI_CONFIG_SCHEMA)?.scope === "global" && scope !== "global" && !(op === "unset" && isUsageConfigKey(key))) return `${key} is global-only; use scope:"global"`;

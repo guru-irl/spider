@@ -19,11 +19,15 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: build · verify · draft release
+  verify:
+    name: Node ${{ matrix.node }} · build · verify
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '26.x']
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -33,11 +37,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.x'
+          node-version: ${{ matrix.node }}
           cache: npm
 
-      - name: Check lockfile registry
-        run: node scripts/check-lockfile-registry.mjs
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/packaging"
+
+      - name: Check lockfile registry and Herdr workspace
+        run: |
+          node scripts/check-lockfile-registry.mjs
+          npm ls --package-lock-only @spider/herdr
 
       - name: Install
         run: npm ci
@@ -57,37 +66,35 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      - name: Test (fake Herdr conformance and acceptance; opt-in modes skip visibly)
+        run: |
+          echo '::notice::Real hc tests require SPIDER_HERDR_E2E=1 and hc; app tests require the separately approved app opt-in. Both are disabled in CI.'
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E TMPDIR="$PWD/.spider/scratch/tmp" npm test -- --reporter=verbose
 
       - name: Build
         run: npm run build
 
-      # Proves the tarball npm would publish contains the bundle and skills,
-      # before anything is released. `--ignore-scripts` is required here: `npm
-      # pack` otherwise re-runs the `prepare` script (`npm run build`), and that
-      # build's own stdout (vite's progress output, assert-bundle's success
-      # line) lands BEFORE `npm pack --json`'s own JSON on the same stdout
-      # stream, so `JSON.parse` on the piped output fails on every run. The
-      # explicit Build step above already produced dist/, so re-running prepare
-      # here is redundant as well as broken.
+      - name: Verify bundle shape
+        run: node scripts/assert-bundle.mjs
+
       - name: Verify package contents
         run: |
-          npm pack --dry-run --ignore-scripts
-          npm pack --json --ignore-scripts | node -e "
-            let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
-              const files=JSON.parse(s)[0].files.map(f=>f.path);
-              const fs=require('node:fs');
-              const skillDirs=['packages/superpowers/skills','packages/pstack/skills'];
-              const skills=skillDirs.flatMap(dir=>fs.readdirSync(dir,{recursive:true}).filter(f=>f==='SKILL.md'||f.endsWith('/SKILL.md')).map(f=>dir+'/'+f));
-              const need=['dist/extension.js','dist/dashboard/index.html','README.md','LICENSE','NOTICE.md','packages/context/LICENSE','packages/pstack/LICENSE',...skills];
-              if(!files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(f)) || !files.some(f=>/^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(f))) throw new Error('dashboard JS/CSS missing');
-              if(files.some(f=>f.startsWith('dist/') && (f.endsWith('.map') || f.includes('states')))) throw new Error('development dashboard files in tarball');
-              const missing=need.filter(n=>!files.includes(n));
-              if(missing.length){console.error('::error::missing from tarball: '+missing.join(', '));process.exit(1);}
-              console.log('tarball contains '+files.length+' files, required entries present');
-            });"
-          rm -f guru-irl-spider-*.tgz
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          export npm_config_foreground_scripts=false npm_config_pack_destination="$PWD/.spider/scratch/packaging"
+          npm pack --json --ignore-scripts | node -e "require('./scripts/check-package-files.cjs')"
+          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
+          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+
+  release:
+    name: draft release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Draft, not live: see the header comment. `gh release create` without
       # `--draft` would publish immediately, authored by GITHUB_TOKEN, which is

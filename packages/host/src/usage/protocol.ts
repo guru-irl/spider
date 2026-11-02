@@ -2,9 +2,13 @@ import type { UsageRoots } from "./discovery.js";
 import type { LedgerHealth } from "./ledger.js";
 import type { CounterState } from "./counter.js";
 import type { CalibrationResult, SourceErrorRow, Period } from "./dashboard-contract.js";
+import type { Pace } from "./dashboard-v4-contract.js";
+
+export type PanelUsage = { monthCost: { credits: number | null; label: string }; pace: Pace; updatedAt: number | null };
 
 export type UsageWorkerCommand =
   | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean; calibration?: "auto" | "off"; metadataBackfillBytesPerPass?: number; responseMetadataBytesPerPass?: number; dashboardMode?: boolean; sessionId?: string | null }
+  | { type: "panel-usage"; requestId: number; now: number; sessionId: string; budget?: number }
   | { type: "refresh" }
   | { type: "configure"; poll: boolean; calibration?: "auto" | "off" }
   | { type: "stop" };
@@ -19,6 +23,7 @@ export type UsageProgress = { sourcesCompleted: number; sourcesTotal: number; so
 /** At most 20 redacted D9 rows. Older workers may omit this field. */
 export type SourceErrorDiagnostics = { rows: readonly SourceErrorRow[]; truncated: boolean };
 export type UsageWorkerEvent =
+  | { type: "panel-usage"; requestId: number; data: PanelUsage | null }
   | { type: "snapshot"; responseMetadataBackfill?: BackfillState; responseMetadataProgress?: UsageProgress; metadataBackfill?: BackfillState; metadataProgress?: UsageProgress; monthUsed?: number | null; monthPeriod?: Period; collector?: UsageCollector; sourceErrorDiagnostics?: SourceErrorDiagnostics; calibration?: CalibrationResult; health: LedgerHealth; counter: CounterState; backfill: BackfillState; reconciliation: ReconciliationView; progress?: UsageProgress; ingestRole?: "owner" | "follower" | "standby" }
   | { type: "error"; code: string }
   | { type: "standby" }

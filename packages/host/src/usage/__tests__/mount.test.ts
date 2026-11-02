@@ -181,6 +181,8 @@ it("calibration reload changes footer without repricing tokens", () => {
 
 
 it("live budget changes and worker corrected fallback refresh month without repricing or ledger reads",()=>{
+ // Yesterday's stale counter must still belong to the current billing period.
+ vi.setSystemTime(stamp);
  const f=fixture();f.month(48);const price=vi.spyOn(pricing,"priceCall");mount(f);
  mounted!.configure({...config,monthlyBudget:200});expect(f.render()[1]).toContain("month 24%");
  mounted!.configure({...config,monthlyBudget:400});expect(f.render()[1]).toContain("month 12%");

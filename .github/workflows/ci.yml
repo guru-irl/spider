@@ -16,20 +16,15 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Node ${{ matrix.node }} · typecheck · test · build
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['22.19.0', '26.x']
+  checks:
+    name: checks
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: '26.x'
           cache: npm
 
       - name: Prepare isolated scratch
@@ -40,19 +35,51 @@ jobs:
           node scripts/check-lockfile-registry.mjs
           npm ls --package-lock-only @spider/herdr
 
-      # `npm ci` runs the `prepare` script, which already builds. We still run an
-      # explicit build step below so a build failure is reported as its own step
-      # rather than being buried inside install output.
+      # npm ci runs prepare, which builds and checks the bundle.
       - name: Install
         run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Herdr acceptance typecheck
+        run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
+
+      - name: Verify bundle shape
+        run: node scripts/assert-bundle.mjs
+
+      - name: Verify package contents
+        run: |
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          npm pack --json --ignore-scripts --foreground-scripts=false --pack-destination .spider/scratch/packaging > .spider/scratch/packaging/pack.json
+          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
+          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+
+  test:
+    name: test shard ${{ matrix.shard }}/12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+
+      - name: Install
+        run: npm ci
+
       # Tests keep hc sockets inside their own state homes, as on macOS. With
       # XDG_RUNTIME_DIR empty, hc falls back to /run/user/<uid> when it exists,
       # so remove the runner's copy for the rest of the job.
-      - name: Remove the runner's runtime directory
+      - name: Remove runner runtime directory
         run: |
           rundir="/run/user/$(id -u)"
           if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
@@ -60,31 +87,100 @@ jobs:
           test ! -e "$rundir"
           echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
 
-      # Many Herdr tests spawn processes. Two workers leave the 4-vCPU hosted runner
-      # enough headroom for their timing, without changing any test.
-      - name: Test (fake Herdr conformance and acceptance; opt-in modes skip visibly)
+      - name: Test shard
         run: |
           echo '::notice::Real hc tests require SPIDER_HERDR_E2E=1 and hc; app tests require the separately approved app opt-in. Both are disabled in CI.'
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npm test -- --reporter=verbose --maxWorkers=2
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npx vitest run --shard=${{ matrix.shard }}/12 --maxWorkers=2 --reporter=default --reporter=json --outputFile=.spider/scratch/test-results/shard-${{ matrix.shard }}.json
 
-      - name: Build
-        run: npm run build
+      - name: Shard timing report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: .spider/scratch/test-results/shard-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: warn
 
-      # assert-bundle already runs inside `npm run build`, but this makes the
-      # published artifact's shape an explicit, named gate.
-      - name: Verify bundle shape
-        run: node scripts/assert-bundle.mjs
+  herdr-acceptance:
+    name: herdr acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
 
-      - name: Verify package contents
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp"
+
+      - name: Install
+        run: npm ci
+
+      # The acceptance steps ran after this removal in the single-job layout; keep
+      # the same environment for them.
+      - name: Remove runner runtime directory
         run: |
-          export TMPDIR="$PWD/.spider/scratch/tmp"
-          # npm 10 may still run prepare; keep its stdout separate from pack JSON.
-          npm pack --json --ignore-scripts --foreground-scripts=false --pack-destination .spider/scratch/packaging > .spider/scratch/packaging/pack.json
-          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
-          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: Herdr confidence utilities (no hc, app or SSH)
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$PWD/.spider/scratch/e2"
+          set -o pipefail
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers 2 packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls 2>&1 | tee .spider/scratch/e2/ci-utilities.log
+
+      - name: Herdr packed acceptance (no hc, app or SSH)
+        timeout-minutes: 10
+        run: |
+          echo '::notice::Herdr CI certifies only the no-hc subset. Active-core, remote and native-window stories are not exercised.'
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e:ci -- --built
+
+      - name: Herdr acceptance failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-e2e-failures
+          path: .spider/scratch/e2/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  chrome:
+    # The three states-gallery tests take most of the browser time, so each runs in
+    # its own job and the other tests share one. Keep the widths in step with
+    # visual-acceptance.e2e.ts; playwright-config.test.ts checks that they match.
+    name: chrome ${{ matrix.part }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: states gallery 1280
+            filter: --grep 'states gallery every component and state 1280$'
+          - part: states gallery 1440
+            filter: --grep 'states gallery every component and state 1440$'
+          - part: states gallery 1600
+            filter: --grep 'states gallery every component and state 1600$'
+          - part: other tests
+            filter: --grep-invert 'states gallery every component and state'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Install
+        run: npm ci
 
       - name: Installed Chrome smoke
-        timeout-minutes: 15
+        timeout-minutes: 10
         run: |
           command -v google-chrome
           google-chrome --version
@@ -92,27 +188,29 @@ jobs:
           export TMPDIR="$PWD/.spider/scratch/playwright/tmp"
           export npm_config_cache="$PWD/.spider/scratch/playwright/npm-cache"
           export npm_config_logs_dir="$PWD/.spider/scratch/playwright/npm-logs"
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npm run -s test:e2e
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npm run -s test:e2e -- ${{ matrix.filter }}
 
       - name: Browser failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-failures-node-${{ matrix.node }}
+          name: playwright-failures-${{ strategy.job-index }}
           path: |
             playwright-results/
             playwright-report/
           if-no-files-found: ignore
 
   required:
-    # Preserve the exact required status-check name across the Node matrix.
-    # These are U+00B7 MIDDLE DOT characters, not hyphens or slashes.
-    # Branch protection matches this name without the CI workflow prefix.
-    # See docs/release-process.md.
+    # These are U+00B7 MIDDLE DOT characters. Branch protection matches the job
+    # name without the workflow prefix. See docs/release-process.md.
     name: typecheck · test · build
-    needs: build
+    needs: [checks, test, herdr-acceptance, chrome]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Require every supported Node version to pass
-        run: test "${{ needs.build.result }}" = success
+      - name: Require every job to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$NEEDS_JSON"

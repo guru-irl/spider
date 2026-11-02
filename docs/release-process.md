@@ -121,7 +121,10 @@ If you want publishes to run without approval instead, remove the
 
 ### 2. The required status check for branch protection (protects `main`)
 
-The one job in `ci.yml` is named:
+The `required` job in `ci.yml` aggregates four parallel jobs: `checks`,
+`test` with twelve shards, `herdr-acceptance`, and `chrome`. Each uses Node 26.
+The aggregate runs even after a failure or cancellation and succeeds only when
+every job succeeds. Its exact name is:
 
 ```
 typecheck · test · build
@@ -169,7 +172,7 @@ configured. To set up the check:
   were reproduced locally. For example, the `npm pack
   --json` parse failure was
   reproduced directly, not inferred. No real tag push has tested the flow.
-- All three workflows still pin `node-version: '26.x'` only. The
+- All three workflows run only Node `26.x`. The
   `engines.node` floor of `>=22.19.0` in `package.json` is a declared minimum,
   not a tested one. See the root `README.md`.
 

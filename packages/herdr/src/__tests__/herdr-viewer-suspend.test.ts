@@ -57,12 +57,12 @@ test.each([false, true])('a suspended real owner resumes its viewer without repl
     expect(await probe.ping()).toMatchObject({ ok: true, op: 'ping' });
     await expect.poll(() => steers, { timeout: 3000 }).toEqual([{ text: 'One original steer, never resend it.', count: 1 }]);
     if (pendingPlacement) await expect.poll(() => placementFailed, { timeout: 3000 }).toBe(true);
-    await expect.poll(() => text, { timeout: 5000 }).toContain('[reconnected]');
+    expect(text).not.toMatch(/\[reconnect(?:ing|ed)\]/);
     worker.send({ type: 'output' });
     await expect.poll(() => text, { timeout: 5000 }).toContain('UNKNOWN_STEER_APPLIED');
     expect(text.match(/BEFORE_SUSPEND/g)).toHaveLength(1);
     expect(text.match(/UNKNOWN_STEER_APPLIED/g)).toHaveLength(1);
-    expect(cursors).toEqual([null, '1']);
+    expect(cursors).toEqual([null]);
     expect(diagnostics).toBe('');
     worker.send({ type: 'finish' }); await viewerExited;
     expect(viewer.exitCode).toBe(0); expect(steers).toHaveLength(1);

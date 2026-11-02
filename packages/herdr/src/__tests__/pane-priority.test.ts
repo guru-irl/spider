@@ -16,7 +16,7 @@ async function priorityScenario(mode: 'fake' | 'hc') {
     const placements = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);
     const parked: TerminalAddress[] = [], commands: { name: string; args: Readonly<Record<string, unknown>> }[] = [];
     const app: AppClient = {
-      ownerPlacement: async address => { const p = placements.get(address); if (!p) throw Object.assign(new Error('unplaced'), { code: 'owner-unplaced' }); return p; },
+      tabTerminals: async target => [...placements].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => { const p = placements.get(address); if (!p) throw Object.assign(new Error('unplaced'), { code: 'owner-unplaced' }); return p; },
       awaitPane: async (address, p) => {
         const terminal = await hc.get(address);
         expect(terminal.labels['herdr.space']).toBe('space'); expect(terminal.labels['herdr.tab']).toBe('tab');
@@ -39,7 +39,7 @@ async function priorityScenario(mode: 'fake' | 'hc') {
         [HERDR_LABELS.ownerTerminal]: owner.terminal.terminalId, ...(kind === HERDR_KINDS.remoteConsole ? { [HERDR_LABELS.machine]: 'remote.invalid' }
           : { [kind === HERDR_KINDS.subagentViewer ? HERDR_LABELS.run : HERDR_LABELS.job]: key }) },
       background: true, outliveParent: kind !== HERDR_KINDS.subagentViewer, noNotify: true })).address;
-    panes = createAuxiliaryPanes({ hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, limit: 2, clock: Date.now, subagentViewer: id => launch(HERDR_KINDS.subagentViewer, id) });
+    panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, limit: 2, clock: Date.now, subagentViewer: id => launch(HERDR_KINDS.subagentViewer, id) });
     const first = await panes.acquire('subagent', 'first' as RunId, owner, { timeoutMs: 10000, automatic: true });
     const second = await panes.acquire('subagent', 'second' as RunId, owner, { timeoutMs: 10000, automatic: true });
     expect(first).not.toBeNull(); expect(second).not.toBeNull();

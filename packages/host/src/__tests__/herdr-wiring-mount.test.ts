@@ -42,7 +42,7 @@ it.each(['exec', 'exec_file', 'batch'])('unavailable child %s uses the disabled-
   vi.stubEnv('PI_SUBAGENT_CHILD', '1');
   spiderExtension({ registerTool() {}, registerCommand() {}, on() {}, sendMessage() {} } as never);
   const handler = getAction(action); expect(handler).toBeDefined();
-  await expect(Promise.resolve().then(() => handler!({ action, on: 'remote.invalid', language: 'shell', code: 'printf forbidden' } as SpiderArgs, {} as never))).rejects.toThrow('herdr-disabled: on requires an enabled live Herdr owner');
+  await expect(Promise.resolve().then(() => handler!({ action, on: 'remote.invalid', language: 'shell', code: 'printf forbidden' } as SpiderArgs, {} as never))).rejects.toThrow("Spider couldn't run this command on another machine because Herdr is off in this session. Local commands still work. Check that Herdr is running and enabled, then run /reload or open a new session in Herdr.");
 });
 
 it('forwards repeated explicit space adoption before the setup preflight', async () => {
@@ -175,7 +175,9 @@ it('older session contexts without getSessionFile keep optional bookkeeping work
     Reflect.deleteProperty(f.ctx.sessionManager, 'getSessionFile');
     await expect(f.emit('session_start')).resolves.toBeUndefined();
     expect(f.mount.enabled()).toBe(true); expect((await f.presence.list())[0].sessionFile).toBeNull();
-    for (const handler of [...f.hooks.get('session_shutdown') ?? []]) await expect(Promise.resolve(handler(undefined, f.ctx))).resolves.toBeUndefined();
+    for (const event of [undefined, { reason: 'reload' }]) {
+      for (const handler of [...f.hooks.get('session_shutdown') ?? []]) await expect(Promise.resolve(handler(event, f.ctx))).resolves.toBeUndefined();
+    }
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 }, 30000);
@@ -231,7 +233,7 @@ it.each([[false, true], ['auto', false]] as const)('optional %s mode with HC own
     await f.emit('session_start', { reason: 'startup' });
     expect(await f.presence.list()).toHaveLength(1);
     expect(await f.calls()).toEqual([]);
-    expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', on: 'remote.invalid', code: 'echo no', language: 'shell' } })).toMatchObject({ block: true, reason: expect.stringContaining('herdr-disabled') });
+    expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', on: 'remote.invalid', code: 'echo no', language: 'shell' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
     expect(await f.mount.guard({ toolName: 'bash', input: { command: 'ssh managed.example.invalid' } })).toBeUndefined();
   } finally { await f.close(); }
 });
@@ -243,7 +245,7 @@ it('auto with a dead socket disables once without launching hc', async () => {
     expect(await f.calls()).toEqual([]); expect(f.captured).toEqual([]);
     await f.emit('session_start', { reason: 'resume' });
     expect(await f.calls()).toEqual([]);
-    expect(f.notices).toHaveLength(1); expect(f.notices[0]).toContain('Herdr core is not running');
+    expect(f.notices).toHaveLength(1); expect(f.notices[0]).toContain('Herdr stopped responding');
   } finally { await f.close(); }
 }, 30000);
 
@@ -274,8 +276,8 @@ it.each([
   let f: Awaited<ReturnType<typeof mountedFixture>> | undefined;
   try {
     f = await mountedFixture('fake', 'tui', hasUI, false, hcOwner, false, requested, false, true, coreAvailable);
-    const visible = () => f!.notices.length + writes.mock.calls.filter(([text]) => /^Herdr (?:unavailable|activation failed):/.test(String(text))).length;
-    expect(visible()).toBe(requested === false ? 0 : 1);
+    const visible = () => f!.notices.length + writes.mock.calls.filter(([text]) => /^(?:Herdr stopped responding|Herdr couldn't respond to spider|This session isn't running inside Herdr)/.test(String(text))).length;
+    expect(visible(), JSON.stringify(writes.mock.calls)).toBe(requested === false ? 0 : 1);
     await f.emit('session_start', { reason: 'resume' });
     await f.emit('session_shutdown', { reason: 'reload' });
     await f.emit('session_start', { reason: 'startup' });
@@ -384,7 +386,7 @@ it('core loss disables routing and local shims once and reload recovers', async 
     await vi.waitFor(() => expect(f.mount.enabled()).toBe(false), { timeout: 5000 });
     const calls = (await f.calls()).length;
     for (let attempt = 0; attempt < 2; attempt++) expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', code: 'ssh managed.invalid' } })).toBeUndefined();
-    expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', on: 'remote.invalid', code: 'printf no' } })).toMatchObject({ block: true, reason: expect.stringContaining('herdr-disabled') });
+    expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', on: 'remote.invalid', code: 'printf no' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
     const environment = f.mount.execution().environmentPolicy(inherited);
     expect(environment.SPIDER_HERDR_SSH_DESCRIPTOR).toBeUndefined(); expect(environment.PATH?.split(':')).not.toContain(f.shimDirectory);
     expect(f.mount.execution().remote).toBeUndefined(); expect(f.notices).toHaveLength(1); expect(String(f.notices[0])).toContain('/reload');
@@ -408,6 +410,11 @@ it('core loss disables routing and local shims once and reload recovers', async 
 }, 30000);
 
 it.each([true, false])('a real executor child resolves ssh with Herdr active=%s', async active => {
+  const { delimiter } = await import('node:path');
+  let inheritedShim: string | undefined;
+  try { const descriptor = JSON.parse(process.env.SPIDER_HERDR_SSH_DESCRIPTOR ?? 'null'); if (typeof descriptor?.shimDirectory === 'string') inheritedShim = descriptor.shimDirectory; } catch { /* No usable inherited shim descriptor. */ }
+  vi.stubEnv('PATH', (process.env.PATH ?? '').split(delimiter).filter(value => value !== inheritedShim).join(delimiter));
+  vi.stubEnv('SPIDER_HERDR_SSH_DESCRIPTOR', '');
   const f = await mountedFixture('fake', 'tui', true, false, true, false, active);
   const { PolyglotExecutor } = await import('../../../context/src/executor.js'); const { join } = await import('node:path');
   try {

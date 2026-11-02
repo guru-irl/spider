@@ -150,12 +150,38 @@ test('production template planning skips malformed global role values like the n
   for (const file of files) expect(file.bytes.length).toBeGreaterThan(0);
 });
 
+async function addAuditTerminal(f: Awaited<ReturnType<typeof fixture>>, address: string, notify: boolean | undefined) {
+  const terminal = { address, parent: null, labels: { 'spider.kind': 'subagent-viewer' }, state: 'finished', status: null, exit_code: 0, reason: 'exited', signal: null, finished_ms: 1, ...(notify === undefined ? {} : { notify }) };
+  await f.h.emitCore({ type: 'created', seq: 100, terminal: address, data: terminal });
+  await vi.waitFor(async () => expect(await f.h.cli(['get', address, '--json'])).toMatchObject(terminal));
+  // hc 0.1.17 omits labels and notify from list rows, but keeps them in events.
+  await f.h.scenario({ steps: [{ argvPrefix: ['ls'], reply: { terminals: [{ address, agent: 'node', cwd: '/fixture', state: 'finished', turn: 0 }] } }] });
+}
+
 test('production doctor reads native notification policy and can reject a launch', async () => {
-  const f = await fixture();
-  await f.h.scenario({ steps: [{ argvPrefix: ['ls'], reply: { terminals: [{ address: 'unsafe', labels: { 'spider.kind': 'job' }, notify: true }] } }] });
+  const f = await fixture(); await addAuditTerminal(f, 'unsafe', true);
   try {
     const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
     expect(report.failures).toContainEqual(expect.objectContaining({ item: 'launches', code: 'launch-notify-enabled' }));
+    expect(report.warnings).not.toContainEqual(expect.objectContaining({ item: 'launches', code: 'inspection-unavailable' }));
+  } finally { await f.h.scenario({}); }
+});
+
+test('doctor verifies quiet launches when the core list omits their labels and notification policy', async () => {
+  const f = await fixture(); await addAuditTerminal(f, 'quiet', false);
+  try {
+    const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
+    expect(report.failures).not.toContainEqual(expect.objectContaining({ item: 'launches' }));
+    expect(report.warnings).not.toContainEqual(expect.objectContaining({ item: 'launches', code: 'inspection-unavailable' }));
+  } finally { await f.h.scenario({}); }
+});
+
+test('doctor gives usable advice when a launch has no readable notification policy', async () => {
+  const f = await fixture(); await addAuditTerminal(f, 'unknown', undefined);
+  try {
+    const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
+    expect(report.warnings).toContainEqual(expect.objectContaining({ item: 'launches', code: 'inspection-unavailable', repair: expect.stringMatching(/setup[\s\S]*doctor/i) }));
+    expect(report.warnings.find(row => row.item === 'launches')?.repair).not.toMatch(/core version/i);
   } finally { await f.h.scenario({}); }
 });
 

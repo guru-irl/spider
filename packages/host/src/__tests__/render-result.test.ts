@@ -639,6 +639,44 @@ describe("renderCommandOutput (slash-command transcript message)", () => {
 // command showed as a bare "spider · exec" spinner with no indication of what was
 // running. The command belongs on the call.
 describe("renderSpiderCall shows the command while it runs", () => {
+  const titleTheme = {
+    fg: (token: string, text: string) => `⟨${token}|${text}⟩`,
+    bold: (text: string) => `**${text}**`,
+    italic: (text: string) => `«${text}»`,
+  };
+
+  it.each(["exec", "exec_file", "batch"])("%s names the destination in the styled call title", (action) => {
+    const args = { action, on: "Alpha.Build.invalid", code: "echo hello", path: "input.txt", commands: [{ code: "echo hello" }] };
+    const title = renderSpiderCall(args, titleTheme, {}).render(200)[0];
+    expect(title).toContain(`«⟨toolTitle|${action}⟩» ⟨toolTitle|on Alpha.Build.invalid⟩`);
+  });
+
+  it.each(["exec", "exec_file", "batch"])("local %s keeps its existing title", (action) => {
+    const title = renderSpiderCall({ action }, titleTheme, {}).render(200)[0];
+    expect(title).toBe(`⟨toolTitle|🕸⟩  ⟨toolTitle|**spider**⟩ ⟨toolTitle|·⟩ «⟨toolTitle|${action}⟩»`);
+  });
+
+  it("keeps local title behavior for shared arguments while naming a remote destination", () => {
+    const local = renderSpiderCall({ action: "exec", command: "doctor" }, titleTheme, {}).render(200)[0];
+    const remote = renderSpiderCall({ action: "exec", command: "doctor", on: "Alpha.Build.invalid" }, titleTheme, {}).render(200)[0];
+    expect(local).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|· doctor⟩");
+    expect(remote).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|on Alpha.Build.invalid⟩");
+  });
+
+  it("does not add the destination to unrelated actions", () => {
+    const title = renderSpiderCall({ action: "search", on: "Alpha.Build.invalid" }, titleTheme, {}).render(200)[0];
+    expect(title).not.toContain("Alpha.Build.invalid");
+  });
+
+  it("keeps the destination in a completed remote command transcript without a duplicate header", () => {
+    const args = { action: "exec", on: "Alpha.Build.invalid", code: "echo hello" };
+    const msg = { details: { args, result: { details: { stdout: "hello", stderr: "", exitCode: 0 } } } };
+    const output = renderCommandOutput(msg, { expanded: false }, {}).render(120).join("\n");
+    expect(output).toContain("spider · exec on Alpha.Build.invalid");
+    expect(output.match(/Alpha\.Build\.invalid/g)).toHaveLength(1);
+    expect(output).toContain("hello");
+  });
+
   it("exec → the call header carries the command text", () => {
     const c = renderSpiderCall({ action: "exec", language: "shell", code: "npm run build" }, theme, {});
     assertComponent(c);

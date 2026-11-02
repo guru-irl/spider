@@ -34,6 +34,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const file = join(h.directories.global, 'herdr/config.json'); await mkdir(join(h.directories.global, 'herdr'), { recursive: true }); await writeFile(file, JSON.stringify(config));
   const packageRoot = join(h.root, 'package'); await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
   await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
+  await writeFile(join(packageRoot, 'dist/herdr/viewer.mjs'), await readFile(resolve('dist/herdr/viewer.mjs')));
   const request: SetupRequest = { config, configPath: file, packageRoot, journalRoot: join(h.root, 'journal') };
   const setup = createProductionHerdrCliPorts(packageRoot, h.localEnv);
   let runtime: Awaited<ReturnType<Awaited<ReturnType<typeof setup.setupParts>>['ensureRuntime']>>[number];
@@ -83,6 +84,19 @@ it('startup reaps crashed-owner run consoles while keeping live and unverified o
   expect((await f.h.hc.get(unknown.address)).state).toBe('live');
   expect((await f.h.hc.get(foreign.address)).state).toBe('live');
   expect((await f.h.hc.get(parent.address)).state).toBe('live'); expect(f.errors).toEqual([]);
+}, 30000);
+
+it('resuming a session keeps a running subagent console whose original parent terminal is gone', async () => {
+  const f = await fixture();
+  const session = f.h.owner!.sessionId, oldTerminal = 'retired-parent' as TerminalAddress;
+  const run = f.store.create({ sessionId: session, agent: 'worker' }).id; f.store.start(run);
+  const console = await f.launch(f.labels(session, run, oldTerminal));
+  await f.presence.record({ pid: 2147483647, startIdentity: 'exited', sessionId: session, sessionFile: null, sessionName: null, hcAddress: oldTerminal, kind: 'top-level' });
+  await f.emit('session_start', { reason: 'startup' });
+  expect((await f.h.hc.get(console.address)).state).toBe('live');
+  f.store.cancel(run, 'Explicit stop');
+  await expect.poll(() => f.missing(console.address), { timeout: 8000 }).toBe(true);
+  expect(f.errors).toEqual([]);
 }, 30000);
 
 it('reaps a cancelled run even when its first console arrives after cancellation', async () => {

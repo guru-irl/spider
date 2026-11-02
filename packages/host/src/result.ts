@@ -10,6 +10,7 @@
 // JSON view of `details` (functional, ANSI-free) until they add a `text` field.
 
 import type { ContextEvent } from "@earendil-works/pi-coding-agent";
+import { capBytes } from '../../context/src/truncate.js';
 
 const ANSI = /\x1b\[[0-9;]*m/g;
 
@@ -59,7 +60,15 @@ function safeJson(v: unknown): string {
 /** Model text for an empty settled result; derive a short status from exec details when present. */
 function emptyResultText(details: unknown, isError: boolean): string {
   if (details && typeof details === "object" && "stdout" in details && "stderr" in details) {
-    const exec = details as { outcome?: string; exitCode?: number | null; signal?: string | null };
+    const exec = details as { stdout?: unknown; stderr?: unknown; outcome?: string; exitCode?: number | null; signal?: string | null };
+    const stdout = typeof exec.stdout === "string" ? exec.stdout : "";
+    const stderr = typeof exec.stderr === "string" ? exec.stderr : "";
+    const visible = (text: string) => text.replace(ANSI, "").trim() !== "";
+    if (visible(stdout) || visible(stderr)) {
+      const output = `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`.replace(ANSI, "");
+      const note = '\n[output truncated at 10KB]';
+      return Buffer.byteLength(output) <= 10000 ? output : capBytes(output, 10000 - Buffer.byteLength(note)) + note;
+    }
     if (exec.outcome === "timeout") return "detached at timeout (no output yet; exit status unknown)";
     if (exec.outcome === "aborted") return "aborted (no output)";
     if (exec.outcome === "signal") return `killed by signal ${exec.signal ?? "unknown"} (no output)`;

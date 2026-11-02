@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
 import { isUsageServerMain, runUsageServerEntry } from "./usage/server-entry.js";
@@ -6,9 +7,13 @@ import { startUsageServerIngest } from "./usage/server-ingest.js";
 export { runUsageServerEntry } from "./usage/server-entry.js";
 export { UsageRuntime } from "./usage/runtime.js";
 import { mountHerdr, effectiveHerdrConfigPath, standardHerdrConfigPath, type HerdrMount } from "./herdr/mount.js";
+import { routeKillAction } from "./herdr/kill-job.js";
+import { HERDR_NOTICES, herdrErrorNotice } from '@spider/herdr/notices';
+import { HerdrError } from '@spider/herdr/client/parse';
+import { RemoteRuntimeError } from '@spider/herdr/remote/runtime';
 import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
-import { persistReviewError } from "@spider/memory";
+import { persistReviewError, scrubSecrets } from "@spider/memory";
 import { commandEnv, THINKING_LEVELS } from "@spider/db-core";
 import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 // packages/host/src/extension.ts
@@ -267,7 +272,7 @@ export const SPIDER_PARAMETERS = {
     thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "SINGLE-mode reasoning/thinking level; overrides the resolved model suffix. Tasks, chain and pipeline use per-item thinking fields." },
     skill: { type: "string", description: "Skill the spawned subagent should follow." },
     context: { type: "string", enum: ["fresh", "fork"], description: "Child context: fresh, or fork from this session." },
-    id: { type: "string", description: "Run id/prefix (todo toggle/remove: per-session seq). For action 'kill': a run id, id prefix, run name, or \"all\" to kill every active subagent in this session." },
+    id: { type: "string", description: "Run id/prefix (todo toggle/remove: per-session seq). For kill, use an owned remote job ID or unique prefix, a subagent run ID or name, or 'all' for active subagents. A remote job reports cancellation through spider.job_done." },
     timeoutMs: { type: "integer", minimum: 1, description: "Give up after N ms (message)." },
     // loop / schedule: persistent named session triggers for external work, never subagent polling
     interval: { type: "string", description: "loop: fixed interval like 5m or 1h (minimum 60 seconds, maximum 24 days), mutually exclusive with cron. Runs immediately, then keeps one busy occurrence due until idle. Omit both for a self-paced loop." },
@@ -275,7 +280,7 @@ export const SPIDER_PARAMETERS = {
     cron: { type: "string", description: "loop: five numeric cron fields (minute hour day-of-month month weekday), mutually exclusive with interval. Starts at its next occurrence, not immediately. Supports stars, ranges, lists and steps." },
     tz: { type: "string", description: "loop cron: IANA time zone such as Asia/Kolkata. Defaults to the captured machine zone. Applies only with cron and keeps its spelling across reload and resume." },
     delaySeconds: { type: "number", description: "schedule: seconds before a one-shot wakeup, rounded and clamped to 60–3600; waits for idle. Exactly one of delaySeconds and at. Replaces only the same name, default wakeup." },
-    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without prompt, interval or cron lists all triggers; timing fields need a prompt. Prompts cannot start with '/' except an exact self-paced /loop <prompt> re-arm with the same name (pass name:\"loop\" for the default loop). For external work (CI, deploys, timers), not polling subagents; their completion notices arrive automatically." },
+    prompt: { type: "string", description: "loop/schedule: prompt to deliver as a follow-up user message. loop without prompt, interval or cron lists all triggers; timing fields need a prompt. Prompts cannot start with '/' except an exact self-paced /loop <prompt> re-arm with the same name (pass name:\"loop\" for the default loop). For external work (CI, deploys, timers), not polling subagents or remote spider jobs; their completion notices arrive automatically." },
     reason: { type: "string", description: "schedule: why this delay, in one short sentence." },
     noop: { type: "boolean", description: "schedule: label a routine check; the wakeup is still scheduled." },
     stop: { type: "boolean", description: "loop: stop only the named loop and its re-arm, not an independent one-shot. schedule: cancel only the named one-shot. Defaults: loop and wakeup. No other fields required. Persistent top-level sessions only. Triggers survive /reload and same-session resume; new and fork start empty. Nothing fires during closure or sleep." },
@@ -287,10 +292,11 @@ export const SPIDER_PARAMETERS = {
     text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate final-format SKILL.md (YAML frontmatter with exactly name and a Use when description, then concise body; agent limit 1500 words/16 KB) for action='skill' op=add; free-form request for action='skill' op=distill." },
     session: { type: "string", description: "todo op=view/toggle/remove: session id/prefix/name in the same project DB; toggle/remove default to current session; 'all' is rejected for toggle/remove and accepted for view. import: single transcript file path, taking precedence over sessions and select." },
     // exec
+    copy: { type: "object", description: "exec: copy a file to or from the on machine in one call. Use absolute paths; preserves file mode and does not overwrite existing files.", properties: { direction: { type: "string", enum: ["to", "from"] }, local: { type: "string" }, remote: { type: "string" } }, required: ["direction", "local", "remote"] },
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
     language: { type: "string", description: "Language for action 'exec' (javascript, shell, python, ruby, go, rust, php, perl, r, elixir, csharp, typescript)." },
     timeout: { type: "number", description: "Max execution time in ms for action 'exec'/'exec_file'." },
-    background: { type: "boolean", description: "Capture stdout/stderr to durable files from launch (not a pipe). If `timeout` elapses while still running, the process is detached (exitCode:null, never fabricated 0) and its logs/receipt path are returned; output keeps growing on disk after that. With no `timeout`, this still waits and streams to the real exit code — it does not detach immediately." },
+    background: { type: "boolean", description: "Capture stdout and stderr in durable files from launch. If `timeout` elapses while the process runs, detach with exitCode:null and return log and receipt paths. For remote jobs with `on`, a spider.job_done notice arrives in this session when the job ends; do not poll. Local jobs do not send this notice. Without `timeout`, wait for the real exit." },
     commands: {
       type: "array",
       description: "Batch commands for action 'batch': each runs sequentially. Give each {language, code} (+ optional timeout).",
@@ -846,10 +852,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
   const registerAction = (name: string, handler: ActionHandler) => {
     // Context packages reuse module-level functions. Wrap even those handlers so
     // registry identity always identifies one activation, not a shared function.
-    const ownedHandler: ActionHandler = (args, ctx) => {
-      if (args.on !== undefined && !herdr?.enabled()) throw new Error('herdr-disabled: on requires an enabled live Herdr owner');
+    const invoke: ActionHandler = (args, ctx) => {
+      if (args.on !== undefined && !herdr?.enabled()) throw new Error(HERDR_NOTICES.remoteDisabled.text);
       return handler(args, { ...ctx, ...herdr?.execution() });
     };
+    const ownedHandler = name === 'kill' ? routeKillAction(() => herdr, invoke) : invoke;
     ownedActions.set(name, ownedHandler);
     registerGlobalAction(name, ownedHandler, true);
   };
@@ -1098,7 +1105,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id}; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
+      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
@@ -1139,6 +1146,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
       try {
         r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, ownedActions, onPartial, abortSignal, project => { sessionProject = project; });
       } catch (error) {
+        if (args.on !== undefined && (error instanceof HerdrError || error instanceof RemoteRuntimeError)) {
+          const detail = error instanceof HerdrError ? error : new HerdrError(error.code, error.message);
+          const safe = scrubSecrets(stripVTControlCharacters(error.message).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ' ')).text;
+          throw Object.assign(new Error(`${herdrErrorNotice(detail)} Details: ${safe}`), { code: error.code });
+        }
         rethrowWithMessage(error, `spider ${action || "call"}`);
       }
       const result = toToolResult(r);
@@ -1266,7 +1278,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     try {
       if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = sessionIdOf(ctx);
-      if (!sessionId || !adoptableFor(sessionId).length) return undefined;
+      if (!sessionId) return undefined;
       const cwd = cwdOf(ctx) ?? process.cwd();
       const actionCtx = buildActionCtx(pi, { action: "kill" } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx));
       // The action ctx has no ui of its own; hand over the session's so a refused adoption is visible.
@@ -1311,9 +1323,13 @@ export default function spiderExtension(pi: PiToolAPI): void {
 
   try {
     herdr = mountHerdr(pi as unknown as ExtensionAPI, {
-      ...(process.env.PI_SUBAGENT_CHILD === '1' ? { reportError: (error: unknown) => { process.stderr.write(`Herdr child: ${safeError(error).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024)}\n`); } } : {}),
+      ...(process.env.PI_SUBAGENT_CHILD === '1' ? { reportError: (error: unknown, notice?: string) => { process.stderr.write((notice ?? herdrErrorNotice(error)) + '\n'); } } : {}),
       packageRoot: herdrPackageRoot,
       actionContext: ctx => buildActionCtx(pi, { action: "message" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)),
+      killAction: (ctx, id) => {
+        const args: SpiderArgs = { action: "kill", id };
+        return dispatch(args, buildActionCtx(pi, args, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions);
+      },
       views: { agents: agentsUI, todos: todosCommand, usage: usageCommand,
         memory: async ctx => {
           const actionCtx = buildActionCtx(pi, { action: "control", command: "memory", sub: "pending" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx));
@@ -1336,12 +1352,11 @@ export default function spiderExtension(pi: PiToolAPI): void {
     });
   } catch (error) {
     // Herdr is optional: a mount failure must leave the rest of spider loaded.
-    const reason = safeError(error).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024);
     let reported = false;
     (pi as unknown as ExtensionAPI).on('session_start', (_event, ctx) => {
       if (reported) return;
       reported = true;
-      const message = `Herdr inactive: ${reason}. Regular spider remains available.`;
+      const message = HERDR_NOTICES.activationProblem.text;
       if (ctx.hasUI) ctx.ui.notify(message, 'warning');
       else process.stderr.write(`${message}\n`);
     });

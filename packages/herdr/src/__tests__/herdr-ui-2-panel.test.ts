@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { describe, expect, test } from 'vitest';
 import type { SessionFeed, CoreId, TerminalId, TerminalAddress, SpaceId, RunSummary } from '../contracts.js';
-import { projectFailedCommands, projectMachineProblems, projectNotifications, projectPace, projectSessionFacts, projectSpacePanel, notificationText } from '../../assets/mods/spider/data.js';
+import * as data from '../../assets/mods/spider/data.js';
+import { projectNotifications, projectPace, projectSessionFacts, projectSpacePanel, notificationText } from '../../assets/mods/spider/data.js';
 
 const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 function feed(id: string, patch: Partial<SessionFeed> = {}): SessionFeed {
@@ -23,39 +24,19 @@ const job = (patch: Record<string, unknown> = {}) => ({ id: 'job-result:job-1', 
   job: { id: 'job-1', runId: null, commandPreview: 'make-test-build', machine: 'build.invalid', address: 'build.invalid/t9', exitCode: 1, signal: null, finishedAt: NOW - 120000, ...patch },
 }) as SessionFeed['notifications'][number];
 
-describe('failed commands', () => {
-  test('the owning agent pill, the command, and a machine pill, without the exit code', () => {
-    const [item] = projectFailedCommands([feed('planner', { notifications: [job({ commandPreview: 'make test build' })] })], NOW);
-    expect(item).toMatchObject({ kind: 'failed', key: 'job:job-1', sessionId: 'planner', action: 'Output' });
-    expect(item!.parts).toEqual([{ type: 'agent', icon: 'session', text: 'planner' }, { type: 'command', text: 'make test build' }, { type: 'text', text: 'failed' },
-      { type: 'text', text: 'on' }, { type: 'machine', text: 'build.invalid' }]);
-  });
-  test('uses the command preview carried by the feed without terminal labels', () => {
-    expect(projectFailedCommands([feed('planner', { notifications: [job()] })], NOW)[0]!.parts[1]).toEqual({ type: 'command', text: 'make-test-build' });
-  });
-  test('a subagent\'s command names the subagent; success, old failures and other spaces\' sessions are left out', () => {
+// The panel does not list these items because the user cannot act on them.
+describe('failed commands and machine problems', () => {
+  test('a failed command never becomes a notification, whoever ran it', () => {
     const owner = feed('planner', { runs: { rows: [{ id: 'run-7', ownerSessionId: 'planner', name: 'worker-3', status: 'running', childMode: 'rpc', canSteer: true, startedAt: NOW, finishedAt: null, viewer: null, result: null } as RunSummary], total: 1, truncated: false } });
-    expect(projectFailedCommands([{ ...owner, notifications: [job({ runId: 'run-7' })] }], NOW)[0]!.parts[0]).toEqual({ type: 'agent', icon: 'subagent', text: 'worker-3' });
-    expect(projectFailedCommands([{ ...owner, notifications: [job({ exitCode: 0 }), job({ finishedAt: NOW - 25 * 3600000 }), job({ exitCode: null })] }], NOW)).toEqual([]);
-    expect(projectFailedCommands([feed('elsewhere', { notifications: [job()] })], NOW)).toEqual([]);
-    expect(projectFailedCommands([{ ...owner, notifications: [job({ exitCode: null, signal: 9 })] }], NOW)[0]!.parts.map(part => part.text)).toEqual(['planner', 'make-test-build', 'failed', 'on', 'build.invalid']);
+    expect(projectNotifications([{ ...owner, notifications: [job({ commandPreview: 'make test build' }), job({ runId: 'run-7' }), job({ exitCode: null, signal: 9 })] }], NOW)).toEqual([]);
   });
-});
-
-describe('machine problems', () => {
-  test('disconnected and unreachable machines become items with a machine pill; connected and temporary ones do not', () => {
-    const items = projectMachineProblems([{ name: 'build.invalid' }, { name: 'spare.invalid' }, { name: 'ok.invalid' }, { name: 'temp.invalid' }],
-      [{ name: 'build.invalid', state: 'disconnected' }, { name: 'ok.invalid', state: 'connected' }, { name: 'temp.invalid', state: 'disconnected', temporary: true }]);
-    expect(items.map(item => [item.key, item.parts])).toEqual([
-      ['machine:build.invalid', [{ type: 'machine', text: 'build.invalid' }, { type: 'text', text: 'disconnected' }]],
-      ['machine:spare.invalid', [{ type: 'machine', text: 'spare.invalid' }, { type: 'text', text: 'unreachable' }]],
-    ]);
-    expect(projectMachineProblems(null, [])).toEqual([]);
+  test('the panel no longer projects failed commands or machine problems', () => {
+    expect(Object.keys(data)).not.toContain('projectFailedCommands');
+    expect(Object.keys(data)).not.toContain('projectMachineProblems');
   });
-  test('they sit in the notification list after failures and before memories', () => {
-    const machines = projectMachineProblems([{ name: 'build.invalid' }], []);
-    const items = projectNotifications([feed('a', { approvals: [{ uuid: 'u', scope: 'global', repoKey: null, ownerSessionId: null, category: 'insight', preview: 'p' }] })], projectPace([], NOW), NOW, { machines });
-    expect(items.map(notificationText)).toEqual(['build.invalid unreachable', '1 memory to review']);
+  test('memories still list after the session items', () => {
+    const items = projectNotifications([feed('b', { status: { native: 'blocked', effective: 'blocked', message: null } }), feed('a', { approvals: [{ uuid: 'u', scope: 'global', repoKey: null, ownerSessionId: null, category: 'insight', preview: 'p' }] })], NOW);
+    expect(items.map(notificationText)).toEqual(['b is waiting', '1 memory to review']);
   });
 });
 

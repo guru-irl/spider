@@ -22,7 +22,7 @@ test.each(['herdr.config', 'herdr.enabled'])('shared session lookup warns about 
   const lookup = effectiveHerdrConfigPath as (cwd: string, ctx?: unknown) => string | null;
   lookup(root, ctx); vi.resetModules();
   const reloaded = await import('../herdr/mount.js'); reloaded.effectiveHerdrConfigPath(root, ctx as never);
-  expect(messages).toHaveLength(1); expect(messages[0]).toMatchObject({ text: expect.stringContaining(key), level: 'warning' });
+  expect(messages).toHaveLength(1); expect(messages[0]).toEqual({ text: `Spider ignores the repository's ${key} setting. Move it to the global spider settings if you want to use it.`, level: 'warning' });
   session = 'second'; lookup(root, ctx);
   expect(messages).toHaveLength(2);
 });
@@ -36,5 +36,5 @@ test.each(['herdr.config', 'herdr.enabled'])('lookup without context warns about
   await writeFile(join(root, '.spider/config.json'), JSON.stringify({ [key]: key === 'herdr.config' ? './untrusted.json' : true }));
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   effectiveHerdrConfigPath(root); effectiveHerdrConfigPath(root);
-  expect(stderr.mock.calls.filter(([text]) => String(text).includes(key))).toHaveLength(1);
+  expect(stderr.mock.calls.filter(([text]) => String(text).includes(key))).toEqual([[`Spider ignores the repository's ${key} setting. Move it to the global spider settings if you want to use it.\n`]]);
 });

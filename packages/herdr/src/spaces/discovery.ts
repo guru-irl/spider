@@ -42,32 +42,40 @@ export function selectedProcessInventory(config: HerdrConfig, inventory: Process
 export interface SessionSelection { file: string | null; sessionId: SessionId | null; name: string | null; cwd: string | null; spaceName: string; spaceOrder: number; sessionOrder: number; extensionArguments: readonly string[] }
 export interface ResolvedSession extends SessionSelection { file: string; sessionId: SessionId; cwd: string }
 export interface SessionManifest { config: HerdrConfig; sessions: SessionSelection[]; unresolved: boolean }
-/** Name lookup scans backwards, stopping at the newest committed metadata, with a 1 MiB budget. */
-export async function readSessionMetadata(file: string, needName = true): Promise<{ file: string; sessionId: SessionId; name: string | null; cwd: string }> {
+/** Scan the whole snapshot in fixed chunks. Oversized message records never accumulate in memory. */
+export async function readSessionMetadata(file: string): Promise<{ file: string; sessionId: SessionId; name: string | null; cwd: string }> {
   const header = await readSessionHeader(file); const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const size = (await handle.stat()).size, limit = needName ? 1024 * 1024 : 65536;
-    let end = needName ? size : Math.min(size, limit), pending: Buffer = Buffer.alloc(0), scanned = 0;
-    while (end > 0 && scanned < limit) {
-      const start = Math.max(0, end - Math.min(65536, limit - scanned));
-      const buffer = Buffer.alloc(end - start); const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-      if (bytesRead !== buffer.length) throw new HerdrError('session-metadata-changed', 'Session changed during metadata lookup');
-      pending = Buffer.concat([buffer, pending]); scanned += bytesRead; end = start;
-      const boundary = pending.indexOf(10); if (boundary < 0) continue;
-      const lines = pending.subarray(boundary + 1).toString('utf8').split('\n'); pending = pending.subarray(0, boundary + 1);
-      // The final fragment is not a committed record. Only inspect session_info, not message payloads.
-      lines.pop();
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!/"type"\s*:\s*"session_info"/.test(lines[i])) continue;
-        const value = JSON.parse(lines[i]) as { type?: unknown; name?: unknown };
-        if (value.type !== 'session_info') continue;
-        if (!(value.name === undefined || typeof value.name === 'string')) throw new HerdrError('session-metadata-invalid', 'Session name is invalid');
-        return { file, sessionId: header.id, name: value.name ?? null, cwd: header.cwd };
+    const size = (await handle.stat()).size, maxRecord = 1024 * 1024;
+    const buffer = Buffer.alloc(65536);
+    let position = 0, pending: Buffer = Buffer.alloc(0), skipping = false, name: string | null = null;
+    while (position < size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - position), position);
+      if (!bytesRead) throw new HerdrError('session-metadata-changed', 'Session changed during metadata lookup');
+      position += bytesRead;
+      let start = 0;
+      while (start < bytesRead) {
+        const newline = buffer.indexOf(10, start), end = newline < 0 || newline >= bytesRead ? bytesRead : newline;
+        if (!skipping) {
+          if (pending.length + end - start > maxRecord) { pending = Buffer.alloc(0); skipping = true; }
+          else pending = Buffer.concat([pending, buffer.subarray(start, end)]);
+        }
+        if (end === bytesRead) break;
+        if (!skipping) {
+          const line = pending.toString('utf8');
+          if (/"type"\s*:\s*"session_info"/.test(line)) {
+            const value = JSON.parse(line) as { type?: unknown; name?: unknown };
+            if (value.type === 'session_info') {
+              if (!(value.name === undefined || typeof value.name === 'string')) throw new HerdrError('session-metadata-invalid', 'Session name is invalid');
+              name = value.name ?? null;
+            }
+          }
+        }
+        pending = Buffer.alloc(0); skipping = false; start = end + 1;
       }
-      // The incomplete leading record stays byte-exact for the next backwards chunk.
     }
-    if (needName && end > 0) throw new HerdrError('session-metadata-too-large', 'No recent session name within the bounded metadata window');
-    return { file, sessionId: header.id, name: null, cwd: header.cwd };
+    // The final fragment is not a committed record.
+    return { file, sessionId: header.id, name, cwd: header.cwd };
   } finally { await handle.close(); }
 }
 export async function discoverSessions(config: HerdrConfig, ports: SessionDiscoveryPorts): Promise<SessionManifest> {
@@ -97,7 +105,7 @@ export async function discoverSessions(config: HerdrConfig, ports: SessionDiscov
     const extensionArguments = live.length ? live.flatMap(r => r.extensionArguments) : mapping?.environment.extensionArguments ?? [];
     if (live.length || unsafe || (await assessSessionLiveness(file, inventory)).kind !== 'free') {
       rows.push({ file, sessionId: live[0]?.sessionId ?? mapping?.owner.sessionId ?? null, name: live[0]?.sessionName ?? mapping?.owner.name ?? null, cwd: mapping?.owner.cwd ?? null, extensionArguments });
-    } else rows.push({ ...await readSessionMetadata(file, needsNames), extensionArguments });
+    } else rows.push({ ...await readSessionMetadata(file), extensionArguments });
     } catch (error) { if (explicit.has(path)) throw error; skipped++; }
   }
   if (skipped) ports.reportSkipped?.(skipped);

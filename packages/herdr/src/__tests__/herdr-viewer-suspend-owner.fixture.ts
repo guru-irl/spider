@@ -52,7 +52,7 @@ process.on('message', async (message: { type: 'output' | 'finish' | 'stop' | 'pl
   if (message.type === 'place') {
     const viewer = 'viewer' as TerminalAddress, placement = { space: 'space', tab: 'tab', pane: 'pane' } as OwnerPlacement;
     const app: AppClient = {
-      ownerPlacement: async address => { if (address === viewer) throw new HerdrError('owner-unplaced', 'Viewer is parked'); return placement; },
+      tabTerminals: async () => [], ownerPlacement: async address => { if (address === viewer) throw new HerdrError('owner-unplaced', 'Viewer is parked'); return placement; },
       awaitPane: async () => {
         process.send?.({ type: 'placement-pending' });
         await new Promise(resolve => setTimeout(resolve, 10000));
@@ -66,7 +66,7 @@ process.on('message', async (message: { type: 'output' | 'finish' | 'stop' | 'pl
       setLabels: async () => {},
       kill: async () => { process.kill(message.viewerPid!, 'SIGTERM'); }, rm: async () => {},
     } as unknown as HcClient;
-    panes = createAuxiliaryPanes({ hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, subagentViewer: async () => viewer, clock: Date.now });
+    panes = createAuxiliaryPanes({ hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, subagentViewer: async () => viewer, automaticSubagentPanes: true, clock: Date.now });
     void panes.acquire('subagent', runId, owner, { timeoutMs: 10000, automatic: true }).catch(error => process.send?.({ type: 'placement-failed', code: error.code }));
   }
   if (message.type === 'output') {

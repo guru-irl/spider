@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 export default function (pi: ExtensionAPI): void {
   const directory = process.env.SPIDER_E2E_OBSERVER_DIR;
@@ -31,7 +32,7 @@ export default function (pi: ExtensionAPI): void {
     server.listen(socketPath);
     server.unref();
   };
-  pi.on('session_start', (event, ctx) => { record('session_start', { reason: (event as { reason?: string }).reason ?? null, mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, hcTerminal: process.env.HC_TERMINAL_ID ?? null, subagentChild: process.env.PI_SUBAGENT_CHILD ?? null, probe: process.env.SPIDER_E2E_PROBE ?? null, stdinTTY: process.stdin.isTTY === true, ...session(ctx) }); serve(); });
+  pi.on('session_start', (event, ctx) => { record('session_start', { reason: (event as { reason?: string }).reason ?? null, mode: ctx.mode, hasUI: ctx.hasUI, cwd: ctx.cwd, model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, hcTerminal: process.env.HC_TERMINAL_ID ?? null, hcScopeHash: process.env.HC_SCOPE ? createHash('sha256').update(process.env.HC_SCOPE).digest('hex') : null, subagentChild: process.env.PI_SUBAGENT_CHILD ?? null, probe: process.env.SPIDER_E2E_PROBE ?? null, stdinTTY: process.stdin.isTTY === true, ...session(ctx) }); serve(); });
   pi.on('tool_execution_start', (event, ctx) => { latest = ctx; record('tool_execution_start', { toolCallId: event.toolCallId, toolName: event.toolName }); });
   pi.on('tool_execution_end', (event, ctx) => { latest = ctx; record('tool_execution_end', { toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError, result: event.result }); });
   pi.on('message_end', (event, ctx) => {

@@ -43,7 +43,7 @@ async function fixture() {
     read: async () => '', kill: async a => { kills.push(a); }, rm: async a => { removed.push(a); terminals.delete(a); }, fileRead: async () => Buffer.alloc(0), fileWrite: async () => {},
   };
   const options: JobMonitorOptions & { panes: NonNullable<JobMonitorOptions['panes']> } = {
-    hc, app: { ownerPlacement: async () => ({ space: 's1', tab: 'tb1', pane: 'p1' } as never), awaitPane: async () => 'p2' as never, command: async () => ({}) },
+    hc, app: { tabTerminals: async () => [], ownerPlacement: async () => ({ space: 's1', tab: 'tb1', pane: 'p1' } as never), awaitPane: async () => 'p2' as never, command: async () => ({}) },
     panes: { reserve: async () => ({ id: 'slot' }), observe: async () => ({ viewer: 'observer' as TerminalAddress, release: async () => { releases.push('observer'); } }), abandon: async () => {} },
     outputCollector: { prepare: async (_p, job) => { currentJob = job.id; return { program: { ...program, directory: join(f.root, 'remote.invalid', job.id) }, nonce: 'private-nonce', releaseDeadlineAt: now + 10000 }; }, collect: async () => { if (collectFailure) throw new Error('chunk unavailable'); return outcome; } },
     journalRoot: f.root, observedJobMessages: async () => [...observed], notifier: async notice => { notices.push(notice); if (submitFailure) throw new Error('submission uncertain'); }, clock: () => now,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { FEED_DISCONNECT_MS } from './shared/feed.js';
 export async function loadAgentFeeds(root, ports) {
   const feeds = [], errors = [];
   const ids = await ports.listSessionIds(root);
@@ -33,7 +34,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   const sessionAction = (kind, key, sessionId, viewer) => {
     const current = feeds.find(f => f.sessionId === sessionId);
     const ownedRun = kind !== 'subagent' || current?.runs.rows.some(run => run.id === key && run.ownerSessionId === sessionId);
-    if (current?.lifecycle !== 'live' || !current.ipc || kind === 'subagent' && (now - current.updatedAt > 10000 || !ownedRun))
+    if (current?.lifecycle !== 'live' || !current.ipc || kind === 'subagent' && (now - current.updatedAt > FEED_DISCONNECT_MS || !ownedRun))
       return kind === 'subagent' && viewer?.state === 'live' ? { kind: 'peek', terminal: viewer.address } : null;
     const descriptor = { version: 1, sessionId: current.sessionId, generation: current.generation, ...current.ipc };
     const request = kind === 'remote' || kind === 'console' ? { op: 'openJob', jobId: key, generation: current.generation } : { op: 'openRun', runId: key, generation: current.generation };
@@ -55,7 +56,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
       outcome = t.signal != null ? `signal ${t.signal}` : exitCode !== null ? `exit ${exitCode}` : t.reason ?? 'unknown';
       status = exitCode !== null || t.signal != null ? 'error' : 'unknown';
       if (exitCode === 0 && t.signal == null && t.reason === 'exited') status = 'done';
-    } else if (feed?.lifecycle === 'live' && now - feed.updatedAt > 10000 && (remote || subagent || console)) status = 'disconnected';
+    } else if (feed?.lifecycle === 'live' && now - feed.updatedAt > FEED_DISCONNECT_MS && (remote || subagent || console)) status = 'disconnected';
     else if (remote && ['done', 'idle'].includes(status)) status = 'working';
     const rowKind = remote ? 'remote' : subagent ? 'subagent' : console ? 'console' : 'native';
     const run = feed?.runs.rows.find(r => r.id === t.labels[labels.run] && r.ownerSessionId === feed.sessionId);
@@ -66,7 +67,6 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     rows.set(key, {
       key, kind: rowKind, address: t.address, originalAddress: t.address,
       name, status, outcome, completeness: 'unknown', machine,
-      agentKey: run ? `run:${run.id}` : `session:${sessionId ?? feed?.sessionId ?? ownerAddress}`,
       parentKey: rowKind === 'native' && depth > 0 ? t.parent : null,
       finishedAt: finish ? finishedAt : null, retained: finish, depth, terminal: t,
       action: remote || subagent || console ? sessionAction(rowKind, key, sessionId, subagent ? t : null) : { kind: 'peek', terminal: t.address },
@@ -90,12 +90,12 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     if (run.ownerSessionId !== feed.sessionId) continue;
     const native = terminals.find(t => t.labels[labels.kind] === kinds.subagentViewer && t.labels[labels.run] === run.id && t.labels[labels.session] === feed.sessionId);
     const done = ['done', 'failed', 'cancelled'].includes(run.status);
-    const status = run.status === 'running' ? (now - feed.updatedAt > 10000 && feed.lifecycle === 'live' ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
+    const status = run.status === 'running' ? (now - feed.updatedAt > FEED_DISCONNECT_MS && feed.lifecycle === 'live' ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
     const previous = rows.get(run.id);
     rows.set(run.id, {
       key: run.id, kind: 'subagent', address: run.viewer, originalAddress: native?.address ?? run.viewer,
       name: run.name ?? run.id, status, outcome: done ? run.status : null, completeness: 'unknown',
-      machine: null, agentKey: `run:${run.id}`, parentKey: null,
+      machine: null, parentKey: null,
       finishedAt: run.finishedAt, retained: done, depth: previous?.depth ?? 0, terminal: native ?? null,
       action: sessionAction('subagent', run.id, feed.sessionId, native),
     });
@@ -127,60 +127,12 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   return ordered;
 }
 
-/** Filter children, retain their ancestors, and hide jobs inside collapsed consoles. */
-export function selectAgentChildren(rows, filters, expandedConsoles = []) {
+/** Hide jobs and their descendants inside collapsed consoles. */
+export function selectAgentChildren(rows, expandedConsoles = []) {
   const byKey = new Map(rows.map(row => [row.key, row]));
-  const selected = new Set();
-  for (const row of rows) {
-    if (filters.machine && row.machine !== filters.machine) continue;
-    if (filters.agent && row.agentKey !== filters.agent) continue;
-    let current = row;
-    while (current && !selected.has(current.key)) { selected.add(current.key); current = byKey.get(current.parentKey); }
-  }
   const expanded = new Set(expandedConsoles), hidden = new Set();
   for (const row of rows) {
     if (hidden.has(row.parentKey) || (byKey.get(row.parentKey)?.kind === 'console' && !expanded.has(row.parentKey))) hidden.add(row.key);
   }
-  return rows.filter(row => selected.has(row.key) && !hidden.has(row.key));
-}
-
-/**
- * Every configured machine for the sidebar's global Machines section, with its
- * status only: connected, disconnected (Herdr dropped it), or unavailable
- * (stopped, asleep, connecting, or absent from Herdr's connection list).
- */
-export function projectMachineRows(configured, inventory) {
-  if (!Array.isArray(configured)) return [];
-  const known = Array.isArray(inventory) ? inventory : [], seen = new Set();
-  return configured.flatMap(machine => {
-    const name = machine?.name;
-    if (typeof name !== 'string' || !name || machine.temporary || seen.has(name)) return [];
-    seen.add(name);
-    const state = known.find(row => row?.name === name)?.state;
-    return [{ name, status: state === 'connected' ? 'connected' : state === 'disconnected' ? 'disconnected' : 'unavailable' }];
-  });
-}
-
-export function agentFilterOptions(terminals, feeds, { labels }) {
-  const machines = [...new Set(terminals.map(t => t.labels[labels.machine]).filter(Boolean))].sort().map(id => ({ id, label: id }));
-  const agents = feeds.flatMap(feed => [
-    { id: `session:${feed.sessionId}`, label: feed.owner.name ?? 'Agent' },
-    ...feed.runs.rows.filter(run => run.ownerSessionId === feed.sessionId).map(run => ({ id: `run:${run.id}`, label: run.name ?? run.id })),
-  ]).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
-  return { machines, agents };
-}
-
-function parseFilters(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const valid = v => v === null || (typeof v === 'string' && v.length > 0 && v.length <= 256);
-  return valid(value.machine) && valid(value.agent) ? { machine: value.machine, agent: value.agent } : null;
-}
-/** Shared storage is global, so the installed mod identity must be part of its key. */
-export function createAgentFilters(modId, ports) {
-  if (typeof modId !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(modId)) throw new Error('Valid modId required for agent filters');
-  const key = `spider.agents.filters/${modId}`;
-  return {
-    get: () => parseFilters(ports.read(key)) ?? { machine: null, agent: null },
-    set: value => { const parsed = parseFilters(value); if (!parsed) throw new Error('Invalid agent filters'); ports.write(key, parsed); },
-  };
+  return rows.filter(row => !hidden.has(row.key));
 }

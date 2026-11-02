@@ -105,6 +105,24 @@ describe('app 0.1.11 command boundary', () => {
     expect(() => validateAppCommand(name, args)).not.toThrow();
     expect(() => validateAppCommand(name, { ...args, typo: 'wrong-target' })).toThrow(/unknown argument/);
   });
+  const nativeWorld = (status: unknown) => ({ spaces: [{ id: 'sp1', name: 'Fixture', folder: 'fixture', machine: null, active: true,
+    tabs: [{ id: 'tb1', name: 'Owner', active: true, settled: false,
+      terminals: [{ terminal: 't1', pane: 'p1', status, app: 'pi', name: null, sub_agents: [] }] }] }], recent: [] });
+  it.each(['working', 'blocked', 'done', 'idle'])('accepts documented native terminal status %s', status => {
+    const world = nativeWorld(status);
+    expect(parseAppReply('ls', {}, world)).toEqual(world);
+  });
+  it.each(['unknown', 'running', 42, false, undefined])('rejects unknown native terminal status %s', status => {
+    expect(() => parseAppReply('ls', {}, nativeWorld(status))).toThrow(/invalid app reply/);
+  });
+  const nativeStatus = (floats: unknown) => ({ zoom: 1, font_size: 14, ui_font_size: 13, space: 'sp1', tab: 'tb1', focused_pane: 'p1',
+    layout: 'spider-glass', agent: 't1', floats, overlays: ['frame-welcome', 'confirm'], errors: [] });
+  it('accepts the observed native floating-window status map', () => {
+    const status = nativeStatus({}); expect(parseAppReply('status', {}, status)).toEqual(status);
+  });
+  it.each([null, 'floating', 42, false])('rejects malformed floating-window status %s', floats => {
+    expect(() => parseAppReply('status', {}, nativeStatus(floats))).toThrow(/invalid app reply/);
+  });
   it('refuses unsupported commands and wrong argument types before transport', () => {
     expect(() => validateAppCommand('terminal.send', { terminal: 't1' })).toThrow(/unknown command/);
     expect(() => validateAppCommand('terminal.park', {})).toThrow(/needs terminal/);

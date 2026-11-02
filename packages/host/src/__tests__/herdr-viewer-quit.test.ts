@@ -119,6 +119,7 @@ test.each([false, true])('quit hands off the stream before cancellation and reta
     expect(viewerExited).toBe(false);
     input.write('do not deliver this draft\n'); await expect.poll(() => text).toContain('[refused]');
     expect(text).not.toContain('Owning session unavailable for 30 seconds.');
-    expect(f.notices.filter(message => message.includes('Fixture endpoint cleanup failed'))).toHaveLength(failQuitDisposal ? 1 : 0);
+    expect(f.notices.filter(message => message.startsWith("Spider's Herdr features hit a problem in this session."))).toHaveLength(failQuitDisposal ? 1 : 0);
+    expect(f.notices.join('\n')).not.toContain('Fixture endpoint cleanup failed');
   } finally { abort.abort(); await viewer; await subscription.dispose(); await f.close(); }
 }, 30000);

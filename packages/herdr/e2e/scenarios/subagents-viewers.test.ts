@@ -12,7 +12,7 @@ import type { Suite } from '../harness/suite.js';
 import {
   setupFresh, scripts, parent, parentTurns, runChild, text, held, tool, mark, prompt, runRow, viewerAddress,
   attachViewer, viewerContains, ipc, childTranscript, childEvent, instructionCount, messageText,
-  feed, putDraft, proveDraft, clearDraft, reload, terminals, saveOwner, withinPhase, transcriptRootControl, replacementLifecycles, readOnlyViewer, childPidForRun, stageViewerTrace, viewerIdentity,
+  feed, putDraft, proveDraft, clearDraft, reload, terminals, saveOwner, withinPhase, transcriptRootControl, replacementLifecycles, readOnlyViewer, childPidForRun, stageViewerTrace, viewerIdentity, writableViewer, viewerScreen, sendReadOnly,
 } from '../fixtures/child-scripts.js';
 
 const tiers = ['headless', 'app'] as const;
@@ -97,14 +97,18 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const ready = await gates.ready('steer-ready', deadline(60_000));
       const run = await runRow(owner, 'steer-child', r => r.canSteer);
       const input = await attachViewer(suite, await viewerAddress(suite, owner, run));
-      await viewerContains(suite, input, 'Steer>'); await putDraft(owner.pi);
+      await writableViewer(suite, input); await putDraft(owner.pi);
+      await suite.evidence('pi-viewer-live-screen.txt', await viewerScreen(suite, input));
       // Known-bad slash input reaches the actual endpoint and creates no instruction.
       await input.send('/forbidden-fixture\r'); await viewerContains(suite, input, 'refused');
       assert.equal(instructionCount((await childTranscript(suite, ready.pid)).entries, '/forbidden-fixture'), 0);
-      await input.send(instruction + '\r'); await viewerContains(suite, input, '[accepted but not confirmed]'); gates.release('steer-ready');
+      await input.send(instruction + '\r'); await viewerContains(suite, input, 'accepted but not confirmed'); gates.release('steer-ready');
       await childEvent(suite, ready.pid, 'message_end', e => e.role === 'user' && messageText(e.content) === instruction);
+      await childEvent(suite, ready.pid, 'message_end', e => e.role === 'assistant' && messageText(e.content) === 'STEER_APPLIED_界');
       const output = await viewerContains(suite, input, 'STEER_APPLIED_界');
-      const delivered = await viewerContains(suite, input, '[steer_delivery] Steer delivered.');
+      const delivered = await waitFor('viewer displays the recorded steer and assistant answer', () => viewerScreen(suite, input), screen =>
+        screen.includes('STEER_APPLIED_界') && !screen.includes('Steering: [[e2e:steered]]') && /\bdone\b/.test(screen), deadline(10_000));
+      await suite.evidence('pi-viewer-after-steer-screen.txt', delivered);
       assert.ok(delivered.includes('STEER_APPLIED_界') && output.includes('STEER_APPLIED_界'), 'A queued/accepted acknowledgement is not proof of delivery');
       const transcript = await childTranscript(suite, ready.pid); assert.equal(instructionCount(transcript.entries, instruction), 1);
       await owner.pi.waitEvent('message_end', e => e.customType === 'spider.subagent_done', deadline(60_000));
@@ -118,7 +122,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const unknownReady = await gates.ready('unknown-ready', deadline(60_000));
       const unknownRun = await runRow(owner, 'unknown-child', r => r.canSteer);
       const uncertain = await attachViewer(suite, await viewerAddress(suite, owner, unknownRun));
-      await viewerContains(suite, uncertain, 'Steer>');
+      await writableViewer(suite, uncertain);
       const unknownInstruction = `${mark('unknown-steered')} Do not submit this instruction twice.`;
       // The real socket stays connected, but its owner cannot answer. No fake acknowledgement is injected.
       process.kill(owner.pi.pid, 'SIGSTOP');
@@ -160,23 +164,23 @@ export const scenarios: readonly ScenarioDefinition[] = [
       assert.equal(instructionCount((await childTranscript(suite, runningReady.pid)).entries, '/must-not-expand'), 0);
       assert.equal(instructionCount((await childTranscript(suite, runningReady.pid)).entries, 'FOREIGN_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       const racing = await attachViewer(suite, await viewerAddress(suite, owner, running));
-      await viewerContains(suite, racing, 'Steer>'); await racing.send('COMPLETION_RACE_MUST_NOT_APPEAR');
+      await writableViewer(suite, racing); await racing.send('COMPLETION_RACE_MUST_NOT_APPEAR');
       gates.release('running-ready');
       await childEvent(suite, runningReady.pid, 'agent_settled', () => true);
-      await racing.send('\r'); await viewerContains(suite, racing, '[refused]');
+      await racing.send('\r'); await viewerContains(suite, racing, 'read-only');
       assert.equal(instructionCount((await childTranscript(suite, runningReady.pid)).entries, 'COMPLETION_RACE_MUST_NOT_APPEAR'), 0);
       await runRow(owner, 'running', r => r.status === 'done');
-      const finishedOutput = await viewerContains(suite, racing, 'This run is done.');
+      const finishedOutput = await viewerContains(suite, racing, 'done');
       await suite.evidence('completion-race.raw', finishedOutput);
       // A completed live viewer deliberately exits after its two-second linger.
       await waitFor('completed live viewer auto-closes before opening the saved view', () => terminals(suite), rows => !rows.some(row => row.address === racing.address && row.state === 'live'), deadline(10_000));
       await racing.close();
       refuse(await ipc(suite, owner, { op: 'steerRun', runId: running.id, text: 'FINISHED_INSTRUCTION_MUST_NOT_APPEAR' }));
-      await readOnlyViewer(suite, owner, await runRow(owner, 'running'), 'FINISHED_INSTRUCTION_MUST_NOT_APPEAR', 'This run is done.', racing.address);
+      await readOnlyViewer(suite, owner, await runRow(owner, 'running'), 'FINISHED_INSTRUCTION_MUST_NOT_APPEAR', 'done', racing.address);
       assert.equal(instructionCount((await childTranscript(suite, runningReady.pid)).entries, 'FINISHED_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       await prompt(owner, mark('spawn-failed')); const failed = await runRow(owner, 'failed', r => r.status === 'failed');
       refuse(await ipc(suite, owner, { op: 'steerRun', runId: failed.id, text: 'FAILED_INSTRUCTION_MUST_NOT_APPEAR' }));
-      await readOnlyViewer(suite, owner, failed, 'FAILED_INSTRUCTION_MUST_NOT_APPEAR', 'This run is failed.');
+      await readOnlyViewer(suite, owner, failed, 'FAILED_INSTRUCTION_MUST_NOT_APPEAR', 'failed');
       assert.equal(instructionCount((await childTranscript(suite, await childPidForRun(suite, failed.id))).entries, 'FAILED_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       // Public control changes real spawn mode. No test edits a run row.
       await scripts(suite, { ...(JSON.parse(await readFile(suite.pi.scriptPath, 'utf8')).scripts),
@@ -187,8 +191,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await prompt(owner, mark('spawn-print')); const printReady = await gates.ready('print-ready', deadline(60_000));
       const print = await runRow(owner, 'print', r => r.childMode === 'print');
       const printInput = await attachViewer(suite, await viewerAddress(suite, owner, print));
-      await viewerContains(suite, printInput, 'one-shot print'); await printInput.send('PRINT_INSTRUCTION_MUST_NOT_APPEAR\r');
-      await viewerContains(suite, printInput, 'refused');
+      await sendReadOnly(suite, printInput, 'PRINT_INSTRUCTION_MUST_NOT_APPEAR');
       assert.equal(instructionCount((await childTranscript(suite, printReady.pid)).entries, 'PRINT_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       gates.release('print-ready'); await runRow(owner, 'print', r => r.status === 'done'); await printInput.close();
       await prompt(owner, mark('set-rpc')); await owner.pi.toolResult('set-rpc-mode', deadline(30_000));
@@ -196,7 +199,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const cancelled = await runRow(owner, 'cancelled', r => r.status === 'running');
       await prompt(owner, mark('kill')); await owner.pi.toolResult('real-kill', deadline(30_000));
       const cancelledFinal = await runRow(owner, 'cancelled', r => r.status === 'cancelled');
-      await readOnlyViewer(suite, owner, cancelledFinal, 'CANCELLED_INSTRUCTION_MUST_NOT_APPEAR', 'This run is cancelled.');
+      await readOnlyViewer(suite, owner, cancelledFinal, 'CANCELLED_INSTRUCTION_MUST_NOT_APPEAR', 'cancelled');
       refuse(await ipc(suite, owner, { op: 'steerRun', runId: cancelled.id, text: 'CANCELLED_INSTRUCTION_MUST_NOT_APPEAR' }));
       assert.equal(instructionCount((await childTranscript(suite, cancelReady.pid)).entries, 'CANCELLED_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       await suite.evidence('refusal-subcases.json', { queued: 'retired: async parallel ignores concurrency (pre-existing, parallel.ts:15), follow-up filed', slash, wrong, paused: 'No public pause action exists. Paused refusal remains lower-level contract coverage.', completionRace: 'A real viewer draft was submitted at the child agent-settled barrier, before waiting for parent completion. It refused with zero child instructions and no retry.' });
@@ -237,12 +240,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await putDraft(owner.pi); const before = await suite.hc(['get', owner.pi.terminal, '--json']);
       gates.release('unicode-middle'); await gates.ready('unicode-end', deadline(60_000));
       const output = await viewerContains(suite, input, 'SEQ_2_2999_界λ');
-      // The guide documents a transient reload banner; recovery must precede the second stream.
-      const reloadedOutput = output.slice(reloadOffset), reconnecting = reloadedOutput.lastIndexOf('[reconnecting]');
-      if (reconnecting >= 0) {
-        const reconnected = reloadedOutput.indexOf('[reconnected]', reconnecting + '[reconnecting]'.length);
-        assert.ok(reconnected > reconnecting && reconnected < reloadedOutput.indexOf('SEQ_2_0000_'), 'The last reload reconnect must recover before the SEQ_2 output');
-      }
+      const reloadedOutput = output.slice(reloadOffset);
+      assert.doesNotMatch(reloadedOutput, /\[(?:reconnecting|reconnected)\]/, 'Reload must remain silent');
       assert.ok(!output.slice(reloadOffset).includes('Saved log is read-only.'), 'Reload may not reach a final state');
       const counts = new Map<string, number>();
       for (const match of output.matchAll(/SEQ_([12])_(\d{4})_/g)) counts.set(match[0], (counts.get(match[0]) ?? 0) + 1);
@@ -274,7 +273,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const saved = await ipc(suite, owner, { op: 'openRun', runId: retained.id }); assert.equal(saved.ok, true);
       const savedInput = await attachViewer(suite, String(saved.viewer));
       await viewerContains(suite, savedInput, 'SAVED_RETAINED_OUTPUT');
-      await savedInput.send('SAVED_INSTRUCTION_MUST_NOT_APPEAR\r'); await viewerContains(suite, savedInput, 'refused');
+      await sendReadOnly(suite, savedInput, 'SAVED_INSTRUCTION_MUST_NOT_APPEAR');
       assert.equal(instructionCount((await childTranscript(suite, await childPidForRun(suite, retained.id))).entries, 'SAVED_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       await savedInput.send('\u0003');
       await waitFor('saved viewer explicitly closes', () => terminals(suite), ts => !ts.some(t => t.address === String(saved.viewer) && t.state === 'live'), deadline(30_000));
@@ -286,14 +285,14 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const identity = viewerIdentity(suite, run.id); const reloadOffset = (await input.output()).length;
       await reload(owner); assert.equal((await feed(owner)).lifecycle, 'live');
       await runRow(owner, 'live-after-quit', r => r.canSteer);
-      await waitFor('viewer has authenticated its same-session snapshot after reload', () => input.output(), output => { const tail = output.slice(reloadOffset); return tail.includes('[reconnected]') || tail.includes('Steer> '); }, deadline(30_000));
+      await writableViewer(suite, input);
       const instruction = `${mark('reload-steered')} Keep working after this real post-reload steer.`;
-      await input.send(instruction + '\r'); await viewerContains(suite, input, '[accepted but not confirmed]'); gates.release('quit-ready');
+      await input.send(instruction + '\r'); await viewerContains(suite, input, 'accepted but not confirmed'); gates.release('quit-ready');
       await childEvent(suite, ready.pid, 'message_end', e => e.role === 'user' && messageText(e.content) === instruction);
       await gates.ready('quit-after-steer', deadline(60_000));
       const reloaded = await viewerContains(suite, input, 'RELOAD_STEER_APPLIED');
-      const reloadTail = reloaded.slice(reloadOffset), lastReconnect = reloadTail.lastIndexOf('[reconnecting]');
-      if (lastReconnect >= 0) assert.ok(reloadTail.indexOf('[reconnected]', lastReconnect + '[reconnecting]'.length) > lastReconnect, 'Reload must recover after its last reconnect notice');
+      const reloadTail = reloaded.slice(reloadOffset);
+      assert.doesNotMatch(reloadTail, /\[(?:reconnecting|reconnected)\]/, 'Reload must remain silent');
       assert.ok(!reloadTail.includes('Saved log is read-only.'), 'Reload may not reach a final read-only state');
       assert.equal(instructionCount((await childTranscript(suite, ready.pid)).entries, instruction), 1); assert.deepEqual(viewerIdentity(suite, run.id), identity);
       await suite.evidence('quiet-reload-steer.raw', reloaded); await owner.pi.key('\u0004');
@@ -302,7 +301,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const output = await viewerContains(suite, input, 'Owning session closed. Saved log is read-only.', deadline(2000));
       assert.ok(Date.now() - closedAt <= 2000); assert.deepEqual(viewerIdentity(suite, run.id), identity);
       assert.ok(output.includes('PRESERVED_VIEW_OUTPUT'));
-      await input.send('CLOSED_INSTRUCTION_MUST_NOT_APPEAR\r'); await viewerContains(suite, input, 'refused');
+      await sendReadOnly(suite, input, 'CLOSED_INSTRUCTION_MUST_NOT_APPEAR');
       await withinPhase('closed viewer remains alive until explicit close', () => terminals(suite), value => assert.ok((value as Awaited<ReturnType<typeof terminals>>).some(t => t.address === address && t.state === 'live')));
       const transcript = await childTranscript(suite, ready.pid); assert.equal(instructionCount(transcript.entries, 'CLOSED_INSTRUCTION_MUST_NOT_APPEAR'), 0);
       await suite.evidence('closed-viewer.raw', await input.output()); await saveOwner(suite, owner);

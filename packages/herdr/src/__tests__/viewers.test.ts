@@ -87,7 +87,7 @@ describe('external run viewer', () => {
       expect(calls).toHaveLength(1);
       expect(calls[0].argv).toContain('--no-notify');
       expect(calls[0].argv.slice(calls[0].argv.indexOf('--parent') + 1, calls[0].argv.indexOf('--parent') + 2)).toEqual([h.owner!.terminal.address]);
-      expect(parks).toContain(runId);
+      expect(parks).toEqual([]);
       expect((await h.hc.get((await registration.peek(runId))!.address)).state).toBe('live');
       await registration.dispose();
     } finally { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
@@ -297,7 +297,7 @@ describe('external run viewer', () => {
     const t = transport(); const status = new PassThrough(); let notices = ''; let attempts = 0; const abort = new AbortController(); status.on('data', b => { notices += b.toString(); });
     const client: ViewerStreamClient = { subscribeRun: async () => { if (++attempts === 3) abort.abort(); throw new Error('closed'); } };
     await runViewer({ ...viewerOptions(t), createClient: () => client, stdout: new PassThrough(), stdin: new PassThrough(), statusOutput: status, signal: abort.signal, wait: async () => {} });
-    expect(notices.match(/reconnecting/g)).toHaveLength(1);
+    expect(notices).not.toMatch(/reconnect/);
   });
   it('refuses a composer submission while the owning feed is missing even if a stale stream sends running', async () => {
     const t = transport(); const stdin = new PassThrough(); let available = true; let changed = () => {}; const sends: string[] = []; const abort = new AbortController();

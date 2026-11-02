@@ -24,7 +24,7 @@ async function fixture() {
     get: async address => { const terminal = terminals.get(address); if (!terminal) throw Object.assign(new Error('missing'), { code: 'not_found' }); return terminal; }, read: async () => '', kill: async address => { kills.push(address); }, rm: async () => {}, fileRead: async () => Buffer.alloc(0), fileWrite: async (_on, path) => { markers.push(path); },
   };
   const options: JobMonitorOptions = { hc, journalRoot: f.root, clock: () => 1000, observedJobMessages: async () => [], notifier: notice => { notices.push(notice); },
-    app: { command: async () => { throw new Error('no app'); }, ownerPlacement: async () => { throw new Error('no pane'); }, awaitPane: async () => { throw new Error('no pane'); } },
+    app: { command: async () => { throw new Error('no app'); }, tabTerminals: async () => [], ownerPlacement: async () => { throw new Error('no pane'); }, awaitPane: async () => { throw new Error('no pane'); } },
     panes: { reserve: async () => ({ id: 'unused' }), observe: async () => ({ viewer: 'unused' as TerminalAddress, release: async () => {} }), abandon: async () => {} },
     outputCollector: { prepare: async (p, job) => ({ program: { ...p, directory: join(f.root, 'remote.invalid', job.id) }, nonce: 'nonce', releaseDeadlineAt: 10000 }), collect: async job => ({ complete: job.phase.kind === 'finished' || Boolean(terminals.get('address' in job.phase ? job.phase.address : '' as TerminalAddress)?.state === 'finished'), summary: 'child output', receipt: terminals.get('address' in job.phase ? job.phase.address : '' as TerminalAddress)?.state === 'finished' ? { jobId: job.id, nonce: 'nonce', finish } : null }) },
   };

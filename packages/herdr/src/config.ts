@@ -9,6 +9,10 @@ function limit(value: unknown, fallback: number, min: number, max: number): numb
   if (value === undefined) return fallback;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) throw new HerdrError('invalid-config', 'Configured limit is out of range'); return value;
 }
+function layout(value: unknown): 'panes' | 'tabs' {
+  if (value !== 'panes' && value !== 'tabs') throw new HerdrError('invalid-config', 'layout must be panes or tabs');
+  return value;
+}
 function wrapperIdentity(value: unknown): HerdrConfig['admin']['wrappers'][number] {
   if (typeof value === 'string') {
     const path = absolutePath(value);
@@ -26,8 +30,9 @@ export function parseHerdrConfig(value: unknown): HerdrConfig {
   const c = object(value); const app = object(c.app), core = object(c.core);
   const limits = object(c.limits ?? {}), retention = object(c.retention ?? {}), admin = object(c.admin ?? {});
   if (c.enabled !== undefined && c.enabled !== 'auto' && typeof c.enabled !== 'boolean') throw new HerdrError('invalid-config', 'enabled must be auto or boolean');
+  if (c.automaticSubagentPanes !== undefined && typeof c.automaticSubagentPanes !== 'boolean') throw new HerdrError('invalid-config', 'automaticSubagentPanes must be boolean');
   const spaces = list(c.spaces).map(value => {
-    const s = object(value); return { name: text(s.name), sessions: list(s.sessions).map(value => {
+    const s = object(value); return { name: text(s.name), ...(s.layout === undefined ? {} : { layout: layout(s.layout) }), sessions: list(s.sessions).map(value => {
       const selector = object(value);
       if (selector.file !== undefined) return { file: absolutePath(selector.file) };
       return { name: text(selector.name), ...(selector.sessionId === undefined ? {} : { sessionId: text(selector.sessionId) }) };
@@ -47,7 +52,7 @@ export function parseHerdrConfig(value: unknown): HerdrConfig {
       const font = object(f[kind]); fonts[kind] = { path: absolutePath(font.path), license: absolutePath(font.license) };
     }
   }
-  return { enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
+  return { automaticSubagentPanes: c.automaticSubagentPanes === true, layout: c.layout === undefined ? 'panes' : layout(c.layout), enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
     app: { binary: absolutePath(app.binary), home: absolutePath(app.home) }, core: { binary: absolutePath(core.binary), config: absolutePath(core.config) },
     agentDirectory: absolutePath(c.agentDirectory), globalRoot: absolutePath(c.globalRoot), shellRc: absolutePath(c.shellRc), spaces, machines,
     ...(fonts ? { fonts } : {}), limits: { auxiliaryPanes: limit(limits.auxiliaryPanes, 2, 1, 6), completedRows: limit(limits.completedRows, 50, 1, 10000), completedHours: limit(limits.completedHours, 24, 1, 8760) },

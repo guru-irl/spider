@@ -12,9 +12,9 @@ const present = Boolean(process.env.SPIDER_HERDR_MOD_FIXTURE);
 const url = (text: string) => 'data:text/javascript;base64,' + Buffer.from(text).toString('base64');
 async function source(mod: 'agents' | 'spaces') {
   const clones = {} as HerdrClones;
-  for (const name of ['agents', 'spaces', 'pane', 'tabs'] as const) {
+  for (const name of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) {
     const root = join(process.env.SPIDER_HERDR_MOD_FIXTURE!, name);
-    clones[name] = { name: `glass-${name}`, clonedFrom: { name, version: '0.1.11' }, files: { 'main.js': await readFile(join(root, 'main.js'), 'utf8'), 'mod.json': await readFile(join(root, 'mod.json'), 'utf8') } };
+    clones[name] = { name: `glass-${name}`, clonedFrom: { name, version: '0.1.12' }, files: { 'main.js': await readFile(join(root, 'main.js'), 'utf8'), 'mod.json': await readFile(join(root, 'mod.json'), 'utf8') } };
   }
   return (await applyLookPatches(clones, patchSet as LookPatchSet))[mod].files['main.js'];
 }
@@ -37,13 +37,21 @@ async function load(mod: 'agents' | 'spaces', supplied: null | undefined | Recor
   const modules: Record<string, Record<string, unknown>> = { ...createUiModules(), herdr: createHostModule(ports) };
   (globalThis as Record<string, unknown>)[key] = modules;
   let code = await source(mod);
+  let menu = await readFile(new URL('../../assets/agents/move-menu.js', import.meta.url), 'utf8');
   for (const [name, exports] of Object.entries(modules)) {
     const module = `const h=globalThis[${JSON.stringify(key)}][${JSON.stringify(name)}]; export const {${Object.keys(exports).join(',')}}=h;`;
-    code = code.replace(new RegExp(`from ["']${name}["']`, 'g'), `from '${url(module)}'`);
+    const pattern = new RegExp(`from ["']${name}["']`, 'g');
+    code = code.replace(pattern, `from '${url(module)}'`);
+    menu = menu.replace(pattern, `from '${url(module)}'`);
   }
-  code = code.replace('"./spider-children.js"', JSON.stringify(new URL('../../assets/agents/children.js', import.meta.url).href))
+  menu = menu.replace("'./move.js'", JSON.stringify(new URL('../../assets/agents/move.js', import.meta.url).href))
+    .replace("'./shared/feed.js'", JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href));
+  const sharedUrl = new URL('../../assets/shared/feed.js', import.meta.url).href;
+  const childSource = (await readFile(new URL('../../assets/agents/children.js', import.meta.url), 'utf8')).replace("'./shared/feed.js'", JSON.stringify(sharedUrl));
+  code = code.replace('"./move-menu.js"', JSON.stringify(url(menu)))
+    .replace('"./spider-children.js"', JSON.stringify(url(childSource)))
     .replace('"./shared/feed.js"', JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href));
-  code = 'const localStorage = { getItem: () => null, setItem: () => {} };\n' + code;
+  code = 'const localStorage = { removeItem: () => {}, getItem: () => null, setItem: () => {} };\n' + code;
   const cx: any = { notify() {}, timer: { every() {} }, spawn(fn: (cx: any) => unknown) { tasks.push(Promise.resolve().then(() => fn(cx))); } };
   try {
     const module = await import(url(code)); const view = new module.default();
@@ -58,10 +66,11 @@ test.skipIf(!present).each([null, undefined, {}])('standalone agents props %j re
   expect(rendered.text).toContain('Open a configured workspace or run doctor.');
   expect(rendered.calls).toEqual([]);
 });
-test.skipIf(!present)('filter popup props without a root contract still render the selector', async () => {
+test.skipIf(!present)('retired filter popup props without a contract render the unconfigured state', async () => {
   const rendered = await load('agents', { modId: 'glass-agents', filterMenu: 'machine', filterOptions: { machines: [], agents: [] } });
-  expect(rendered.text).toContain('All machines');
-  expect(rendered.text).not.toContain('Agents unavailable');
+  expect(rendered.text).toContain('Agents unavailable');
+  expect(rendered.text).not.toContain('All machines');
+  expect(rendered.calls).toEqual([]);
 });
 test.skipIf(!present)('native sort popup props without a root contract still render sorting choices', async () => {
   const rendered = await load('agents', { sortMenu: true });

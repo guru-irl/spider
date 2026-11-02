@@ -76,6 +76,7 @@ export interface ExecResult {
   remote?: RemoteResult["remote"];
   evidenceConflict?: RemoteResult["evidenceConflict"];
   exitEvidence?: RemoteResult["exitEvidence"];
+  remoteAbortInfo?: RemoteResult["remoteAbortInfo"];
   stdout: string; stderr: string;
   /**
    * A real number when `outcome === "exited"` (the ordinary case) OR

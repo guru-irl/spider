@@ -24,9 +24,39 @@ export function createAppClient(options: AppClientOptions, operationSignal?: Abo
   const env = Object.freeze({ ...options.env });
   const call = (args: readonly string[], signal: AbortSignal | undefined = operationSignal) => invokeCli(options.binary, args, env, undefined, undefined, { signal });
   return {
+    tabTerminals: async placement => {
+      const layout = object(await call(['ls']));
+      if (!Array.isArray(layout.spaces)) throw new HerdrError('app-disconnected', 'App layout document is unavailable');
+      const matches: TerminalAddress[][] = [];
+      for (const rawSpace of layout.spaces) {
+        const space = object(rawSpace);
+        if (space.id !== placement.space) continue;
+        if (!Array.isArray(space.tabs)) throw new HerdrError('invalid-reply', 'Invalid app tabs');
+        for (const rawTab of space.tabs) {
+          const tab = object(rawTab);
+          if (tab.id !== placement.tab) continue;
+          if (!Array.isArray(tab.terminals)) throw new HerdrError('invalid-reply', 'Invalid app terminals');
+          matches.push(tab.terminals.map(value => text(object(value).terminal) as TerminalAddress));
+        }
+      }
+      if (matches.length !== 1) throw new HerdrError(matches.length ? 'owner-ambiguous' : 'owner-unplaced', 'Owner tab has no unique observed layout');
+      return matches[0];
+    },
     ownerPlacement: async address => {
       const rows = placements(await call(['ls']), address);
       if (rows.length !== 1) throw new HerdrError(rows.length ? 'owner-ambiguous' : 'owner-unplaced', 'Owner terminal has no unique observed pane'); return rows[0];
+    },
+    tabSpace: async id => {
+      const doc = object(await call(['ls']));
+      if (!Array.isArray(doc.spaces)) throw new HerdrError('app-disconnected', 'App layout document is unavailable');
+      const found: SpaceId[] = [];
+      for (const raw of doc.spaces) {
+        const space = object(raw);
+        if (!Array.isArray(space.tabs)) throw new HerdrError('invalid-reply', 'Invalid app tabs');
+        if (space.tabs.some(rawTab => text(object(rawTab).id) === id)) found.push(text(space.id) as SpaceId);
+      }
+      if (found.length > 1) throw new HerdrError('owner-ambiguous', 'Tab appears in more than one space');
+      return found[0] ?? null;
     },
     awaitPane: async (viewer, owner, { signal, timeoutMs }) => {
       const deadline = Date.now() + timeoutMs;

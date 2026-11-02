@@ -153,7 +153,8 @@ it('publishes complete JSON with private modes during repeated replacement', asy
   expect((await stat(path)).mode & 0o777).toBe(0o600); expect((await stat(join(root, 'sessions', owner.sessionId))).mode & 0o777).toBe(0o700);
   const reader = async () => { for (let i = 0; i < 60; i++) expect(parseFeed(await readFile(path, 'utf8'))).not.toBeNull(); };
   const writer = async () => { for (let i = 2; i < 30; i++) await publishSessionFeed(root, { ...fixtureFeed(), revision: i, errors: [{ source: 'fixture', message: 'x'.repeat(60000) }] }); };
-  await Promise.all([reader(), writer()]); expect(await readdir(join(root, 'sessions', owner.sessionId))).toEqual(['session.json']);
+  await Promise.all([reader(), writer()]); expect(await readdir(join(root, 'sessions', owner.sessionId))).toEqual(['heartbeat.json', 'session.json']);
+  expect((await stat(join(root, 'sessions', owner.sessionId, 'heartbeat.json'))).mode & 0o777).toBe(0o600);
 });
 it.each([
   ['capability', 'unauthorized'], ['version', 'unauthorized'], ['operation', 'unknown-op'], ['owner', 'refused'],

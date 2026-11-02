@@ -12,6 +12,8 @@ import { configFixtureCwd } from './herdr-config-fixture.js';
 import { createHerdrHarness, type HerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { HerdrLabelContract } from '../../../herdr/src/contracts.js';
+import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../../../herdr/src/look/patches.js';
+import { readJournal, digest } from '../../../herdr/src/setup/backup.js';
 
 // A fenced setup must not inspect other pi sessions on this host.
 vi.mock('node:child_process', async importOriginal => {
@@ -28,6 +30,7 @@ let source: string;
 let children: Record<string, unknown>;
 let sharedFeed: Record<string, unknown>;
 let doctorFailures: unknown;
+let upgradeEvidence: { previousLayout: any; previousAgents: string; previousIcon: string; oldJournalHash: string | null; oldIconHash: string; oldChevronAbsent: boolean; refusedEdit: boolean; editPreserved: boolean; writes: readonly string[]; probes: readonly unknown[] };
 
 beforeAll(async () => {
   harness = await createHerdrHarness('fake');
@@ -43,14 +46,13 @@ beforeAll(async () => {
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
   await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
   await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
-  for (const kind of ['agents', 'spaces', 'pane', 'tabs']) {
+  for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
     const dir = join(h.directories.app, 'mods', kind);
-    await mkdir(dir, { recursive: true });
-    for (const file of ['main.js', 'mod.json']) await cp(join(fixture!, kind, file), join(dir, file));
+    await cp(join(fixture!, kind), dir, { recursive: true });
   }
   await mkdir(join(h.directories.app, 'layouts'), { recursive: true });
   await writeFile(join(h.directories.app, 'layouts/main.json'), JSON.stringify({ children: [
-    { id: 'sidebar', content: { mod: 'agents' } }, { id: 'spaces', content: { mod: 'spaces' } }, { id: 'tabs', content: { mod: 'tabs' } },
+    { id: 'brand', content: { mod: 'workspace-chrome' } }, { id: 'sidebar', content: { mod: 'agents' } }, { id: 'spaces', content: { mod: 'spaces' } }, { id: 'tabs', content: { mod: 'tabs' } },
     { id: 'work-body', children: [{ id: 'main', content: { tab: 'active', pane: { header: { content: { mod: 'pane' } } } } },
       { id: 'panel', children: [{ id: 'panel-body', type: 'stack', children: [{ id: 'files' }, { id: 'changes' }] }] }] },
   ] }));
@@ -59,7 +61,7 @@ beforeAll(async () => {
   const script = join(h.root, 'app-selection.mjs');
   await writeFile(script, `import { readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';
-if (args[0] === '--version') console.log('herdr-app 0.1.11');
+if (args[0] === '--version') console.log('herdr-app 0.1.12');
 else if (args[0] === 'do') { const settings = JSON.parse(readFileSync(path, 'utf8')); if (args[1] === 'layout.switch') settings.layout = args[args.indexOf('--name') + 1]; if (args[1] === 'app.theme') settings.theme = args[args.indexOf('--name') + 1]; writeFileSync(path, JSON.stringify(settings)); console.log('{}'); }
 else console.log('{"spaces":[]}');\n`);
   const app = join(h.root, 'app-selection');
@@ -70,14 +72,56 @@ else console.log('{"spaces":[]}');\n`);
   vi.spyOn(ModelRegistry.prototype, 'getAvailable').mockImplementation(function (this: ModelRegistry) { return this.getAll(); });
   ports = configFixtureCwd(createProductionHerdrCliPorts(root, { ...h.localEnv, SPIDER_GLOBAL_ROOT: h.directories.global }), h.directories.local);
   const request = await ports.request(configPath);
-  try {
-    const result = await setupHerdr(request, await ports.setupParts(request));
-    expect(result.probes).toHaveLength(1);
-    doctorFailures = result.doctor.failures;
-  } catch (error: any) {
-    if (error.code !== 'setup-verification-failed') throw error;
-    doctorFailures = error.details.failures;
-  }
+  const previous = resolve('packages/host/src/__tests__/fixtures/herdr-look-previous');
+  const oldPatches = JSON.parse(await readFile(join(previous, 'patches.json'), 'utf8')) as LookPatchSet;
+  const oldEdits = JSON.parse(await readFile(join(previous, 'layout-edits.json'), 'utf8'));
+  const clones = {} as HerdrClones;
+  for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) clones[kind] = {
+    name: `spider-${kind}`, clonedFrom: { name: kind, version: '0.1.12' },
+    files: { 'main.js': await readFile(join(fixture!, kind, 'main.js'), 'utf8'), 'mod.json': await readFile(join(fixture!, kind, 'mod.json'), 'utf8') },
+  };
+  const oldClones = await applyLookPatches(clones, { ...oldPatches, upstreamVersion: '0.1.12' });
+  const parts = await ports.setupParts(request), stage = parts.stageLook;
+  const oldParts = { ...parts, verify: async () => ({ failures: [], warnings: [], probes: [] }), stageLook: async (...args: Parameters<typeof stage>) => {
+    const plans = (await stage(...args)).filter(plan => plan.path !== join(request.config.app.home, 'mods/spider-agents/chevron-up.svg'));
+    return Promise.all(plans.map(async plan => {
+      let bytes = plan.bytes;
+      for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) {
+        const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`);
+        if (plan.path === join(directory, 'main.js')) bytes = Buffer.from(oldClones[kind].files['main.js']);
+        if (plan.path === join(directory, 'mod.json')) bytes = Buffer.from(JSON.stringify({ ...JSON.parse(oldClones[kind].files['mod.json']), clonedFrom: oldClones[kind].clonedFrom, patchState: oldClones[kind].patchState }));
+      }
+      if (plan.path === join(request.config.app.home, 'mods/spider-agents/spider-children.js')) bytes = await readFile(join(previous, 'children.js'));
+      if (plan.path === join(request.config.app.home, 'mods/spider-tabs/spider.svg')) bytes = await readFile(join(previous, 'spider.svg'));
+      if (plan.path === join(request.config.app.home, 'layouts/spider-glass.json')) {
+        const layout = JSON.parse(bytes.toString());
+        const walk = (node: any): void => {
+          if (node.content?.tab === 'active') Object.assign(node.content.pane, oldEdits.pane);
+          if (node.id === 'panel') { delete node.radius; delete node.border; delete node.padding; delete node.background; }
+          for (const child of node.children ?? []) walk(child);
+        };
+        walk(layout); bytes = Buffer.from(JSON.stringify(layout, null, 2));
+      }
+      return { ...plan, bytes };
+    }));
+  } };
+  const first = await setupHerdr(request, oldParts);
+  expect(first.probes).toHaveLength(1);
+  const iconPath = join(h.directories.app, 'mods/spider-tabs/spider.svg');
+  const oldIcon = await readFile(iconPath);
+  const oldJournal = await readJournal(request.journalRoot);
+  const previousLayout = JSON.parse(await readFile(join(h.directories.app, 'layouts/spider-glass.json'), 'utf8'));
+  const previousAgents = await readFile(join(h.directories.app, 'mods/spider-agents/main.js'), 'utf8');
+  const oldChevronAbsent = await readFile(join(h.directories.app, 'mods/spider-agents/chevron-up.svg')).then(() => false, (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return true; throw error; });
+  await writeFile(iconPath, Buffer.concat([oldIcon, Buffer.from('<!-- user edit -->')]));
+  let refusedEdit = false;
+  try { await setupHerdr(request, await ports.setupParts(request)); } catch (error: any) { if (error.code !== 'unowned-clone-collision') throw error; refusedEdit = true; }
+  const editPreserved = (await readFile(iconPath, 'utf8')).endsWith('<!-- user edit -->');
+  await writeFile(iconPath, oldIcon);
+  const result = await setupHerdr(request, await ports.setupParts(request));
+  upgradeEvidence = { previousLayout, previousAgents, previousIcon: oldIcon.toString(), oldJournalHash: oldJournal.entries.find(entry => entry.path === iconPath)?.after ?? null,
+    oldIconHash: digest(oldIcon), oldChevronAbsent, refusedEdit, editPreserved, writes: result.writes, probes: result.probes };
+  doctorFailures = result.doctor.failures;
   const agentDir = join(h.directories.app, 'mods/spider-agents');
   source = await readFile(join(agentDir, 'main.js'), 'utf8');
   children = await import(pathToFileURL(join(agentDir, 'spider-children.js')).href);
@@ -129,12 +173,37 @@ describe('installed agents sidebar', () => {
     expect(doctorFailures).toEqual([]);
   });
 
+  test('setup upgrades the recorded previous look but refuses an edited installed icon', async () => {
+    const h = harness!, appHome = h.directories.app;
+    const find = (node: any, id: string): any => node.id === id ? node : (node.children ?? []).map((child: any) => find(child, id)).find(Boolean);
+    const old = upgradeEvidence;
+    expect(find(old.previousLayout, 'main').content.pane.border).toEqual({ width: 0, color: '#00000000' });
+    expect(find(old.previousLayout, 'panel').border).toBeUndefined();
+    expect(old.previousAgents).toContain('spider-look:machines-section');
+    expect(old.previousAgents).toContain('filterControls');
+    expect(old.previousIcon).toContain('<ellipse');
+    expect(old.oldJournalHash).toBe(old.oldIconHash);
+    expect(old.oldChevronAbsent).toBe(true);
+    expect(old.refusedEdit).toBe(true); expect(old.editPreserved).toBe(true);
+    const paths = ['layouts/spider-glass.json', 'mods/spider-agents/main.js', 'mods/spider-agents/spider-children.js', 'mods/spider-agents/chevron-up.svg', 'mods/spider-spaces/main.js', 'mods/spider-tabs/spider.svg'];
+    for (const path of paths) expect(old.writes).toContain(join(appHome, path));
+    expect(old.probes).toEqual([]);
+    const installed = JSON.parse(await readFile(join(appHome, 'layouts/spider-glass.json'), 'utf8'));
+    expect(find(installed, 'main').content.pane.border).toEqual({ width: 1, color: '#38383a' });
+    expect(find(installed, 'panel')).toMatchObject({ radius: 12, border: { width: 1, color: '#38383a' }, padding: 5, background: '#161618f0' });
+    expect(await readFile(join(appHome, 'mods/spider-agents/main.js'), 'utf8')).not.toContain('filterControls');
+    expect(await readFile(join(appHome, 'mods/spider-tabs/spider.svg'), 'utf8')).toContain('viewBox="0 0 56 56"');
+    expect(await readFile(join(appHome, 'mods/spider-agents/chevron-up.svg'), 'utf8')).toContain('d="m18 15-6-6-6 6"');
+    const request = await ports!.request(join(h.root, 'config.json'));
+    expect((await setupHerdr(request, await ports!.setupParts(request))).writes).toEqual([]);
+  }, 120_000);
+
   test('setup refuses a newer upstream app before changing installed files', async () => {
     const h = harness!, app = join(h.root, 'app-selection');
     const original = await readFile(app, 'utf8');
     const layout = join(h.directories.app, 'layouts/spider-glass.json');
     const before = await readFile(layout);
-    await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.12'; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);
+    await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.13'; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);
     try {
       const request = await ports!.request(join(h.root, 'config.json'));
       await expect(setupHerdr(request, await ports!.setupParts(request))).rejects.toMatchObject({ code: 'upstream-version-mismatch' });
@@ -143,6 +212,22 @@ describe('installed agents sidebar', () => {
       await expect(setupHerdr(request, await ports!.setupParts(request))).rejects.toMatchObject({ code: 'upstream-version-unavailable' });
       expect(await readFile(layout)).toEqual(before);
     } finally { await writeFile(app, original); }
+  }, 120_000);
+
+  test('setup and doctor accept Herdr 0.1.12, using the rebased built-in mods', async () => {
+    const h = harness!, app = join(h.root, 'app-selection');
+    const original = await readFile(app, 'utf8');
+    const request = await ports!.request(join(h.root, 'config.json'));
+    await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.12'; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);
+    try {
+      await setupHerdr(request, await ports!.setupParts(request));
+      const manifest = JSON.parse(await readFile(join(h.directories.app, 'mods/spider-agents/mod.json'), 'utf8'));
+      expect(manifest.clonedFrom).toEqual({ name: 'agents', version: '0.1.12' });
+      expect((await (await ports!.doctorParts(request)).inspect('patch-version', request)).failures).toEqual([]);
+    } finally {
+      await writeFile(app, original);
+      await setupHerdr(request, await ports!.setupParts(request));
+    }
   }, 120_000);
 
 
@@ -171,9 +256,8 @@ describe('installed agents sidebar', () => {
       projectAgentChildren: (...args: any[]) => { calls.push(args[2]); return project(...args); },
       agents: () => mains, terminals: () => [], panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}),
       props: () => ({ modId: 'spider-agents', labelContract: HerdrLabelContract }), shared: (key: string) => stored.get(key), setShared: (key: string, value: unknown) => stored.set(key, value),
-      setAgentOrder: () => { if (throwOnOrder) throw new Error('render failed'); }, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pins = []; view.spiderFeeds = [failedFeed(Date.now())];
-    view.filters().set({ machine: null, agent: 'run:run-one' });
+      setAgentOrder: () => { if (throwOnOrder) throw new Error('render failed'); }, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [failedFeed(Date.now())];
     view.render({});
     expect(calls).toEqual(['t1', 't9']);
     throwOnOrder = true;
@@ -204,8 +288,8 @@ describe('installed agents sidebar', () => {
     const project = children.projectAgentChildren as (...args: any[]) => any[];
     const select = children.selectAgentChildren as (...args: any[]) => any[];
     const rows = project(terminals, [feed], 't1', HerdrLabelContract);
-    expect(select(rows, { machine: null, agent: null }, []).map(row => row.key)).toEqual(['console:remote.invalid/t2']);
-    expect(select(rows, { machine: null, agent: null }, ['console:remote.invalid/t2']).map(row => row.key)).toEqual(['console:remote.invalid/t2', 'job-one', 'remote.invalid/t4']);
+    expect(select(rows, []).map(row => row.key)).toEqual(['console:remote.invalid/t2']);
+    expect(select(rows, ['console:remote.invalid/t2']).map(row => row.key)).toEqual(['console:remote.invalid/t2', 'job-one', 'remote.invalid/t4']);
   });
 
   test('native descendants remain under their job and viewer', () => {
@@ -231,8 +315,8 @@ describe('installed agents sidebar', () => {
     const Agents = loadView({ ...sharedFeed, View: class {}, div: ui, h_flex: ui, v_flex: ui, svg: ui, image: ui,
       agents: () => [{ address: 't1', status: 'idle', seq: 1 }], terminals: () => [], panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}),
       props: () => p, shared: () => null, setShared: () => {}, setAgentOrder: () => {}, exec: async () => ({ code: 0, stdout: JSON.stringify(reply) }),
-      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pins = []; view.spiderFeeds = [];
+      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [];
     const action = { kind: 'ipc', descriptor: { version: 1, sessionId: 'session-one', generation: 'generation-one', address: '/fixture/ipc', capabilityFile: '/fixture/cap' }, request: { op: 'openJob', jobId: 'job-one', generation: 'generation-one' } };
     await view.openChild({ action });
     expect(elements(view.render({})).some(el => el.children.includes('No owned job'))).toBe(true);
@@ -241,50 +325,56 @@ describe('installed agents sidebar', () => {
     expect(elements(view.render({})).some(el => el.children.includes('Child view unavailable; run doctor'))).toBe(true);
   });
 
-  test('a saved filter survives an empty initial agent snapshot', () => {
-    const stored = new Map<string, unknown>();
+  test('a saved filter cannot hide children after an empty initial agent snapshot', () => {
+    const saved = { machine: 'other.invalid', agent: 'run:other' };
+    const stored = new Map<string, unknown>([['spider.agents.filters/spider-agents', saved]]);
     const Agents = loadView({ View: class {}, props: () => ({ modId: 'spider-agents', labelContract: HerdrLabelContract, feedRoot: '/fixture' }),
       shared: (key: string) => stored.get(key), setShared: (key: string, value: unknown) => stored.set(key, value) });
-    const view = new Agents(); view.spiderFeeds = [failedFeed(Date.now())]; view.spiderFeedsLoaded = true;
-    view.filters().set({ machine: null, agent: 'run:run-one' });
-    view.reconcileFilters([], []);
-    expect(view.filters().get()).toEqual({ machine: null, agent: 'run:run-one' });
-    view.reconcileFilters([], [{ address: 't1' }]);
-    expect(view.filters().get().agent).toBe('run:run-one');
-    view.reconcileFilters([], []);
-    expect(view.filters().get()).toEqual({ machine: null, agent: null });
+    const view = new Agents(); view.spiderFeeds = [];
+    expect(view.tree([], 't1')).toEqual([]);
+    const running = failedFeed(Date.now());
+    view.spiderFeeds = [{ ...running, runs: { ...running.runs, rows: [{ ...running.runs.rows[0], status: 'running', finishedAt: null }] } }];
+    expect(view.tree([], 't1').map((row: any) => row.t.key)).toEqual(['run-one']);
+    expect(stored.get('spider.agents.filters/spider-agents')).toEqual(saved);
   });
 
-  test('agent choices all have rows and remain selected under the machine filter', () => {
-    const stored = new Map<string, unknown>(), overlays: any[] = [], terminals: any[] = [];
-    const mains = [{ address: 't1', status: 'idle', seq: 1 }];
-    const p: any = { modId: 'spider-agents', labelContract: HerdrLabelContract };
+  test('all installed child rows remain visible with a saved combined filter', () => {
+    const saved = { machine: 'other.invalid', agent: 'run:other' };
+    const stored = new Map<string, unknown>([['spider.agents.filters/spider-agents', saved]]);
+    const terminals = [{ address: 'remote.invalid/t2', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'exec', 'spider.session': 'session-one', 'spider.job': 'job-one', 'spider.machine': 'remote.invalid' } }];
     const Agents = loadView({ View: class {}, div: ui, h_flex: ui, v_flex: ui, svg: ui, image: ui,
-      agents: () => mains, terminals: () => terminals, panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}),
-      props: () => p, shared: (key: string) => stored.get(key), setShared: (key: string, value: unknown) => stored.set(key, value),
-      setAgentOrder: () => {}, openOverlay: (value: unknown) => overlays.push(value), closeOverlay: () => {},
-      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pins = []; view.spiderFeeds = [failedFeed(Date.now())];
-    const menu = () => {
-      elements(view.filterControls({})).find(el => el.id === 'agents-filter-agent')!.click!();
-      Object.assign(p, overlays.at(-1).props);
-      return elements(view.filterMenu({}));
-    };
-    const withoutChildren = menu();
-    expect(withoutChildren.map(el => el.id)).not.toContain('agent-filter-agent-session:session-one');
-    expect(withoutChildren.map(el => el.id)).toContain('agent-filter-agent-run:run-one');
-    delete p.filterMenu;
-    terminals.push({ address: 'remote.invalid/t2', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'exec', 'spider.session': 'session-one', 'spider.job': 'job-one', 'spider.machine': 'remote.invalid' } });
-    view.filters().set({ machine: 'remote.invalid', agent: null });
-    const filtered = menu();
-    expect(filtered.map(el => el.id)).not.toContain('agent-filter-agent-run:run-one');
-    filtered.find(el => el.id === 'agent-filter-agent-session:session-one')!.click!();
-    delete p.filterMenu;
-    view.render({});
-    expect(view.filters().get()).toEqual({ machine: 'remote.invalid', agent: 'session:session-one' });
+      agents: () => [{ address: 't1', status: 'idle', seq: 1 }], terminals: () => terminals, panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}),
+      props: () => ({ modId: 'spider-agents', labelContract: HerdrLabelContract }), shared: (key: string) => stored.get(key), setShared: (key: string, value: unknown) => stored.set(key, value),
+      setAgentOrder: () => {}, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [failedFeed(Date.now())];
+    let rendered = elements(view.render({}));
+    expect(rendered.map(el => el.id)).toEqual(expect.arrayContaining(['ag-t1', 'sub-job-one', 'finished-toggle-t1']));
+    expect(rendered.map(el => el.id)).not.toContain('sub-run-one');
+    rendered.find(el => el.id === 'finished-toggle-t1')!.click!(null, { notify() {} });
+    rendered = elements(view.render({}));
+    expect(rendered.map(el => el.id)).toContain('sub-run-one');
+    expect(rendered.some(el => el.id?.startsWith('agents-filter-') || el.id === 'agents-clear-filters')).toBe(false);
+    expect(stored.get('spider.agents.filters/spider-agents')).toEqual(saved);
   });
 
-  test('a retained failed child is visible but does not put its idle owner in Needs you', () => {
+  test('a running blocked job still affects priority inside a collapsed console', () => {
+    const order: string[][] = [], feed = failedFeed(Date.now());
+    const terminals = [
+      { address: 'remote.invalid/console', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.session': 'session-one', 'spider.machine': 'remote.invalid' } },
+      { address: 'remote.invalid/job', parent: 't1', state: 'live', status: 'blocked', labels: { 'spider.kind': 'exec', 'spider.session': 'session-one', 'spider.job': 'job-one', 'spider.machine': 'remote.invalid' } },
+    ];
+    const Agents = loadView({ View: class {}, div: ui, h_flex: ui, v_flex: ui, image: ui, svg: ui,
+      agents: () => [{ address: 't1', status: 'idle', seq: 1 }, { address: 't9', status: 'working', seq: 2 }], terminals: () => terminals,
+      panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}), shared: () => null, setShared: () => {},
+      setAgentOrder: (ids: string[]) => order.push(ids), props: () => ({ modId: 'spider-agents', labelContract: HerdrLabelContract }),
+      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed];
+    const rendered = elements(view.render({}));
+    expect(rendered.map(el => el.id)).not.toContain('sub-job-one');
+    expect(order.at(-1)).toEqual(['t1', 't9']);
+  });
+
+  test('a hidden or expanded retained failed child does not put its idle owner in Needs you', () => {
     const now = Date.now();
     const agents = [{ address: 't1', status: 'idle', seq: 1 }, { address: 't9', status: 'working', seq: 2 }];
     const theme = { dim: '#777777', blocked: '#ff0000', working: '#00ff00', idle: '#cccccc' };
@@ -294,13 +384,18 @@ describe('installed agents sidebar', () => {
       agents: () => agents, terminals: () => terminals, panes: () => [], focused: () => null, spaces: () => [], theme: () => theme,
       shared: () => null, setShared: () => {}, setAgentOrder: (ids: string[]) => order.push(ids), openOverlay: () => {},
       props: () => ({ modId: 'spider-agents', labelContract: HerdrLabelContract }), layout: () => ({ id: 'sidebar', size: { px: 268 } }),
-      run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const view = new Agents(); view.folded = new Set(['t1']); view.changed = {}; view.pins = []; view.spiderFeeds = [failedFeed(now)];
+      run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(['t1']); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [failedFeed(now)];
     const rendered = elements(view.render({}));
     expect(order.at(-1)).toEqual(['t9', 't1']);
-    expect(rendered.find(el => el.id === 'fold-t1')?.color).toBe(theme.dim);
+    expect(rendered.find(el => el.id === 'fold-t1')).toBeUndefined();
     view.folded.delete('t1');
-    expect(elements(view.render({})).map(el => el.id)).toContain('sub-run-one');
+    let expanded = elements(view.render({}));
+    expect(expanded.map(el => el.id)).not.toContain('sub-run-one');
+    expanded.find(el => el.id === 'finished-toggle-t1')!.click!(null, { notify() {} });
+    expanded = elements(view.render({}));
+    expect(expanded.map(el => el.id)).toContain('sub-run-one');
+    expect(order.at(-1)).toEqual(['t9', 't1']);
     view.folded.add('t1');
     terminals.push({ address: 't2', parent: 't1', state: 'live', status: 'blocked', labels: {} });
     const blocked = elements(view.render({}));

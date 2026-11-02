@@ -9,7 +9,8 @@
 //     disposeSession(sessionId, reason): Promise<void> }
 // All behaviour lives in the module functions below and operates on that shared data, so a
 // different build with the same version reads and writes the same structure. Anything that
-// changes the data semantics MUST bump CHILD_REGISTRY_VERSION (new key). A build never
+// changes existing field meanings MUST bump CHILD_REGISTRY_VERSION (new key). New lifetime
+// states must remain ignored by older exit and expiry hooks. A build never
 // reads a version it does not implement; foreign versions are only ever cleaned up through
 // their own `disposeSession` (see disposeSessionRegistries) and their own build's TTL sweeper.
 //
@@ -27,6 +28,7 @@ import { emitStatus } from "./run-events";
 import { decideOutcome, summarizeCompletionEvents } from "./completion-output";
 import { shutdownReason } from "./shutdown-reason";
 import { checkProcessIdentity } from "./process-identity";
+import { HERDR_NOTICES } from '@spider/herdr/notices';
 
 export const CHILD_REGISTRY_VERSION = 1;
 const KEY_PREFIX = "spider.childRegistry.v";
@@ -40,6 +42,8 @@ export interface ExitInfo { exitCode: number; result?: string }
 
 /** Structural subset of the runner's ChildHandle that must survive across builds. */
 export interface SharedHandle {
+  durable?: boolean;
+  release?(): void;
   pid?: number;
   startTime?: string | null;
   wait(): Promise<ExitInfo>;
@@ -65,7 +69,8 @@ export interface SharedChildEntry {
   handle: SharedHandle;
   /** False for chain steps: their continuation lives in the activation, so reload kills them. */
   survivable: boolean;
-  state: "attached" | "detached";
+  /** Old v1 exit hooks reap only detached entries. Independent runs must never use that state. */
+  state: "attached" | "detached" | "independent";
   detachedAt?: number;
   timer?: ReturnType<typeof setTimeout>;
   /** How the current TTL timer was armed, so a failed adoption can re-arm it identically. */
@@ -92,13 +97,19 @@ function isRegistryV1(value: unknown): value is ChildRegistryV1 {
     && v.tailCursors instanceof Map && typeof v.disposeSession === "function";
 }
 
-export async function killSharedEntry(entry: SharedChildEntry, reason: string, graceMs?: number): Promise<void> { await killEntry(entry, reason, graceMs); }
+export async function killSharedEntry(entry: SharedChildEntry, reason: string, graceMs?: number): Promise<void> {
+  const finished = !!entry.exit;
+  if (entry.state !== "attached") finalizeRowByPath(entry, reason, finished);
+  if (!finished) await killEntry(entry, reason, graceMs);
+}
 
-async function killEntry(entry: SharedChildEntry, reason: string, graceMs = DEFAULT_GRACE_MS): Promise<void> {
+async function killEntry(entry: SharedChildEntry, reason: string, graceMs = DEFAULT_GRACE_MS, strict = false): Promise<void> {
   try {
     if (entry.handle.killAsync) await entry.handle.killAsync(graceMs, reason);
     else entry.handle.kill(reason);
-  } catch { /* best-effort: the TTL path and the reaper are the backstops */ }
+  } catch (error) {
+    if (strict) throw error;
+  }
 }
 
 function makeRegistry(): ChildRegistryV1 {
@@ -177,6 +188,7 @@ export function releaseShared(runId: string): void {
 }
 
 export interface DetachOpts {
+  durableOnly?: boolean;
   ttlMs?: number;
   graceMs?: number;
   /** Replaces the default "finalize the run row by DB path" expiry step. Used by tests. */
@@ -228,7 +240,7 @@ function bufferedLossNotes(db: Db, entry: SharedChildEntry): string[] {
   const events: Record<string, any>[] = [];
   try {
     entry.handle.bindEvents?.(event => {
-      if (!PERSISTED_EVENT_TYPES.includes(event.type)) return;
+      if (event.spiderDurablePersisted || !PERSISTED_EVENT_TYPES.includes(event.type)) return;
       if (event.type === "spider_usage") {
         try { recordRunUsage(db, entry.runId, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose, event.compactionCount); }
         catch (error) { warnUsage(db, { id: entry.runId, session_id: entry.sessionId }, error); }
@@ -255,6 +267,7 @@ function bufferedLossNotes(db: Db, entry: SharedChildEntry): string[] {
 
 function armTimer(entry: SharedChildEntry, opts: DetachOpts): void {
   clearTimeout(entry.timer);
+  if (entry.handle.durable) { entry.timer = undefined; return; }
   entry.detachOpts = opts;
   entry.timer = setTimeout(() => { void expire(entry, opts); }, opts.ttlMs ?? DEFAULT_DETACH_TTL_MS);
   entry.timer.unref?.();
@@ -269,6 +282,22 @@ async function expire(entry: SharedChildEntry, opts: DetachOpts): Promise<void> 
   try { await (opts.onExpire ? opts.onExpire(entry) : finalizeRowByPath(entry, TTL_REASON, finished)); } catch { /* best-effort */ }
 }
 
+function recordChainInterruption(entry: SharedChildEntry, closed: boolean): void {
+  let db: Db | undefined;
+  try {
+    db = openDb(entry.dbPath, { fileMustExist: true });
+    const event = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='chain_steps' ORDER BY id DESC LIMIT 1").get(entry.runId) as { payload: string } | undefined;
+    if (!event) return;
+    const remaining = JSON.parse(event.payload).remaining;
+    if (!Array.isArray(remaining) || !remaining.length || !remaining.every(step => typeof step === 'string')) return;
+    const warnings = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='warning'").all(entry.runId) as Array<{ payload: string }>;
+    if (warnings.some(warning => { try { return JSON.parse(warning.payload).chainInterrupted === true; } catch { return false; } })) return;
+    const message = (closed ? HERDR_NOTICES.chainClosed : HERDR_NOTICES.chainReloaded).text.replace('<steps>', remaining.join('. '));
+    appendRunEvent(db, { runId: entry.runId, sessionId: entry.sessionId, ts: Date.now(), type: 'warning', summary: message, payload: { reload: true, chainInterrupted: true, message } });
+  } catch { /* a diagnostic must not block releasing the child */ }
+  finally { db?.close(); }
+}
+
 /**
  * Reload, step one (synchronous): park this session's survivable children (sink dropped, events
  * unbound, TTL armed). Entries that cannot survive (foreground chain steps) are removed and
@@ -281,12 +310,20 @@ export function parkSession(sessionId: string, opts: DetachOpts = {}): SharedChi
   let parked = false;
   for (const entry of [...reg.entries.values()]) {
     if (entry.sessionId !== sessionId) continue;
-    if (!entry.survivable) { clearTimeout(entry.timer); doomed.push(entry); reg.entries.delete(entry.runId); continue; }
-    if (entry.state === "detached") continue;
+    if (!entry.survivable || (opts.durableOnly && !entry.handle.durable)) { clearTimeout(entry.timer); doomed.push(entry); reg.entries.delete(entry.runId); continue; }
+    if (entry.state !== "attached") {
+      if (entry.handle.durable) {
+        entry.state = "independent";
+        if (opts.durableOnly) entry.handle.release?.();
+      }
+      continue;
+    }
     entry.sink = undefined;
-    entry.state = "detached";
+    entry.state = entry.handle.durable ? "independent" : "detached";
     entry.detachedAt = Date.now();
+    recordChainInterruption(entry, opts.durableOnly === true);
     try { entry.handle.unbindEvents?.(); } catch { /* best-effort */ }
+    if (opts.durableOnly && entry.handle.durable) entry.handle.release?.();
     armTimer(entry, opts);
     parked = true;
   }
@@ -321,7 +358,7 @@ export function adoptShared(sessionId: string, claim: (entry: SharedChildEntry) 
     entry.state = "attached";
     entry.detachedAt = undefined;
     try { claim(entry); } catch (error) {
-      entry.state = "detached";
+      entry.state = entry.handle.durable ? "independent" : "detached";
       entry.detachedAt = Date.now();
       entry.sink = undefined;
       try { entry.handle.unbindEvents?.(); } catch { /* best-effort */ }
@@ -336,31 +373,30 @@ export function adoptShared(sessionId: string, claim: (entry: SharedChildEntry) 
 }
 
 export function adoptableFor(sessionId: string): SharedChildEntry[] {
-  return [...sharedRegistry().entries.values()].filter(e => e.state === "detached" && e.sessionId === sessionId);
+  return [...sharedRegistry().entries.values()].filter(e => e.state !== "attached" && e.sessionId === sessionId);
 }
 
 /** Kill one session's children in this registry and finalize the rows nobody else will. */
-async function disposeOwnSession(reg: ChildRegistryV1, sessionId: string, reason: string, exclude?: ReadonlySet<string>): Promise<void> {
+async function disposeOwnSession(reg: ChildRegistryV1, sessionId: string, reason: string, exclude?: ReadonlySet<string>, strict = false): Promise<void> {
   const mine = [...reg.entries.values()].filter(e => e.sessionId === sessionId && !exclude?.has(e.runId));
   const finished = new Set(mine.filter(e => e.exit).map(e => e.runId));
-  await Promise.all(mine.map(e => finished.has(e.runId) ? Promise.resolve() : killEntry(e, reason)));
+  // Independent runs have no attached sink to record the stop before their exit.
+  for (const e of mine) if (e.state !== "attached" && !e.handle.durable) finalizeRowByPath(e, reason, finished.has(e.runId));
+  await Promise.all(mine.map(e => finished.has(e.runId) ? Promise.resolve() : killEntry(e, reason, DEFAULT_GRACE_MS, strict)));
   for (const e of mine) {
     clearTimeout(e.timer);
     if (reg.entries.get(e.runId) === e) reg.entries.delete(e.runId);
-    // An attached entry's sink finalizes its row when the exit arrives. A detached one has no sink,
-    // so without this its row would stay `running` until the next reaper pass guessed a false cause.
-    if (e.state === "detached") finalizeRowByPath(e, reason, finished.has(e.runId));
   }
   reg.tailCursors.delete(sessionId);
 }
 
 /**
- * Quit, new, resume or fork of ONE session: dispose that session's children in every registry
+ * Explicitly stop ONE session's children in every registry
  * version found in this process. Our own version is handled directly so `exclude` can skip runs a
  * caller already killed; foreign versions are asked through their minimal `disposeSession`.
  */
-export async function disposeSessionRegistries(sessionId: string, reason: string, opts: { exclude?: ReadonlySet<string> } = {}): Promise<void> {
-  await disposeOwnSession(sharedRegistry(), sessionId, reason, opts.exclude);
+export async function disposeSessionRegistries(sessionId: string, reason: string, opts: { exclude?: ReadonlySet<string>; strict?: boolean } = {}): Promise<void> {
+  await disposeOwnSession(sharedRegistry(), sessionId, reason, opts.exclude, opts.strict);
   const g = globalThis as Record<symbol, unknown>;
   for (const sym of Object.getOwnPropertySymbols(globalThis)) {
     if (sym === CHILD_REGISTRY_KEY || !sym.description?.startsWith(KEY_PREFIX)) continue;
@@ -402,7 +438,7 @@ export function sweepDetachedOnExit(probes: ExitSweepProbes = {}): void {
     } catch { /* no safe group signalling without the host's group id */ }
   }
   for (const e of [...sharedRegistry().entries.values()]) {
-    if (e.state !== "detached") continue;
+    if (e.state !== "detached" || e.handle.durable) continue;
     const finished = !!e.exit;
     if (!finished && e.pid !== undefined && Number.isInteger(e.pid) && e.pid > 1 && e.pid !== process.pid
       && (process.platform === "win32" || (Number.isInteger(ownGroup) && ownGroup! > 0 && e.pid !== ownGroup))

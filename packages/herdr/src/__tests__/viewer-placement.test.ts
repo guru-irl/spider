@@ -21,7 +21,7 @@ async function fixture(limit = 2, mode: 'fake' | 'hc' = 'fake') {
   let failDisplay = false, failRemoval = false, kept = 0; let focused = placement;
   const tabNames = new Map<string, string>();
   const app: AppClient = {
-    ownerPlacement: async address => {
+    tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => {
       if (failRemoval && address !== owner.terminal.address) { failRemoval = false; throw new HerdrError('app-disconnected', 'Transient app failure'); }
       const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p;
     },
@@ -56,7 +56,7 @@ async function fixture(limit = 2, mode: 'fake' | 'hc' = 'fake') {
   };
   const launcher = createViewerLauncher({ hc: h.hc, owner: () => owner, viewerExecutable: executable, feedRoot: h.root,
     ipcDescriptor: () => ({ version: 1, sessionId: owner.sessionId, generation: owner.generation, address: join(h.root, 'ipc.sock'), capabilityFile: join(h.root, 'ipc.cap') }) });
-  const panes = createAuxiliaryPanes({ hc: h.hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit, clock: Date.now, reportError: error => errors.push(error) });
+  const panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc: h.hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit, clock: Date.now, reportError: error => errors.push(error) });
   return { h, owner, layout, panes, launcher, errors, failDisplay: () => { failDisplay = true; }, failRemoval: () => { failRemoval = true; },
     async close() { await panes.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); },
   };

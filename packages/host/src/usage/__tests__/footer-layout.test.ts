@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { calibrationFallback } from "../calibration.js";
 import { FooterAccumulator } from "../footer-state.js";
 import * as pricing from "../price.js";
-import { createUsageFooter, renderUsageFooter, type FooterInput } from "../footer.js";
+import { createUsageFooter, inHerdrPane, renderUsageFooter, type FooterInput } from "../footer.js";
 
 function input(overrides: Partial<FooterInput> = {}): FooterInput {
-  return { cwd: "~/src/demo", branch: "main", sessionName: "demo-session", modelId: "gpt-6.1-sol",
+  return { cwd: "~/src/demo", branch: "main", sessionName: "demo-session", modelId: "model-alpha",
     thinking: "high", context: { percent: 14.6, contextWindow: 1000000 }, subscription: true,
     totals: { input: 3700000, output: 4000000, cacheRead: 763000000, cacheWrite: 65000000,
       piCost: 123, aic: 3294, unpricedEntries: 0, aggregateEntries: 1, estimated: true, latestCacheHitRate: 99.3 },
@@ -59,7 +59,7 @@ describe("usage footer layout", () => {
   });
 
   it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max"])("shows thinking level %s on row one", thinking => {
-    expect(renderUsageFooter(input({ thinking }), 40)[0]).toContain(`gpt-6.1-sol · ${thinking}`);
+    expect(renderUsageFooter(input({ thinking }), 40)[0]).toContain(`model-alpha · ${thinking}`);
   });
 
   it("row two drops entire lowest priority items", () => {
@@ -139,7 +139,7 @@ describe("usage footer layout", () => {
         sessionName: "my long session name here", thinking }), 40)[0];
       expect(stripTerminalSequences(row)).toMatch(/^my long session/);
       expect(row).not.toContain(" • ");
-      expect(row).toContain(`gpt-6.1-sol · ${thinking}`);
+      expect(row).toContain(`model-alpha · ${thinking}`);
     }
   });
 
@@ -152,7 +152,7 @@ describe("usage footer layout", () => {
             expect(row, `width ${width}, cwd ${cwd}, name ${sessionName}, branch ${branch}`)
               .not.toMatch(/^\.{1,3}(?: \(| •| |$)/);
             expect(visibleWidth(row)).toBeLessThanOrEqual(width);
-            expect(row).toMatch(/ gpt-6\.1-sol · high$/);
+            expect(row).toMatch(/ model-alpha · high$/);
           }
         }
       }
@@ -163,7 +163,7 @@ describe("usage footer layout", () => {
     for (const width of [48, 49, 50]) {
       const row = renderUsageFooter(input({ cwd: "~/src/some/deep/project", branch: null,
         sessionName: "my long session name here" }), width)[0];
-      expect(row).toMatch(/^my long session name here +gpt-6\.1-sol · high$/);
+      expect(row).toMatch(/^my long session name here +model-alpha · high$/);
       expect(visibleWidth(row)).toBe(width);
     }
   });
@@ -172,7 +172,7 @@ describe("usage footer layout", () => {
     for (const width of [47, 48, 49]) {
       const row = renderUsageFooter(input({ cwd: "~/src/some/deep/project", sessionName: null,
         branch: "feature/long-branch-name" }), width)[0];
-      expect(row).toMatch(/^~\/src\/some\/deep\/project +gpt-6\.1-sol · high$/);
+      expect(row).toMatch(/^~\/src\/some\/deep\/project +model-alpha · high$/);
       expect(row).not.toContain("(feature/");
     }
     for (const [width, tail] of [[56, "...roject"], [57, "...project"]] as const) {
@@ -186,7 +186,7 @@ describe("usage footer layout", () => {
   it("retains the cwd once truncation can show a real character", () => {
     const row = renderUsageFooter(input({ cwd: "~/src/some/deep/project", branch: null,
       sessionName: "my long session name here" }), 51)[0];
-    expect(row).toBe("...t • my long session name here gpt-6.1-sol · high");
+    expect(row).toBe("...t • my long session name here model-alpha · high");
   });
 
   it("omits an unnamed cwd rather than overflowing with an unclipped ellipsis at tiny widths", () => {
@@ -204,7 +204,7 @@ describe("usage footer layout", () => {
     for (const cwd of ["~", "ab", "abc"]) {
       for (const branch of [null, "main", "feature/long-branch-name"]) {
         const row = renderUsageFooter(input({ cwd, branch, sessionName: "my long session name here" }), 51)[0];
-        expect(row).toMatch(new RegExp(`^${cwd} • my long session name here +gpt-6\\.1-sol · high$`));
+        expect(row).toMatch(new RegExp(`^${cwd} • my long session name here +model-alpha · high$`));
       }
     }
   });
@@ -215,7 +215,7 @@ describe("usage footer layout", () => {
     for (let width = 40; width <= 200; width++) {
       const lines = renderUsageFooter(variant, width);
       for (const line of lines) expect(visibleWidth(line), `width ${width}: ${line}`).toBeLessThanOrEqual(width);
-      expect(lines[0]).toMatch(/ gpt-6\.1-sol · high$/);
+      expect(lines[0]).toMatch(/ model-alpha · high$/);
       expect(lines[0]).not.toContain(" • ");
     }
   });
@@ -274,7 +274,7 @@ describe("public usage footer component", () => {
     try {
       const row = component.render(40)[0];
       expect(row).toContain("\x1b[2m...");
-      expect(row).toContain("\x1b[2mgpt-6.1-sol");
+      expect(row).toContain("\x1b[2mmodel-alpha");
       expect(row).toContain("\x1b[2m · high");
     } finally { component.dispose(); }
     const longModel = themed(input({ modelId: "model".repeat(30) }));
@@ -325,7 +325,7 @@ describe("public usage footer component", () => {
     try {
       const totals = new FooterAccumulator();
       totals.append([{ type: "usage", kind: "cache_warm", timestamp: "2026-10-02T00:00:00.000Z",
-        provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } }]);
+        provider: "github-copilot", model: "model-alpha", usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } }]);
       const provider: ReadonlyFooterDataProvider = { getGitBranch: () => null,
         getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 1, onBranchChange: () => () => {} };
       const component = createUsageFooter(() => input({ totals: totals.snapshot() }),
@@ -360,4 +360,50 @@ it("context comes first and credit copy is plain with budget before allowance",(
 it.each([[999.96,"1.0k"],[9999.6,"10k"],[999500,"1.0M"],[999999,"1.0M"]])("credits choose units after rounding %s",(count,want)=>{
  const variant=input();variant.totals={...variant.totals,aic:count};
  expect(renderUsageFooter(variant,200)[1]).toContain(`${want} credits`);
+});
+
+describe("usage footer in a Herdr pane", () => {
+  const items = ["14.6%/1.0M", "3.3k credits", "CH99.3%", "month 3%", "↑3.7M ↓4.0M", "R763M W65M"];
+  const model = "model-alpha · high";
+  const line = (left: string, width: number) => left + " ".repeat(width - visibleWidth(left) - visibleWidth(model)) + model;
+
+  it("puts the stats and the model on one line, without folder, branch or session name", () => {
+    const lines = renderUsageFooter(input({ inPane: true }), 120);
+    expect(lines).toEqual([line(items.join(" · "), 120)]);
+    for (const hidden of ["~/src/demo", "(main)", "demo-session"]) expect(lines[0]).not.toContain(hidden);
+  });
+
+  it("drops the lowest-priority stats before the model", () => {
+    for (let retained = items.length; retained > 0; retained--) {
+      const expected = items.slice(0, retained).join(" · ");
+      const width = visibleWidth(expected) + 1 + visibleWidth(model);
+      expect(renderUsageFooter(input({ inPane: true }), width)).toEqual([`${expected} ${model}`]);
+      expect(renderUsageFooter(input({ inPane: true }), width - 1)).toEqual([line(items.slice(0, retained - 1).join(" · "), width - 1)]);
+    }
+  });
+
+  it("keeps extension statuses on their own line", () => {
+    expect(renderUsageFooter(input({ inPane: true, statuses: new Map([["a", "first\nstatus"]]) }), 120)).toEqual([line(items.join(" · "), 120), "first status"]);
+  });
+
+  it("fits every width and keeps the thinking level visible", () => {
+    for (let width = 1; width <= 200; width++) {
+      for (const variant of [input({ inPane: true }), input({ inPane: true, modelId: "界".repeat(250), context: null })]) {
+        const lines = renderUsageFooter(variant, width);
+        for (const text of lines) expect(visibleWidth(text), `width ${width}: ${text}`).toBeLessThanOrEqual(width);
+        if (width >= 40) expect(lines[0]).toContain("high");
+      }
+    }
+  });
+});
+
+describe("inHerdrPane", () => {
+  it("is true inside a Herdr terminal unless Herdr is disabled", () => {
+    expect(inHerdrPane({ HC_TERMINAL_ID: "t1" }, "auto")).toBe(true);
+    expect(inHerdrPane({ HC_TERMINAL_ID: "t1" }, true)).toBe(true);
+    expect(inHerdrPane({ HC_TERMINAL_ID: "t1" }, undefined)).toBe(true);
+    expect(inHerdrPane({ HC_TERMINAL_ID: "t1" }, false)).toBe(false);
+    expect(inHerdrPane({ HC_TERMINAL_ID: "" }, true)).toBe(false);
+    expect(inHerdrPane({}, true)).toBe(false);
+  });
 });

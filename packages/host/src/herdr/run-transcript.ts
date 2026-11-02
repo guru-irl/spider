@@ -8,7 +8,23 @@ import { createHash } from 'node:crypto';
 import { openSync, readSync, closeSync, fstatSync, realpathSync, readdirSync, constants } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Owner, RunId, Disposable, RunSummary } from '../../../herdr/src/contracts.js';
-import type { RunCursor, RunViewFrame, RunViewEvent } from '../../../herdr/src/contracts.js';
+import type { RunCursor, RunViewFrame, RunViewEvent, RunViewInfo } from '../../../herdr/src/contracts.js';
+import { RUN_VIEW_PROTOCOL } from '../../../herdr/src/contracts.js';
+import { subscribeLiveRunEvents } from '../../../subagents/src/live-events.js';
+/** A live frame is a preview: anything larger waits for the transcript instead. */
+const LIVE_FRAME_BYTES = 192 * 1024;
+const LIVE_UPDATE_MS = 100;
+function liveEvent(event: Record<string, any>): ({ type: string } & Record<string, unknown>) | null {
+  if (event.parentToolCallId) return null; // pi shows nested calls inside their parent's row.
+  switch (event.type) {
+    case 'message_start': case 'message_update': case 'message_end':
+      return event.message?.role === 'assistant' ? { type: event.type, message: event.message } : null;
+    case 'tool_execution_start': return { type: event.type, toolCallId: event.toolCallId, toolName: event.toolName, args: event.args };
+    case 'tool_execution_update': return { type: event.type, toolCallId: event.toolCallId, toolName: event.toolName, partialResult: event.partialResult };
+    case 'tool_execution_end': return { type: event.type, toolCallId: event.toolCallId, toolName: event.toolName, result: event.result, isError: Boolean(event.isError), ...(typeof event.durationMs === 'number' ? { durationMs: event.durationMs } : {}) };
+    default: return null;
+  }
+}
 export interface RunTranscriptSourceOptions {
   owner(): Owner | null;
   /** Returns a fresh, caller-owned handle. The source closes it on cancellation or rejection. */
@@ -18,8 +34,9 @@ export interface RunTranscriptSourceOptions {
   transcriptRoots(owner: Owner): readonly string[]; pageBytes?: number; pollMs?: number;
   /** Raw records are capped at 100 MiB; an oversized tail is reported as a gap. */
   recordBytes?: number;
+  modelContextWindow?(model: string): number | undefined;
 }
-export interface RunTranscriptSource extends Disposable { subscribe(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void): () => void }
+export interface RunTranscriptSource extends Disposable { subscribe(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view?: number }): () => void }
 interface Position { version: 1; session: string; generation: string; run: string; binding: string; event: number; offset: number; textOffset: number; suppressProse?: boolean; pendingMessage?: { id: number; offset: number }; file: string | null; anchor: { offset: number; length: number; digest: string } | null }
 function error(code: string): Error & { code: string } { return Object.assign(new Error(code), { code }); }
 const hash = (text: string | Buffer) => createHash('sha256').update(text).digest('hex');
@@ -69,7 +86,7 @@ function completionKey(record: { payload: string | null; summary: string | null 
 function occurrence(counts: Map<string, number>, key: string): string {
   const count = (counts.get(key) ?? 0) + 1; counts.set(key, count); return `${key}:${count}`;
 }
-interface TranscriptFile { fd: number; identity: string; size: number; stamp: string }
+interface TranscriptFile { fd: number; path: string; identity: string; size: number; stamp: string }
 type RecordCache = { offset: number; file: string; length: number; digest: string; messageKey?: string | null; messageOccurrence?: string; proseRanges?: readonly [number, number][] } & (
   | { content: Buffer; problem: null }
   | { content: null; problem: 'invalid-transcript-record' | 'transcript-record-too-large' }
@@ -120,7 +137,7 @@ function transcriptFile(roots: readonly string[], runId: RunId): TranscriptFile 
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.nlink !== 1) { closeSync(fd); throw error('unsafe-transcript-path'); }
       if (found) { closeSync(fd); throw error('ambiguous-child-transcript'); }
-      found = { fd, identity: `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`, size: stat.size, stamp: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` };
+      found = { fd, path, identity: `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`, size: stat.size, stamp: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` };
     }
     return found;
   } catch (cause) { if (found) closeSync(found.fd); throw cause; }
@@ -160,7 +177,8 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
     } catch { return null; }
   }
   return {
-    subscribe(runId, cursor, emit) {
+    subscribe(runId, cursor, emit, subscribeOptions) {
+      const view: RunViewInfo | undefined = subscribeOptions?.view ? { protocol: RUN_VIEW_PROTOCOL } : undefined;
       if (disposed) throw error('transcript-source-closed');
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) throw error('run-not-owned');
       const liveOwner = options.owner(); if (!liveOwner) throw error('owner-unavailable');
@@ -194,8 +212,9 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
       let resumeShown = Boolean(cursor && !invalid);
       let active = true; let pumping = false; let timer: ReturnType<typeof setInterval> | undefined; let unsubscribe: (() => void) | undefined;
       let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      let liveOff: (() => void) | undefined; let liveTimer: ReturnType<typeof setTimeout> | undefined;
       let lastState = ''; let first = true; let recordCache: RecordCache | null = null; let validatedStamp: string | null = null; let lastProblem: string | null = null;
-      const cancel = () => { if (!active) return; active = false; recordCache = null; clearInterval(timer); clearTimeout(drainTimer); unsubscribe?.(); subscriptions.delete(cancel); bindingDb?.close(); db.close(); };
+      const cancel = () => { if (!active) return; active = false; recordCache = null; clearInterval(timer); clearTimeout(drainTimer); clearTimeout(liveTimer); liveOff?.(); unsubscribe?.(); subscriptions.delete(cancel); bindingDb?.close(); db.close(); };
       const send = (frame: RunViewFrame) => { if (active) emit(frame); };
       const problem = (reason: string) => { if (reason !== lastProblem) { lastProblem = reason; send({ runId, cursor: encode(position!), kind: 'gap', data: { reason } }); } };
       function pump(): void {
@@ -238,6 +257,24 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
             p.event = (db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM run_events WHERE run_id=? AND session_id=?').get(runId, owner.sessionId) as { id: number }).id;
             send({ runId, cursor: encode(p), kind: 'gap', data: { reason: 'cursor-invalidated' } }); invalid = false;
           }
+          if (subscribeOptions?.view === RUN_VIEW_PROTOCOL) {
+            // Rich viewers tail the verified session file. Do not scan or project its
+            // whole history, especially when reopening a large finished transcript.
+            const summary = runSummary(row, owner);
+            const info: RunViewInfo = { ...view!, sessionFile: file?.path ?? null, model: row.model, thinking: row.thinking,
+              contextWindow: row.model ? options.modelContextWindow?.(row.model) ?? null : null };
+            const state = JSON.stringify({ run: summary, view: info });
+            if (first || state !== lastState) {
+              send({ runId, cursor: encode(p), kind: 'snapshot', data: { run: summary, view: info } });
+              lastState = state; first = false;
+            }
+            if (file) {
+              if (['done', 'failed', 'cancelled'].includes(row.status)) {
+                send({ runId, cursor: encode(p), kind: 'end', data: { reason: 'finished' } }); cancel();
+              }
+              return;
+            }
+          }
           if (!historyIndexed) {
             const previous = db.prepare("SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id<=? ORDER BY id").all(runId, owner.sessionId, p.event) as { summary: string | null; payload: string | null }[];
             for (const event of previous) completedMessages.add(occurrence(messageCounts, completionKey(event)));
@@ -258,7 +295,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
             historyIndexed = true;
           }
           const summary = runSummary(row, owner); const state = JSON.stringify(summary);
-          if (first || state !== lastState) { send({ runId, cursor: encode(p), kind: 'snapshot', data: { run: summary } }); lastState = state; first = false; }
+          if (subscribeOptions?.view !== RUN_VIEW_PROTOCOL && (first || state !== lastState)) { send({ runId, cursor: encode(p), kind: 'snapshot', data: view ? { run: summary, view } : { run: summary } }); lastState = state; first = false; }
           const max = Math.max(4, Math.min(options.pageBytes ?? 65536, 65536));
           let text = ''; let readBudget = 1024 * 1024; const beforeText = `${p.offset}:${p.textOffset}`;
           if (file) {
@@ -362,6 +399,31 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
       if (active) {
         unsubscribe = bus.on(event => { if (event.runId === runId && event.sessionId === owner.sessionId) pump(); });
         timer = setInterval(pump, options.pollMs ?? 2000); timer.unref?.();
+        if (subscribeOptions?.view === RUN_VIEW_PROTOCOL) {
+          // Streamed partials each carry the whole message so far: keep only the newest.
+          let update: Record<string, any> | null = null; const toolUpdates = new Map<string, Record<string, any>>();
+          const forward = (event: Record<string, any>) => {
+            const slim = liveEvent(event); if (!slim || !active) return;
+            try {
+              const frame: RunViewFrame = { runId, cursor: encode(position!), kind: 'live', data: { event: slim } };
+              if (Buffer.byteLength(JSON.stringify(frame)) <= LIVE_FRAME_BYTES) send(frame);
+            } catch { /* A preview can never disturb the child pipe that reports it. */ }
+          };
+          const flush = () => {
+            clearTimeout(liveTimer); liveTimer = undefined;
+            if (update) { const latest = update; update = null; forward(latest); }
+            for (const event of toolUpdates.values()) forward(event); toolUpdates.clear();
+          };
+          liveOff = subscribeLiveRunEvents(runId, event => {
+            if (!active) return;
+            if (event.type === 'message_update' || event.type === 'tool_execution_update') {
+              if (event.type === 'message_update') update = event; else toolUpdates.set(String(event.toolCallId), event);
+              if (!liveTimer) { liveTimer = setTimeout(flush, LIVE_UPDATE_MS); liveTimer.unref?.(); }
+              return;
+            }
+            flush(); forward(event);
+          });
+        }
       }
       return cancel;
     },

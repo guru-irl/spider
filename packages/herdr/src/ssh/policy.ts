@@ -1,17 +1,30 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { validSnapshot, type MachineCache, type MachineSnapshot } from './cache.js';
-import { parseSshDestinations, shellCommands, commandName, normalizeSshHost, type SshDestination } from './parse.js';
+import { HerdrError } from '../client/parse.js';
+import { parseSshDestinations, shellCommands, commandName, normalizeSshHost, parseFailureToken, type ShellCommand, type SshDestination } from './parse.js';
+import { HERDR_NOTICES } from '../notices.js';
 export type SshDecision = { kind: 'allow' } | { kind: 'refuse'; machine?: string; reason: string };
 export interface SshPolicy { checkArgv(argv: readonly string[]): Promise<SshDecision>; checkShell(code: string): Promise<SshDecision> }
+export function explainHereRefusal(decision: SshDecision, command: ShellCommand): SshDecision {
+  if (decision.kind !== 'refuse' || !command.hereSubstitution) return decision;
+  return { ...decision, reason: `${decision.reason} ${HERDR_NOTICES.sshHeredoc.text.replace('<command>', JSON.stringify(commandName(command[0])))}` };
+}
+export function parseFailureDecision(code: string, error: unknown): SshDecision {
+  if (!(error instanceof HerdrError) || error.code !== 'ssh-parse-failed') throw error;
+  const token = parseFailureToken(code);
+  const substitution = error.message === 'Unsupported here-document command substitution';
+  const detail = substitution && error.details && typeof error.details === 'object' && 'token' in error.details && typeof error.details.token === 'string' ? error.details.token : undefined;
+  const trigger = detail ?? token;
+  return trigger ? { kind: 'refuse', reason: HERDR_NOTICES[substitution ? 'sshHeredoc' : 'sshParse'].text.replace('<command>', JSON.stringify(commandName(trigger))) } : { kind: 'allow' };
+}
 export function decideSsh(routes: readonly SshDestination[], snapshot: MachineSnapshot | null, now: number): SshDecision {
-  const refuse = (reason: string, machine?: string): SshDecision => ({ kind: 'refuse', ...(machine ? { machine } : {}), reason: `${reason}; use spider exec with on:${machine ?? '<machine>'}` });
-  if (!snapshot || !validSnapshot(snapshot, now)) return refuse('No valid machine cache: raw SSH is unavailable');
+  if (!snapshot || !validSnapshot(snapshot, now)) return { kind: 'refuse', reason: HERDR_NOTICES.sshList.text };
   for (const route of routes) {
     const match = snapshot.machines.find(m => m.targets.some(target => normalizeSshHost(target) === route.host));
-    if (match) return refuse('Raw SSH to a managed machine is unavailable', match.name);
+    if (match) return { kind: 'refuse', machine: match.name, reason: HERDR_NOTICES.sshManaged.text.replace('<machine>', match.name.replace(/[\x00-\x1f\x7f]/g, '?')) };
   }
-  if (routes.some(r => r.ambiguous)) return refuse('SSH destination cannot be classified');
+  if (routes.some(r => r.ambiguous)) return { kind: 'refuse', reason: HERDR_NOTICES.sshUnclear.text };
   return { kind: 'allow' };
 }
 export function createSshPolicy(cache: MachineCache, clock: () => number = cache.now): SshPolicy {
@@ -28,10 +41,10 @@ export function createSshPolicyReader(readSnapshot: () => Promise<MachineSnapsho
           const option = argv.findIndex(a => /^-[^-]*c/.test(a));
           if (option >= 0 && argv[option + 1] !== undefined) result = await checkShell(argv[option + 1]);
         }
-        if (result.kind === 'refuse') return result;
+        if (result.kind === 'refuse') return explainHereRefusal(result, argv);
       }
       return { kind: 'allow' };
-    } catch { return { kind: 'refuse', reason: 'SSH parser failed; use spider exec with on:<machine>' }; }
+    } catch (error) { return parseFailureDecision(code, error); }
   };
   return { checkArgv, checkShell };
 }

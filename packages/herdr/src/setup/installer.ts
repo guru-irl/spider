@@ -85,6 +85,7 @@ export interface InstalledModProps extends Readonly<Record<string, unknown>> {
   feedRoot: string;
   cliPath: string;
   nodePath: string;
+  appBinary: string;
   configPath: string;
   labelContract: HerdrLabelContract;
 }
@@ -93,6 +94,8 @@ export interface InstalledModCopy {
   props: InstalledModProps;
 }
 export interface SetupPreflight {
+  /** Existing terminals moved into a shared tab and need a journal-only recheck. */
+  cutoverNeedsRecheck?: boolean;
   fingerprint: string;
   coreIdentity: CoreIdentity;
   mods: readonly ModCopy[];
@@ -135,6 +138,8 @@ export interface SetupParts {
   runtimeRootProbes?(request: SetupRequest): readonly RuntimeRootObservation[];
   hc: Pick<HcClient, 'fileRead' | 'fileWrite'>;
   cutover(request: SetupRequest, context: SetupContext): Promise<CutoverResult>;
+  /** Recheck existing owners without repeating initial app selection. */
+  reconcileCutover?(request: SetupRequest, context: SetupContext): Promise<CutoverResult>;
   verify(request: SetupRequest): Promise<DoctorReport>;
   rollback(result: CutoverResult): Promise<void>;
   warn(message: string): void;
@@ -172,7 +177,7 @@ async function installedModProps(request: SetupRequest, copies: readonly ModCopy
       throw new HerdrError('invalid-mod-id', 'Every installed modId must equal its direct mod-directory name');
     await rejectSymlinks(directory);
     result.push({ directory, props: { ...copy.props, modId, feedRoot: join(request.config.globalRoot, 'herdr'),
-        cliPath: join(request.packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, configPath: request.configPath, labelContract: HerdrLabelContract } });
+        cliPath: join(request.packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } });
   }
   return result;
 }
@@ -204,6 +209,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       return true;
     };
     const reconcilingCutover = journal.cutoverPending;
+    const needsAppSelection = !journal.verified;
     const preflight = await parts.preflight(request);
     const modProps = await installedModProps(request, preflight.mods);
     if (journal.cutoverPending) {
@@ -215,8 +221,8 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     }
     const fingerprint = digest(Buffer.from(JSON.stringify({ assets: preflight.fingerprint, config: request.config, targets: preflight.targets, modProps })));
     const retiredTerminals = !journal.verified && journal.fingerprint === fingerprint ? journal.retiredTerminals : [...preflight.retiredTerminals];
-    const cutoverFingerprint = digest(Buffer.from(JSON.stringify({ spaces: request.config.spaces, core: preflight.coreIdentity, appHome: request.config.app.home, agentDirectory: request.config.agentDirectory, globalRoot: request.config.globalRoot, configPath: request.configPath, cliPath: join(request.packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath })));
-    const cutoverNeeded = reconcilingCutover || !journal.verified || journal.cutover === null || (journal.cutoverFingerprint === undefined ? !journal.verified || journal.fingerprint !== fingerprint : journal.cutoverFingerprint !== cutoverFingerprint);
+    const cutoverFingerprint = digest(Buffer.from(JSON.stringify({ layout: request.config.layout ?? 'panes', spaces: request.config.spaces, core: preflight.coreIdentity, appHome: request.config.app.home, agentDirectory: request.config.agentDirectory, globalRoot: request.config.globalRoot, configPath: request.configPath, cliPath: join(request.packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath })));
+    const cutoverNeeded = preflight.cutoverNeedsRecheck || reconcilingCutover || !journal.verified || journal.cutover === null || (journal.cutoverFingerprint === undefined ? !journal.verified || journal.fingerprint !== fingerprint : journal.cutoverFingerprint !== cutoverFingerprint);
     const context: SetupContext = { labelContract: HerdrLabelContract, modProps,
       installed: Object.fromEntries(journal.entries.map(e => [e.path, e.after])), retiredTerminals, priorCutover: journal.cutover,
       recordCutover: async (result) => {
@@ -371,7 +377,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       if (cutoverNeeded) {
         journal.cutoverPending = true;
         await saveJournal(request.journalRoot, journal);
-        try { cutover = await parts.cutover(request, context); }
+        try { cutover = await (context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context)); }
         finally {
           for (const file of files.filter(file => file.snapshotOnly)) {
             const current = await snapshot(file.path);

@@ -20,8 +20,8 @@ async function runtimeProbe(suite: Suite, packed: string): Promise<void> {
   if (probe.directory !== directory || probe.mode !== 0o700) throw new Error('runtime-probe: wrong owned directory or mode');
 }
 async function helperImports(suite: Suite, packed: string): Promise<void> {
-  const module = join(packed, 'packages/herdr/assets/mods/spider/notifications.js');
-  const code = `const m=await import(${JSON.stringify(module)}); if(typeof m.createPanelNotifications!=='function')throw new Error('missing export'); console.log('helper-loaded');`;
+  const module = join(packed, 'packages/herdr/assets/mods/spider/data.js');
+  const code = `const m=await import(${JSON.stringify(module)}); if(typeof m.projectSpiderPanel!=='function')throw new Error('missing export'); console.log('helper-loaded');`;
   const result = await suite.invoke(process.execPath, ['--input-type=module', '-e', code]);
   if (result.exitCode !== 0 || result.stdout !== 'helper-loaded\n') throw new Error(`helper-import: actual packed helper did not load: ${result.stderr.replace(/[\r\n]/g, ' ')}`);
 }

@@ -26,7 +26,7 @@ async function fixture() {
     root, directories, env, story: id, options: { tier: 'ci', story: id },
     ledger: openLedger(join(root, 'ledgers'), root), cores: null,
     packed: { root: packedRoot, cli: own(join(packedRoot, 'dist/herdr/cli.mjs')), extension: own(join(packedRoot, 'dist/extension.js')), viewer: own(join(packedRoot, 'dist/herdr/viewer.mjs')), remoteRuntime: own(join(packedRoot, 'dist/herdr/remote-runtime.mjs')),
-      digests: { 'dist/extension.js': '0'.repeat(64), 'dist/herdr/cli.mjs': '0'.repeat(64), 'dist/herdr/viewer.mjs': '0'.repeat(64), 'dist/herdr/remote-runtime.mjs': '0'.repeat(64) } },
+      digests: { 'dist/extension.js': '0'.repeat(64), 'dist/herdr/cli.mjs': '0'.repeat(64), 'dist/herdr/viewer.mjs': '0'.repeat(64), 'dist/herdr/remote-runtime.mjs': '0'.repeat(64), 'dist/herdr/viewer-pi.mjs': '0'.repeat(64) } },
     pi: { root, bin: own(join(root, 'bin')), launcher: own(join(root, 'bin/pi')), observerDir: own(join(root, 'observer')), scriptPath: own(join(root, 'script.json')), gateSocket: own(join(root, 'gate.sock')), providerPath: join(root, 'provider.mjs'), observerPath: join(root, 'observer.mjs'), env, story: id },
     evidenceDirectory: join(root, 'evidence'), cleanupProofPath: join(root, 'cleanup.json'),
     evidence: unexpected, keepEvidence: unexpected, hc: unexpected, launchPi: unexpected, project: unexpected, gates: unexpected, app: unexpected, close: unexpected,

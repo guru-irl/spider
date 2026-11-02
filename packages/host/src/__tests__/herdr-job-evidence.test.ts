@@ -112,14 +112,14 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
     const dbPath = join(h.root, 'runs.db'), globalPath = join(h.root, 'global.db');
     openDbAt(dbPath, 'worktree').close(); openDbAt(globalPath, 'global').close();
     source = createHerdrDataSource({ resolveRunDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), runEvents: { on: () => () => {} },
-      readJobJournal: owner => readJobJournal(journalRoot, owner), scheduler: { listTriggers: () => [], subscribe: () => () => {} }, readConfig: () => config,
+      scheduler: { listTriggers: () => [], subscribe: () => () => {} }, readConfig: () => config,
       readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), clock: Date.now });
     const feed = await source.snapshot(h.owner!); await publishSessionFeed(join(h.directories.global, 'herdr'), feed);
     const wire = await readFile(join(h.directories.global, 'herdr/sessions', h.owner!.sessionId, 'session.json'), 'utf8'), decoded = parseFeed(wire)!;
     expect(decoded).not.toBeNull();
     const notice = decoded.notifications.find(n => n.kind === 'job-result');
-    expect(notice).toMatchObject({ kind: 'job-result', job: { exitCode: null, outcome: 'unknown', evidenceConflict: true, exitEvidence: { native: { exitCode: 0 }, receipt: { exitCode: 23 } } } });
-    expect(notice?.body).toMatch(/uncertain.*native.*0.*receipt.*23/i);
+    expect(notice).toBeUndefined();
+    expect(journal.jobs[0].exitEvidence).toMatchObject({ native: { exitCode: 0 }, receipt: { exitCode: 23 } });
     await writeFile(resolve(`.spider/scratch/fx5-exit-${mode}-evidence.json`), JSON.stringify({ localSocket: h.localSocket, remoteSocket: h.remoteSocket, result, journal, feed: decoded }, null, 2));
   } finally {
     restoreDeadline(); receiptVisible = true; release(); await jobs?.reconcile(); await executing?.catch(() => {}); source?.dispose(); await jobs?.shutdown('reload'); output?.dispose(); vi.unstubAllEnvs(); await h.close();

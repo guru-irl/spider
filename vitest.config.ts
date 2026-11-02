@@ -1,9 +1,17 @@
 import { defineConfig } from "vitest/config";
 import DurationSequencer from "./scripts/vitest-sequencer.js";
+import { fileURLToPath } from "node:url";
 
 // Native better-sqlite3 addons segfault in worker_threads during teardown —
 // use forks on all platforms (mirrors context-mode's proven config).
 export default defineConfig({
+  plugins: [{
+    name: "herdr-installed-shared-feed",
+    resolveId(id, importer) {
+      if (id === "./shared/feed.js" && importer?.includes("/packages/herdr/assets/"))
+        return fileURLToPath(new URL("./packages/herdr/assets/shared/feed.js", import.meta.url));
+    },
+  }],
   test: {
     setupFiles: ["./vitest.setup.ts"],
     globalSetup: ["./vitest.herdr-global-setup.ts"],

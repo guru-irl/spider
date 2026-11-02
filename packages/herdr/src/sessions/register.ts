@@ -6,6 +6,7 @@ import { processContainsCaller } from '../client/hc.js';
 import type { ProcessPresenceStore } from './presence.js';
 import { canonicalSessionFile, type LaunchEnvironment, type TerminalRegistry } from './registry.js';
 import type { ProcessIdentity, ProcessInventoryPorts, SessionLease, SessionLeases } from './lease.js';
+import { herdrErrorNotice } from '../notices.js';
 export interface SessionRegistrationPorts extends ProcessInventoryPorts {
   currentSession(ctx: ExtensionContext): ProcessPresence; owner(): Owner | null;
   registry: TerminalRegistry; presence: ProcessPresenceStore; leases: SessionLeases;
@@ -61,8 +62,8 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
   const unsubscribe = [
     pi.on('session_start', async (_event, ctx) => activation(ctx)),
     pi.on('session_info_changed', async (_event, ctx) => activation(ctx)),
-    pi.on('session_before_switch', async event => { if (!event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(error instanceof Error ? error.message : 'Target session is held by another recorded process'); return { cancel: true }; } }),
-    pi.on('session_shutdown', async event => cleanup(event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined)),
+    pi.on('session_before_switch', async event => { if (!event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
+    pi.on('session_shutdown', async (event, ctx) => cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined)),
   ];
   return { async dispose() { if (disposed) return; disposed = true; for (const off of unsubscribe) off(); await cleanup(); } };
 }

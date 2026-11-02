@@ -13,7 +13,7 @@ it.each([HERDR_KINDS.remoteObserver, HERDR_KINDS.remoteConsole])('closing a %s f
   const h = await monitorFixture(), placement = { space: 'space', tab: 'tab', pane: 'owner-pane' } as OwnerPlacement;
   const placements = new Map<TerminalAddress, OwnerPlacement>([[h.owner.terminal.address, placement]]);
   const app: AppClient = {
-    ownerPlacement: async address => { const p = placements.get(address); if (!p) throw Object.assign(new Error('unplaced'), { code: 'owner-unplaced' }); return p; },
+    tabTerminals: async target => [...placements].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => { const p = placements.get(address); if (!p) throw Object.assign(new Error('unplaced'), { code: 'owner-unplaced' }); return p; },
     awaitPane: async (address, p) => { placements.set(address, { ...p, pane: 'aux-pane' as never }); return 'aux-pane' as never; },
     command: async (_name, args) => { placements.delete(args.terminal as TerminalAddress); return {}; },
   };
@@ -21,7 +21,7 @@ it.each([HERDR_KINDS.remoteObserver, HERDR_KINDS.remoteConsole])('closing a %s f
     const terminal = await h.hc.run({ argv: [], cwd: null, labels: { [HERDR_LABELS.kind]: paneKind, [HERDR_LABELS.session]: h.owner.sessionId, [HERDR_LABELS.ownerCore]: h.owner.terminal.coreId, [HERDR_LABELS.ownerTerminal]: h.owner.terminal.terminalId }, background: true, outliveParent: true, noNotify: true });
     return terminal.address;
   };
-  const panes = createAuxiliaryPanes({ hc: h.hc, discardSubagentViewer: async (_id, _owner, viewer) => { await h.hc.kill(viewer); await h.hc.rm(viewer); }, app, limit: 1, clock: Date.now, subagentViewer: () => launch(HERDR_KINDS.subagentViewer) }); cleanup(() => panes.dispose());
+  const panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc: h.hc, discardSubagentViewer: async (_id, _owner, viewer) => { await h.hc.kill(viewer); await h.hc.rm(viewer); }, app, limit: 1, clock: Date.now, subagentViewer: () => launch(HERDR_KINDS.subagentViewer) }); cleanup(() => panes.dispose());
   const slot = await panes.reserveRemote('job' as never, h.owner, { timeoutMs: 1000 }), viewer = await launch(kind);
   await panes.display(slot, viewer, { timeoutMs: 1000 });
   placements.delete(viewer); h.complete(viewer);

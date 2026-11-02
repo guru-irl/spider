@@ -14,13 +14,13 @@ function object(raw: unknown): Record<string, unknown> {
 function equal(actual: unknown, expected: unknown, name: string): void {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`installed-look: ${name}: expected ${JSON.stringify(expected)}, observed ${JSON.stringify(actual)}`);
 }
-function noEdges(raw: unknown): void {
+function noEdges(raw: unknown, framed: ReadonlySet<object>): void {
   if (!raw || typeof raw !== 'object') return;
-  if (Array.isArray(raw)) { for (const value of raw) noEdges(value); return; }
+  if (Array.isArray(raw)) { for (const value of raw) noEdges(value, framed); return; }
   for (const [key, value] of Object.entries(raw)) {
     if ((key === 'shadow' || key === 'outline' || key === 'divider') && value !== null && value !== false && value !== 0 && value !== 'none') throw new Error(`installed-look: app ${key} must be absent`);
-    if ((key === 'border' || key === 'focus') && value && typeof value === 'object' && 'width' in value) equal((value as Record<string, unknown>).width, 0, `app ${key} width`);
-    noEdges(value);
+    if (!framed.has(raw) && (key === 'border' || key === 'focus') && value && typeof value === 'object' && 'width' in value) equal((value as Record<string, unknown>).width, 0, `app ${key} width`);
+    noEdges(value, framed);
   }
 }
 export function validateInstalledLook(raw: unknown): InstalledLookReport {
@@ -36,9 +36,10 @@ export function validateInstalledLook(raw: unknown): InstalledLookReport {
   equal(layout.terminal_opacity, 0, 'terminal opacity');
   const colors = object(layout.colors);
   for (const [key, expected] of Object.entries({ chrome: '#00000000', canvas: '#00000000', hover: '#ffffff12', selected: '#ffffff14', raised: '#ffffff1c', border: '#00000000', popover: '#161618f0', surface: '#161618f0' })) equal(colors[key], expected, `layout ${key}`);
-  const panes: Record<string, unknown>[] = [], work: Record<string, unknown>[] = [];
+  const panes: Record<string, unknown>[] = [], work: Record<string, unknown>[] = [], panels: Record<string, unknown>[] = [];
   const walk = (node: Record<string, unknown>): void => {
     if (node.id === 'work-body') work.push(node);
+    if (node.id === 'panel') panels.push(node);
     if (node.content && typeof node.content === 'object') {
       const content = object(node.content);
       if (content.tab === 'active') panes.push(object(content.pane));
@@ -49,10 +50,16 @@ export function validateInstalledLook(raw: unknown): InstalledLookReport {
     }
   };
   walk(layout);
-  if (panes.length !== 1 || work.length !== 1) throw new Error('installed-look: expected one active pane and work-body');
+  if (panes.length !== 1 || work.length !== 1 || panels.length !== 1) throw new Error('installed-look: expected one active pane, work-body and panel');
   equal(work[0].gap, 8, 'work gap'); equal(work[0].padding, 8, 'work padding');
   equal(panes[0].gap, 8, 'pane gap'); equal(panes[0].radius, 12, 'pane radius'); equal(panes[0].background, '#161618f0', 'text pane background');
-  noEdges(layout);
+  equal(panes[0].border, { width: 1, color: '#38383a' }, 'pane border');
+  equal(panes[0].focus, { width: 1, color: 'accent' }, 'pane focus');
+  equal(panels[0].radius, 12, 'panel radius');
+  equal(panels[0].border, { width: 1, color: '#38383a' }, 'panel border');
+  equal(panels[0].padding, 5, 'panel padding');
+  equal(panels[0].background, '#161618f0', 'panel background');
+  noEdges(layout, new Set([panes[0], panels[0]]));
   const keys = object(object(actual.keys).terminal), previous = object(object(actual.previousKeys).terminal);
   for (const [key, value] of Object.entries(shortcuts)) equal(keys[key], value, `shortcut ${key}`);
   equal(keys['ctrl-v'], previous['ctrl-v'], 'Ctrl-V unchanged');

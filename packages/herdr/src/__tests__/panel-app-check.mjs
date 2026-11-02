@@ -19,7 +19,7 @@ export async function checkSpiderPanel({ appBinary, appHome, feed }) {
   await mkdir(appHome, { recursive: true });
   if (await realpath(appHome) !== appHome) throw new Error('App check home must be fenced without symlinks');
   const probe = join(appHome, 'probe'); await mkdir(join(probe, 'shared'), { recursive: true });
-  for (const file of ['main.js', 'data.js', 'notifications.js']) {
+  for (const file of ['main.js', 'data.js']) {
     await writeFile(join(probe, file === 'main.js' ? 'spider.js' : file), await readFile(new URL(`../../assets/mods/spider/${file}`, import.meta.url), 'utf8'));
   }
   await writeFile(join(probe, 'shared/feed.js'), await readFile(new URL('../../assets/shared/feed.js', import.meta.url), 'utf8'));
@@ -29,8 +29,8 @@ export default class Probe extends Spider {
   init(_props, cx) {
     this.config = {}; this.feeds = [${JSON.stringify(feed)}];
     this.feeds[0].updatedAt = Date.now(); this.feeds[0].lifecycle = 'live';
-    this.errors = []; this.expanded = new Set([this.feeds[0].sessionId]); this.closed = false;
-    this.handle = cx.focus_handle(); this.actions = { ping: async () => true, openView: async () => {}, openRun: async () => null };
+    this.errors = []; this.expanded = new Set([this.feeds[0].sessionId]); this.closed = false; this.view = { kind: 'home' }; this.dismissed = new Set();
+    this.handle = cx.focus_handle(); this.actions = { openRun: async () => null };
   }
 }
 `);

@@ -1,6 +1,9 @@
 import { matchesKey, type KeyId } from '@earendil-works/pi-tui';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Disposable, HerdrViews } from '../contracts.js';
+import { HERDR_NOTICES, herdrErrorNotice } from '../notices.js';
+import { HerdrError } from '../client/parse.js';
+const viewNotices = { agents: HERDR_NOTICES.viewAgents, todos: HERDR_NOTICES.viewTodos, usage: HERDR_NOTICES.viewUsage, memory: HERDR_NOTICES.viewMemory, triggers: HERDR_NOTICES.viewTriggers } as const;
 export const HERDR_SHORTCUTS = [
   { key: 'ctrl+shift+a', view: 'agents', bytes: '\u001b[97;6u' },
   { key: 'ctrl+shift+o', view: 'todos', bytes: '\u001b[111;6u' },
@@ -14,7 +17,7 @@ export function registerHerdrShortcuts(pi: ExtensionAPI, views: HerdrViews): Dis
     pi.registerShortcut(key, { description: `Open spider ${view}`, handler: async ctx => {
       if (disposed) return;
       try { await views[view](ctx); }
-      catch (error) { ctx.ui.notify(`Could not open spider ${view}: ${error instanceof Error ? error.message : String(error)}`, 'error'); }
+      catch (error) { ctx.ui.notify(error instanceof HerdrError ? herdrErrorNotice(error) : viewNotices[view].text, 'error'); }
     } });
   }
   // Pi unregisters keys when replacing the extension runtime; retained callbacks are inert.

@@ -67,20 +67,17 @@ async function budgetCase(outer: Suite, threshold: '80' | '100'): Promise<void> 
             await waitFor('real usage worker requested first counter', () => observed, rows => rows.some(r => r.type === 'counter-request' && r.seq === 1), deadline(15000));
             server.child.stdin!.write('{"op":"release","seq":1}\n');
             await tools(f, second, `budget-second-poll-${threshold}`, [{ action: 'control', command: 'config', op: 'set', scope: 'global', key: 'usage.counter.poll', value: true }]);
-            const secondFeed = await waitFeed(second, 'second real session observes shared account reading', feed => feed.pace.used === Number(threshold) && feed.notifications.some(n => n.kind === 'budget'), 45000);
-            const feed = await waitFeed(parent, 'real host computed budget threshold', feed => feed.pace.used === Number(threshold) && feed.pace.budget === 100 && feed.notifications.some((n: any) => n.kind === 'budget'), 45000);
+            const secondFeed = await waitFeed(second, 'second real session observes shared account reading', feed => feed.pace.used === Number(threshold), 45000);
+            const feed = await waitFeed(parent, 'real host computed budget threshold', feed => feed.pace.used === Number(threshold) && feed.pace.budget === 100, 45000);
             expect(feed.pace.remaining).toBe(100 - Number(threshold));
             const stable = `budget:${feed.pace.periodStart}:${threshold}`;
-            await waitFor('one budget notification post', () => panel.posts, posts => posts.some(p => p.action?.name?.includes(encodeURIComponent(stable))), deadline(15000));
-            expect(panel.posts.filter(p => p.action?.name?.includes(encodeURIComponent(stable)))).toHaveLength(1);
-            expect(feed.notifications.find((n: any) => n.id === stable)).toMatchObject({ scope: 'shared', sessionId: null, ownerAddress: null, action: { kind: 'open-usage' } });
-            expect(secondFeed.notifications.some(n => n.id === stable)).toBe(true);
-            await f.app.command('pane.focus', { terminal: second.pi.terminal });
-            const focusBefore = await f.app.status();
-            const offsets = await Promise.all([parent.pi, second.pi].map(async (pi) => (await pi.rawOutput()).length)), notice = panel.posts.find(p => p.action?.name?.includes(encodeURIComponent(stable)))!;
-            panel.dispatch(notice.action.name);
-            await waitFor('shared notice opens a real usage view', () => Promise.all([parent.pi, second.pi].map(async (pi, i) => (await pi.rawOutput()).subarray(offsets[i]).toString())), values => values.some(value => /usage/i.test(value)), deadline(15000));
-            expect(await f.app.status()).toMatchObject({ agent: (focusBefore as any).agent });
+            expect(feed.notifications.filter(n => n.kind === 'budget')).toEqual([]);
+            expect(secondFeed.notifications.filter(n => n.kind === 'budget')).toEqual([]);
+            // Pace shows in the panel's bar; a budget crossing never posts a toast.
+            await panel.refresh();
+            await panel.host.waitForUi('panel reads the crossed budget', ui => ui.nodes.some(n => n.id === 'spider-pace'), 15000);
+            expect(panel.posts.filter(p => p.action?.name?.includes(encodeURIComponent(stable)))).toEqual([]);
+            expect(panel.posts).toEqual([]);
             expect(panel.actions.filter(a => a.name === 'pane.focus')).toEqual([]);
             await panel.close();
             const reloaded = await mountPanel(f, 'spider-panel');
@@ -95,7 +92,7 @@ async function budgetCase(outer: Suite, threshold: '80' | '100'): Promise<void> 
             const logs = await readFile(join(suite.root, 'counter-requests.jsonl'), 'utf8');
             expect(logs).not.toContain('fixture-only-oauth');
             expect(logs).not.toContain('Authorization');
-            await suite.evidence(`budget-${threshold}.json`, { feed, secondFeed, posts: panel.posts, requests: logs, projected: { status: 'retired by design', reason: 'UI round 3 projected-budget branch is covered by the host unit test, not the live UI story' } });
+            await suite.evidence(`budget-${threshold}.json`, { feed, secondFeed, posts: panel.posts, requests: logs, projected: { status: 'retired by design', reason: 'The projected-budget case is covered by the host unit test, not the live UI story' } });
             await outer.evidence(`budget-${threshold}-evidence.json`, { path: suite.evidenceDirectory, cleanupProof: suite.cleanupProofPath });
         }
         finally {
@@ -151,8 +148,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 await f.app.command('pane.focus', { terminal: parent.pi.terminal }); await panel.refresh();
                 await panel.host.waitForUi('returning to first space restores only its owner', value => value.nodes.some(node => node.id === `session-${parent.sessionId}`) && !value.nodes.some(node => node.id === `session-${second.sessionId}`), 20000);
                 await suite.evidence('panel-scope-and-approvals.json', { feed, secondFeed, approvals, otherSpace, retired: [
-                    { control: 'individual memory controls', reason: 'UI round 3 replaced them with one aggregate memory-review action' },
-                    { control: 'multi-space grouping', reason: 'UI round 3 scopes the panel to the selected native space; both directions are checked' },
+                    { control: 'individual memory controls', reason: 'The panel uses one aggregate memory-review action' },
+                    { control: 'multi-space grouping', reason: 'The panel uses the selected space, and both directions are checked' },
                 ] });
                 expect(feed.pace.used).toBeNull();
                 expect(ui.nodes.find(node => node.id === 'spider-pace')?.text).toBe('Usage unavailable');
@@ -193,22 +190,27 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 expect(link?.text.trim()).toBe('All todos, runs and usage');
                 const beforeEnabledClick = actionCommands(panel).length;
                 await panel.host.activate(`view-${parent.sessionId}-todos`);
-                await waitFor('single panel link opens the actual Todos UI', async () => (await parent.pi.rawOutput()).subarray(offset), bytes => bytes.toString().toLowerCase().includes('todos'), deadline(15000));
-                expect(actionCommands(panel)).toHaveLength(beforeEnabledClick + 1);
+                // The link opens the in-panel session view; nothing is asked of pi.
+                await panel.host.waitForUi('single panel link opens the in-panel session view', ui => ui.nodes.some(node => node.id === 'session-view-todos') && ui.nodes.some(node => node.id === 'session-back'), 15000);
+                expect(actionCommands(panel)).toHaveLength(beforeEnabledClick);
+                expect((await parent.pi.rawOutput()).length).toBe(offset);
+                await panel.host.activate('session-back');
+                await panel.host.waitForUi('back returns to the session list', ui => ui.nodes.some(node => node.id === `view-${parent.sessionId}-todos`), 15000);
                 expect(await parent.pi.draft()).toBe(draft);
                 await parent.pi.key('\x1b[27u');
                 await parent.pi.key('X');
                 expect(await waitFor('typed character proves the preserved multibyte cursor', () => parent.pi.draft(), value => value === 'draft 界X🙂', deadline(10000))).toBe('draft 界X🙂');
                 await parent.pi.close();
-                const unavailable = await panel.host.waitForUi('retained owner disables its real view action', ui => ui.nodes.some(node => { const tooltip = node.attributes?.tooltip; return node.id === `view-${parent.sessionId}-todos` && Array.isArray(tooltip) && tooltip.length === 1 && tooltip[0] === 'closed: owner unavailable'; }), 20000);
-                const beforeDisabledClick = actionCommands(panel).length, before = panel.actions.length;
+                const retained = await panel.host.waitForUi('retained owner keeps its feed-backed view link', ui => ui.nodes.some(node => node.id === `view-${parent.sessionId}-todos`) && ui.nodes.some(node => JSON.stringify(node.attributes?.tooltip) === JSON.stringify(['closed: owner unavailable'])), 20000);
+                const beforeClosedClick = actionCommands(panel).length, before = panel.actions.length;
                 await panel.host.activate(`view-${parent.sessionId}-todos`);
-                expect(actionCommands(panel)).toHaveLength(beforeDisabledClick);
+                await panel.host.waitForUi('closed owner data still opens in the panel', ui => ui.nodes.some(node => node.id === 'session-view-todos'), 15000);
+                expect(actionCommands(panel)).toHaveLength(beforeClosedClick);
                 expect(panel.actions).toHaveLength(before);
-                await suite.evidence('retained-owner-disabled-view.json', { unavailable, beforeDisabledClick, beforeActions: before, beforeEnabledClick, enabledRequestCount: beforeEnabledClick + 1 });
+                await suite.evidence('retained-owner-view.json', { retained, beforeClosedClick, beforeActions: before, beforeEnabledClick });
                 await suite.evidence('panel-actions.json', { ui: await panel.host.uiSnapshot(), actions: panel.actions, run, retired: [
-                    { control: 'panel run buttons', reason: 'UI round 3 puts run actions in Agents; actual viewer reuse is checked there' },
-                    { control: 'separate agents/todos/usage/memory/triggers links', reason: 'UI round 3 exposes one All todos, runs and usage link; its real view and draft preservation are checked' },
+                    { control: 'panel run buttons', reason: 'Run actions are in Agents, where viewer reuse is checked' },
+                    { control: 'separate agents/todos/usage/memory/triggers links', reason: 'The panel exposes one All todos, runs and usage link, and checks its view and draft preservation' },
                 ] });
             }
             finally {
@@ -216,31 +218,30 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 await sidebar.close(); await panel.close();
             }
         } },
-    { id: storyId('S41'), title: 'real result and budget inputs produce one correctly scoped notification', tiers: ['headless', 'app'], async run(suite) {
+    { id: storyId('S41'), title: 'real result and budget inputs never post duplicate notices', tiers: ['headless', 'app'], async run(suite) {
             await nativeGate(suite);
             const f = await installPanelFixture(suite), parent = await startPanelParent(f), gates = await suite.gates();
             const [historical] = await tools(f, parent, 'historical-notice', [{ action: 'run', ...child('historical-child') }], { 'historical-child': [{ steps: [{ text: 'historical child completed' }] }] });
-            const history = await waitFeed(parent, 'actual historical result before first panel mount', feed => feed.runs.rows.some(row => row.id === historical.run.id && row.status === 'done') && feed.notifications.some(row => row.kind === 'subagent-result'), 30000);
+            const history = await waitFeed(parent, 'actual historical result before first panel mount', feed => feed.runs.rows.some(row => row.id === historical.run.id && row.status === 'done'), 30000);
             const historicalIds = new Set(history.notifications.map(row => row.id));
             const panel = await mountPanel(f, 'spider-panel');
             let noticeHeld = false;
             try {
                 await panel.host.waitForUi('notifications subscribed before child starts', ui => ui.nodes.some(n => n.id === `session-${parent.sessionId}`), 20000);
                 expect(panel.posts).toEqual([]);
-                await tools(f, parent, 'notice-child', [{ action: 'run', ...child('notice-work') }], { 'notice-work': [{ steps: [{ text: 'ESCALATION[warning]: fixture escalation' }, { gate: 'notice-held' }] }, { steps: [{ text: 'fixture child completed' }] }] });
+                await tools(f, parent, 'notice-child', [{ action: 'run', ...child('notice-work') }], { 'notice-work': [{ steps: [{ text: 'ESCALATION[warning]: fixture escalation\n' }, { gate: 'notice-held' }, { text: 'fixture child completed' }] }] });
                 await gates.ready('notice-held', deadline(30000)); noticeHeld = true;
                 const job = await holdJob(f, parent, 'notice-job');
                 await writeFile(job.releasePath, 'release');
                 gates.release('notice-held'); noticeHeld = false;
-                const feed = await waitFeed(parent, 'real result, escalation, and job notifications', feed => ['subagent-result', 'escalation', 'job-result'].every(kind => feed.notifications.some(n => n.kind === kind)), 30000);
-                await waitFor('result, escalation, and job posts', () => panel.posts, posts => posts.length >= 3, deadline(20000));
-                for (const n of feed.notifications.filter(n => !historicalIds.has(n.id) && ['subagent-result', 'escalation', 'job-result'].includes(n.kind))) {
-                    expect(n).toMatchObject({ scope: 'session', sessionId: parent.sessionId, ownerAddress: parent.pi.terminal });
-                    expect(panel.posts.filter(p => p.action?.name?.includes(encodeURIComponent(n.id)))).toHaveLength(1);
-                    await f.app.command('pane.focus', { terminal: parent.placement.terminal });
-                    panel.dispatch(panel.posts.find(p => p.action?.name?.includes(encodeURIComponent(n.id)))!.action.name);
-                    await waitFor('session notice focuses its actual owner', () => f.app.status(), value => (value as any).agent === parent.pi.terminal, deadline(10000));
-                }
+                const feed = await waitFeed(parent, 'real completed run', feed => feed.runs.rows.some(row => row.name === 'notice-work' && row.status === 'done'), 30000);
+                await panel.refresh();
+                expect(feed.runs.rows.find(row => row.name === 'notice-work')?.result).toContain('fixture child completed');
+                expect(feed.notifications.filter(n => ['subagent-result', 'escalation', 'job-result', 'budget'].includes(n.kind))).toEqual([]);
+                expect(panel.posts).toEqual([]);
+                expect(feed.sessionId).toBe(parent.sessionId);
+                expect(feed.owner.sessionId).toBe(parent.sessionId);
+                expect(feed.owner.terminal.address).toBe(parent.pi.terminal);
                 await panel.close();
                 const reloaded = await mountPanel(f, 'spider-panel');
                 try {
@@ -250,7 +251,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 finally {
                     await reloaded.close();
                 }
-                await suite.evidence('session-notifications.json', { history, historicalIds: [...historicalIds], feed, posts: panel.posts, projected: { status: 'retired by design', reason: 'UI round 3 projected-budget branch is covered by the host unit test, not the live UI story' } });
+                await suite.evidence('session-notifications.json', { history, historicalIds: [...historicalIds], feed, posts: panel.posts, projected: { status: 'retired by design', reason: 'The projected-budget case is covered by the host unit test, not the live UI story' } });
             }
             finally {
                 if (noticeHeld) gates.release('notice-held');
@@ -258,31 +259,48 @@ export const scenarios: readonly ScenarioDefinition[] = [
             }
             await budgetCase(suite, '80');
             await budgetCase(suite, '100');
-            await suite.evidence('projected-budget-retired.json', { status: 'retired by design', reason: 'UI round 3 projected-budget branch is covered by the host unit test; actual 80/100 budget notifications remain required' });
+            await suite.evidence('projected-budget-retired.json', { status: 'retired by design', reason: 'The projected-budget case is covered by the host unit test. The 80 and 100 pace readings do not produce budget notifications' });
         } },
-    { id: storyId('S42'), title: 'global sidebar machine rows filter without terminal or focus effects', tiers: ['headless', 'app'], run: async (suite) => {
-        await nativeGate(suite);const f=await installPanelFixture(suite),parent=await startPanelParent(f),sidebar=await mountPanel(f,'spider-agents');
-        try {const configured=(f.config.machines as any[]).filter(m=>!m.temporary);const inventory=await suite.hc(['machine','ls','--json']);expect(inventory.exitCode).toBe(0);
-            const expectedTip = (name: string): string => { const native=(inventory.json as any).machines.find((row:any)=>row.name===name)?.state; return `${native==='connected'?'Connected':native==='disconnected'?'Disconnected':'Stopped or unavailable'}. Show only this machine's jobs`; };
-            const ui=await sidebar.host.waitForUi('every configured machine has its actual native status',ui=>configured.every(machine=>ui.nodes.some(node=>node.id===`machine-row-${machine.name}` && JSON.stringify(node.attributes?.tooltip)===JSON.stringify([expectedTip(machine.name)]))),20000);
-            const before=await coreRows(suite),focusBefore=await f.app.status();for(const machine of configured){const matches=ui.nodes.filter(node=>node.id===`machine-row-${machine.name}`);expect(matches).toHaveLength(1);const native=(inventory.json as any).machines.find((row:any)=>row.name===machine.name)?.state;const expected=native==='connected'?'Connected':native==='disconnected'?'Disconnected':'Stopped or unavailable';expect(matches[0].attributes?.tooltip).toEqual([`${expected}. Show only this machine's jobs`]);if(expected==='Stopped or unavailable')expect(matches[0].attributes?.opacity).toEqual([0.5]);await sidebar.host.activate(`machine-row-${machine.name}`);expect(await coreRows(suite)).toEqual(before);expect(await f.app.status()).toEqual(focusBefore);await sidebar.host.activate(`machine-row-${machine.name}`);}
-            await suite.evidence('machine-status-only.json',{configured,inventory,ui,before,focusBefore,actions:sidebar.actions,retired:'Lock, jobs, load, memory and shell action retired by design (UI round 3)'});
-        } finally {await sidebar.close();}
+    { id: storyId('S42'), title: 'configured machines add no sidebar section or focus effects', tiers: ['headless', 'app'], run: async (suite) => {
+        await nativeGate(suite);
+        const f = await installPanelFixture(suite), parent = await startPanelParent(f), sidebar = await mountPanel(f, 'spider-agents');
+        try {
+            const configured = (f.config.machines as any[]).filter(m => !m.temporary);
+            expect(configured.length).toBeGreaterThan(0);
+            const before = await coreRows(suite), focusBefore = await f.app.status();
+            const ui = await sidebar.host.waitForUi('owned agent appears without machine rows', ui => ui.nodes.some(node => node.id === `ag-${parent.pi.terminal}`), 20000);
+            expect(ui.nodes.some(node => node.id === 'spider-machines' || node.id.startsWith('machine-row-'))).toBe(false);
+            expect(ui.nodes.some(node => node.id.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
+            expect(await coreRows(suite)).toEqual(before);
+            expect(await f.app.status()).toEqual(focusBefore);
+            expect(sidebar.actions).toEqual([]);
+            await suite.evidence('machine-section-absent.json', { configured, ui, before, focusBefore, actions: sidebar.actions });
+        } finally { await sidebar.close(); }
     } },
-    { id: storyId('S43'), title: 'unreachable sidebar state refresh has no machine wake or mutation', tiers: ['headless', 'app'], run: async (suite) => {
-        await nativeGate(suite);const f=await installPanelFixture(suite),parent=await startPanelParent(f),sidebar=await mountPanel(f,'spider-agents');
+    { id: storyId('S43'), title: 'an unreachable destination creates no sidebar machine control or wake action', tiers: ['headless', 'app'], run: async (suite) => {
+        await nativeGate(suite);
+        const f = await installPanelFixture(suite), parent = await startPanelParent(f), sidebar = await mountPanel(f, 'spider-agents');
         let restore: (() => Promise<void>) | undefined;
-        try {await sidebar.host.waitForUi('configured owned destination shown',ui=>ui.nodes.some(node=>node.id===`machine-row-${suite.cores!.machine}`),20000);
-            restore=await disconnectOwnedVia(suite);const before=await coreRows(suite),callsBefore=(await appCalls(suite)).length;
-            const inventory=await waitFor('native inventory reports the unreachable destination',()=>suite.hc(['machine','ls','--json']),value=>{const native=(value.json as any).machines.find((m:any)=>m.name===suite.cores!.machine);return native?.state==='unreachable' && String(native.why).includes('fixture transport intentionally disconnected');},deadline(20000)).catch(async error=>{ await suite.evidence('disconnect-last-native-inventory.json', { error: String(error), last: error.details?.last }); throw error; });
-            await sidebar.refresh();const ui=await sidebar.host.waitForUi('actual unreachable status reaches the installed sidebar',ui=>ui.nodes.some(node=>node.id===`machine-row-${suite.cores!.machine}` && JSON.stringify(node.attributes?.tooltip)===JSON.stringify(["Stopped or unavailable. Show only this machine's jobs"])),20000);const rows=ui.nodes.filter(node=>node.id===`machine-row-${suite.cores!.machine}`);expect(rows).toHaveLength(1);expect(rows[0].attributes?.tooltip).toEqual(["Stopped or unavailable. Show only this machine's jobs"]);expect(await coreRows(suite)).toEqual(before);expect((await appCalls(suite)).slice(callsBefore).filter(call=>['space.new','tab.new','terminal.new'].includes(call.name))).toEqual([]);
-            expect(sidebar.commands.filter(command=>command.argv.some(arg=>arg.includes('/proc/')||arg.includes('lock')))).toEqual([]);
-            await suite.evidence('machine-disconnect-status.json',{inventory,ui,commands:sidebar.commands,retired:'Sample staleness retired with metrics (UI round 3)'});
-        } finally {await sidebar.close();await restore?.();}
+        try {
+            await sidebar.host.waitForUi('owned agent appears', ui => ui.nodes.some(node => node.id === `ag-${parent.pi.terminal}`), 20000);
+            restore = await disconnectOwnedVia(suite);
+            const before = await coreRows(suite), callsBefore = (await appCalls(suite)).length;
+            const inventory = await waitFor('native inventory reports the unreachable destination', () => suite.hc(['machine', 'ls', '--json']), value => {
+                const native = (value.json as any).machines.find((m: any) => m.name === suite.cores!.machine);
+                return native?.state === 'unreachable' && String(native.why).includes('fixture transport intentionally disconnected');
+            }, deadline(20000)).catch(async error => { await suite.evidence('disconnect-last-native-inventory.json', { error: String(error), last: error.details?.last }); throw error; });
+            await sidebar.refresh();
+            const ui = await sidebar.host.waitForUi('agent remains visible with no machine section', ui => ui.nodes.some(node => node.id === `ag-${parent.pi.terminal}`), 20000);
+            expect(ui.nodes.some(node => node.id === 'spider-machines' || node.id.startsWith('machine-row-'))).toBe(false);
+            expect(await coreRows(suite)).toEqual(before);
+            expect((await appCalls(suite)).slice(callsBefore).filter(call => ['space.new', 'tab.new', 'terminal.new'].includes(call.name))).toEqual([]);
+            expect(sidebar.commands.filter(command => command.argv.some(arg => arg.includes('/proc/') || arg.includes('lock')))).toEqual([]);
+            await suite.evidence('machine-disconnect-no-sidebar.json', { inventory, ui, commands: sidebar.commands });
+        } finally { await sidebar.close(); await restore?.(); }
     } },
-    { id: storyId('S44'), title: 'machine shell action retired by design (UI round 3)', tiers: ['headless', 'app'], run: async (suite) => {
+    { id: storyId('S44'), title: 'machine shell action is not available', tiers: ['headless', 'app'], run: async (suite) => {
         await nativeGate(suite);const f=await installPanelFixture(suite),parent=await startPanelParent(f),sidebar=await mountPanel(f,'spider-agents'),panel=await mountPanel(f,'spider-panel');
-        try {const left=await sidebar.host.uiSnapshot(),right=await panel.host.uiSnapshot();expect(f.installed.mods['spider-machines']).toBeUndefined();expect([...left.nodes,...right.nodes].some(node=>node.id.startsWith('open-shell-'))).toBe(false);await suite.evidence('S44-retired-by-design.json',{reason:'No machine shell action exists after UI round 3; no-guessed-focus check moved to S42',left,right});}
+        try {const left=await sidebar.host.uiSnapshot(),right=await panel.host.uiSnapshot();expect(f.installed.mods['spider-machines']).toBeUndefined();expect([...left.nodes,...right.nodes].some(node=>node.id.startsWith('open-shell-'))).toBe(false);await suite.evidence('S44-retired-by-design.json',{reason:'The machine shell action is absent. S42 checks that focus stays unchanged',left,right});}
         finally{await sidebar.close();await panel.close();}
     } },
 

@@ -89,6 +89,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
   let next = 0, layout = 'main';
   let activeSpace: string | null = null, activeTab: string | null = null, focus: string | null = null;
   const spaces: Space[] = [], errors: string[] = [];
+  const modPanes = new Map<string, { pane: string; mod: string }[]>();
   const selections = new Map<string, { tab: string | null; focus: string | null }>();
   let layoutTree: unknown;
   let queue: Promise<void> = Promise.resolve();
@@ -108,12 +109,13 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
     return Promise.all(addresses.map(address => get(address)));
   };
   const cleanEmpty = (): void => {
-    for (const s of spaces) s.tabs = s.tabs.filter(t => t.terminals.length);
+    for (const s of spaces) s.tabs = s.tabs.filter(t => t.terminals.length || modPanes.get(t.id)?.length);
+    for (const id of modPanes.keys()) if (!tabOf(id)) modPanes.delete(id);
     for (let i = spaces.length - 1; i >= 0; i--) if (!spaces[i].tabs.length) spaces.splice(i, 1);
     for (const id of selections.keys()) if (!spaces.some(s => s.id === id)) selections.delete(id);
     if (!spaces.some(s => s.id === activeSpace)) activeSpace = spaces[0]?.id ?? null;
     if (!activeTab || !tabOf(activeTab)) activeTab = spaces.find(s => s.id === activeSpace)?.tabs[0]?.id ?? null;
-    if (!spaces.flatMap(s => s.tabs).flatMap(t => t.terminals).some(p => p.pane === focus)) focus = tabOf(activeTab ?? '')?.terminals[0]?.pane ?? null;
+    if (!spaces.flatMap(s => s.tabs).flatMap(t => t.terminals).some(p => p.pane === focus) && ![...modPanes.values()].flat().some(p => p.pane === focus)) focus = tabOf(activeTab ?? '')?.terminals[0]?.pane ?? modPanes.get(activeTab ?? '')?.[0]?.pane ?? null;
   };
   const adopt = (rows: CoreRow[]): void => {
     // Native adoption targets only observed label IDs, preserving the selected pane.
@@ -155,20 +157,25 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       if (!s) throw new AppBoundaryError('unknown-id', 'no such space');
       const prior = selections.get(s.id), tab = s.tabs.find(t => t.id === prior?.tab) ?? s.tabs[0];
       activeSpace = s.id; activeTab = tab?.id ?? null;
-      focus = tab?.terminals.find(p => p.pane === prior?.focus)?.pane ?? tab?.terminals[0]?.pane ?? null;
+      focus = tab?.terminals.find(p => p.pane === prior?.focus)?.pane ?? tab?.terminals[0]?.pane ?? modPanes.get(tab?.id ?? '')?.[0]?.pane ?? null;
       return { reply: { ok: true } };
     }
     if (name === 'ls') return { reply: await world() };
     if (name === 'status') return { reply: { layout, space: activeSpace, tab: activeTab, focused_pane: focus, agent: spaces.flatMap(s => s.tabs).flatMap(t => t.terminals).find(p => p.pane === focus)?.terminal ?? null, floats: [], overlays: [], errors: [...errors], zoom: 1, font_size: 14, ui_font_size: 14 } };
     if (name === 'space.new' || name === 'tab.new') {
       if (args.task) throw new AppBoundaryError('unsupported-capability', 'native task paste is forbidden in the fixture');
-      if (args.mod) throw new AppBoundaryError('unsupported-capability', 'mod tabs are not implemented in the fixture');
+      if (args.mod && (name !== 'tab.new' || typeof args.mod !== 'string')) throw new AppBoundaryError('unsupported-capability', 'invalid mod tab');
       const machine = typeof args.machine === 'string' && args.machine ? args.machine : null;
       const s: Space | undefined = name === 'space.new'
         ? { id: fresh('sp', machine), name: String(args.name ?? '').trim(), folder: String(args.folder ?? ''), machine, active: false, tabs: [] }
         : spaces.find(s => s.id === (args.space ?? activeSpace));
       if (!s) throw new AppBoundaryError('unknown-id', 'no space for tab');
       const t: Tab = { id: fresh('tb', s.machine), name: String(name === 'space.new' ? args.tab ?? '' : args.name ?? '').trim(), active: true, settled: false, terminals: [] };
+      if (typeof args.mod === 'string') {
+        const pane = fresh('p', s.machine); modPanes.set(t.id, [{ pane, mod: args.mod }]); s.tabs.push(t);
+        activeSpace = s.id; activeTab = t.id; focus = pane;
+        return { reply: { space: s.id, tab: t.id, pane } };
+      }
       const address = await launch(s, t, String(args.folder ?? s.folder), args.argv);
       t.terminals.push({ pane: fresh('p', s.machine), terminal: address }); s.tabs.push(t);
       if (name === 'space.new') spaces.push(s);
@@ -185,11 +192,18 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
         const s = spaceOf(t.id)!;
         if (s.tabs.length === 1 && args.confirmed !== true) throw new AppBoundaryError('confirmation-required', 'last tab close needs confirmed: true');
         for (const p of t.terminals) { await get(p.terminal); coreObject(await options.hc(['kill', p.terminal, '--json'])); }
-        s.tabs = s.tabs.filter(v => v !== t); cleanEmpty();
+        s.tabs = s.tabs.filter(v => v !== t); modPanes.delete(t.id); cleanEmpty();
       }
       return { reply: { ok: true } };
     }
     if (name === 'pane.close') {
+      const id = String(args.pane ?? focus);
+      for (const [tab, panes] of modPanes) {
+        if (panes.some(pane => pane.pane === id)) {
+          modPanes.set(tab, panes.filter(pane => pane.pane !== id)); cleanEmpty();
+          return { reply: { ok: true } };
+        }
+      }
       const p = spaces.flatMap(s => s.tabs).flatMap(t => t.terminals).find(p => p.pane === (args.pane ?? focus));
       if (!p) throw new AppBoundaryError('unknown-id', 'no such pane');
       const tab = spaces.flatMap(s => s.tabs).find(tab => tab.terminals.includes(p))!;

@@ -3,13 +3,19 @@ import { expect, it } from 'vitest';
 import { join } from 'node:path';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { createHostHerdrPorts } from '../herdr/ports.js';
-import type { HcClient, HerdrConfig, JobRecord, PreparedProgram } from '../../../herdr/src/contracts.js';
+import { parseHerdrConfig } from '../../../herdr/src/config.js';
+import type { HcClient, JobRecord, PreparedProgram } from '../../../herdr/src/contracts.js';
 
 it('an index published before the receipt keeps a silent background command incomplete', async () => {
   const h = await createHerdrHarness('fake'); await h.start();
   const files = new Map<string, Buffer>();
   const hc: HcClient = { ...h.hc, fileWrite: async (_on, path, bytes) => { files.set(path, bytes); }, fileRead: async (_on, path) => { const bytes = files.get(path); if (!bytes) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'invalid_params' }); return bytes; } };
-  const config = { machines: [{ name: 'remote.invalid', nodePath: process.execPath }] } as unknown as HerdrConfig;
+  const config = parseHerdrConfig({
+    app: { binary: h.appBinary, home: h.directories.app },
+    core: { binary: h.hcBinary, config: join(h.root, 'core.toml') },
+    agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [],
+    machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { cwd: null, directory: join(h.root, 'programs'), commands: {} } }],
+  });
   const ports = createHostHerdrPorts({ hc, config, runtimeBytes: Buffer.alloc(0), runtimePath: () => join(h.root, 'runtime.mjs') });
   try {
     const directory = join(h.root, 'remote.invalid/program');

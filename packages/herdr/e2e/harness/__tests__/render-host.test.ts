@@ -29,15 +29,34 @@ describe('strict fake-app render host', () => {
     expect(emitted).toEqual([{ name: 'layout.show', args: { id: 'panel' } }]);
     await expect(host.activate('unknown-control')).rejects.toThrow(/unknown control/);
   });
+  it('dispatches the selected mouse button without triggering a left click', async () => {
+    const dir = mod(`import {View,div} from 'gpui-kit'; import {run} from 'herdr';
+      export default class Panel extends View { render(){return div().id('row').on_click(()=>run('left',{})).on_mouse_down('right',(_e,cx)=>{cx.stop_propagation();run('right',{target:'row'});});} }`);
+    const emitted: unknown[] = [];
+    const host = await createRenderHost({ installedDirectory: dir, props: {}, api: { run: (name, args) => { emitted.push({ name, args }); } } }); hosts.push(host);
+    await host.mouse('row', 'right');
+    expect(emitted).toEqual([{ name: 'right', args: { target: 'row' } }]);
+    await expect(host.mouse('row', 'middle')).rejects.toThrow(/no registered mouse handler/);
+  });
+  it('passes native key event fields to keyboard-only controls', async () => {
+    const dir = mod(`import {View,div} from 'gpui-kit'; import {run} from 'herdr';
+      export default class Panel extends View { render(){return div().id('menu').on_key_down((e)=>run('key',{key:e.key,keystroke:e.keystroke}));} }`);
+    const emitted: unknown[] = [];
+    const host = await createRenderHost({ installedDirectory: dir, props: {}, api: { run: (name, args) => { emitted.push({ name, args }); } } }); hosts.push(host);
+    await host.key('menu', 'down');
+    expect(emitted).toEqual([{ name: 'key', args: { key: 'down', keystroke: 'down' } }]);
+  });
   it('forwards native sidebar storage and rerenders externally changed shared state', async () => {
     const dir = mod(`import {View,div,image} from 'gpui-kit'; import {props,shared,setShared} from 'herdr';
       export default class Panel extends View { init(){localStorage.setItem('pins',JSON.stringify([props().modId]));}
-        render(){return div().id('root').child(localStorage.getItem('pins')).child(div().id('filter').child(shared('filter')||'All').on_hover(()=>{}).on_click((_e,cx)=>{cx.stop_propagation();setShared('filter','selected');})).child(image('owned-icon').size(14));} }`);
+        render(){return div().id('root').child(localStorage.getItem('pins')).child(div().id('filter').child(shared('filter')||'All').on_hover(()=>{}).on_click((_e,cx)=>{cx.stop_propagation();setShared('filter','selected');})).child(image('owned-icon').size(14)).child(div().id('clear-pins').on_click(()=>localStorage.removeItem('pins')));} }`);
     let selected: unknown = null; const values = new Map<string, string>();
-    const host = await createRenderHost({ installedDirectory: dir, props: { modId: 'sidebar-a' }, storage: { getItem: k => values.get(k) ?? null, setItem: (k,v) => { values.set(k,v); } }, api: { props: () => ({modId:'sidebar-a'}), shared: () => selected, setShared: (_k,v) => { selected=v; } } }); hosts.push(host);
+    const host = await createRenderHost({ installedDirectory: dir, props: { modId: 'sidebar-a' }, storage: { getItem: k => values.get(k) ?? null, setItem: (k,v) => { values.set(k,v); }, removeItem: k => { values.delete(k); } }, api: { props: () => ({modId:'sidebar-a'}), shared: () => selected, setShared: (_k,v) => { selected=v; } } }); hosts.push(host);
     expect((await host.uiSnapshot()).nodes.find(n=>n.id==='root')?.text).toContain('["sidebar-a"]');
     await host.activate('filter'); expect((await host.uiSnapshot()).nodes.find(n=>n.id==='filter')?.text).toBe('selected');
     selected='external-change'; host.invalidate(); expect((await host.uiSnapshot()).nodes.find(n=>n.id==='filter')?.text).toBe('external-change');
+    await host.activate('clear-pins'); expect(values.has('pins')).toBe(false);
+    expect((await host.uiSnapshot()).nodes.find(n => n.id === 'root')?.text).not.toContain('sidebar-a');
   });
   it('passes {} to init and serves the layout props only through props(), as Herdr 0.1.11 does', async () => {
     const dir = mod(`import {View,div} from 'gpui-kit'; import {props} from 'herdr';

@@ -85,7 +85,7 @@ for (const mode of ['fake', 'hc'] as const) for (const age of [200000, -200000])
       await unlink(options.cacheDescriptor.path);
       const missing = await bash('ssh unmanaged.invalid true', childEnv);
       expect(missing.code).toBe(126); expect(missing.stdout).not.toContain('ORDINARY-SSH');
-      expect(missing.stderr).toContain('No valid machine cache');
+      expect(missing.stderr).toContain("Spider couldn't check Herdr's machine list");
     } finally {
       await cache?.dispose(); await h.close();
       expect(await h.remainingOwnedResources()).toEqual([]);

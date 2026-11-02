@@ -29,7 +29,7 @@ it.each([true, false])('Herdr mount failure cannot take down spider (child=%s)',
       for (const fn of hooks.get('session_start') ?? []) if (!previousStarts.has(fn)) await fn(event, ctx);
     }
     expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('mount unavailable');
+    expect(notices[0]).toBe("Spider couldn't start its Herdr features in this session. Everything else in spider still works. Run /herdr-setup to print the doctor command for this machine.");
     expect(notices[0].length).toBeLessThan(1200);
     expect(notices[0]).not.toContain('\n');
   } finally {

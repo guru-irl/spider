@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, sep, join } from "node:path";
 import type { UsageConfig } from "./config.js";
 import { FooterAccumulator } from "./footer-state.js";
-import { createUsageFooter, type FooterInput } from "./footer.js";
+import { createUsageFooter, inHerdrPane, type FooterInput } from "./footer.js";
 import { UsageRuntime } from "./runtime.js";
 import type { UsageRoots } from "./discovery.js";
 
@@ -55,6 +55,8 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   const subscriptions: (() => void)[] = [];
   const totals = new FooterAccumulator();
   let input: FooterInput;
+  // herdr.enabled is read once per folder, not on every refresh tick.
+  let herdrPane: { cwd: string; inPane: boolean } | undefined;
   const child = process.env.PI_SUBAGENT_CHILD === "1";
   const eligible = () => !child && current.mode === "tui";
 
@@ -84,8 +86,9 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     const sameMonth = runtimeSnapshot.monthPeriod?.start === period.start && runtimeSnapshot.monthPeriod.end === period.end;
     const pace = computePace({ now, snapshots: snapshot?.latest ? [snapshot.latest] : [], budget: settings.monthlyBudget,
       correctedMonth: sameMonth ? runtimeSnapshot.monthUsed ?? null : null, correctedWindow: null });
+    if (herdrPane?.cwd !== current.cwd) herdrPane = { cwd: current.cwd, inPane: Boolean(process.env.HC_TERMINAL_ID) && inHerdrPane(process.env, controlConfig("get", current.cwd, "herdr.enabled")) };
     input = {
-      cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null,
+      cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null, inPane: herdrPane.inPane,
       modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
       context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
       subscription, totals: totals.snapshot(), monthlyBudget: settings.monthlyBudget, monthUsed: pace.used,

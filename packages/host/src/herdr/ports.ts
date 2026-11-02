@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
-import { realpath, stat, appendFile } from 'node:fs/promises';
+import { constants as fileFlags } from 'node:fs';
+import { stripVTControlCharacters } from 'node:util';
+import { realpath, stat, appendFile, open } from 'node:fs/promises';
+import { scrubSecrets } from '@spider/memory';
 import { ModelRuntime, ModelRegistry, getAgentDir } from '@earendil-works/pi-coding-agent';
 import { createHcClient, invokeCli } from '@spider/herdr/client/hc';
 import { invokeCli as invokeAppCli } from '@spider/herdr/client/cli-transport';
@@ -7,7 +10,7 @@ import { createAppClient } from '@spider/herdr/client/app';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { runSshShim, ordinaryExecutionEnvironment, SSH_DESCRIPTOR_ENV } from '@spider/herdr/ssh/shim';
 import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
-import { preflightSpaces, setupSpaces, readCutoverRecovery, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
+import { preflightSpaces, setupSpaces, readCutoverRecovery, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
@@ -22,23 +25,22 @@ import { readLayer, configValues } from '../control.js';
 import { paths } from '@spider/db-core';
 import { doctorHerdr, checkNodeVersion, probeLaunch, type DoctorParts, type DoctorItem, type DoctorFailure, type DoctorInformation } from '@spider/herdr/setup/doctor';
 import { feedWriterLiveness } from '@spider/herdr/feed/writer';
+import { sessionFeedIsFresh } from '@spider/herdr/feed/freshness';
 import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles } from '@spider/herdr/setup/backup';
 import { runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
 import type { CoreIdentity, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
 import { parseFeed } from '../../../herdr/assets/shared/feed.js';
+import { createSessionIpcClient } from '@spider/herdr/feed/ipc-client';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join, resolve, isAbsolute, dirname } from 'node:path';
-import type { Readable, Writable } from 'node:stream';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { createSessionIpcClient } from '@spider/herdr/feed/ipc-client';
-import { submitViewerSteer } from '@spider/herdr/viewers/steering';
-import type { ViewerOptions } from '@spider/herdr/viewers/program';
+import { createMemoryReviewDbs, decideMemoryReview, listMemoryReview } from './memory-review.js';
 import { createProcessPresence } from '@spider/herdr/sessions/presence';
 import { createSessionLeases, assessSessionLiveness, type ProcessInventoryPorts } from '@spider/herdr/sessions/lease';
-import { createTerminalRegistry, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
+import { createTerminalRegistry, readPrivateJson, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { fixtureProcessDomain } from './fixture-process-domain.js';
 import { collectRemoteChunks, createFileLogSink, type LogSink, type RemoteLogLocation, type CollectedLogs } from '@spider/herdr/remote/transfer';
@@ -50,6 +52,8 @@ import type { HcClient, HerdrConfig, JobRecord, JobId, Owner, RunId, SessionId }
 import type { HostViewOptions } from './views.js';
 import type { HostDataSourceOptions } from './data-source.js';
 import { HerdrError } from '@spider/herdr/client/parse';
+import { resolveMachine } from './machine.js';
+import { HERDR_NOTICES, duplicateSessionNotice, installedModMismatchNotice, rollbackForeignPanesNotice, switchedSessionNotice } from '@spider/herdr/notices';
 
 export function disabledHerdrEnvironment(env: Readonly<NodeJS.ProcessEnv>): Readonly<NodeJS.ProcessEnv> {
   const next = { ...env };
@@ -58,25 +62,7 @@ export function disabledHerdrEnvironment(env: Readonly<NodeJS.ProcessEnv>): Read
   return ordinaryExecutionEnvironment(next);
 }
 
-export function createViewerPorts(argv: readonly string[], io: { stdin: Readable; stdout: Writable; signal?: AbortSignal }): ViewerOptions<ReturnType<typeof createSessionIpcClient>> | null {
-  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) { io.stdout.write('usage: viewer --feed-root <absolute-feed-root> --session <session-id> --run <run-id> [--intent automatic|explicit] [--initial-status <status>]\n  --help, -h\n'); return null; }
-  const values = new Map<string, string>();
-  for (let i = 0; i < argv.length; i += 2) { if (!['--run', '--session', '--feed-root', '--intent', '--initial-status'].includes(argv[i]) || values.has(argv[i]) || !argv[i + 1]) throw new HerdrError('viewer-usage', 'Invalid viewer arguments'); values.set(argv[i], argv[i + 1]); }
-  const feedRoot = values.get('--feed-root') ?? '', sessionId = values.get('--session') ?? '', id = values.get('--run') ?? '';
-  const intent = values.get('--intent') ?? 'explicit';
-  const initialStatus = values.get('--initial-status') as ViewerOptions['initialStatus'];
-  if (initialStatus !== undefined && !['queued', 'running', 'paused', 'done', 'failed', 'cancelled'].includes(initialStatus)) throw new HerdrError('viewer-usage', 'Invalid viewer arguments');
-  if (intent !== 'automatic' && intent !== 'explicit') throw new HerdrError('viewer-usage', 'Invalid viewer arguments');
-  if (!values.has('--run') || !values.has('--session') || !values.has('--feed-root') || !isAbsolute(feedRoot) || !sessionId || !id || [sessionId, id].some(id => /[/\\\0]/.test(id) || id === '.' || id === '..'))
-    throw new HerdrError('viewer-usage', 'usage: viewer --feed-root <absolute-root> --session <id> --run <id>');
-  const clients = new Set<ReturnType<typeof createSessionIpcClient>>();
-  const runId = id as RunId;
-  return { feedRoot, sessionId: sessionId as SessionId, runId, intent, initialStatus, ...io,
-    createClient(descriptor) { const client = createSessionIpcClient(descriptor); clients.add(client); return client; },
-    submitSteer: (client, text) => submitViewerSteer(client, runId, text),
-    async release() { for (const client of clients) client.dispose(); clients.clear(); },
-  };
-}
+export { createViewerPorts } from '../../../herdr/src/viewers/ports.js';
 
 export function createProcessInventory(root: string): ProcessInventoryPorts {
   const presence = createProcessPresence(root), leases = createSessionLeases(root), domain = fixtureProcessDomain(root);
@@ -116,12 +102,56 @@ function missingTransportFile(error: unknown): boolean {
   return false;
 }
 
+async function noticeLogTail(path: string): Promise<string> {
+  const file = await open(path, fileFlags.O_RDONLY | (fileFlags.O_NOFOLLOW ?? 0));
+  try {
+    const info = await file.stat();
+    if (!info.isFile()) throw new HerdrError('local-log-invalid', 'Job log is not a regular file');
+    const length = Math.min(info.size, 16 * 1024), bytes = Buffer.alloc(length);
+    const { bytesRead } = await file.read(bytes, 0, length, info.size - length);
+    let text = bytes.subarray(0, bytesRead).toString('utf8');
+    if (info.size > length) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline < 0 ? '[long output line omitted]' : text.slice(firstNewline + 1);
+    }
+    text = scrubSecrets(stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')).text;
+    const lines = text.replace(/\n+$/, '').split('\n').slice(-5).join('\n');
+    // Leave room for both streams in the monitor's 2 KiB summary budget.
+    const encoded = Buffer.from(lines);
+    return encoded.length <= 700 ? lines : `…${encoded.subarray(encoded.length - 697).toString('utf8').replace(/^\ufffd/, '')}`;
+  } finally { await file.close(); }
+}
+
+async function noticeSummary(directory: string, complete: boolean): Promise<string> {
+  try {
+    const stdout = await noticeLogTail(join(directory, 'stdout.log'));
+    const stderr = await noticeLogTail(join(directory, 'stderr.log'));
+    return [complete ? '' : 'Remote output is incomplete.', stdout ? `stdout:\n${stdout}` : '', stderr ? `stderr:\n${stderr}` : ''].filter(Boolean).join('\n') || 'No output.';
+  } catch {
+    return complete ? 'Output summary unavailable. See the job logs.' : 'Remote output is incomplete. See the job logs.';
+  }
+}
+
+async function legacyCancellation(job: JobRecord): Promise<'pending' | 'sent' | null> {
+  try {
+    const file = await open(join(job.localDirectory, '.spider-kill.json'), fileFlags.O_RDONLY | (fileFlags.O_NOFOLLOW ?? 0));
+    try {
+      const info = await file.stat(); if (!info.isFile() || info.size > 4096) return null;
+      const marker: unknown = JSON.parse(await file.readFile('utf8'));
+      if (!marker || typeof marker !== 'object' || !('version' in marker) || marker.version !== 1 || !('jobId' in marker) || marker.jobId !== job.id || !('nonce' in marker) || !('nonce' in job) || marker.nonce !== job.nonce || !('state' in marker) || !('expiresAt' in marker) || typeof marker.expiresAt !== 'number') return null;
+      if (marker.state === 'sent') return 'sent';
+      if (marker.state === 'pending' && Date.now() < marker.expiresAt) return 'pending';
+      return null;
+    } finally { await file.close(); }
+  } catch { return null; }
+}
+
 export interface HostPortOptions {
   config: HerdrConfig; hc: HcClient; runtimeBytes: Buffer; runtimePath(on: string): string;
 }
 export interface HostHerdrPorts {
   outputCollector: JobMonitorOptions['outputCollector'];
-  logReader(jobId: JobId): { collect(): Promise<CollectedLogs>; dispose(): void };
+  logReader(jobId: JobId, options?: { onData?: (text: string) => void }): { collect(): Promise<CollectedLogs>; dispose(): void };
   dispose(): void;
 }
 /** C and D read through one serialized collector and one log sink per durable job. */
@@ -163,15 +193,30 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
         await options.hc.fileWrite(job.machine, requestPath, bytes);
         await options.hc.fileWrite(job.machine, requestPath + '.sha256', Buffer.from(sha256(bytes)));
         await get(job);
-        return { nonce, releaseDeadlineAt, program: { ...program, argv: [options.config.machines.find(m => m.name === job.machine)?.nodePath ?? 'node', options.runtimePath(job.machine), requestPath] } };
+        const { machine } = await resolveMachine(options.hc, options.config.machines, job.machine);
+        return { nonce, releaseDeadlineAt, program: { ...program, argv: [machine.nodePath ?? 'node', options.runtimePath(job.machine), requestPath] } };
       },
       async collect(job) {
         await get(job); const result = await collect(job.id);
         const receipt = result.receipt;
-        return { complete: result.complete, summary: result.complete ? 'Remote command finished. Exact output is in the job logs.' : 'Remote command output is incomplete.', receipt: receipt ? { jobId: job.id, nonce: receipt.nonce, finish: { exitCode: receipt.exitCode, reason: receipt.outcome === 'exited' ? 'exited' : receipt.outcome, signal: receipt.signal ? (await import('node:os')).constants.signals[receipt.signal as NodeJS.Signals] : null, finishedAt: receipt.finishedAt } } : null };
+        const summary = await noticeSummary(job.localDirectory, result.complete);
+        const annotated = receipt?.signalHint ? `Exit ${receipt.exitCode} (${receipt.signalHint} convention).\n${summary}` : summary;
+        const legacy = receipt ? await legacyCancellation(job) : null;
+        if (legacy === 'pending') return { complete: false, summary: annotated, receipt: null };
+        return { complete: result.complete, summary: annotated, receipt: receipt ? { jobId: job.id, nonce: receipt.nonce, finish: { exitCode: receipt.exitCode, reason: legacy === 'sent' ? 'cancelled' : receipt.outcome, signal: receipt.signal ? (await import('node:os')).constants.signals[receipt.signal as NodeJS.Signals] : null, finishedAt: receipt.finishedAt } } : null };
       },
     },
-    logReader(id) { return { collect: () => collect(id), dispose() {} }; },
+    logReader(id, readerOptions) {
+      let stdoutLength = 0, stderrLength = 0, disposed = false;
+      return { async collect() {
+        const result = await collect(id);
+        const stdout = result.stdout.slice(stdoutLength), stderr = result.stderr.slice(stderrLength);
+        stdoutLength = result.stdout.length; stderrLength = result.stderr.length;
+        if (!disposed && stdout) readerOptions?.onData?.(stdout);
+        if (!disposed && stderr) readerOptions?.onData?.(stderr);
+        return result;
+      }, dispose() { disposed = true; } };
+    },
     dispose() { for (const c of collectors.values()) c.sink.finish(); collectors.clear(); },
   };
 }
@@ -180,9 +225,10 @@ export interface HostHerdrOptions {
   packageRoot: string;
   views: HostViewOptions;
   actionContext(ctx: ExtensionContext): unknown;
+  killAction?(ctx: ExtensionContext, id: string): Promise<unknown>;
   readConfig?(ctx: ExtensionContext): Promise<HerdrConfig | null>;
   dataSource?: Pick<HostDataSourceOptions, 'resolveRunDb' | 'openApprovalDbs' | 'readUsage' | 'scheduler'>;
-  reportError?(error: unknown): void;
+  reportError?(error: unknown, notice?: string): void;
 }
 
 export async function readJobJournal(root: string, owner: Owner): Promise<readonly JobRecord[]> {
@@ -193,6 +239,26 @@ export async function readJobJournal(root: string, owner: Owner): Promise<readon
   return [...jobs, ...(await readChildJobJournals(root, owner)).flatMap(journal => journal.jobs)];
 }
 
+
+export async function readAppLayout(binary: string, env: Readonly<NodeJS.ProcessEnv>): Promise<LayoutSnapshot> {
+  const raw = await invokeAppCli(binary, ['ls'], env) as { spaces?: unknown };
+  if (!Array.isArray(raw.spaces)) throw new HerdrError('app-disconnected', 'No read-only app space document');
+  const spaces: LayoutSnapshot['spaces'] = raw.spaces.map((value: unknown) => {
+    const space = value as { id?: unknown; name?: unknown; tabs?: unknown };
+    if (typeof space.id !== 'string' || typeof space.name !== 'string' || !Array.isArray(space.tabs)) throw new HerdrError('invalid-reply', 'Malformed app space');
+    return { id: space.id as LayoutSnapshot['spaces'][number]['id'], name: space.name, tabs: space.tabs.map((value: unknown) => {
+      const tab = value as { id?: unknown; name?: unknown; terminals?: unknown };
+      if (typeof tab.id !== 'string' || typeof tab.name !== 'string' || !Array.isArray(tab.terminals)) throw new HerdrError('invalid-reply', 'Malformed app tab');
+      const terminals = tab.terminals.map(value => {
+        const row = value as { terminal?: unknown };
+        if (typeof row?.terminal !== 'string') throw new HerdrError('invalid-reply', 'Malformed app terminal');
+        return { terminal: row.terminal as TerminalAddress };
+      });
+      return { id: tab.id as LayoutSnapshot['spaces'][number]['tabs'][number]['id'], name: tab.name, ownerSessionId: null, terminal: terminals[0]?.terminal ?? null, terminals };
+    }) };
+  });
+  return { spaces };
+}
 
 export async function verifiedHerdrFile(journalRoot: string, file: InstallFile): Promise<void> {
   await withSetupLock(journalRoot, async () => {
@@ -271,21 +337,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         };
         await walk(directory); return files;
       },
-      layoutSnapshot: async () => {
-        const raw = await invokeAppCli(request.config.app.binary, ['ls'], appEnv(request)) as { spaces?: unknown };
-        if (!Array.isArray(raw.spaces)) throw new HerdrError('app-disconnected', 'No read-only app space document');
-        const spaces: LayoutSnapshot['spaces'] = raw.spaces.map((value: unknown) => {
-          const space = value as { id?: unknown; name?: unknown; tabs?: unknown };
-          if (typeof space.id !== 'string' || typeof space.name !== 'string' || !Array.isArray(space.tabs)) throw new HerdrError('invalid-reply', 'Malformed app space');
-          return { id: space.id as LayoutSnapshot['spaces'][number]['id'], name: space.name, tabs: space.tabs.map((value: unknown) => {
-            const tab = value as { id?: unknown; name?: unknown; terminals?: unknown };
-            if (typeof tab.id !== 'string' || typeof tab.name !== 'string' || !Array.isArray(tab.terminals)) throw new HerdrError('invalid-reply', 'Malformed app tab');
-            const terminal = (tab.terminals[0] as { terminal?: unknown } | undefined)?.terminal;
-            return { id: tab.id as LayoutSnapshot['spaces'][number]['tabs'][number]['id'], name: tab.name, ownerSessionId: null, terminal: typeof terminal === 'string' ? terminal as TerminalAddress : null };
-          }) };
-        });
-        return { spaces };
-      },
+      layoutSnapshot: () => readAppLayout(request.config.app.binary, appEnv(request)),
       launcher: { nodePath: process.execPath, cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), configPath: request.configPath }, clock: Date.now,
       waitForChange: (deadline, signal) => new Promise<void>(resolve => { let timer: ReturnType<typeof setTimeout>; const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }; timer = setTimeout(done, Math.max(0, Math.min(250, deadline - Date.now()))); signal.addEventListener('abort', done, { once: true }); if (signal.aborted) done(); }),
       reportLive: records => { for (const record of records) process.stderr.write(`Close session ${record.sessionName ?? record.sessionId ?? '(unnamed)'} (PID ${record.pid}) before cutover.\n`); },
@@ -293,6 +345,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       reportSkipped: count => process.stderr.write(`Skipped ${count} unreadable or invalid session files.\n`),
       notesDisabled: async () => rootNotesValue((await snapshot(request.config.core.config)).bytes) === false,
       terminalState: async placement => { try { return (await hc.get(placement.terminal)).state; } catch (error) { if (missingTransportFile(error)) return 'absent'; throw error; } },
+      terminalLabels: async address => (await hc.get(address)).labels,
+      reportLayout: message => process.stderr.write(message + '\n'),
+      liveSessionFeed: async target => {
+        if (!target.sessionId || /[/\\\0]/.test(target.sessionId) || target.sessionId === '.' || target.sessionId === '..') return null;
+        try {
+          const value = await readPrivateJson(join(root, 'sessions', target.sessionId, 'session.json'));
+          const feed = value === null ? null : parseFeed(JSON.stringify(value));
+          if (!feed || feed.sessionId !== target.sessionId || !await sessionFeedIsFresh(root, feed, Date.now())) return null;
+          const core = await hc.identity();
+          return feed.owner.terminal.socket === core.socket && feed.owner.terminal.sessionNamespace === core.sessionNamespace ? feed : null;
+        } catch { return null; }
+      },
       verifyOwner: async (target, placement, signal) => {
         const deadline = Date.now() + 30_000;
         const controller = new AbortController();
@@ -303,18 +367,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const identity = await hc.identity();
         const terminal = await hc.get(placement.terminal);
         if (terminal.state !== 'live') throw new HerdrError('owner-terminal-finished', 'New owner terminal finished before activation');
-        // After /new or /resume the tab's pi keeps its process and terminal but names another session.
-        // It is still the process this tab launched; once the selected session is free, identify it at once.
+        // After /new or /resume the same process can own a different session.
         const tabProcess = (await inventory.presence.list()).find(p => p.kind === 'top-level' && p.hcAddress === placement.terminal && p.sessionId !== null && p.sessionId !== target.sessionId);
         const tabProbe = tabProcess ? await inventory.probe(tabProcess.pid) : null;
-        if (tabProcess && tabProbe?.kind === 'live' && tabProbe.startIdentity === tabProcess.startIdentity) {
-          if ((await assessSessionLiveness(target.file, selectedProcessInventory(request.config, inventory))).kind !== 'free') throw new HerdrError('owner-session-switched', `The pi in this tab switched to another session, and ${target.name ?? target.sessionId} is open elsewhere. Close that session, then rerun.`);
-          return { pid: tabProcess.pid, startIdentity: tabProcess.startIdentity, sessionFile: target.file, sessionId: target.sessionId, cwd: target.cwd };
-        }
+        if (tabProcess && tabProbe?.kind === 'live' && tabProbe.startIdentity === tabProcess.startIdentity) throw new HerdrError('owner-session-switched', switchedSessionNotice());
         const mapping = (await registry.list()).find(mapping => mapping.owner.sessionId === target.sessionId && mapping.owner.sessionFile === target.file && mapping.owner.cwd === target.cwd && mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && mapping.owner.terminal.sessionNamespace === identity.sessionNamespace && mapping.owner.terminal.address === placement.terminal);
         if (!mapping) throw new HerdrError('owner-activation-unconfirmed', 'New owner has no validated live mapping');
         const feed = parseFeed(await readFile(join(root, 'sessions', target.sessionId, 'session.json'), 'utf8'));
-        if (!feed || feed.generation !== mapping.owner.generation || feed.owner.terminal.address !== placement.terminal || Date.now() - feed.updatedAt > 10_000) throw new HerdrError('owner-activation-unconfirmed', 'New owner has no fresh generation-bound feed');
+        if (!feed || feed.generation !== mapping.owner.generation || feed.owner.terminal.address !== placement.terminal || !await sessionFeedIsFresh(root, feed, Date.now())) throw new HerdrError('owner-activation-unconfirmed', 'New owner has no fresh generation-bound feed');
         const process = (await inventory.presence.list()).find(p => p.sessionId === target.sessionId && p.sessionFile === target.file && p.kind === 'top-level' && p.hcAddress === placement.terminal);
         if (!process || (await inventory.probe(process.pid)).kind !== 'live' || processStartTime(process.pid) !== process.startIdentity) throw new HerdrError('owner-activation-unconfirmed', 'New owner has no matching live process identity');
         return { pid: process.pid, startIdentity: process.startIdentity, sessionFile: target.file, sessionId: target.sessionId, cwd: target.cwd };
@@ -338,11 +398,11 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       appVersion = match[1];
     } catch { throw new HerdrError('upstream-version-unavailable', 'Cannot determine the installed Herdr app version'); }
     const clones = {} as HerdrClones;
-    for (const kind of ['agents', 'spaces', 'pane', 'tabs'] as const) clones[kind] = { name: `spider-${kind}`, clonedFrom: { name: kind, version: appVersion }, files: Object.fromEntries((await assetFiles(join(request.config.app.home, 'mods', kind))).map(file => [file.relative, file.bytes.toString()])) };
-    const patched = await applyLookPatches(clones, patches);
+    for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) clones[kind] = { name: kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`, clonedFrom: { name: kind, version: appVersion }, files: Object.fromEntries((await assetFiles(join(request.config.app.home, 'mods', kind))).map(file => [file.relative, file.bytes.toString()])) };
+    const patched = await applyLookPatches(clones, patches, { requireCompleteSources: true });
     const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(assets, 'fonts'), readFile });
     const files: { path: string; bytes: Buffer }[] = [];
-    for (const kind of ['agents', 'spaces', 'pane', 'tabs'] as const) for (const [name, source] of Object.entries(patched[kind].files)) files.push({ path: join(request.config.app.home, 'mods', `spider-${kind}`, name), bytes: Buffer.from(name === 'mod.json' ? JSON.stringify({ ...JSON.parse(source), clonedFrom: patched[kind].clonedFrom, patchState: patched[kind].patchState }) : source) });
+    for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) for (const [name, source] of Object.entries(patched[kind].files)) files.push({ path: join(request.config.app.home, 'mods', patched[kind].name, name), bytes: Buffer.from(name === 'mod.json' ? JSON.stringify({ ...JSON.parse(source), clonedFrom: patched[kind].clonedFrom, patchState: patched[kind].patchState }) : source) });
     for (const file of await assetFiles(join(assets, 'agents'))) files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative === 'children.js' ? 'spider-children.js' : file.relative), bytes: file.bytes });
     for (const file of await assetFiles(join(assets, 'tabs'))) files.push({ path: join(request.config.app.home, 'mods/spider-tabs', file.relative), bytes: file.bytes });
     const props = Object.fromEntries(context.modProps.map(copy => {
@@ -354,7 +414,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       }];
     }));
     const current = JSON.parse(await readFile(join(request.config.app.home, 'layouts/main.json'), 'utf8'));
-    files.push({ path: join(request.config.app.home, 'layouts/spider-glass.json'), bytes: Buffer.from(JSON.stringify(buildGlassLayout(current, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', bodyFont: fonts.families.body, props: { ...props, spider: props.panel } }), null, 2)) });
+    files.push({ path: join(request.config.app.home, 'layouts/spider-glass.json'), bytes: Buffer.from(JSON.stringify(buildGlassLayout(current, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', bodyFont: fonts.families.body, props: { ...props, spider: props.panel } }), null, 2)) });
     for (const font of fonts.files) files.push({ path: join(request.config.app.home, 'fonts', font.fileName), bytes: font.bytes });
     for (const copy of context.modProps) files.push({ path: join(copy.directory, 'shared/feed.js'), bytes: await readFile(join(assets, 'shared/feed.js')) });
     return filesFor(files, context);
@@ -372,16 +432,27 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     return filesFor(files.map(file => ({ path: file.path, bytes: Buffer.from(file.content) })), context);
   };
   const doctorParts = async (request: SetupRequest): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request), launchHistory: async () => {
-    const launches: { argv: string[] }[] = []; let unavailable = false;
-    // The selected core lists local terminals and its remote mirrors; ls has no --on option.
-    const raw = await invokeCli(request.config.core.binary, ['ls', '--all', '--json'], env) as { terminals?: { labels?: Record<string, string>; notify?: unknown }[] };
-    if (!Array.isArray(raw.terminals)) return null;
-    for (const terminal of raw.terminals.filter(t => t.labels?.[HERDR_LABELS.kind] || t.labels?.[HERDR_LABELS.space])) {
-      if (typeof terminal.notify !== 'boolean') { unavailable = true; continue; }
-      launches.push({ argv: terminal.notify ? ['run'] : ['run', '--no-notify'] });
-    }
-    if (launches.some(launch => !launch.argv.includes('--no-notify'))) return launches;
-    return unavailable || !launches.length ? null : launches;
+    const hc = createHcClient({ binary: request.config.core.binary, env });
+    const stream = hc.events();
+    try {
+      const terminals = await new Promise<readonly import('@spider/herdr').TerminalSummary[]>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error, rows?: readonly import('@spider/herdr').TerminalSummary[]) => {
+          if (settled) return; settled = true; clearTimeout(timer); unsubscribe();
+          if (error) reject(error); else resolve(rows!);
+        };
+        const timer = setTimeout(() => finish(new HerdrError('events-timeout', 'Herdr did not send its terminal list')), 10_000);
+        const unsubscribe = stream.subscribe(event => { if (event.type === 'snapshot' || event.type === 'missed') finish(undefined, event.terminals); });
+        void stream.ready.catch(error => finish(error instanceof Error ? error : new Error(String(error))));
+      });
+      const launches: { argv: string[] }[] = []; let unavailable = false;
+      for (const terminal of terminals.filter(t => t.labels[HERDR_LABELS.kind] || t.labels[HERDR_LABELS.space])) {
+        if (typeof terminal.notify !== 'boolean') { unavailable = true; continue; }
+        launches.push({ argv: terminal.notify ? ['run'] : ['run', '--no-notify'] });
+      }
+      if (launches.some(launch => !launch.argv.includes('--no-notify'))) return launches;
+      return unavailable || !launches.length ? null : launches;
+    } finally { stream.dispose(); await hc.dispose(); }
   }, probeMachineNode: (_target, launch) => probe(request, launch),
     probeRuntimeRoot: (_target, launch) => probe(request, launch),
     inspect: async item => {
@@ -402,9 +473,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'fonts') { const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile }); for (const file of fonts.files) if (!(await snapshot(join(request.config.app.home, 'fonts', file.fileName))).bytes?.equals(file.bytes)) return failure('installed-font-mismatch', `Installed font or notice differs: ${file.fileName}`); return { failures: [] }; }
       if (item === 'spaces-tabs') { await preflightSpaces(request.config, spacePorts(request), { adoptExistingSpaces: request.adoptExistingSpaces }); return { failures: [] }; }
       const journal = await readJournal(request.journalRoot);
-      const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: ['agents', 'spaces', 'pane', 'tabs', 'panel'].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
+      const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome'].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
       const compareFiles = async (files: readonly InstallFile[]) => {
-        for (const file of files) if (!(await snapshot(file.path)).bytes?.equals(file.bytes)) return failure('installed-artifact-changed', `Installed ${item} content differs: ${file.path}`);
+        for (const file of files) if (!(await snapshot(file.path)).bytes?.equals(file.bytes)) {
+          if (item === 'mods' || item === 'clones') { const notice = installedModMismatchNotice(file.path); return failure('installed-artifact-changed', notice.message, notice.repair); }
+          return failure('installed-artifact-changed', `Installed ${item} content differs: ${file.path}`);
+        }
         return { failures: [] };
       };
       const loadingUnavailable = (names: readonly string[]) => ({ failures: [], warnings: names.map(name => ({ item, code: 'inspection-unavailable', message: `${name} source content matches; mod loading is not verified`, repair: `HERDR_APP_HOME=${shellQuote(join(request.journalRoot, 'headless-app-check'))} ${shellQuote(request.config.app.binary)} check ${shellQuote(join(request.config.app.home, 'mods', name))}` })) });
@@ -414,14 +488,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         for (const mod of context.modProps) files.push({ path: join(mod.directory, 'shared/feed.js'), bytes: await readFile(join(packageRoot, 'packages/herdr/assets/shared/feed.js')), expected: null });
         const result = await compareFiles(files); return result.failures.length ? result : loadingUnavailable(['spider-panel']);
       }
-      if (item === 'clones') { const result = await compareFiles((await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs)\//.test(file.path))); return result.failures.length ? result : loadingUnavailable(['spider-agents', 'spider-spaces', 'spider-pane', 'spider-tabs']); }
+      if (item === 'clones') { const result = await compareFiles((await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome)\//.test(file.path))); return result.failures.length ? result : loadingUnavailable(['spider-agents', 'spider-spaces', 'spider-pane', 'spider-tabs', 'spider-chrome']); }
       if (item === 'patch-version') {
         const patches = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'), 'utf8')) as LookPatchSet;
-        for (const kind of ['agents', 'spaces', 'pane', 'tabs'] as const) {
-          const directory = join(request.config.app.home, 'mods', `spider-${kind}`), manifest = JSON.parse(await readFile(join(directory, 'mod.json'), 'utf8'));
+        for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) {
+          const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`), manifest = JSON.parse(await readFile(join(directory, 'mod.json'), 'utf8'));
           if (manifest.clonedFrom?.name !== kind || manifest.clonedFrom?.version !== patches.upstreamVersion || manifest.patchState?.version !== 1) return failure('upstream-version-mismatch', `Installed ${kind} clone has an unsupported patch or upstream version`);
           const source = await readFile(join(directory, 'main.js'), 'utf8');
-          for (const patch of patches.mods[kind]) if (source.split(`/* spider-look:${patch.id} */`).length !== 2 || !source.includes(`/* spider-look:${patch.id} */` + patch.replacement)) return failure('patch-marker-mismatch', `Installed ${kind} patch ${patch.id} differs`);
+          for (const patch of patches.mods[kind] ?? []) if (source.split(`/* spider-look:${patch.id} */`).length !== 2 || !source.includes(`/* spider-look:${patch.id} */` + patch.replacement)) return failure('patch-marker-mismatch', `Installed ${kind} patch ${patch.id} differs`);
         }
         return { failures: [] };
       }
@@ -436,12 +510,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           walk(root as Parameters<typeof walk>[0]); return found;
         };
         const installed = contents(layout);
-        for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel']) if (!installed.has(`spider-${name}`)) return failure('layout-mod-mismatch', `Installed layout omits spider-${name}`);
+        for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!installed.has(`spider-${name}`)) return failure('layout-mod-mismatch', `Installed layout omits spider-${name}`);
         const expectedFile = (await stagedLook(request, context)).find(file => file.path === path);
         if (!expectedFile) return failure('layout-props-mismatch', 'Cannot determine expected layout props');
         const expected = contents(JSON.parse(expectedFile.bytes.toString('utf8')));
         const { isDeepStrictEqual } = await import('node:util');
-        for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel']) if (!isDeepStrictEqual(installed.get(`spider-${name}`), expected.get(`spider-${name}`))) return failure('layout-props-mismatch', `Installed spider-${name} props differ from the current configuration`);
+        for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!isDeepStrictEqual(installed.get(`spider-${name}`), expected.get(`spider-${name}`))) return failure('layout-props-mismatch', `Installed spider-${name} props differ from the current configuration`);
         if (!(await snapshot(join(request.config.app.home, 'themes/spider-glass.json'))).bytes?.equals(await readFile(join(packageRoot, 'packages/herdr/assets/themes/spider-glass.json')))) return failure('app-theme-mismatch', 'Installed Herdr theme differs');
         const settings = JSON.parse((await snapshot(join(request.config.app.home, 'settings.json'))).bytes?.toString() ?? '{}');
         if (settings.theme !== undefined && settings.theme !== 'spider-glass' || settings.layout !== undefined && settings.layout !== 'spider-glass') return failure('app-selection-mismatch', 'App selection differs from spider-glass');
@@ -494,7 +568,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           }
           const path = join(request.config.globalRoot, 'herdr/sessions', mapping.owner.sessionId, 'session.json');
           const feed = parseFeed(await readFile(path, 'utf8'));
-          if (!feed || feed.generation !== mapping.owner.generation || feed.owner.terminal.address !== mapping.owner.terminal.address || Date.now() - feed.updatedAt > 10_000) {
+          if (!feed || feed.generation !== mapping.owner.generation || feed.owner.terminal.address !== mapping.owner.terminal.address || !await sessionFeedIsFresh(join(request.config.globalRoot, 'herdr'), feed, Date.now())) {
             failures.push(...failure('feed-stale', 'Owner feed is stale or has a different generation').failures); continue;
           }
           if (item === 'feed-freshness') continue;
@@ -526,7 +600,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     request: async configPath => {
       const settings = configValues(process.cwd(), undefined, globalRoot);
       for (const warning of settings.warnings.filter(message => /^herdr\.(config|enabled) /.test(message))) {
-        if (!warnedConfig.has(warning)) { warnedConfig.add(warning); process.stderr.write(warning + '\n'); }
+        if (!warnedConfig.has(warning)) { warnedConfig.add(warning); process.stderr.write((warning.startsWith('herdr.config ') ? HERDR_NOTICES.repoConfig.text : HERDR_NOTICES.repoEnabled.text) + '\n'); }
       }
       let path = configPath;
       if (!path) {
@@ -545,28 +619,45 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       // Root probes made during this setup run. Verification reuses them instead of launching another per machine.
       const rootProbes = new Map<string, string>(), rootKey = (launch: HcRunRequest) => JSON.stringify([launch.on, launch.argv]);
       const probeRoot = async (launch: HcRunRequest) => { const output = await probe(request, launch); rootProbes.set(rootKey(launch), output); return output; };
+      const runSpaces = async (request: SetupRequest, context: SetupContext, selectApp: boolean) => {
+        const aborter = new AbortController(), abort = () => aborter.abort();
+        process.once('SIGINT', abort); process.once('SIGTERM', abort);
+        let result;
+        try { result = await setupSpaces(request.config, spaces, { adoptExistingSpaces: request.adoptExistingSpaces, signal: aborter.signal }); }
+        finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+        const recovery = result.conflicts?.length ? await readCutoverRecovery(spaces.journalRoot) : null;
+        const owners = recovery ? recovery.entries.flatMap(entry => entry.result ? [entry.result] : []) : result.launched;
+        const cutover = { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(owners.map(owner => [owner.sessionId, owner.startIdentity])) };
+        if (selectApp && !result.conflicts?.length) {
+          for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await spaces.app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
+        }
+        await context.recordCutover(cutover);
+        if (result.conflicts?.length) throw new HerdrError('duplicate-live-session', result.conflicts.map(conflict => duplicateSessionNotice(conflict.sessionId, conflict.terminals)).join('\n'));
+        return cutover;
+      };
       return { globalRoot, hc,
         validateSelections: async () => { await discoverSessions(request.config, spaces); },
         preflight: async () => {
           rootProbes.clear();
           // This exported G check is before any backup or asset/config staging.
           await preflightSpaces(request.config, spaces, { adoptExistingSpaces: request.adoptExistingSpaces });
-          const identity = await hc.identity(), recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot()), saved = await readJournal(request.journalRoot);
+          const identity = await hc.identity(), recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot(), request.config, spaces), saved = await readJournal(request.journalRoot);
           let recoveredCutover: import('@spider/herdr/setup/installer').CutoverResult | undefined, cutoverProvedAbsent = false;
           if (saved.cutoverPending) {
             const verified: import('@spider/herdr/spaces/cutover').LaunchedSession[] = [];
             for (const entry of recovery.entries) {
+              if (recovery.conflicts?.some(conflict => conflict.sessionId === entry.target.sessionId)) continue;
               const state = await spaces.terminalState!(entry.placement);
-              if (state === 'live') { verified.push(await spaces.verifyOwner(entry.target, entry.placement)); continue; }
+              if (state === 'live') { verified.push(entry.confirmedLive && entry.result ? entry.result : await spaces.verifyOwner(entry.target, entry.placement)); continue; }
               const live = await assessSessionLiveness(entry.target.file, selectedProcessInventory(request.config, spaces.processInventory));
               const process = entry.result ? await spaces.processInventory.probe(entry.result.pid) : null;
               if (live.kind !== 'free' || process?.kind === 'unknown' || process?.kind === 'live' && process.startIdentity === entry.result!.startIdentity) throw new HerdrError('cutover-reconciliation-required', 'A recorded tab still has a possible session owner');
             }
             for (const intent of recovery.pendingIntents ?? []) if ((await assessSessionLiveness(intent.target.file, selectedProcessInventory(request.config, spaces.processInventory))).kind !== 'free') throw new HerdrError('cutover-reconciliation-required', 'An unresolved allocation still has a possible writer');
-            cutoverProvedAbsent = verified.length === 0;
+            cutoverProvedAbsent = verified.length === 0 && !recovery.conflicts?.length;
             recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.entries.flatMap(entry => { const result = verified.find(r => r.sessionId === entry.target.sessionId) ?? entry.result; return result ? [[result.sessionId, result.startIdentity]] : []; })) };
           } else if (recovery.recoveredCutover) recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.recoveredCutover.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
-          return { recoveredCutover, cutoverProvedAbsent, fingerprint: digest(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'))), coreIdentity: identity, mods: ['agents', 'spaces', 'pane', 'tabs', 'panel'].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
+          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, fingerprint: digest(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'))), coreIdentity: identity, mods: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome'].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
         stageLook: (request, context) => stagedLook(request, context),
         installFiles: async (request, context) => {
@@ -626,18 +717,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
             }
           }
         },
-        cutover: async (request, context) => {
-          const controller = new AbortController(), abort = () => controller.abort();
-          process.once('SIGINT', abort); process.once('SIGTERM', abort);
-          let result;
-          try { result = await setupSpaces(request.config, spaces, { adoptExistingSpaces: request.adoptExistingSpaces, signal: controller.signal }); }
-          finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
-          const cutover = { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(result.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
-          const app = spaces.app; for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
-          // Owner IDs are already in the spaces journal; selection must finish before completing cutover.
-          await context.recordCutover(cutover);
-          return cutover;
-        }, verify: async request => doctorHerdr(request, { ...await doctorParts(request), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
+        cutover: (request, context) => runSpaces(request, context, true),
+        reconcileCutover: (request, context) => runSpaces(request, context, false),
+        verify: async request => doctorHerdr(request, { ...await doctorParts(request), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
         rollback: async result => {
           const recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot());
           if (result.terminals.length !== recovery.createdTabs.length || result.terminals.some(address => !recovery.createdTabs.some(tab => tab.terminal === address)) || recovery.entries.some(entry => entry.result && result.identities[entry.target.sessionId] !== entry.result.startIdentity)) throw new HerdrError('cutover-owner-conflict', 'Rollback does not match G-created tab identities');
@@ -646,15 +728,25 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           for (const entry of recovery.entries) {
             const live = await assessSessionLiveness(entry.target.file, selectedProcessInventory(request.config, spaces.processInventory)), process = entry.result ? await spaces.processInventory.probe(entry.result.pid) : null;
             if (live.kind !== 'free' || process?.kind === 'unknown' || process?.kind === 'live' && process.startIdentity === entry.result!.startIdentity) throw new HerdrError('cutover-owner-live', 'Close the created session owner before rolling back its tab');
-            const space = snapshot.spaces.find(space => space.id === entry.placement.space), tab = space?.tabs.find(tab => tab.id === entry.placement.tab);
-            if (!tab) continue;
-            if (space!.name !== entry.target.spaceName || tab.name !== (entry.target.name ?? entry.target.sessionId) && tab.name !== entry.label || tab.terminal !== entry.placement.terminal) throw new HerdrError('cutover-owner-conflict', 'A created tab no longer has its recorded identity');
-            // The tab's pi may have run /new or /resume, so its session no longer names the target. Its terminal still does.
+            // A session can switch files while remaining in the same terminal.
             for (const record of (await spaces.processInventory.presence.list()).filter(p => p.kind === 'top-level' && p.hcAddress === entry.placement.terminal)) {
               const current = await spaces.processInventory.probe(record.pid);
-              if (current.kind === 'unknown' || current.kind === 'live' && current.startIdentity === record.startIdentity) throw new HerdrError('cutover-owner-live', `Close the pi running in tab ${tab.name} (PID ${record.pid}) before rolling back its tab`);
+              if (current.kind === 'unknown' || current.kind === 'live' && current.startIdentity === record.startIdentity) throw new HerdrError('cutover-owner-live', `Close the pi in the recorded terminal (PID ${record.pid}) before rollback`);
             }
-            close.push(entry.placement);
+            if (entry.manuallyMoved) {
+              if (snapshot.spaces.some(s => s.tabs.some(t => tabTerminals(t).some(row => row.terminal === entry.placement.terminal)))) throw new HerdrError('cutover-owner-conflict', 'Close the moved session before rollback');
+              continue;
+            }
+            const space = snapshot.spaces.find(space => space.id === entry.placement.space), tab = space?.tabs.find(tab => tab.id === entry.placement.tab);
+            if (!tab) {
+              if (snapshot.spaces.some(s => s.tabs.some(t => tabTerminals(t).some(row => row.terminal === entry.placement.terminal)))) throw new HerdrError('cutover-owner-conflict', 'A recorded terminal moved to an unowned tab');
+              continue;
+            }
+            const owned = new Set(recovery.entries.filter(e => e.placement.space === space!.id && e.placement.tab === tab.id).map(e => e.placement.terminal));
+            const foreign = tabTerminals(tab).filter(row => !owned.has(row.terminal)).map(row => row.terminal);
+            if (foreign.length) throw new HerdrError('cutover-owner-conflict', rollbackForeignPanesNotice(space!.name, tab.name, foreign));
+            if (tab.name !== (entry.tabName ?? entry.target.name ?? entry.target.sessionId) && tab.name !== entry.label || !tabTerminals(tab).some(row => row.terminal === entry.placement.terminal)) throw new HerdrError('cutover-owner-conflict', 'A created tab no longer has its recorded identity');
+            if (!close.some(p => p.space === entry.placement.space && p.tab === entry.placement.tab)) close.push(entry.placement);
           }
           for (const tab of close) { const reply = await spaces.app.command('tab.close', { id: tab.tab, confirmed: true }); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
           await forgetCutoverTabs(spaces.journalRoot, recovery.createdTabs, await spaces.layoutSnapshot());
@@ -662,6 +754,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         warn: message => process.stderr.write(message + '\n'),
       };
     }, doctorParts,
+    memoryReview: {
+      list: repoKeys => listMemoryReview(createMemoryReviewDbs(), repoKeys),
+      decide: (op, target) => decideMemoryReview(createMemoryReviewDbs(), op, target.scope === 'global' ? { scope: 'global', repoKey: null, uuid: target.uuid } : { scope: 'repo', repoKey: target.repoKey!, uuid: target.uuid }),
+    },
     ipc: async (descriptor, request) => { const ipc = createSessionIpcClient(descriptor); try { if (request.op === 'subscribeRun') throw new HerdrError('ipc-stream-unavailable', 'Use the external viewer for transcript subscriptions'); return await ipc.request(request); } finally { ipc.dispose(); } },
     sshShim: argv => runSshShim(argv, env),
     remoteObserver: async argv => {

@@ -8,6 +8,7 @@ import { join, dirname, basename, win32, isAbsolute, resolve } from 'node:path';
 import { constants } from 'node:os';
 import type { ExecutionEnvironmentPolicy } from '../contracts.js';
 import { HerdrError, object, text } from '../client/parse.js';
+import { HERDR_NOTICES } from '../notices.js';
 import { isCoreAvailable } from '../client/liveness.js';
 import { readMachineSnapshot, validSnapshot, type CacheDescriptor } from './cache.js';
 import { decideSsh } from './policy.js';
@@ -130,8 +131,8 @@ export async function runSshShim(argv: readonly string[], env: Readonly<NodeJS.P
       const forward = (signal: NodeJS.Signals) => { child.kill(signal); };
       const handlers = signals.map(signal => { const handler = () => forward(signal); process.on(signal, handler); return [signal, handler] as const; });
       const cleanup = () => { for (const [signal, handler] of handlers) process.off(signal, handler); };
-      child.once('error', error => { cleanup(); process.stderr.write(error.message + '\n'); resolve(127); });
+      child.once('error', () => { cleanup(); process.stderr.write(HERDR_NOTICES.sshStart.text + '\n'); resolve(127); });
       child.once('close', (code, signal) => { cleanup(); if (signal && process.platform !== 'win32') process.kill(process.pid, signal); resolve(code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1)); });
     });
-  } catch (error) { process.stderr.write(`SSH policy unavailable: ${String((error as Error).message)}; use spider exec with on:<machine>\n`); return 126; }
+  } catch { process.stderr.write(HERDR_NOTICES.sshCheck.text + '\n'); return 126; }
 }

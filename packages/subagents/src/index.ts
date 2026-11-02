@@ -17,13 +17,14 @@ export * from "./kill";
 export * from "./kill-process";
 export * from "./reaper";
 export * from "./child-registry";
+export { diagnoseDurableChildren } from './durable-adoption';
 export * from "./shutdown-reason";
 
 import { attachChildReporter, isSubagentChild } from "./child-reporter";
 import { makeRunHandler, adoptReloadedChildren } from "./actions/run";
 import { makeMessageHandler } from "./actions/message";
 import { makeKillHandler } from "./actions/kill";
-import { listChildSessions, teardownSessionAsync, detachForReload } from "./coordinators";
+import { listChildSessions, detachForReload } from "./coordinators";
 
 /** The session a pi event context belongs to ("" when the context does not say). */
 export function sessionIdFromCtx(ctx: unknown): string {
@@ -49,15 +50,14 @@ export function registerSubagentActions(host: { registerAction: (name: string, h
   host.registerAction("message", makeMessageHandler());
   host.registerAction("kill", makeKillHandler());
   // The ending session is named by ctx (pi passes the session's own context to session_shutdown).
-  // reload keeps THAT session's async children running for the reloaded activation to adopt; every
-  // other reason (quit, new, resume, fork, or an unknown/absent one) kills them, as before. Other
-  // sessions in this process are never touched. With no usable ctx the sessions this activation
-  // itself coordinates are used, never the whole process.
+  // Reload preserves every survivable handle. Other shutdowns preserve supervised children and
+  // stop only legacy direct-stdio children. Other sessions in this process are never touched.
+  // Without a usable ctx, use only sessions coordinated by this activation.
   try {
     pi?.on?.("session_shutdown", async (event?: { reason?: string }, ctx?: unknown) => {
       const id = sessionIdFromCtx(ctx);
       const sessions = id ? [id] : listChildSessions();
-      await Promise.all(sessions.map(s => event?.reason === "reload" ? detachForReload(s) : teardownSessionAsync(s)));
+      await Promise.all(sessions.map(s => detachForReload(s, { durableOnly: event?.reason !== 'reload' })));
     });
   } catch { /* best-effort */ }
 }

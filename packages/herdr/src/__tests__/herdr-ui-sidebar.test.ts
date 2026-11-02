@@ -6,12 +6,12 @@ import { describe, expect, it } from 'vitest';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
 import theme from '../../assets/themes/spider-glass.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
-import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentFilterOptions, createAgentFilters, projectMachineRows } from '../../assets/agents/children.js';
+import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren } from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
-import { middlePath } from '../../assets/shared/feed.js';
+import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
-interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: unknown[]) => unknown }
+interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: any[]) => unknown; hoverChange?: (...args: any[]) => unknown; hoverStyle?: (value: any) => unknown }
 const data = new WeakMap<object, Node>();
 function element(svgPath?: string): any {
   const node: Node = { calls: [], children: [], svg: svgPath };
@@ -19,8 +19,8 @@ function element(svgPath?: string): any {
     if (key === 'when') return (on: boolean, fn: (el: unknown) => unknown) => { if (on) fn(proxy); return proxy; };
     if (key === 'child') return (value: unknown) => { node.children.push(value); return proxy; };
     if (key === 'children') return (values: unknown[]) => { node.children.push(...values); return proxy; };
-    if (key === 'hover') return () => proxy;
-    return (...args: unknown[]) => { node.calls.push([key, args]); if (key === 'id') node.id = args[0] as string; if (key === 'on_click') node.click = args[0] as Node['click']; return proxy; };
+    if (key === 'hover') return (fn: Node['hoverStyle']) => { node.hoverStyle = fn; return proxy; };
+    return (...args: unknown[]) => { node.calls.push([key, args]); if (key === 'id') node.id = args[0] as string; if (key === 'on_click') node.click = args[0] as Node['click']; if (key === 'on_hover') node.hoverChange = args[0] as Node['hoverChange']; return proxy; };
   } });
   data.set(proxy, node); return proxy;
 }
@@ -35,13 +35,13 @@ const texts = (root: unknown): string[] => all(root).flatMap(node => node.childr
 async function currentClones(): Promise<HerdrClones> {
   const root = process.env.SPIDER_HERDR_MOD_FIXTURE!;
   const result = {} as HerdrClones;
-  for (const name of ['agents', 'spaces', 'pane', 'tabs'] as const) {
-    result[name] = { name: `spider-${name}`, clonedFrom: { name, version: '0.1.11' }, files: { 'main.js': await readFile(join(root, name, 'main.js'), 'utf8'), 'mod.json': await readFile(join(root, name, 'mod.json'), 'utf8') } };
+  for (const name of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) {
+    result[name] = { name: `spider-${name}`, clonedFrom: { name, version: '0.1.12' }, files: { 'main.js': await readFile(join(root, name, 'main.js'), 'utf8'), 'mod.json': await readFile(join(root, name, 'mod.json'), 'utf8') } };
   }
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { middlePath, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentFilterOptions, createAgentFilters, projectMachineRows, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -61,15 +61,33 @@ describe('Herdr UI theme accents', () => {
 describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the current built-ins (requires SPIDER_HERDR_MOD_FIXTURE; no app window)', () => {
   const props = { modId: 'spider-agents', labelContract: HerdrLabelContract, labelFont: 'Glass Label' };
 
+  it('placed sessions focus normally without promising to restore a parked main terminal', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const calls: unknown[] = [];
+    const parked = { address: 't1', parent: null, state: 'live', status: 'working', name: 'planner',
+      labels: { 'spider.kind': 'session', 'spider.session': 'planner' }, program: { key: 'pi', name: 'Pi', agent: true } };
+    let placed: any[] = [{ ...parked, pane: 'p1', space: 's1', space_name: 'planner', tab: 'tb1' }];
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => placed, terminals: () => [parked], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
+      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props,
+      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: (name: string, args: unknown) => calls.push({ name, args }), localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = []; view.listed = new Map();
+    const row = all(view.render({})).find(node => node.id === 'ag-t1');
+    expect(row).toBeDefined();
+    row!.click!({}, { stop_propagation() {} });
+    expect(calls).toEqual([{ name: 'pane.focus', args: { pane: 'p1' } }]);
+    placed = [];
+    expect(all(view.render({})).find(node => node.id === 'ag-t1')).toBeUndefined();
+  });
+
   it('section titles are Herdr\'s own, not the bold condensed label face', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const Agents = loadView(clones.agents.files['main.js'], { agents: () => [], terminals: () => [], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
       shared: () => null, setShared: () => {}, setAgentOrder: () => {}, openOverlay: () => {}, closeOverlay: () => {}, props: () => props, window: () => ({}),
-      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const agents = new Agents(); agents.folded = new Set(); agents.changed = {}; agents.pins = []; agents.spiderFeeds = []; agents.listed = new Map();
+      layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const agents = new Agents(); agents.folded = new Set(); agents.changed = {}; agents.pendingPins = []; agents.migratingPins = new Set(); agents.spiderFeeds = []; agents.listed = new Map();
     const Spaces = loadView(clones.spaces.files['main.js'], { machines: () => [], spaces: () => [], panes: () => [], focused: () => null, theme: () => palette, shared: () => null, setShared: () => {},
       run: () => {}, props: () => props, window: () => ({}), layout: () => ({ id: 'sidebar', size: { px: 268 } }), openOverlay: () => {}, closeOverlay: () => {} });
-    const spaces = new Spaces(); spaces.folded = new Set(); spaces.machines = []; spaces.shown = new Set();
+    const spaces = new Spaces(); spaces.folded = new Set(); spaces.machines = []; spaces.reconnecting = {}; spaces.shown = new Set();
     for (const [view, title] of [[agents.render({}), 'Agents'], [spaces.render(), 'Spaces']] as const) {
       const nodes = all(view);
       expect(texts(view)).toContain(title);
@@ -125,8 +143,8 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
   it('keeps Herdr\'s hairline between Spaces and Agents', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const Agents = loadView(clones.agents.files['main.js'], { agents: () => [], terminals: () => [], panes: () => [], focused: () => null, spaces: () => [], theme: () => ({ ...palette, border: '#00000000' }),
-      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pins = []; view.spiderFeeds = []; view.listed = new Map();
+      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = []; view.listed = new Map();
     const root = data.get(view.render({}))!;
     expect(call(root, 'border_t')).toEqual([1]); expect(call(root, 'border_color')).toEqual(['#2f2f32']);
   });
@@ -137,8 +155,8 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const child = { address: 't5', parent: 't1', state: 'live', status: 'idle', labels: {}, name: 'helper' };
     const order: string[][] = [];
     const Agents = loadView(clones.agents.files['main.js'], { agents: () => mains, terminals: () => [child], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
-      shared: () => null, setShared: () => {}, setAgentOrder: (ids: string[]) => order.push(ids), props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { getItem: () => null, setItem: () => {} } });
-    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pins = []; view.spiderFeeds = []; view.listed = new Map();
+      shared: () => null, setShared: () => {}, setAgentOrder: (ids: string[]) => order.push(ids), props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = []; view.listed = new Map();
     const rendered = all(view.render({}));
     expect(rendered.filter(node => node.id && /^(sec-|pinned$)/.test(node.id))).toEqual([]);
     for (const word of ['Needs you', 'Working', 'Idle', 'Done', 'Pinned', 'parked']) expect(texts(view.render({}))).not.toContain(word);
@@ -151,7 +169,43 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(call(space.find(node => node.children.includes('docs · build tools'))!, 'font_family')).toEqual(['JetBrains Mono']);
   });
 
-  it('spider pane headers: name, parent pill, middle-truncated cwd, then the steer chip at the right; never a kind word', async () => {
+  it('names each shared-tab agent from its own session or terminal while preserving a lone tab label', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const program = { name: 'pi', key: 'pi', agent: true };
+    const mains = [
+      { address: 't1', pane: 'p1', tab: 'shared', space_name: 'workspace', status: 'working', seq: 1, title: 'old owner title', program },
+      { address: 't2', pane: 'p2', tab: 'shared', space_name: 'workspace', status: 'working', seq: 2, title: '✳ Builder two', program },
+      { address: 't3', pane: 'p3', tab: 'single', space_name: 'workspace', status: 'working', seq: 3, title: 'other title', program },
+      { address: 't4', pane: 'p4', tab: 'shared', space_name: 'workspace', status: 'working', seq: 4, title: '123', program },
+    ];
+    const panes = mains.map(a => ({ ...a, terminal: a.address }));
+    const tabs = [{ id: 'shared', name: 'Shared tab' }, { id: 'single', name: 'Named tab', named: true }];
+    let sorting = 'priority';
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => mains, terminals: () => [], panes: () => panes, focused: () => null,
+      spaces: () => [{ id: 'space', name: 'workspace', tabs }], theme: () => palette, shared: (key: string) => key === 'agents.sort' ? sorting : null, setShared: () => {}, setAgentOrder: () => {},
+      props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.listed = new Map();
+    view.spiderFeeds = [{ owner: { name: 'Planner', terminal: { address: 't1' } }, runs: { rows: [] } }];
+    let rendered = view.render({});
+    const rowWords = (id: string) => {
+      const node = all(rendered).find(node => node.id === id)!;
+      return [node, ...node.children.flatMap(all)].flatMap(n => n.children.filter((c): c is string => typeof c === 'string'));
+    };
+    expect(rowWords('ag-t1')).toContain('· Planner');
+    expect(rowWords('ag-t2')).toContain('· Builder two');
+    expect(rowWords('ag-t3')).toContain('· Named tab');
+    expect(rowWords('ag-t4')).toContain('· 123');
+    view.spiderFeeds.push({ owner: { name: '42', terminal: { address: 't3' } }, runs: { rows: [] } });
+    rendered = view.render({});
+    expect(rowWords('ag-t3')).toContain('· 42');
+    sorting = 'grouped'; rendered = view.render({});
+    expect(rowWords('ag-t1')).toContain('Planner');
+    expect(rowWords('ag-t2')).toContain('Builder two');
+    expect(rowWords('ag-t3')).toContain('42');
+    expect(rowWords('ag-t4')).toContain('123');
+  });
+
+  it('subagent headers have two pills and no path or steer chip; consoles keep middle-truncated paths', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const render = (labels: Record<string, string>, title: string, cwd = '/fixture/home/src/spider', width?: number) => {
       const Pane = loadView(clones.pane.files['main.js'], { panes: () => [{ pane: 'p1', terminal: 't4', focused: false, status: 'idle', cwd, title }],
@@ -162,18 +216,21 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const viewer = render({ 'spider.kind': 'subagent-viewer', 'spider.parent-name': 'planner', 'spider.steer': 'rpc' }, 'e2e-task1 viewer');
     const nodes = all(viewer), words = texts(viewer);
     const at = (text: string) => words.indexOf(text);
-    expect([at('e2e-task1') >= 0, at('e2e-task1') < at('planner'), at('planner') < at('~/src/spider'), at('~/src/spider') < at('Can steer')]).toEqual([true, true, true, true]);
+    expect([at('e2e-task1') >= 0, at('e2e-task1') < at('planner'), at('~/src/spider') === -1, at('Can steer') === -1]).toEqual([true, true, true, true]);
     expect(words.join(' ')).not.toMatch(/viewer|observer|console|\u21b3/i);
-    for (const text of ['e2e-task1', '~/src/spider', 'planner']) expect(call(nodes.find(node => node.children.includes(text))!, 'font_family')).toEqual(['JetBrains Mono']);
+    for (const text of ['e2e-task1', 'planner']) expect(call(nodes.find(node => node.children.includes(text))!, 'font_family')).toEqual(['JetBrains Mono']);
     const pill = nodes.find(node => node.children.includes('planner'))!;
     expect([call(pill, 'rounded'), call(pill, 'bg')]).toEqual([[999], ['#ffffff14']]);
-    const path = nodes.find(node => node.children.includes('~/src/spider'))!;
+    const consoleNodes = all(render({ 'spider.kind': 'remote-console', 'spider.parent-name': 'planner' }, 'console'));
+    const path = consoleNodes.find(node => node.children.includes('~/src/spider'))!;
     expect(call(path, 'tooltip')).toEqual(['~/src/spider']); expect(call(path, 'truncate')).toBeUndefined();
     // A narrow header keeps the prefix and the last folder, with the full path on hover.
-    const narrow = all(render({ 'spider.kind': 'subagent-viewer', 'spider.parent-name': 'planner' }, 'e2e', '/fixture/home/src/spider/worktrees/feature/checkout-01', 22 * 7));
+    const narrow = all(render({ 'spider.kind': 'remote-observer', 'spider.parent-name': 'planner' }, 'command', '/fixture/home/src/spider/worktrees/feature/checkout-01', 22 * 7));
     const cut = narrow.find(node => node.children.includes('~/src/spi\u2026/checkout-01'))!;
     expect(call(cut, 'tooltip')).toEqual(['~/src/spider/worktrees/feature/checkout-01']);
-    expect(texts(render({ 'spider.kind': 'subagent-viewer', 'spider.parent-name': 'parent-run', 'spider.steer': 'print' }, 'nested'))).toEqual(expect.arrayContaining(['nested', 'parent-run', 'Read-only']));
+    const nested = texts(render({ 'spider.kind': 'subagent-viewer', 'spider.parent-name': 'parent-run', 'spider.steer': 'print' }, 'nested'));
+    expect(nested).toEqual(expect.arrayContaining(['nested', 'parent-run']));
+    expect(nested).not.toContain('Read-only');
     expect(texts(render({ 'spider.kind': 'remote-observer' }, 'npm test observer'))).toContain('npm test');
     expect(texts(render({ 'spider.kind': 'remote-console' }, 'console \u00b7 build.invalid'))).toContain('build.invalid');
     const plain = texts(render({}, 'zsh'));
@@ -217,6 +274,193 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
       expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(out)).toBe(false);
       if (max >= 4 && max < length) expect(out.endsWith('/\u{1F680}\u{1F680}')).toBe(true);
     }
+  });
+
+  it('keeps parked runs and finished ancestors of running work visible, with independent finished toggles', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
+    const makeFeed = (id: string, address: string, runs: any[]) => ({ sessionId: id, generation: 'generation', updatedAt: now, lifecycle: 'live',
+      owner: { sessionId: id, name: id, terminal: { address } }, ipc: null, runs: { rows: runs.map(run => ({ ownerSessionId: id, ...run })) } });
+    const run = (id: string, status: string, viewer: string | null) => ({ id, name: id, status, viewer, finishedAt: status === 'running' ? null : now - 1000 });
+    const feeds = [makeFeed('session-one', 't1', [run('parked', 'running', null), run('parent-done', 'done', null), run('hidden-done', 'failed', null)]),
+      makeFeed('session-two', 't9', [run('other-done', 'done', null)])];
+    const job = { address: 'remote.invalid/t2', parent: 't1', state: 'live', status: 'working', name: 'running job', labels: { 'spider.kind': 'exec', 'spider.session': 'session-one', 'spider.run': 'parent-done', 'spider.job': 'job', 'spider.machine': 'remote.invalid' } };
+    const mains = [{ address: 't1', pane: 'p1', status: 'idle', seq: 1, program }, { address: 't9', pane: 'p9', status: 'idle', seq: 2, program }];
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => mains, terminals: () => [job], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
+      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = feeds; view.listed = new Map();
+    const cx = { notify() {}, stop_propagation() {} };
+    let root = view.render({}), nodes = all(root), ids = nodes.map(node => node.id);
+    expect(ids).toEqual(expect.arrayContaining(['sub-parked', 'sub-parent-done', 'sub-job', 'finished-toggle-t1', 'finished-toggle-t9']));
+    expect(ids).not.toContain('sub-hidden-done'); expect(ids).not.toContain('sub-other-done');
+    const toggle = nodes.find(node => node.id === 'finished-toggle-t1')!;
+    expect(toggle.children).toContain('1 finished');
+    expect(toggle.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
+    expect(all(root).find(node => node.id === 'finished-toggle-t9')!.children).toContain('1 finished');
+    toggle.click!({}, cx); root = view.render({}); nodes = all(root); ids = nodes.map(node => node.id);
+    expect(ids).toContain('sub-hidden-done'); expect(ids).not.toContain('sub-other-done');
+    const expanded = nodes.find(node => node.id === 'finished-toggle-t1')!;
+    expect(expanded.children).toContain('Hide finished');
+    expect(expanded.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/chevron-up.svg')).toBe(true);
+    expanded.click!({}, cx); root = view.render({});
+    expect(all(root).map(node => node.id)).not.toContain('sub-hidden-done');
+    expect(all(root).find(node => node.id === 'finished-toggle-t1')!.children).toContain('1 finished');
+  });
+
+  it('keeps finished ancestors of a running job in a collapsed console and counts the job', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
+    const feed = { sessionId: 'session-one', generation: 'generation', updatedAt: now, lifecycle: 'live', owner: { sessionId: 'session-one', name: 'planner', terminal: { address: 't1' } }, ipc: null,
+      runs: { rows: [{ id: 'parent-done', ownerSessionId: 'session-one', name: 'parent', status: 'done', viewer: null, finishedAt: now - 1000 }] } };
+    const labels = { 'spider.session': 'session-one', 'spider.run': 'parent-done', 'spider.machine': 'remote.invalid' };
+    const console = { address: 'remote.invalid/console', parent: 't1', state: 'finished', status: 'done', exitCode: 0, reason: 'exited', finishedAt: now - 1000, labels: { ...labels, 'spider.kind': 'remote-console' } };
+    const job = { address: 'remote.invalid/job', parent: 't1', state: 'live', status: 'blocked', labels: { ...labels, 'spider.kind': 'exec', 'spider.job': 'job' } };
+    const order: string[][] = [];
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => [{ address: 't1', pane: 'p1', status: 'idle', seq: 1, program }, { address: 't9', pane: 'p9', status: 'working', seq: 2, program }],
+      terminals: () => [console, job], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette, shared: () => null, setShared: () => {},
+      setAgentOrder: (ids: string[]) => order.push(ids), props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed]; view.listed = new Map();
+    const cx = { notify() {}, stop_propagation() {} };
+    let root = view.render({}), ids = all(root).map(node => node.id);
+    expect(ids).toEqual(expect.arrayContaining(['sub-parent-done', 'sub-console:remote.invalid/console']));
+    expect(ids).not.toContain('sub-job');
+    expect(ids).not.toContain('finished-toggle-t1');
+    expect(order.at(-1)).toEqual(['t1', 't9']);
+    all(root).find(node => node.id === 'fold-left-t1')!.click!({}, cx); root = view.render({});
+    const pill = all(root).find(node => node.id === 'fold-t1')!;
+    expect(pill.children).toContain('1');
+    expect(call(pill, 'text_color')).toEqual([palette.blocked]);
+    expect(call(pill, 'tooltip')).toEqual(['1 subagent']);
+  });
+
+  it('places a centred fold chevron before the agent icon and keeps empty slots aligned', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
+    const mains = [{ address: 't1', pane: 'p1', status: 'idle', seq: 1, program }, { address: 't9', pane: 'p9', status: 'idle', seq: 2, program }];
+    const child = { address: 't2', parent: 't1', state: 'live', status: 'blocked', labels: {}, name: 'live child' };
+    const feed = { sessionId: 'session-one', generation: 'generation', updatedAt: now, lifecycle: 'live', owner: { sessionId: 'session-one', name: 'planner', terminal: { address: 't1' } }, ipc: null,
+      runs: { rows: [{ id: 'finished', ownerSessionId: 'session-one', name: 'finished', status: 'done', viewer: null, finishedAt: now - 1000 }] } };
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => mains, terminals: () => [child], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
+      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed]; view.listed = new Map();
+    const cx = { notify() {}, stop_propagation() {} };
+    let root = view.render({});
+    for (const id of ['t1', 't9']) {
+      const slot = all(root).find(node => node.id === `fold-slot-${id}`)!;
+      expect(slot).toBeDefined();
+      expect(call(slot, 'size')).toEqual([11]);
+    }
+    expect(all(root).find(node => node.id === 'fold-left-t9')).toBeUndefined();
+    const chevron = all(root).find(node => node.id === 'fold-left-t1')!;
+    for (const method of ['flex', 'items_center', 'justify_center', 'flex_none']) expect(call(chevron, method)).toEqual([]);
+    expect(all(root).find(node => node.id === 'finished-toggle-t9')).toBeUndefined();
+    const row = all(root).find(node => node.id === 'ag-t1')!;
+    const rowNodes = [row, ...row.children.flatMap(all)];
+    expect(rowNodes.findIndex(node => node.id === 'fold-slot-t1')).toBeLessThan(rowNodes.findIndex(node => node.id === 'agent-pin-t1'));
+    expect(call(all(root).find(node => node.id === 'sub-t2')!, 'pl')).toEqual([17]);
+    expect(call(all(root).find(node => node.id === 'finished-toggle-t1')!, 'pl')).toEqual([38]);
+    chevron.click!({}, cx); root = view.render({});
+    expect(all(root).map(node => node.id)).not.toContain('sub-t2');
+    all(root).find(node => node.id === 'fold-left-t1')!.click!({}, cx); root = view.render({});
+    expect(all(root).map(node => node.id)).toContain('sub-t2');
+  });
+
+  it('puts a fixed fold slot before each icon and a running-only pill on folded rows', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
+    const mains = [{ address: 't1', pane: 'p1', status: 'idle', seq: 1, program }, { address: 't9', pane: 'p9', status: 'idle', seq: 2, program }];
+    const child = { address: 't2', parent: 't1', state: 'live', status: 'blocked', labels: {}, name: 'live child' };
+    const feed = { sessionId: 'session-one', generation: 'generation', updatedAt: now, lifecycle: 'live', owner: { sessionId: 'session-one', name: 'planner', terminal: { address: 't1' } }, ipc: null,
+      runs: { rows: [{ id: 'finished', ownerSessionId: 'session-one', name: 'finished', status: 'done', viewer: null, finishedAt: now - 1000 }] } };
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => mains, terminals: () => [child], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
+      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
+    const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed]; view.listed = new Map();
+    const cx = { notify() {}, stop_propagation() {} };
+    let root = view.render({});
+    for (const id of ['t1', 't9']) {
+      const slot = all(root).find(node => node.id === `fold-slot-${id}`)!;
+      expect(slot).toBeDefined();
+      expect(call(slot, 'size')).toEqual([11]);
+    }
+    expect(all(root).find(node => node.id === 'fold-left-t9')).toBeUndefined();
+    const chevron = all(root).find(node => node.id === 'fold-left-t1')!;
+    for (const method of ['flex', 'items_center', 'justify_center', 'flex_none']) expect(call(chevron, method)).toEqual([]);
+    expect(all(root).find(node => node.id === 'finished-toggle-t9')).toBeUndefined();
+    const row = all(root).find(node => node.id === 'ag-t1')!;
+    const rowNodes = [row, ...row.children.flatMap(all)];
+    expect(rowNodes.findIndex(node => node.id === 'fold-slot-t1')).toBeLessThan(rowNodes.findIndex(node => node.id === 'agent-pin-t1'));
+    expect(call(all(root).find(node => node.id === 'sub-t2')!, 'pl')).toEqual([17]);
+    expect(call(all(root).find(node => node.id === 'finished-toggle-t1')!, 'pl')).toEqual([38]);
+    all(root).find(node => node.id === 'finished-toggle-t1')!.click!({}, cx); root = view.render({});
+    expect(all(root).map(node => node.id)).toContain('sub-finished');
+    all(root).find(node => node.id === 'fold-left-t1')!.click!({}, cx); root = view.render({});
+    const pill = all(root).find(node => node.id === 'fold-t1')!;
+    expect(pill.children).toContain('1');
+    expect(call(pill, 'rounded')).toEqual([999]); expect(call(pill, 'bg')).toEqual([palette.hover]);
+    const hover = element(); pill.hoverStyle!(hover);
+    expect(call(data.get(hover)!, 'bg')).toEqual([palette.selected]);
+    expect(call(pill, 'text_color')).toEqual([palette.blocked]); expect(call(pill, 'tooltip')).toEqual(['1 subagent']);
+    expect(pill.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/bot.svg' && call(node, 'size')?.[0] === 11)).toBe(true);
+    expect(pill.children.flatMap(all).some(node => node.svg?.includes('chevron'))).toBe(false);
+    pill.click!({}, cx); root = view.render({}); expect(all(root).map(node => node.id)).toContain('sub-t2');
+  });
+
+  it('shows pin only on icon hover and keeps the elapsed time visible', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true }, actions: unknown[] = [], writes: string[] = [];
+    const main = { address: 't1', pane: 'p1', status: 'working', seq: 1, program, pinned: false };
+    const terminal = { address: 't1', parent: null, state: 'live', status: 'working', labels: {} };
+    const child = { address: 't2', parent: 't1', state: 'live', status: 'working', labels: {}, name: 'child' };
+    const Agents = loadView(clones.agents.files['main.js'], { agents: () => [main], terminals: () => [terminal, child], panes: () => [], focused: () => null, spaces: () => [], theme: () => palette,
+      shared: () => null, setShared: () => {}, setAgentOrder: () => {}, props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: (...args: unknown[]) => actions.push(args),
+      localStorage: { removeItem: () => {}, getItem: () => null, setItem: (_key: string, value: string) => writes.push(value) } });
+    const view = new Agents(); view.folded = new Set(); view.changed = { t1: { s: 'working', at: Date.now() - 60000 } }; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = []; view.listed = new Map();
+    const cx = { notify() {}, stop_propagation() {} };
+    let root = view.render({});
+    const icon = () => all(root).find(node => node.id === 'agent-pin-t1')!;
+    expect(icon()).toBeDefined();
+    expect(call(icon(), 'size')).toEqual([16]); expect(texts(root)).toContain('1m');
+    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/pi.svg')).toBe(true);
+    expect(all(root).some(node => node.id === 'pin-t1')).toBe(false);
+    all(root).find(node => node.id === 'ag-t1')!.hoverChange?.(true, cx); root = view.render({});
+    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/pi.svg')).toBe(true);
+    expect(texts(root)).toContain('1m');
+    icon().hoverChange!(true, cx); root = view.render({});
+    expect(texts(root)).toContain('1m');
+    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/pin.svg')).toBe(true);
+    expect(call(icon(), 'tooltip')).toEqual(['Pin to the top']);
+    icon().click!({}, cx); expect(view.pendingPins).toEqual([]); expect(view.folded.has('t1')).toBe(false); expect(actions).toEqual([['terminal.pin', { terminal: 't1', pinned: true }]]); expect(writes).toEqual([]);
+    expect(main.pinned).toBe(false); main.pinned = true;
+    root = view.render({}); icon().hoverChange!(true, cx); root = view.render({});
+    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/pin-off.svg')).toBe(true);
+    expect(call(icon(), 'tooltip')).toEqual(['Unpin']);
+    icon().click!({}, cx); expect(view.pendingPins).toEqual([]); expect(actions).toEqual([['terminal.pin', { terminal: 't1', pinned: true }], ['terminal.pin', { terminal: 't1', pinned: false }]]);
+  });
+
+  it('ships a small Lucide up-chevron for hiding finished rows', async () => {
+    const icon = await readFile(join('packages/herdr/assets/agents/chevron-up.svg'), 'utf8').catch(() => '');
+    expect(icon).toContain('stroke-width="2"');
+    expect(icon).toContain('d="m18 15-6-6-6 6"');
+  });
+
+  it('centres the console chevron in a round 20-pixel target that toggles commands', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const Agents = loadView(clones.agents.files['main.js'], { props: () => props, terminals: () => [] });
+    const view = new Agents(); view.listed = new Map(); view.expandedConsoles = new Set();
+    const row = () => view.subRow(palette, { t: { key: 'console', kind: 'console', status: 'idle', address: 'x', name: 'console', spider: true, outcome: null, action: null }, lines: ['└'] }, null, false);
+    const toggle = () => all(row()).find(node => node.id === 'console-fold-console')!;
+    const cx = { notify() {}, stop_propagation() {} };
+    let target = toggle();
+    expect(call(target, 'size')).toEqual([20]);
+    expect(call(target, 'rounded')).toEqual([999]);
+    for (const method of ['flex', 'items_center', 'justify_center', 'flex_none']) expect(call(target, method)).toEqual([]);
+    expect(call(target, 'tooltip')).toEqual(['Show commands']);
+    expect(target.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg' && call(node, 'size')?.[0] === 11)).toBe(true);
+    target.click!({}, cx); target = toggle();
+    expect(call(target, 'tooltip')).toEqual(['Hide commands']);
+    expect(target.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
+    target.click!({}, cx);
+    expect(call(toggle(), 'tooltip')).toEqual(['Show commands']);
   });
 
   it('needs-you rows keep their amber mark with a glyph', async () => {

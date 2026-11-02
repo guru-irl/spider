@@ -9,7 +9,7 @@ import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { stageFakeAppDaemon } from '../fake-app.js';
 
-it('answers every 0.1.11 version spelling without starting or contacting a daemon', async () => {
+it('answers every 0.1.12 version spelling without starting or contacting a daemon', async () => {
   const scratch = resolve('.spider/scratch/e2'); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'v-'));
   const staged = await stageFakeAppDaemon(root, path => {
@@ -28,7 +28,7 @@ it('answers every 0.1.11 version spelling without starting or contacting a daemo
     }
   };
   for (const spelling of ['-V', '--version', 'version']) {
-    expect(await invoke(spelling)).toEqual({ exitCode: 0, stdout: 'herdr-app 0.1.11\n', stderr: '' });
+    expect(await invoke(spelling)).toEqual({ exitCode: 0, stdout: 'herdr-app 0.1.12\n', stderr: '' });
     expect(existsSync(staged.socket)).toBe(false);
     expect((await readdir(root)).sort()).toEqual(before);
   }
@@ -37,7 +37,7 @@ it('answers every 0.1.11 version spelling without starting or contacting a daemo
   await new Promise<void>((done, fail) => { trap.once('error', fail); trap.listen(staged.socket, done); });
   try {
     for (const spelling of ['-V', '--version', 'version']) {
-      expect(await invoke(spelling)).toEqual({ exitCode: 0, stdout: 'herdr-app 0.1.11\n', stderr: '' });
+      expect(await invoke(spelling)).toEqual({ exitCode: 0, stdout: 'herdr-app 0.1.12\n', stderr: '' });
     }
     expect(contacts).toBe(0);
   } finally { await new Promise<void>((done, fail) => trap.close(error => error ? fail(error) : done())); }

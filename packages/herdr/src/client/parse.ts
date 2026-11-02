@@ -68,7 +68,8 @@ export function parseTerminal(value: unknown): TerminalSummary {
   if (t.state !== 'live' && t.state !== 'finished') throw new HerdrError('invalid-reply', 'Invalid terminal state');
   return { address: text(t.address) as TerminalAddress, parent: nullableText(t.parent) as TerminalAddress | null,
     labels: labels as Record<string, string>, state: t.state, status: parseProgramStatus(t.status), exitCode: nullableInteger(t.exit_code),
-    reason: nullableText(t.reason), signal: nullableInteger(t.signal), finishedAt: nullableInteger(t.finished_ms) };
+    reason: nullableText(t.reason), signal: nullableInteger(t.signal), finishedAt: nullableInteger(t.finished_ms),
+    ...(typeof t.notify === 'boolean' ? { notify: t.notify } : {}) };
 }
 export function absolutePath(value: unknown): string {
   const path = text(value); if (!isAbsolute(path)) throw new HerdrError('invalid-config', 'Configured path must be absolute'); return path;

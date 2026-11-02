@@ -30,7 +30,7 @@ test('startup opens at most four viewers concurrently and an individual failure 
   try {
     await flush(); expect(started).toBe(true); expect(active).toBe(4);
     while (gates.length) { gates.splice(0).forEach(resolve => resolve()); await flush(); }
-    await start; expect(maximum).toBe(4); expect(errors).toHaveLength(1); expect(opened).toEqual(ids.slice(1));
+    await start; expect(maximum).toBe(4); expect(errors).toEqual([]); expect(opened).toEqual(ids.slice(1));
   } finally { gates.splice(0).forEach(resolve => resolve()); await registration.dispose(); await start.catch(() => {}); }
 });
 

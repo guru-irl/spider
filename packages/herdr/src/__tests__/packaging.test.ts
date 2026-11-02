@@ -75,16 +75,16 @@ describe.sequential('published Herdr artifact', () => {
     expect(lock.packages['packages/herdr']).toMatchObject({ name: '@spider/herdr', version: '0.0.0', license: 'MIT AND OFL-1.1 AND Apache-2.0' });
     expect(lock.packages['node_modules/@spider/herdr']).toEqual({ resolved: 'packages/herdr', link: true });
   });
-  it('the packed package contains three runtimes and assets without frozen mods', async () => {
+  it('the packed package contains the runtimes, optional pi view and assets without frozen mods', async () => {
     const packed = await h.buildAndInspectPackage();
     expect(packed.files).toEqual(expect.arrayContaining([
-      'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/remote-runtime.mjs',
+      'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/feed-reader.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs', 'dist/herdr/subagent-supervisor.mjs',
       'packages/herdr/assets/themes/dracula-plus-glass.json',
       'packages/herdr/assets/themes/spider-glass.json',
       'packages/herdr/assets/shared/feed.js',
       'packages/herdr/assets/tabs/spider.svg',
       'packages/herdr/assets/mods/spider/main.js',
-      'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg',
+      'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/move.js', 'packages/herdr/assets/agents/move-menu.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg', 'packages/herdr/assets/agents/chevron-up.svg',
       'packages/herdr/assets/look/patches.json', 'packages/herdr/assets/look/layout-edits.json',
       'packages/herdr/assets/fonts/GoogleSansFlex.ttf', 'packages/herdr/assets/fonts/GlassLabel-Bold.ttf',
       'packages/herdr/assets/fonts/GoogleSansFlex-OFL.txt', 'packages/herdr/assets/fonts/GoogleSansFlex-TRADEMARKS.md',
@@ -97,6 +97,16 @@ describe.sequential('published Herdr artifact', () => {
     expect(packed.remoteNonBuiltinImports).toEqual([]);
     expect(packed.files.filter(path => /(?:__tests__|recordings|\.d\.ts$|config\.example\.json$|\.map$)/.test(path))).toEqual([]);
   }, 180_000);
+
+  it('the packed feed reader serves and closes from only an explicit fixture root', async () => {
+    const feedRoot = join(packedRoot, 'reader-root');
+    const connection = JSON.parse(run([join(packedRoot, 'package/dist/herdr/feed-reader.mjs'), '--root', feedRoot], packedRoot));
+    const request = (route: string) => fetch(`http://127.0.0.1:${connection.port}${route}`, { method: 'POST', headers: { authorization: `Bearer ${connection.token}` }, body: JSON.stringify(route === '/snapshot' ? { known: {} } : {}) });
+    try {
+      const snapshot = await request('/snapshot'); expect(snapshot.ok).toBe(true);
+      expect(await snapshot.json()).toEqual({ version: 1, entries: [], changes: [], errors: [] });
+    } finally { expect((await request('/close')).ok).toBe(true); }
+  });
 
   it('CLI usage never accidentally runs the remote runtime entry', () => {
     const result = spawnSync(process.execPath, [join(packedRoot, 'package/dist/herdr/cli.mjs'), '--invalid-command'], { cwd: packedRoot, env, encoding: 'utf8', timeout: 10_000 });
@@ -117,11 +127,11 @@ describe.sequential('published Herdr artifact', () => {
   });
 
   it('remote-runtime is the only bundle containing the remote main guard', () => {
-    const bundles = ['dist/extension.js', 'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/remote-runtime.mjs'];
+    const bundles = ['dist/extension.js', 'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/feed-reader.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs', 'dist/herdr/subagent-supervisor.mjs'];
     // This diagnostic belongs exclusively to C's main block, never its library API.
     const mains = bundles.filter(file => readFileSync(join(packedRoot, 'package', file), 'utf8').includes('A runtime request file is required'));
     expect(mains).toEqual(['dist/herdr/remote-runtime.mjs']);
-    expect(bundles.map(file => readFileSync(join(packedRoot, 'package', file), 'utf8').match(/SPIDER_HERDR_RUNTIME_ENTRY=(true|false)/)?.[1])).toEqual(['false', 'false', 'false', 'true']);
+    expect(bundles.map(file => readFileSync(join(packedRoot, 'package', file), 'utf8').match(/SPIDER_HERDR_RUNTIME_ENTRY=(true|false)/)?.[1])).toEqual(['false', 'false', 'false', 'false', 'true', 'false', 'false']);
     for (const file of bundles) expect(readFileSync(join(packedRoot, 'package', file), 'utf8')).not.toContain('import.meta.spiderHerdrRuntimeEntry');
   });
 
@@ -130,7 +140,7 @@ describe.sequential('published Herdr artifact', () => {
     const licence = readFileSync(join(packedRoot, 'package/licenses/herdr-apache-2.0.txt'));
     expect(createHash('sha256').update(licence).digest('hex')).toBe('c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4');
     expect(readFileSync(join(packedRoot, 'package/packages/herdr/assets/look/NOTICE'), 'utf8')).toContain('modified portions of Herdr');
-    expect(readFileSync(join(packedRoot, 'package/NOTICE.md'), 'utf8')).toContain('Herdr 0.1.11 by the Herdr authors');
+    expect(readFileSync(join(packedRoot, 'package/NOTICE.md'), 'utf8')).toContain('Herdr 0.1.12 by the Herdr authors');
   });
 
   it('checks the real packed tarball', () => {

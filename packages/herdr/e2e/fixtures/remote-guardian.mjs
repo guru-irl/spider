@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync, watch, lstatSync, 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { connect } from 'node:net';
 import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
 
 export const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
 export function processStart(pid) {
@@ -62,7 +63,45 @@ function validateLedger(ledger, leasePath) {
   }
 }
 
-export async function defaultInventory(core) {
+const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const marks = (value, scope) => {
+  const text = JSON.stringify(value);
+  return [...scope.roots ?? [], ...scope.namespaces ?? []].filter(item => typeof item === 'string' && item.length >= 3).some(item => text.includes(item));
+};
+function terminalProjection(id, row, scope) {
+  if (!row || typeof row !== 'object' || !row.labels || typeof row.labels !== 'object' || Array.isArray(row.labels) || !Array.isArray(row.argv) || !row.argv.every(value => typeof value === 'string') || typeof row.cwd !== 'string') return { id };
+  const labels = {};
+  for (const key of ['spider.owner-core', 'spider.run', 'spider.job', 'spider.session']) if (typeof row.labels[key] === 'string') labels[key] = fingerprint(row.labels[key]);
+  return { id, fingerprint: fingerprint(row), labels, ownedPath: marks([row.argv, row.cwd, row.last_cwd ?? ''], scope) };
+}
+/** Compare shared state by ownership, not by whether foreign sessions were active. */
+export function assessDefaultInventory(before, after, scope = {}) {
+  if (before === null && after === null) return { clean: true, violations: [], foreignActivity: [] };
+  if (!before || !after || !Array.isArray(before.terminals) || !Array.isArray(after.terminals)) return { clean: false, violations: [{ kind: 'inventory-unverified' }], foreignActivity: [] };
+  const owned = new Set([...(scope.coreIds ?? []), ...(scope.runIds ?? []), ...(scope.jobIds ?? []), ...(scope.sessionIds ?? [])].map(fingerprint));
+  const attributable = row => row?.ownedPath === true || Object.values(row?.labels ?? {}).some(value => owned.has(value));
+  const complete = row => typeof row?.fingerprint === 'string' && row.labels && typeof row.ownedPath === 'boolean';
+  const previous = new Map(before.terminals.map(row => [row.id, row])), current = new Map(after.terminals.map(row => [row.id, row]));
+  const reachable = new Set((scope.terminalIds ?? []).map(id => String(id).replace(/^t/, '')));
+  const violations = [], foreignActivity = [];
+  for (const id of new Set([...previous.keys(), ...current.keys()])) {
+    const old = previous.get(id), next = current.get(id);
+    if (JSON.stringify(old) === JSON.stringify(next)) continue;
+    const kind = !old ? 'added' : !next ? 'removed' : 'changed';
+    const unknownRemoval = kind === 'removed' && (scope.identitiesComplete === false || !old?.labels?.['spider.owner-core'] || reachable.has(String(id).replace(/^t/, '')));
+    const incomplete = (old && !complete(old)) || (next && !complete(next));
+    const unprovedIds = scope.identitiesComplete === false && [old, next].some(row => row?.labels?.['spider.run'] || row?.labels?.['spider.job']);
+    const target = attributable(old) || attributable(next) || unknownRemoval || incomplete || unprovedIds ? violations : foreignActivity;
+    target.push({ id, kind });
+  }
+  if (JSON.stringify(before.machines) !== JSON.stringify(after.machines)) {
+    (before.machines?.ownedPath || after.machines?.ownedPath ? violations : foreignActivity).push({ id: 'machines', kind: 'changed' });
+  }
+  if (before.listening !== after.listening) foreignActivity.push({ id: 'socket', kind: 'changed' });
+  return { clean: violations.length === 0, violations, foreignActivity };
+}
+
+export async function defaultInventory(core, scope = {}) {
   if (!core) return null;
   // Never query hc in the default namespace, even for an apparently read-only inventory.
   const directory = (core.env.XDG_STATE_HOME || core.env.HOME + '/.local/state') + '/herdr-core/default';
@@ -74,14 +113,15 @@ export async function defaultInventory(core) {
     } catch (error) { if (error.code === 'ENOENT') return { present: false }; throw error; }
   };
   const machines = read('machines.json'), saved = read('terminals.json');
+  const projectedMachines = machines.present ? { present: true, fingerprint: fingerprint(machines.value), ownedPath: marks(machines.value, scope) } : machines;
   const active = await listening(core.socket);
   if (!saved.present) {
     if (active || core.wasListening) throw new Error('default-inventory-unavailable: persisted terminals are missing');
-    return { listening: active, terminals: [], machines };
+    return { listening: active, terminals: [], machines: projectedMachines };
   }
   const value = saved.value?.terminals;
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('default-inventory-malformed');
-  return { listening: active, terminals: Object.keys(value).sort().map(id => ({ id })), machines };
+  return { listening: active, terminals: Object.keys(value).sort().map(id => terminalProjection(id, value[id], scope)), machines: projectedMachines };
 }
 
 // An observed root process is never signalled by name. Unregistered survivors fail the proof.
@@ -136,14 +176,16 @@ async function guardian(ledgerPath, leasePath, removeRoot) {
     for (const p of rootProcesses(root)) proof.survivors.push({ kind: 'root-process', id: `${p.pid} ${p.command.slice(0, 200)}` });
     try {
       proof.defaultBefore = ledger.defaultBefore ?? null;
-      proof.defaultAfter = await defaultInventory(ledger.defaultCore);
-      if (JSON.stringify(proof.defaultBefore) !== JSON.stringify(proof.defaultAfter)) proof.survivors.push({ kind: 'default-inventory-changed', id: 'default' });
+      const scope = { ...ledger.ownership, roots: ledger.ownership?.roots ?? [root], namespaces: ledger.ownership?.namespaces ?? ledger.cores.map(core => core.namespace), coreIds: [...ledger.ownership?.coreIds ?? [], ...ledger.cores.map(core => core.coreId).filter(Boolean)] };
+      proof.defaultAfter = await defaultInventory(ledger.defaultCore, scope);
+      proof.defaultAssessment = assessDefaultInventory(proof.defaultBefore, proof.defaultAfter, scope);
+      if (!proof.defaultAssessment.clean) proof.survivors.push({ kind: 'default-inventory-changed', id: 'default', violations: proof.defaultAssessment.violations });
     } catch (error) { proof.survivors.push({ kind: 'default-inventory-unverified', id: String(error) }); }
     proof.clean = proof.survivors.length === 0;
     writeAtomic(ledgerPath.replace(/\.json$/, '.remote-cleanup.json'), proof);
     ledger.state = proof.clean ? 'closed' : 'cleanup-failed'; writeAtomic(ledgerPath, ledger);
     if (proof.clean && removeRoot) { rmSync(root, { recursive: true }); proof.rootRemoved = !existsSync(root); }
-    if (removeRoot) process.stdout.write(JSON.stringify(proof) + '\n');
+    if (removeRoot) await new Promise((resolve, reject) => process.stdout.write(JSON.stringify(proof) + '\n', error => error ? reject(error) : resolve()));
     process.exit(proof.clean ? 0 : 1);
   }
   let firing = false;

@@ -109,7 +109,7 @@ it.each(['disabled', 'outside'])('a child %s Herdr has ordinary local execution 
     await expect(runExec({ on: 'remote.invalid', language: 'shell', code: 'printf forbidden' }, ctx)).rejects.toMatchObject({ code: 'herdr-unavailable' });
     const managed = await f.mount.guard({ toolName: 'bash', input: { command: 'ssh remote.invalid' } });
     if (mode === 'disabled') expect(managed).toBeUndefined();
-    else expect(managed).toEqual({ block: true, reason: 'Herdr child inactive: not inside Herdr. Raw SSH to a managed machine is unavailable; use spider exec with on:remote.invalid' });
+    else expect(managed).toEqual({ block: true, reason: "This session isn't running inside Herdr. Spider blocked SSH to this Herdr-managed machine. Use spider exec with on:remote.invalid instead." });
     expect(await f.mount.guard({ toolName: 'bash', input: { command: 'ssh unmanaged.invalid' } })).toBeUndefined();
     const local = await runExec({ language: 'javascript', code: `console.log(process.env.${SSH_DESCRIPTOR_ENV} ?? 'clear');console.log(process.env.PATH.split(':')[0])` }, ctx);
     if (mode === 'disabled') { expect(local.details.stdout.split('\n')[0]).toBe('clear'); expect(local.details.stdout).not.toContain(shimDirectory); }
@@ -165,8 +165,11 @@ it('production child mount receives a bounded stderr error reporter', async () =
     expect(reporter).toBeTypeOf('function');
     reporter!(new Error('activation failed\n' + 'x'.repeat(5000)));
     const text = writes.mock.calls.map(([value]) => String(value)).join('');
-    expect(text).toContain('activation failed'); expect(text.length).toBeLessThanOrEqual(1100);
+    expect(text).toBe("Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.\n"); expect(text.length).toBeLessThanOrEqual(1100);
     expect(text.trimEnd()).not.toContain('\n'); expect(text).toMatch(/\n$/);
+    writes.mockClear();
+    reporter!(new Error('private detail'), "This session isn't running inside Herdr, so spider's Herdr features are off here. Everything else in spider still works.");
+    expect(writes.mock.calls.map(([value]) => String(value)).join('')).toBe("This session isn't running inside Herdr, so spider's Herdr features are off here. Everything else in spider still works.\n");
   } finally {
     mount.mockRestore(); writes.mockRestore();
     for (const fn of f.hooks.get('session_shutdown') ?? []) if (!prior.has(fn)) await fn({ reason: 'quit' }, f.ctx);

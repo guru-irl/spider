@@ -3,6 +3,7 @@ import { RunStore, type RunRow } from "./run-store";
 import { killProcessGroup, isProcessAlive, isProcessOrGroupAlive, type KillOpts } from "./kill-process";
 import { getChild, unregisterChild } from "./coordinators";
 import { checkProcessIdentity } from "./process-identity";
+import { HERDR_NOTICES } from '@spider/herdr/notices';
 
 export interface KillResult {
   runId: string;
@@ -32,23 +33,25 @@ const TERMINAL = new Set(["done", "failed", "cancelled"]);
  * Grammar: "all" | exact id | unique id prefix | exact name | unique name prefix.
  * Only ACTIVE runs are considered — killing a finished run is meaningless.
  */
+export function matchKillTargets(store: RunStore, sessionId: string, id: string): RunRow[] {
+  const active = store.listActive(sessionId), target = id.trim();
+  if (target === 'all') return active;
+  if (!target) return [];
+  const exactId = active.filter(run => run.id === target);
+  if (exactId.length) return exactId;
+  const exactName = active.filter(run => run.name === target);
+  if (exactName.length) return exactName;
+  return active.filter(run => run.id.startsWith(target) || (run.name ?? '').startsWith(target));
+}
+
 export function resolveKillTargets(store: RunStore, sessionId: string, id: string): RunRow[] {
-  const active = store.listActive(sessionId);
-  const target = (id ?? "").trim();
-  if (target === "all") return active;
-  if (!target) throw new Error("kill: `id` is required (a run id, id prefix, name, or \"all\")");
-
-  const exactId = active.find((r) => r.id === target);
-  if (exactId) return [exactId];
-
-  const exactName = active.find((r) => r.name === target);
-  if (exactName) return [exactName];
-
-  const byPrefix = active.filter((r) => r.id.startsWith(target) || (r.name ?? "").startsWith(target));
-  if (byPrefix.length === 1) return byPrefix;
-  if (byPrefix.length > 1) {
-    const names = byPrefix.map((r) => `${r.name ?? r.agent} (${r.id.slice(0, 8)})`).join(", ");
-    throw new Error(`kill: "${target}" is ambiguous — matches ${byPrefix.length} runs: ${names}`);
+  const target = (id ?? '').trim();
+  if (!target) throw new Error('kill: `id` is required (a run id, id prefix, name, or "all")');
+  const matches = matchKillTargets(store, sessionId, target);
+  if (target === 'all' || matches.length === 1) return matches;
+  if (matches.length > 1) {
+    const names = matches.map(run => `${run.name ?? run.agent} (${run.id})`).join(', ');
+    throw new Error(`${HERDR_NOTICES.killAmbiguous.text}\n${names}`);
   }
   throw new Error(`kill: no active run matches "${target}"`);
 }

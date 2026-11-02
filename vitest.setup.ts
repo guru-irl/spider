@@ -17,6 +17,7 @@ for (const key of [
 // test scratch inside the checkout — never under /tmp and never under the user's
 // real ~/.pi/agent/spider tree.
 const checkout = dirname(fileURLToPath(import.meta.url));
+process.env.SPIDER_HERDR_MOD_FIXTURE ??= resolve(checkout, "packages/herdr/src/__tests__/fixtures/herdr-0.1.12/mods");
 const testGlobalRoot = resolve(
   checkout,
   ".spider",
@@ -71,6 +72,10 @@ aroundAll(async (runSuite) => {
 
 export function fenceHerdrTestEnvironment(checkout: string, root: string): void {
   for (const key of Object.keys(process.env)) if (key.startsWith("HC_") || key.startsWith("HERDR_")) delete process.env[key];
+  delete process.env.SPIDER_HERDR_SSH_DESCRIPTOR;
+  const separator = process.platform === "win32" ? ";" : ":";
+  process.env.PATH = (process.env.PATH ?? "").split(separator)
+    .filter(entry => !entry.includes("/spider/herdr/ssh/bin/")).join(separator);
   const bin = resolve(root, "bin"); mkdirSync(bin, { recursive: true });
   for (const name of ["hc", "herdr-app", "ssh", "scp", "sftp"]) {
     const path = resolve(bin, name);

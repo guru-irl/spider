@@ -9,11 +9,16 @@ import { resolveModelThinking } from "./model-resolve";
 import { registerShared, releaseShared, setSink, type CompletionSink, type SharedChildEntry, type SharedHandle } from "./child-registry";
 import { decideOutcome, NO_DELIVERABLE_RESULT, summarizeCompletionEvents } from "./completion-output";
 import { isHandledPrompt, PERSISTED_EVENT_TYPES } from "./rpc-child";
+import { publishLiveRunEvent } from "./live-events";
 import { recordRunUsage, safelyReportUsage, warnUsage } from "./usage";
 
 export { NO_DELIVERABLE_RESULT };
 
 export interface ChildHandle {
+  /** Stdio and finalization belong to a separate process, not this pi. */
+  durable?: boolean;
+  /** This activation released ownership. An awaiting chain must not launch its next step. */
+  relinquished?: boolean;
   pid?: number;
   startTime?: string | null;
   cancellationReason?: string;
@@ -29,6 +34,8 @@ export interface ChildHandle {
   bindEvents?(sink: (event: Record<string, any>) => void): void;
   /** Buffer RPC events instead of calling the previous activation's sink (reload). */
   unbindEvents?(): void;
+  /** Release the controlling socket when this process switches away from the session. */
+  release?(): void;
   detach(): void;
 }
 
@@ -44,6 +51,7 @@ export interface RunOpts {
   thinking?: string;
   context: "fresh" | "fork";
   phase?: string;
+  remainingSteps?: string[];
   parentRunId?: string;
   async?: boolean;
   orchestratorTarget?: string;
@@ -56,7 +64,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { environmentPolicy?: ExecutionEnvironmentPolicy; parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { supervise?: boolean; supervisorHcBinary?: string; environmentPolicy?: ExecutionEnvironmentPolicy; parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -76,6 +84,7 @@ export class Runner {
       // queued row once its owning host exits. No child has been spawned yet.
       hostPid: process.pid,
     });
+    if (opts.remainingSteps?.length) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: 'chain_steps', payload: { remaining: opts.remainingSteps } });
     if (thinking?.notice) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: "warning", summary: thinking.notice, payload: { thinkingNotice: true, ...thinking, message: thinking.notice } });
     return this.deps.store.get(id)!;
   }
@@ -116,6 +125,8 @@ export class Runner {
       type: "child_transcript", payload: { version: 1, directory: spec.sessionDir } });
     this.deps.globalDb?.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES (?,?,?)")
       .run(run.id, this.sessionId, this.deps.dbPath);
+    if (this.deps.supervise) spec.supervisor = { directory: `${this.deps.scratchRoot}/sa/${run.id.slice(0, 12)}`, dbPath: this.deps.dbPath, runId: run.id, sessionId: this.sessionId,
+      ...(this.deps.supervisorHcBinary ? { hcBinary: this.deps.supervisorHcBinary } : {}) };
     spec.onRpcEvent = this.rpcSink(run);
     for (const message of spec.extensionWarnings ?? []) spec.onRpcEvent({ type: "warning", message });
     if (spec.launchWarning) spec.onRpcEvent({ type: "warning", message: spec.launchWarning, launchWarning: true, printFallback: spec.childMode === "print" });
@@ -125,6 +136,8 @@ export class Runner {
   /** Persist the RPC events worth keeping. Rebuilt per activation so a reload rebinds it to the new DB. */
   private rpcSink(run: RunRow): (event: Record<string, any>) => void {
     return event => {
+      publishLiveRunEvent(run.id, event);
+      if (event.spiderDurablePersisted) return;
       if (event.type === "spider_usage") {
         try { recordRunUsage(this.db, run.id, { provider: event.provider, model: event.model, usage: event.usage }, event.purpose, event.compactionCount); }
         catch (error) { warnUsage(this.db, run, error); }
@@ -158,13 +171,14 @@ export class Runner {
     // Snapshot BEFORE the cancel bookkeeping below is bound to this activation's DB: a reloaded
     // activation re-wraps the raw handle with its own store instead of calling into ours.
     const raw: SharedHandle = {
-      pid: handle.pid, startTime: handle.startTime, wait: () => exit,
-      kill: () => kill(), ...(killAsync ? { killAsync: (graceMs?: number) => killAsync(graceMs) } : {}),
+      durable: handle.durable, pid: handle.pid, startTime: handle.startTime, wait: () => exit,
+      kill: reason => kill(reason), ...(killAsync ? { killAsync: (graceMs?: number, reason?: string) => killAsync(graceMs, reason) } : {}),
       ...(handle.steer ? { steer: handle.steer.bind(handle) } : {}),
       ...(handle.bindEvents ? { bindEvents: handle.bindEvents.bind(handle) } : {}),
-      ...(handle.unbindEvents ? { unbindEvents: handle.unbindEvents.bind(handle) } : {}),
+      unbindEvents: () => { handle.relinquished = true; handle.unbindEvents?.(); },
+      ...(handle.release ? { release: handle.release.bind(handle) } : {}),
     };
-    if (shared) registerShared({ runId: run.id, sessionId: this.sessionId, dbPath: this.deps.dbPath, handle: raw, ...shared });
+    if (shared) registerShared({ runId: run.id, sessionId: this.sessionId, dbPath: this.deps.dbPath, handle: raw, ...shared, survivable: handle.durable || shared.survivable });
     const restore = (reason: string, before: RunRow | undefined, previousReason: string | undefined) => {
       // An exit report is final even if group termination later fails during grace.
       if (exited) { this.removeRoute(run.id); return; }
@@ -176,7 +190,7 @@ export class Runner {
       const before = this.deps.store.get(run.id);
       handle.cancellationReason = reason;
       try { this.deps.store.cancel(run.id, reason); } catch { /* the kill must still run; finalize records the reason */ }
-      try { kill(); } catch (error) {
+      try { kill(reason); } catch (error) {
         try { restore(reason, before, previousReason); }
         catch (restoreError) { throw new AggregateError([error, restoreError], `Kill failed: ${String(error)}; restore failed: ${String(restoreError)}`); }
         throw error;
@@ -188,7 +202,7 @@ export class Runner {
       const before = this.deps.store.get(run.id);
       handle.cancellationReason = reason;
       try { this.deps.store.cancel(run.id, reason); } catch { /* the kill must still run; finalize records the reason */ }
-      try { await killAsync(graceMs); } catch (error) {
+      try { await killAsync(graceMs, reason); } catch (error) {
         try { restore(reason, before, previousReason); }
         catch (restoreError) { throw new AggregateError([error, restoreError], `Kill failed: ${String(error)}; restore failed: ${String(restoreError)}`); }
         throw error;
@@ -216,7 +230,12 @@ export class Runner {
   }
 
   private removeRoute(runId: string): void {
-    try { this.deps.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(runId); } catch { /* cleanup cannot mask the run outcome */ }
+    try {
+      const undelivered = this.db.prepare(`SELECT 1 FROM runs r WHERE r.id=? AND r.status!='cancelled'
+        AND EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='child_supervisor')
+        AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='completion_delivered')`).get(runId);
+      if (!undelivered) this.deps.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(runId);
+    } catch { /* cleanup cannot mask the run outcome */ }
   }
 
   private launch(run: RunRow, opts: RunOpts, survivable: boolean): ChildHandle | undefined {
@@ -318,17 +337,21 @@ export class Runner {
     if (!handle) return this.deps.store.get(run.id)!;
     try {
       const { exitCode, result } = await handle.wait();
+      if (handle.relinquished) throw new Error('Parent session released this chain step. Remaining steps were not started.');
       this.finalize(run, exitCode, result, handle.cancellationReason);
       const finished = this.deps.store.get(run.id)!;
       if (!opts.async && finished.status === "cancelled") this.deps.onComplete?.(finished, finished.status, finished.result ?? undefined);
       return finished;
     } catch (error) {
+      if (handle.relinquished) throw error;
       const outcome = this.finalize(run, 1, `Child wait failed: ${String(error)}`, handle.cancellationReason);
       this.deps.onComplete?.(this.deps.store.get(run.id) ?? run, outcome.status, outcome.result);
       return this.deps.store.get(run.id)!;
     } finally {
-      unregisterChild(this.sessionId, run.id);
-      releaseShared(run.id);
+      if (!handle.relinquished) {
+        unregisterChild(this.sessionId, run.id);
+        releaseShared(run.id);
+      }
     }
   }
 
@@ -385,7 +408,7 @@ export class Runner {
     if (!run) throw new Error(`run ${entry.runId} has no row in this session's DB`);
     const raw = entry.handle;
     const handle: ChildHandle = {
-      pid: raw.pid, startTime: raw.startTime,
+      durable: raw.durable, pid: raw.pid, startTime: raw.startTime,
       wait: () => raw.wait(),
       kill: reason => raw.kill(reason),
       ...(raw.killAsync ? { killAsync: (graceMs?: number, reason?: string) => raw.killAsync!(graceMs, reason) } : {}),

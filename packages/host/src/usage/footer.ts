@@ -27,7 +27,17 @@ export type FooterInput = {
   calibration?: CalibrationResult;
   counter: CounterStateView;
   statuses: ReadonlyMap<string, string>;
+  /**
+   * Inside a Herdr pane, whose header shows the folder and session name and whose sidebar shows
+   * the branch. The footer then leaves them out and puts the model on the stats line.
+   */
+  inPane?: boolean;
 };
+
+/** Whether the footer runs inside a Herdr pane: a Herdr terminal, with spider's Herdr support not disabled. */
+export function inHerdrPane(env: Readonly<Record<string, string | undefined>>, herdrEnabled: unknown): boolean {
+  return Boolean(env.HC_TERMINAL_ID) && herdrEnabled !== false;
+}
 
 function singleLine(text: string): string {
   return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
@@ -74,16 +84,22 @@ function leftTruncate(text: string, width: number): string {
   return ellipsis + tail;
 }
 
-function heading(input: FooterInput, width: number, theme?: Theme): string {
+function modelSide(input: FooterInput, width: number, theme?: Theme): string {
   const dim = (text: string) => theme ? theme.fg("dim", text) : text;
   const shorten = (text: string, budget: number) => truncateToWidth(dim(text), budget, dim("..."));
   const thinking = label(input.thinking) || "off";
   const suffix = ` · ${thinking}`;
   const model = label(input.modelId ?? "no-model");
   // Even an unexpectedly long model must leave its thinking level visible.
-  const right = visibleWidth(suffix) < width
+  return visibleWidth(suffix) < width
     ? shorten(model, width - visibleWidth(suffix)) + dim(suffix)
     : shorten(thinking, width);
+}
+
+function heading(input: FooterInput, width: number, theme?: Theme): string {
+  const dim = (text: string) => theme ? theme.fg("dim", text) : text;
+  const shorten = (text: string, budget: number) => truncateToWidth(dim(text), budget, dim("..."));
+  const right = modelSide(input, width, theme);
   const budget = width - visibleWidth(right) - 1;
   if (budget <= 0) return right;
 
@@ -141,9 +157,18 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   }).join(" · ");
 }
 
+/** One line: the stats, dropping their lowest-priority items first, then the model. */
+function paneLine(input: FooterInput, width: number, theme?: Theme): string {
+  const right = modelSide(input, width, theme);
+  const budget = width - visibleWidth(right) - 1;
+  if (budget <= 0) return right;
+  const left = stats(input, budget, theme);
+  return left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right;
+}
+
 function render(input: FooterInput, width: number, theme?: Theme): string[] {
   const columns = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
-  const lines = [heading(input, columns, theme), stats(input, columns, theme)];
+  const lines = input.inPane ? [paneLine(input, columns, theme)] : [heading(input, columns, theme), stats(input, columns, theme)];
   if (input.statuses.size > 0) {
     const status = Array.from(input.statuses.entries()).sort(([a], [b]) => a.localeCompare(b))
       .map(([, text]) => singleLine(text)).join(" ");

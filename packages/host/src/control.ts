@@ -7,6 +7,7 @@ import { openGlobal, openDbReadOnlyAt, resolveProject, paths, assertTestConfigPa
 import { getVectorState, getVectorErrors, getEmbedDrainState, getEmbedderState, getEmbedLeaseState, safeReviewError } from "@spider/memory";
 import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtime";
 import { bundledSkillCollections } from "@spider/superpowers";
+import { diagnoseDurableChildren } from '@spider/subagents';
 
 import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } from "./usage/config.js";
@@ -360,6 +361,21 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
     };
     inspect(openDbReadOnlyAt(info.dbPath), "worktree");
     inspect(openDbReadOnlyAt(embeddingRepoPath(info)), "repo");
+    const runs = openDbReadOnlyAt(info.dbPath);
+    if (runs) {
+      let global: Db | undefined;
+      try {
+        if (sessionId) global = openGlobal();
+        const children = diagnoseDurableChildren({ db: runs, globalDb: global, sessionId });
+        if (!children.length) lines.push('- subagent supervisors: no active runs');
+        for (const child of children) {
+          const orphaned = child.supervisor !== 'alive';
+          const leaked = !['queued', 'running', 'paused'].includes(child.status);
+          if (orphaned || leaked) ok = false;
+          lines.push(`- subagent ${child.runId}: ${orphaned ? 'ORPHANED' : leaked ? 'STOPPING' : child.owner === 'detached' ? 'running independently' : 'attached'} supervisor=${child.supervisor} child=${child.child} status=${child.status}${child.supervisorPid ? ` supervisor_pid=${child.supervisorPid}` : ''}${child.childPid ? ` child_pid=${child.childPid}` : ''}`);
+        }
+      } finally { runs.close(); global?.close(); }
+    }
   } catch (e) {
     ok = false;
     lines.push(`- registry: FAILED (${(e as Error).message})`);

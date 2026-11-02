@@ -2,7 +2,7 @@ This directory's patches.json contains modified portions of Herdr's built-in
 mods under Apache-2.0.
 
 Portions of packages/herdr/assets/look/patches.json are derived from the
-built-in mods of Herdr 0.1.11 by the Herdr authors, licensed under the Apache
+built-in mods of Herdr 0.1.12 by the Herdr authors, licensed under the Apache
 License, Version 2.0, and were modified for spider.
 
 The complete licence is shipped at licenses/herdr-apache-2.0.txt at the root of the spider package.

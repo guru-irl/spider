@@ -84,38 +84,39 @@ To protect the working tree from accidental edits by a reviewer, keep the review
 - Kill accepts a full ID, a unique prefix, a run name, or `"all"` for the active runs of this session.
 - Spider stops the whole process group, so descendant processes stop too. Once a run is cancelled, a later `cancel()` or `finish()` cannot mark it as done.
 - To kill from the run details UI, press `k` twice within the confirmation interval.
-- Pressing Escape in a later parent turn does not cancel background children.
+- Escape is handled by pi. It can dismiss a dialog or abort the parent's turn, but it does not stop background subagents.
 - Shutdown affects only the session that is ending. In an SDK host with several sessions, shutting down session A does not stop session B's children.
 
 | Shutdown reason | Result |
 | --- | --- |
-| `reload` | Eligible single, parallel, and pipeline-stage children survive in RPC or print mode; chain steps stop. |
-| `quit`, `new`, `resume`, `fork` | Session-owned children stop, including detached children from an earlier reload. |
+| `reload` | Supervised children keep running. The new activation adopts them. |
+| `quit`, `new`, `resume`, `fork`, a pane hang-up, or a parent crash | Supervised children keep running. Resuming the same session restores them and delivers saved results. |
+| Explicit `spider kill` or confirmed Kill session | The selected children stop. Cancelled runs are never restarted or re-adopted. |
 
 - Named loop and schedule triggers have a separate lifetime. Their timers stop on shutdown, but saved definitions survive `/reload` and same-session resume. New sessions and forks start empty. Nothing fires while closed or asleep. Missed one-shot and cron triggers fire once, late. Intervals resume from their anchor without catch-up. See [Loops and scheduled wakeups](loop-and-schedule.md).
 
-- On RPC shutdown, spider sends `clear_queue`, then `abort`, then closes stdin. If the child is still running after a grace period, spider sends `SIGTERM` and then `SIGKILL` to the process group.
+- On an explicit RPC stop, spider sends `clear_queue`, then `abort`, then closes stdin. If the child is still running after a grace period, spider sends `SIGTERM` and then `SIGKILL` to the process group.
 - A cancelled run records the shutdown reason and does not start a model turn.
 - On pi 1.2.0, an unexpected `agent_settled.aborted` fails the child run, even if the process exits cleanly. Kills by the parent keep their existing cancellation reason.
 - A kill started from this session reports through its tool result. It sends no separate completion notice, unless steers that were accepted or have an unknown outcome still need a report.
 - If spider fails to capture a child's identity at spawn, the session's own handles can still kill it. Killing by PID alone and the orphan reaper both require an identity check.
-- After a hard kill of the host, the next session start reaps orphan runs, but only when the owning host is dead. The PID's start time must match. Legacy rows use a command check instead, so spider does not signal an unrelated process.
+- The run's owning host is its supervisor, not the parent pi. The orphan reaper leaves a live supervisor alone. If that supervisor dies, the next session start reconciles its abandoned run. The child's PID start time must match before spider signals it. Legacy rows use a command check instead.
 
-## Reload survival internals
+## Session survival internals
 
-- Live handles are parked in `globalThis[Symbol.for("spider.childRegistry.v1")]`, a versioned registry shared by the whole process.
-- Each entry keeps the process, the pipes, the run and session IDs, the database path, the intercom name, the PID and the start time.
-- On reload, spider detaches the old listeners and leaves processes and pipes open. RPC events are buffered up to a count limit and a byte limit.
-- Streaming partial output is not buffered. Saved history events have their own buffer. If a buffer overflows, spider adds an events-lost warning to the history and to the final result. Usage is totalled separately by provider, model and purpose, and is never evicted.
-- At session start, a session adopts only its own entries. It restores event handling, completion reporting, kill and steering, and it replays escalations sent during the gap.
-- If a child finishes during the gap, spider finalizes it and reports it once after adoption.
-- A chain cannot survive, because the code that continues it belongs to the old activation.
-- A pipeline's running stage survives, but its coordinator does not. Spider does not start the later stages. The run and its completion notice warn that those stages need to be dispatched again.
-- Entries that no session adopts expire after `60` seconds. A child that is still running is stopped and marked cancelled. A child that already finished keeps its real result.
-- If adoption fails, spider notifies the user, adds a warning and restarts the timer.
-- Registries of different versions cannot adopt each other's entries. Timers clean up old entries, and quitting asks every registry version to dispose of its children.
-- A best-effort exit hook stops detached children and finalizes their rows if adoption never happens. The hook cannot run after a hard kill.
-- `node scripts/probe-child-survival.mjs` uses fixtures to check, against real pi, that children survive reload, that one completion notice arrives, and that quitting after a reload cleans up.
+Each new production local run has a detached Node supervisor. That process owns the child's stdin, stdout, RPC state, and finalization. Closing the parent's socket does not close the child's stdin. The supervisor writes accounting and delivery events directly to the recorded run database, even when no parent is connected.
+
+Inside Herdr, a private background holder gives the supervisor and child their own terminal cleanup scope. It has no pane and Herdr removes it when the supervisor exits. This matters because a separate process group alone does not stop Herdr from signalling processes in the closing pane's scope. Outside Herdr, a short-lived launcher releases the supervisor from the parent's process tree. Neither supervisor transport inherits the parent's terminal input or output.
+
+The parent connects through an authenticated local socket with a per-run capability. Long state directories use loopback TCP to avoid the Unix socket path limit. State and capability files are readable only by the user. A supervisor accepts one controlling parent connection at a time. A second parent cannot steal control or mark that child failed. A disconnected steer is not retried, because it might already have reached the child.
+
+At session start, spider finds the session's recorded supervisors in its run database and saved routes. It restores status, kill, steering, and completion delivery. A child that already finished needs no live supervisor. Spider reads its atomic exit receipt and delivers the saved result. A cancelled row is a permanent stop and is not adopted.
+
+When pi quits or switches sessions with `/new`, `/resume` or a fork, spider releases its supervisor sockets without stopping the children. A resumed parent can then steer or kill them. During `/reload`, the process-wide `spider.childRegistry.v1` registry keeps the sockets and hands their live handles to the new activation. Supervised runs use the `independent` lifetime state, so exit hooks left by an older bundle cannot reap them. They have no adoption timeout and finish even if the session never returns. Older direct-stdio handles cannot survive a parent exit and retain their bounded reload cleanup. Finish any run started under the older transport before closing or quitting its parent after an upgrade.
+
+A running chain step survives, but the old activation cannot start its remaining steps after handover. Its completion notice names the steps that did not start. A pipeline's running stage also survives. Dispatch the remaining chain or pipeline stages again when you resume. The supervisor never replays a prompt or launches a replacement child.
+
+The supervisor saves the terminal result before it exits and closes its listener, including idle client connections. The saved receipt and run history remain available for resume. `spider doctor` lists independently running children and flags orphaned supervisor state. Rebooting the machine still ends its local processes. This design does not add remote subagent processes.
 
 ## Escalation
 
@@ -150,4 +151,4 @@ To protect the working tree from accidental edits by a reviewer, keep the review
 
 ## Viewers in Herdr
 
-Inside [Herdr](herdr.md#watch-and-steer-subagents), each run gets a viewer terminal under its session's agent pane, and a row in the left sidebar. The viewer's message box sends a steer through the same owning-session message action as `spider message`, so the same refusals and delivery states apply. Viewers do not change how a child runs, and the run keeps working when its viewer is parked, closed, or in a tab you close. A viewer stays open after its owning session quits and shows the saved log read-only. A run's machine consoles appear under its row and close when the run ends.
+Inside [Herdr](herdr.md#watch-and-steer-subagents), each run gets a parked viewer terminal and a row under its session in the left sidebar. The viewer's message box sends a steer through the same owning-session message action as `spider message`, so the same refusals and delivery states apply. Viewers do not change how a child runs, and the run keeps working when its viewer is parked, closed, or in a tab you close. A viewer stays open after its owning session quits and shows the saved log read-only until the same session resumes. Spider reuses that viewer when its old parent terminal is gone. It does not take a viewer from another live parent. A run's machine consoles appear under its row and close when the run ends.

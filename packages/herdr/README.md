@@ -40,7 +40,7 @@ This package does not own:
 | `src/setup/` | `runHerdrCli`, the transactional installer, backups, rollback, and the doctor. |
 | `assets/mods/spider/` | The spider panel mod. It is plain JavaScript and uses no Node APIs. |
 | `assets/shared/feed.js` | The feed parser shared by the mods. Setup copies it into each mod that uses it. |
-| `assets/agents/children.js` | The projection of runs, consoles, and jobs into sidebar rows, and of configured machines into the sidebar's Machines section. Setup copies it into the cloned agents mod. |
+| `assets/agents/children.js` | The projection of runs, consoles, and jobs into sidebar rows. Setup copies it into the cloned agents mod. |
 | `assets/look/`, `assets/themes/`, `assets/fonts/` | Patches, layout edits, the Herdr and pi themes, and the bundled fonts. |
 | `assets/keys.json` | The five terminal key bindings. |
 | `assets/shell/resume.sh` | The resume hook that the rc block sources. |

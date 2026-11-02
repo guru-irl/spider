@@ -48,15 +48,15 @@ test.each([[true, undefined], [false, undefined], [true, 'auto'], [false, 'auto'
   expect(notices).toEqual([]); expect(stderr).toEqual([]); noPersistentOffFooter(); expect(m.enabled()).toBe(false);
   expect(await m.guard({ toolName: 'bash', input: { command: 'ssh unmanaged.invalid true' } })).toBeUndefined();
   vi.stubEnv('HC_TERMINAL_ID', 'fixture-terminal'); await start(ctx); await start({ ...ctx });
-  if (hasUI) expect(notices).toEqual([{ message: expect.stringContaining('no Herdr configuration'), level: 'warning' }]);
-  else expect(stderr).toEqual([expect.stringContaining('no Herdr configuration')]);
+  if (hasUI) expect(notices).toEqual([{ message: "Herdr has no configuration, so its features are off in this session. Everything else in spider still works. Run /herdr-setup for setup and doctor commands.", level: 'warning' }]);
+  else expect(stderr).toEqual(["Herdr has no configuration, so its features are off in this session. Everything else in spider still works. Run /herdr-setup for setup and doctor commands.\n"]);
   noPersistentOffFooter();
 });
 
 test('a configured auto session gets one notice rather than an off footer, including its next session', async () => {
   await configured();
   const ctx = context(); mounted(); await start(ctx); await start({ ...ctx });
-  expect(notices).toEqual([{ message: expect.stringContaining('not inside Herdr'), level: 'warning' }]); noPersistentOffFooter();
+  expect(notices).toEqual([{ message: "This session isn't running inside Herdr, so spider's Herdr features are off here. Everything else in spider still works.", level: 'warning' }]); noPersistentOffFooter();
   session = 'second'; await start(ctx); expect(notices).toHaveLength(2); noPersistentOffFooter();
 });
 
@@ -64,14 +64,14 @@ test.each(['auto', true] as const)('a dead isolated core reports mode %s once pe
   await configured(); await settings({ 'herdr.enabled': enabled }); vi.stubEnv('HC_TERMINAL_ID', 'fixture-terminal');
   expect(process.env.HC_SOCKET!.length).toBeLessThan(104);
   const ctx = context(); mounted(); await start(ctx); await start({ ...ctx });
-  expect(notices).toEqual([{ message: expect.stringContaining('Herdr core is not running'), level: enabled === true ? 'error' : 'warning' }]);
+  expect(notices).toEqual([{ message: "Herdr stopped responding, so the sidebar and panes can't follow this session for now. Everything else in spider still works. Run /reload once Herdr is running again.", level: enabled === true ? 'error' : 'warning' }]);
   session = 'second'; await start(ctx); expect(notices).toHaveLength(2); noPersistentOffFooter();
 });
 
 test('explicit true that cannot activate reports one error without a persistent footer', async () => {
   await settings({ 'herdr.enabled': true });
   const ctx = context(); mounted(); await start(ctx); await start({ ...ctx });
-  expect(notices).toEqual([{ message: expect.stringContaining('no Herdr configuration'), level: 'error' }]); noPersistentOffFooter();
+  expect(notices).toEqual([{ message: "Herdr has no configuration, so its features are off in this session. Everything else in spider still works. Run /herdr-setup for setup and doctor commands.", level: 'error' }]); noPersistentOffFooter();
 });
 
 test('a malformed existing config gives one activation notice rather than repeated boundary errors', async () => {

@@ -11,8 +11,8 @@ import { shutdownReason } from "./shutdown-reason";
 export interface SessionCoordinators {
   tailer: RunEventTailer;
   pipelines: PipelineCoordinator[];
-  /** Live child handles by runId — the in-process fast path for kill, and what
-   *  session_shutdown iterates so quitting the session kills its subagents. */
+  /** Live child handles by runId for explicit stops and lifecycle cleanup.
+   *  Ordinary shutdown stops legacy handles and preserves supervised children. */
   children: Map<string, ChildHandle>;
   /** Cleanup function for the escalation notifier (watches bus for escalation events). */
   escalationNotifierCleanup?: () => void;
@@ -151,45 +151,45 @@ const SESSION_EXIT_GRACE_MS = 250;
 export interface TeardownAsyncOpts {
   /** Per-child grace period between SIGTERM and SIGKILL. */
   graceMs?: number;
+  /** Explicit-stop cause, for example a confirmed Kill session action. */
+  reason?: string;
 }
 
-/** Quit, new, resume or fork of ONE session: kill that session's children, await a bounded grace,
- *  then SIGKILL survivors. Children this session left detached by an earlier reload (never adopted)
- *  are killed and their rows finalized too. Other sessions are never touched.
- *  Escalation is parallel (N children take ~graceMs total, not N*graceMs). Best-effort: never throws. */
+/** Explicitly stop ONE session's children, await a bounded grace, then SIGKILL survivors.
+ *  Independent children and those detached by an earlier reload are stopped and finalized too.
+ *  Other sessions are never touched.
+ *  Escalation is parallel (N children take ~graceMs total, not N*graceMs). A refused stop is reported. */
 export async function teardownSessionAsync(sessionId: string, opts: TeardownAsyncOpts = {}): Promise<void> {
   cancelPendingIntercom(sessionId);
   const graceMs = opts.graceMs ?? SESSION_EXIT_GRACE_MS;
-  const reason = shutdownReason("quit");
+  const reason = opts.reason ?? shutdownReason("quit");
   const killed = new Set<string>();
-  try {
-    const c = registry.get(sessionId);
-    const kills: Promise<void>[] = [];
-    // Kill children FIRST: the tailer surfaces their final events
-    for (const [runId, h] of c?.children ?? []) {
-      killed.add(runId);
-      try {
-        if (typeof h.killAsync === "function") kills.push(h.killAsync(graceMs, reason).catch(() => { /* best-effort */ }));
-        else h.kill(reason); // no escalation guarantee
-      } catch { /* best-effort */ }
-    }
-    await Promise.all(kills);
-    // Whatever the shared registry still holds for this session (children detached by an earlier
-    // reload and never adopted, or parked by another build version) must not outlive it either.
-    await disposeSessionRegistries(sessionId, reason, { exclude: killed });
-    for (const runId of killed) releaseShared(runId);
-    if (c) {
-      c.children?.clear();
-      c.childStatusCleanup?.();
-      c.childStatusCleanup = undefined;
-      try { c.tailer?.stop(); } catch {}
-      for (const p of c.pipelines) { try { p.dispose(); } catch {} }
-      try { c.escalationNotifierCleanup?.(); } catch {}
-      try { c.adoptionCleanup?.(); } catch {}
-      registry.delete(sessionId);
-    }
-  } catch {
-    // Best-effort: never let cleanup errors block session exit
+  const errors: unknown[] = [];
+  const c = registry.get(sessionId);
+  const kills: Promise<void>[] = [];
+  // Kill children FIRST: the tailer surfaces their final events
+  for (const [runId, h] of c?.children ?? []) {
+    killed.add(runId);
+    try {
+      if (typeof h.killAsync === "function") kills.push(h.killAsync(graceMs, reason).catch(error => { errors.push(error); }));
+      else h.kill(reason); // no escalation guarantee
+    } catch (error) { errors.push(error); }
+  }
+  await Promise.all(kills);
+  if (errors.length) throw new AggregateError(errors, errors.map(String).join('\n'));
+  // Whatever the shared registry still holds for this session (children detached by an earlier
+  // reload and never adopted, or parked by another build version) must not outlive it either.
+  await disposeSessionRegistries(sessionId, reason, { exclude: killed, strict: true });
+  for (const runId of killed) releaseShared(runId);
+  if (c) {
+    c.children?.clear();
+    c.childStatusCleanup?.();
+    c.childStatusCleanup = undefined;
+    try { c.tailer?.stop(); } catch {}
+    for (const p of c.pipelines) { try { p.dispose(); } catch {} }
+    try { c.escalationNotifierCleanup?.(); } catch {}
+    try { c.adoptionCleanup?.(); } catch {}
+    registry.delete(sessionId);
   }
 }
 
@@ -205,6 +205,8 @@ export async function teardownAllAsync(opts: TeardownAsyncOpts = {}): Promise<vo
 export interface DetachForReloadOpts extends TeardownAsyncOpts {
   /** Overrides the unadopted-child TTL (tests). */
   ttlMs?: number;
+  /** Parent exit preserves durable runs only. Legacy direct-stdio handles cannot survive it. */
+  durableOnly?: boolean;
 }
 
 /**
@@ -218,18 +220,19 @@ export interface DetachForReloadOpts extends TeardownAsyncOpts {
 export async function detachForReload(sessionId: string, opts: DetachForReloadOpts = {}): Promise<void> {
   cancelPendingIntercom(sessionId);
   const graceMs = opts.graceMs ?? SESSION_EXIT_GRACE_MS;
-  const reason = shutdownReason("reload");
+  const reason = shutdownReason(opts.durableOnly ? "quit" : "reload");
   try {
     const shared = sharedRegistry();
     // Park first and synchronously: from here no old sink can fire for a survivable child, even if
     // it exits while the foreground kills below are still waiting out their grace period.
-    const doomed = parkSession(sessionId, { ttlMs: opts.ttlMs, graceMs });
+    const doomed = parkSession(sessionId, { ttlMs: opts.ttlMs, graceMs, durableOnly: opts.durableOnly });
     const c = registry.get(sessionId);
     const kills: Promise<void>[] = [];
     // Foreground children through their activation-owned handles (cancel bookkeeping).
     const viaHandle = new Set<string>();
     for (const [runId, h] of c?.children ?? []) {
-      if (!doomed.some(e => e.runId === runId)) continue;
+      const stopLegacy = opts.durableOnly && !h.durable;
+      if (!stopLegacy && !doomed.some(e => e.runId === runId)) continue;
       viaHandle.add(runId);
       try {
         if (typeof h.killAsync === "function") kills.push(h.killAsync(graceMs, reason).catch(() => {}));

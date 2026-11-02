@@ -11,14 +11,15 @@ export interface RenderHostOptions {
   installedDirectory: string;
   props: unknown;
   api: Readonly<Record<string, (...args: any[]) => unknown>>;
-  storage?: { getItem(key: string): string | null; setItem(key: string, value: string): void };
+  storage?: { getItem(key: string): string | null; setItem(key: string, value: string): void; removeItem(key: string): void };
   dispose?(): void | Promise<void>;
 }
 export interface RenderHost {
   invalidate(): void;
   uiSnapshot(): Promise<RenderedUi>;
   activate(controlId: string): Promise<void>;
-  key(controlId: string, key: 'enter' | 'space'): Promise<void>;
+  mouse(controlId: string, button: 'left' | 'right' | 'middle'): Promise<void>;
+  key(controlId: string, key: 'enter' | 'space' | 'up' | 'down' | 'escape'): Promise<void>;
   waitForUi(description: string, predicate: (ui: RenderedUi) => boolean, timeoutMs: number): Promise<RenderedUi>;
   close(): Promise<void>;
 }
@@ -29,6 +30,7 @@ interface Element {
   children: (Element | string)[];
   click?: (event: unknown, cx: unknown) => unknown;
   key?: (event: unknown, cx: unknown) => unknown;
+  mouse: Partial<Record<'left' | 'right' | 'middle', (event: unknown, cx: unknown) => unknown>>;
 }
 const styles = new Set([
   'min_w_0', 'min_h_0', 'min_w', 'min_h', 'max_w', 'max_h', 'size', 'size_full', 'w', 'h', 'w_full', 'h_full',
@@ -66,7 +68,7 @@ export async function createRenderHost(options: RenderHostOptions): Promise<Rend
   const emit = () => { for (const listener of listeners) listener(); };
   const fail = (error: unknown) => { failure = error; emit(); };
   const element = (id: string | null = null): any => {
-    const state: Element = { id, disabled: false, attributes: {}, children: [] };
+    const state: Element = { id, disabled: false, attributes: {}, children: [], mouse: {} };
     let proxy: any;
     const add = (child: unknown): void => {
       if (child === null || child === undefined || typeof child === 'boolean') return;
@@ -83,6 +85,7 @@ export async function createRenderHost(options: RenderHostOptions): Promise<Rend
       if (key === 'child') return (child: unknown) => { add(child); return proxy; };
       if (key === 'children') return (children: unknown[]) => { children.forEach(add); return proxy; };
       if (key === 'on_click') return (click: Element['click']) => { state.click = click; return proxy; };
+      if (key === 'on_mouse_down') return (button: 'left' | 'right' | 'middle', handler: NonNullable<Element['mouse'][typeof button]>) => { state.mouse[button] = handler; return proxy; };
       if (key === 'on_hover') return (_hover: unknown) => proxy;
       if (key === 'on_key_down') return (handler: Element['key']) => { state.key = handler; return proxy; };
       if (key === 'when') return (condition: unknown, transform: (e: any) => unknown) => { if (condition) transform(proxy); return proxy; };
@@ -112,7 +115,7 @@ export async function createRenderHost(options: RenderHostOptions): Promise<Rend
         if (ids.has(id)) throw new AppBoundaryError('duplicate-control-id', `duplicate control id: ${id}`);
         ids.add(id);
         nodes.push({ id, text: text(node), enabled, bounds: [0, 0, 0, 0], attributes: structuredClone(node.attributes) });
-        if (node.id && node.click) nextControls.set(node.id, { ...node, disabled: !enabled });
+        if (node.id && (node.click || node.key || Object.keys(node.mouse).length)) nextControls.set(node.id, { ...node, disabled: !enabled });
         for (const child of node.children) if (typeof child !== 'string') walk(child, enabled);
       };
       walk(state, true); controls = nextControls; snapshot = { frame: ++frame, nodes }; emit();
@@ -175,28 +178,34 @@ export async function createRenderHost(options: RenderHostOptions): Promise<Rend
   for (const item of output) if (item.type === 'chunk') code = item.code;
   if (!code) throw new AppBoundaryError('invalid-mod', 'mod bundle is absent');
   const module = { exports: {} as any };
-  const context = createContext({ __renderBridge: bridge, module, exports: module.exports, console, Date, Map, Set, Promise, JSON, Error, TextEncoder, TextDecoder, encodeURIComponent, decodeURIComponent, ...(options.storage ? { localStorage: options.storage } : {}) });
+  const context = createContext({ __renderBridge: bridge, module, exports: module.exports, console, Date, Map, Set, Promise, JSON, Error, TextEncoder, TextDecoder, fetch: globalThis.fetch, encodeURIComponent, decodeURIComponent, ...(options.storage ? { localStorage: options.storage } : {}) });
   try {
     new Script(code, { filename: join(root, 'main.js') }).runInContext(context, { timeout: 2000 });
     const Mod = module.exports.default;
     if (typeof Mod !== 'function') throw new AppBoundaryError('invalid-mod', 'installed mod has no default View');
     instance = new Mod(); instance.init?.({}, cx); render(); if (failure) throw failure;
-  } catch (error) { closed = true; for (const timer of timers) clearInterval(timer); for (const task of tasks) task.cancel(); await options.dispose?.(); throw error; }
+  } catch (error) { closed = true; await instance?.close?.(); for (const timer of timers) clearInterval(timer); for (const task of tasks) task.cancel(); await options.dispose?.(); throw error; }
   const current = (): RenderedUi => { if (failure) throw failure; if (closed) throw new AppBoundaryError('render-host-closed', 'render host is closed'); return structuredClone(snapshot); };
   return {
     invalidate: render,
     uiSnapshot: async () => current(),
     activate: async id => {
       current(); const control = controls.get(id);
-      if (!control) throw new AppBoundaryError('unknown-control', `unknown control: ${id}`);
+      if (!control?.click) throw new AppBoundaryError('unknown-control', `unknown control: ${id}`);
       if (control.disabled) throw new AppBoundaryError('disabled-control', `disabled control: ${id}`);
       await completeHandler(control.click!({ kind: 'click' }, cx)); if (!closed) { render(); current(); }
+    },
+    mouse: async (id, button) => {
+      current(); const control = controls.get(id), handler = control?.mouse[button];
+      if (!handler) throw new AppBoundaryError('unknown-mouse-control', `no registered mouse handler: ${id}`);
+      if (control!.disabled) throw new AppBoundaryError('disabled-control', `disabled control: ${id}`);
+      await completeHandler(handler({ button }, cx)); if (!closed) { render(); current(); }
     },
     key: async (id, key) => {
       current(); const control = controls.get(id);
       if (!control?.key) throw new AppBoundaryError('unknown-key-control', `no registered key handler: ${id}`);
       if (control.disabled) throw new AppBoundaryError('disabled-control', `disabled control: ${id}`);
-      await completeHandler(control.key({ keystroke: { key } }, cx)); if (!closed) { render(); current(); }
+      await completeHandler(control.key({ key, keystroke: key, modifiers: {} }, cx)); if (!closed) { render(); current(); }
     },
     waitForUi: (description, predicate, timeoutMs) => new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout>;
@@ -207,7 +216,7 @@ export async function createRenderHost(options: RenderHostOptions): Promise<Rend
     }),
     close: async () => {
       if (closed) return;
-      instance?.close?.(); closed = true;
+      closed = true; await instance?.close?.();
       for (const timer of timers) clearInterval(timer); timers.clear();
       for (const task of tasks) task.cancel(); tasks.clear();
       await options.dispose?.(); emit(); listeners.clear();

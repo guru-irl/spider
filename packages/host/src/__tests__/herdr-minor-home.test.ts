@@ -13,7 +13,7 @@ test('a failed home probe is retried across reload and concurrent callers share 
     await ready;
     return { address: 'probe@remote.invalid' };
   });
-  const hc = { run, get: async () => ({ state: 'finished', exitCode: 0 }), read: async () => '"/home/agent"', kill: async () => {}, rm: async () => {} } as unknown as HcClient;
+  const hc = { machines: async () => [], run, get: async () => ({ state: 'finished', exitCode: 0 }), read: async () => '"/home/agent"', kill: async () => {}, rm: async () => {} } as unknown as HcClient;
   const session = { manager: {}, id: 'home-session' };
   const first = createRemoteFileResolver(hc, machines, session);
   await expect(first.resolve('script.sh', on)).rejects.toThrow('machine disconnected');
@@ -30,10 +30,11 @@ test('concurrent first callers share one pending home probe', async () => {
   let finish!: () => void;
   const ready = new Promise<void>(resolve => { finish = resolve; });
   const run = vi.fn(async () => { await ready; return { address: 'probe@remote.invalid' }; });
-  const hc = { run, get: async () => ({ state: 'finished', exitCode: 0 }), read: async () => '"/home/agent"', kill: async () => {}, rm: async () => {} } as unknown as HcClient;
+  const hc = { machines: async () => [], run, get: async () => ({ state: 'finished', exitCode: 0 }), read: async () => '"/home/agent"', kill: async () => {}, rm: async () => {} } as unknown as HcClient;
   const resolver = createRemoteFileResolver(hc, machines, { manager: {}, id: 'concurrent-session' });
   const paths = [resolver.resolve('one.sh', on), resolver.resolve('two.sh', on)];
-  expect(run).toHaveBeenCalledTimes(1);
+  await expect.poll(() => run.mock.calls.length).toBe(1);
   finish();
   await expect(Promise.all(paths)).resolves.toEqual(['/home/agent/one.sh', '/home/agent/two.sh']);
+  expect(run).toHaveBeenCalledTimes(1);
 });

@@ -2,11 +2,12 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 // Two real isolated hc cores (local and destination), a recording hc wrapper, and a local --via machine.
 import { spawn } from 'node:child_process';
+import { lstatSync } from 'node:fs';
 import { mkdir, writeFile, chmod, readFile, stat } from 'node:fs/promises';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, isAbsolute } from 'node:path';
 import { userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { assertSocketPath, defaultCoreSocket, HarnessError, ownedPath, type OwnedPath } from './environment.js';
+import { assertSocketPath, defaultCoreSocket, HarnessError, ownedPath, scratchRoot, type OwnedPath } from './environment.js';
 import { identityOf, type LedgerHandle } from './resources.js';
 
 export type Side = 'local' | 'dest';
@@ -22,7 +23,15 @@ export interface Cores {
   records(): Promise<HcRecord[]>;
 }
 
-export function realHcBinary(): string { return join(userInfo().homedir, '.local/bin/hc'); }
+export function realHcBinary(): string {
+  const override = process.env.SPIDER_HERDR_E2E_HC;
+  if (!override) return join(userInfo().homedir, '.local/bin/hc');
+  if (!isAbsolute(override)) throw new HarnessError('outside-owned-root', 'The hc override must be an absolute path under the fixture root');
+  const path = ownedPath(scratchRoot(), override), info = lstatSync(path);
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || !(info.mode & 0o100)) throw new HarnessError('outside-owned-root', 'The hc override must be an owned executable under the fixture root');
+  return path;
+}
+
 const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
 
 export function runHc(binary: string, argv: readonly string[], env: Record<string, string>, options: { cwd?: string; input?: string } = {}): Promise<HcResult> {

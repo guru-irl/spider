@@ -78,7 +78,7 @@ test('setup verification reuses the root probe that bootstrap just ran', async (
   expect(probes).toHaveLength(f.request.config.machines.length);
 });
 
-test('a recovered tab whose pi switched sessions is identified by its own process at once', async () => {
+test('a recovered tab whose pi switched sessions is not mistaken for the selected session', async () => {
   const f = await fixture();
   const { createProcessPresence } = await import('../../../herdr/src/sessions/presence.js');
   const { processStartTime } = await import('../../../subagents/src/process-identity.js');
@@ -92,9 +92,8 @@ test('a recovered tab whose pi switched sessions is identified by its own proces
   const target = { file, sessionId: 'selected' as never, cwd: f.h.root, spaceName: 'Space', spaceOrder: 0, sessionOrder: 0, name: null } as never;
   const placement = { space: 'space-1' as never, tab: 'tab-1' as never, terminal: terminal.address };
   const started = Date.now();
-  const result = await f.ports.spacePorts(f.request).verifyOwner(target, placement);
+  await expect(f.ports.spacePorts(f.request).verifyOwner(target, placement)).rejects.toMatchObject({ code: 'owner-session-switched' });
   expect(Date.now() - started).toBeLessThan(10_000);
-  expect(result).toEqual({ ...identity, sessionFile: file, sessionId: 'selected', cwd: f.h.root });
   // While the target session is held elsewhere, the switch is reported at once instead of waiting.
   f.request.config.spaces = [{ name: 'Space', sessions: [{ file }] }] as never;
   await createProcessPresence(join(f.h.directories.global, 'herdr')).record({ pid: process.ppid, startIdentity: processStartTime(process.ppid)!, sessionId: 'selected' as never, sessionFile: file, sessionName: null, kind: 'top-level', hcAddress: null });

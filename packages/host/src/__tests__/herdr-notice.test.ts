@@ -104,7 +104,7 @@ for (const mode of ['fake', 'hc'] as const) test.skipIf(mode === 'hc' && !realHc
     await until(async () => !m!.enabled(), 'parent did not go inactive');
     await m.guard({ toolName: 'bash', input: { command: 'true' } });
     expect(f.errors.filter(error => error instanceof HerdrError && error.code === 'core-unavailable').length).toBeGreaterThanOrEqual(2);
-    expect(f.notices).toEqual([expect.stringContaining('Herdr unavailable:')]);
+    expect(f.notices).toEqual([expect.stringContaining("Herdr stopped responding")]);
     // Match the reported outage duration; repeated guards must not add notices.
     for (let i = 0; i < 5; i++) { await delay(2000); await m.guard({ toolName: 'bash', input: { command: 'true' } }); }
     expect(f.notices).toHaveLength(1);
@@ -114,12 +114,12 @@ for (const mode of ['fake', 'hc'] as const) test.skipIf(mode === 'hc' && !realHc
     try {
       for (let i = 0; i < 2; i++) for (const hook of f.hooks.get('session_info_changed') ?? []) await hook({}, f.ctx);
     } finally { Reflect.set(f.ctx.sessionManager, 'getSessionFile', sessionFile); }
-    expect(f.notices).toEqual([expect.stringContaining('Herdr unavailable:'), 'Herdr: Unrelated session metadata failure']);
+    expect(f.notices).toEqual([expect.stringContaining("Herdr stopped responding"), "Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
     expect(f.errors.filter(error => error instanceof Error && error.message === 'Unrelated session metadata failure')).toHaveLength(2);
     if (mode === 'hc') { for (const pid of paused) process.kill(pid, 'SIGCONT'); paused.clear(); }
     else await f.h.cli(['server', 'start', '--json']);
-    await until(async () => f.notices.includes('Herdr core is back. /reload to reconnect.'), 'no recovery notice');
-    expect(f.notices).toEqual([expect.stringContaining('Herdr unavailable:'), 'Herdr: Unrelated session metadata failure', 'Herdr core is back. /reload to reconnect.']);
+    await until(async () => f.notices.includes("Herdr is running again. Run /reload to reconnect this session to the sidebar and panes."), 'no recovery notice');
+    expect(f.notices).toEqual([expect.stringContaining("Herdr stopped responding"), "Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes."]);
     expect(m.enabled()).toBe(false);
     const after = await f.h.cli(['server', 'status', '--json']) as typeof before;
     expect(after.core.id).toBe(before.core.id);
@@ -139,31 +139,117 @@ test('a distinct unrelated error reports once per session across repeated hooks 
   let m = f.mounted();
   f.storageError(new Error('Usage snapshot could not be read'));
   await f.start(); await f.start();
-  expect(f.notices).toEqual(['Herdr: Usage snapshot could not be read']);
+  expect(f.notices).toEqual(["Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
   expect(f.storageFailures()).toBeGreaterThanOrEqual(4);
   expect(f.errors.length).toBeGreaterThanOrEqual(f.storageFailures());
   await m.dispose(); f.hooks.clear(); m = f.mounted(); await f.start();
-  expect(f.notices).toEqual(['Herdr: Usage snapshot could not be read']);
+  expect(f.notices).toEqual(["Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
   f.storageError(new Error('Another unrelated failure')); await f.start(); await f.start();
-  expect(f.notices).toEqual(['Herdr: Usage snapshot could not be read', 'Herdr: Another unrelated failure']);
+  expect(f.notices).toEqual(["Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
   f.nextSession(); await f.start();
-  expect(f.notices).toEqual(['Herdr: Usage snapshot could not be read', 'Herdr: Another unrelated failure', 'Herdr: Another unrelated failure']);
+  expect(f.notices).toEqual(["Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", "Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
   expect(f.errors.length).toBeGreaterThanOrEqual(f.storageFailures());
 }, 60000);
 
+
+test('repeated notices return after 60 seconds independently for each session and catalog entry', async () => {
+  const f = await fixture();
+  f.mounted();
+  let now = Date.now();
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const paneNotices = () => f.notices.filter(text => text.includes("Herdr couldn't open a pane for this session"));
+  f.storageError(new HerdrError('pane-timeout', 'first failure'));
+  await f.start();
+  expect(paneNotices()).toHaveLength(1);
+  now += 59_999;
+  await f.start();
+  expect(paneNotices()).toHaveLength(1);
+  f.storageError(new HerdrError('owner-unplaced', 'different failure'));
+  await f.start();
+  expect(f.notices.some(text => text.includes("Herdr couldn't find the session pane"))).toBe(true);
+  f.storageError(new HerdrError('pane-timeout', 'second failure'));
+  f.nextSession();
+  await f.start();
+  expect(paneNotices()).toHaveLength(2);
+  now += 1;
+  // Return to the original session at exactly the boundary.
+  Reflect.set(f.ctx.sessionManager, 'getSessionId', () => 'notice-session');
+  await f.start();
+  expect(paneNotices()).toHaveLength(3);
+}, 60000);
+
+test('non-actionable pane diagnostics do not notify pi', async () => {
+  const f = await fixture();
+  f.mounted();
+  for (const code of ['pane-removal-timeout', 'agent-pane-protected', 'run-finished']) {
+    const error = new HerdrError(code, `Details for ${code}`);
+    f.storageError(error); await f.start();
+    expect(f.errors).toContain(error);
+  }
+  expect(f.notices).toEqual([]);
+}, 60000);
 
 test('a failed initial feed retries on ordinary refresh without another session start', async () => {
   const f = await fixture(), m = f.mounted();
   const feedPath = join(f.h.directories.global, 'herdr/sessions', f.ctx.sessionManager.getSessionId(), 'session.json');
   f.storageError(new Error('Initial feed storage unavailable'));
   await f.start();
-  expect(f.notices).toEqual(['Herdr: Initial feed storage unavailable']);
+  expect(f.notices).toEqual(["Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
   expect(m.enabled()).toBe(true);
   f.storageError(undefined);
   await until(async () => access(feedPath).then(() => true, () => false), 'feed did not recover after initial storage failure');
   const { readFile } = await import('node:fs/promises');
   expect(JSON.parse(await readFile(feedPath, 'utf8'))).toMatchObject({ version: 1, sessionId: f.ctx.sessionManager.getSessionId(), lifecycle: 'live' });
 }, 30000);
+
+test('a setup-launched session reloads without a reservation warning in pi', async () => {
+  const f = await fixture();
+  const { launchSession } = await import('../../../herdr/src/sessions/launcher.js');
+  const { createSessionLeases } = await import('../../../herdr/src/sessions/lease.js');
+  const { createProcessPresence } = await import('../../../herdr/src/sessions/presence.js');
+  const { processStartTime } = await import('../../../subagents/src/process-identity.js');
+  const file = join(f.h.directories.local, 'planner.jsonl');
+  const id = f.ctx.sessionManager.getSessionId();
+  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id, cwd: f.h.directories.local }) + '\n');
+  const root = join(f.h.directories.global, 'herdr'), leases = createSessionLeases(root), presence = createProcessPresence(root);
+  const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
+  const inventory = { leases, presence, processes: async () => [], probe: async (pid: number) => pid === identity.pid ? { kind: 'live' as const, startIdentity: identity.startIdentity } : { kind: 'absent' as const } };
+  let launchEnv: Readonly<NodeJS.ProcessEnv> = {};
+  await launchSession({ sessionFile: file, sessionId: id as never, cwd: f.h.directories.local, environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } },
+    { leases, processInventory: inventory, processIdentity: identity, leasePolicy: { mode: 'switch', sessionId: id as never }, env: process.env,
+      spawnPi: async request => { launchEnv = request.env; return identity; } });
+  vi.stubEnv('SPIDER_HERDR_LEASE_TOKEN', launchEnv.SPIDER_HERDR_LEASE_TOKEN);
+  vi.stubEnv('SPIDER_HERDR_LEASE_FILE', launchEnv.SPIDER_HERDR_LEASE_FILE);
+  Reflect.set(f.ctx.sessionManager, 'getSessionFile', () => file);
+  let mount = f.mounted();
+  await f.start();
+  expect(mount.enabled()).toBe(true);
+  expect(f.notices).toEqual([]);
+  for (const hook of [...f.hooks.get('session_shutdown') ?? []]) await hook({ reason: 'reload' }, f.ctx);
+  await mount.dispose(); f.hooks.clear();
+  mount = f.mounted(); await f.start();
+  expect(mount.enabled()).toBe(true);
+  expect(f.notices).toEqual([]);
+  expect(f.errors).toEqual([]);
+  expect(await leases.get(file)).toMatchObject(identity);
+  for (const hook of [...f.hooks.get('session_shutdown') ?? []]) await hook({ reason: 'quit' }, f.ctx);
+  expect(await leases.get(file)).toBeNull();
+}, 60000);
+
+test('session handoff and unknown errors reach pi as actionable notices while diagnostics stay available', async () => {
+  const f = await fixture();
+  f.mounted();
+  const handoff = new HerdrError('lease-token-invalid', 'Lease adoption requires the launcher capability');
+  f.storageError(handoff);
+  await f.start();
+  expect(f.notices).toEqual(["Spider couldn't register this session with Herdr, so reopening it later may not work. This session still works. Close and reopen the session in Herdr."]);
+  expect(f.errors).toContain(handoff);
+  const unexpected = new HerdrError('future-failure', 'private diagnostic');
+  f.storageError(unexpected);
+  await f.start();
+  expect(f.notices.at(-1)).toBe("Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine (future-failure).");
+  expect(f.errors).toContain(unexpected);
+}, 60000);
 
 test('a disconnected event transport with a live core still reports once', async () => {
   const f = await fixture(), m = f.mounted();
@@ -172,6 +258,6 @@ test('a disconnected event transport with a live core still reports once', async
   await until(async () => f.notices.length > 0, 'live-core transport failure was hidden');
   expect(await isCoreAvailable(f.h.localEnv)).toBe(true);
   expect(m.enabled()).toBe(true);
-  expect(f.notices).toEqual(['Herdr: Event transport disconnected']);
+  expect(f.notices).toEqual(["Herdr stopped sending updates to this session, so the sidebar and panes may be out of date. Everything else in spider still works. Run /reload to reconnect."]);
   expect(f.errors.length).toBeGreaterThanOrEqual(f.storageFailures());
 }, 60000);

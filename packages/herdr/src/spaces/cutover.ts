@@ -9,6 +9,7 @@ import { discoverSessions, selectedProcessInventory, type SessionDiscoveryPorts,
 export type LaunchedSession = Omit<SessionLaunchResult, 'token'>;
 export interface CutoverPorts extends SessionDiscoveryPorts {
   signal?: AbortSignal;
+  excludeFiles?: ReadonlySet<string>;
   clock(): number; waitForChange(deadline: number, signal: AbortSignal): Promise<void>;
   reportLive(records: readonly PresenceRecord[]): void; reportBlocked(message: string): void;
   notesDisabled(): Promise<boolean>;
@@ -22,26 +23,37 @@ export interface CutoverResult { manifest: SessionManifest; launched: LaunchedSe
 export async function startCutover(initial: SessionManifest, ports: CutoverPorts): Promise<CutoverResult> {
   const discoveryPorts = ports;
   ports = { ...ports, processInventory: selectedProcessInventory(initial.config, ports.processInventory, initial.sessions) };
-  const deadline = ports.clock() + 30 * 60 * 1000; let manifest = initial; const reused = new Map<string, LaunchedSession>();
+  const include = (manifest: SessionManifest): SessionManifest => ({ ...manifest, sessions: manifest.sessions.filter(session => !session.file || !ports.excludeFiles?.has(session.file)) });
+  const deadline = ports.clock() + 30 * 60 * 1000; let manifest = include(initial); const reused = new Map<string, LaunchedSession>();
+  let liveReport: string | undefined; let blockedReport = new Set<string>();
   for (;;) {
     if (ports.signal?.aborted) throw new HerdrError('aborted', 'Cutover aborted before allocation');
     reused.clear();
-    const inventory = await inventorySnapshot(ports.processInventory); ports.reportLive(inventory.records);
-    let blocked = inventory.unknownPids.length > 0 || inventory.uncertainPids.length > 0;
-    if (blocked) {
-      for (const pid of inventory.unknownPids) ports.reportBlocked(`Unrecorded pi PID ${pid}: /reload in that session, or closing it, clears this block.`);
-      for (const pid of inventory.uncertainPids) ports.reportBlocked(`Selected owner PID ${pid} has an uncertain process identity; close it or restore its presence record.`);
-    }
+    const inventory = await inventorySnapshot(ports.processInventory);
+    const messages = new Set<string>();
+    let blocked = false;
     for (const target of manifest.sessions) {
       refuseExplicitExtensions(target.name ?? target.sessionId ?? target.file ?? 'unresolved session', target.extensionArguments);
       if (target.file === null) continue;
       const existing = await ports.alreadyLaunched?.(target);
       if (existing) { reused.set(target.file, existing); continue; }
       const liveness = await assessSessionLiveness(target.file, ports.processInventory);
-      if (liveness.kind !== 'free') { blocked = true; ports.reportBlocked(`Close selected session ${target.name ?? target.sessionId ?? target.file}; PIDs: ${liveness.pids.join(', ')}`); }
+      if (liveness.kind !== 'free') { blocked = true; messages.add(`Close selected session ${target.name ?? target.sessionId ?? target.file}; PIDs: ${liveness.pids.join(', ')}`); }
     }
+    const unknownMessages = new Set<string>();
+    if (manifest.sessions.some(target => !target.file || !reused.has(target.file))) {
+      if (inventory.unknownPids.length || inventory.uncertainPids.length) blocked = true;
+      for (const pid of inventory.unknownPids) unknownMessages.add(`Unrecorded pi PID ${pid}: /reload in that session, or closing it, clears this block.`);
+      for (const pid of inventory.uncertainPids) unknownMessages.add(`Selected owner PID ${pid} has an uncertain process identity; close it or restore its presence record.`);
+    }
+    const blockingRecords = inventory.records.filter(record => manifest.sessions.some(target => (target.sessionId && target.sessionId === record.sessionId || target.file && target.file === record.sessionFile) && (!target.file || !reused.has(target.file))));
+    const currentLive = JSON.stringify(blockingRecords.map(record => [record.pid, record.sessionName ?? record.sessionId ?? '(unnamed)']).sort((a, b) => Number(a[0]) - Number(b[0])));
+    if (currentLive !== liveReport) { ports.reportLive(blockingRecords); liveReport = currentLive; }
+    const allMessages = new Set([...unknownMessages, ...messages]);
+    for (const message of allMessages) if (!blockedReport.has(message)) ports.reportBlocked(message);
+    blockedReport = allMessages;
     if (!blocked) {
-      manifest = await discoverSessions(initial.config, discoveryPorts);
+      manifest = include(await discoverSessions(initial.config, discoveryPorts));
       // Metadata for an already-verified journalled live owner comes from its journal, not from opening its file.
       manifest.sessions = manifest.sessions.map(s => { const r = s.file && reused.get(s.file); return r ? { ...s, sessionId: r.sessionId, cwd: r.cwd } : s; });
       if (manifest.sessions.some(s => s.file === null || s.sessionId === null || s.cwd === null)) throw new HerdrError('session-selector-unresolved', 'Selected session metadata is unavailable');

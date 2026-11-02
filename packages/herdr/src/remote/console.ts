@@ -165,8 +165,9 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       if (terminal.labels[HERDR_LABELS.kind] !== HERDR_KINDS.remoteConsole) return;
       try {
         const ownerGone = await ports.ownerIsLive?.(terminal) === false;
-        const runEnded = !!terminal.labels[HERDR_LABELS.run] && await ports.runIsLive?.(terminal) === false;
-        if (!ownerGone && !runEnded) return;
+        const runLive = terminal.labels[HERDR_LABELS.run] ? await ports.runIsLive?.(terminal) : null;
+        const runEnded = runLive === false;
+        if (!runEnded && (!ownerGone || runLive === true)) return;
         if (ports.beforeReap && !await ports.beforeReap(terminal)) return;
         const latest = await ports.hc.get(terminal.address);
         if ([HERDR_LABELS.kind, HERDR_LABELS.session, HERDR_LABELS.ownerCore, HERDR_LABELS.ownerTerminal, HERDR_LABELS.machine, HERDR_LABELS.run]

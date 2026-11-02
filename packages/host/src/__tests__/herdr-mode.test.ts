@@ -117,6 +117,6 @@ test.each(['tui', 'rpc'] as const)('a nested %s session stays inactive without p
   expect(f.mount.execution().remote).toBeUndefined(); expect(f.mount.execution().environmentPolicy(process.env).SPIDER_HERDR_SSH_DESCRIPTOR).toBeUndefined();
   expect(await f.mount.guard({ toolName: 'bash', input: { command: 'printf local' } })).toBeUndefined();
   expect(await new PolyglotExecutor({ projectRoot: f.h.root, ...f.mount.execution() }).execute({ language: 'shell', code: 'printf local', timeout: 5000 })).toMatchObject({ exitCode: 0, stdout: 'local' });
-  expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', on: 'remote.invalid' } })).toMatchObject({ block: true, reason: expect.stringContaining('herdr-disabled') });
+  expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', on: 'remote.invalid' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
   expect(f.notices.length).toBeLessThanOrEqual(1); expect(f.errors).toEqual([]);
 }, 60000);

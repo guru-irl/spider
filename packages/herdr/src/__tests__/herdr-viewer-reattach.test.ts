@@ -37,7 +37,7 @@ async function prove(story: Story) {
   const clients: ReturnType<typeof createSessionIpcClient>[] = [], endpoints: SessionEndpoint[] = [];
   const cursors: { sessionId: SessionId; cursor: RunCursor | null }[] = [], steers: string[] = [], backoffs: number[] = [];
   const publishers = new Set<(frame: RunViewFrame) => void>();
-  let tail = ''; let resumedOwnerProcess: ChildProcess | undefined;
+  let tail = '', offline = false; let resumedOwnerProcess: ChildProcess | undefined;
   const resumedOwnerSteers: string[] = [];
   const owner = (id = sessionId, generation = 'first'): Owner => ({ sessionId: id, generation: generation as Owner['generation'], terminal: { coreId: 'core', terminalId: 'owner', address: 'owner', socket: f.localSocket, sessionNamespace: 'fixture' } as Owner['terminal'], cwd: f.root, sessionFile: null, name: null });
   const summary = (id: SessionId): RunSummary => ({ id: id === sessionId ? runId : '20000000-0000-4000-8000-000000000002' as RunId, ownerSessionId: id, name: null, status: 'running', childMode: 'rpc', canSteer: true, startedAt: 1, finishedAt: null, result: null, viewer: null });
@@ -46,6 +46,7 @@ async function prove(story: Story) {
       currentOwner: () => o, liveCapabilities: () => ({ native: 'working', effective: 'working' }),
       ownsRun: id => id === summary(o.sessionId).id,
       subscribeRun: (_id, cursor, emit) => {
+        if (offline) throw new Error('The fixture stream is unavailable.');
         cursors.push({ sessionId: o.sessionId, cursor });
         emit({ runId, cursor: cursor ?? 'initial' as RunCursor, kind: 'snapshot', data: { run: summary(o.sessionId) } });
         if (cursor === null) emit({ runId, cursor: priorCursor, kind: 'event', data: { text: 'BEFORE_STEER\n', events: [] } });
@@ -97,7 +98,10 @@ async function prove(story: Story) {
       wait: async ms => { backoffs.push(ms); if (ms === 2000 && ending) { graceReached(); await grace; } else await delay(ms); } });
     await expect.poll(() => text).toContain('BEFORE_STEER'); input.write(instruction + '\n');
     await expect.poll(() => diagnostics).toContain('delivery unknown'); expect(steers).toEqual([instruction]);
-    publishers.clear(); now = 12000; if (story === 'missing-feed-same-session') value = null; changed(); await expect.poll(() => diagnostics).toContain('reconnecting');
+    offline = true;
+    for (const emit of publishers) emit({ runId, cursor: priorCursor, kind: 'end', data: { reason: 'disposed' } });
+    publishers.clear(); now = 22000; if (story === 'missing-feed-same-session') value = null; changed();
+    await expect.poll(() => backoffs.length).toBeGreaterThan(0); expect(diagnostics).not.toContain('reconnect');
     const offlineReads = reads;
     for (let i = 0; i < 20; i++) { changed(); await delay(5); }
     expect(reads - offlineReads).toBeLessThanOrEqual(1);
@@ -105,14 +109,14 @@ async function prove(story: Story) {
     if (story === 'replaced-session') {
       await oldEndpoint.dispose(); value = { ...feed(oldOwner, oldEndpoint), lifecycle: 'closed', ipc: null, updatedAt: now }; changed();
     } else if (story !== 'same-epoch') {
-      await oldEndpoint.dispose(); now = 43000; changed();
+      await oldEndpoint.dispose(); now = 53000; changed();
     }
     if (story !== 'same-epoch') await expect.poll(() => diagnostics, { timeout: 3000 }).toContain('Saved log is read-only');
     const beforeClients = clients.length;
-    now = story === 'same-epoch' ? 13000 : 50000;
+    now = story === 'same-epoch' ? 23000 : 60000;
     const nextOwner = foreign ? owner('other-session' as SessionId, 'foreign') : story === 'same-epoch' ? oldOwner : owner(sessionId, 'resumed');
     const nextEndpoint = story === 'same-epoch' ? oldEndpoint : story === 'same-session-new-endpoint' ? await externalEndpoint(nextOwner) : await endpoint(nextOwner);
-    value = feed(nextOwner, nextEndpoint); changed(); release();
+    offline = false; value = feed(nextOwner, nextEndpoint); changed(); release();
     await expect.poll(() => childText).toContain('UNKNOWN_STEER_APPLIED');
     tail = childText;
     if (resumedOwnerProcess?.connected) resumedOwnerProcess.send({ type: 'tail', text: tail });
@@ -128,7 +132,7 @@ async function prove(story: Story) {
       await expect.poll(() => text, { timeout: 5000 }).toContain('UNKNOWN_STEER_APPLIED');
       expect(cursors.map(row => row.cursor)).toEqual([null, priorCursor]);
       expect(text.match(/BEFORE_STEER/g)).toHaveLength(1); expect(text.match(/UNKNOWN_STEER_APPLIED/g)).toHaveLength(1);
-      expect(clients).toHaveLength(2);
+      expect(clients).toHaveLength(story === 'same-epoch' ? 1 : 2);
       expect(await clients.at(-1)!.ping()).toMatchObject({ ok: true, op: 'ping' });
       if (story === 'same-session-new-endpoint') expect(resumedOwnerProcess!.pid).not.toBe(process.pid);
       ending = true; if (resumedOwnerProcess?.connected) resumedOwnerProcess.send({ type: 'finish' });

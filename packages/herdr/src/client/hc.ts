@@ -75,7 +75,8 @@ export function createHcClient(options: HcClientOptions): HcClient & Disposable 
     if (!Array.isArray(rows)) throw new HerdrError('invalid-reply', 'Expected machine list');
     return rows.map(value => {
       const m = object(value); const name = text(m.name);
-      const aliases = [name, text(m.host), ...(m.via ? [] : [text(m.target).replace(/^.*@/, '')])].map(v => v.toLowerCase().replace(/\.$/, ''));
+      const target = m.via ? (typeof m.target === 'string' && /^(?:[\w.-]+@)?[\w.-]+$/.test(m.target) ? m.target : '') : text(m.target);
+      const aliases = [name, text(m.host), ...(target ? [target.replace(/^.*@/, '')] : [])].map(v => v.toLowerCase().replace(/\.$/, ''));
       return { id: text(m.id) as CoreId, name: name as MachineName, aliases: [...new Set(aliases)], state: m.state === 'connected' ? 'connected' : 'disconnected', sessionNamespace: m.session === null || m.session === undefined ? 'default' : text(m.session), runtime: null } satisfies MachineSummary;
     });
   };

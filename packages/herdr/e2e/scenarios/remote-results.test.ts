@@ -3,12 +3,13 @@
 import assert from 'node:assert/strict';
 import { expect } from 'vitest';
 import { join } from 'node:path';
-import { writeFile, readFile } from 'node:fs/promises';
+import { writeFile, readFile, chmod, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import type { ScenarioDefinition } from '../harness/scenario.js';
 import { storyId } from '../harness/scenario.js';
 import { stagePayload } from '../fixtures/payloads/index.js';
-import { armFault } from '../fixtures/payloads/transport.js';
-import { remoteStory, call, begin, result, settled, rejection, exactResult, snapshot, assertNoPanes, writeMarker, remoteEffect, configChanged, shellQuote, deadline, rawDetails } from '../fixtures/payloads/story.js';
+import { armFault, payloadTransport } from '../fixtures/payloads/transport.js';
+import { remoteStory, call, begin, result, settled, rejection, exactResult, snapshot, assertNoPanes, writeMarker, remoteEffect, configChanged, shellQuote, deadline, rawDetails, waitFor } from '../fixtures/payloads/story.js';
 
 export const scenarios: readonly ScenarioDefinition[] = [
   {
@@ -23,6 +24,21 @@ export const scenarios: readonly ScenarioDefinition[] = [
       exactResult(value, 'remote-out\n', 'remote-err\n', 23);
       assert.equal(value.remote?.machine, s.machine); assert.ok(value.remote?.jobId); assert.ok(value.remote?.address.startsWith(s.machine + '/'));
       assert.equal(await remoteEffect(suite, s.machine, effect), 'once\n');
+      const alias = suite.options.tier === 'remote' ? suite.options.machine : 'route.invalid';
+      const heredoc = await call(s, 'heredoc-alias', { action: 'exec', language: 'shell', on: alias.toUpperCase(), code: "cat <<'EOF'\nssh alpha.invalid is data\nEOF\n" });
+      exactResult(heredoc, 'ssh alpha.invalid is data\n', '', 0); assert.equal(heredoc.remote?.machine, s.machine);
+      const source = join(s.cwd, "copy 'source'.bin"), destination = join(s.destinationCwd, "copy 'destination'.bin"), returned = join(s.cwd, "copy 'returned'.bin");
+      const bytes = Buffer.alloc(512 * 1024 + 19); for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 193 + 17) & 255;
+      await writeFile(source, bytes); await chmod(source, 0o751);
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      let copyAt = await begin(s, 'copy-to', [{ id: 'copy-to', args: { action: 'exec', on: alias, copy: { direction: 'to', local: source, remote: destination } } }]);
+      const sent = await s.driver.toolResult('copy-to', deadline(180000)); assert.equal(sent.isError, false, JSON.stringify(sent));
+      assert.deepEqual(rawDetails(sent), { direction: 'to', machine: s.machine, source, destination, bytes: bytes.length, mode: 0o751, sha256 }); await settled(s.driver, copyAt);
+      copyAt = await begin(s, 'copy-from', [{ id: 'copy-from', args: { action: 'exec', on: alias, copy: { direction: 'from', local: returned, remote: destination } } }]);
+      const received = await s.driver.toolResult('copy-from', deadline(180000)); assert.equal(received.isError, false, JSON.stringify(received));
+      assert.equal((rawDetails(received) as { destination: string }).destination, returned); await settled(s.driver, copyAt);
+      assert.equal(createHash('sha256').update(await readFile(returned)).digest('hex'), sha256);
+      assert.equal((await stat(returned)).mode & 0o777, 0o751);
       const local = await call(s, 'local', { action: 'exec', language: 'shell', code: 'cat where.txt' });
       exactResult(local, 'local-marker\n', '', 0); assert.equal(local.remote, undefined);
       const bad = await call(s, 'wrong-bytes', { action: 'exec', language: 'shell', on: s.machine, code: "printf 'wrong\\n'; exit 0" });
@@ -80,10 +96,17 @@ export const scenarios: readonly ScenarioDefinition[] = [
       at = await begin(s, 'aborted', [{ id: 'aborted', args: { action: 'batch', on: s.machine, commands: [
         { language: 'shell', code: "printf 'entry-one\\n'" }, { language: 'shell', code: held.code }, { language: 'shell', code: `printf bad >> ${shellQuote(after)}` },
       ] } }]);
-      await held.ready(deadline(30000)); assert.equal(await held.effect(), null); await s.driver.key('\x1b');
+      await held.ready(deadline(30000)); assert.equal(await held.effect(), null);
+      const heldJob = await payloadTransport(s, held.configPath);
+      const heldLog = join(suite.directories.SPIDER_GLOBAL_ROOT, 'herdr/jobs/sessions', s.sessionId, 'logs', heldJob.id, 'stdout.log');
+      await waitFor('gathered output before abort', () => readFile(heldLog, 'utf8').catch(() => ''), text => text.includes('entry-two-held'), deadline(30000));
+      await s.driver.key('\x1b');
       const aborted = await s.driver.toolResult('aborted', deadline(60000)); await suite.evidence('abort-result.json', aborted); await settled(s.driver, at);
-      const abortValues = rawDetails(aborted) as { aborted?: boolean; outcome?: string }[];
+      const abortValues = rawDetails(aborted) as { aborted?: boolean; outcome?: string; stdout: string; remoteAbortInfo?: string }[];
       assert.equal(abortValues.length, 2); assert.ok(abortValues[1].aborted || abortValues[1].outcome === 'aborted');
+      assert.ok(abortValues[1].stdout.includes('entry-two-held'));
+      assert.match(abortValues[1].remoteAbortInfo ?? '', /remote process.*(?:killed|exited|unknown)/i);
+      assert.ok(abortValues[1].remoteAbortInfo?.includes(heldJob.address));
       assert.equal(await remoteEffect(suite, s.machine, after), null);
       const early = join(s.destinationCwd, 'preflight-effect');
       await rejection(s, 'entry-target', { action: 'batch', on: s.machine, commands: [{ language: 'shell', code: `printf bad >> ${shellQuote(early)}` }, { language: 'shell', code: 'true', on: s.machine }] }, early);

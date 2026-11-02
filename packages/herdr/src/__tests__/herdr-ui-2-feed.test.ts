@@ -59,7 +59,7 @@ beforeEach(async () => {
   options = {
     resolveRunDb: o => openSessionRunDb(o.cwd, o.sessionId, { projectKey: 'fx4-ui-2', realPath: root, dbPath }),
     openApprovalDbs: () => ({ global: openDb(globalPath), repo: null }),
-    runEvents: bus, scheduler, readJobJournal: async () => [],
+    runEvents: bus, scheduler,
     readUsage: async () => ({ snapshots: [], budget: 5000, correctedMonth: 1284.4, correctedWindow: null, updatedAt: now - 4 * 60000 }),
     // The production mount passes the whole Herdr config; globalRoot locates usage.db.
     readConfig: () => ({ limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, globalRoot: global }), clock: () => Date.now(),

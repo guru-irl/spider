@@ -79,7 +79,7 @@ it.runIf(Boolean(process.env.SPIDER_HERDR_E2E_REMOTE || process.env.SPIDER_HERDR
     expect((await suite.close()).clean).toBe(true);
     const result = JSON.parse(await readFile(join(suite.evidenceDirectory, 'remote-final.json'), 'utf8'));
     expect(result.guardian).toMatchObject({ reason: 'lease-expired', clean: true, rootRemoved: true, survivors: [] });
-    expect(result.guardian.defaultAfter).toEqual(result.guardian.defaultBefore);
+    expect(result.guardian.defaultAssessment.clean).toBe(true);
   } finally { await suite.close(); }
 }, 180_000);
 
@@ -102,7 +102,7 @@ it.runIf(Boolean(process.env.SPIDER_HERDR_E2E_REMOTE || process.env.SPIDER_HERDR
     expect(proof.clean).toBe(true);
     const after = JSON.parse(await readFile(join(suite.evidenceDirectory, 'remote-final.json'), 'utf8'));
     expect(after).toMatchObject({ observerDisconnected: true, after: { rootExists: false, socketListening: false, coreAlive: false, guardianAlive: false, rootProcesses: [] } });
-    expect(after.after.defaultAfter).toEqual(suite.remote.metadata.defaultBefore);
+    expect(after.after.defaultAssessment.clean).toBe(true);
   } finally { await suite.close(); }
 }, 180_000);
 
@@ -126,7 +126,7 @@ it.runIf(Boolean(process.env.SPIDER_HERDR_E2E_REMOTE || process.env.SPIDER_HERDR
     const reconciled = JSON.parse(await readFile(path, 'utf8'));
     expect(reconciled.metadata.root).toBe(m.root);
     expect(reconciled.observed).toMatchObject({ rootExists: false, socketListening: false, coreAlive: false, guardianAlive: false, rootProcesses: [] });
-    expect(reconciled.observed.defaultAfter).toEqual(m.defaultBefore);
+    expect(reconciled.observed.defaultAssessment.clean).toBe(true);
     expect((await next.close()).clean).toBe(true);
   } finally {
     if (next) await next.close();

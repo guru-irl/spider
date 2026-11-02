@@ -8,7 +8,7 @@ import { HerdrError } from '../client/parse.js';
 import { sweepSessionIpc } from './cleanup.js';
 import { join } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { parseRunViewFrame, parseSessionIpcEnvelope, parseSessionIpcReply, type Disposable, type IpcDescriptor, type IpcErrorCode, type JobId, type Owner, type RunCursor, type RunId, type RunViewFrame, type SessionIpcReply, type SteerReply, type TerminalAddress, type ViewName } from '../contracts.js';
+import { parseRunViewFrame, parseSessionIpcEnvelope, parseSessionIpcReply, type Disposable, type IpcDescriptor, type IpcErrorCode, type IpcMoveDestination, type JobId, type Owner, type RunCursor, type RunId, type RunViewFrame, type SessionIpcReply, type SteerReply, type TerminalAddress, type ViewName } from '../contracts.js';
 import { atomicPrivateWrite, feedError, privateDirectory, sweepSessionFeeds } from './publisher.js';
 export const MAX_FRAME_BYTES: number = 256 * 1024;
 export const MAX_TRANSCRIPT_BYTES: number = 64 * 1024;
@@ -20,12 +20,19 @@ export interface SessionEndpointPorts {
   /** Null means no detected live instance; never substitute a module-file inspection. */
   liveCapabilities(): Extract<SessionIpcReply, { op: 'ping' }>['status'] | null;
   ownsRun(runId: RunId): boolean | Promise<boolean>;
-  subscribeRun(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void): Disposable | Promise<Disposable>;
+  subscribeRun(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view: number }): Disposable | Promise<Disposable>;
   steerRun(runId: RunId, text: string): SteerReply | Promise<SteerReply>;
   openView(view: ViewName): void | Promise<void>;
   openRun(runId: RunId): TerminalAddress | null | Promise<TerminalAddress | null>;
+  killRun?(runId: RunId): void | Promise<void>;
+  moveRun?(runId: RunId, destination: IpcMoveDestination): TerminalAddress | null | Promise<TerminalAddress | null>;
+  moveSession?(destination: Exclude<IpcMoveDestination, { kind: 'hide' }>): void | Promise<void>;
+  prepareSessionStop?(): Promise<void>;
+  killSessionTerminal?(): void | Promise<void>;
   ownsJob(jobId: JobId): boolean | Promise<boolean>;
   openJob(jobId: JobId): TerminalAddress | null | Promise<TerminalAddress | null>;
+  killJob?(jobId: JobId): void | Promise<void>;
+  moveJob?(jobId: JobId, viewer: TerminalAddress, destination: Exclude<IpcMoveDestination, { kind: 'hide' }>): TerminalAddress | null | Promise<TerminalAddress | null>;
 }
 type HandoffReason = 'disposed' | 'wrong-generation';
 export interface SessionEndpoint extends Disposable { descriptor: IpcDescriptor; dispose(reason?: HandoffReason): void | Promise<void> }
@@ -54,10 +61,10 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
   const server = createServer(socket => {
     let pending = Buffer.alloc(0); let received = false; let subscription: Disposable | undefined; let endStream: ((reason: HandoffReason) => void) | undefined;
     const unsubscribe = () => { const previous = subscription; subscription = undefined; if (previous) release(previous); };
-    const sendReply = (reply: SessionIpcReply) => {
-      if (socket.destroyed) return;
+    const sendReply = (reply: SessionIpcReply, afterWrite?: () => void) => {
+      if (socket.destroyed) { afterWrite?.(); return; }
       const text = JSON.stringify(reply) + '\n';
-      socket.end(Buffer.byteLength(text) <= MAX_FRAME_BYTES ? text : JSON.stringify({ ok: false, code: 'too-large', message: 'Reply exceeds 256 KiB.' } satisfies SessionIpcReply) + '\n');
+      socket.end(Buffer.byteLength(text) <= MAX_FRAME_BYTES ? text : JSON.stringify({ ok: false, code: 'too-large', message: 'Reply exceeds 256 KiB.' } satisfies SessionIpcReply) + '\n', afterWrite);
     };
     const fail = (code: IpcErrorCode, message: string = code) => sendReply({ ok: false, code, message });
     const shutdown = (reason: HandoffReason) => { if (endStream && !socket.destroyed) endStream(reason); else socket.destroy(); unsubscribe(); };
@@ -73,7 +80,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         if (value && typeof value === 'object' && 'request' in value) {
           const request = value.request;
           if (request && typeof request === 'object' && 'op' in request) {
-            if (!['ping', 'openView', 'openRun', 'openJob', 'steerRun', 'subscribeRun'].includes(String(request.op))) return fail('unknown-op');
+            if (!['ping', 'openView', 'openRun', 'killRun', 'moveRun', 'moveSession', 'killSession', 'openJob', 'killJob', 'moveJob', 'steerRun', 'subscribeRun'].includes(String(request.op))) return fail('unknown-op');
             if ('text' in request && typeof request.text === 'string' && Buffer.byteLength(request.text) > MAX_STEER_BYTES) return fail('too-large');
           }
         }
@@ -89,12 +96,38 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
             return status === null ? fail('status-instance-unavailable') : sendReply({ ok: true, op: 'ping', status });
           }
           case 'openView': await ports.openView(request.view); return sendReply({ ok: true, op: 'openView' });
-          case 'openJob': {
+          case 'killSession': {
+            if (!ports.prepareSessionStop || !ports.killSessionTerminal) return fail('unavailable');
+            await ports.prepareSessionStop();
+            if (!live()) return fail('wrong-generation');
+            return sendReply({ ok: true, op: 'killSession' }, () => {
+              void Promise.resolve().then(() => ports.killSessionTerminal!()).catch(error => ports.reportError?.(error));
+            });
+          }
+          case 'moveSession': {
+            if (!ports.moveSession) return fail('unavailable');
+            await ports.moveSession(request.destination);
+            return sendReply({ ok: true, op: 'moveSession' });
+          }
+          case 'openJob':
+          case 'killJob':
+          case 'moveJob': {
             if (!(await ports.ownsJob(request.jobId))) return fail('not-found');
             if (!live() || socket.destroyed) return fail('wrong-generation');
+            if (request.op === 'killJob') {
+              if (!ports.killJob) return fail('unavailable');
+              await ports.killJob(request.jobId);
+              return sendReply({ ok: true, op: 'killJob', jobId: request.jobId });
+            }
+            if (request.op === 'moveJob') {
+              if (!ports.moveJob) return fail('unavailable');
+              const viewer = await ports.moveJob(request.jobId, request.viewer, request.destination);
+              return sendReply({ ok: true, op: 'moveJob', viewer });
+            }
             const viewer = await ports.openJob(request.jobId);
             return viewer === null ? fail('not-found') : sendReply({ ok: true, op: 'openJob', viewer });
           }
+
         }
         if (!(await ports.ownsRun(request.runId))) return request.op === 'steerRun'
           ? sendReply({ ok: false, code: 'refused', reason: 'wrong-owner', message: 'Run is not owned by this session.' }) : fail('not-found');
@@ -102,6 +135,16 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         if (request.op === 'openRun') {
           const viewer = await ports.openRun(request.runId);
           return viewer === null ? fail('not-found') : sendReply({ ok: true, op: 'openRun', viewer });
+        }
+        if (request.op === 'moveRun') {
+          if (!ports.moveRun) return fail('unavailable');
+          const viewer = await ports.moveRun(request.runId, request.destination);
+          return sendReply({ ok: true, op: 'moveRun', viewer });
+        }
+        if (request.op === 'killRun') {
+          if (!ports.killRun) return fail('unavailable');
+          await ports.killRun(request.runId);
+          return sendReply({ ok: true, op: 'killRun' });
         }
         if (request.op === 'steerRun') {
           if (!request.text.trim()) return fail('refused', 'Steer text must not be blank.');
@@ -137,15 +180,18 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
           if (ended || socket.destroyed) return;
           if (!live()) { end('wrong-generation'); return; }
           if (frame.runId !== request.runId) { end('run-not-owned'); return; }
-          lastCursor = frame.cursor;
           const text = JSON.stringify(frame) + '\n';
+          // Live frames are a preview; the transcript and events stay authoritative. A slow
+          // viewer loses previews instead of its whole stream.
+          if (frame.kind === 'live' && (blocked || queuedBytes + socket.writableLength + Buffer.byteLength(text) > MAX_PENDING_BYTES / 4 || !parseRunViewFrame(text))) return;
+          lastCursor = frame.cursor;
           if (!parseRunViewFrame(text)) { end('overflow', 'transcript-page-too-large'); return; }
           if (queuedBytes + socket.writableLength + Buffer.byteLength(text) > MAX_PENDING_BYTES) { end('overflow', 'backpressure'); return; }
           queue.push({ text, end: frame.kind === 'end', cursor: frame.cursor }); queuedBytes += Buffer.byteLength(text);
           if (frame.kind === 'end') ended = true;
           pump();
         };
-        const result = await ports.subscribeRun(request.runId, request.cursor, emit);
+        const result = await ports.subscribeRun(request.runId, request.cursor, emit, request.view === undefined ? undefined : { view: request.view });
         if (socket.destroyed) { release(result); return; }
         subscription = result;
         if (!live()) end('wrong-generation');

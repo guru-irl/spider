@@ -24,12 +24,14 @@ modified Herdr excerpts use Apache-2.0. The remaining upstreams use MIT.
 ### Herdr built-in mod excerpts
 
 Portions of `packages/herdr/assets/look/patches.json` are derived from the
-built-in mods of Herdr 0.1.11 by the Herdr authors, licensed under the Apache
+built-in mods of Herdr 0.1.12 by the Herdr authors, licensed under the Apache
 License, Version 2.0, and were modified for spider.
 
 The complete licence is shipped at [licenses/herdr-apache-2.0.txt](licenses/herdr-apache-2.0.txt).
-The adjacent `packages/herdr/assets/look/NOTICE` prominently identifies the
-modified portions; the JSON patch anchors and replacements are unchanged.
+The adjacent `packages/herdr/assets/look/NOTICE` identifies the modified portions.
+Unmodified 0.1.12 built-in sources and the stock layout are committed under
+`packages/herdr/src/__tests__/fixtures/herdr-0.1.12/` for compatibility tests.
+The recorded previous-look test assets retain excerpts from Herdr 0.1.11.
 
 ### iTerm2 Color Schemes
 

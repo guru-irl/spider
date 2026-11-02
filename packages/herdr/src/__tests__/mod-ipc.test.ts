@@ -27,11 +27,12 @@ test('the installed shared asset has no Node dependencies', () => {
 
 test('the installed shared asset decodes bounded IPC in a plain JS context', () => {
   // Strip only ESM export declarations so vm can evaluate the installed code as a script.
-  // No imports or runtime globals are substituted. TextEncoder is the app's web API.
+  // No imports or runtime globals are substituted. Herdr runs mods in QuickJS, which has no
+  // TextEncoder: a decoder that needs one throws inside the app and every panel action fails.
   const script = source.replace(/^export /gm, '') + `\n({ ${names.join(', ')} })`;
-  const context = { TextEncoder };
+  const context = {};
   const api: typeof shared = runInNewContext(script, context, { timeout: 1000 });
-  expect(runInNewContext('[typeof Buffer, typeof require, typeof process]', context)).toEqual(['undefined', 'undefined', 'undefined']);
+  expect(runInNewContext('[typeof Buffer, typeof require, typeof process, typeof TextEncoder]', context)).toEqual(['undefined', 'undefined', 'undefined', 'undefined']);
   const argv = api.panelIpcArgv('node', '/cli.mjs', descriptor, request);
   expect(api.parsePanelIpcArgv(argv)).toEqual({ nodePath: 'node', cliPath: '/cli.mjs', descriptor, request });
   expect(api.parseSessionIpcRequest(JSON.stringify(request))).toEqual(request);

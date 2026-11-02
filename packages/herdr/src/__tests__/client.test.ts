@@ -4,10 +4,24 @@ import { afterEach, test, expect } from 'vitest';
 import { parseHerdrConfig } from '../config.js';
 import type { MachineName, CoreId, HcRunRequest } from '../contracts.js';
 import { createHcClient } from '../client/hc.js';
+import { createAppClient } from '../client/app.js';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createClientFixture, terminal, type ClientFixture } from './testutil.js';
 const fixtures: ClientFixture[] = [];
 afterEach(async () => { for (const h of fixtures.splice(0)) await h.close(); });
 async function fixture(): Promise<ClientFixture> { const h = await createClientFixture(); fixtures.push(h); return h; }
+test('app placements and viewer acknowledgements accept documented native string statuses', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'sp1', name: 'Fixture', tabs: [{ id: 'tb1', name: 'Owner', terminals: [
+    { terminal: 't1', pane: 'p1', status: 'working', app: 'pi' },
+    { terminal: 't2', pane: 'p2', status: 'blocked', app: 'pi' },
+  ] }] }], recent: [] }));
+  const client = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  const owner = await client.ownerPlacement(h.address('t1'));
+  expect(owner).toEqual({ space: 'sp1', tab: 'tb1', pane: 'p1' });
+  expect(await client.awaitPane(h.address('t2'), owner, { timeoutMs: 1000 })).toBe('p2');
+});
 test('preserves the isolated caller and rejects a foreign socket', async () => {
   const h = await fixture();
   const client = createHcClient({ binary: h.hcBinary, env: h.localEnv });

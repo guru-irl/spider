@@ -3,8 +3,9 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Disposable, Owner, ExecutionEnvironmentPolicy } from '../contracts.js';
 import { ordinaryExecutionEnvironment } from './shim.js';
-import type { SshPolicy } from './policy.js';
+import { parseFailureDecision, type SshPolicy } from './policy.js';
 import { shellCommands, commandName } from './parse.js';
+import { HERDR_NOTICES } from '../notices.js';
 export interface RoutingPorts {
   policy: SshPolicy; environmentPolicy: ExecutionEnvironmentPolicy; currentOwner(ctx: ExtensionContext): Owner | null;
   createBashTool: typeof import('@earendil-works/pi-coding-agent').createBashTool;
@@ -47,7 +48,8 @@ function setsShellBypass(code: string): boolean {
     }
     return false;
   };
-  return shellCommands(code, false).some(wordsSet);
+  try { return shellCommands(code, false).some(wordsSet); }
+  catch (error) { return parseFailureDecision(code, error).kind === 'refuse'; }
 }
 const setsBypass = (code: string, language: unknown) => /SPIDER_HERDR_SSH_BYPASS/i.test(code) && (shell(language) ? setsShellBypass(code) : setsProgramBypass(code));
 export async function guardHerdrToolCall(event: { toolName: string; input: Record<string, unknown> }, ports: RoutingPorts): Promise<{ block: true; reason: string } | undefined> {
@@ -56,7 +58,7 @@ export async function guardHerdrToolCall(event: { toolName: string; input: Recor
   if (event.toolName !== 'bash' && !['spider', 'functions.spider'].includes(event.toolName)) return;
   const block = (reason: string) => ({ block: true as const, reason });
   try {
-    const bypassRefusal = () => block('SPIDER_HERDR_SSH_BYPASS may only be set by the audited admin route');
+    const bypassRefusal = () => block(HERDR_NOTICES.sshBypass.text);
     const codes: string[] = [];
     if (event.toolName === 'bash') {
       const code = String(input.command ?? ''); if (setsBypass(code, 'shell')) return bypassRefusal(); codes.push(code);
@@ -64,22 +66,28 @@ export async function guardHerdrToolCall(event: { toolName: string; input: Recor
       const code = String(input.code ?? ''); if (setsBypass(code, input.language)) return bypassRefusal(); if (shell(input.language)) codes.push(code);
     }
     else if (input.action === 'exec_file') {
-      if (typeof input.path !== 'string') return block('SSH parser failed: exec_file requires a path');
+      if (typeof input.path !== 'string') return block(HERDR_NOTICES.sshPath.text);
       let code: string;
       try { code = await ports.readShellFile(input.path, typeof input.on === 'string' ? input.on : undefined); }
-      catch (error) { return block(`exec_file read failed for ${JSON.stringify(input.path)}${typeof input.on === 'string' ? ` on ${input.on}` : ''}: ${error instanceof Error ? error.message : String(error)}`); }
+      catch (error) {
+        const file = JSON.stringify(input.path.slice(0, 1000));
+        const machine = typeof input.on === 'string' ? ` on ${JSON.stringify(input.on.slice(0, 200))}` : '';
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+        const missing = code === 'ENOENT' || code === 'not_found' || error instanceof Error && /\bENOENT\b|no such file/i.test(error.message);
+        return block((missing ? HERDR_NOTICES.sshFileMissing.text : HERDR_NOTICES.sshFile.text).replace('<file>', file + machine));
+      }
       if (setsBypass(code, input.language)) return bypassRefusal();
       if (shell(input.language)) codes.push(code);
     } else if (input.action === 'batch') {
-      if (!Array.isArray(input.commands)) return block('SSH parser failed: batch commands must be an array');
+      if (!Array.isArray(input.commands)) return block(HERDR_NOTICES.sshBatch.text);
       for (const entry of input.commands) {
-        if (!entry || typeof entry !== 'object') return block('SSH parser failed: invalid batch entry');
+        if (!entry || typeof entry !== 'object') return block(HERDR_NOTICES.sshBatch.text);
         const code = String(entry.code ?? ''); if (setsBypass(code, entry.language)) return bypassRefusal();
         if (shell(entry.language)) codes.push(code);
       }
     }
     for (const code of codes) { const result = await ports.policy.checkShell(code); if (result.kind === 'refuse') return block(result.reason); }
-  } catch { return block('SSH parser failed; use spider exec with on:<machine>'); }
+  } catch { return block(HERDR_NOTICES.sshUnclear.text); }
 }
 export function registerHerdrRouting(pi: ExtensionAPI, ports: RoutingPorts): Disposable {
   let disposed = false;

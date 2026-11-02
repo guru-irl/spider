@@ -185,8 +185,27 @@ export async function attachViewer(suite: Suite, address: string): Promise<Viewe
   };
 }
 export async function viewerContains(suite: Suite, input: ViewerInput, value: string, limit: Deadline = deadline(60_000)): Promise<string> {
-  const output = await waitFor(`viewer output ${value.slice(0, 50)}`, input.output, t => t.includes(value), limit, { reconcileMs: 200 });
-  await suite.evidence('viewer.raw', output); return output;
+  try {
+    const output = await waitFor(`viewer output ${value.slice(0, 50)}`, input.output, t => t.includes(value), limit, { reconcileMs: 200 });
+    await suite.evidence('viewer.raw', output); return output;
+  } catch (error) { await suite.evidence('viewer-failure.raw', await input.output()); throw error; }
+}
+export async function viewerScreen(suite: Suite, input: ViewerInput): Promise<string> {
+  const result = await suite.hc(['read', input.address, '--json', '--lines', '40']); assert.equal(result.exitCode, 0, result.stderr);
+  const text = (result.json as { text?: unknown }).text; assert.equal(typeof text, 'string');
+  await suite.evidence(`viewer-screen-${input.address}.txt`, String(text)); return String(text);
+}
+export async function writableViewer(suite: Suite, input: ViewerInput): Promise<void> {
+  await waitFor('pi viewer has a writable editor', () => viewerScreen(suite, input), screen => {
+    const status = screen.split('\n').filter(line => /\brunning\b/.test(line)).at(-1) ?? '';
+    return /\brunning\s*$/.test(status) && screen.includes('──');
+  }, deadline(30_000));
+}
+export async function sendReadOnly(suite: Suite, input: ViewerInput, instruction: string): Promise<void> {
+  await viewerContains(suite, input, 'read-only'); await input.send(instruction + '\r');
+  await withinPhase('read-only viewer has no editor for an instruction', () => viewerScreen(suite, input), screen => {
+    assert.ok(String(screen).includes('read-only')); assert.ok(!String(screen).includes(instruction));
+  }, 500);
 }
 export async function childEvents(suite: Suite, pid: number): Promise<ObservedEvent[]> { return readObserved(suite.pi.observerDir, pid); }
 export async function childEvent(suite: Suite, pid: number, type: string, predicate: (e: ObservedEvent) => boolean, limit: Deadline = deadline(60_000)): Promise<ObservedEvent> {
@@ -208,7 +227,7 @@ export async function readOnlyViewer(suite: Suite, owner: ChildParent, run: RunR
   const input = await attachViewer(suite, String(opened.viewer));
   try {
     await viewerContains(suite, input, reason);
-    await input.send(instruction + '\r'); await viewerContains(suite, input, '[refused]');
+    await sendReadOnly(suite, input, instruction);
     await suite.evidence(`readonly-${run.id}.raw`, await input.output());
     await input.send('\u0003');
     await waitFor('explicit close of read-only viewer', () => terminals(suite), ts => !ts.some(t => t.address === input.address && t.state === 'live'), deadline(30_000));
@@ -311,7 +330,7 @@ export async function replacementLifecycles(suite: Suite, initial: ChildParent, 
     const ready = await owner.gates.ready(`replacement-${n}-ready`, deadline(60_000));
     const run = await runRow(owner, `replacement-${n}`, r => r.canSteer);
     const input = await attachViewer(suite, await viewerAddress(suite, owner, run));
-    await viewerContains(suite, input, `REPLACEMENT_${n}_LOG`); await viewerContains(suite, input, 'Steer>');
+    await viewerContains(suite, input, `REPLACEMENT_${n}_LOG`); await writableViewer(suite, input);
     const identity = viewerIdentity(suite, run.id);
     if (trace.enabled) {
       const rows = await waitFor('recorder observes actual viewer startup and subscription', () => trace.rows(run.id), rs => rs.some(r => r.kind === 'startup') && rs.some(r => r.kind === 'stream'), deadline(10_000));
@@ -341,7 +360,7 @@ export async function replacementLifecycles(suite: Suite, initial: ChildParent, 
     assert.ok(Date.now() - replacedAt <= 30_000, 'The final state must be reached within 30 seconds');
     view.finalOffset = output.length; view.finalAttempts = (await trace.rows(view.run.id)).filter(r => r.kind === 'connect').length;
     const instruction = `REPLACED_${view.run.id}_MUST_NOT_APPEAR`;
-    await view.input.send(instruction + '\r'); await viewerContains(suite, view.input, '[refused]');
+    await sendReadOnly(suite, view.input, instruction);
     assert.equal(instructionCount((await childTranscript(suite, view.ready.pid)).entries, instruction), 0);
     await withinPhase('replaced viewer remains final and alive until user close', () => steady(view), () => {});
     await suite.evidence(`replaced-${view.run.id}.raw`, await view.input.output());
@@ -373,7 +392,7 @@ export async function replacementLifecycles(suite: Suite, initial: ChildParent, 
   await final(second, next.at);
   // The original owner is genuinely healthy again, but its already-final viewer must not reattach.
   assert.equal((await ipc(suite, next.owner, { op: 'ping' })).ok, true);
-  await first.input.send('RESUMED_OWNER_MUST_NOT_REVIVE_FINAL_VIEWER\r'); await viewerContains(suite, first.input, '[refused]');
+  await sendReadOnly(suite, first.input, 'RESUMED_OWNER_MUST_NOT_REVIVE_FINAL_VIEWER');
   assert.equal(instructionCount((await childTranscript(suite, first.ready.pid)).entries, 'RESUMED_OWNER_MUST_NOT_REVIVE_FINAL_VIEWER'), 0);
   await withinPhase('healthy resumed owner cannot revive a final viewer', () => steady(first), () => {});
   await close(first); await close(second);

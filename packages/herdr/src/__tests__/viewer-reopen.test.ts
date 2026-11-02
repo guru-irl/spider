@@ -25,7 +25,7 @@ for (const mode of modes) test.each([
   const parked: TerminalAddress[] = [], errors: unknown[] = [];
   let focused: TerminalAddress | undefined;
   const app: AppClient = {
-    ownerPlacement: async address => {
+    tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => {
       const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p;
     },
     awaitPane: async (address, p) => {

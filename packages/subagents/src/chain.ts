@@ -25,6 +25,7 @@ export async function runChain(
       skill: base.skill,
       context: s.context ?? base.context,
       phase: `step-${i + 1}`,
+      remainingSteps: steps.slice(i + 1).map((step, offset) => `Step ${i + offset + 2} ${JSON.stringify(step.name ?? step.agent ?? 'worker')}`),
       async: true, // Foreground within the chain, but the dispatch tool already returned.
     });
     out.push(row);

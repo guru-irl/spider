@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect } from 'vitest';
-import { mkdirSync, writeFileSync, readFileSync, chmodSync, copyFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { build } from 'vite';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
 import { connect, createServer, type Socket } from 'node:net';
 import { createViewerLauncher } from '../../viewers/register.js';
 import { openDbAt } from '@spider/db-core';
@@ -66,16 +66,10 @@ export async function exerciseOwnedRpcSteer(root: string, sessionId: string, env
 }
 async function exerciseExternalViewer(h: HerdrHarness, runId: RunId): Promise<TerminalAddress> {
   const root = join(h.root, 'viewer-js'); mkdirSync(root, { mode: 0o700 });
-  // Build only the actual external module, not a substitute implementation. The
-  // Node 22.19 baseline includes this built-in stripper; no build dependency is added.
-  for (const name of ['program', 'transcript']) {
-    const source = fileURLToPath(new URL(`../../viewers/${name}.ts`, import.meta.url));
-    const destination = join(root, `${name}.mjs`);
-    execFileSync(process.execPath, ['--disable-warning=ExperimentalWarning', '-e',
-      "const fs=require('node:fs'),m=require('node:module');let s=m.stripTypeScriptTypes(fs.readFileSync(process.argv[1],'utf8'));s=s.replace('../../assets/shared/feed.js','./feed.mjs').replace('./transcript.js','./transcript.mjs');fs.writeFileSync(process.argv[2],s);", source, destination],
-      { env: { ...process.env, TMPDIR: h.directories.tmp }, stdio: ['ignore', 'pipe', 'pipe'] });
-  }
-  copyFileSync(fileURLToPath(new URL('../../../assets/shared/feed.js', import.meta.url)), join(root, 'feed.mjs'));
+  // Bundle the actual module with the same external dependencies as the shipped viewer.
+  await build({ configFile: resolve('vite.herdr.config.mjs'), mode: 'viewer', logLevel: 'silent',
+    build: { ssr: fileURLToPath(new URL('../../viewers/program.ts', import.meta.url)), outDir: root, emptyOutDir: false,
+      rollupOptions: { output: { entryFileNames: 'program.mjs' } } } });
   const entry = join(root, 'viewer.mjs'); const inputSocket = join(h.root, 'input.sock');
   writeFileSync(entry, `import {runViewer} from './program.mjs';
 import {connect,createServer} from 'node:net'; import {StringDecoder} from 'node:string_decoder'; import {PassThrough} from 'node:stream'; import {chmodSync} from 'node:fs';

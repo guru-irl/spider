@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { writeFile, appendFile, rename, mkdir, open, lstat, readdir, rm } from 'node:fs/promises';
 import { constants as fileFlags } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -24,9 +24,23 @@ export interface RemoteChunkIndex { version: 1; jobId: string; nonce: string; he
 export interface RuntimeReceipt {
   version: 1; jobId: string; nonce: string; requestSha256: string; indexSha256: string;
   outcome: 'exited' | 'signal' | 'spawn-error' | 'release-timeout' | 'cancelled';
-  exitCode: number | null; signal: string | null; finishedAt: number; stdoutBytes: number; stderrBytes: number; error?: string;
+  exitCode: number | null; signal: string | null; signalHint?: string; finishedAt: number; stdoutBytes: number; stderrBytes: number; error?: string;
 }
 export const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
+/** A shell may encode a signal as 128 + N; this is a hint, not proof of a signal. */
+export function signalHint(exitCode: number | null): string | undefined {
+  if (exitCode === null || exitCode <= 128) return;
+  return Object.entries(constants.signals).find(([, value]) => value === exitCode - 128)?.[0];
+}
+function groupIdentities(pgid: number): Map<number, string> {
+  const output = execFileSync('ps', ['-eo', 'pid=,pgid=,lstart='], { encoding: 'utf8', timeout: 2000 });
+  const members = new Map<number, string>();
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+    if (match && Number(match[2]) === pgid) members.set(Number(match[1]), match[3]);
+  }
+  return members;
+}
 export class RemoteRuntimeError extends Error {
   readonly code: string;
   constructor(code: string, message: string) { super(message); this.code = code; }
@@ -162,12 +176,16 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
       await atomicRuntimeFile(join(directory, 'index.json'), indexBytes); indexPublished = true;
     }
     for (const stream of initializedLogs) { const file = await open(join(directory, stream + '.log'), 'r+'); try { await file.sync(); } finally { await file.close(); } }
-    const result: RuntimeReceipt = { version: 1, jobId: request.jobId, nonce: request.nonce, requestSha256, indexSha256: sha256(indexBytes), outcome, exitCode, signal, finishedAt: Date.now(), stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr, ...(error ? { error } : {}) };
+    const hint = outcome === 'exited' ? signalHint(exitCode) : undefined;
+    const result: RuntimeReceipt = { version: 1, jobId: request.jobId, nonce: request.nonce, requestSha256, indexSha256: sha256(indexBytes), outcome, exitCode, signal, ...(hint ? { signalHint: hint } : {}), finishedAt: Date.now(), stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr, ...(error ? { error } : {}) };
     const bytes = JSON.stringify(result); await atomicRuntimeFile(join(directory, 'receipt.json'), bytes); await atomicRuntimeFile(join(directory, 'receipt.json.sha256'), sha256(bytes));
   };
   let child: ReturnType<typeof spawn> | undefined;
   let rootProbeFailed = false;
   let cancellation: NodeJS.Signals | null = null;
+  let explicitCancel = false, checkingCancel = false;
+  let cancelWatcher: ReturnType<typeof setInterval> | undefined;
+  let cancelEscalation: Promise<void> | undefined;
   let escalation: ReturnType<typeof setTimeout> | undefined;
   const forward = (signal: NodeJS.Signals) => {
     cancellation = signal;
@@ -178,7 +196,7 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
   };
   const handlers = { SIGHUP: () => forward('SIGHUP'), SIGINT: () => forward('SIGINT'), SIGTERM: () => forward('SIGTERM') };
   for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
-  const removeHandlers = () => { for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler); if (escalation) clearTimeout(escalation); };
+  const removeHandlers = () => { for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler); if (escalation) clearTimeout(escalation); if (cancelWatcher) clearInterval(cancelWatcher); };
   const terminate = (signal: NodeJS.Signals): number => {
     removeHandlers(); process.kill(process.pid, signal);
     return 128 + (constants.signals[signal] ?? 0);
@@ -197,6 +215,7 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
       await writeFile(join(directory, stream + '.log'), '', { mode: 0o600, flag: 'wx' }); initializedLogs.add(stream);
     }
     await atomicRuntimeFile(join(directory, 'index.json'), indexBytes); indexPublished = true;
+    await atomicRuntimeFile(join(directory, 'capabilities.json'), JSON.stringify({ version: 1, jobId: request.jobId, nonce: request.nonce, cancelAfterRelease: true }));
     await verifyInputs();
     await pruneSettledPrograms(dirname(directory), directory);
     try { await lstat(join(directory, '.spider-settled')); throw new RemoteRuntimeError('program-already-settled', 'A settled program cannot run again'); }
@@ -210,7 +229,10 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
       try {
         const cancel = record(JSON.parse((await readBoundedFile(join(directory, 'cancel.json'), 1024)).toString()));
         if (cancel.nonce === request.nonce && cancel.jobId === request.jobId) { await receipt('cancelled', 137, null); return 137; }
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)
+          && !(error instanceof RemoteRuntimeError && ['runtime-file-invalid', 'runtime-request-invalid'].includes(error.code))) throw error;
+      }
       try {
         const release = record(JSON.parse((await readBoundedFile(join(directory, 'release.json'), 1024)).toString()));
         released = release.version === 1 && release.jobId === request.jobId && release.nonce === request.nonce && release.requestSha256 === requestSha256;
@@ -225,6 +247,30 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
     if (cancellation) { await receipt('signal', null, cancellation); return terminate(cancellation); }
     if (performance.now() >= deadline) { await receipt('release-timeout', null, null); return 124; }
     child = spawn(request.argv[0], [...request.argv.slice(1)], { cwd: request.cwd ?? undefined, env: destinationEnvironment(process.env, request.env, tmpDir), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    cancelWatcher = setInterval(() => {
+      if (checkingCancel || explicitCancel || !child?.pid) return;
+      checkingCancel = true;
+      void (async () => {
+        try {
+          const cancel = record(JSON.parse((await readBoundedFile(join(directory, 'cancel.json'), 1024)).toString()));
+          if (cancel.nonce !== request.nonce || cancel.jobId !== request.jobId || !child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+          const pid = child.pid;
+          const original = process.platform === 'win32' ? new Map([[pid, 'windows']]) : groupIdentities(pid);
+          if (!original.has(pid)) return;
+          explicitCancel = true;
+          try { process.kill(process.platform === 'win32' ? pid : -pid, 'SIGTERM'); } catch { /* Already exited. */ }
+          cancelEscalation = new Promise(resolve => setTimeout(() => {
+            try {
+              const current = process.platform === 'win32' ? new Map([[pid, 'windows']]) : groupIdentities(pid);
+              if ([...original].some(([member, started]) => current.get(member) === started)) process.kill(process.platform === 'win32' ? pid : -pid, 'SIGKILL');
+            } catch { /* The group exited, or its identity cannot be proved. */ }
+            resolve();
+          }, 1500));
+        } catch { /* Missing or incomplete cancellation publications are retried. */ }
+        finally { checkingCancel = false; }
+      })();
+    }, 100);
+    cancelWatcher.unref();
     const finished = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>(resolve => {
       child!.once('error', error => resolve({ code: null, signal: null, error }));
       child!.once('close', (code, signal) => resolve({ code, signal }));
@@ -268,6 +314,7 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
     };
     await Promise.all([capture('stdout'), capture('stderr')]);
     const result = await finished;
+    if (explicitCancel) { await cancelEscalation; await receipt('cancelled', 137, null); return 137; }
     if (result.error) { await receipt('spawn-error', null, null, result.error.message); return 127; }
     if (result.signal) { await receipt('signal', null, result.signal); return terminate(result.signal); }
     if (result.code === null) { await receipt('spawn-error', null, null, 'Payload exited without a code or signal'); return 127; }

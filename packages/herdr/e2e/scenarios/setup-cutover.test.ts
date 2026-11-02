@@ -13,7 +13,13 @@ import { readObserved } from '../harness/pi.js';
 import { identityAlive, identityOf } from '../harness/resources.js';
 import { prepareInstallInputs, createNamedSession, startPlainSetup, readPresence, stopCreatedOwners, fingerprintInstallation, type NamedSession } from '../fixtures/install-inputs.js';
 
+import type { readCutoverRecovery, SessionTab } from '../../src/spaces/setup.js';
+type SavedSession = Awaited<ReturnType<typeof readCutoverRecovery>>['entries'][number];
+type SavedGroup = Pick<SessionTab, 'space' | 'tab'> & { sessions: (Omit<SavedSession, 'placement'> & Pick<SessionTab, 'terminal'>)[] };
 async function json(path: string) { return JSON.parse(await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return '{}'; throw error; })); }
+function sessionEntries(journal: { tabs?: (SavedSession | SavedGroup)[] }): SavedSession[] {
+  return (journal.tabs ?? []).flatMap(tab => 'sessions' in tab ? tab.sessions.map(session => ({ ...session, placement: { space: tab.space, tab: tab.tab, terminal: session.terminal } })) : [tab]);
+}
 async function owners(suite: Suite, sessions: readonly NamedSession[]) {
   const present = await readPresence(suite);
   return present.filter(row => {
@@ -30,10 +36,13 @@ async function assertPlacement(suite: Suite, app: { ls(): Promise<unknown> }, gr
   await suite.evidence('cutover-owner-events.json', started);
   const addresses: string[] = [];
   for (const [index, group] of groups.entries()) {
-    assert.deepEqual(world.spaces[index].tabs.map(t => t.name), group.sessions.map(s => s.name));
-    for (const [tabIndex, session] of group.sessions.entries()) {
-      const terminal = world.spaces[index].tabs[tabIndex].terminals[0].terminal; addresses.push(terminal);
+    assert.deepEqual(world.spaces[index].tabs.map(t => t.name), [group.name]);
+    const panes = world.spaces[index].tabs[0].terminals;
+    assert.equal(panes.length, group.sessions.length);
+    for (const session of group.sessions) {
       const owner = started.owners.find(owner => owner.sessionId === session.sessionId)!;
+      const terminal = String(owner.hcAddress); addresses.push(terminal);
+      assert.ok(panes.some(pane => pane.terminal === terminal), 'each selected owner must occupy the shared space tab');
       const event = started.events.find(event => event.type === 'session_start' && event.pid === owner.pid)!;
       assert.equal(event.cwd, session.cwd); assert.equal(event.mode, 'tui'); assert.equal(String(event.hcTerminal), terminal.split(':').at(-1));
       const feed = await json(join(suite.directories.SPIDER_GLOBAL_ROOT, 'herdr/sessions', session.sessionId, 'session.json'));
@@ -65,7 +74,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
         const result = await runSetup(suite, config); await suite.evidence('cutover.json', result);
         if (result.exitCode !== 0) {
           const journal = await json(join(config.globalRoot, 'herdr/spaces/spaces.json'));
-          for (const entry of journal.tabs ?? []) {
+          for (const entry of sessionEntries(journal)) {
             const address = entry.placement.terminal;
             const state = await suite.hc(['get', address, '--json']);
             if ((state.json as { state?: string } | null)?.state === 'finished') {
@@ -191,12 +200,12 @@ export const scenarios: readonly ScenarioDefinition[] = [
           const selected = await createNamedSession(suite, `Interrupted ${phase}`, await suite.project('interrupt'), `interrupt-${phase}`);
           config.spaces = [{ name: 'Interrupted group', sessions: [{ file: selected.file }] }];
           const setup = await startPlainSetup(suite, config); const journalPath = join(config.globalRoot, 'herdr/spaces/spaces.json');
-          const outcome = await waitFor(`externally persisted setup ${phase}`, async () => ({ journal: await json(journalPath), alive: identityAlive(setup.process.identity), stderr: await readFile(setup.stderr, 'utf8') }), value => !value.alive || (phase === 'intent' ? value.journal.intents?.length > 0 : phase === 'tab' ? value.journal.tabs?.some((tab: { placement?: unknown }) => tab.placement) : value.journal.tabs?.some((tab: { result?: unknown }) => tab.result)), deadline(60_000));
+          const outcome = await waitFor(`externally persisted setup ${phase}`, async () => ({ journal: await json(journalPath), alive: identityAlive(setup.process.identity), stderr: await readFile(setup.stderr, 'utf8') }), value => !value.alive || (phase === 'intent' ? value.journal.intents?.length > 0 : phase === 'tab' ? sessionEntries(value.journal).some(tab => tab.placement) : sessionEntries(value.journal).some(tab => tab.result)), deadline(60_000));
           await suite.evidence('interrupted-phase.json', outcome);
           assert.ok(outcome.alive, outcome.stderr || 'setup exited before allocation');
           const observed = outcome.journal;
           if (phase === 'owner') {
-            const owner = observed.tabs.find((tab: { result?: unknown }) => tab.result)?.result;
+            const owner = sessionEntries(observed).find(tab => tab.result)?.result;
             assert.ok(owner); assert.equal(typeof owner.pid, 'number'); assert.equal(typeof owner.startIdentity, 'string');
             assert.equal(owner.sessionId, selected.sessionId); assert.equal(owner.sessionFile, selected.file); assert.equal(owner.cwd, selected.cwd);
             assert.ok(identityAlive(identityOf(owner.pid)), 'confirmed pi owner must actually be live at interruption');
@@ -207,15 +216,17 @@ export const scenarios: readonly ScenarioDefinition[] = [
           const backups = await fingerprintInstallation(suite, config);
           const rerun = await runSetup(suite, config); await suite.evidence('resumed-setup.json', rerun); assert.equal(rerun.exitCode, 0, rerun.stderr);
           const recovered = await json(journalPath);
-          assert.equal(recovered.tabs.length, 1); assert.equal(new Set(recovered.tabs.map((t: { target: { file: string } }) => t.target.file)).size, 1);
-          if (observed.tabs?.[0]?.placement) {
-            assert.equal(recovered.tabs[0].placement.tab, observed.tabs[0].placement.tab);
-            assert.equal(recovered.tabs[0].placement.terminal, observed.tabs[0].placement.terminal);
+          assert.equal(recovered.tabs.length, 1); assert.equal(new Set(sessionEntries(recovered).map(t => t.target.file)).size, 1);
+          if (sessionEntries(observed)[0]?.placement) {
+            assert.equal(sessionEntries(recovered)[0].placement.tab, sessionEntries(observed)[0].placement.tab);
+            assert.equal(sessionEntries(recovered)[0].placement.terminal, sessionEntries(observed)[0].placement.terminal);
           }
           assert.equal((await owners(suite, [selected])).length, 1);
           if (phase === 'owner') {
-            assert.equal(recovered.tabs[0].result.pid, observed.tabs[0].result.pid, 'recovery replaced the already-confirmed owner');
-            assert.equal(recovered.tabs[0].result.startIdentity, observed.tabs[0].result.startIdentity);
+            const recoveredOwner = sessionEntries(recovered)[0].result, observedOwner = sessionEntries(observed)[0].result;
+            assert.ok(recoveredOwner && observedOwner, 'both owner records must exist');
+            assert.equal(recoveredOwner.pid, observedOwner.pid, 'recovery replaced the already-confirmed owner');
+            assert.equal(recoveredOwner.startIdentity, observedOwner.startIdentity);
           }
           const current = await json(join(config.globalRoot, 'herdr/setup/journal.json'));
           const resumedFiles = await fingerprintInstallation(suite, config);

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "root": {
+    "theme": "spider-glass",
+    "ui_font": "Google Sans Flex",
+    "terminal_opacity": 0,
+    "background": { "gradient": ["#18181a", "#22201e"], "angle": 176 },
+    "colors": {
+      "chrome": "#00000000", "canvas": "#00000000", "hover": "#ffffff12",
+      "selected": "#ffffff14", "raised": "#ffffff1c", "input": "#ffffff0f",
+      "border": "#00000000", "popover": "#161618f0", "surface": "#161618f0"
+    }
+  },
+  "pane": {
+    "gap": 8, "radius": 12, "background": "#161618f0",
+    "border": { "width": 0, "color": "#00000000" },
+    "focus": { "width": 0, "color": "#00000000" }
+  },
+  "dock": { "hidden": true, "size": { "px": 368 }, "min": 280, "max": 900 }
+}

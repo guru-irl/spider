@@ -4,8 +4,11 @@ import { builtinModules } from 'node:module';
 
 const entries = {
   cli: 'packages/herdr/src/bin/cli.ts',
+  'feed-reader': 'packages/herdr/src/bin/feed-reader.ts',
   viewer: 'packages/herdr/src/bin/viewer.ts',
+  'viewer-pi': 'packages/herdr/src/viewers/pi-main.ts',
   'remote-runtime': 'packages/herdr/src/remote/runtime.ts',
+  'subagent-supervisor': 'packages/subagents/src/supervisor-main.ts',
 };
 const peers = [
   'better-sqlite3', 'sqlite-vec', 'onnxruntime-node', 'onnxruntime-web', 'fastembed',

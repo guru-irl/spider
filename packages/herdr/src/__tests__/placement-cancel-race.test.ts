@@ -32,7 +32,7 @@ test.each(['before-enqueue', 'queued'] as const)('explicit open survives cancell
     return terminal;
   }, rm: async address => { await h.hc.rm(address); if (address === first?.viewer) retired.resolve(); } };
   const app: AppClient = {
-    ownerPlacement: async address => {
+    tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => {
       if (blockNext && address !== owner.terminal.address) { blockNext = false; blocked.resolve(); await unblock.promise; }
       const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p;
     },

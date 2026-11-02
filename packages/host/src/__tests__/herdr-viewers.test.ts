@@ -92,16 +92,21 @@ test('production subscriptions close both read-only binding handles at unsubscri
 }, 30000);
 
 test('a mounted reload reattaches its viewer without reconnecting or final-state notices', async () => {
-  const f = await fixture(); const abort = new AbortController(); const output = new PassThrough(); let text = ''; let clients = 0;
+  const f = await fixture(); const abort = new AbortController(); const output = new PassThrough(); let text = ''; let clients = 0, snapshots = 0;
   output.on('data', bytes => { text += bytes.toString(); });
   const session = f.h.owner!.sessionId; const { id } = f.store.create({ sessionId: session, agent: 'worker' }); f.store.start(id);
   const ports = createViewerPorts(['--feed-root', join(f.h.directories.global, 'herdr'), '--session', session, '--run', id], { stdin: new PassThrough(), stdout: output, signal: abort.signal })!;
-  const running = runViewer({ ...ports, createClient: descriptor => { clients++; return ports.createClient(descriptor); } });
+  const running = runViewer({ ...ports, createClient: descriptor => {
+    clients++; const client = ports.createClient(descriptor); const subscribe = client.subscribeRun.bind(client);
+    client.subscribeRun = (id, cursor, emit, options) => subscribe(id, cursor, frame => { if (frame.kind === 'snapshot') snapshots++; emit(frame); }, options);
+    return client;
+  } });
   try {
     await expect.poll(() => text, { timeout: 3000 }).toContain('[running');
     await f.emit('session_shutdown', { reason: 'reload' }); await f.emit('session_start');
     await expect.poll(() => clients, { timeout: 3000 }).toBe(2);
-    await expect.poll(() => (text.match(/\[running/g) ?? []).length, { timeout: 3000 }).toBe(2);
+    await expect.poll(() => snapshots, { timeout: 3000 }).toBe(2);
+    expect((text.match(/\[running/g) ?? []).length).toBe(1);
     expect(text).not.toContain('read-only'); expect(text).not.toContain('reconnecting');
   } finally { abort.abort(); await running; await f.close(); }
 }, 30000);

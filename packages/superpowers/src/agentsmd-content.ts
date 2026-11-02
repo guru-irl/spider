@@ -64,7 +64,7 @@ built-ins:
   \`pipeline:[worker, reviewer], handoff:"intercom"\`. Give review-only children
   \`context:"fresh"\` and tell them not to edit source.
   While a child runs, \`spider exec\` and \`spider batch\` block foreground sleeps,
-  even with \`background:true\`; use \`spider schedule\` for external waits.
+  even with \`background:true\`; use \`spider schedule\` for external CI or deploy waits.
 - \`spider todo\` — durable, per-project + per-session task tracking
   (\`list\`/\`add\`/\`toggle\`/\`remove\`/\`clear\`/\`sessions\`/\`view\`). One todo per
   checklist item; toggle as you complete each. Remove obsolete items with op=remove;
@@ -72,7 +72,7 @@ built-ins:
   clear rejects session selectors. Use session id/prefix/name for
   toggle/remove in another session in this project; session:"all" is rejected.
 - \`spider loop\` / \`spider schedule\` wait on external work (CI, deploys,
-  timers), never subagents; completion notices arrive automatically. Persistent
+  timers), never subagents or remote spider jobs; completion notices arrive automatically. Persistent
   top-level sessions only, including RPC. Named triggers replace only the same
   name, with defaults \`loop\` and \`wakeup\`. Loop accepts \`interval\` or numeric
   \`cron\` with an IANA \`tz\`; cron has no immediate first prompt. Schedule accepts
@@ -135,6 +135,8 @@ scratch/intermediate/golden/log data under the project's \`.spider/scratch/\`
 When \`HC_TERMINAL_ID\` is set, remote execution is visible.
 For commands on another machine, use \`spider exec\`, \`exec_file\`, or \`batch\`
 with an explicit \`on\` destination.
+For remote commands longer than a minute or two, use \`background:true\` and a
+short \`timeout\`. Wait for \`spider.job_done\`. Don't block, poll, or schedule.
 Inspect owned jobs and their output through spider; an observer exit is not
 command completion. Communicate through \`spider message\` or intercom.
 Never use \`hc send\`, paste, or terminal input to send text into pi, even if

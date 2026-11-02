@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import type { SessionFeed, CoreId, TerminalId, TerminalAddress, SpaceId, RunSummary } from '../contracts.js';
 import { runPanelScene } from './acceptance/i.js';
-import { projectFailedCommands, projectMachineProblems, projectNotifications, projectPace, projectSessionFacts, notificationText } from '../../assets/mods/spider/data.js';
+import { projectNotifications, projectSessionFacts, notificationText } from '../../assets/mods/spider/data.js';
 
 const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 function feed(id: string, patch: Partial<SessionFeed> = {}): SessionFeed {
@@ -31,28 +31,21 @@ const LABELS = "props.labelContract={version:1,labels:{job:'spider.job',kind:'sp
 describe('notification wording', () => {
   test('a waiting session shows only that it is waiting, never the question', () => {
     const waiting = feed('planner', { status: { native: 'blocked', effective: 'blocked', message: 'Approve push to origin?' } });
-    const [item] = projectNotifications([waiting], projectPace([], NOW), NOW);
+    const [item] = projectNotifications([waiting], NOW);
     expect(item!.parts).toEqual([{ type: 'agent', icon: 'session', text: 'planner' }, { type: 'text', text: 'is waiting' }]);
     expect(notificationText(item!)).toBe('planner is waiting');
   });
-  test('a failed command reads [agent] `command` failed on [machine], without the exit code', () => {
-    const [item] = projectFailedCommands([feed('planner', { notifications: [job({ commandPreview: 'make test build' })] })], NOW);
-    expect(item!.parts).toEqual([{ type: 'agent', icon: 'session', text: 'planner' }, { type: 'command', text: 'make test build' }, { type: 'text', text: 'failed' },
-      { type: 'text', text: 'on' }, { type: 'machine', text: 'build.invalid' }]);
+  test('a failed command is not something to act on, so it is not listed', () => {
+    expect(projectNotifications([feed('planner', { notifications: [job({ commandPreview: 'make test build' })] })], NOW)).toEqual([]);
   });
-  test('memories read just the count; failed runs and sessions carry no detail', () => {
+  test('memories read just the count; failed sessions carry no detail; failed runs are not listed', () => {
     const shared = { uuid: 'g', scope: 'global' as const, repoKey: null, ownerSessionId: null, category: 'insight', preview: 'p' };
     const owned = { uuid: 'm', scope: 'repo' as const, repoKey: 'r' as never, ownerSessionId: 'planner' as never, category: 'insight', preview: 'q' };
     const items = projectNotifications([
       feed('planner', { approvals: [shared, owned], runs: { rows: [run('reviewer', 'planner', { status: 'failed', finishedAt: NOW - 60000, result: 'exit 1' })], total: 1, truncated: false } }),
       feed('tester', { status: { native: 'error', effective: 'error', message: 'boom' } }),
-    ], projectPace([], NOW), NOW);
-    expect(items.map(notificationText)).toEqual(['tester failed', 'reviewer failed', '2 memories to review']);
-  });
-  test('a machine problem names its real state', () => {
-    const items = projectMachineProblems([{ name: 'a.invalid' }, { name: 'b.invalid' }, { name: 'c.invalid' }, { name: 'd.invalid' }],
-      [{ name: 'a.invalid', state: 'disconnected' }, { name: 'b.invalid', state: 'stopped' }, { name: 'c.invalid', state: 'needs_auth' }]);
-    expect(items.map(notificationText)).toEqual(['a.invalid disconnected', 'b.invalid stopped', 'c.invalid needs auth', 'd.invalid unreachable']);
+    ], NOW);
+    expect(items.map(notificationText)).toEqual(['tester failed', '2 memories to review']);
   });
 });
 
@@ -71,35 +64,39 @@ describe('panel rendering', () => {
       a.approvals=[{uuid:'g',scope:'global',repoKey:null,ownerSessionId:null,category:'insight',preview:'p'}];
       files[0]=JSON.stringify(a);${LABELS}
       a.notifications=[{id:'job-result:j1',kind:'job-result',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now()-60000,title:'Job j1',body:'Exit 2',action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address},job:{id:'j1',runId:null,commandPreview:'make test build',machine:'build.invalid',address:'build.invalid/t9',exitCode:2,signal:null,finishedAt:Date.now()-60000}}];files[0]=JSON.stringify(a);api.terminals=()=>[];
-      initView(panel,cx);await tasks[0];const tree=panel.render(cx);const list=byId(tree,'spider-notifications');
-      const row=byId(tree,'need-job:j1');const code=byId(row,'pill-job:j1-1');const pill=byId(row,'pill-job:j1-0');
+      initView(panel,cx);await tasks[0];panel.errors.push({source:'Doctor',message:'timeout',command:'make test build',updatedAt:Date.now()});const tree=panel.render(cx);const list=byId(tree,'spider-notifications');
+      const code=byId(tree,'problem-0-command');const pill=byId(tree,'pill-waiting:'+a.sessionId+'-0');
       let buttons=0;(function walk(el){if(el?.styles?.id&&/^need-(focus|output|review|usage)/.test(el.styles.id[0]))buttons++;(el?.items||[]).forEach(walk);})(list);
       console.log(JSON.stringify({text:texts(list),buttons,lines:list.items.map(r=>'border_t' in r.styles),code:[code.items.length,code.styles.rounded?.[0],code.styles.font_family?.[0],code.styles.bg?.[0],'border' in code.styles],
         pill:[pill.styles.h?.[0],pill.styles.text_size?.[0],pill.styles.bg?.[0],'border' in pill.styles]}));`, feed('planner'), tagIcons);
-    expect(output.text).toEqual(['!', 'planner', 'is waiting', 'planner', 'make test build', 'failed', 'on', 'build.invalid', '1 memory to review']);
+    // The failed command in the feed is not listed: only what the user acts on.
+    expect(output.text).toEqual(['!', 'planner', 'is waiting', '1 memory to review']);
     expect(output.text.join(' ')).not.toMatch(/\u00b7|Approve push|exit 2|Focus|Output|Review/);
     expect(output.buttons).toBe(0);
-    // Rows are separated by space and their hover fill, not by rules.
-    expect(output.lines).toEqual([false, false, false]);
+    // Cards are separated by space and their own border, not by rules.
+    expect(output.lines).toEqual([false, false]);
     // Inline code: text only, monospace, a subtle fill and a small radius; no border, no pill.
     expect(output.code).toEqual([1, 4, 'JetBrains Mono', '#ffffff12', false]);
     expect(output.pill).toEqual([16, 10.5, '#ffffff0d', false]);
   });
   test('the whole row runs its action from a click or the keyboard, with a hover fill', async () => {
-    const output = await runPanelScene<{ commands: { name: string; args: unknown }[]; hover: boolean[]; tab: unknown[]; quiet: boolean }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();
+    const output = await runPanelScene<{ commands: { name: string; args: unknown }[]; hover: boolean[]; tab: unknown[]; view: string; quiet: boolean }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();
       a.status={native:'blocked',effective:'blocked',message:'Approve?'};files[0]=JSON.stringify(a);${LABELS}
       api.panes=()=>[{terminal:'build.invalid/t9'}];
+      a.approvals=[{uuid:'g',scope:'global',repoKey:null,ownerSessionId:null,category:'insight',preview:'p'}];
       a.notifications=[{id:'job-result:j1',kind:'job-result',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now()-60000,title:'Job j1',body:'Exit 1',action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address},job:{id:'j1',runId:null,commandPreview:'make-test-build',machine:'build.invalid',address:'build.invalid/t9',exitCode:1,signal:null,finishedAt:Date.now()-60000}}];files[0]=JSON.stringify(a);api.terminals=()=>[];
-      api.readTextFile=async()=>JSON.stringify({machines:[{name:'gone.invalid'}]});api.hc=async()=>({code:0,stdout:JSON.stringify({machines:[]}),stderr:''});
-      initView(panel,cx);await tasks[0];await drain();const after=Date.now()+10000;Date.now=()=>after;a.updatedAt=after;files[0]=JSON.stringify(a);await panel.reload(cx);await panel.refreshMachines(cx);const tree=panel.render(cx);
-      const waiting=byId(tree,'need-waiting:'+a.sessionId), failed=byId(tree,'need-job:j1'), machine=byId(tree,'need-machine:gone.invalid');
-      waiting.events.on_click({},cx);failed.events.on_key_down({keystroke:{key:'enter'}},cx);failed.events.on_key_down({keystroke:{key:'a'}},cx);
-      console.log(JSON.stringify({commands,hover:[waiting,failed].map(r=>'hover' in r.styles&&'cursor_pointer' in r.styles),tab:[waiting.styles.tab_index?.[0],failed.styles.tab_index?.[0]],
-        quiet:!machine.events.on_click&&!('cursor_pointer' in machine.styles)}));`, feed('planner'));
-    expect(output.commands).toEqual([{ name: 'pane.focus', args: { terminal: 'planner' } }, { name: 'pane.focus', args: { terminal: 'build.invalid/t9' } }]);
+      let polled=0;api.readTextFile=async()=>{polled++;return JSON.stringify({machines:[{name:'gone.invalid'}]});};api.hc=async()=>{polled++;return {code:0,stdout:JSON.stringify({machines:[]}),stderr:''};};
+      initView(panel,cx);await tasks[0];await drain();const after=Date.now()+10000;Date.now=()=>after;a.updatedAt=after;files[0]=JSON.stringify(a);await panel.reload(cx);for(const timer of timers)for(let i=0;i<5;i++)timer.f(cx);await drain();const tree=panel.render(cx);
+      const waiting=byId(tree,'need-waiting:'+a.sessionId), memory=byId(tree,'need-memory');
+      waiting.events.on_click({},cx);waiting.events.on_key_down({keystroke:{key:'a'}},cx);memory.events.on_key_down({keystroke:{key:'enter'}},cx);await drain();
+      console.log(JSON.stringify({commands,hover:[waiting,memory].map(r=>'hover' in r.styles&&'cursor_pointer' in r.styles),tab:[waiting.styles.tab_index?.[0],memory.styles.tab_index?.[0]],
+        view:panel.view.kind,quiet:polled===0}));`, feed('planner'));
+    expect(output.commands).toEqual([{ name: 'pane.focus', args: { terminal: 'planner' } }]);
     expect(output.hover).toEqual([true, true]);
     expect(output.tab).toEqual([0, 0]);
-    // A machine problem has no action, so its row is not clickable.
+    // The memories card opens the Memories view in the panel.
+    expect(output.view).toBe('memories');
+    // Machine problems are not notifications, so the panel never polls machines.
     expect(output.quiet).toBe(true);
   });
   test('session rows lead with the kind icon instead of a status glyph, keep credits and the chevron, and show facts as icons', async () => {

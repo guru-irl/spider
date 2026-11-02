@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+// This file also loads straight from the package, where the shared folder that setup copies into each
+// installed mod does not exist. A test keeps this value equal to FEED_DISCONNECT_MS in assets/shared/feed.js.
+export const PANEL_DISCONNECT_MS = 20_000;
 export function panelSessionState(feed, now) {
-  return feed.lifecycle === 'closed' ? 'closed' : now - feed.updatedAt > 10000 ? 'disconnected' : 'live';
+  return feed.lifecycle === 'closed' ? 'closed' : now - feed.updatedAt > PANEL_DISCONNECT_MS ? 'disconnected' : 'live';
 }
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 export function projectSpiderPanel(feeds) {
@@ -23,7 +26,6 @@ export function projectSpiderPanel(feeds) {
   return { sessions: ordered.map(feed => ({ id: feed.sessionId, feed })), spaces: [...spaces.values()], sharedApprovals: [...shared.values()] };
 }
 
-const FAILED_RUN_WINDOW = 24 * 3600000;
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const nameOf = feed => feed.owner.name || feed.sessionId;
 
@@ -80,67 +82,78 @@ export function projectPace(feeds, now) {
 
 const agent = (text, icon = 'session') => ({ type: 'agent', icon, text });
 const words = text => ({ type: 'text', text });
-const detail = text => ({ type: 'detail', text });
 /** Plain text of an item's parts, for tooltips and accessibility labels. */
 export function notificationText(item) { return item.parts.map(part => part.text).join(' '); }
 
-/** Finished commands come from the feed, because Herdr only publishes live terminals to mods. */
-export function projectFailedCommands(feeds, now) {
-  const items = new Map();
-  for (const feed of feeds) for (const notice of feed.notifications) {
-    const job = notice.kind === 'job-result' && notice.sessionId === feed.sessionId ? notice.job : null;
-    if (!job || ((job.exitCode === null || job.exitCode === 0) && job.signal === null) || now - job.finishedAt > FAILED_RUN_WINDOW) continue;
-    const run = feed.runs.rows.find(r => r.id === job.runId);
-    // "[agent] `command` failed on [machine]"; the output view shows the exit code.
-    const parts = [run ? agent(run.name || run.id, 'subagent') : agent(nameOf(feed)), { type: 'command', text: job.commandPreview }, words('failed'), words('on'), { type: 'machine', text: job.machine }];
-    items.set(job.id, { kind: 'failed', key: `job:${job.id}`, jobId: job.id, runId: job.runId ?? undefined, sessionId: feed.sessionId, address: job.address, finishedAt: job.finishedAt, parts, action: 'Output' });
-  }
-  return [...items.values()].sort((a, b) => b.finishedAt - a.finishedAt);
-}
-
-/**
- * Machine problems from the configured machines and Herdr's connection list:
- * a machine Herdr has never connected is unreachable; a known one that dropped
- * is disconnected.
- */
-export function projectMachineProblems(configured, inventory) {
-  if (!Array.isArray(configured) || !Array.isArray(inventory)) return [];
-  return configured.flatMap(machine => {
-    const name = machine?.name; if (typeof name !== 'string' || !name) return [];
-    const native = inventory.find(row => row?.name === name);
-    if (native?.temporary) return [];
-    // Herdr's own state word ("stopped", "needs auth"); never connected to Herdr at all is unreachable.
-    const state = !native ? 'unreachable' : native.state !== 'connected' ? String(native.state ?? 'disconnected').replace(/_/g, ' ') : null;
-    return state ? [{ kind: 'machine', key: `machine:${name}`, machine: name, parts: [{ type: 'machine', text: name }, words(state)], action: null }] : [];
-  });
-}
-
-/** What the user can act on, for the given sessions, in a fixed order of urgency. */
-export function projectNotifications(feeds, pace, now, extra = {}) {
-  const live = feeds.filter(feed => panelSessionState(feed, now) === 'live');
-  const items = [];
-  for (const feed of live) if (feed.status.effective === 'blocked')
-    items.push({ kind: 'waiting', key: `waiting:${feed.sessionId}`, sessionId: feed.sessionId, parts: [agent(nameOf(feed)), words('is waiting')], action: 'Focus' });
-  for (const feed of live) if (feed.status.effective === 'error')
-    items.push({ kind: 'failed', key: `error:${feed.sessionId}`, sessionId: feed.sessionId, parts: [agent(nameOf(feed)), words('failed')], action: 'Focus' });
-  items.push(...projectFailedCommands(feeds, now));
-  for (const feed of feeds) for (const run of feed.runs.rows) {
-    if (run.status !== 'failed' || run.finishedAt === null || now - run.finishedAt > FAILED_RUN_WINDOW) continue;
-    items.push({ kind: 'failed', key: `run:${run.id}`, sessionId: feed.sessionId, runId: run.id, parts: [agent(run.name || run.id, 'subagent'), words('failed')], action: 'Output' });
-  }
-  items.push(...(extra.machines ?? []));
+const approvalKey = approval => JSON.stringify([approval.scope, approval.repoKey, approval.uuid]);
+/** Pending approvals the given sessions can see, once each by scope, repo and uuid. */
+function pendingApprovals(feeds) {
   const ids = new Set(feeds.map(feed => feed.sessionId)), owners = new Map(), shared = new Map();
   for (const feed of feeds) for (const approval of feed.approvals) {
-    const key = JSON.stringify([approval.scope, approval.repoKey, approval.uuid]);
+    const key = approvalKey(approval);
     if (approval.ownerSessionId === null) shared.set(key, approval);
     else if (ids.has(approval.ownerSessionId)) owners.set(key, approval);
   }
-  const memories = owners.size + shared.size;
-  if (memories)
-    items.push({ kind: 'memory', key: 'memory', approvals: [...owners.values(), ...shared.values()], parts: [words(`${plural(memories, 'memory', 'memories')} to review`)], action: 'Review' });
-  if (pace.state === 'ok' && pace.over)
-    items.push({ kind: 'budget', key: 'budget', parts: [words('Over budget pace'), detail(`projected ${pace.labels.projected} of ${pace.labels.budget}`)], action: 'Usage' });
+  return [...owners.values(), ...shared.values()];
+}
+
+/**
+ * Only what the user acts on, in a fixed order of urgency: a live session
+ * waiting on them, a live session that stopped with an error, and memories to
+ * review. Each item carries the tokens a dismissal hides: one per session
+ * occurrence, one per pending approval.
+ */
+export function projectNotifications(feeds, now) {
+  const live = feeds.filter(feed => panelSessionState(feed, now) === 'live');
+  const items = [];
+  for (const feed of live) if (feed.status.effective === 'blocked')
+    items.push({ kind: 'waiting', key: `waiting:${feed.sessionId}`, tokens: [`waiting:${feed.sessionId}`], sessionId: feed.sessionId, parts: [agent(nameOf(feed)), words('is waiting')], action: 'Focus' });
+  for (const feed of live) if (feed.status.effective === 'error')
+    items.push({ kind: 'failed', key: `error:${feed.sessionId}`, tokens: [`error:${feed.sessionId}`], sessionId: feed.sessionId, parts: [agent(nameOf(feed)), words('failed')], action: 'Focus' });
+  const approvals = pendingApprovals(feeds);
+  if (approvals.length)
+    items.push({ kind: 'memory', key: 'memory', tokens: approvals.map(approval => `memory:${approvalKey(approval)}`), approvals,
+      parts: [words(`${plural(approvals.length, 'memory', 'memories')} to review`)], action: 'Review' });
   return items;
+}
+
+/** Items with at least one token the user has not dismissed. */
+export function visibleNotifications(items, dismissed) {
+  return items.filter(item => item.tokens.some(token => !dismissed.has(token)));
+}
+
+const DISMISSED_LIMIT = 512;
+/**
+ * Dismissals that still hide something. A token whose state has gone (the
+ * session stopped waiting, the memory was decided) is dropped, so the same
+ * state returning later shows again. Bounded to the newest tokens.
+ */
+export function pruneDismissed(dismissed, items) {
+  const present = new Set(items.flatMap(item => item.tokens));
+  const kept = [...dismissed].filter(token => present.has(token));
+  return new Set(kept.slice(-DISMISSED_LIMIT));
+}
+
+/** The basename of a repo key (its git common dir), for people. */
+function repoName(repoKey) {
+  const parts = String(repoKey).split(/[\\/]/).filter(Boolean);
+  const last = parts[parts.length - 1] ?? '';
+  return (last === '.git' ? parts[parts.length - 2] : last.replace(/\.git$/, '')) || String(repoKey);
+}
+/** Cards for the Memories view, from the feeds; full text comes from the CLI. */
+export function projectMemoryReview(feeds) {
+  return pendingApprovals(feeds).map(approval => ({ ...approval, key: approvalKey(approval),
+    scopeLabel: approval.scope === 'global' ? 'Global' : approval.repoKey ? repoName(approval.repoKey) : 'Repo' }));
+}
+
+/** A session's own view: open todos, the done count, runs newest first, and usage. */
+export function projectSessionView(feed, now) {
+  const open = feed.todos.rows.filter(todo => !todo.done);
+  const runs = [...feed.runs.rows].sort((a, b) => b.startedAt - a.startedAt || (a.id < b.id ? -1 : 1))
+    .map(run => ({ id: run.id, name: run.name || run.id, status: run.status, viewer: run.viewer, when: relativeAge(now - run.startedAt) }));
+  const credits = feed.monthCost && feed.monthCost.credits !== null && feed.monthCost.label !== 'unavailable' ? feed.monthCost.label : 'Unavailable';
+  return { id: feed.sessionId, name: nameOf(feed), state: panelSessionState(feed, now), todos: open, done: feed.todos.rows.length - open.length,
+    moreRuns: Math.max(0, feed.runs.total - feed.runs.rows.length), runs, usage: [{ label: 'Credits this month', value: credits }] };
 }
 
 /** One session row: its state glyph, compact facts and the expanded detail. */
@@ -189,12 +202,10 @@ export function doctorCommand(config) {
 
 // What a failed action was, and why, in words.
 const ACTIONS = {
-  'Run view': "The run's output didn't open.", 'Job output': "The command's output didn't open.", 'View action': "The view didn't open in pi.",
-  'Shared approvals': "Memory review didn't open.", 'Notification action': "The notice's action didn't run.",
+  'Run view': "The run's output didn't open.", 'Notification action': "The notice's action didn't run.",
 };
 const CAUSES = {
   'Owner endpoint unavailable': "Its pi session isn't reachable.", 'Owner unavailable': "Its pi session isn't reachable.",
-  'No live approval endpoint': 'No live pi session can open it.', 'No live usage endpoint': 'No live pi session can open usage.',
   'Unknown notification': 'Spider no longer has that notice.', 'Action unavailable': 'The notice has no action.',
 };
 const RUNTIME = {
@@ -251,5 +262,6 @@ export function projectSpacePanel(feeds, space, now, extra = {}) {
   const ordered = projectSpiderPanel(feeds).sessions.map(row => row.feed);
   const mine = space ? ordered.filter(feed => !feed.placement || feed.placement.spaceId === space.id) : ordered;
   const pace = projectPace(feeds, now);
-  return { space, pace, notifications: projectNotifications(mine, pace, now, extra), sessions: mine.map(feed => ({ ...projectSessionFacts(feed, now), feed })) };
+  const notifications = visibleNotifications(projectNotifications(mine, now), extra.dismissed ?? new Set());
+  return { space, pace, notifications, sessions: mine.map(feed => ({ ...projectSessionFacts(feed, now), feed })) };
 }

@@ -92,6 +92,22 @@ describe('strict fake app against the core boundary', () => {
     try { await expect(daemon.appRequest(socket, 'tab.rename', { id: 'tb1', name: 'A' })).rejects.toThrow(/UTF-8/); }
     finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
+  it('creates a temporary mod tab without a shell and removes only its mod pane', async () => {
+    const core = coreBoundary(), boundary = createFakeAppBoundary({ hc: core.hc });
+    const main = await boundary.command('space.new', { name: 'Work', folder: '/owned/project', argv: ['/bin/sh'] });
+    const runsBefore = core.calls.filter(argv => argv[0] === 'run').length;
+    const tab = await boundary.command('tab.new', { space: main.space, mod: 'pane' });
+    expect(tab).toMatchObject({ space: main.space, tab: expect.any(String), pane: expect.any(String) });
+    expect(core.calls.filter(argv => argv[0] === 'run')).toHaveLength(runsBefore);
+    const parked = await core.hc(['run']) as { address: string };
+    await core.hc(['label', parked.address, `herdr.space=${main.space}`, `herdr.tab=${tab.tab}`]);
+    const before = await boundary.command('ls', {}) as any;
+    expect(before.spaces[0].tabs.find((value: any) => value.id === tab.tab).terminals.map((value: any) => value.terminal)).toEqual([parked.address]);
+    await boundary.command('pane.close', { pane: tab.pane });
+    const after = await boundary.command('ls', {}) as any;
+    expect(after.spaces[0].tabs.find((value: any) => value.id === tab.tab).terminals.map((value: any) => value.terminal)).toEqual([parked.address]);
+    expect(core.calls.some(argv => argv[0] === 'kill' && argv[1] === parked.address)).toBe(false);
+  });
   it('peeks an existing native pane without launching or rewriting a terminal', async () => {
     const core = coreBoundary(), boundary = createFakeAppBoundary({ hc: core.hc });
     const first = await boundary.command('space.new', { name: 'First', folder: '/owned/project', argv: ['/bin/sh'] });

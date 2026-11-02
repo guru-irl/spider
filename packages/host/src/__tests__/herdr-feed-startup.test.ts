@@ -53,7 +53,7 @@ process.stdout.write(execFileSync(${JSON.stringify(h.appBinary)}, process.argv.s
     });
     // Advance only recurring timers while the real app read is gated. No elapsed
     // sleep stands in for a refresh or a completed publication.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
     let settled = false;
     startup = (async () => { for (const handler of hooks.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx); settled = true; })();
     await vi.waitFor(() => expect(existsSync(join(h.root, 'ready-1'))).toBe(true), { timeout: 5000 });
@@ -63,12 +63,15 @@ process.stdout.write(execFileSync(${JSON.stringify(h.appBinary)}, process.argv.s
     await vi.waitFor(async () => expect(JSON.parse(await readFile(feedPath, 'utf8'))).toMatchObject({ version: 1, sessionId: h.owner!.sessionId, revision: 1, lifecycle: 'live' }), { timeout: 5000 });
     await vi.waitFor(() => expect(settled, 'later refreshes must not hold session_start open').toBe(true), { timeout: 1000 });
     await startup;
-    // Ordinary refreshes still publish after startup. Hold the next app read to
-    // prove the first publication was sufficient, then verify real feed progress.
+    // A slow full refresh must not stop liveness or rewrite unchanged content.
+    const content = await readFile(feedPath, 'utf8'), heartbeatPath = join(config.globalRoot, 'herdr/sessions', h.owner!.sessionId, 'heartbeat.json');
+    const heartbeat = JSON.parse(await readFile(heartbeatPath, 'utf8')).updatedAt;
     vi.advanceTimersByTime(2000);
     await vi.waitFor(() => expect(existsSync(join(h.root, 'ready-2'))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(heartbeatPath, 'utf8')).updatedAt).toBeGreaterThan(heartbeat), { timeout: 5000 });
+    expect(await readFile(feedPath, 'utf8')).toBe(content);
     await writeFile(gates[1], 'release');
-    await vi.waitFor(async () => expect(JSON.parse(await readFile(feedPath, 'utf8')).revision).toBeGreaterThan(1), { timeout: 5000 });
+    expect(JSON.parse(await readFile(feedPath, 'utf8')).revision).toBe(1);
     expect(errors).toEqual([]);
   } finally {
     for (const gate of gates) await writeFile(gate, 'release');

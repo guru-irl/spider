@@ -40,7 +40,7 @@ test.each(['missing-removal', 'stalled-layout', 'stalled-command'] as const)('%s
   let removed = false, blocked = false, lateReply: (() => void) | undefined, signal: AbortSignal | undefined;
   const pending = () => new Promise<void>(resolve => { lateReply = resolve; });
   const app: AppClient = {
-    ownerPlacement: async address => {
+    tabTerminals: target => f.app.tabTerminals(target), ownerPlacement: async address => {
       if (address === f.owner.terminal.address) return f.placement;
       if (blocked && stage === 'stalled-layout') await pending();
       if (removed) throw new HerdrError('owner-unplaced', 'Pane removed');

@@ -71,6 +71,20 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   } catch (error) { await h.close(); throw error; }
 }
 
+test('only an attested live Herdr owner supplies a supervisor launcher', async () => {
+  const f = await fixture();
+  try {
+    vi.stubEnv('HC_TERMINAL_ID', undefined);
+    const m = f.mounted(); await f.start();
+    expect(m.owner()).toBeNull();
+    expect(m.execution().supervisorHcBinary).toBeUndefined();
+    f.environment(); await f.start();
+    expect(m.execution().supervisorHcBinary).toBe(f.h.hcBinary);
+    await f.shutdown();
+    expect(m.execution().supervisorHcBinary).toBeUndefined();
+  } finally { for (const m of mounts.splice(0)) await m.dispose(); await f.h.close(); }
+}, 60000);
+
 test('bad terminal files are diagnosed once without disabling activation or hiding good mappings', async () => {
   const f = await fixture();
   try {
@@ -90,8 +104,8 @@ test('bad terminal files are diagnosed once without disabling activation or hidi
     expect(m.enabled()).toBe(true);
     for (const name of bad) {
       expect(f.errors.filter(error => String(error).includes(name))).toHaveLength(1);
-      expect(f.notices.filter(message => message.includes(name))).toHaveLength(1);
     }
+    expect(f.notices).toEqual(["Spider couldn't read some saved Herdr session information. Other Herdr features may still work. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine."]);
   } finally { for (const m of mounts.splice(0)) await m.dispose(); await f.h.close(); }
 }, 60000);
 

@@ -42,7 +42,7 @@ export function installationConfig(suite: Suite, appBinary: string): HerdrConfig
 }
 async function copyBaseAssets(suite: Suite, source: string): Promise<void> {
   const app = suite.directories.HERDR_APP_HOME;
-  for (const name of ['agents', 'spaces', 'pane', 'tabs']) {
+  for (const name of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
     const from = join(source, 'mods', name), to = suite.ownPath(join(app, 'mods', name));
     try { await lstat(join(from, 'mod.json')); } catch { throw new HarnessError('missing-prerequisite', `known shipped base mod ${name} is unavailable`); }
     await mkdir(to, { recursive: true });

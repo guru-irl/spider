@@ -41,8 +41,14 @@ test('the test environment deletes inherited HC and Herdr values and blocks defa
   const original = { ...process.env };
   try {
     process.env.HC_TEST_INHERITED = 'unsafe'; process.env.HERDR_TEST_INHERITED = 'unsafe';
+    process.env.SPIDER_HERDR_SSH_DESCRIPTOR = JSON.stringify({ shimDirectory: '/fixture/spider/herdr/ssh/bin/current' });
+    const inheritedPath = process.env.PATH ?? '';
+    process.env.PATH = ['/fixture/spider/herdr/ssh/bin/current', inheritedPath, '/fixture/spider/herdr/ssh/bin/older'].join(':');
     fenceHerdrTestEnvironment(process.cwd(), h.root);
     expect(Object.keys(process.env).filter(k => k.startsWith('HC_') || k.startsWith('HERDR_'))).toEqual([]);
+    expect(process.env.SPIDER_HERDR_SSH_DESCRIPTOR).toBeUndefined();
+    expect(process.env.PATH?.split(':').some(entry => entry.includes('/spider/herdr/ssh/bin/'))).toBe(false);
+    expect(process.env.PATH).toContain(inheritedPath);
     for (const binary of ['hc', 'herdr-app']) {
       const reply = spawnSync(binary, ['--version'], { encoding: 'utf8', env: process.env });
       expect(reply.status).not.toBe(0); expect(reply.stderr).toContain('real hc is disabled in tests');

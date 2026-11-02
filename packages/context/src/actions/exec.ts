@@ -1,6 +1,7 @@
 import { PolyglotExecutor, type ExecResult } from "../executor";
 import type { Owner, RemoteExecutionPort, ExecutionEnvironmentPolicy } from "../../../herdr/src/contracts.js";
 import { capBytes } from "../truncate";
+import { isAbsolute, posix } from "node:path";
 
 export interface ExecCtx {
   cwd: string;
@@ -133,6 +134,7 @@ export function makeStreamer(ctx: ExecCtx): ExecStreamer | undefined {
   const acc = new BoundedChunkAccumulator(STREAM_ACC_BUDGET_BYTES);
   let lastAt = 0;
   let lastEmitted: string | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const emit = (dedupe: boolean) => {
     // Cap completion flushes exactly like timer-permitted partials. Suppress an empty
     // snapshot, and suppress an identical snapshot specifically on final flush so the
@@ -145,11 +147,15 @@ export function makeStreamer(ctx: ExecCtx): ExecStreamer | undefined {
   const streamer = ((chunk: string) => {
     acc.push(chunk);
     const now = Date.now();
-    if (now - lastAt < PARTIAL_THROTTLE_MS) return;
+    if (now - lastAt < PARTIAL_THROTTLE_MS) {
+      timer ??= setTimeout(() => { timer = undefined; lastAt = Date.now(); emit(true); }, PARTIAL_THROTTLE_MS - (now - lastAt));
+      return;
+    }
+    if (timer) { clearTimeout(timer); timer = undefined; }
     lastAt = now;
     emit(false);
   }) as ExecStreamer;
-  streamer.flush = () => emit(true);
+  streamer.flush = () => { if (timer) { clearTimeout(timer); timer = undefined; } emit(true); };
   return streamer;
 }
 
@@ -163,7 +169,7 @@ function capExecOutput(text: string, logs?: { stdout: string; stderr: string }):
 }
 
 const shape = (r: ExecResult) => {
-  let text = r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : "");
+  let text = (r.remoteAbortInfo ? `${r.remoteAbortInfo}\n\n` : "") + r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : "");
 
   // Structured discriminator (see executor.ts's ExecOutcome). Fall back to a
   // conservative derivation for any hypothetical caller/result that predates
@@ -188,7 +194,10 @@ const shape = (r: ExecResult) => {
     // R3 (background-brief): deliberately detached at a timeout handoff —
     // genuinely still running, outcome not known YET. This is the ONE case
     // where "returned before the command finished" is actually true.
-    text += `\n\n[detached — this call returned before the command finished; exit status is not known yet, and is never assumed to be 0.\n${receiptLine}${logsLines}Its output no longer depends on this session; tail the logs, or re-check with another exec call${receiptPath ? ` (e.g. \`cat ${receiptPath}\`).]` : ".]"}`;
+    const follow = r.remote
+      ? "Wait for the spider.job_done notice in this session. Do not poll or schedule checks."
+      : "The local job keeps writing to its logs. A receipt, when written, records the outcome.";
+    text += `\n\n[detached. The command has not finished, so its exit status is unknown.\n${receiptLine}${logsLines}${follow}]`;
   } else if (outcome === "unknown") {
     // Genuinely indeterminate (e.g. the supervisor died before writing a
     // receipt): never claim it "returned before finishing" (that may already
@@ -242,6 +251,15 @@ export function isExecError(res: { outcome?: string; exitCode: number | null; ti
 }
 
 export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
+  if (args.copy !== undefined) {
+    if (typeof args.on !== 'string' || !args.on) throw new Error('File copy requires an on destination');
+    if (!ctx.remote?.copy || !ctx.owner) throw new Error('Remote file copy requires an active Herdr owner');
+    const copy = args.copy;
+    if (!copy || typeof copy !== 'object' || !['to', 'from'].includes(copy.direction) || typeof copy.local !== 'string' || typeof copy.remote !== 'string' || !isAbsolute(copy.local) || !posix.isAbsolute(copy.remote) || copy.local.includes('\0') || copy.remote.includes('\0')) throw new Error('File copy requires direction to or from and absolute local and remote paths');
+    if (args.code !== undefined || args.language !== undefined || args.background !== undefined || args.timeout !== undefined) throw new Error('File copy cannot be combined with code, language, background, or timeout');
+    const result = await ctx.remote.copy({ ...copy, on: args.on, owner: ctx.owner, signal: ctx.signal });
+    return { text: `Copied to ${result.destination}`, details: result, isError: false };
+  }
   const onData = makeStreamer(ctx);
   let res: ExecResult;
   try {

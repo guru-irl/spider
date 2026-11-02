@@ -8,7 +8,8 @@ import { join, resolve } from 'node:path';
 import { checkSpiderPanel } from './panel-app-check.mjs';
 import { runPanelScene } from './acceptance/i.js';
 import type { SessionFeed, CoreId, TerminalId, TerminalAddress, SpaceId } from '../contracts.js';
-import { projectSpiderPanel, panelSessionState } from '../../assets/mods/spider/data.js';
+import { projectSpiderPanel, panelSessionState, PANEL_DISCONNECT_MS } from '../../assets/mods/spider/data.js';
+import { FEED_DISCONNECT_MS } from '../../assets/shared/feed.js';
 
 function feed(id: string): SessionFeed {
   return {
@@ -26,11 +27,11 @@ function feed(id: string): SessionFeed {
 
 const scene = <T = string[]>(body: string) => runPanelScene<T>(body, feed('fixture'));
 
-const fileScene = (setup: string) => scene<{ids: string[]; errors: {message: string}[]}>(`props.nodePath=process.execPath; props.feedRoot=path.join(path.dirname(m.identifier),'feeds');
+const fileScene = (setup: string) => scene<{ids: string[]; errors: {message: string}[]}>(`api.nativeReader=true;props.cliPath=${JSON.stringify(resolve('dist/herdr/cli.mjs'))};props.nodePath=process.execPath; props.feedRoot=path.join(path.dirname(m.identifier),'feeds');
   await fs.mkdir(path.join(props.feedRoot,'sessions','fixture'),{recursive:true});
   const file=path.join(props.feedRoot,'sessions','fixture','session.json'); ${setup}
-  const {execFile}=await import('node:child_process'); api.exec=(cmd,args)=>new Promise((resolve,reject)=>execFile(cmd,args,{maxBuffer:8*1024*1024,env:{...process.env,TMPDIR:path.dirname(m.identifier)}},(error,stdout,stderr)=>error?reject(error):resolve({code:0,stdout,stderr})));
-  initView(panel,cx);await tasks[0];console.log(JSON.stringify({ids:panel.feeds.map(f=>f.sessionId),errors:panel.errors}));`);
+  const {execFile}=await import('node:child_process'); api.exec=(cmd,args)=>new Promise(resolve=>execFile(cmd,args,{maxBuffer:8*1024*1024,env:{...process.env,TMPDIR:path.dirname(m.identifier)}},(error,stdout,stderr)=>resolve({code:error?Number(error.code)||1:0,stdout,stderr})));
+  initView(panel,cx);await tasks[0];await panel.close();console.log(JSON.stringify({ids:panel.feeds.map(f=>f.sessionId),errors:panel.errors}));`);
 
 describe('Spider panel', () => {
   test('native check is headless and fences its app, state, config and temporary homes', async () => {
@@ -100,19 +101,19 @@ describe('Spider panel', () => {
     expect(output.mono).toEqual(['none', 'JetBrains Mono']);
   });
   test('close cancels the mod-owned clock timer as well as watch and commands', async () => {
-    const output = await scene(`const canceled=[];cx.timer.every=(n,f)=>{timers.push({n,f});return {cancel:()=>canceled.push('timer')};};
-      initView(panel,cx);await tasks[0];panel.close();console.log(JSON.stringify(canceled));`);
-    expect(output).toEqual(['timer']);
+    const output = await scene(`const canceled=[];cx.timer.every=(n,f)=>{timers.push({n,f});return {cancel:()=>canceled.push(n)};};
+      initView(panel,cx);await tasks[0];await panel.close();console.log(JSON.stringify(canceled));`);
+    expect(output).toEqual([10000,5000,5000,2000,5000]);
   });
   test('watch bursts coalesce into at most one reload per second without another timer', async () => {
-    const output = await scene<{ reads: number[]; timers: number[] }>(`let now=10000;Date.now=()=>now;let reads=0;const samples=[],release=[];let registered;
+    const output = await scene<{ reads: number[]; timers: number[]; deadlines: number[] }>(`let now=10000;Date.now=()=>now;let reads=0;const samples=[],release=[];let registered;
       api.exec=async()=>{reads++;return {code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
       api.watchFolder=()=>{registered?.();return new Promise(resolve=>release.push(resolve));};
       initView(panel,cx);await tasks[0];samples.push(reads);
       for(let i=0;i<3;i++){const ready=new Promise(resolve=>registered=resolve);release.shift()([]);await ready;}samples.push(reads);
       now+=1001;timers[0].f(cx);await drain();samples.push(reads);
-      console.log(JSON.stringify({reads:samples,timers:timers.map(t=>t.n)}));`);
-    expect(output.reads).toEqual([2,2,3]); expect(output.timers).toEqual([2000]);
+      console.log(JSON.stringify({reads:samples,timers:timers.filter(t=>!t.cancelled).map(t=>t.n),deadlines:timers.filter(t=>t.cancelled).map(t=>t.n)}));`);
+    expect(output.reads).toEqual([2,2,3]); expect(output.timers).toEqual([2000]); expect(output.deadlines).toEqual([10000,5000,5000,5000]);
   });
   test('overlapping snapshot requests retain exactly one trailing reload and never overlap Node processes', async () => {
     const output = await scene<{ reads: number[]; maxActive: number }>(`let now=10000;Date.now=()=>now;let reads=0,active=0,maxActive=0,release;const samples=[];
@@ -136,25 +137,28 @@ describe('Spider panel', () => {
       now+=1;timers[0].f(cx);await drain();samples.push(reads);console.log(JSON.stringify(samples));`);
     expect(output).toEqual([3,3]);
   });
-  test('close cancels only the mod-owned folder watch and notification listener', async () => {
-    const output=await scene(`const canceled=[];cx.spawn=f=>{const p=f(cx);p.cancel=()=>canceled.push(p===panel.watchTask?'watch':p===panel.commandTask?'commands':'other');tasks.push(p);return p;};initView(panel,cx);await tasks[0];panel.close();console.log(JSON.stringify(canceled));`);
-    expect(output).toEqual(['watch','commands']);
+  test('close stops the mod-owned timer, watch and reader without a notice listener', async () => {
+    const output=await scene(`const canceled=[];let commandReads=0;api.nextCommand=()=>{commandReads++;return new Promise(()=>{});};
+      cx.spawn=f=>{const p=f(cx);p.cancel=()=>canceled.push(p===panel.watchTask?'watch':'other');tasks.push(p);return p;};
+      initView(panel,cx);await tasks[0];panel.timer.cancel=()=>canceled.push('timer');
+      const reader=panel.reader;panel.reader={...reader,close:async()=>{canceled.push('reader');await reader.close();}};
+      await panel.close();console.log(JSON.stringify({canceled,commandReads,hasCommandTask:panel.commandTask!==undefined}));`);
+    expect(output).toEqual({canceled:['timer','watch','reader'],commandReads:0,hasCommandTask:false});
   });
-  test('packaged view actions carry only canonical paths and owner generation', async () => {
-    const output=await scene<{calls:string[][];commands:unknown[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();files[0]=JSON.stringify(f);const calls=[];
-      api.exec=async(cmd,args)=>{if(args[1]==='ipc'){calls.push([cmd,...args]);const request=JSON.parse(args[5]);return {code:0,stdout:JSON.stringify(request.op==='ping'?{ok:true,op:'ping',status:{native:'idle',effective:'idle'}}:{ok:true,op:request.op}),stderr:''};}return {code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
-      initView(panel,cx);await tasks[0];panel.expanded.add('fixture');byId(panel.render(cx),'view-fixture-todos').events.on_click({},cx);await drain();console.log(JSON.stringify({calls,commands}));`);
+  test('packaged run actions carry only canonical paths and owner generation', async () => {
+    const output=await scene<{calls:string[][];commands:unknown[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.runs={total:1,truncated:false,rows:[{id:'r1',ownerSessionId:'fixture',name:'Run',status:'done',childMode:'print',canSteer:false,startedAt:1,finishedAt:2,viewer:null,result:null}]};files[0]=JSON.stringify(f);const calls=[];
+      api.exec=async(cmd,args)=>{if(args[1]==='ipc'){calls.push([cmd,...args]);const request=JSON.parse(args[5]);return {code:0,stdout:JSON.stringify(request.op==='ping'?{ok:true,op:'ping',status:{native:'idle',effective:'idle'}}:{ok:true,op:request.op,viewer:'viewer-t1'}),stderr:''};}return {code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
+      initView(panel,cx);await tasks[0];panel.expanded.add('fixture');byId(panel.render(cx),'view-fixture-todos').events.on_click({},cx);byId(panel.render(cx),'session-run-r1').events.on_click({},cx);await drain();console.log(JSON.stringify({calls,commands}));`);
     expect(output.calls.map(argv=>[argv[0],argv[1],argv[2],argv[3],JSON.parse(argv[4]),argv[5],JSON.parse(argv[6])])).toEqual([
-      ['/fixture/node','/fixture/cli.mjs','ipc','--descriptor',{version:1,sessionId:'fixture',generation:'generation',address:'/fixture/ipc',capabilityFile:'/fixture/capability'},'--request',{op:'ping',generation:'generation'}],
-      ['/fixture/node','/fixture/cli.mjs','ipc','--descriptor',{version:1,sessionId:'fixture',generation:'generation',address:'/fixture/ipc',capabilityFile:'/fixture/capability'},'--request',{op:'openView',view:'todos',generation:'generation'}],
+      ['/fixture/node','/fixture/cli.mjs','ipc','--descriptor',{version:1,sessionId:'fixture',generation:'generation',address:'/fixture/ipc',capabilityFile:'/fixture/capability'},'--request',{op:'openRun',runId:'r1',generation:'generation'}],
     ]);
-    expect(output.commands).toEqual([]);
+    expect(output.commands).toEqual([{name:'pane.focus',args:{terminal:'viewer-t1'}}]);
   });
   test('a working session shows no status spinner in the panel (the sidebar shows status), with no extra refresh timers', async () => {
-    const output=await scene<{spinner: boolean; timers: number[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.status.effective='working';files[0]=JSON.stringify(f);initView(panel,cx);await tasks[0];
+    const output=await scene<{spinner: boolean; timers: number[]; deadlines: number[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.status.effective='working';files[0]=JSON.stringify(f);initView(panel,cx);await tasks[0];
       const spins=el=>Boolean(el?.styles?.spin)||(el?.items||[]).some(spins);
-      console.log(JSON.stringify({spinner:spins(panel.render(cx)),timers:timers.map(t=>t.n)}));`);
-    expect(output.spinner).toBe(false);expect(output.timers).toEqual([2000]);
+      console.log(JSON.stringify({spinner:spins(panel.render(cx)),timers:timers.filter(t=>!t.cancelled).map(t=>t.n),deadlines:timers.filter(t=>t.cancelled).map(t=>t.n)}));`);
+    expect(output.spinner).toBe(false);expect(output.timers).toEqual([2000]);expect(output.deadlines).toEqual([10000,5000,5000]);
   });
   test('doctor timeouts explain the command limit and the full-report alternative', async () => {
     const output = await scene(`files.splice(0);api.exec=async(_command,args)=>{if(args[1]==='doctor')throw new Error('Timed out');return {code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
@@ -182,34 +186,36 @@ describe('Spider panel', () => {
     expect(output.text).toEqual(expect.arrayContaining(['NOV', '1.3k'])); expect(output.text.join(' ')).not.toMatch(/This month|All spaces|\d{4}-\d\d-\d\dT/);
     expect(output.closed).toBe(true);
     expect(output.open).toEqual(['NOV 2026', 'Used', '1,284', 'Projected month end', 'unavailable', 'Budget', '5,000', 'Remaining', '3,716', 'On pace for the budget', 'Updated Sun 15 NOV 17:26 (4m ago)']);
-    expect(output.over).toEqual(expect.arrayContaining(['Over budget pace', 'projected 9,000 of 5,000']));
+    // Over pace shows in the bar and its popover, never as a notification.
+    expect(output.over).toEqual(expect.arrayContaining(['Over pace for the budget']));
+    expect(output.over).not.toContain('Over budget pace');
   });
-  test('shared repository approval actions use a matching endpoint without inventing ownership', async () => {
-    const output=await scene<{opened: string[][]; commands: unknown[]}>(`const a=JSON.parse(files[0]),b=JSON.parse(files[0]);a.updatedAt=b.updatedAt=Date.now();b.sessionId=b.owner.sessionId='other';b.owner.terminal.address='other';
-      a.approvals=[{uuid:'approval',scope:'repo',repoKey:'repo-a',ownerSessionId:null,category:'insight',preview:'First'}];b.approvals=[{uuid:'approval',scope:'repo',repoKey:'repo-b',ownerSessionId:null,category:'insight',preview:'Second'}];files.splice(0,1,JSON.stringify(a),JSON.stringify(b));
-      a.approvals=[];files.splice(0,1,JSON.stringify(a),JSON.stringify(b));
-      const opened=[];panel.actions={ping:async()=>true,openView:async(feed,view)=>opened.push([feed.sessionId,view])};initView(panel,cx);await tasks[0];
-      const button=byId(panel.render(cx),'need-memory');if(button)button.events.on_click({},cx);await drain();console.log(JSON.stringify({opened,commands}));`);
-    expect(output.opened).toEqual([['other','memory']]);expect(output.commands).toEqual([]);
+  test('shared repository approvals load in the Memories view through the CLI, never through a pi session', async () => {
+    const output=await scene<{calls: string[][]; commands: unknown[]; view: string}>(`const a=JSON.parse(files[0]),b=JSON.parse(files[0]);a.updatedAt=b.updatedAt=Date.now();b.sessionId=b.owner.sessionId='other';b.owner.terminal.address='other';
+      a.approvals=[];b.approvals=[{uuid:'approval',scope:'repo',repoKey:'/fixture/repo-b/.git',ownerSessionId:null,category:'insight',preview:'Second'}];files.splice(0,1,JSON.stringify(a),JSON.stringify(b));
+      const calls=[];api.exec=async(cmd,args)=>{if(args[0]!=='-e')calls.push(args);return args[1]==='memory'?{code:0,stdout:JSON.stringify({ok:true,op:'pending',items:[],unavailable:[]}),stderr:''}:{code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
+      initView(panel,cx);await tasks[0];
+      const button=byId(panel.render(cx),'need-memory');if(button)button.events.on_click({},cx);await drain();console.log(JSON.stringify({calls,commands,view:panel.view.kind}));`);
+    expect(output.calls).toEqual([['/fixture/cli.mjs','memory','pending','--repo','/fixture/repo-b/.git']]);expect(output.commands).toEqual([]);expect(output.view).toBe('memories');
   });
-  test('failed-run Output reuses displayed viewers and focuses returned saved-view IDs', async () => {
+  test('a run reuses its displayed viewer and focuses the viewer the session returns', async () => {
     const output=await scene<{opened: string[][]; commands: unknown[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.runs={total:2,truncated:false,rows:[
       {id:'live-run',ownerSessionId:'fixture',name:'Live',status:'failed',childMode:'rpc',canSteer:false,startedAt:1,finishedAt:Date.now()-1000,viewer:'displayed',result:'exit 1'},
       {id:'saved-run',ownerSessionId:'fixture',name:'Saved',status:'failed',childMode:'print',canSteer:false,startedAt:1,finishedAt:Date.now()-2000,viewer:'parked',result:'Failed'}]};
       files[0]=JSON.stringify(f);api.panes=()=>[{pane:'viewer-pane',terminal:'displayed'}];const opened=[];
-      panel.actions={ping:async()=>true,openRun:async(feed,id)=>{opened.push([feed.sessionId,id]);return 'returned-viewer';},openView:async()=>{}};
-      initView(panel,cx);await tasks[0];panel.expanded.add('fixture');const tree=panel.render(cx);
-      for(const id of ['need-run:live-run','need-run:saved-run']){const button=byId(tree,id);if(button)button.events.on_click({},cx);}await drain();
+      panel.actions={openRun:async(feed,id)=>{opened.push([feed.sessionId,id]);return 'returned-viewer';}};
+      initView(panel,cx);await tasks[0];panel.showSession('fixture',cx);const tree=panel.render(cx);
+      for(const id of ['session-run-live-run','session-run-saved-run']){const button=byId(tree,id);if(button)button.events.on_click({},cx);}await drain();
       console.log(JSON.stringify({opened,commands}));`);
     expect(output.opened).toEqual([['fixture','saved-run']]);
     expect(output.commands).toEqual([{name:'pane.focus',args:{terminal:'displayed'}},{name:'pane.focus',args:{terminal:'returned-viewer'}}]);
   });
-  test('view action failures stay visible and never focus or type into a terminal', async () => {
-    const output=await scene<{opened: string[][]; commands: unknown[]; text: string[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();files[0]=JSON.stringify(f);const opened=[];
-      panel.actions={ping:async feed=>feed.sessionId==='fixture',openView:async(feed,view)=>{opened.push([feed.sessionId,view]);throw new Error('View unavailable');}};
-      initView(panel,cx);await tasks[0];panel.expanded.add('fixture');const button=byId(panel.render(cx),'view-fixture-todos');if(button)button.events.on_click({},cx);await drain();
+  test('run output failures stay visible and never focus or type into a terminal', async () => {
+    const output=await scene<{opened: string[][]; commands: unknown[]; text: string[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.runs={total:1,truncated:false,rows:[{id:'r1',ownerSessionId:'fixture',name:'Run',status:'done',childMode:'print',canSteer:false,startedAt:1,finishedAt:2,viewer:null,result:null}]};files[0]=JSON.stringify(f);const opened=[];
+      panel.actions={openRun:async(feed,id)=>{opened.push([feed.sessionId,id]);throw new Error('Viewer unavailable');}};
+      initView(panel,cx);await tasks[0];panel.showSession('fixture',cx);const button=byId(panel.render(cx),'session-run-r1');if(button)button.events.on_click({},cx);await drain();
       console.log(JSON.stringify({opened,commands,text:texts(panel.render(cx))}));`);
-    expect(output.opened).toEqual([['fixture','todos']]); expect(output.commands).toEqual([]);expect(output.text.join(' ')).toContain("The view didn't open in pi.");
+    expect(output.opened).toEqual([['fixture','r1']]); expect(output.commands).toEqual([]);expect(output.text.join(' ')).toContain("The run's output didn't open.");
   });
   test('session focus targets the recorded terminal and stale rows cannot redirect it', async () => {
     const output=await scene(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();files[0]=JSON.stringify(f);initView(panel,cx);await tasks[0];
@@ -225,10 +231,10 @@ describe('Spider panel', () => {
     expect(output.tabs).toEqual([false, false]); expect(output.text).not.toContain('Machines');
   });
   test('reloads after registering the feed-only watch so startup changes are not lost', async () => {
-    const output=await scene<{watched: string[]; text: string[]; timers: number[]}>(`const watched=[]; api.watchFolder=async root=>{watched.push(root);const f=JSON.parse(files[0]);f.owner.name='Changed';files[0]=JSON.stringify(f);return new Promise(()=>{});};
-      initView(panel,cx);await tasks[0];console.log(JSON.stringify({watched,text:texts(panel.render(cx)),timers:timers.map(t=>t.n)}));`);
+    const output=await scene<{watched: string[]; text: string[]; timers: number[]; deadlines: number[]}>(`const watched=[]; api.watchFolder=async root=>{watched.push(root);const f=JSON.parse(files[0]);f.owner.name='Changed';files[0]=JSON.stringify(f);return new Promise(()=>{});};
+      initView(panel,cx);await tasks[0];console.log(JSON.stringify({watched,text:texts(panel.render(cx)),timers:timers.filter(t=>!t.cancelled).map(t=>t.n),deadlines:timers.filter(t=>t.cancelled).map(t=>t.n)}));`);
     expect(output.watched).toEqual(['/fixture/feeds/sessions']); expect(output.text.join(' ')).toContain('Changed');
-    expect(output.timers).toEqual([2000]);
+    expect(output.timers).toEqual([2000]); expect(output.deadlines).toEqual([10000,5000,5000]);
   });
   test('reads its layout props from herdr props(), the only place the real app supplies them', async () => {
     const output=await scene<{called: string[]; ids: string[]; text: string[]}>(`const called=[];api.exec=async (cmd,args)=>{called.push(cmd,args[2]);return {code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
@@ -280,12 +286,12 @@ describe('Spider panel', () => {
     expect(output.errors).toMatchObject([{message:expect.stringContaining('truncated')}]);
   });
   test('loads only validated feed-root files without SPIDER_GLOBAL_ROOT', async () => {
-    const output = await scene<{ids: string[]; text: string[]}>(`delete process.env.SPIDER_GLOBAL_ROOT; props.nodePath=process.execPath;
+    const output = await scene<{ids: string[]; text: string[]}>(`delete process.env.SPIDER_GLOBAL_ROOT; api.nativeReader=true;props.cliPath=${JSON.stringify(resolve('dist/herdr/cli.mjs'))};props.nodePath=process.execPath;
       props.feedRoot=path.join(path.dirname(m.identifier),'feeds'); await fs.mkdir(path.join(props.feedRoot,'sessions','fixture'),{recursive:true});
       await fs.writeFile(path.join(props.feedRoot,'sessions','fixture','session.json'),files[0]);
       const {execFile}=await import('node:child_process'); api.exec=(cmd,args)=>args.length?new Promise((resolve,reject)=>execFile(cmd,args,{maxBuffer:8*1024*1024,env:{...process.env,TMPDIR:path.dirname(m.identifier)}},(error,stdout,stderr)=>error?reject(error):resolve({code:0,stdout,stderr}))):Promise.resolve({code:0,stdout:'{"feeds":[],"errors":[]}',stderr:''});
-      initView(panel,cx);await tasks[0];console.log(JSON.stringify({ids:panel.feeds.map(f=>f.sessionId),text:texts(panel.render(cx))}));`);
-    expect(output.ids).toEqual(['fixture']); expect(output.text.join(' ')).toContain('fixture');
+      initView(panel,cx);await tasks[0];await panel.close();console.log(JSON.stringify({ids:panel.feeds.map(f=>f.sessionId),text:texts(panel.render(cx)),errors:panel.errors}));`);
+    expect(output.ids, JSON.stringify(output)).toEqual(['fixture']); expect(output.text.join(' ')).toContain('fixture');
   });
   test('missing usage says so, draws no bar, and shared memories need review', async () => {
     const output = await scene(`const f = JSON.parse(files[0]); f.runs.total=14; f.runs.truncated=true; f.todos.total=9; f.todos.truncated=true;
@@ -308,9 +314,12 @@ describe('Spider panel', () => {
   });
   test('stale sessions are disconnected, not newly completed, and closed stays closed', () => {
     const live = feed('live'), closed = feed('closed'); closed.lifecycle = 'closed';
-    expect(panelSessionState(live, 11000)).toBe('live');
-    expect(panelSessionState(live, 11001)).toBe('disconnected');
-    expect(panelSessionState(closed, 11001)).toBe('closed');
+    expect(panelSessionState(live, 21000)).toBe('live');
+    expect(panelSessionState(live, 21001)).toBe('disconnected');
+    expect(panelSessionState(closed, 21001)).toBe('closed');
+  });
+  test('the panel disconnects sessions at the shared feed cutoff', () => {
+    expect(PANEL_DISCONNECT_MS).toBe(FEED_DISCONNECT_MS);
   });
   test('groups observed spaces in visual order and leaves unknown placement unplaced', () => {
     const a = feed('a'), b = feed('b'), c = feed('c'), d = feed('d');

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect } from 'vitest';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { registerScenarios, storyId } from '../harness/scenario.js';
 import type { ScenarioDefinition } from '../harness/scenario.js';
@@ -22,7 +23,8 @@ async function nativeGate(suite: Suite): Promise<void> {
 }
 const request = (name: string) => ({ agent: 'worker', name, model: 'e2e-fixture/scripted', thinking: 'off', task: `[[e2e:${name}]] Work inline. No children.` });
 const held = (name: string) => [{ steps: [{ text: `work-${name}` }, { gate: `held-${name}` }] }, { steps: [{ text: `result-${name}` }] }];
-const placed = (world: any) => world.spaces.flatMap((space: any) => space.tabs.flatMap((tab: any) => tab.terminals.map((pane: any) => ({ space: space.id, tab: tab.id, pane: pane.pane, terminal: pane.terminal }))));
+type PlacedPane = { space: string; tab: string; pane: string; terminal: string };
+const placed = (world: any): PlacedPane[] => world.spaces.flatMap((space: any) => space.tabs.flatMap((tab: any) => tab.terminals.map((pane: any) => ({ space: space.id, tab: tab.id, pane: pane.pane, terminal: pane.terminal }))));
 const mainOnly = (main: ReturnType<typeof placed>, observed: ReturnType<typeof placed>) => observed.filter((pane: any) => main.some((original: any) => original.terminal === pane.terminal));
 async function receipt(job: any): Promise<any> {
     return waitFor('real payload exit receipt', async () => {
@@ -36,16 +38,6 @@ async function receipt(job: any): Promise<any> {
         }
     }, value => value?.exitCode === 23, deadline(20000), { reconcileMs: 250 });
 }
-async function select(panel: any, kind: 'machine' | 'agent', id: string): Promise<void> {
-    const target = `agent-filter-${kind}-${id}`;
-    await waitFor(`actual ${kind} choice ${id} is available`, async () => {
-        await panel.host.activate(`agents-filter-${kind}`);
-        const ui = await panel.host.uiSnapshot(), available = ui.nodes.some((node: { id: string }) => node.id === target);
-        if (!available) await panel.host.activate(`agent-filter-${kind}-all`);
-        return available;
-    }, Boolean, deadline(20000), { reconcileMs: 250 });
-    await panel.host.activate(target);
-}
 async function assertUserOpenSlots(suite: Suite): Promise<void> {
     await nativeGate(suite);
     const f = await installPanelFixture(suite), parent = await startPanelParent(f), main = placed(await f.app.ls()), gates = await suite.gates();
@@ -55,15 +47,23 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
     try {
         for (const name of names) { const ready = await gates.ready(`held-${name}`, deadline(30000)); identities.set(name, identityOf(ready.pid)); }
         const feed = await waitFeed(parent, 'three running public children', feed => feed.runs.rows.length === 3), runs = await waitNativeViewerRuns(suite, feed);
-        const before = await waitFor('exactly two automatic slots are acknowledged', async () => placed(await f.app.ls()), panes => runs.filter(run => panes.some((pane: any) => pane.terminal === run.viewer)).length === 2, deadline(20000), { reconcileMs: 250 });
+        const automatic = placed(await f.app.ls());
+        expect(automatic, 'automatic-viewers-stay-parked').toEqual(main);
+        sidebar = await mountPanel(f, 'spider-agents');
+        for (const run of runs.slice(0, 2)) {
+            await sidebar.host.waitForUi('actual parked child action', ui => ui.nodes.some(node => node.id === `sub-${run.id}`), 20000);
+            await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
+        }
+        const before = await waitFor('two user-requested slots are acknowledged', async () => placed(await f.app.ls()), panes => runs.filter(run => panes.some((pane: any) => pane.terminal === run.viewer)).length === 2, deadline(20000), { reconcileMs: 250 });
         const displayed = runs.filter(run => before.some((pane: any) => pane.terminal === run.viewer)), parked = runs.filter(run => !before.some((pane: any) => pane.terminal === run.viewer));
         expect(displayed).toHaveLength(2); expect(parked).toHaveLength(1); expect(parked[0].status).toBe('running');
         const existingAux = before.filter((pane: any) => displayed.some(run => run.viewer === pane.terminal)), callsBefore = (await appCalls(suite)).length;
-        sidebar = await mountPanel(f, 'spider-agents');
+        const actionsBeforeOverflow = sidebar.actions.length;
         await sidebar.host.waitForUi('actual parked child action', ui => ui.nodes.some(node => node.id === `sub-${parked[0].id}`), 20000);
         await activateChildAction(sidebar, `sub-${parked[0].id}`, { op: 'openRun', runId: parked[0].id });
         const opened = await f.app.ls() as any, after = placed(opened), newPane = after.find((pane: any) => pane.terminal === parked[0].viewer);
-        expect(newPane).toBeDefined(); expect(newPane.tab).not.toBe(parent.placement.tab);
+        expect(newPane).toBeDefined(); if (!newPane) throw new Error('Opened viewer pane is missing');
+        expect(newPane.tab).not.toBe(parent.placement.tab);
         const newTab = opened.spaces.flatMap((space: any) => space.tabs).find((tab: any) => tab.id === newPane.tab);
         expect(newTab.name).toBe(parked[0].name);
         expect(await f.app.status()).toMatchObject({ tab: newPane.tab, agent: parked[0].viewer });
@@ -79,8 +79,14 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         await sidebar.refresh();
         await suite.evidence('native-run-actions.json', sidebar.actions);
         expect(sidebar.actions.every(action => action.state !== 'pending')).toBe(true);
-        const unsupported = sidebar.actions.filter(action => action.state === 'failed');
-        expect(unsupported.length).toBeGreaterThan(0);
+        const unsupported = sidebar.actions.slice(actionsBeforeOverflow).filter(action => action.state === 'failed');
+        const openRequests = sidebar.commands.filter(command => {
+            const index = command.argv.indexOf('--request');
+            if (index < 0) return false;
+            const request = JSON.parse(command.argv[index + 1]);
+            return request.op === 'openRun' && request.runId === parked[0].id;
+        });
+        expect(openRequests.map(command => command.exitCode)).toEqual([0, 0]);
         for (const action of unsupported) {
             expect(action).toMatchObject({ name: 'terminal.peek', args: { terminal: parked[0].viewer }, state: 'failed', error: { code: 'app-error', message: 'unplaced terminal peek requires a native overlay' } });
         }
@@ -90,7 +96,7 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         const closed = placed(await f.app.ls()); expect(closed.some((pane: any) => pane.terminal === parked[0].viewer)).toBe(false);
         expect(closed.filter((pane: any) => displayed.some(run => run.viewer === pane.terminal))).toEqual(existingAux);
         expect(mainOnly(main, closed)).toEqual(main);
-        await suite.evidence('user-open-new-tab.json', { feed, retained, main, before, after, reused, closed, newTab, evictionCalls, counts: { automaticBefore: 2, visibleAfterOpen: 3, originalAuxAfterOpen: 2, visibleAfterClose: 2 }, superseded: 'Eviction superseded by user ruling 2026-11-02 00:22; placement.ts:134. Old expected surviving auxiliaries 1; required now 2 in unchanged panes.' });
+        await suite.evidence('user-open-new-tab.json', { feed, retained, main, automatic, before, after, reused, closed, newTab, evictionCalls, counts: { automaticBefore: 0, visibleBeforeOverflow: 2, visibleAfterOpen: 3, originalAuxAfterOpen: 2, visibleAfterClose: 2 }, superseded: 'Eviction superseded by user ruling 2026-11-02 00:22; placement.ts:134. Old expected surviving auxiliaries 1; required now 2 in unchanged panes.' });
     } finally { for (const name of names) gates.release(`held-${name}`); await sidebar?.close(); }
 }
 async function assertEvictionIsCaught(suite: Suite): Promise<void> {
@@ -123,6 +129,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
             const automatic = placed(await f.app.ls());
             expect(main.length).toBeGreaterThanOrEqual(2);
             expect(mainOnly(main, automatic), 'main-pane-layout-preserved').toEqual(main);
+            expect(automatic, 'automatic-viewers-stay-parked').toEqual(main);
             expect(await f.app.status(), 'main-pane-focus-preserved').toMatchObject({ agent: (originalStatus as any).agent });
             const job = await holdJob(f, parent, 'main-job'), sidebar = await mountPanel(f, 'spider-agents');
             try {
@@ -157,6 +164,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 const observer = await waitFor('actual read-only observer terminal', () => coreRows(suite), rows => rows.some(r => r.labels['spider.kind'] === 'remote-observer' && r.labels['spider.job'] === job.id), deadline(20000), { reconcileMs: 250 });
                 const row = observer.find(r => r.labels['spider.kind'] === 'remote-observer' && r.labels['spider.job'] === job.id), pane = placed(await f.app.ls()).find((p: any) => p.terminal === row.address);
                 expect(pane).toBeDefined();
+                if (!pane) throw new Error('Observer pane is missing');
                 await f.app.command('pane.close', { pane: pane.pane });
                 expect((await suite.hc(['get', job.address, '--json'])).json).toMatchObject({ state: 'live' });
                 await releasePayloadGate(suite, job.releasePath);
@@ -199,6 +207,11 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 expect(run.ownerSessionId).toBe(parent.sessionId);
                 expect(ui.nodes.filter(n => n.id === `sub-${run.id}`)).toHaveLength(1);
                 expect(ui.nodes.some(n => n.id === `ag-${job.address}` || n.id === `ag-${job.console}` || n.id === `ag-${run.viewer}`)).toBe(false);
+                await sidebar.host.activate(`fold-left-${parent.pi.terminal}`);
+                const folded = await sidebar.host.waitForUi('left chevron folds the running children', value => value.nodes.some(n => n.id === `fold-${parent.pi.terminal}`) && !value.nodes.some(n => n.id === `sub-${run.id}`), 20000);
+                expect(folded.nodes.some(n => n.id === `fold-left-${parent.pi.terminal}`)).toBe(true);
+                await sidebar.host.activate(`fold-${parent.pi.terminal}`);
+                await sidebar.host.waitForUi('running count pill unfolds the children', value => value.nodes.some(n => n.id === `sub-${run.id}`), 20000);
                 const ownedRows = await coreRows(suite);
                 for (const [address, kind, key] of [[run.viewer, 'subagent-viewer', run.id], [job.address, 'exec', job.id], [job.console, 'remote-console', null]]) {
                     const row = ownedRows.find(row => row.address === address);
@@ -217,15 +230,50 @@ export const scenarios: readonly ScenarioDefinition[] = [
                     expect(afterObserver.nodes.some(n => n.id === `ag-${row.address}`)).toBe(false);
                 await activateChildAction(sidebar, `sub-console:${job.console}`, { op: 'openJob', jobId: `console:${job.console}` });
                 expect(sidebar.commands.some(c => c.argv.some(arg => arg.includes('openJob') && arg.includes(`console:${job.console}`)))).toBe(true);
+                expect(placed(await f.app.ls()).some(row => row.terminal === run.viewer)).toBe(false);
+                await sidebar.refresh();
+                await sidebar.host.mouse(`sub-${run.id}`, 'right');
+                const parkedMenu = await waitFor('parked viewer menu', () => sidebar.host.uiSnapshot(), ui => ui.nodes.some(node => node.id === 'move-new'), deadline(15000));
+                expect(parkedMenu.nodes.some(node => node.text.includes('Open in new tab'))).toBe(true);
+                await suite.evidence('parked-viewer-menu.json', { parkedMenu, feed, viewer: run.viewer });
+                await sidebar.host.activate('move-new');
+                const openedView = await waitFor('parked viewer opened in its tab', async () => placed(await f.app.ls()), rows => rows.some(row => row.terminal === run.viewer), deadline(20000));
+                expect(openedView.find(row => row.terminal === run.viewer)?.tab).not.toBe(parent.placement.tab);
+                expect(await f.app.status()).toMatchObject({ agent: run.viewer });
+                await sidebar.refresh();
                 await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
                 expect(sidebar.commands.some(c => c.argv.some(arg => arg.includes('openRun') && arg.includes(run.id)))).toBe(true);
+                const ownerPane = placed(await f.app.ls()).find(row => row.terminal === parent.pi.terminal);
+                if (!ownerPane) throw new Error('Owner pane is unavailable');
+                const target = await f.app.command('tab.new', { space: ownerPane.space, name: 'Move target' }) as { tab: string };
+                await sidebar.refresh();
+                await sidebar.host.mouse(`sub-${run.id}`, 'right');
+                const menu = await waitFor('subagent move menu', () => sidebar.host.uiSnapshot(), ui => ui.nodes.some(node => node.id === 'move-tabs'), deadline(15000));
+                expect(menu.nodes.some(node => node.text.includes('Move to tab'))).toBe(true);
+                await sidebar.host.activate('move-tabs');
+                await sidebar.host.waitForUi('target tab in menu', ui => ui.nodes.some(node => node.id === `move-tab-${target.tab}`), 15000);
+                await sidebar.host.activate(`move-tab-${target.tab}`);
+                const moved = await waitFor('viewer moved to chosen tab', async () => placed(await f.app.ls()), rows => rows.some(row => row.terminal === run.viewer && row.tab === target.tab), deadline(20000));
+                expect(moved.find(row => row.terminal === run.viewer)?.tab).toBe(target.tab);
+                expect(await f.app.status()).toMatchObject({ agent: run.viewer });
+                await sidebar.refresh();
+                await sidebar.host.mouse(`sub-${run.id}`, 'right');
+                await waitFor('viewer menu after first move', () => sidebar.host.uiSnapshot(), ui => ui.nodes.some(node => node.id === 'move-new'), deadline(15000));
+                await sidebar.host.activate('move-new');
+                const movedAgain = await waitFor('viewer moved to a new tab', async () => placed(await f.app.ls()), rows => rows.some(row => row.terminal === run.viewer && row.tab !== target.tab), deadline(20000));
+                expect(movedAgain.find(row => row.terminal === run.viewer)?.tab).not.toBe(target.tab);
+                expect(await f.app.status()).toMatchObject({ agent: run.viewer });
                 await writeFile(job.releasePath, 'release');
                 await receipt(job);
                 gates.release('held-tree-child'); childHeld = false;
                 await waitFeed(parent, 'retained run completed', feed => feed.runs.rows.some((r: any) => r.id === run.id && r.status === 'done'), 30000);
                 await sidebar.refresh();
-                const ended = await sidebar.host.waitForUi('completed job disappears while console and retained run remain', ui => !ui.nodes.some(n => n.id === `sub-${job.id}`) && ui.nodes.some(n => n.id === `sub-console:${job.console}`) && ui.nodes.some(n => n.id === `sub-${run.id}`), 20000);
-                await suite.evidence('agents-tree.json', { before, ui, afterObserver, ended, feed, ownedRows, terminals: await coreRows(suite), appCalls: sidebar.commands, laggingSnapshot: 'console omitted at the native-read boundary only' });
+                const ended = await sidebar.host.waitForUi('completed job disappears and retained run is hidden', ui => !ui.nodes.some(n => n.id === `sub-${job.id}` || n.id === `sub-${run.id}`) && ui.nodes.some(n => n.id === `sub-console:${job.console}`) && ui.nodes.some(n => n.id === `finished-toggle-${parent.pi.terminal}` && n.text.includes('1 finished')), 20000);
+                await sidebar.host.activate(`finished-toggle-${parent.pi.terminal}`);
+                const shown = await sidebar.host.waitForUi('finished toggle reveals retained run', ui => ui.nodes.some(n => n.id === `sub-${run.id}`) && ui.nodes.some(n => n.id === `finished-toggle-${parent.pi.terminal}` && n.text.includes('Hide finished')), 20000);
+                await sidebar.host.activate(`finished-toggle-${parent.pi.terminal}`);
+                const hidden = await sidebar.host.waitForUi('finished toggle hides retained run again', ui => !ui.nodes.some(n => n.id === `sub-${run.id}`) && ui.nodes.some(n => n.id === `finished-toggle-${parent.pi.terminal}` && n.text.includes('1 finished')), 20000);
+                await suite.evidence('agents-tree.json', { before, ui, folded, afterObserver, ended, shown, hidden, feed, ownedRows, terminals: await coreRows(suite), appCalls: sidebar.commands, laggingSnapshot: 'console omitted at the native-read boundary only' });
             }
             finally {
                 if (childHeld) gates.release('held-tree-child');
@@ -233,80 +281,48 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 await sidebar.close();
             }
         } },
-    { id: storyId('S38'), title: 'real filter controls keep sidebar copies independent and use IDs for duplicate names', tiers: ['headless', 'app'], async run(suite) {
+    { id: storyId('S38'), title: 'old sidebar filters do not hide duplicate-named runs or remote jobs', tiers: ['headless', 'app'], async run(suite) {
             await nativeGate(suite);
             const f = await installPanelFixture(suite), parent = await startPanelParent(f), gates = await suite.gates();
             const [created] = await tools(f, parent, 'filter-runs', [{ action: 'run', tasks: [{ ...request('filter-a'), name: 'Duplicate' }, { ...request('filter-b'), name: 'Duplicate' }] }], { 'filter-a': held('filter-a'), 'filter-b': held('filter-b') } as any);
-            for (const name of ['filter-a', 'filter-b'])
-                await gates.ready(`held-${name}`, deadline(30000));
+            for (const name of ['filter-a', 'filter-b']) await gates.ready(`held-${name}`, deadline(30000));
             const feed = await waitFeed(parent, 'two actual duplicate-named runs', feed => feed.runs.rows.length === 2);
             const [a, b] = await waitNativeViewerRuns(suite, feed);
-            expect(a.name).toBe('Duplicate');
-            expect(b.name).toBe('Duplicate');
-            expect(a.id).not.toBe(b.id);
+            expect(a.name).toBe('Duplicate'); expect(b.name).toBe('Duplicate'); expect(a.id).not.toBe(b.id);
             const job = await holdJob(f, parent, 'filter-job');
             const propsA = await sidebarCopy(f, 'spider-agents-a'), propsB = await sidebarCopy(f, 'spider-agents-b');
+            const stateDir = suite.ownPath(join(suite.root, 'ui-state'));
+            await mkdir(stateDir, { recursive: true, mode: 0o700 });
+            const seed = async (id: string, value: unknown) => {
+                const key = `spider.agents.filters/${id}`;
+                const file = suite.ownPath(join(stateDir, createHash('sha256').update(key).digest('hex') + '.json'));
+                await writeFile(file, JSON.stringify(value), { mode: 0o600 });
+            };
+            await seed('spider-agents-a', { machine: null, agent: `run:${a.id}` });
+            await seed('spider-agents-b', { machine: 'other.invalid', agent: `run:${b.id}` });
             let copyA = await mountPanel(f, 'spider-agents-a', false, propsA), copyB = await mountPanel(f, 'spider-agents-b', false, propsB);
             try {
-                for (const panel of [copyA, copyB])
-                    await panel.host.waitForUi('actual duplicate run rows', ui => ui.nodes.some(n => n.id === `sub-${a.id}`) && ui.nodes.some(n => n.id === `sub-${b.id}`), 20000);
-                const duplicateOptions = (ui: Awaited<ReturnType<typeof copyA.host.uiSnapshot>>) => ui.nodes.filter(n => n.id.startsWith('agent-filter-agent-run:') && n.text.includes('Duplicate'));
-                const options = await waitFor('actual duplicate filter choices after async feed loading', async () => {
-                    await copyA.host.activate('agents-filter-agent');
-                    const ui = await copyA.host.uiSnapshot();
-                    if (duplicateOptions(ui).length !== 2) await copyA.host.activate('agent-filter-agent-all');
-                    return ui;
-                }, ui => duplicateOptions(ui).length === 2, deadline(20000), { reconcileMs: 250 });
-                expect(duplicateOptions(options)).toHaveLength(2);
-                await copyA.host.activate(`agent-filter-agent-run:${a.id}`);
-                await select(copyB, 'agent', `run:${b.id}`);
-                expect((await copyA.host.uiSnapshot()).nodes.some(n => n.id === `sub-${a.id}`)).toBe(true);
-                expect((await copyA.host.uiSnapshot()).nodes.some(n => n.id === `sub-${b.id}`)).toBe(false);
-                expect((await copyB.host.uiSnapshot()).nodes.some(n => n.id === `sub-${b.id}`)).toBe(true);
-                expect((await copyB.host.uiSnapshot()).nodes.some(n => n.id === `sub-${a.id}`)).toBe(false);
-                await copyA.close();
-                await copyB.close();
+                const observe = async (panel: typeof copyA) => {
+                    const ui = await panel.host.waitForUi('both runs and the remote console remain visible', ui =>
+                        ui.nodes.some(n => n.id === `sub-${a.id}`) && ui.nodes.some(n => n.id === `sub-${b.id}`) && ui.nodes.some(n => n.id === `sub-console:${job.console}`), 20000);
+                    expect(ui.nodes.filter(n => n.id === `sub-${a.id}` || n.id === `sub-${b.id}`)).toHaveLength(2);
+                    expect(ui.nodes.some(n => n.id.startsWith('agents-filter-') || n.id === 'agents-clear-filters' || n.id.startsWith('machine-row-'))).toBe(false);
+                    await panel.host.activate(`console-fold-console:${job.console}`);
+                    const expanded = await panel.host.waitForUi('remote job appears when its console expands', ui => ui.nodes.some(n => n.id === `sub-${job.id}`), 20000);
+                    expect(expanded.nodes.some(n => n.id === `sub-${a.id}`)).toBe(true);
+                    expect(expanded.nodes.some(n => n.id === `sub-${b.id}`)).toBe(true);
+                    return { ui, expanded };
+                };
+                const firstA = await observe(copyA), firstB = await observe(copyB);
+                await copyA.close(); await copyB.close();
                 copyA = await mountPanel(f, 'spider-agents-a', false, propsA);
                 copyB = await mountPanel(f, 'spider-agents-b', false, propsB);
-                await copyA.host.waitForUi('copy A filter persisted after real mod reload', ui => ui.nodes.some(n => n.id === `sub-${a.id}`) && !ui.nodes.some(n => n.id === `sub-${b.id}`), 20000);
-                await copyB.host.waitForUi('copy B filter persisted independently', ui => ui.nodes.some(n => n.id === `sub-${b.id}`) && !ui.nodes.some(n => n.id === `sub-${a.id}`), 20000);
-                await select(copyA, 'agent', 'all');
-                await copyA.host.activate('agents-filter-machine');
-                const machineOptions = await copyA.host.uiSnapshot();
-                expect(machineOptions.nodes.some(n => n.id === `agent-filter-machine-${suite.cores!.machine}`)).toBe(true);
-                expect(machineOptions.nodes.some(n => n.id === 'agent-filter-machine-all')).toBe(true);
-                await copyA.host.activate(`agent-filter-machine-${suite.cores!.machine}`);
-                const intersection = await copyA.host.uiSnapshot();
-                expect(intersection.nodes.some(n => n.id === `ag-${parent.pi.terminal}`)).toBe(true);
-                expect(intersection.nodes.some(n => n.id === `sub-${a.id}` || n.id === `sub-${b.id}`)).toBe(false);
-                await select(copyA, 'agent', `session:${parent.sessionId}`);
-                await copyA.host.waitForUi('matching remote console ancestor', ui => ui.nodes.some(n => n.id === `sub-console:${job.console}`) && ui.nodes.some(n => n.id === `ag-${parent.pi.terminal}`), 20000);
-                await copyA.host.activate(`console-fold-console:${job.console}`);
-                const combined = await copyA.host.waitForUi('matching live job under its console', ui => ui.nodes.some(n => n.id === `sub-${job.id}`), 20000);
-                expect(combined.nodes.some(n => n.id === `sub-${a.id}` || n.id === `sub-${b.id}`)).toBe(false);
-                expect((await copyB.host.uiSnapshot()).nodes.some(n => n.id === `sub-${b.id}`)).toBe(true);
-                expect((await copyB.host.uiSnapshot()).nodes.some(n => n.id === `sub-console:${job.console}`)).toBe(false);
-                await copyA.close();
-                await copyB.close();
-                copyA = await mountPanel(f, 'spider-agents-a', false, propsA);
-                copyB = await mountPanel(f, 'spider-agents-b', false, propsB);
-                const combinedReload = await copyA.host.waitForUi('combined filter survives mod reload', ui => ui.nodes.some(n => n.id === `sub-console:${job.console}`) && !ui.nodes.some(n => n.id === `sub-${a.id}` || n.id === `sub-${b.id}`), 20000);
-                await copyB.host.waitForUi('other copy remains on its independent run filter', ui => ui.nodes.some(n => n.id === `sub-${b.id}`) && !ui.nodes.some(n => n.id === `sub-${a.id}` || n.id === `sub-console:${job.console}`), 20000);
-                await select(copyA, 'machine', 'all');
-                await select(copyA, 'agent', 'all');
-                const resetA = await copyA.host.waitForUi('All machines and All agents restore both runs', ui => ui.nodes.some(n => n.id === `sub-${a.id}`) && ui.nodes.some(n => n.id === `sub-${b.id}`), 20000);
-                expect((await copyB.host.uiSnapshot()).nodes.some(n => n.id === `sub-${a.id}`)).toBe(false);
-                await select(copyB, 'machine', 'all');
-                await select(copyB, 'agent', 'all');
-                const resetB = await copyB.host.waitForUi('second copy independently resets both selectors', ui => ui.nodes.some(n => n.id === `sub-${a.id}`) && ui.nodes.some(n => n.id === `sub-${b.id}`), 20000);
-                await suite.evidence('independent-filters.json', { created, feed, options, machineOptions, intersection, combined, combinedReload, resetA, resetB, terminals: await coreRows(suite) });
-            }
-            finally {
+                const reloadA = await observe(copyA), reloadB = await observe(copyB);
+                await suite.evidence('unfiltered-sidebar-copies.json', { created, feed, firstA, firstB, reloadA, reloadB, terminals: await coreRows(suite) });
+            } finally {
                 await writeFile(job.releasePath, 'release');
-                for (const name of ['filter-a', 'filter-b'])
-                    gates.release(`held-${name}`);
-                await copyA.close();
-                await copyB.close();
+                for (const name of ['filter-a', 'filter-b']) gates.release(`held-${name}`);
+                await copyA.close(); await copyB.close();
             }
         } },
 ];

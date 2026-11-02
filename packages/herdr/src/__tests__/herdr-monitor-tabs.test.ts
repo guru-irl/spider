@@ -14,7 +14,7 @@ async function fixture() {
   let tab = 0, next = 0, observer: (() => Promise<TerminalAddress>) | undefined;
   h.hc.run = async request => { const address = `aux-${++next}` as TerminalAddress; h.terminals.set(address, { address, parent: null, labels: request.labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null }); return { address, coreId: h.owner.terminal.coreId }; };
   const app: AppClient = {
-    ownerPlacement: async address => { const p = placements.get(address); if (!p) throw Object.assign(new Error('unplaced'), { code: 'owner-unplaced' }); return p; },
+    tabTerminals: async target => [...placements].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => { const p = placements.get(address); if (!p) throw Object.assign(new Error('unplaced'), { code: 'owner-unplaced' }); return p; },
     awaitPane: async (address, p) => { placements.set(address, { ...p, pane: `pane-${address}` as never }); return `pane-${address}` as never; },
     command: async (name, args) => {
       commands.push({ name, args }); const address = args.terminal as TerminalAddress;
@@ -30,7 +30,7 @@ async function fixture() {
     },
   };
   const launch = async (kind: string) => (await h.hc.run({ argv: [], cwd: null, labels: { [HERDR_LABELS.kind]: kind, [HERDR_LABELS.session]: h.owner.sessionId, [HERDR_LABELS.ownerCore]: h.owner.terminal.coreId, [HERDR_LABELS.ownerTerminal]: h.owner.terminal.terminalId, 'spider.display-name': `Readable ${kind}` }, background: true, outliveParent: true, noNotify: true })).address;
-  const panes = createAuxiliaryPanes({ hc: h.hc, discardSubagentViewer: async (_id, _owner, viewer) => { await h.hc.kill(viewer); await h.hc.rm(viewer); }, app, limit: 1, clock: Date.now, subagentViewer: () => launch(HERDR_KINDS.subagentViewer), remoteObserver: async () => { if (!observer) throw new Error('No observer configured'); return observer(); } }); cleanup(() => panes.dispose());
+  const panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc: h.hc, discardSubagentViewer: async (_id, _owner, viewer) => { await h.hc.kill(viewer); await h.hc.rm(viewer); }, app, limit: 1, clock: Date.now, subagentViewer: () => launch(HERDR_KINDS.subagentViewer), remoteObserver: async () => { if (!observer) throw new Error('No observer configured'); return observer(); } }); cleanup(() => panes.dispose());
   return { ...h, app, panes, placements, ownerPlacement, commands, tabNames, launch, observer: (open: () => Promise<TerminalAddress>) => { observer = open; } };
 }
 

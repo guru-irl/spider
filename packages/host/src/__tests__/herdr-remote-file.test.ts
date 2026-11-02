@@ -85,7 +85,7 @@ test.each(['parent', 'child'] as const)('%s names an absolute remote file-read f
     const m = f.mounted(); await f.start(); expect(m.enabled()).toBe(true);
     const missing = await m.guard({ toolName: 'spider', input: { action: 'exec_file', language: 'shell', on: 'remote.invalid', path: join(f.cwd!, 'absent.txt') } });
     expect(missing?.block).toBe(true); expect(missing?.reason).toContain('absent.txt');
-    expect(missing?.reason).toMatch(/ENOENT|not.found|no such file|no file/i); expect(missing?.reason).not.toContain('SSH parser failed');
+    expect(missing?.reason).toContain("couldn't find the command file"); expect(missing?.reason).toContain('Check the path'); expect(missing?.reason).not.toContain('SSH parser failed');
   } finally { for (const m of mounts.splice(0)) await m.dispose(); vi.stubEnv('HOME', f.originalHome); await f.h.close(); }
 }, 60000);
 
@@ -109,7 +109,7 @@ for (const mode of ['fake', 'hc'] as const) for (const kind of ['parent', 'child
       expect(await m.guard({ toolName: 'spider', input: { ...input, path: destination } })).toBeUndefined();
       const missing = await m.guard({ toolName: 'spider', input: { ...input, path: 'absent.txt' } });
       expect(missing?.block).toBe(true); expect(missing?.reason).toContain('absent.txt');
-      expect(missing?.reason).toMatch(/ENOENT|not.found|no such file|no file/i); expect(missing?.reason).not.toContain('SSH parser failed');
+      expect(missing?.reason).toContain("couldn't find the command file"); expect(missing?.reason).toContain('Check the path'); expect(missing?.reason).not.toContain('SSH parser failed');
       await f.shutdown(); await f.start();
       expect(await m.guard({ toolName: 'spider', input })).toBeUndefined();
       await f.h.hc.fileWrite('remote.invalid' as never, destination, Buffer.from('ssh remote.invalid true'));

@@ -84,11 +84,11 @@ describe('runtime problems', () => {
   });
   test('notification failures and watch failures read as sentences', async () => {
     const output = await scene(`initView(panel,cx);await tasks[0];panel.unavailable('Feed watch','EMFILE',cx);panel.unavailable('Notification action','Owner unavailable',cx);
-      panel.unavailable('Shared approvals','No live approval endpoint',cx);console.log(JSON.stringify(seen(byId(panel.render(cx),'spider-problems'))));`);
+      panel.unavailable('Run view','Owner endpoint unavailable',cx);console.log(JSON.stringify(seen(byId(panel.render(cx),'spider-problems'))));`);
     expect(output.text).toEqual([
       "Spider can't watch for session changes. It rereads the feeds every 8 seconds instead.",
       "The notice's action didn't run. Its pi session isn't reachable.",
-      "Memory review didn't open. No live pi session can open it.",
+      "The run's output didn't open. Its pi session isn't reachable.",
     ]);
   });
   test('problems survive a feed reload for a minute; a broken watch stays until the watch works', async () => {

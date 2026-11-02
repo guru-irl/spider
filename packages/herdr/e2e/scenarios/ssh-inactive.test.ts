@@ -128,7 +128,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
       const refusal = await driver.toolResult('inactive-on', deadline(5_000));
       await suite.evidence('inactive-on.json', refusal);
       expect(refusal.isError).toBe(true);
-      expect(JSON.stringify(refusal.result)).toMatch(/herdr-disabled|herdr-unavailable/);
+      expect(JSON.stringify(refusal.result)).toMatch(/Herdr is off in this session|Herdr stopped responding/);
       expect(existsSync(effect)).toBe(false);
       expect(await transport.records()).toHaveLength(beforeRefusal);
       await suite.keepEvidence(join(suite.pi.observerDir, `${driver.pid}.jsonl`), 'inactive-pi-events.jsonl');

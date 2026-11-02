@@ -259,7 +259,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
         expect((await rpc.toolResult('ci-child', deadline(10_000))).isError).toBe(false);
         const child = await gates.ready('ci-child', deadline(60_000));
         const childEvents = await readObserved(suite.pi.observerDir, child.pid);
-        expect(childEvents.find(event => event.type === 'session_start')).toMatchObject({ mode: 'rpc', subagentChild: '1', hcTerminal: 'fixture-inherited' });
+        expect(childEvents.find(event => event.type === 'session_start')).toMatchObject({ mode: 'rpc', subagentChild: '1', hcTerminal: null });
         await suite.evidence('headless-child.json', childEvents);
         const completeAt = Date.now(); gates.release('ci-child');
         await rpc.waitEvent('message_end', e => e.at >= completeAt && e.customType === 'spider.subagent_done', deadline(60_000));

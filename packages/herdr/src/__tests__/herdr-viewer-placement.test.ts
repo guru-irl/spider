@@ -9,12 +9,12 @@ function fixture() {
   const ownerPlacement = { space: 'space', tab: 'owner-tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, ownerPlacement]]);
   const terminals = new Map<TerminalAddress, TerminalSummary>();
-  const commands: { name: string; args: Readonly<Record<string, unknown>> }[] = [];
-  let failure: 'pane' | 'tab' | 'park' | null = null, launches = 0;
+  const commands: { name: string; args: Readonly<Record<string, unknown>> }[] = [], reports: unknown[] = [];
+  let failure: 'pane' | 'tab' | 'park' | null = null, launches = 0, failCleanup = false;
   const failed = new HerdrError('pane-timeout', 'Placement acknowledgement timed out');
   const unplaced = () => new HerdrError('owner-unplaced', 'Terminal is parked');
   const app: AppClient = {
-    ownerPlacement: async address => { const placement = layout.get(address); if (!placement) throw unplaced(); return placement; },
+    tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => { const placement = layout.get(address); if (!placement) throw unplaced(); return placement; },
     awaitPane: async (viewer, placement) => {
       // A partial placement must also be parked when its acknowledgement fails.
       const placed = { ...placement, pane: `pane-${viewer}` as OwnerPlacement['pane'] }; layout.set(viewer, placed);
@@ -24,7 +24,7 @@ function fixture() {
     command: async (name, args) => {
       commands.push({ name, args });
       const viewer = args.terminal as TerminalAddress;
-      if (name === 'terminal.park') { if (failure === 'park') throw failed; layout.delete(viewer); }
+      if (name === 'terminal.park') { if (failCleanup) throw new HerdrError('app-disconnected', 'Slow app during cleanup'); if (failure === 'park') throw failed; layout.delete(viewer); }
       if (name === 'terminal.keep') {
         if (failure === 'tab') return { error: { code: failed.code, message: failed.message } };
         layout.set(viewer, { ...ownerPlacement, tab: `tab-${viewer}` as OwnerPlacement['tab'], pane: `pane-${viewer}` as OwnerPlacement['pane'] });
@@ -39,7 +39,7 @@ function fixture() {
     kill: async (address: TerminalAddress) => { terminals.get(address)!.state = 'finished'; },
     rm: async (address: TerminalAddress) => { terminals.delete(address); },
   } as unknown as HcClient;
-  const panes = createAuxiliaryPanes({ hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, limit: 1, clock: Date.now, subagentViewer: async id => {
+  const panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, limit: 1, clock: Date.now, reportError: error => reports.push(error), subagentViewer: async id => {
     const address = `viewer-${id}` as TerminalAddress;
     if (!terminals.has(address)) {
       launches++;
@@ -47,7 +47,7 @@ function fixture() {
     }
     return address;
   } });
-  return { owner, panes, layout, terminals, commands, failed, launches: () => launches, fail: (value: typeof failure) => { failure = value; } };
+  return { owner, panes, layout, terminals, commands, reports, failed, launches: () => launches, fail: (value: typeof failure) => { failure = value; }, failCleanup: () => { failCleanup = true; } };
 }
 const first = '10000000-0000-4000-8000-000000000001' as RunId;
 const second = '10000000-0000-4000-8000-000000000002' as RunId;
@@ -64,6 +64,15 @@ test.each([true, false])('a viewer survives parked when placement fails after la
     expect(await f.panes.acquire('subagent', first, f.owner, { automatic: false, timeoutMs: 100 })).toMatchObject({ viewer: address(first) });
     expect(f.launches()).toBe(1);
     expect(f.commands).toContainEqual({ name: 'pane.focus', args: { terminal: address(first) } });
+  } finally { await f.panes.dispose(); }
+});
+
+test('automatic pane cleanup failures do not produce user warnings', async () => {
+  const f = fixture(); f.fail('pane'); f.failCleanup();
+  try {
+    await expect(f.panes.acquire('subagent', first, f.owner, { automatic: true, timeoutMs: 100 })).rejects.toBe(f.failed);
+    expect(f.terminals.get(address(first))?.state).toBe('live');
+    expect(f.reports).toEqual([]);
   } finally { await f.panes.dispose(); }
 });
 

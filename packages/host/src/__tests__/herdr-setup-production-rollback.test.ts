@@ -56,7 +56,7 @@ test('doctor reports mod loading not verified with fenced headless commands', as
   for (const item of ['mods', 'clones'] as const) {
     const report = await parts.inspect(item, f.request);
     expect(report.failures).toEqual([]);
-    expect(report.warnings?.length).toBe(item === 'mods' ? 1 : 4);
+    expect(report.warnings?.length).toBe(item === 'mods' ? 1 : 5);
     for (const warning of report.warnings ?? []) {
       expect(warning.message).toContain('not verified');
       expect(warning.code).toBe('inspection-unavailable');
@@ -87,7 +87,7 @@ choices = [
 test('production setup stages every relative import target in every installed mod', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts);
   const missing: string[] = [];
-  for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'panel']) {
+  for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) {
     const files = await installedModFiles(join(f.h.directories.app, 'mods', `spider-${mod}`));
     for (const file of files.filter(file => file.endsWith('.js'))) {
       const source = await readFile(file, 'utf8');

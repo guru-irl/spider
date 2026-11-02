@@ -241,7 +241,18 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	return { args, env, tempDir };
 }
 
+export interface SupervisorLaunch {
+  entry?: string;
+  hcBinary?: string;
+  directory: string;
+  dbPath: string;
+  runId: string;
+  sessionId: string;
+}
+
 export interface ChildSpawnSpec {
+  /** Local supervisor owns stdio and persists the outcome independently of the parent. */
+  supervisor?: SupervisorLaunch;
 	argv: string[];
 	env: Record<string, string>;
 	cwd: string;

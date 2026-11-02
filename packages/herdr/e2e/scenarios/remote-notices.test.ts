@@ -8,8 +8,9 @@ import { stagePayload, readDestination, writeDestination, removeDestination } fr
 import { runtimePid, registerDestinationProcess, destinationProcessAlive, signalDestinationProcess } from '../fixtures/payloads/processes.js';
 import { stageFault, payloadTransport } from '../fixtures/payloads/transport.js';
 import { join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { proveCrashDelivery } from '../fixtures/payloads/crash-notice.js';
-import { remoteStory, begin, call, result, settled, exactResult, detached, snapshot, persistedLogs, oneNotice, notices, noticeCount, reload, deadline, waitFor } from '../fixtures/payloads/story.js';
+import { remoteStory, begin, call, result, settled, exactResult, detached, snapshot, persistedLogs, oneNotice, notices, noticeCount, reload, deadline, waitFor, rawDetails } from '../fixtures/payloads/story.js';
 
 export const scenarios: readonly ScenarioDefinition[] = [
   {
@@ -21,6 +22,9 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await held.ready(deadline(30000));
       assert.equal(await held.effect(), null);
       assert.ok(!(await s.driver.events()).some(e => e.type === 'tool_execution_end' && e.toolCallId === 'background-wait'), 'no timeout means the tool still waits');
+      await s.driver.prompt('Please keep waiting for the command.');
+      await waitFor('queued user steer', async () => stripVTControlCharacters((await s.driver.rawOutput()).toString()), text => text.includes('Steering: Please keep waiting for the command.'), deadline(15000));
+      assert.ok(!(await s.driver.events()).some(e => e.type === 'tool_execution_end' && e.toolCallId === 'background-wait'), 'a user steer must not abort the running tool');
       await held.release(); const foreground = await result(s, 'background-wait'); await settled(s.driver, at);
       exactResult(foreground, 'capture-start\ncapture-finish\n', 'capture-error\n', 29);
       expect(() => detached(foreground)).toThrow();
@@ -37,7 +41,27 @@ export const scenarios: readonly ScenarioDefinition[] = [
       assert.ok(logs.stdout.length > saved.length); assert.equal(logs.stdout.toString(), 'before-detach\nafter-detach\n'); assert.equal(logs.stderr.toString(), 'detached-error\n');
       assert.equal(logs.receipt.exitCode, 29); assert.equal(notice.details.exitCode, 29); assert.equal(notice.details.machine, s.machine);
       assert.equal(notice.details.address, value.remote!.address); assert.equal(notice.details.complete, true);
-      assert.equal(await p.effect(), 'detach\n'); await snapshot(s, 'background');
+      assert.ok(String(notice.content).includes('after-detach'));
+      assert.ok(String(notice.content).includes('detached-error'));
+      assert.ok(String(notice.content).includes(handle.dir));
+      assert.equal(await p.effect(), 'detach\n');
+      const stopped = await stagePayload(suite, { id: 'kill-detached', beforeStdout: 'kill-ready\n', stdout: 'must-not-finish\n' });
+      at = await begin(s, 'kill-detached', [{ id: 'kill-detached', args: { action: 'exec', on: s.machine, language: 'shell', code: stopped.code, background: true, timeout: 4000 } }]);
+      const ready = await stopped.ready(deadline(30000));
+      const identity = await registerDestinationProcess(suite, ready.pid, 'kill-payload', true);
+      const stoppedJob = await result(s, 'kill-detached'); detached(stoppedJob); await settled(s.driver, at);
+      const killAt = await begin(s, 'kill-by-prefix', [{ id: 'kill-by-prefix', args: { action: 'kill', id: stoppedJob.remote!.jobId.slice(0, 8) } }]);
+      const killEvent = await s.driver.toolResult('kill-by-prefix', deadline(60000));
+      assert.equal(killEvent.isError, false);
+      assert.equal((rawDetails(killEvent) as { job: { jobId: string } }).job.jobId, stoppedJob.remote!.jobId);
+      await settled(s.driver, killAt);
+      const stoppedNotice = await oneNotice(s, stoppedJob.remote!.jobId);
+      assert.equal(stoppedNotice.details.reason, 'cancelled');
+      const stoppedLogs = await persistedLogs(s, stoppedJob);
+      assert.equal(stoppedLogs.receipt.outcome, 'cancelled');
+      await waitFor('killed payload no longer exists', () => destinationProcessAlive(suite, identity), alive => !alive, deadline(20000));
+      assert.equal(await stopped.effect(), null);
+      await snapshot(s, 'background');
     },
   },
   {

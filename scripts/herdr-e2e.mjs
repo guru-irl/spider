@@ -137,7 +137,7 @@ function ownedDirectory(checkout, candidate) {
   if (realpathSync(candidate) !== candidate || lstatSync(candidate).uid !== process.getuid?.()) throw new Error('unowned runner root');
 }
 export function storyWorkerEnvironment(fenced, caller, tier) {
-  return tier === 'remote' && caller.SSH_AUTH_SOCK ? { ...fenced, SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : { ...fenced };
+  return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}), ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}) };
 }
 export function storyTimeoutMs(id) {
   // S08 compares two fresh thirteen-session installations, not one cutover.
@@ -165,7 +165,7 @@ export async function packEntryDigests(checkout, root, pack) {
   if (result.code !== 0) throw new Error('pack failed');
   // npm 10 may rebuild dist during pack even with --ignore-scripts. Snapshot
   // the checkout as packed, including the new build id, not its pre-pack state.
-  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/remote-runtime.mjs'];
+  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs'];
   const digests = Object.fromEntries(entries.map(entry => [entry, createHash('sha256').update(readFileSync(path.join(checkout, 'dist', entry))).digest('hex')]));
   writeFileSync(path.join(root, 'entries.json'), JSON.stringify(digests, null, 2));
   return { entries, digests };
@@ -185,6 +185,7 @@ export async function main(argv = process.argv.slice(2)) {
   Object.assign(env, { TMPDIR: path.join(root, 'tmp'), SPIDER_HERDR_E2E_RUN_ROOT: root, SPIDER_HERDR_E2E_OPTIONS: JSON.stringify(options), SPIDER_TEST_FIXTURE_CHECKOUT: checkout, npm_config_cache: path.join(root, 'npm-cache'), npm_config_logs_dir: path.join(root, 'npm-logs') });
   if (options.tier === 'app') Object.assign(env, { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: options.displayUuid });
   if (options.tier === 'remote') env.SPIDER_HERDR_REAL_MACHINE = options.machine;
+  if (process.env.SPIDER_HERDR_E2E_HC) env.SPIDER_HERDR_E2E_HC = process.env.SPIDER_HERDR_E2E_HC;
   writeFileSync(path.join(root, 'invocation.json'), JSON.stringify({ version: 1, options, startedAt: started }, null, 2));
   let selected = options.ids;
   let exit = 1;

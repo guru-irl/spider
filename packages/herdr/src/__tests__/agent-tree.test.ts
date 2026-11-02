@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test } from 'vitest';
-import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentFilterOptions, createAgentFilters } from '../../assets/agents/children.js';
+import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
 import type { RunId, SessionFeed } from '../contracts.js';
 import type { AgentTerminal } from '../../assets/agents/children.js';
@@ -47,9 +47,9 @@ test('session and run consoles own only the same agent and machine jobs', () => 
   expect(r.find(row => row.key === 'other-machine')).toMatchObject({ parentKey: 'run', depth: 1 });
   expect(r.find(row => row.key === 'console:remote.invalid/child-console')).toMatchObject({ kind: 'console', parentKey: 'run', depth: 1, name: 'Builder · remote.invalid',
     action: { kind: 'ipc', request: { op: 'openJob', jobId: 'console:remote.invalid/child-console' } } });
-  const visible = selectAgentChildren(r, { machine: null, agent: null }, []);
+  const visible = selectAgentChildren(r, []);
   expect(visible.some(row => row.key === 'main-job' || row.key === 'child-job')).toBe(false);
-  expect(selectAgentChildren(r, { machine: null, agent: null }, ['console:remote.invalid/child-console']).some(row => row.key === 'child-job')).toBe(true);
+  expect(selectAgentChildren(r, ['console:remote.invalid/child-console']).some(row => row.key === 'child-job')).toBe(true);
 });
 
 test('finished jobs disappear from the sidebar while their machine console keeps history', () => {
@@ -57,23 +57,21 @@ test('finished jobs disappear from the sidebar while their machine console keeps
   expect(rows([done, consoleTerminal('console')]).map(row => row.key)).toEqual(['console:remote.invalid/console', 'run']);
 });
 
-test('machine and agent filters retain matching descendants and their named ancestors', () => {
+test('expanding one console keeps other agents and consoles visible', () => {
   const r = rows([job('child-job', { 'spider.run': 'run' }), job('main-job'), consoleTerminal('child-console', { 'spider.run': 'run' }), consoleTerminal('main-console')]);
-  expect(selectAgentChildren(r, { machine: 'remote.invalid', agent: 'run:run' }, ['console:remote.invalid/child-console']).map(row => row.key)).toEqual(['run', 'console:remote.invalid/child-console', 'child-job']);
-  expect(selectAgentChildren(r, { machine: 'missing.invalid', agent: null }, []).map(row => row.key)).toEqual([]);
-  expect(agentFilterOptions([job('child-job'), consoleTerminal('main-console')], [feed()], contract)).toEqual({ machines: [{ id: 'remote.invalid', label: 'remote.invalid' }], agents: [{ id: 'run:run', label: 'Builder' }, { id: 'session:session', label: 'Main agent' }] });
+  const visible = selectAgentChildren(r, ['console:remote.invalid/child-console']).map(row => row.key);
+  expect(visible).toContain('run');
+  expect(visible).toContain('console:remote.invalid/child-console');
+  expect(visible).toContain('child-job');
+  expect(visible).toContain('console:remote.invalid/main-console');
+  expect(visible).not.toContain('main-job');
 });
 
-test('filters persist separately for each installed mod copy and reject corrupt stored values', () => {
-  const storage = new Map<string, unknown>();
-  const ports = { read: (key: string) => storage.get(key), write: (key: string, value: unknown) => { storage.set(key, value); } };
-  const a = createAgentFilters('agents-a', ports), b = createAgentFilters('agents-b', ports);
-  a.set({ machine: 'remote.invalid', agent: 'run:run' });
-  expect(createAgentFilters('agents-a', ports).get()).toEqual({ machine: 'remote.invalid', agent: 'run:run' });
-  expect(b.get()).toEqual({ machine: null, agent: null });
-  expect(() => createAgentFilters('../agents', ports)).toThrow('modId');
-  for (const key of storage.keys()) storage.set(key, { machine: {}, agent: 7 });
-  expect(createAgentFilters('agents-a', ports).get()).toEqual({ machine: null, agent: null });
+test('expanding both consoles reveals both jobs and preserves their ancestors', () => {
+  const r = rows([job('child-job', { 'spider.run': 'run' }), job('main-job'), consoleTerminal('child-console', { 'spider.run': 'run' }), consoleTerminal('main-console')]);
+  const visible = selectAgentChildren(r, ['console:remote.invalid/child-console', 'console:remote.invalid/main-console']);
+  expect(visible).toEqual(r);
+  expect(visible.map(row => row.key)).toEqual(expect.arrayContaining(['run', 'child-job', 'main-job', 'console:remote.invalid/child-console', 'console:remote.invalid/main-console']));
 });
 
 async function realLabelScenario(mode: 'fake' | 'hc') {

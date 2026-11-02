@@ -72,6 +72,7 @@ export function appId(value: unknown): string {
   return value;
 }
 const nullableString = (v: unknown): boolean => v === null || typeof v === 'string';
+const nativeStatuses = new Set(['working', 'blocked', 'done', 'idle']);
 function parseWorld(reply: Record<string, unknown>): void {
   if (!Array.isArray(reply.spaces) || !Array.isArray(reply.recent)) invalid();
   const ids = new Set<string>();
@@ -87,7 +88,7 @@ function parseWorld(reply: Record<string, unknown>): void {
         const p = appObject(raw); unique(p.pane); const address = appId(p.terminal);
         if (addresses.has(address)) invalid(); addresses.add(address);
         if (!nullableString(p.app) || !nullableString(p.name) || !Array.isArray(p.sub_agents) || p.sub_agents.some(v => typeof v !== 'string')) invalid();
-        if (p.status !== null && typeof p.status !== 'object') invalid();
+        if (p.status !== null && typeof p.status !== 'object' && !(typeof p.status === 'string' && nativeStatuses.has(p.status))) invalid();
       }
     }
   }
@@ -102,7 +103,8 @@ export function parseAppReply(name: string, args: Record<string, unknown>, value
   if (name === 'status') {
     appId(r.layout);
     for (const key of ['space', 'tab', 'focused_pane', 'agent']) if (!nullableString(r[key])) invalid();
-    if (!Array.isArray(r.errors) || r.errors.some(v => typeof v !== 'string') || !Array.isArray(r.overlays) || !Array.isArray(r.floats)) invalid();
+    if (!Array.isArray(r.errors) || r.errors.some(v => typeof v !== 'string') || !Array.isArray(r.overlays)) invalid();
+    if (!Array.isArray(r.floats)) appObject(r.floats);
     return r;
   }
   if (name === 'space.new' || name === 'tab.new') {

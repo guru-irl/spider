@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { readFile, writeFile, mkdir, appendFile, stat } from 'node:fs/promises';
-import { watch, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { watch, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { HERDR_LABELS, HERDR_KINDS, type SessionFeed, type RunSummary, type TerminalAddress } from '../../src/contracts.js';
@@ -248,7 +248,7 @@ export async function mountPanel(f: PanelFixture, modId: string, syntheticProc =
     await refresh();
     const nativeRun = createNativeRun((name, args) => f.app.command(name, args), refresh), actions = nativeRun.calls;
     const makeHost = (viewProps: Record<string, unknown>) => createRenderHost({ installedDirectory: s.ownPath(directory), props: viewProps,
-        storage: { getItem: key => { const value = readState(`local:${modId}:${key}`); return typeof value === 'string' ? value : null; }, setItem: (key, value) => writeState(`local:${modId}:${key}`, value) }, api: {
+        storage: { getItem: key => { const value = readState(`local:${modId}:${key}`); return typeof value === 'string' ? value : null; }, setItem: (key, value) => writeState(`local:${modId}:${key}`, value), removeItem: key => rmSync(statePath(`local:${modId}:${key}`), { force: true }) }, api: {
             exec: async (binary: string, argv: string[]) => {
                 const result = await s.invoke(binary, argv, f.suite.env);
                 commands.push({ binary, argv: [...argv], exitCode: result.exitCode });
@@ -281,6 +281,7 @@ export async function mountPanel(f: PanelFixture, modId: string, syntheticProc =
                     throw new HarnessError('unowned-overlay', 'only this installed sidebar popup is supported');
                 if (overlay)
                     throw new HarnessError('overlay-already-open', 'close the owned popup first');
+                await s.evidence(`${modId}-popup-props.json`, spec);
                 overlay = await makeHost({ ...viewProps, ...spec.props, overlay: 'owned-popup' });
                 return 'owned-popup';
             },
@@ -346,7 +347,7 @@ export async function mountPanel(f: PanelFixture, modId: string, syntheticProc =
         } });
     rootHost = await makeHost(props);
     const active = () => overlay ?? rootHost!;
-    const host: RenderHost = { invalidate: () => active().invalidate(), uiSnapshot: () => active().uiSnapshot(), activate: id => active().activate(id), key:(id,key)=>active().key(id,key), waitForUi: (d, p, t) => active().waitForUi(d, p, t), close: async () => {
+    const host: RenderHost = { invalidate: () => active().invalidate(), uiSnapshot: () => active().uiSnapshot(), activate: id => active().activate(id), mouse: (id, button) => active().mouse(id, button), key:(id,key)=>active().key(id,key), waitForUi: (d, p, t) => active().waitForUi(d, p, t), close: async () => {
             if (closed)
                 return;
             closed = true;

@@ -27,6 +27,7 @@ export interface TerminalSummary {
   address: TerminalAddress; parent: TerminalAddress | null; labels: Readonly<Record<string, string>>;
   state: 'live' | 'finished'; status: ProgramStatus | null; exitCode: number | null;
   reason: string | null; signal: number | null; finishedAt: number | null;
+  notify?: boolean;
 }
 export interface TerminalHandle { address: TerminalAddress; coreId: CoreId }
 export interface HcRunRequest {
@@ -86,7 +87,9 @@ export type AppReply = { space?: SpaceId; tab?: TabId; pane?: PaneId; terminal?:
   | { error: { code: string; message: string }; space?: never; tab?: never; pane?: never; terminal?: never };
 export interface OwnerPlacement { space: SpaceId; tab: TabId; pane: PaneId }
 export interface AppClient {
+	tabTerminals(placement: Pick<OwnerPlacement, 'space' | 'tab'>): Promise<readonly TerminalAddress[]>;
 	ownerPlacement(address: TerminalAddress): Promise<OwnerPlacement>;
+	tabSpace?(tab: TabId): Promise<SpaceId | null>;
 	awaitPane(viewer: TerminalAddress, owner: OwnerPlacement,
 		options: { signal?: AbortSignal; timeoutMs: number }): Promise<PaneId>;
 	command(name: string, args: Readonly<Record<string, unknown>>): Promise<AppReply>;
@@ -127,8 +130,26 @@ export interface RemoteExecuteRequest {
 	signal?: AbortSignal;
 	onData?: (chunk: string) => void;
 }
+export interface RemoteCopyRequest {
+	on: MachineName;
+	owner: Owner;
+	direction: 'to' | 'from';
+	local: string;
+	remote: string;
+	signal?: AbortSignal;
+}
+export interface RemoteCopyResult {
+	direction: 'to' | 'from';
+	machine: MachineName;
+	source: string;
+	destination: string;
+	bytes: number;
+	mode: number;
+	sha256: string;
+}
 export interface RemoteExecutionPort {
 	execute(request: RemoteExecuteRequest): Promise<RemoteResult>;
+	copy?(request: RemoteCopyRequest): Promise<RemoteCopyResult>;
 }
 export interface RemoteResult {
 	evidenceConflict?: boolean;
@@ -146,6 +167,7 @@ export interface RemoteResult {
 	};
 	backgroundLogs?: { stdout: string; stderr: string };
 	aborted?: boolean;
+	remoteAbortInfo?: string;
 	retained?: boolean;
 	retainedReason?: string;
 	remote: { jobId: JobId; machine: MachineName; address: TerminalAddress | null };
@@ -236,7 +258,9 @@ export type HerdrViews = Readonly<Record<ViewName,
 export interface HerdrConfig {
   enabled: 'auto' | boolean; app: { binary: string; home: string }; core: { binary: string; config: string };
   agentDirectory: string; globalRoot: string; shellRc: string;
-  spaces: { name: string; sessions: ({ file: string } | { name: string; sessionId?: string })[] }[];
+  layout?: 'panes' | 'tabs';
+  automaticSubagentPanes?: boolean;
+  spaces: { name: string; layout?: 'panes' | 'tabs'; sessions: ({ file: string } | { name: string; sessionId?: string })[] }[];
   machines: { name: MachineName; aliases: string[]; runtime: MachineRuntime; nodePath?: string }[];
   fonts?: { body?: { path: string; license: string }; label?: { path: string; license: string }; paths?: { path: string; license: string } };
   limits: { auxiliaryPanes: number; completedRows: number; completedHours: number };
@@ -289,10 +313,16 @@ export interface TranscriptPage {
   text: string;
   events: RunViewEvent[];
 }
+/** The run-view protocol this build speaks. Viewers request it; owners answer with the version they serve. */
+export const RUN_VIEW_PROTOCOL = 2;
+/** Present on snapshots only for a viewer that requested a protocol. */
+export interface RunViewInfo { protocol: number; sessionFile?: string | null; model?: string | null; thinking?: string | null; contextWindow?: number | null }
 /** Stream frames are at most 256 KiB; overflow ends a subscription for cursor-based reconnect. */
 export type RunViewFrame =
-  | { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: RunSummary } }
+  | { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: RunSummary; view?: RunViewInfo } }
   | { runId: RunId; cursor: RunCursor; kind: 'event'; data: TranscriptPage }
+  /** A child's live pi event (streamed text, tool starts and ends). Sent only to protocol 2 viewers. */
+  | { runId: RunId; cursor: RunCursor; kind: 'live'; data: { event: { type: string } & Record<string, unknown> } }
   | { runId: RunId; cursor: RunCursor; kind: 'gap'; data: { reason: string } }
   | { runId: RunId; cursor: RunCursor; kind: 'end'; data: {
       reason: 'finished' | 'disposed' | 'wrong-generation' | 'overflow' | 'run-not-owned';
@@ -310,15 +340,22 @@ export type SteerReply = SteerReplyDetails & (
   | { delivery: 'no reply yet, delivery unknown'; accepted: false; delivered: false }
   | { delivery: 'refused'; accepted: false; delivered: false }
 );
+export type IpcMoveDestination = { kind: 'new' } | { kind: 'hide' } | { kind: 'tab'; tab: TabId };
 /** Every IPC request is generation-bound, and steer text is at most 16 KiB of UTF-8. */
 export type SessionIpcRequest =
   | { op: 'ping'; generation: Generation }
   | { op: 'openView'; view: ViewName; generation: Generation }
   | { op: 'openRun'; runId: RunId; generation: Generation }
+  | { op: 'killRun'; runId: RunId; generation: Generation }
+  | { op: 'killSession'; generation: Generation }
+  | { op: 'moveRun'; runId: RunId; destination: IpcMoveDestination; generation: Generation }
+  | { op: 'moveSession'; destination: Exclude<IpcMoveDestination, { kind: 'hide' }>; generation: Generation }
   /** The owning session acquires the job's local observer with AuxiliaryPanes.acquire('remote', jobId, owner, options). */
   | { op: 'openJob'; jobId: JobId; generation: Generation }
+  | { op: 'killJob'; jobId: JobId; generation: Generation }
+  | { op: 'moveJob'; jobId: JobId; viewer: TerminalAddress; destination: Exclude<IpcMoveDestination, { kind: 'hide' }>; generation: Generation }
   | { op: 'steerRun'; runId: RunId; text: string; generation: Generation }
-  | { op: 'subscribeRun'; runId: RunId; cursor: RunCursor | null; generation: Generation };
+  | { op: 'subscribeRun'; runId: RunId; cursor: RunCursor | null; generation: Generation; view?: number };
 /** The first Unix-socket JSON line carries a 64-hex-character capability and is at most 256 KiB. */
 export interface SessionIpcEnvelope { v: 1; capability: string; request: SessionIpcRequest }
 /** Stable IPC failures let callers distinguish authentication, lifecycle, bounds, and action refusal. */
@@ -330,8 +367,14 @@ export type SteerRefusal = 'queued' | 'paused' | 'print-mode' | 'slash-prefixed'
 export type SessionIpcReply =
   | { ok: true; op: 'ping'; status: { native: ProgramState | null; effective: ProgramState | null } }
   | { ok: true; op: 'openView' }
+  | { ok: true; op: 'killRun' }
+  | { ok: true; op: 'killSession' }
+  | { ok: true; op: 'moveSession' }
+  | { ok: true; op: 'moveRun'; viewer: TerminalAddress | null }
+  | { ok: true; op: 'moveJob'; viewer: TerminalAddress | null }
   | { ok: true; op: 'openRun'; viewer: TerminalAddress }
   | { ok: true; op: 'openJob'; viewer: TerminalAddress }
+  | { ok: true; op: 'killJob'; jobId: JobId }
   | { ok: true; op: 'steerRun'; acknowledgement: SteerReply }
   | { ok: false; code: Exclude<IpcErrorCode, 'refused'>; message: string; reason?: never }
   | { ok: false; code: 'refused'; message: string; reason?: SteerRefusal };

@@ -12,12 +12,12 @@ import { RunStore } from '../../../subagents/src/run-store.js';
 import { addTodo } from '../../../todo/src/store.js';
 import { stageWrite } from '../../../memory/src/staging.js';
 import { SessionScheduler } from '../../../host/src/loop/index.js';
-import { createHerdrDataSource, budgetNotifications, type HostDataSourceOptions } from '../../../host/src/herdr/data-source.js';
+import { createHerdrDataSource, type HostDataSourceOptions } from '../../../host/src/herdr/data-source.js';
 import { openSessionRunDb } from '../../../host/src/session-run-db.js';
 import { registerProject } from '@spider/db-core';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { atomicPrivateWrite } from '../feed/publisher.js';
-import type { Owner, PaceSummary, SessionFeed } from '../contracts.js';
+import type { Owner, SessionFeed } from '../contracts.js';
 const root = resolve('.spider/scratch/h/ds');
 const owner: Owner = { sessionId: 'session-a' as Owner['sessionId'], generation: 'generation-a' as Owner['generation'], terminal: { coreId: 'core-a' as Owner['terminal']['coreId'], terminalId: 't1' as Owner['terminal']['terminalId'], address: 't1' as Owner['terminal']['address'], socket: join(root, 'core.sock'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: null };
 let db: Db; let globalDb: Db; let repoDb: Db; let scheduler: SessionScheduler; let options: HostDataSourceOptions; let ownedRunId: string; let globalApprovalId: string;
@@ -41,7 +41,7 @@ beforeEach(async () => {
   options = {
     resolveRunDb: o => openSessionRunDb(o.cwd, o.sessionId, { projectKey: 'bound-fixture', realPath: root, dbPath }),
     openApprovalDbs: () => ({ global: openDb(globalPath), repo: { db: openDb(repoPath), repoKey: 'fixture-repository' } }),
-    runEvents: bus, scheduler, readJobJournal: async () => [],
+    runEvents: bus, scheduler,
     readUsage: async () => ({ snapshots: [{ ts: now, creditsUsed: 80, resetDate: '2026-02-01', accountLogin: 'fixture', raw: {} }], budget: 100, correctedMonth: null, correctedWindow: null, updatedAt: now }),
     readConfig: () => ({ limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 } }), clock: () => Date.now(),
   };
@@ -53,7 +53,6 @@ it('closes the last snapshot with its next revision and no further live reads', 
     const live = await source.snapshot(owner);
     options.resolveRunDb = () => { throw new Error('No reads during closure'); };
     options.readOwnerFacts = async () => { throw new Error('No layout calls during closure'); };
-    options.readJobJournal = async () => { throw new Error('No journal reads during closure'); };
     await vi.advanceTimersByTimeAsync(2000);
     const closed = await source.snapshot(owner, 'closed');
     expect(closed).toMatchObject({ lifecycle: 'closed', ipc: null, sessionId: owner.sessionId, generation: owner.generation, revision: live.revision + 1, updatedAt: now + 2000 });
@@ -119,7 +118,7 @@ it('keeps missing usage and null budgets unavailable rather than guessing zero',
   try { expect((await source.snapshot(owner)).pace).toMatchObject({ scope: 'shared', used: null, budget: null, projected: null, remaining: null, updatedAt: null, unavailableReason: 'usage-counter-unavailable' }); }
   finally { source.dispose(); }
 });
-it('produces owned run and job notices and shared period thresholds', async () => {
+it('publishes result and pace facts without duplicate notices', async () => {
   const store = new RunStore(db);
   emitEscalation(db, { runId: ownedRunId, sessionId: owner.sessionId, severity: 'warning', summary: 'Need a smaller case' });
   emitEscalation(db, { runId: ownedRunId, sessionId: owner.sessionId, severity: 'warning', summary: 'Need a smaller case' });
@@ -129,34 +128,38 @@ it('produces owned run and job notices and shared period thresholds', async () =
   const journal = join(root, 'jobs.json');
   const job = { version: 1, id: 'job-a', owner, machine: 'fixture-machine.invalid', kind: 'exec', phase: { kind: 'finished', address: 'remote.invalid/t1', result: { exitCode: 23, reason: 'exited', signal: null, finishedAt: now } }, viewer: null, remoteDirectory: '/fixture/job', localDirectory: root, detached: true, noticeMode: 'async', notice: 'pending' };
   await atomicPrivateWrite(journal, JSON.stringify([job, { ...job, id: 'foreign-job', owner: { ...owner, sessionId: 'foreign-session' } }]));
-  options.readJobJournal = async () => JSON.parse(await readFile(journal, 'utf8'));
   const source = createHerdrDataSource(options);
   try {
     const feed = await source.snapshot(owner);
-    expect(feed.notifications.filter(n => n.kind === 'escalation')).toMatchObject([{ sessionId: owner.sessionId, ownerAddress: owner.terminal.address }]);
-    expect(feed.notifications.find(n => n.kind === 'escalation')?.id).toContain(ownedRunId);
-    expect(feed.notifications.find(n => n.kind === 'subagent-result')?.id).toContain(ownedRunId);
-    expect(feed.notifications.find(n => n.kind === 'job-result')?.id).toContain('job-a');
+    expect(feed.notifications.filter(n => n.kind === 'escalation')).toEqual([]);
+    expect(feed.notifications.filter(n => n.kind === 'subagent-result')).toEqual([]);
+    expect(feed.runs.rows.find(row => row.id === ownedRunId)?.result).toBe('finished output');
+    expect(feed.notifications.find(n => n.kind === 'job-result')).toBeUndefined();
     expect(feed.notifications.some(n => n.id.includes('foreign-job'))).toBe(false);
-    const budget = feed.notifications.find(n => n.kind === 'budget');
-    expect(budget).toMatchObject({ id: `budget:${Date.UTC(2026, 0, 1)}:80`, kind: 'budget', scope: 'shared', sessionId: null, ownerAddress: null, action: { kind: 'open-usage' } });
-    expect((await source.snapshot({ ...owner, sessionId: 'second-session' as Owner['sessionId'] })).notifications.find(n => n.kind === 'budget')?.id).toBe(budget?.id);
+    expect(feed.notifications.filter(n => n.kind === 'budget')).toEqual([]);
+    expect((await source.snapshot({ ...owner, sessionId: 'second-session' as Owner['sessionId'] })).notifications).toEqual([]);
     expect((await source.snapshot(owner)).notifications.map(n => n.id)).toEqual(feed.notifications.map(n => n.id));
   } finally { source.dispose(); }
 });
-it('budget IDs are period-plus-threshold, with null budgets and projections producing no warning', () => {
-  const pace: PaceSummary = { scope: 'shared', used: 80, budget: 100, projected: null, remaining: 20, periodStart: 1000, periodEnd: 2000, updatedAt: 1500, unavailableReason: null };
-  expect(budgetNotifications(pace)).toMatchObject([{ id: 'budget:1000:80', scope: 'shared', sessionId: null, ownerAddress: null, action: { kind: 'open-usage' } }]);
-  expect(budgetNotifications({ ...pace, used: 100, projected: 101 }).map(n => n.id)).toEqual(['budget:1000:80', 'budget:1000:100', 'budget:1000:projected']);
-  expect(budgetNotifications({ ...pace, budget: null })).toEqual([]);
-  expect(budgetNotifications({ ...pace, used: null, projected: null })).toEqual([]);
-  expect(budgetNotifications({ ...pace, periodStart: 3000 }).map(n => n.id)).toEqual(['budget:3000:80']);
+it('keeps thresholds in pace data without publishing budget notices', async () => {
+  for (const [used, budget, resetDate] of [[80, 100, '2026-02-01'], [100, 100, '2026-02-01'], [120, undefined, '2026-02-01'], [null, 100, '2026-02-01'], [80, 100, '2026-03-01']] as const) {
+    vi.setSystemTime(resetDate === '2026-03-01' ? Date.UTC(2026, 1, 15) : now);
+    options.readUsage = async () => ({ snapshots: used === null ? [] : [{ ts: Date.now(), creditsUsed: used, resetDate, accountLogin: 'fixture', raw: {} }], budget, correctedMonth: null, correctedWindow: null, updatedAt: Date.now() });
+    const source = createHerdrDataSource(options);
+    try {
+      const feed = await source.snapshot(owner);
+      expect(feed.notifications.filter(n => n.kind === 'budget')).toEqual([]);
+      expect(feed.pace.used).toBe(used);
+      expect(feed.pace.budget).toBe(budget ?? null);
+      expect(feed.pace.scope).toBe('shared');
+      expect(feed.pace.periodEnd).toBeGreaterThan(now);
+    } finally { source.dispose(); }
+  }
 });
-it('keeps the live feed available when optional journal and layout sources fail', async () => {
-  options.readJobJournal = async () => { throw new Error('journal unavailable'); };
+it('keeps the live feed available without reading job notices when the layout source fails', async () => {
   options.readOwnerFacts = async () => { throw new Error('layout unavailable'); };
   const source = createHerdrDataSource(options);
-  try { const feed = await source.snapshot(owner); expect(feed.runs.rows[0].id).toBe(ownedRunId); expect(feed.placement).toBeNull(); expect(feed.errors.map(error => error.source)).toEqual(['placement', 'jobs']); }
+  try { const feed = await source.snapshot(owner); expect(feed.runs.rows[0].id).toBe(ownedRunId); expect(feed.placement).toBeNull(); expect(feed.errors.map(error => error.source)).toEqual(['placement']); }
   finally { source.dispose(); }
 });
 it('only publishes committed owned events and refreshes observed placement without changing terminal identity', async () => {
@@ -171,7 +174,7 @@ it('only publishes committed owned events and refreshes observed placement witho
     placement = { spaceId: 'space-b' as NonNullable<SessionFeed['placement']>['spaceId'], spaceName: null, spaceOrder: null, tabId: null };
     const second = await source.snapshot(owner);
     expect(second.owner.terminal).toEqual(first.owner.terminal); expect(second.placement).toEqual(placement);
-    expect(second.notifications.filter(n => n.kind === 'escalation').map(n => n.body)).toEqual(['committed']);
+    expect(second.notifications.filter(n => n.kind === 'escalation')).toEqual([]);
   } finally { source.dispose(); }
 });
 it('keeps a truthful total when retained completion rows exceed the configured display limit', async () => {

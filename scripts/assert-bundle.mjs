@@ -127,11 +127,11 @@ if (leaks.length) {
   process.exit(1);
 }
 try {
-  const entries = ['cli.mjs', 'remote-runtime.mjs', 'viewer.mjs'];
+  const entries = ['cli.mjs', 'feed-reader.mjs', 'remote-runtime.mjs', 'subagent-supervisor.mjs', 'viewer-pi.mjs', 'viewer.mjs'];
   if (!lstatSync('dist/herdr').isDirectory() || readdirSync('dist/herdr').sort().join() !== entries.join()) throw new Error('Herdr entries missing or unexpected runtime chunk');
   const assets = [
-    'agents/children.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'tabs/spider.svg', 'shared/feed.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
-    'mods/spider/data.js', 'mods/spider/main.js', 'mods/spider/mod.json', 'mods/spider/notifications.js',
+    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'tabs/spider.svg', 'shared/feed.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
+    'mods/spider/data.js', 'mods/spider/main.js', 'mods/spider/mod.json',
     'themes/dracula-plus-glass.json', 'themes/spider-glass.json', 'keys.json',
     'fonts/GlassLabel-Bold.ttf', 'fonts/GoogleSansFlex.ttf', 'fonts/GoogleSansFlex-OFL.txt', 'fonts/GoogleSansFlex-TRADEMARKS.md',
     'shell/resume.sh', 'templates/role.md', 'templates/role-instructions.md',
@@ -181,12 +181,20 @@ try {
   }
   for (const file of assets.filter(file => file.endsWith('.js'))) checkJavaScript(readFileSync(`${assetRoot}/${file}`, 'utf8'), file, true);
   if (src.includes('A runtime request file is required') || !src.includes('SPIDER_HERDR_RUNTIME_ENTRY=false') || src.includes('import.meta.spiderHerdrRuntimeEntry')) throw new Error('Herdr extension runtime-main boundary invalid');
+  if (src.includes('A subagent supervisor request file is required.')) throw new Error('Subagent supervisor leaked into the extension entry');
   for (const entry of entries) {
     const code = readFileSync(`dist/herdr/${entry}`, 'utf8');
     if (ts.createSourceFile(entry, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS).parseDiagnostics.length) throw new Error(`invalid Herdr JavaScript syntax in ${entry}`);
     if (mustBeExternal.some(id => code.includes(`node_modules/${id}/`))) throw new Error(`Herdr peer/native inlined in ${entry}`);
+    const supervisorEntry = entry === 'subagent-supervisor.mjs';
+    if (code.includes('A subagent supervisor request file is required.') !== supervisorEntry) throw new Error(`Subagent supervisor boundary invalid in ${entry}`);
+    if (supervisorEntry) {
+      if (code.includes('A runtime request file is required')) throw new Error('Remote runtime leaked into the subagent supervisor');
+      continue;
+    }
     const remoteEntry = entry === 'remote-runtime.mjs';
-    if (remoteEntry) checkJavaScript(code, entry, false);
+    if (remoteEntry || entry === 'feed-reader.mjs') checkJavaScript(code, entry, false);
+    if (entry === 'feed-reader.mjs' && /SPIDER_GLOBAL_ROOT|better-sqlite3|sqlite-vec/.test(code)) throw new Error('Herdr feed reader imports global or database state');
     if (code.includes('A runtime request file is required') !== remoteEntry || !code.includes(`SPIDER_HERDR_RUNTIME_ENTRY=${remoteEntry}`) || code.includes('import.meta.spiderHerdrRuntimeEntry')) throw new Error(`Herdr runtime-main boundary invalid in ${entry}`);
   }
   if (extracted) {
@@ -217,4 +225,4 @@ try {
   console.error(`assert-bundle: native import failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
-console.log(`assert-bundle: OK (single-file extension, dashboard, three explicit Herdr entries, valid mod assets and notices, self-contained remote runtime, build marker valid, natives/peers external, native import verified${extracted ? ', tarball verified' : ''})`);
+console.log(`assert-bundle: OK (single-file extension, dashboard, six explicit Herdr entries, valid mod assets and notices, self-contained remote runtime, build marker valid, natives/peers external, native import verified${extracted ? ', tarball verified' : ''})`);

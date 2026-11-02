@@ -8,7 +8,7 @@ import { join, relative, isAbsolute, sep } from 'node:path';
 import { checkoutRoot, scratchRoot, HarnessError, ownedPath, type OwnedPath } from './environment.js';
 
 export const PACKED_ROOT_ENV = 'SPIDER_HERDR_E2E_PACKED_ROOT';
-export const PACKED_ENTRIES = ['dist/extension.js', 'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/remote-runtime.mjs'] as const;
+export const PACKED_ENTRIES = ['dist/extension.js', 'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs'] as const;
 export interface PackedBuild {
   /** The extracted package directory, which pi loads as an installed package. */
   root: OwnedPath;

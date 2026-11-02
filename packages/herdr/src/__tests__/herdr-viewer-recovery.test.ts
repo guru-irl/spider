@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import { runViewer, type ViewerStreamClient } from '../viewers/program.js';
 import type { RunId, RunSummary, SessionFeed } from '../contracts.js';
 
-it('keeps a healthy viewer interactive through two short feed stalls separated by recovery', async () => {
+it('keeps healthy IPC interactive through two feed-write pauses without reconnecting', async () => {
   // Leaving unavailableSince set on recovery makes the second stall final.
   vi.useFakeTimers();
   const runId = '10000000-0000-4000-8000-000000000001' as RunId;
@@ -29,13 +29,13 @@ it('keeps a healthy viewer interactive through two short feed stalls separated b
   const heartbeat = async () => { feed = { ...feed, updatedAt: Date.now(), revision: feed.revision + 1 }; changed(); await vi.advanceTimersByTimeAsync(1000); };
   try {
     await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(12000); await heartbeat();
+    await vi.advanceTimersByTimeAsync(22000); await heartbeat();
     for (let i = 0; i < 36; i++) { await vi.advanceTimersByTimeAsync(2000); await heartbeat(); }
-    await vi.advanceTimersByTimeAsync(12000); await heartbeat();
+    await vi.advanceTimersByTimeAsync(22000); await heartbeat();
     input.write('continue the run\n'); await vi.advanceTimersByTimeAsync(1);
     expect(text).not.toContain('Saved log is read-only');
-    expect(text.match(/\[reconnected\]/g)).toHaveLength(2);
+    expect(text).not.toMatch(/\[reconnect(?:ing|ed)\]/);
     expect(steers).toEqual(['continue the run']);
-    expect(subscriptions).toBe(3);
+    expect(subscriptions).toBe(1);
   } finally { abort.abort(); await running; vi.useRealTimers(); }
 });

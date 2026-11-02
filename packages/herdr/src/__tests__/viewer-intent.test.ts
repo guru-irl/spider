@@ -96,6 +96,10 @@ test.each(['automatic', 'explicit'] as const)('viewer argv carries %s intent wit
 test.each(['queued', 'running', 'paused', 'done', 'failed', 'cancelled'] as const)('viewer argv preserves launch-time status %s', status => {
   expect(createViewerPorts([...argv, '--initial-status', status], { stdin: new PassThrough(), stdout: new PassThrough() })?.initialStatus).toBe(status);
 });
+test('viewer argv carries the session run database for ownerless completion', () => {
+  expect(createViewerPorts([...argv, '--run-db', '/fixture/runs.db'], { stdin: new PassThrough(), stdout: new PassThrough() })?.runDbPath).toBe('/fixture/runs.db');
+  expect(() => createViewerPorts([...argv, '--run-db', 'relative.db'], { stdin: new PassThrough(), stdout: new PassThrough() })).toThrow('Invalid viewer arguments');
+});
 test('viewer argv rejects an unknown launch-time status', () => {
   expect(() => createViewerPorts([...argv, '--initial-status', 'unknown'], { stdin: new PassThrough(), stdout: new PassThrough() })).toThrow('Invalid viewer arguments');
 });

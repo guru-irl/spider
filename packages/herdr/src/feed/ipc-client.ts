@@ -14,17 +14,20 @@ export function ipcFailureReply(error: unknown): SessionIpcReply {
 }
 export interface SessionIpcClient extends Disposable {
   request(request: Exclude<SessionIpcRequest, { op: 'subscribeRun' }>): Promise<SessionIpcReply>;
-  ping(): Promise<SessionIpcReply>;
+  ping(options?: { timeoutMs?: number }): Promise<SessionIpcReply>;
   steerRun(runId: RunId, text: string): Promise<SessionIpcReply>;
   openView(view: ViewName): Promise<SessionIpcReply>;
   openRun(runId: RunId): Promise<SessionIpcReply>;
   openJob(jobId: JobId): Promise<SessionIpcReply>;
-  subscribeRun(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void): Promise<Disposable & { closed: Promise<void> }>;
+  killJob(jobId: JobId): Promise<SessionIpcReply>;
+  /** `view` requests a run-view protocol; owners that predate it ignore the field. */
+  subscribeRun(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view?: number }): Promise<Disposable & { closed: Promise<void> }>;
+
 }
 export function createSessionIpcClient(descriptor: IpcDescriptor): SessionIpcClient {
   let disposed = false;
   const sockets = new Set<Socket>();
-  const send = async (request: SessionIpcRequest, emit?: (frame: RunViewFrame) => void): Promise<{ reply: SessionIpcReply | null; socket: Socket; closed: Promise<void> }> => {
+  const send = async (request: SessionIpcRequest, emit?: (frame: RunViewFrame) => void, timeoutMs?: number): Promise<{ reply: SessionIpcReply | null; socket: Socket; closed: Promise<void> }> => {
     if (disposed) throw feedError('ipc-client-disposed');
     if (descriptor.version !== 1) throw feedError('unavailable', 'Unsupported IPC descriptor version.');
     await rejectSymlinks(descriptor.address);
@@ -42,7 +45,7 @@ export function createSessionIpcClient(descriptor: IpcDescriptor): SessionIpcCli
       const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
       const fail = (error: Error) => { socket.destroy(); if (!settled) reject(error); };
       // A steer may spend 10 s queued plus 10 s awaiting its child acknowledgement.
-      socket.setTimeout(request.op === 'steerRun' ? 25000 : 10000, () => fail(feedError('unavailable', 'IPC acknowledgement timed out.')));
+      socket.setTimeout(request.op === 'ping' && timeoutMs !== undefined ? Math.max(10, Math.min(10000, timeoutMs)) : request.op === 'steerRun' ? 25000 : 10000, () => fail(feedError('unavailable', 'IPC acknowledgement timed out.')));
       socket.once('connect', () => socket.write(text)); socket.on('error', fail);
       socket.once('close', () => { resolveClosed(); sockets.delete(socket); if (!settled) reject(feedError('unavailable', 'IPC disconnected before acknowledgement.')); });
       socket.on('data', data => {
@@ -77,13 +80,14 @@ export function createSessionIpcClient(descriptor: IpcDescriptor): SessionIpcCli
   const action = async (request: Exclude<SessionIpcRequest, { op: 'subscribeRun' }>): Promise<SessionIpcReply> => (await send(request)).reply!;
   return {
     request: action,
-    ping: () => action({ op: 'ping', generation: descriptor.generation }),
+    ping: async options => (await send({ op: 'ping', generation: descriptor.generation }, undefined, options?.timeoutMs)).reply!,
     openView: view => action({ op: 'openView', view, generation: descriptor.generation }),
     openRun: runId => action({ op: 'openRun', runId, generation: descriptor.generation }),
     openJob: jobId => action({ op: 'openJob', jobId, generation: descriptor.generation }),
+    killJob: jobId => action({ op: 'killJob', jobId, generation: descriptor.generation }),
     steerRun: (runId, text) => action({ op: 'steerRun', runId, text, generation: descriptor.generation }),
-    async subscribeRun(runId, cursor, emit) {
-      const { socket, closed } = await send({ op: 'subscribeRun', runId, cursor, generation: descriptor.generation }, emit);
+    async subscribeRun(runId, cursor, emit, options) {
+      const { socket, closed } = await send({ op: 'subscribeRun', runId, cursor, generation: descriptor.generation, ...(options?.view === undefined ? {} : { view: options.view }) }, emit);
       return { closed, dispose() { socket.destroy(); } };
     },
     dispose() { disposed = true; for (const socket of sockets) socket.destroy(); },

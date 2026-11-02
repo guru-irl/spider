@@ -18,6 +18,7 @@ import { latestRunOutput } from "../completion-output";
 import { resolveChildIntercom } from "../child-intercom";
 import { adoptShared, adoptableFor, getShared, sharedRegistry, type AdoptResult } from "../child-registry";
 import { isShutdownReason } from "../shutdown-reason";
+import { discoverDurableChildren } from '../durable-adoption';
 
 // Kept local to avoid a subagents -> UI dependency. Host parity tests cover both formatters.
 function formatCompactionCount(compactionCount?: number): string {
@@ -56,7 +57,6 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       const agent = run?.agent ?? "worker";
       // UI standard: italic verb (`subagent`) + italic status, mirroring the tool titles.
       const headline = `🕸 *subagent* "${name}" · ${agent} · *${status}*`;
-      ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
       // Carry the COMPLETE curated output in the transcript; the registered renderer collapses
       // it and ctrl+o expands the whole thing. triggerTurn wakes an idle main agent so the
       // conversation continues automatically instead of waiting for the user to send a message.
@@ -72,7 +72,8 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       } catch { /* optional usage cannot suppress a completion or cancellation cause */ }
       const usageLine = `${tokenCount.toLocaleString("en-US")} tokens${costText !== undefined ? ` · ${costText}` : cost === undefined ? "" : ` · $${cost.toFixed(2)}`}${formatCompactionCount(compactionCount)}`;
       const content = `${headline}\n${usageLine}\n\n${output || "(no output)"}`;
-      ctx.pi?.sendMessage?.(
+      if (!ctx.pi?.sendMessage) return;
+      const deliver = () => ctx.pi.sendMessage(
         {
           customType: "spider.subagent_done",
           content,
@@ -81,11 +82,31 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
         },
         shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
       );
-    } catch { /* best-effort */ }
+      let supervised = false;
+      try { supervised = Boolean(ctx.db?.prepare("SELECT 1 FROM run_events WHERE run_id=? AND type='child_supervisor' LIMIT 1").get(run.id)); } catch { /* A closed optional DB cannot suppress a legacy shutdown notice. */ }
+      if (supervised) {
+        const delivered = ctx.db.transaction(() => {
+          // Start with a write, not a read-then-write, so competing parents cannot both claim this notification.
+          const claim = ctx.db.prepare(`INSERT INTO run_events (run_id,session_id,ts,type)
+            SELECT id,session_id,?,'completion_delivered' FROM runs WHERE id=?
+            AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='completion_delivered')`);
+          if (!claim.run(Date.now(), run.id, run.id).changes) return false;
+          for (const step of completed) if (step.id !== run.id) claim.run(Date.now(), step.id, step.id);
+          deliver(); // A synchronous delivery failure rolls the claims back for the next resume.
+          return true;
+        })();
+        if (!delivered) return;
+        ctx.db.afterCommit(() => {
+          for (const step of completed) ctx.globalDb?.prepare('DELETE FROM run_routes WHERE run_id=?').run(step.id);
+        });
+      } else deliver();
+      ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
+    } catch { /* best-effort; saved completions remain recoverable */ }
   };
 }
 
 interface RunDeps {
+  supervise?: boolean;
   makeStore?: (db: any) => RunStore;
   makeRunner?: (db: any, sessionId: string, cwd: string, deps: any) => any;
   makePipeline?: (deps: any) => any;
@@ -149,7 +170,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const thinkingDiagnostics: Array<{ model?: string; requested?: string; effective?: string; notice?: string; step?: number }> = [];
     const withWarning = (details: any) => ({ ...details, ...(warning ? { warning } : {}), ...(thinkingDiagnostics.length ? { thinkingDiagnostics } : {}) });
     const orchestratorTarget = childMode === "rpc" ? process.env.PI_INTERCOM_SESSION_ID ?? ctx.sessionId : undefined;
-    const runnerDeps = { environmentPolicy: ctx.environmentPolicy, parentSessionFile: ctx.parentSessionFile, modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
+    const runnerDeps = { supervise: overrides.supervise ?? (!overrides.spawner && !overrides.makeRunner), supervisorHcBinary: ctx.supervisorHcBinary, environmentPolicy: ctx.environmentPolicy, parentSessionFile: ctx.parentSessionFile, modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
     }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, reviewerExcludeTools: ctx.reviewerExcludeTools, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };
@@ -221,6 +242,7 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
  * are refused and left untouched (the registry's TTL reaps anything nobody adopts).
  */
 export function adoptReloadedChildren(ctx: any, overrides: RunDeps = {}): AdoptResult {
+  discoverDurableChildren(ctx);
   if (!adoptableFor(ctx.sessionId).length) return adoptShared(ctx.sessionId, () => {});
   const store = overrides.makeStore?.(ctx.db) ?? new RunStore(ctx.db, ctx.globalDb);
   const reg = sharedRegistry();
@@ -269,22 +291,25 @@ export function adoptReloadedChildren(ctx: any, overrides: RunDeps = {}): AdoptR
   return result;
 }
 
-/** A child this session owns that could not be re-adopted stays under its TTL, but the user and the
- *  run's own history must hear about it: it will be stopped, and nothing else says why. */
+/** Failed adoption is visible in the UI and run history. Legacy children retain their TTL;
+ *  supervised children remain independent and must not be described as expiring. */
 function reportAdoptionFailures(ctx: any, result: AdoptResult): void {
   for (const { runId, reason } of result.refused) {
     if (!reason.startsWith("adoption failed")) continue;
-    const message = `Subagent run ${runId} could not be re-adopted after the reload (${reason}). It is no longer reported and will be stopped if it is not re-adopted soon.`;
+    const entry = getShared(runId);
+    const lifetime = entry?.handle.durable ? "It keeps running independently. Use /doctor to inspect it before retrying."
+      : "It is no longer reported and will be stopped if it is not re-adopted soon.";
+    const message = `Subagent run ${runId} could not be re-adopted after the reload (${reason}). ${lifetime}`;
     try { ctx.ui?.notify?.(message, "warning"); } catch { /* best-effort */ }
     let db: Db | undefined;
     try {
-      const entry = getShared(runId);
       if (!entry) continue;
-      db = openDb(entry.dbPath, { fileMustExist: true });
+      const runDb: Db = entry.dbPath === (ctx.runDbPath ?? ctx.project?.dbPath ?? ctx.db.raw.name) ? ctx.db : openDb(entry.dbPath, { fileMustExist: true });
+      db = runDb;
       // A deleted row is not a run history. Never leave orphan diagnostics in any DB.
-      if (!new RunStore(db).get(runId)) continue;
-      appendRunEvent(db, { runId, sessionId: entry.sessionId, ts: Date.now(), type: "warning", summary: message, payload: { type: "warning", message, adoptionFailed: true } });
+      if (!new RunStore(runDb).get(runId)) continue;
+      appendRunEvent(runDb, { runId, sessionId: entry.sessionId, ts: Date.now(), type: "warning", summary: message, payload: { type: "warning", message, adoptionFailed: true } });
     } catch { /* missing or inaccessible run DB: the UI warning above is still visible */ }
-    finally { try { db?.close(); } catch { /* best-effort */ } }
+    finally { try { if (db !== ctx.db) db?.close(); } catch { /* best-effort */ } }
   }
 }

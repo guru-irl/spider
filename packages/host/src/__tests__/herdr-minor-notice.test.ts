@@ -96,9 +96,9 @@ test('an inactive session stays silent on later outages without reload', async (
   const f = await fixture(), m = f.mounted();
   await f.start(); expect(m.enabled()).toBe(true);
   await outage(f, m);
-  expect(f.notices).toEqual([expect.stringContaining('Herdr unavailable:')]);
+  expect(f.notices).toEqual([expect.stringContaining("Herdr stopped responding")]);
   await back(f, 2);
-  expect(f.notices).toEqual([expect.stringContaining('Herdr unavailable:'), 'Herdr core is back. /reload to reconnect.']);
+  expect(f.notices).toEqual([expect.stringContaining("Herdr stopped responding"), "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes."]);
   expect(m.enabled()).toBe(false);
   await outage(f, m);
   await f.h.cli(['server', 'start', '--json']);
@@ -111,7 +111,7 @@ test('successful reload rearms one loss and one recovery notice for each new out
   const f = await fixture(); let m = f.mounted();
   await f.start(); expect(m.enabled()).toBe(true);
   await outage(f, m);
-  expect(f.notices).toEqual([expect.stringContaining('Herdr unavailable:')]);
+  expect(f.notices).toEqual([expect.stringContaining("Herdr stopped responding")]);
   await back(f, 2);
   for (let cycle = 1; cycle <= 2; cycle++) {
     await m.dispose(); f.hooks.clear(); m = f.mounted(); await f.start();
@@ -119,9 +119,9 @@ test('successful reload rearms one loss and one recovery notice for each new out
     expect(f.notices).toHaveLength(cycle * 2);
     await outage(f, m);
     expect(f.notices).toHaveLength(cycle * 2 + 1);
-    expect(f.notices.at(-1)).toContain('Herdr unavailable:');
+    expect(f.notices.at(-1)).toContain("Herdr stopped responding");
     await back(f, cycle * 2 + 2);
-    expect(f.notices.at(-1)).toBe('Herdr core is back. /reload to reconnect.');
+    expect(f.notices.at(-1)).toBe("Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.");
     expect(m.enabled()).toBe(false);
   }
 }, 90000);

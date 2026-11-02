@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+export const FEED_DISCONNECT_MS = 20_000;
+export const FEED_REFRESH_MS = 5_000;
 const obj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const str = v => typeof v === 'string' && v.length > 0 && !v.includes('\0');
 const string = v => typeof v === 'string';
@@ -70,7 +72,113 @@ export function parseFeed(text) {
   } catch { return null; }
 }
 
-const ipcUtf8Size = text => new TextEncoder().encode(text).byteLength;
+/** Older writers have no sidecar. Bad or stale-generation data cannot renew them. */
+export function applyFeedHeartbeat(feed, text) {
+  if (feed.lifecycle !== 'live' || typeof text !== 'string' || text.length > 1024 || utf8Size(text) > 1024) return feed;
+  try {
+    const value = JSON.parse(text);
+    if (!obj(value) || value.version !== 1 || value.sessionId !== feed.sessionId || value.generation !== feed.generation || !count(value.updatedAt) || value.updatedAt <= feed.updatedAt) return feed;
+    return { ...feed, updatedAt: value.updatedAt };
+  } catch { return feed; }
+}
+
+/** Reuse one helper per mod copy and transfer only changed, validated feeds. */
+export function createFeedReader(config, ports) {
+  let connection = null, starting = null, closed = false, closing = null, cache = new Map();
+  let failures = 0, retryAt = 0, lastFailure = new Error('Feed read failed');
+  const failed = error => {
+    lastFailure = error; retryAt = Date.now() + Math.min(60000, 5000 * 2 ** Math.min(failures++, 4));
+  };
+  const bounded = async (work, ms) => {
+    let timer;
+    try {
+      return await Promise.race([Promise.resolve().then(work), new Promise((_, reject) => {
+        timer = ports.timer.every(ms, () => reject(new Error('Feed reader timed out')));
+      })]);
+    } finally { timer?.cancel(); }
+  };
+  const request = (target, operation, value) => bounded(async () => {
+    const response = await ports.fetch(`http://127.0.0.1:${target.port}/${operation}`, {
+      method: 'POST', headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/json' }, body: JSON.stringify(value),
+    });
+    if (!response.ok) throw new Error('Feed reader unavailable');
+    return response.json();
+  }, 5000);
+  const connect = async () => {
+    if (closed) throw new Error('Feed reader closed');
+    if (connection) return connection;
+    if (!starting && Date.now() < retryAt) throw lastFailure;
+    if (!starting) starting = (async () => {
+      let abandoned = false;
+      const launch = (async () => {
+        const slash = Math.max(config.cliPath.lastIndexOf('/'), config.cliPath.lastIndexOf('\\'));
+        const reader = config.cliPath.slice(0, slash + 1) + 'feed-reader.mjs';
+        const reply = await ports.exec(config.nodePath, [reader, '--root', config.feedRoot]);
+        if (reply.code !== 0) {
+          let error; try { error = JSON.parse(reply.stdout)?.error; } catch {}
+          throw new Error(error === 'unsafe-feed-path' ? error : 'Feed read failed');
+        }
+        const value = JSON.parse(reply.stdout);
+        if (value?.version !== 1 || !Number.isSafeInteger(value.port) || value.port < 1 || value.port > 65535 || !Number.isSafeInteger(value.pid) || value.pid < 1 || typeof value.token !== 'string' || !/^[a-f0-9]{64}$/.test(value.token)) throw new Error('Invalid feed reader');
+        return value;
+      })();
+      void launch.then(value => { if (abandoned) void request(value, 'close', {}).catch(() => {}); }, () => {});
+      try {
+        const value = await bounded(() => launch, 10000);
+        if (closed) { await request(value, 'close', {}).catch(() => {}); throw new Error('Feed reader closed'); }
+        connection = value; return value;
+      } catch (error) {
+        abandoned = true;
+        if (!closed) failed(error);
+        throw error;
+      }
+    })().finally(() => { starting = null; });
+    return starting;
+  };
+  return {
+    async read() {
+      const target = connection ?? await connect();
+      try {
+        const known = Object.fromEntries([...cache].map(([source, value]) => [source, value.stamp]));
+        const snapshot = await request(target, 'snapshot', { known });
+        if (closed) throw new Error('Feed reader closed');
+        if (snapshot?.version !== 1 || !Array.isArray(snapshot.entries) || snapshot.entries.length > 4096 || !Array.isArray(snapshot.changes) || snapshot.changes.length > 4096 || !Array.isArray(snapshot.errors) || snapshot.errors.length > 256) throw new Error('Invalid feed snapshot');
+        const values = new Map(cache), next = new Map(), feeds = [];
+        for (const change of snapshot.changes) {
+          if (typeof change?.source !== 'string' || typeof change.stamp !== 'string' || change.feed?.version !== 1 || change.feed.sessionId !== change.source) throw new Error('Invalid feed snapshot');
+          values.set(change.source, { stamp: change.stamp, feed: change.feed });
+        }
+        for (const entry of snapshot.entries) {
+          const value = values.get(entry?.source);
+          if (!value || value.stamp !== entry.stamp || !Number.isSafeInteger(entry.updatedAt) || entry.updatedAt < 0 || next.has(entry.source)) throw new Error('Invalid feed snapshot');
+          next.set(entry.source, value); feeds.push({ ...value.feed, updatedAt: entry.updatedAt });
+        }
+        for (const error of snapshot.errors) if (typeof error?.source !== 'string' || typeof error.message !== 'string') throw new Error('Invalid feed snapshot');
+        cache = next; failures = 0; retryAt = 0; return { feeds, errors: snapshot.errors };
+      } catch (error) {
+        if (connection === target) {
+          connection = null;
+          if (!closed) failed(error);
+          await request(target, 'close', {}).catch(() => {});
+        }
+        throw error;
+      }
+    },
+    close() {
+      if (closing) return closing;
+      closed = true; cache.clear();
+      closing = (async () => {
+        starting?.catch(() => {});
+        const target = connection; connection = null;
+        if (target) await request(target, 'close', {}).catch(() => {});
+      })();
+      return closing;
+    },
+  };
+}
+
+// Herdr runs mods in QuickJS, which has no TextEncoder: count bytes by hand.
+const ipcUtf8Size = utf8Size;
 const IPC_LINE_BYTES = 256 * 1024;
 const IPC_PAGE_BYTES = 64 * 1024;
 const IPC_STEER_BYTES = 16 * 1024;
@@ -86,11 +194,20 @@ function ipcRequest(value) {
   if (!ipcObject(value) || !ipcString(value.generation)) return false;
   switch (value.op) {
     case 'ping': return true;
+    case 'killSession': return Object.keys(value).every(key => key === 'op' || key === 'generation');
     case 'openView': return ipcOne(value.view, ['agents', 'todos', 'usage', 'memory', 'triggers']);
-    case 'openRun': return ipcString(value.runId);
-    case 'openJob': return ipcString(value.jobId);
+    case 'openRun':
+    case 'killRun': return ipcString(value.runId);
+    case 'openJob':
+    case 'killJob': return ipcString(value.jobId);
+    case 'moveRun': return ipcString(value.runId) && ipcObject(value.destination)
+      && (ipcOne(value.destination.kind, ['new', 'hide']) || value.destination.kind === 'tab' && ipcString(value.destination.tab));
+    case 'moveSession': return ipcObject(value.destination)
+      && (value.destination.kind === 'new' || value.destination.kind === 'tab' && ipcString(value.destination.tab));
+    case 'moveJob': return ipcString(value.jobId) && ipcString(value.viewer) && ipcObject(value.destination)
+      && (value.destination.kind === 'new' || value.destination.kind === 'tab' && ipcString(value.destination.tab));
     case 'steerRun': return ipcString(value.runId) && typeof value.text === 'string' && ipcUtf8Size(value.text) <= IPC_STEER_BYTES;
-    case 'subscribeRun': return ipcString(value.runId) && (value.cursor === null || ipcCursor(value.cursor));
+    case 'subscribeRun': return ipcString(value.runId) && (value.cursor === null || ipcCursor(value.cursor)) && (value.view === undefined || ipcCount(value.view));
     default: return false;
   }
 }
@@ -105,11 +222,17 @@ function ipcPage(value, runId) {
     && value.events.every(event => ipcEvent(event) && event.runId === runId)
     && ipcUtf8Size(JSON.stringify(value)) <= IPC_PAGE_BYTES;
 }
+function ipcView(value) {
+  return ipcObject(value) && ipcCount(value.protocol)
+    && ['sessionFile', 'model', 'thinking'].every(key => value[key] === undefined || value[key] === null || ipcString(value[key]))
+    && (value.contextWindow === undefined || value.contextWindow === null || ipcCount(value.contextWindow) && value.contextWindow > 0);
+}
 function ipcFrame(value) {
   if (!ipcObject(value) || !ipcString(value.runId) || !ipcCursor(value.cursor) || !ipcObject(value.data)) return false;
   switch (value.kind) {
-    case 'snapshot': return run(value.data.run) && value.data.run.id === value.runId;
+    case 'snapshot': return run(value.data.run) && value.data.run.id === value.runId && (value.data.view === undefined || ipcView(value.data.view));
     case 'event': return ipcPage(value.data, value.runId);
+    case 'live': return ipcObject(value.data.event) && typeof value.data.event.type === 'string';
     case 'gap': return typeof value.data.reason === 'string';
     case 'end': return ipcOne(value.data.reason, ['finished', 'disposed', 'wrong-generation', 'overflow', 'run-not-owned']);
     default: return false;
@@ -141,9 +264,15 @@ function ipcReply(value) {
     case 'ping': return ipcObject(value.status)
       && (value.status.native === null || ipcOne(value.status.native, ['idle', 'working', 'blocked', 'done', 'error']))
       && (value.status.effective === null || ipcOne(value.status.effective, ['idle', 'working', 'blocked', 'done', 'error']));
-    case 'openView': return true;
+    case 'openView':
+    case 'killRun':
+    case 'killSession':
+    case 'moveSession': return true;
     case 'openRun':
     case 'openJob': return ipcString(value.viewer);
+    case 'killJob': return ipcString(value.jobId);
+    case 'moveRun':
+    case 'moveJob': return value.viewer === null || ipcString(value.viewer);
     case 'steerRun': return ipcSteerReply(value.acknowledgement);
     default: return false;
   }

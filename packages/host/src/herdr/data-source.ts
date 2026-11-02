@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { createHash } from 'node:crypto';
 import type { Db, RunEvent } from '@spider/db-core';
 import { RunStore, type RunRow } from '../../../subagents/src/run-store.js';
 import { getChild } from '../../../subagents/src/coordinators.js';
 import { listTodos } from '../../../todo/src/store.js';
 import { listPending } from '../../../memory/src/staging.js';
 import { scrubSecrets } from '@spider/memory';
-import type { Owner, SessionDataSource, SessionFeed, HerdrConfig, JobRecord, PaceSummary, PanelNotification } from '../../../herdr/src/contracts.js';
+import type { Owner, SessionDataSource, SessionFeed, HerdrConfig, PaceSummary } from '../../../herdr/src/contracts.js';
 import type { SessionScheduler } from '../loop/index.js';
 import { computePace } from '../usage/billing-pace.js';
 import type { PanelUsage } from '../usage/protocol.js';
@@ -18,7 +17,6 @@ export interface HostDataSourceOptions {
   resolveRunDb(owner: Owner): { db: Db; dbPath: string };
   openApprovalDbs(owner: Owner): { global: Db; repo: { db: Db; repoKey: string } | null };
   runEvents: { on(listener: (event: RunEvent) => void): () => void };
-  readJobJournal(owner: Owner): Promise<readonly JobRecord[]>;
   scheduler: Pick<SessionScheduler, 'listTriggers' | 'subscribe'>;
   readUsage(now: number, owner: Owner): Promise<PanelUsage | (Omit<Parameters<typeof computePace>[0], 'now'> & { updatedAt: number | null; monthCost?: SessionMonthCost })>;
   readConfig(owner: Owner): Pick<HerdrConfig, 'limits'> & Partial<Pick<HerdrConfig, 'globalRoot'>>;
@@ -27,26 +25,7 @@ export interface HostDataSourceOptions {
   clock(): number;
 }
 const preview = (text: string, limit = 180): string => scrubSecrets(text).text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').slice(0, limit);
-interface OwnedFacts { rows: RunRow[]; total: number; truncated: boolean; todos: SessionFeed['todos']['rows']; approvals: SessionFeed['approvals']; notifications: PanelNotification[] }
-interface StoredRunNotice { run_id: string; ts: number; type: string; summary: string | null; payload: string | null; run_name: string | null; run_result: string | null; run_status: RunRow['status'] }
-function readRunNotifications(db: Db, owner: Owner, cutoff: number): PanelNotification[] {
-  const records = db.prepare(`SELECT e.run_id, e.ts, e.type, e.summary, e.payload, r.name AS run_name, r.result AS run_result, r.status AS run_status
-    FROM run_events e JOIN runs r ON r.id = e.run_id AND r.session_id = e.session_id
-    WHERE e.session_id = ? AND e.ts >= ? AND e.type IN ('escalation', 'status') ORDER BY e.ts DESC, e.id DESC LIMIT 1000`).all(owner.sessionId, cutoff) as StoredRunNotice[];
-  const notifications = new Map<string, PanelNotification>();
-  for (const event of records) {
-    let payload: Record<string, unknown> = {};
-    try { payload = JSON.parse(event.payload ?? '{}'); } catch { continue; }
-    const escalation = event.type === 'escalation';
-    if (!escalation && (!['done', 'failed', 'cancelled'].includes(String(payload?.status)) || !['done', 'failed', 'cancelled'].includes(event.run_status))) continue;
-    const fingerprint = createHash('sha256').update(JSON.stringify([payload?.severity, event.summary])).digest('hex').slice(0, 16);
-    const id = escalation ? `escalation:${event.run_id}:${fingerprint}` : `subagent-result:${event.run_id}`;
-    if (notifications.has(id)) continue;
-    notifications.set(id, { id, kind: escalation ? 'escalation' : 'subagent-result', createdAt: event.ts, scope: 'session', sessionId: owner.sessionId, ownerAddress: owner.terminal.address,
-      title: preview(event.run_name ?? event.run_id), body: preview(escalation ? event.summary ?? 'Run needs attention' : event.run_result ?? event.run_status, 2000), action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.terminal.address } });
-  }
-  return [...notifications.values()];
-}
+interface OwnedFacts { rows: RunRow[]; total: number; truncated: boolean; todos: SessionFeed['todos']['rows']; approvals: SessionFeed['approvals'] }
 const USAGE_CACHE_TTL = 30000;
 interface UsageCache { at: number; period?: ReturnType<typeof computePace>['period']; valueAt?: number; pending: boolean; publishedPending?: boolean; pace?: PaceSummary; monthCost?: SessionMonthCost }
 interface OwnerCache { sessionId: string; readAt: number; dirty: boolean; revision: number; facts: OwnedFacts | null; lastSnapshot?: SessionFeed; usage?: UsageCache }
@@ -59,26 +38,6 @@ export function paceLabels(pace: Omit<PaceSummary, 'labels'>): PaceLabels {
     updatedAt: pace.updatedAt === null ? null : formatLocalTime(pace.updatedAt, Intl.DateTimeFormat().resolvedOptions().timeZone) };
 }
 const UNAVAILABLE_COST: SessionMonthCost = { credits: null, label: 'unavailable' };
-export function budgetNotifications(pace: PaceSummary): PanelNotification[] {
-  if (pace.budget === null || pace.budget <= 0 || pace.periodStart === null) return [];
-  const thresholds: (80 | 100 | 'projected')[] = [];
-  if (pace.used !== null && pace.used >= pace.budget * 0.8) thresholds.push(80);
-  if (pace.used !== null && pace.used >= pace.budget) thresholds.push(100);
-  if (pace.projected !== null && pace.projected > pace.budget) thresholds.push('projected');
-  return thresholds.map(threshold => ({ id: `budget:${pace.periodStart}:${threshold}`, kind: 'budget', createdAt: pace.updatedAt ?? pace.periodStart!, scope: 'shared', sessionId: null, ownerAddress: null,
-    title: 'Account usage', body: threshold === 'projected' ? 'Projected usage exceeds the period budget.' : `Account usage reached ${threshold}% of the period budget.`, action: { kind: 'open-usage', scope: 'shared' } }));
-}
-function jobNotifications(records: readonly JobRecord[], owner: Owner): PanelNotification[] {
-  return records.filter(job => job.owner.sessionId === owner.sessionId && (job.phase.kind === 'finished' || job.phase.kind === 'disconnected' && job.exitEvidence)).map(job => {
-    if (job.phase.kind !== 'finished' && job.phase.kind !== 'disconnected') throw new Error('Completed job evidence expected');
-    const evidence = job.exitEvidence;
-    const result = job.phase.kind === 'finished' ? job.phase.result : { exitCode: null, signal: null, reason: 'unknown', finishedAt: Math.max(evidence!.native.finishedAt, evidence!.receipt.finishedAt) };
-    return { id: `job-result:${job.id}`, kind: 'job-result', createdAt: result.finishedAt, scope: 'session', sessionId: job.owner.sessionId, ownerAddress: job.owner.terminal.address,
-      job: { id: job.id, runId: job.runId ?? null, commandPreview: preview(job.commandPreview || `Job ${job.id}`), machine: job.machine, exitCode: result.exitCode,
-        signal: result.signal, finishedAt: result.finishedAt, address: job.phase.address, ...(evidence ? { outcome: 'unknown' as const, evidenceConflict: true, exitEvidence: evidence } : {}) },
-      title: preview(`Job ${job.id} on ${job.machine}`), body: preview(evidence ? `Exit uncertain: native exit ${evidence.native.exitCode ?? 'unknown'}, signal ${evidence.native.signal ?? 'none'}; receipt exit ${evidence.receipt.exitCode ?? 'unknown'}, signal ${evidence.receipt.signal ?? 'none'}.` : `Exit ${result.exitCode ?? 'unknown'} (${result.reason}).`), action: { kind: 'focus-owner', sessionId: job.owner.sessionId, address: job.owner.terminal.address } };
-  });
-}
 export function createHerdrDataSource(options: HostDataSourceOptions): HostSessionDataSource {
   let disposed = false;
   const listeners = new Set<() => void>();
@@ -134,7 +93,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
   };
   const readFacts = (owner: Owner): OwnedFacts => {
     const { db } = options.resolveRunDb(owner);
-    let rows: RunRow[]; let total: number; let truncated: boolean; let todos: OwnedFacts['todos']; let notifications: PanelNotification[];
+    let rows: RunRow[]; let total: number; let truncated: boolean; let todos: OwnedFacts['todos'];
     try {
       const limits = options.readConfig(owner).limits;
       const cutoff = options.clock() - limits.completedHours * 3600000;
@@ -146,7 +105,6 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
         return { rows: [...active, ...completed], total: active.length + count.total, truncated: count.total > completed.length, todos: listTodos(db, owner.sessionId).map(todo => ({ ...todo, text: preview(todo.text, 2000), sessionId: owner.sessionId })) };
       })();
       ({ rows, total, truncated, todos } = values);
-      notifications = readRunNotifications(db, owner, cutoff);
     } finally { db.close(); }
     const handles = options.openApprovalDbs(owner);
     let approvals: SessionFeed['approvals'];
@@ -155,7 +113,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
       if (handles.repo) approvals.push(...listPending(handles.repo.db, 'repo').map(record => ({ uuid: record.uuid, scope: 'repo' as const, repoKey: handles.repo!.repoKey, ownerSessionId: record.sessionId as Owner['sessionId'] | null, category: record.category, preview: preview(record.content) })));
     } finally { handles.global.close(); handles.repo?.db.close(); }
     approvals = [...new Map(approvals.map(row => [JSON.stringify([row.scope, row.repoKey, row.uuid]), row])).values()];
-    return { rows, total, truncated, todos, approvals, notifications };
+    return { rows, total, truncated, todos, approvals };
   };
   return {
     subscribe(listener) { if (disposed) return () => {}; listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -176,16 +134,13 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
       const account = { ...(usage.pace ?? unavailablePace()) };
       const errors: SessionFeed['errors'] = [];
       let live: Awaited<ReturnType<NonNullable<HostDataSourceOptions['readOwnerFacts']>>> | undefined;
-      let jobs: readonly JobRecord[] = [];
       try { live = await options.readOwnerFacts?.(owner); } catch { errors.push({ source: 'placement', message: 'Observed owner placement is unavailable.' }); }
-      try { jobs = await options.readJobJournal(owner); } catch { errors.push({ source: 'jobs', message: 'Owned job journal is unavailable.' }); }
-      const notices = [...new Map([...facts.notifications, ...jobNotifications(jobs, owner), ...budgetNotifications(account)].map(notice => [notice.id, notice])).values()];
       if (disposed) throw new Error('data-source-disposed');
       const feed: SessionFeed = { version: 1, sessionId: owner.sessionId, generation: owner.generation, revision: ++cache.revision, updatedAt: options.clock(), owner,
         placement: live?.placement ?? null, lifecycle: 'live', status: live?.status ?? { native: null, effective: null, message: null },
         runs: { rows, total: facts.total, truncated: facts.truncated }, todos: { rows: facts.todos.map(row => ({ ...row })), total: facts.todos.length, truncated: false },
         triggers: options.scheduler.listTriggers().map(trigger => ({ name: trigger.name, kind: trigger.kind === 'once' ? 'schedule' : 'loop', nextAt: trigger.nextAt, tz: trigger.tz, state: trigger.state, prompt: preview(trigger.prompt, 80) })),
-        pace: account, approvals: facts.approvals.map(row => ({ ...row })), notifications: notices, ipc: live?.ipc ?? null, errors, monthCost: { ...(usage.monthCost ?? UNAVAILABLE_COST) } };
+        pace: account, approvals: facts.approvals.map(row => ({ ...row })), notifications: [], ipc: live?.ipc ?? null, errors, monthCost: { ...(usage.monthCost ?? UNAVAILABLE_COST) } };
       cache.lastSnapshot = feed; return feed;
     },
   };

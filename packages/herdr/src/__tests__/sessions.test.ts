@@ -123,6 +123,32 @@ it('a supported resume switch holds the target lease across runtime shutdown', a
   await next.fire('session_start', { reason: 'resume' }, context(target, 'tui', 'named session', 's2')); await next.fire('session_shutdown', { reason: 'quit' }, context(target, 'tui', 'named session', 's2')); await resumed.dispose();
   expect(await assessSessionLiveness(target, inventory())).toEqual({ kind: 'free' });
 });
+it('a launcher-started session keeps its reservation through reload and releases it on quit', async () => {
+  const file = await session();
+  await launchSession(request(file), ports);
+  const env = opened[0].env;
+  const makeRegistration = () => {
+    const api = apiFixture();
+    const registration = registerHerdrSessions(api.pi, { ...inv, registry: createTerminalRegistry(root),
+      processIdentity: { pid: 102, startIdentity: 'start:102' }, env,
+      currentSession: () => ({ pid: 102, startIdentity: 'start:102', sessionFile: file, sessionName: 'planner', kind: 'top-level', hcAddress: terminal.address }),
+      owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
+    return { ...api, registration };
+  };
+  const first = makeRegistration();
+  await first.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
+  expect(await inv.leases.get(file)).toMatchObject({ pid: 102, startIdentity: 'start:102' });
+  await first.fire('session_shutdown', { reason: 'reload' }, context(file, 'tui'));
+  await first.registration.dispose();
+  await expect(launchSession(request(file), ports)).rejects.toMatchObject({ code: 'session-may-be-live' });
+  const second = makeRegistration();
+  await expect(second.fire('session_start', { reason: 'reload' }, context(file, 'tui'))).resolves.toBeUndefined();
+  expect(await assessSessionLiveness(file, inv)).toMatchObject({ kind: 'live' });
+  await second.fire('session_shutdown', { reason: 'quit' }, context(file, 'tui'));
+  await second.registration.dispose();
+  expect(await inv.leases.get(file)).toBeNull();
+});
+
 it('the receiving process can adopt the launcher token before its spawn reply returns', async () => {
   const file = await session(); const lease = await inv.leases.claim(file, { pid: 101, startIdentity: 'start:101' }, inv);
   const adopted = await inv.leases.adopt(file, lease.token, { pid: 102, startIdentity: 'start:102' });
@@ -215,7 +241,7 @@ it('active switching refuses a target held by another recorded live process with
   try {
     await f.fire('session_start', {}, context(current, 'tui'));
     expect(await f.fire('session_before_switch', { targetSessionFile: target }, context(current, 'tui'))).toMatchObject({ cancel: true });
-    expect(warnings.join('\n')).toContain('302'); expect(warnings.join('\n')).toContain('Close');
+    expect(warnings).toEqual(["Spider couldn't open that session because it may already be open elsewhere. Check for another pi session with it open, then close that session and try again."]);
   } finally { await f.registration.dispose(); }
 });
 

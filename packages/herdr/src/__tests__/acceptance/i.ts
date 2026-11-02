@@ -10,7 +10,6 @@ import type { HerdrHarness } from '../testutil.js';
 import { parseFeed } from '../../../assets/shared/feed.js';
 import { projectSpiderPanel } from '../../../assets/mods/spider/data.js';
 import { checkSpiderPanel } from '../panel-app-check.mjs';
-import { createNotificationTracker, dispatchPanelNotification, selectPanelNotifications } from '../../../assets/mods/spider/notifications.js';
 
 export async function acceptanceI(h: HerdrHarness): Promise<void> {
   assert(h.owner, 'The shared harness must be started');
@@ -50,7 +49,7 @@ export async function acceptanceI(h: HerdrHarness): Promise<void> {
   await publish();decoded=await current();
   assert.equal(projectSpiderPanel([decoded]).sessions[0].feed.todos.rows[0].text, 'Changed todo');
   assert.equal(projectSpiderPanel([decoded]).sessions[0].feed.todos.total, 7);
-  const document = await runPanelScene<{text:string[];facts:string[];requests:{descriptor:{sessionId:string;generation:string};request:{op:string;view?:string}}[]}>(`
+  const document = await runPanelScene<{text:string[];facts:string[];view:string;session:string[];requests:{descriptor:{sessionId:string;generation:string};request:{op:string;view?:string}}[]}>(`
     props.feedRoot=${JSON.stringify(join(h.directories.global,'herdr'))};props.nodePath=process.execPath;
     props.cliPath=${JSON.stringify(join(h.directories.global,'cli.mjs'))};props.configPath=${JSON.stringify(join(h.directories.global,'config.json'))};
     const requests=[];const {execFile}=await import('node:child_process');
@@ -58,7 +57,7 @@ export async function acceptanceI(h: HerdrHarness): Promise<void> {
       :new Promise((resolve,reject)=>execFile(command,args,{maxBuffer:8*1024*1024,env:{...process.env,TMPDIR:path.dirname(m.identifier)}},(error,stdout,stderr)=>error?reject(error):resolve({code:0,stdout,stderr})));
     initView(panel,cx);await tasks[0];panel.expanded.add(${JSON.stringify(feed.sessionId)});
     const tree=panel.render(cx);byId(tree,${JSON.stringify(`view-${feed.sessionId}-todos`)}).events.on_click({},cx);await drain();
-    console.log(JSON.stringify({text:texts(tree),facts:byId(tree,${JSON.stringify(`facts-${feed.sessionId}`)}).items.map(f=>f.styles.tooltip[0]),requests}));`,decoded);
+    console.log(JSON.stringify({text:texts(tree),facts:byId(tree,${JSON.stringify(`facts-${feed.sessionId}`)}).items.map(f=>f.styles.tooltip[0]),view:panel.view.kind,session:texts(panel.render(cx)),requests}));`,decoded);
   assert(document.text.includes('Changed todo'));
   assert(document.facts.includes('1 open todo'));
   if (h.mode === 'app') {
@@ -67,37 +66,25 @@ export async function acceptanceI(h: HerdrHarness): Promise<void> {
     assert(checked.stdout.includes(`view-${feed.sessionId}-todos`), 'The actual app must materialize the action button');
     console.info(checked.stderr.trim());
   }
-  assert.deepEqual(document.requests.map(call=>[call.descriptor.sessionId,call.descriptor.generation,call.request.op,call.request.view]),
-    [[feed.sessionId,feed.generation,'ping',undefined],[feed.sessionId,feed.generation,'openView','todos']]);
+  // Todos, runs and usage open inside the panel; nothing is asked of the pi session.
+  assert.equal(document.view, 'session');
+  assert(document.session.includes('Changed todo'));
+  assert.deepEqual(document.requests, []);
 
   const budget: HerdrNotification = {id:'budget:0:80',kind:'budget',scope:'shared',sessionId:null,ownerAddress:null,createdAt:now,
     title:'Budget warning',body:'Shared credit pace',action:{kind:'open-usage',scope:'shared'}};
   feed.notifications=[budget];await publish();decoded=await current();
-  const selected=selectPanelNotifications([decoded,decoded],new Set(),now);
-  assert.deepEqual(selected.map(n=>n.id),['budget:0:80']);assert.equal(selected[0].ownerAddress,null);
-  const opened: string[]=[],focused: string[]=[];
-  const ports={ping:async(source:SessionFeed)=>source.generation===owner.generation,
-    openUsage:async(source:SessionFeed)=>{opened.push(source.sessionId);},
-    focus:async(address:SessionFeed['owner']['terminal']['address'])=>{
-      assert.equal(address,owner.terminal.address);assert.equal((await h.hc.get(address)).state,'live');focused.push(address);
-      if(h.mode==='fake') {
-        const reply=await h.app.command('pane.focus',{terminal:address});assert(!reply.error);
-      }
-    }};
-  assert.deepEqual(await dispatchPanelNotification(selected[0],[decoded],ports,now),{ok:true});
-  assert.deepEqual(opened,[feed.sessionId]);assert.deepEqual(focused,[]);
-  let persisted: unknown;const delivered: string[]=[];
-  const tracker=createNotificationTracker({read:()=>persisted,write:ids=>{persisted=ids;},notify:n=>{delivered.push(n.id);}});
-  tracker.update([decoded],now);assert.deepEqual(delivered,[]);
-  const result: HerdrNotification={id:'result:one',kind:'subagent-result',scope:'session',sessionId:feed.sessionId,ownerAddress:feed.owner.terminal.address,createdAt:now+1,
+  const result: HerdrNotification={id:'result:one',kind:'job-result',scope:'session',sessionId:feed.sessionId,ownerAddress:feed.owner.terminal.address,createdAt:now+1,
     title:'Result',body:'Completed run',action:{kind:'focus-owner',sessionId:feed.sessionId,address:feed.owner.terminal.address}};
   feed.notifications.push(result,result);feed.updatedAt=now+1;feed.revision++;await publish();decoded=await current();
-  tracker.update([decoded],now+1);tracker.update([decoded],now+1);assert.deepEqual(delivered,['result:one']);
-  assert.deepEqual(await dispatchPanelNotification(result,[decoded],ports,now+1),{ok:true});
-  assert.deepEqual(focused,[feed.owner.terminal.address]);
+  const quiet = await runPanelScene<{posts:unknown[];commands:unknown[];history:boolean}>(`
+    initView(panel,cx);await tasks[0];await panel.reload(cx);await drain();
+    console.log(JSON.stringify({posts:notifications,commands,history:persisted.has('spider.notifications/spider-test')}));`,decoded);
+  assert.deepEqual(quiet.posts,[]); assert.deepEqual(quiet.commands,[]); assert.equal(quiet.history,false);
   feed.lifecycle='closed';await publish();decoded=await current();
-  assert.equal((await dispatchPanelNotification(result,[decoded],ports,now+1)).ok,false);
-  assert.deepEqual(focused,[feed.owner.terminal.address]);
+  const closed = await runPanelScene<{posts:unknown[];commands:unknown[]}>(`
+    initView(panel,cx);await tasks[0];await drain();console.log(JSON.stringify({posts:notifications,commands}));`,decoded);
+  assert.deepEqual(closed.posts,[]); assert.deepEqual(closed.commands,[]);
   assert(!(await h.calls()).some(call=>call.argv[0]==='send'), 'No terminal input is ever sent');
 }
 
@@ -106,7 +93,7 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
   const root = await mkdtemp(join(scratch, 'scene-'));
   try {
     const mod = join(root, 'mod'); await mkdir(join(mod, 'shared'), { recursive: true });
-    for (const name of ['main.js', 'data.js', 'notifications.js']) {
+    for (const name of ['main.js', 'data.js']) {
       const source = await readFile(new URL(`../../../assets/mods/spider/${name}`, import.meta.url), 'utf8');
       await writeFile(join(mod, name), name === 'main.js' ? transform(source) : source);
     }
@@ -114,7 +101,23 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
     const script = `import vm from 'node:vm'; import fs from 'node:fs/promises'; import path from 'node:path';
       import { createUiModules, createHostModule, initView, strictInit } from ${JSON.stringify(new URL('../strict-mod-api.mjs', import.meta.url).href)};
       const ui = createUiModules();
-      const context = vm.createContext({ console, Date, Set, Map, JSON, Promise, Error, TextEncoder });
+      const context = vm.createContext({ console, Date, Set, Map, JSON, Promise, Error, fetch: async (url, options) => {
+        if (api.nativeReader) return globalThis.fetch(url, options);
+        if (String(url).endsWith('/close')) return {ok:true,json:async()=>({ok:true})};
+        const script = "const fs=require('node:fs'),path=require('node:path');const root=path.join(process.argv[1],'sessions');const ids=fs.readdirSync(root);console.log(JSON.stringify({feeds:ids.map(id=>fs.readFileSync(path.join(root,id,'session.json'),'utf8')),errors:[]}));";
+        const reply = await api.exec(props.nodePath, ['-e', script, props.feedRoot]);
+        if (reply.code !== 0) throw new Error('Feed read failed');
+        const legacy = JSON.parse(reply.stdout);
+        if (!Array.isArray(legacy.feeds) || !legacy.feeds.every(text=>typeof text==='string') || !Array.isArray(legacy.errors)) throw new Error('Invalid feed snapshot');
+        const entries=[],changes=[],errors=[...legacy.errors];
+        const codec=cache.get(path.join(modRoot,'shared/feed.js')).namespace;
+        for(const [index,text] of legacy.feeds.entries()) {
+          const feed=codec.parseFeed(text);
+          if(!feed){errors.push({source:legacy.sources?.[index]??'session feed',message:'Unavailable: invalid feed'});continue;}
+          const entry={source:feed.sessionId,stamp:String(index),updatedAt:feed.updatedAt};entries.push(entry);changes.push({...entry,feed});
+        }
+        return {ok:true,json:async()=>({version:1,entries,changes,errors})};
+      } });
       const tasks = [], timers = [], commands = [], notifications = [], persisted = new Map();
       const props = { feedRoot: '/fixture/feeds', cliPath: '/fixture/cli.mjs', nodePath: '/fixture/node', configPath: '/fixture/config.json', modId: 'spider-test' };
       const files = [${JSON.stringify(JSON.stringify(fixture))}];
@@ -122,11 +125,16 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
         exec: async () => ({code: 0, stdout: JSON.stringify({feeds: files, errors: []}), stderr: ''}),
         panes: () => [], spaces: () => globalThis.sceneSpaces ?? [], readTextFile: async () => null, watchFolder: async () => new Promise(() => {}), run: (name,args) => { commands.push({name,args}); },
         shared: k => persisted.get(k), setShared: (k,v) => persisted.set(k,v), notify: n => notifications.push(n), nextCommand: async () => new Promise(() => {}) };
-      const cx = {spawn: f => {const p=f(cx);p.cancel=()=>{};tasks.push(p);return p;},notify:()=>{},focus_handle:()=>({focus(){}}),timer:{every:(n,f)=>{const timer={n,f,cancel(){}};timers.push(timer);return timer;}}};
+      const cx = {spawn: f => {const p=f(cx);p.cancel=()=>{};tasks.push(p);return p;},notify:()=>{},focus_handle:()=>({focus(){}}),timer:{every:(n,f)=>{const timer={n,f,cancelled:false,cancel(){this.cancelled=true;}};timers.push(timer);return timer;}}};
       const fake = (id,values)=>new vm.SyntheticModule(Object.keys(values),function(){for(const [k,v]of Object.entries(values))this.setExport(k,v);},{context,identifier:id});
-      const cache=new Map();
-      async function load(file){if(cache.has(file))return cache.get(file);const m=new vm.SourceTextModule(await fs.readFile(file,'utf8'),{context,identifier:file});cache.set(file,m);await m.link((s,m)=>s==='herdr'?fake(s,createHostModule(api)):ui[s]?fake(s,ui[s]):load(path.resolve(path.dirname(m.identifier),s)));return m;}
-      const m=await load(${JSON.stringify(mod + '/main.js')});await m.evaluate();const panel=strictInit(new m.namespace.default());
+      const modRoot=${JSON.stringify(mod)},cache=new Map();
+      // UI scenes fake only the transport; the reader's own tests use its real CLI.
+      const readerHost={...api,exec:(command,args)=>!api.nativeReader&&args[0]?.endsWith('/feed-reader.mjs')?Promise.resolve({code:0,stdout:JSON.stringify({version:1,port:34567,token:'0'.repeat(64),pid:1}),stderr:''}):api.exec(command,args)};
+      const moduleLoads=new Map();
+      function load(file){if(!moduleLoads.has(file))moduleLoads.set(file,fs.readFile(file,'utf8').then(text=>{const m=new vm.SourceTextModule(text,{context,identifier:file});cache.set(file,m);return m;}));return moduleLoads.get(file);}
+      const m=await load(${JSON.stringify(mod + '/main.js')});
+      await m.link((s,m)=>s==='herdr'?fake(s,createHostModule(new Proxy(readerHost,{get(target,key){return key==='exec'?target.exec:api[key];}}))):ui[s]?fake(s,ui[s]):load(path.resolve(path.dirname(m.identifier),s)));
+      await m.evaluate();const panel=strictInit(new m.namespace.default());
       async function drain(){await Promise.all(tasks.filter(p=>p!==panel.watchTask&&p!==panel.commandTask));}
       function texts(el){return typeof el==='string'?[el]:el?.items?el.items.flatMap(texts):[];}
       function byId(el,id){if(el?.styles?.id?.[0]===id)return el;for(const child of el?.items||[]){const found=byId(child,id);if(found)return found;}}

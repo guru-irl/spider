@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import patches from '../../assets/look/patches.json' with { type: 'json' };
@@ -10,8 +11,8 @@ import { createUiModules, createHostModule } from './strict-mod-api.mjs';
 const fixtureRoot = process.env.SPIDER_HERDR_MOD_FIXTURE;
 async function clones(): Promise<HerdrClones> {
   const result = {} as HerdrClones;
-  for (const name of ['agents', 'spaces', 'pane', 'tabs'] as const) result[name] = {
-    name: `spider-${name}`, clonedFrom: { name, version: '0.1.11' },
+  for (const name of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) result[name] = {
+    name: `spider-${name}`, clonedFrom: { name, version: '0.1.12' },
     files: { 'main.js': await readFile(join(fixtureRoot!, name, 'main.js'), 'utf8'), 'mod.json': await readFile(join(fixtureRoot!, name, 'mod.json'), 'utf8') },
   };
   return result;
@@ -36,7 +37,7 @@ function scene(source: string, enabled: string[] | null = null) {
   return { view, panel, body, space, calls, saved, render, button };
 }
 
-describe.skipIf(!fixtureRoot)('Spider top-bar button against shipped Herdr 0.1.11', () => {
+describe.skipIf(!fixtureRoot)('Spider top-bar button against shipped Herdr 0.1.12', () => {
   test('renders after Changes and toggles the same panel using the strict mod API', async () => {
     const patched = await applyLookPatches(await clones(), patches as LookPatchSet);
     const s = scene(patched.tabs.files['main.js']);
@@ -73,7 +74,10 @@ describe.skipIf(!fixtureRoot)('Spider top-bar button against shipped Herdr 0.1.1
     for (const source of [original.tabs.files['main.js'].replace('const enabled =', 'const allowed ='), original.tabs.files['main.js'] + '\n' + 'const enabled = shared("workspace.panels") ?? ["files", "changes"];']) {
       const changed = structuredClone(original); changed.tabs.files = { ...changed.tabs.files, 'main.js': source };
       const before = structuredClone(changed);
-      await expect(applyLookPatches(changed, patches as LookPatchSet)).rejects.toMatchObject({ code: 'patch-anchor-mismatch', message: expect.stringContaining('tabs:') });
+      // A hypothetical recognized source can still have an invalid patch anchor.
+      const recognized = structuredClone(patches);
+      recognized.sourceHashes.tabs['main.js'] = createHash('sha256').update(source).digest('hex');
+      await expect(applyLookPatches(changed, recognized as LookPatchSet)).rejects.toMatchObject({ code: 'patch-anchor-mismatch', message: expect.stringContaining('tabs:') });
       expect(changed).toEqual(before);
     }
   });
@@ -88,7 +92,7 @@ describe.skipIf(!fixtureRoot)('Spider top-bar button against shipped Herdr 0.1.1
   test('the glass layout routes the shipped top bar through the tabs clone without changing the source', async () => {
     const source = JSON.parse(await readFile(join(fixtureRoot!, '../layouts/main.json'), 'utf8'));
     const before = structuredClone(source);
-    const result = buildGlassLayout(source, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel' });
+    const result = buildGlassLayout(source, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome' });
     function mods(node: any): string[] { return [node.content?.mod, ...(node.children ?? []).flatMap(mods)].filter(Boolean); }
     expect(mods(result)).toContain('spider-tabs'); expect(mods(result)).not.toContain('tabs');
     expect(source).toEqual(before);

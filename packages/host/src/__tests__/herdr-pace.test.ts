@@ -34,13 +34,13 @@ describe.skipIf(!mods)('production pace feed', () => {
     await mkdir(join(root, 'dist/herdr'), { recursive: true });
     await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
     await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
-    for (const kind of ['agents', 'spaces', 'pane', 'tabs']) {
-      const target = join(h.directories.app, 'mods', kind); await mkdir(target, { recursive: true });
-      for (const file of ['main.js', 'mod.json']) await cp(join(mods!, kind, file), join(target, file));
+    for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
+      const target = join(h.directories.app, 'mods', kind);
+      await cp(join(mods!, kind), target, { recursive: true });
     }
     await mkdir(join(h.directories.app, 'layouts'), { recursive: true });
     await writeFile(join(h.directories.app, 'layouts/main.json'), JSON.stringify({ children: [
-      { id: 'sidebar', content: { mod: 'agents' } }, { id: 'spaces', content: { mod: 'spaces' } }, { id: 'tabs', content: { mod: 'tabs' } },
+      { id: 'brand', content: { mod: 'workspace-chrome' } }, { id: 'sidebar', content: { mod: 'agents' } }, { id: 'spaces', content: { mod: 'spaces' } }, { id: 'tabs', content: { mod: 'tabs' } },
       { id: 'work-body', children: [{ id: 'main', content: { tab: 'active', pane: { header: { content: { mod: 'pane' } } } } },
         { id: 'panel', children: [{ id: 'panel-body', type: 'stack', children: [{ id: 'files' }, { id: 'changes' }] }] }] },
     ] }));
@@ -49,7 +49,7 @@ describe.skipIf(!mods)('production pace feed', () => {
     const script = join(h.root, 'app-selection.mjs');
     await writeFile(script, `import { readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';
-if (args[0] === '--version') console.log('herdr-app 0.1.11');
+if (args[0] === '--version') console.log('herdr-app 0.1.12');
 else if (args[0] === 'do') { const s = JSON.parse(readFileSync(path, 'utf8')); if (args[1] === 'layout.switch') s.layout = args[args.indexOf('--name') + 1]; if (args[1] === 'app.theme') s.theme = args[args.indexOf('--name') + 1]; writeFileSync(path, JSON.stringify(s)); console.log('{}'); }
 else console.log('{"spaces":[]}');\n`);
     const app = join(h.root, 'app-selection'); await writeFile(app, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`); await chmod(app, 0o700);
@@ -73,7 +73,7 @@ else console.log('{"spaces":[]}');\n`);
     vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.resetModules();
   }, 120_000);
 
-  test('two ledger readings a day apart produce a projected budget notice; one does not', async () => {
+  test('two ledger readings a day apart project usage without producing retired budget notices', async () => {
     globalConfigForTest(h.directories.global).set('herdr.enabled', true);
     const { openUsageLedger } = await import('../usage/ledger.js');
     const file = join(h.directories.global, 'usage.db');
@@ -113,7 +113,7 @@ else console.log('{"spaces":[]}');\n`);
       expect(two.pace.used).toBe(50);
       expect(two.pace.projected).not.toBeNull();
       expect(two.pace.projected).toBeGreaterThan(70);
-      expect(two.notifications.some((n: any) => n.kind === 'budget' && n.id.endsWith(':projected'))).toBe(true);
+      expect(two.notifications.filter((n: any) => n.kind === 'budget')).toEqual([]);
     } finally { ledger.close(); }
   }, 120_000);
 });

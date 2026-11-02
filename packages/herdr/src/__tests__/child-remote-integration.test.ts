@@ -33,7 +33,7 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false) {
       const childHook = /if\s*\(process\.env\.PI_SUBAGENT_CHILD\s*===\s*["']1["']\)\s*return mountChildHerdr\([^;]+\);/g;
       // Round 4 removed the dead parent child guard. Restore it in this isolated
       // mutant as well as removing delegation, so it still models missing policy.
-      const parentActivation = /if\s*\(!process\.env\.HC_TERMINAL_ID\)\s*\{\s*disabled\(["']not inside Herdr["']\);/g;
+      const parentActivation = /if\s*\(!process\.env\.HC_TERMINAL_ID\)\s*\{\s*disabled\(["']outside["']\);/g;
       expect([bundle.match(childHook)?.length, bundle.match(parentActivation)?.length]).toEqual([1, 1]);
       await writeFile(bundlePath, bundle.replace(childHook, '').replace(parentActivation, match => `if (process.env.PI_SUBAGENT_CHILD === '1') return; ${match}`));
     }
@@ -73,7 +73,7 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false) {
     const bash = await message(m => m.id === 'plain-bash'); expect(bash.type, bash.reason ?? bash.error).toBe('result'); expect(JSON.stringify(bash.result.content)).toContain('bash-ok');
     child.stdin!.write(JSON.stringify({ id: 'foreground', action: 'exec', on: 'remote.invalid', language: 'javascript', code: "console.log('returned to child');console.error('child diagnostic');process.exitCode=23" }) + '\n');
     const foreground = await message(m => m.id === 'foreground');
-    if (legacyChildPolicy) { expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringContaining('herdr-disabled') }); return; }
+    if (legacyChildPolicy) { expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringContaining('Herdr is off in this session') }); return; }
     expect(foreground.type, foreground.error).toBe('result'); expect(foreground.result.details).toMatchObject({ stdout: 'returned to child\n', stderr: 'child diagnostic\n', exitCode: 23 });
     child.stdin!.write(JSON.stringify({ id: 'managed-ssh', action: 'bash', command: '/usr/bin/ssh managed.invalid' }) + '\n');
     const ssh = await message(m => m.id === 'managed-ssh'); expect(ssh).toMatchObject({ type: 'refused', reason: expect.stringContaining('on:remote.invalid') });

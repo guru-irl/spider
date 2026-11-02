@@ -5,6 +5,7 @@ import type { HcClient, HerdrConfig, MachineName, RemoteSource, RuntimeTarget, P
 import { HerdrError } from '@spider/herdr/client/parse';
 import { probeLaunch } from '@spider/herdr/setup/doctor';
 import { prepareRemoteProgram } from '../../../context/src/remote-plan.js';
+import { resolveMachine } from './machine.js';
 
 const HOME_CACHE = Symbol.for('spider.herdr.remote-home.v1');
 interface SessionHomes { id: string; homes: Map<MachineName, Promise<string>> }
@@ -20,8 +21,8 @@ export function createRemoteFileResolver(hc: HcClient, machines: HerdrConfig['ma
   let cached = sessionHomes.get(session.manager);
   if (!cached || cached.id !== session.id) { cached = { id: session.id, homes: new Map() }; sessionHomes.set(session.manager, cached); }
   const homes = cached.homes;
-  const probeHome = async (machine: HerdrConfig['machines'][number]): Promise<string> => {
-    const launch = probeLaunch({ machine: machine.name, nodePath: machine.nodePath ?? 'node', coreStartedAt: '' });
+  const probeHome = async (machine: HerdrConfig['machines'][number], on: MachineName): Promise<string> => {
+    const launch = probeLaunch({ machine: on, nodePath: machine.nodePath ?? 'node', coreStartedAt: '' });
     const terminal = await hc.run({ ...launch, argv: [machine.nodePath ?? 'node', '-e', 'process.stdout.write(JSON.stringify(require("node:os").homedir()))'] });
     let failed = false;
     try {
@@ -50,15 +51,13 @@ export function createRemoteFileResolver(hc: HcClient, machines: HerdrConfig['ma
       if (!failed && cleanupError) throw cleanupError;
     }
   };
-  const resolve = async (file: string, on: MachineName): Promise<string> => {
+  const resolveFor = async (file: string, machine: HerdrConfig['machines'][number], on: MachineName): Promise<string> => {
     if (posix.isAbsolute(file)) return file;
-    const machine = machines.find(machine => machine.name === on);
-    if (!machine) throw new HerdrError('machine-unconfigured', `Destination ${on} is not configured`);
     let base = machine.runtime.cwd;
     if (base === null) {
       let pending = homes.get(on);
       if (!pending) {
-        pending = probeHome(machine); homes.set(on, pending);
+        pending = probeHome(machine, on); homes.set(on, pending);
         const probe = pending;
         void probe.catch(() => { if (homes.get(on) === probe) homes.delete(on); });
       }
@@ -66,9 +65,16 @@ export function createRemoteFileResolver(hc: HcClient, machines: HerdrConfig['ma
     }
     return posix.resolve(base, file);
   };
+  const resolve = async (file: string, on: MachineName): Promise<string> => {
+    const selected = await resolveMachine(hc, machines, on);
+    return resolveFor(file, selected.machine, selected.on);
+  };
   return {
     resolve,
-    read: async (file: string, on: MachineName) => (await hc.fileRead(on, await resolve(file, on))).toString(),
+    read: async (file: string, on: MachineName) => {
+      const selected = await resolveMachine(hc, machines, on);
+      return (await hc.fileRead(selected.on, await resolveFor(file, selected.machine, selected.on))).toString();
+    },
     prepare: async (source: RemoteSource, target: RuntimeTarget) => prepareRemoteProgram(source.kind === 'file' ? { ...source, path: await resolve(source.path, target.on) } : source, target),
   };
 }

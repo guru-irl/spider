@@ -18,12 +18,12 @@ export interface ViewerRegistrationPorts {
   viewerLauncher?: ViewerLauncher; reportError?(error: unknown): void;
 }
 export interface ViewerRegistration extends Disposable { peek(runId: RunId): Promise<TerminalHandle | null>; launcher: ViewerLauncher }
-export interface ViewerRunInfo { name?: string; cwd?: string; parentName?: string; steer?: 'rpc' | 'headless'; status?: RunSummary['status'] }
+export interface ViewerRunInfo { name?: string; cwd?: string; parentName?: string; steer?: 'rpc' | 'headless'; status?: RunSummary['status']; dbPath?: string }
 export interface ManagedViewerLauncher extends ViewerLauncher {
   discard(runId: RunId, owner: Owner, address: TerminalAddress): Promise<void>;
 }
 /** Shared with the pane actor: even a parked run has exactly one local viewer. */
-export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' | 'ipcDescriptor' | 'viewerExecutable' | 'owner' | 'feedRoot'> & { runInfo?(id: RunId, owner: Owner): ViewerRunInfo | Promise<ViewerRunInfo> }): ManagedViewerLauncher {
+export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' | 'ipcDescriptor' | 'viewerExecutable' | 'owner' | 'feedRoot'> & { piPackageRoot?: string; runInfo?(id: RunId, owner: Owner): ViewerRunInfo | Promise<ViewerRunInfo> }): ManagedViewerLauncher {
   const launches = new Map<string, { promise: Promise<TerminalAddress>; claim: { retained: boolean }; discard?: Promise<void> }>();
   const keyFor = (runId: RunId, owner: Owner) => JSON.stringify([owner.sessionId, owner.terminal.coreId, owner.terminal.terminalId, runId]);
   const current = (owner: Owner, signal?: AbortSignal) => {
@@ -36,6 +36,22 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
     && terminal.parent === owner.terminal.address && terminal.labels[labels.session] === owner.sessionId
     && terminal.labels[labels.ownerCore] === owner.terminal.coreId && terminal.labels[labels.ownerTerminal] === owner.terminal.terminalId
     && terminal.labels[labels.run] === runId && terminal.labels[labels.kind] === kinds.subagentViewer;
+  const sameRun = (terminal: TerminalSummary, owner: Owner, runId: RunId) => terminal.state === 'live' && !terminal.address.includes('/')
+    && terminal.labels[labels.session] === owner.sessionId && terminal.labels[labels.ownerCore] === owner.terminal.coreId
+    && terminal.labels[labels.run] === runId && terminal.labels[labels.kind] === kinds.subagentViewer;
+  async function recoverViewer(terminal: TerminalSummary, owner: Owner, runId: RunId, signal?: AbortSignal): Promise<boolean> {
+    if (isViewer(terminal, owner, runId)) return true;
+    if (!sameRun(terminal, owner, runId) || !terminal.parent
+      || terminal.labels[labels.ownerTerminal] !== terminal.parent && terminal.labels[labels.ownerTerminal] !== owner.terminal.terminalId) return false;
+    const previous = await ports.hc.get(terminal.parent).catch(error => {
+      if (error instanceof HerdrError && error.code === 'not_found') return null;
+      throw error;
+    });
+    if (previous?.state === 'live') return false;
+    if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
+    await ports.hc.setLabels(terminal.address, { [labels.ownerTerminal]: owner.terminal.terminalId });
+    return true;
+  }
   const isFinal = (status: ViewerRunInfo['status']) => status === 'done' || status === 'failed' || status === 'cancelled';
   async function closingForSavedOpen(terminal: TerminalSummary, runId: RunId, owner: Owner, signal: AbortSignal | undefined, intent: ViewerIntent): Promise<boolean> {
     if (intent !== 'explicit' || terminal.labels[labels.viewerLifetime] !== 'live') return false;
@@ -70,7 +86,7 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
         try { terminal = await ports.hc.get(address); }
         catch (cause) { if (!(cause instanceof HerdrError) || cause.code !== 'not_found') throw cause; terminal = null; }
         if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
-        if (terminal && isViewer(terminal, owner, runId) && !await closingForSavedOpen(terminal, runId, owner, signal, intent)) return address;
+        if (terminal && await recoverViewer(terminal, owner, runId, signal) && !await closingForSavedOpen(terminal, runId, owner, signal, intent)) return address;
         if (launches.get(key) === existing) launches.delete(key);
         return launcher(runId, owner, signal, intent);
       }, cause => { if (!current(owner, signal)) throw cause; return launcher(runId, owner, signal, intent); });
@@ -78,16 +94,18 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
     const claim = { retained: false };
     const launch = (async () => {
       // Reconcile live labelled viewers before launch, including activation reloads.
-      const stream = ports.hc.events(); let found: TerminalSummary | undefined;
+      const stream = ports.hc.events(); const candidates = new Map<TerminalAddress, TerminalSummary>();
       const unsubscribe = stream.subscribe(event => {
         const terminals = event.type === 'snapshot' || event.type === 'missed' ? event.terminals : [];
-        for (const terminal of terminals) if (isViewer(terminal, owner, runId)) found = terminal;
+        for (const terminal of terminals) if (sameRun(terminal, owner, runId)) candidates.set(terminal.address, terminal);
       });
       const cancelled = () => { void stream.dispose(); };
       signal?.addEventListener('abort', cancelled, { once: true });
       try { await stream.ready; } finally { signal?.removeEventListener('abort', cancelled); unsubscribe(); await stream.dispose(); }
       if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
-      if (found && !await closingForSavedOpen(found, runId, owner, signal, intent)) { claim.retained = true; return found.address; }
+      for (const found of candidates.values()) {
+        if (await recoverViewer(found, owner, runId, signal) && !await closingForSavedOpen(found, runId, owner, signal, intent)) { claim.retained = true; return found.address; }
+      }
       let info: ViewerRunInfo = {}, cwd = owner.cwd;
       try { info = await ports.runInfo?.(runId, owner) ?? {}; } catch { /* Display metadata cannot prevent a viewer launch. */ }
       if (intent === 'automatic' && isFinal(info.status))
@@ -96,7 +114,7 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
       if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
       const parentName = (info.parentName || owner.name || 'Agent').replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 160);
       const displayName = (info.name || runId).replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 120);
-      const handle = await ports.hc.run({ name: `run-${createHash('sha256').update(key).digest('hex').slice(0, 28)}`, argv: [process.execPath, ports.viewerExecutable, '--run', runId, '--session', owner.sessionId, '--feed-root', ports.feedRoot, '--intent', intent, ...(info.status ? ['--initial-status', info.status] : [])],
+      const handle = await ports.hc.run({ name: `run-${createHash('sha256').update(key).digest('hex').slice(0, 28)}`, argv: [process.execPath, ports.viewerExecutable, '--run', runId, '--session', owner.sessionId, '--feed-root', ports.feedRoot, '--intent', intent, ...(info.status ? ['--initial-status', info.status] : []), ...(info.dbPath && isAbsolute(info.dbPath) ? ['--run-db', info.dbPath] : []), ...(ports.piPackageRoot ? ['--pi-root', ports.piPackageRoot] : [])],
         cwd, parent: owner.terminal.address, labels: { [labels.session]: owner.sessionId, [labels.ownerCore]: owner.terminal.coreId,
           [labels.ownerTerminal]: owner.terminal.terminalId, [labels.kind]: kinds.subagentViewer, [labels.run]: runId, [labels.parentName]: parentName, [labels.steer]: info.steer ?? 'headless', [labels.displayName]: displayName, [labels.viewerLifetime]: intent === 'automatic' || info.status && !isFinal(info.status) ? 'live' : 'saved' },
         background: true, noNotify: true, outliveParent: true });
@@ -142,7 +160,7 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
       reservation = await ports.panes.acquire('subagent', runId, owner, { signal, timeoutMs: 10000, automatic }) ?? undefined;
       if (!current(owner, version)) { if (reservation) await ports.panes.release(reservation); return null; }
       if (reservation) reservations.set(runId, reservation);
-      else { reservations.delete(runId); await ports.panes.park(runId); }
+      else reservations.delete(runId);
       const address = await launcher(runId, owner, signal, automatic ? 'automatic' : 'explicit');
       if (!current(owner, version)) { await releaseHeld(); return null; }
       if (reservation && reservation.viewer !== address) { await releaseHeld(); throw new Error('Viewer reservation acknowledged a different terminal'); }
@@ -171,7 +189,7 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
     const drain = () => {
       while (current(owner, version) && opening < 4 && queue.length) {
         const runId = queue.shift()!; opening++;
-        void peek(runId, true).catch(report).finally(() => { opening--; drain(); });
+        void peek(runId, true).catch(() => {}).finally(() => { opening--; drain(); });
       }
     };
     const automatic = (runId: RunId) => {

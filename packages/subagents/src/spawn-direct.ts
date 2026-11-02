@@ -1,0 +1,97 @@
+import { spawn } from "node:child_process";
+import { constants } from "node:os";
+import type { Spawner, ChildHandle } from "./runner";
+import { killProcessGroup, isProcessAlive, isProcessGroupAlive } from "./kill-process";
+import { ownRpcChild, createEventGate, attachRpcReader } from "./rpc-child";
+import { processStartTime, checkProcessIdentity } from "./process-identity";
+import { finalChildEnvironment } from "@spider/herdr/ssh/shim";
+
+const isWin = process.platform === "win32";
+
+/** Real child-process spawner (production). NOT exercised in unit tests, which inject a fake. */
+export const directSpawner: Spawner = (spec) => {
+  const child = spawn(spec.argv[0], spec.argv.slice(1), {
+    cwd: spec.cwd,
+    env: { ...finalChildEnvironment(process.env, spec.env) },
+    stdio: spec.childMode === "rpc" ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+    // On Unix give the child its OWN process group, so killing it also kills every
+    // tool subprocess IT spawned. Without this, kill() signals only `pi` and orphans
+    // the rest. Mirrors packages/context/src/executor.ts.
+    detached: !isWin,
+  });
+  // Warnings go through a rebindable sink, never straight to spec.onRpcEvent: after a /reload that
+  // callback belongs to the previous activation (its Runner, db and pi).
+  let rpc: ReturnType<typeof ownRpcChild> | undefined;
+  let stderrTail = "";
+  const printGate = createEventGate(spec.onRpcEvent, spec.model);
+  const warn = (event: Record<string, any>) => { try { (rpc ? rpc.report : printGate.report)(event); } catch { /* diagnostics must not leak a spawned child */ } };
+  const startTime = child.pid === undefined ? null : processStartTime(child.pid);
+  if (child.pid !== undefined && startTime === null) {
+    warn({ type: "warning", message: "Process start identity unavailable: spawn-time capture returned no start time (unsupported platform or OS probe failure). Owned handle kill and shutdown remain available; pid-only signalling requires identity confirmation." });
+  }
+  // Attach 'exit'/'error' listeners EAGERLY (not lazily in wait()): runner.runAsync
+  // detaches without ever calling wait(), so a lazy 'error' listener would leave an
+  // async ENOENT unhandled → uncaught exception that crashes the host. Eager attachment
+  // guarantees a handler on every path; the memoized promise settles once (idempotent).
+  let settle!: (v: { exitCode: number; result?: string }) => void;
+  const exit = new Promise<{ exitCode: number; result?: string }>((res) => { settle = res; });
+  child.on("close", (code, signal) => {
+    const failure = rpc?.failureReason();
+    const exitCode = failure ? code || 1 : code ?? (signal ? 128 + (constants.signals[signal] ?? 1) : 1);
+    const result = failure ?? (!rpc && exitCode !== 0 && stderrTail.trim()
+      ? `Child process exited with code ${exitCode}.\nStderr tail:\n${stderrTail.trim()}` : undefined);
+    settle({ exitCode, ...(result ? { result } : {}) });
+  });
+  child.on("error", (error) => settle({ exitCode: 1, ...(spec.childMode === "rpc" ? { result: `Child launch failed: ${error.message}` } : {}) }));
+  rpc = spec.childMode === "rpc" ? ownRpcChild(child, spec.prompt ?? "", spec.onRpcEvent, spec.model) : undefined;
+  if (!rpc) {
+    if (child.stdout) attachRpcReader(child.stdout, printGate.report, error => warn({ type: "warning", message: `Invalid child JSONL record: ${error.message}` }));
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      const bytes = Buffer.from(stderrTail + chunk);
+      let start = Math.max(0, bytes.length - 4096);
+      // Discard any leading UTF-8 continuation bytes, never half a character.
+      while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+      stderrTail = bytes.subarray(start).toString("utf8");
+    });
+  }
+  const killAsync = async (graceMs?: number) => {
+    if (child.pid === undefined) return;
+    if (rpc) {
+      const pipeGraceMs = graceMs ?? 250;
+      await rpc.abort(pipeGraceMs);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { await Promise.race([exit, new Promise(resolve => { timer = setTimeout(resolve, pipeGraceMs); })]); }
+      finally { if (timer) clearTimeout(timer); }
+    }
+    await killProcessGroup(child.pid, { graceMs, canSignal: () => {
+      if (child.exitCode === null && child.signalCode === null) return true;
+      // A surviving group retains its pgid even after the leader has exited.
+      // Do not authorize a new/reused live leader through this exception.
+      if (!isWin && !isProcessAlive(child.pid!) && isProcessGroupAlive(child.pid!)) return true;
+      return checkProcessIdentity(child.pid!, startTime).matches;
+    } });
+  };
+  return {
+    ...(rpc ? { steer: rpc.steer } : {}),
+    // Both modes rebind: print children only emit spawner warnings, but those must not reach a dead sink either.
+    bindEvents: rpc ? rpc.bindEvents : printGate.bind,
+    unbindEvents: rpc ? rpc.unbindEvents : printGate.unbind,
+    pid: child.pid,
+    startTime,
+    wait() { return exit; },
+    kill() {
+      if (child.pid === undefined) return;
+      // Fire-and-forget: kill() is sync by contract (session_shutdown calls it), but
+      // the SIGTERM→SIGKILL escalation is inherently async.
+      void killAsync().catch(error => warn({ type: "warning", message: `Child termination unconfirmed: ${String(error)}` }));
+    },
+    killAsync(graceMs?: number) {
+      if (child.pid === undefined) return Promise.resolve();
+      // Awaitable kill: returns the killProcessGroup promise so the caller can wait
+      // for SIGTERM → SIGKILL escalation to complete.
+      return killAsync(graceMs);
+    },
+    detach() { child.unref(); },
+  } as ChildHandle;
+};

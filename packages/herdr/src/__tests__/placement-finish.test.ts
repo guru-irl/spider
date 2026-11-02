@@ -29,7 +29,7 @@ async function fixture() {
     launches.push(request); if (hold) { entered.resolve(); await release.promise; } return h.hc.run(request);
   }, rm: async (address: TerminalAddress) => { await h.hc.rm(address); removed.push(address); } };
   const app: AppClient = {
-    ownerPlacement: async address => { const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p; },
+    tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => { const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p; },
     awaitPane: async (address, p) => { const pane = `pane-${address}` as OwnerPlacement['pane']; layout.set(address, { ...p, pane }); return pane; },
     command: async (name, args) => {
       if (name === 'pane.focus' && args.terminal === focusFailure?.viewer) {
@@ -44,7 +44,7 @@ async function fixture() {
     runInfo: () => ({ status }),
     ipcDescriptor: () => ({ version: 1, sessionId: owner.sessionId, generation: owner.generation, address: join(h.root, 'ipc.sock'), capabilityFile: join(h.root, 'ipc.cap') }) });
   const launcher = makeLauncher();
-  const panes = createAuxiliaryPanes({ hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit: 1, clock: Date.now, reportError: error => errors.push(error) });
+  const panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit: 1, clock: Date.now, reportError: error => errors.push(error) });
   return { h, owner, launcher, makeLauncher, panes, launches, removed, layout, placement, errors, entered, release,
     setStatus(value: RunSummary['status']) { status = value; }, hold() { hold = true; },
     failFocus(viewer: TerminalAddress, code: string) { focusFailure = { viewer, code, entered: barrier(), release: barrier() }; return focusFailure; },

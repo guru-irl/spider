@@ -236,6 +236,16 @@ describe('destination runtime', () => {
     expect((await job.finished).signal).toBe('SIGHUP'); expect(await job.started()).toBe(false);
     expect(await job.receipt()).toMatchObject({ outcome: 'signal', signal: 'SIGHUP', exitCode: null });
   });
+  it('retries a torn cancellation file before release and cancels without launching', async () => {
+    const job = await runtime("require('fs').writeFileSync('started','yes')"); await job.ready();
+    await writeFile(join(job.root, 'cancel.json'), '{');
+    const early = await Promise.race([job.finished, new Promise<null>(resolve => setTimeout(() => resolve(null), 300))]);
+    expect(early).toBeNull();
+    await writeFile(join(job.root, 'cancel.json'), JSON.stringify({ version: 1, jobId: 'job', nonce: job.nonce }));
+    expect((await job.finished).code).toBe(137);
+    expect(await job.started()).toBe(false);
+    expect(await job.receipt()).toMatchObject({ outcome: 'cancelled', exitCode: 137 });
+  });
   it('forwards the observed signal after release and persists it before wrapper termination', async () => {
     const job = await runtime("require('fs').writeFileSync('started','yes'); setInterval(()=>{},1000)"); await job.ready(); await job.release();
     const deadline = Date.now() + 2000; while (!(await job.started()) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));

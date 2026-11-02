@@ -6,7 +6,8 @@ import { readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createMachineCache, type MachineCache } from '../ssh/cache.js';
-import { createSshPolicy } from '../ssh/policy.js';
+import { createSshPolicy, createSshPolicyReader } from '../ssh/policy.js';
+import { runSshShim } from '../ssh/shim.js';
 import { parseSshDestinations } from '../ssh/parse.js';
 
 async function fixture(test: (h: HerdrHarness, cache: MachineCache, tick: (n: number) => void) => Promise<void>) {
@@ -25,9 +26,20 @@ async function invoke(h: HerdrHarness, argv: string[]) {
   });
 }
 describe('managed SSH policy', () => {
+  it('explains why SSH is blocked when the machine list is unavailable', async () => {
+    const result = await createSshPolicyReader(async () => null).checkArgv(['planner.invalid']);
+    expect(result).toEqual({ kind: 'refuse', reason: "Spider couldn't check Herdr's machine list, so it blocked this SSH command. Run /reload once Herdr is running. If that doesn't help, run /herdr-setup to print the doctor command for this machine." });
+  });
+  it('prints a plain error when the SSH check itself cannot start', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(await runSshShim([], {})).toBe(126);
+      expect(stderr.mock.calls.map(([text]) => String(text)).join('')).toBe("Spider couldn't check this SSH command, so the command did not run. Run /herdr-setup to print the doctor command for this machine.\n");
+    } finally { stderr.mockRestore(); }
+  });
   it('refuses a managed destination before connecting but preserves another host', async () => fixture(async (h, cache) => {
     const policy = createSshPolicy(cache);
-    expect(await policy.checkArgv(['-p', '2222', 'user@remote.invalid', 'echo', 'hidden'])).toMatchObject({ kind: 'refuse', machine: 'remote.invalid' });
+    expect(await policy.checkArgv(['-p', '2222', 'user@remote.invalid', 'echo', 'hidden'])).toEqual({ kind: 'refuse', machine: 'remote.invalid', reason: 'Spider blocked SSH to this Herdr-managed machine. Use spider exec with on:remote.invalid instead.' });
     const argv = ['user@elsewhere.invalid', 'echo', 'ok']; expect(await policy.checkArgv(argv)).toEqual({ kind: 'allow' });
     expect(await invoke(h, argv)).toMatchObject({ exitCode: 17, stdout: 'ok\n', stderr: 'separate\n' });
     expect(JSON.parse((await readFile(join(h.root, 'ssh-calls.jsonl'), 'utf8')).trim())).toEqual(argv);

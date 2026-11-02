@@ -33,10 +33,20 @@ test('busy and idle sessions open views, but a failed handler reports an error w
     await h.press(bytes[0]);
     await h.press(bytes[3]);
     expect(h.opened).toEqual(['agents']);
-    expect(h.errors).toEqual(['Could not open spider memory: pending approvals unavailable']);
+    expect(h.errors).toEqual(["Spider couldn't open the memory view. Try opening it again, or close and reopen the session."]);
     expect(h.editor.getText()).toBe('draft 漢字');
     expect(h.editor.getCursor().col).toBe(6);
   }
+});
+
+
+test('a shortcut reports an unknown Herdr error code without showing its private details', async () => {
+  const h = shortcutFixture();
+  const { HerdrError } = await import('../client/parse.js');
+  registerHerdrShortcuts(h.pi, { ...h.views, memory: async () => { throw new HerdrError('future-failure', 'private diagnostic'); } });
+  await h.press(bytes[3]);
+  expect(h.errors).toEqual(["Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine (future-failure)."]);
+  expect(h.editor.getText()).toBe('draft 漢字');
 });
 
 
@@ -155,7 +165,7 @@ test('the agents shortcut gives feedback before activation and after its overlay
   const agents = registerAgentsUI({ registerCommand() {}, registerShortcut() {} });
   const views = createHerdrViews({ agents, todos: { handler() {} }, usage: { handler() {} }, memory() {}, loop: { handler() {} } });
   registerHerdrShortcuts(h.pi, views);
-  await h.press(bytes[0]); expect(h.errors).toHaveLength(1); expect(h.errors[0]).toMatch(/agents.*unavailable/i);
+  await h.press(bytes[0]); expect(h.errors).toHaveLength(1); expect(h.errors[0]).toContain("couldn't open the agents view");
   const opened: string[] = []; const deactivate = agents.activate(() => { opened.push('agents'); });
   await h.press(bytes[0]); expect(opened).toEqual(['agents']); expect(h.errors).toHaveLength(1);
   deactivate(); await h.press(bytes[0]); expect(h.errors).toHaveLength(2);

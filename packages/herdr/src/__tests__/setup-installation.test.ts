@@ -42,6 +42,22 @@ test('runtime bootstrap failure prevents cutover with repair advice', async () =
   expect(f.cutovers()).toBe(0);
 });
 
+test('a changed core and legacy layout fingerprint reconcile existing sessions without another cutover', async () => {
+  const f = await fixture(), first = await setupHerdr(f.request, f.parts);
+  const journal = await readJournal(f.request.journalRoot);
+  journal.cutoverFingerprint = 'legacy-fingerprint';
+  await (await import('../setup/backup.js')).saveJournal(f.request.journalRoot, journal);
+  const preflight = f.parts.preflight;
+  f.parts.preflight = async request => ({ ...await preflight(request), coreIdentity: { ...f.h.owner!.terminal, coreId: 'new-core' as never }, cutoverNeedsRecheck: true });
+  let reconciled = 0;
+  (f.parts as any).reconcileCutover = async (_request: SetupRequest, context: any) => { reconciled++; await context.recordCutover(first.cutover); return first.cutover; };
+  f.parts.cutover = async () => { throw new Error('An existing owner must not be cut over again'); };
+  const result = await setupHerdr(f.request, f.parts);
+  expect(reconciled).toBe(1); expect(result.cutover).toEqual(first.cutover);
+  expect(f.cutovers()).toBe(1);
+  expect((await f.h.hc.get(first.cutover!.terminals[0])).state).toBe('live');
+});
+
 test('an unchanged setup performs no feed-directory metadata writes', async () => {
   const f = await fixture();
   await setupHerdr(f.request, f.parts);
@@ -66,6 +82,7 @@ test('a second setup writes nothing and preserves unrelated settings', async () 
   expect(await Promise.all(first.writes.map(async (p) => [p, hash(await readFile(p))]))).toEqual(baseline);
   expect((await doctorHerdr(f.request, f.doctorParts)).failures).toEqual([]);
   expect(JSON.parse(await readFile(f.paths.props, 'utf8')).labelContract).toEqual({ version: 1, labels: HERDR_LABELS, kinds: HERDR_KINDS });
+  expect(JSON.parse(await readFile(f.paths.props, 'utf8')).mods.map((mod: { props: { appBinary: string } }) => mod.props.appBinary)).toEqual(Array(5).fill(f.request.config.app.binary));
   for (const path of [f.paths.spider, f.paths.agents, f.paths.machines])
     expect(await readFile(path)).toEqual(await readFile(f.paths.feed));
   expect(await readFile(f.paths.children)).toEqual(await readFile(f.paths.projection));
@@ -537,4 +554,16 @@ test('doctor CLI reports unavailable inspections instead of claiming all checks 
   expect(await runHerdrCli(['doctor', '--config', f.request.configPath], { request: async () => f.request, setupParts: async () => f.parts, doctorParts: async () => f.doctorParts, stdout: text => { output += text; }, stderr() {} })).toBe(0);
   expect(output).not.toContain('Doctor checks passed');
   expect(output).toContain('1 unavailable');
+});
+
+test('an unchanged install still runs cutover recheck when the layout needs journal adoption', async () => {
+  const f = await fixture(); const cutover = vi.spyOn(f.parts, 'cutover'); await setupHerdr(f.request, f.parts);
+  expect(cutover).toHaveBeenCalledTimes(1);
+  const preflight = f.parts.preflight;
+  f.parts.preflight = async request => ({ ...await preflight(request), cutoverNeedsRecheck: true });
+  await setupHerdr(f.request, f.parts);
+  expect(cutover).toHaveBeenCalledTimes(2);
+  f.parts.preflight = preflight; await setupHerdr(f.request, f.parts);
+  expect(cutover).toHaveBeenCalledTimes(2);
+  expect(f.cutovers()).toBe(1);
 });

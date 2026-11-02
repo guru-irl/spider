@@ -40,6 +40,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
   if (request.signal?.aborted) throw Object.assign(new Error('Remote execution was aborted before launch'), { code: 'aborted-before-launch' });
   const startedAt = ports.clock();
   const target = await ports.target(request.on, request.owner);
+  request = { ...request, on: target.on };
   let checks = verifiedRuntimes.get(ports.hc);
   if (!checks) { checks = new Map(); verifiedRuntimes.set(ports.hc, checks); }
   const identity = request.owner.terminal;
@@ -115,9 +116,21 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
       }).finally(() => { releaseCollection = undefined; }); }
       catch { outputFailed(); }
       if (request.signal?.aborted && !aborted) {
-        await job.cancel('abort'); aborted = true; timedOut = false;
-        if (reader && !outputUnreadable) try { latest = await reader.collect(); } catch { /* cancellation is confirmed; keep collected payload bytes */ }
-        return acknowledge(result('aborted', 137));
+        aborted = true; timedOut = false;
+        try { await job.cancel('abort'); } catch { /* A lost transport cannot prove the process stopped. */ }
+        if (reader && !outputUnreadable) try { latest = await reader.collect(); } catch { /* Retain the last successfully collected bytes. */ }
+        const receipt = latest.receipt;
+        const confirmed = receipt && !finish?.evidenceConflict;
+        const state = confirmed && (receipt.outcome === 'signal' || receipt.outcome === 'cancelled') ? `was killed${receipt.signal ? ` by ${receipt.signal}` : ''}`
+          : confirmed && receipt.outcome === 'exited' ? `exited with code ${receipt.exitCode}`
+          : 'state unknown; it may still be running';
+        const value = result('aborted', 137);
+        value.backgroundJob = backgroundJob;
+        value.remoteAbortInfo = `Remote process ${state}. Job ${job.id}, terminal ${job.address}. Follow with hc read ${job.address}; logs: stdout ${logs.stdout}; stderr ${logs.stderr}.`;
+        if (confirmed) return acknowledge(value);
+        // If the original wrapper is lost, leave the monitor eligible to report a later receipt.
+        try { await ports.jobs.detach(job.id); } catch { /* The paths and unknown state remain useful. */ }
+        return value;
       }
       if (latest.capped && !request.background) {
         await job.cancel('abort'); await ports.jobs.consumeNotice(job.id);

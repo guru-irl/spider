@@ -127,7 +127,7 @@ test('repo herdr.config cannot redirect admin approvals or doctor config', async
   const env = { ...process.env, SPIDER_GLOBAL_ROOT: globalRoot, HC_SESSION: 'admin-invalid', XDG_STATE_HOME: join(directory, 'xdg-state'), XDG_CONFIG_HOME: join(directory, 'xdg-config') };
   try {
     expect(await call(['admin', '--session-id', 'owner', '--wrapper', wrapper, '--reason', 'Repair', '--destination', 'managed.invalid', '--'], env))
-      .toEqual({ code: 0, stdout: 'global-policy=managed.invalid\n', stderr: `herdr.config in ${join(root, '.spider/config.json')} is ignored: global scope only\n` });
+      .toEqual({ code: 0, stdout: 'global-policy=managed.invalid\n', stderr: "Spider ignores the repository's herdr.config setting. Move it to the global spider settings if you want to use it.\n" });
     const doctor = await call(['doctor'], env); expect(doctor.code).toBe(1);
     expect(doctor.stdout).toContain(`rerun doctor --config ${configPath}`); expect(doctor.stderr).not.toContain(repoPath);
   } finally { await rm(join(root, '.spider/config.json')); }

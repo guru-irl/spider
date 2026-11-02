@@ -20,7 +20,7 @@ import { createViewerFeedSource } from '../../../herdr/src/viewers/program.js';
 import type { RunId, SessionFeed } from '../../../herdr/src/contracts.js';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); setGlobalDbPathForTests(null); });
-async function fixture(mode: 'fake' | 'hc', existingRun = false) {
+async function fixture(mode: 'fake' | 'hc', existingRun = false, automaticSubagentPanes = false) {
   const h = await createHerdrHarness(mode); await h.start();
   try {
     // Real cores use a recording app double, never an app process or window.
@@ -37,7 +37,7 @@ async function fixture(mode: 'fake' | 'hc', existingRun = false) {
     for (const [name, value] of Object.entries(h.localEnv)) if (value !== undefined && /^(HC_|XDG_|HERDR_)/.test(name)) vi.stubEnv(name, value);
     vi.stubEnv('PI_SUBAGENT_CHILD', '0'); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global);
     const file = standardHerdrConfigPath(h.directories.global);
-    const config = parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
+    const config = parseHerdrConfig({ enabled: true, automaticSubagentPanes, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
       agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] });
     await mkdir(join(h.root, 'packages/herdr'), { recursive: true });
     await cp(resolve('packages/herdr/assets'), join(h.root, 'packages/herdr/assets'), { recursive: true });
@@ -119,7 +119,7 @@ it.each([{ gated: false }, { gated: true }])('reload does not move a viewer from
       } };
     });
   }
-  const f = await fixture('fake', gated); let reloaded: ReturnType<typeof createSessionIpcClient> | undefined;
+  const f = await fixture('fake', gated, gated); let reloaded: ReturnType<typeof createSessionIpcClient> | undefined;
   try {
     const id = f.activeRun ?? f.store.create({ sessionId: f.feed.sessionId, agent: 'worker' }).id;
     if (!f.activeRun) f.store.start(id);
@@ -185,3 +185,26 @@ it.skipIf(!real)('real hc: the mounted viewer stays displayed and read-only afte
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 }, 45000);
+
+it.each([false, true])('mounted automatic viewers follow automaticSubagentPanes=%s and user opens reuse them', async automaticSubagentPanes => {
+  const createPanes = paneModule.createAuxiliaryPanes;
+  let viewer: import('../../../herdr/src/contracts.js').TerminalAddress | undefined, settled = false;
+  vi.spyOn(paneModule, 'createAuxiliaryPanes').mockImplementation(options => {
+    const actor = createPanes({ ...options, subagentViewer: async (...args) => { viewer = await options.subagentViewer(...args); return viewer; } });
+    return { ...actor, acquire: async (...args: Parameters<typeof actor.acquire>) => { try { return await actor.acquire(...args); } finally { if (args[3].automatic) settled = true; } } };
+  });
+  const f = await fixture('fake', true, automaticSubagentPanes);
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 10000 });
+    if (!viewer) throw new Error('Automatic run did not launch its viewer');
+    const terminal = await f.h.hc.get(viewer);
+    expect(terminal).toMatchObject({ state: 'live', parent: f.h.owner!.terminal.address, labels: { 'spider.kind': 'subagent-viewer', 'spider.run': f.activeRun } });
+    const owner = await f.app.ownerPlacement(f.h.owner!.terminal.address);
+    if (automaticSubagentPanes) expect(await f.app.ownerPlacement(viewer)).toMatchObject({ space: owner.space, tab: owner.tab });
+    else { await expect(f.app.ownerPlacement(viewer)).rejects.toMatchObject({ code: 'owner-unplaced' }); expect(terminal.labels['herdr.tab']).toBeUndefined(); }
+    expect(await f.ipc.openRun(f.activeRun!)).toMatchObject({ ok: true, op: 'openRun', viewer });
+    expect(await f.app.ownerPlacement(viewer)).toMatchObject({ space: owner.space, tab: owner.tab });
+    expect(await f.ipc.openRun(f.activeRun!)).toMatchObject({ ok: true, op: 'openRun', viewer });
+    expect(f.errors).toEqual([]);
+  } finally { await f.close(); }
+}, 30000);

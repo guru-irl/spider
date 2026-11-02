@@ -84,7 +84,7 @@ it('a child with failed activation keeps the inherited transport guard and names
     expect(mount.enabled()).toBe(false);
     expect(mount.execution().environmentPolicy(process.env).PATH?.split(':')[0]).toBe(f.shim.shimDirectory);
     for (const command of managedCommands) {
-      expect(await mount.guard({ toolName: 'bash', input: { command } }), command).toMatchObject({ block: true, reason: expect.stringContaining('activation unavailable') });
+      expect(await mount.guard({ toolName: 'bash', input: { command } }), command).toMatchObject({ block: true, reason: expect.stringContaining("couldn't read the Herdr configuration") });
     }
     expect(await mount.guard({ toolName: 'bash', input: { command: 'ssh unmanaged.invalid true' } })).toBeUndefined();
   } finally { await f.close(); }
@@ -102,7 +102,9 @@ it('a child outside Herdr keeps inherited managed-destination enforcement on eve
       { toolName: 'functions.spider', input: { action: 'batch', commands: [{ language: 'shell', code: 'rsync -e ssh f box.invalid:/x' }] } },
       { toolName: 'spider', input: { action: 'exec_file', language: 'shell', path: script } },
     ];
-    for (const call of calls) expect(await mount.guard(call), JSON.stringify(call)).toMatchObject({ block: true, reason: expect.stringContaining('not inside Herdr') });
+    for (const call of calls) expect(await mount.guard(call), JSON.stringify(call)).toMatchObject({ block: true, reason: expect.stringContaining("isn't running inside Herdr") });
+    expect(await mount.guard({ toolName: 'spider', input: { action: 'exec', on: 'remote.invalid', language: 'shell', code: 'true' } }))
+      .toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
   } finally { await f.close(); }
 }, 30000);
 
@@ -118,10 +120,15 @@ async function proveCoreLoss(mode: 'fake' | 'hc') {
     const env = mount.execution().environmentPolicy(process.env);
     expect(env.SPIDER_HERDR_SSH_DESCRIPTOR).toBeUndefined();
     expect(env.PATH?.split(':')).not.toContain(f.shim.shimDirectory);
-    expect(await mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', on: 'remote.invalid', code: 'true' } })).toMatchObject({ block: true, reason: expect.stringContaining('herdr-disabled') });
+    const remoteCall = { toolName: 'spider', input: { action: 'exec', language: 'shell', on: 'remote.invalid', code: 'true' } };
+    const message = "Herdr stopped responding while this subagent was running, so it can't run commands on other machines for the rest of this run. Finish without remote commands, or report back so the parent can start a new run.";
+    expect(await mount.guard(remoteCall)).toEqual({ block: true, reason: message });
     for (const command of [...managedCommands, 'scp f unmanaged.invalid:/x']) {
       expect(await mount.guard({ toolName: 'bash', input: { command } })).toBeUndefined();
     }
+    await f.h.cli(['server', 'start', '--json']);
+    expect(mount.enabled()).toBe(false);
+    expect(await mount.guard(remoteCall)).toEqual({ block: true, reason: message });
     expect(f.errors).toHaveLength(1);
     expect(String(f.errors[0])).toContain('core');
   } finally { await f.close(); }
@@ -148,7 +155,7 @@ it('an inherited invalid cache still refuses SSH rather than guessing destinatio
     const mount = f.mount({ readConfig: async () => { throw new Error('activation unavailable'); } });
     await f.emit('session_start');
     for (const command of ['ssh managed.invalid true', 'ssh unmanaged.invalid true']) {
-      expect(await mount.guard({ toolName: 'bash', input: { command } })).toMatchObject({ block: true, reason: expect.stringContaining('No valid machine cache') });
+      expect(await mount.guard({ toolName: 'bash', input: { command } })).toMatchObject({ block: true, reason: expect.stringContaining("couldn't check Herdr's machine list") });
     }
   } finally { await f.close(); }
 }, 30000);
@@ -181,7 +188,7 @@ it('an unreadable active child writer identity deactivates only Herdr and preser
     const mount = f.mount();
     await expect(f.emit('session_start')).resolves.toBeUndefined();
     expect(mount.enabled()).toBe(false);
-    expect(await mount.guard({ toolName: 'bash', input: { command: 'scp f managed.invalid:/x' } })).toMatchObject({ block: true, reason: expect.stringContaining('child writer identity unavailable') });
+    expect(await mount.guard({ toolName: 'bash', input: { command: 'scp f managed.invalid:/x' } })).toMatchObject({ block: true, reason: expect.stringContaining("couldn't connect this subagent to Herdr") });
     expect(f.errors).toHaveLength(1);
   } finally { ps.mockRestore(); await f.close(); }
 }, 30000);
@@ -208,7 +215,7 @@ it('a configured child outside Herdr reports one inactive notice, not a persiste
     vi.stubEnv('HC_TERMINAL_ID', undefined);
     const mount = f.mount(); await f.emit('session_start'); await f.emit('session_start', { reason: 'reload' });
     expect(mount.enabled()).toBe(false); expect(f.errors).toHaveLength(1);
-    expect(String(f.errors[0])).toContain('not inside Herdr'); expect(statuses).toEqual([]);
+    expect(String(f.errors[0])).toContain("isn't running inside Herdr"); expect(statuses).toEqual([]);
   } finally { await f.close(); }
 }, 30000);
 
@@ -236,7 +243,7 @@ it('explicit true activation failure is one UI error notice, never a footer', as
     vi.stubEnv('HC_TERMINAL_ID', undefined);
     globalConfigForTest(paths.globalRoot).set('herdr.enabled', true);
     f.mount(); await f.emit('session_start'); await f.emit('session_start', { reason: 'reload' });
-    expect(notices).toEqual([{ message: 'Herdr inactive: not inside Herdr', kind: 'error' }]);
+    expect(notices).toEqual([{ message: "This session isn't running inside Herdr, so spider's Herdr features are off here. Everything else in spider still works.", kind: 'error' }]);
     expect(statuses).toEqual([]); expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 }, 30000);
@@ -283,6 +290,6 @@ it.skipIf(process.platform === 'linux')('a first presence ps failure leaves Herd
     const mount = f.mount(); await f.emit('session_start');
     expect(mount.enabled()).toBe(false); expect(mount.owner()).toBeNull();
     expect(f.errors).toHaveLength(1);
-    expect(await mount.guard({ toolName: 'bash', input: { command: 'scp f managed.invalid:/x' } })).toMatchObject({ block: true, reason: expect.stringContaining('process start time') });
+    expect(await mount.guard({ toolName: 'bash', input: { command: 'scp f managed.invalid:/x' } })).toMatchObject({ block: true, reason: expect.stringContaining("Spider couldn't connect this subagent to Herdr") });
   } finally { ps.mockRestore(); syncBuiltinESMExports(); await f.close(); }
 }, 30000);

@@ -16,7 +16,7 @@ test('an explicit viewer that finishes during placement is replaced without evic
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);
   let ended: TerminalAddress | undefined;
   const app: AppClient = {
-    ownerPlacement: async address => { const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p; },
+    tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address), ownerPlacement: async address => { const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Pane absent'); return p; },
     awaitPane: async (address, p) => { const pane = `pane-${address}` as OwnerPlacement['pane']; layout.set(address, { ...p, pane }); return pane; },
     command: async (name, args) => {
       const address = args.terminal as TerminalAddress;

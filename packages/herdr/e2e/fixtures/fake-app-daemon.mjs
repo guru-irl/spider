@@ -104,7 +104,7 @@ export function cliArgs(argv) {
   validateAppCommand(name, args); return { name, args };
 }
 async function main() {
-  if (['-V', '--version', 'version'].includes(process.argv[2])) { console.log('herdr-app 0.1.11'); return; }
+  if (['-V', '--version', 'version'].includes(process.argv[2])) { console.log('herdr-app 0.1.12'); return; }
   const root = process.env.SPIDER_HERDR_E2E_APP_ROOT;
   if (!root) throw new Error('owned fake app root required');
   const socket = socketPath(root, process.env.SPIDER_HERDR_E2E_APP_SOCKET, process.argv[2] === 'serve');

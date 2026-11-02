@@ -22,6 +22,6 @@ test('absolute-path SSH cannot hide a managed stream destination', async () => {
 });
 
 test('an unclassifiable forward target refuses without masking a known managed destination', async () => {
-  expect(await policy.checkArgv(['-W', '%h:%p', 'unmanaged.invalid'])).toMatchObject({ kind: 'refuse', reason: expect.stringContaining('cannot be classified') });
+  expect(await policy.checkArgv(['-W', '%h:%p', 'unmanaged.invalid'])).toEqual({ kind: 'refuse', reason: "Spider couldn't tell where this SSH command would connect, so it blocked the command. Check the SSH command and try again." });
   expect(await policy.checkArgv(['-W', '%h:%p', 'managed.invalid'])).toMatchObject({ kind: 'refuse', machine: 'managed.invalid' });
 });

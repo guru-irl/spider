@@ -746,11 +746,11 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
     suffix = mode === "single"
       ? verb("run")
       : `${verb(mode)} ${t.fg("toolTitle", `· ${n} started`)}`;
+  } else if ((action === "exec" || action === "exec_file" || action === "batch") && typeof args?.on === "string") {
+    // The command goes below the title; remote calls also name their destination.
+    suffix = `${verb(action)} ${t.fg("toolTitle", `on ${args.on}`)}`;
   } else if (args?.sub || args?.command) {
     suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
-  } else if (action === "exec" || action === "exec_file" || action === "batch") {
-    // Keep the header line to the bare verb; the command goes BELOW it (see cmdLines).
-    suffix = verb(action);
   }
   const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
 

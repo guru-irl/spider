@@ -30,14 +30,12 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
   await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
   await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
-  const patches = JSON.parse(await readFile(join(root, 'packages/herdr/assets/look/patches.json'), 'utf8'));
-  for (const kind of ['agents', 'spaces', 'pane', 'tabs']) {
-    await mkdir(join(h.directories.app, 'mods', kind), { recursive: true });
-    await writeFile(join(h.directories.app, 'mods', kind, 'main.js'), patches.mods[kind].map((p: { anchor: string }) => p.anchor).join('\n'));
-    await writeFile(join(h.directories.app, 'mods', kind, 'mod.json'), JSON.stringify({ name: kind, version: patches.upstreamVersion }));
+  for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
+    await cp(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/mods', kind), join(h.directories.app, 'mods', kind), { recursive: true });
   }
   await mkdir(join(h.directories.app, 'layouts'), { recursive: true });
   await writeFile(join(h.directories.app, 'layouts/main.json'), JSON.stringify({ children: [
+    { id: 'brand', content: { mod: 'workspace-chrome' } }, { id: 'footer', content: { mod: 'workspace-chrome', props: { footer: true } } },
     { id: 'sidebar', content: { mod: 'agents' } }, { id: 'spaces', content: { mod: 'spaces' } }, { id: 'tabs', content: { mod: 'tabs' } },
     { id: 'work-body', children: [ { id: 'main', content: { tab: 'active', pane: { header: { content: { mod: 'pane' } } } } },
       { id: 'panel', children: [{ id: 'panel-body', type: 'stack', children: [{ id: 'files' }, { id: 'changes' }] }] } ] },
@@ -51,7 +49,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
   const script = join(h.root, 'app-selection.mjs');
   await writeFile(script, `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 const a = process.argv.slice(2), p = process.env.HERDR_APP_HOME + '/settings.json';
-if (a[0] === '--version') console.log('herdr-app 0.1.11');
+if (a[0] === '--version') console.log('herdr-app 0.1.12');
 else if (a[0] === 'do') { if (${requireAppBackup}) { const j = JSON.parse(readFileSync(${JSON.stringify(join(h.directories.global, 'herdr/setup/journal.json'))}, 'utf8')); const entry = j.entries.find(e => e.path === p); if (!entry?.backup || !readFileSync(entry.backup).length) throw new Error('App settings backup missing before selection'); } const s = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {}; if (a[1] === 'layout.switch') s.layout = a[a.indexOf('--name') + 1]; if (a[1] === 'app.theme') s.theme = a[a.indexOf('--name') + 1]; writeFileSync(p, JSON.stringify(s)); console.log('{}'); }
 else console.log(JSON.stringify({spaces:[]}));\n`);
   const app = join(h.root, 'app-selection'); await writeFile(app, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`); await chmod(app, 0o700); config.app.binary = app;
@@ -60,7 +58,7 @@ else console.log(JSON.stringify({spaces:[]}));\n`);
   execFileSync('git', ['init', '-q', h.root]);
   const ports = configFixtureCwd(createProductionHerdrCliPorts(root, { ...h.localEnv, SPIDER_GLOBAL_ROOT: h.directories.global }), h.root); cleanup.push(() => ports.dispose());
   const request = await ports.request(configPath), parts = await ports.setupParts(request);
-  const context: SetupContext = { labelContract: HerdrLabelContract, modProps: ['agents', 'spaces', 'pane', 'tabs', 'panel'].map(name => ({ directory: join(h.directories.app, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(h.directories.global, 'herdr'), cliPath: join(root, 'dist/herdr/cli.mjs'), nodePath: process.execPath, configPath, labelContract: HerdrLabelContract } })), installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {} };
+  const context: SetupContext = { labelContract: HerdrLabelContract, modProps: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome'].map(name => ({ directory: join(h.directories.app, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(h.directories.global, 'herdr'), cliPath: join(root, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath, labelContract: HerdrLabelContract } })), installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {} };
   const bootstraps: string[] = [];
   const bootstrap = parts.bootstrapRuntime;
   const ensureRuntime = parts.ensureRuntime; let planned: Awaited<ReturnType<typeof ensureRuntime>> = [];

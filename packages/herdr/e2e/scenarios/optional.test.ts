@@ -89,7 +89,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
         await pi.prompt(`${marker('remote')} refuse the remote command`, deadline(90_000));
         const remote = await pi.toolResult('remote', deadline(10_000));
         expect(remote.isError, JSON.stringify(remote)).toBe(true);
-        expect(JSON.stringify(remote.result)).toMatch(/herdr-(disabled|unavailable)/i);
+        expect(JSON.stringify(remote.result)).toMatch(/Herdr is off in this session|Herdr stopped responding/);
         expect(existsSync(remoteEffect)).toBe(false);
         await pi.prompt(`${marker('spawn')} start the child`, deadline(90_000));
         expect((await pi.toolResult('spawn', deadline(10_000))).isError).toBe(false);
@@ -102,7 +102,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
         expect(childLocal).toMatchObject({ isError: false });
         expect(JSON.stringify(childLocal?.result)).toContain('sentinel-ok');
         expect(childRemote).toMatchObject({ isError: true });
-        expect(JSON.stringify(childRemote?.result)).toMatch(/herdr-(disabled|unavailable)/i);
+        expect(JSON.stringify(childRemote?.result)).toMatch(/Herdr is off in this session|Herdr stopped responding/);
         expect(existsSync(remoteEffect)).toBe(false);
         const herdr = join(suite.directories.SPIDER_GLOBAL_ROOT, 'herdr');
         await waitFor('parent and child presence', async () => (await readdir(join(herdr, 'processes')).catch(() => [])).length, n => n === 2, deadline(20_000));
@@ -189,7 +189,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
           const remoteAt = Date.now(); await pi.prompt(`${marker('remote')} refuse remote execution`);
           await pi.waitEvent('agent_settled', event => event.at >= remoteAt, deadline(90_000));
           const remote = await pi.toolResult('remote', deadline(10_000));
-          expect(remote.isError).toBe(true); expect(JSON.stringify(remote.result)).toMatch(/herdr-(disabled|unavailable)/i);
+          expect(remote.isError).toBe(true); expect(JSON.stringify(remote.result)).toMatch(/Herdr is off in this session|Herdr stopped responding/);
           expect(existsSync(remoteEffect)).toBe(false);
           const calls = (await suite.cores!.records()).filter(record => record.ppid === pi.pid);
           expect(calls, 'no spider-side hc calls while inactive').toEqual([]);

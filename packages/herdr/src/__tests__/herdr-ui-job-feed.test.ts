@@ -37,7 +37,7 @@ test('the journal reader retains command metadata after the writer reloads', asy
   expect(journal.jobs[0]).toMatchObject({ commandPreview: 'npm test' });
 });
 
-test('a finished child command reaches the panel from the real feed with no finished terminals and opens job output', async () => {
+test('a finished child command retains its journal without a feed notice, card or toast', async () => {
   const h = await monitorFixture();
   const dbPath = join(h.f.root, 'feed.db');
   const db = openDbAt(dbPath, 'worktree');
@@ -52,7 +52,6 @@ test('a finished child command reaches the panel from the real feed with no fini
   const source = createHerdrDataSource({
     resolveRunDb: () => ({ db: openDb(dbPath), dbPath }), openApprovalDbs: () => ({ global: openDb(approvalPath), repo: null }),
     runEvents: { on: () => () => {} }, scheduler: { subscribe: () => () => {}, listTriggers: () => [] },
-    readJobJournal: async () => (await createJobStore(h.f.root, h.owner.sessionId, run.id as never).read()).jobs,
     readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }),
     readConfig: () => ({ limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 } }),
     readOwnerFacts: async () => ({ placement: null, status: { native: 'idle', effective: 'idle', message: null }, ipc: { address: '/fixture/ipc', capabilityFile: '/fixture/capability' } }),
@@ -61,16 +60,19 @@ test('a finished child command reaches the panel from the real feed with no fini
   try {
     const feed = await source.snapshot(h.owner);
     const notice = feed.notifications.find(n => n.kind === 'job-result');
-    expect(notice).toMatchObject({ createdAt: 1000, job: { id: handle.id, runId: run.id, commandPreview: 'npm test', machine: 'remote.invalid', exitCode: 23, signal: null, finishedAt: 1000, address: handle.address } });
+    expect(notice).toBeUndefined();
+    expect((await createJobStore(h.f.root, h.owner.sessionId, run.id as never).read()).jobs[0]).toMatchObject({ id: handle.id, runId: run.id, commandPreview: 'npm test', machine: 'remote.invalid', phase: { kind: 'finished', address: handle.address, result: { exitCode: 23, signal: null, finishedAt: 1000 } } });
     expect(parseFeed(JSON.stringify(feed))).not.toBeNull();
-    const result = await runPanelScene<{ text: string[]; requests: unknown[]; focus: unknown[] }>(`
+    const result = await runPanelScene<{ posts: unknown[]; card: boolean; requests: unknown[]; focus: unknown[] }>(`
       Date.now=()=>1000;api.terminals=()=>[];const requests=[];
-      api.exec=async(command,args)=>{if(args[1]==='ipc'){const req=JSON.parse(args[5]);requests.push(req);return {code:0,stdout:JSON.stringify(req.op==='ping'?{ok:true,op:'ping',status:{native:'idle',effective:'idle'}}:{ok:true,op:'openJob',viewer:'output.invalid/t1'}),stderr:''};}
+      api.exec=async(command,args)=>{if(args[1]==='ipc'){const req=JSON.parse(args[5]);requests.push(req);return {code:0,stdout:JSON.stringify({ok:true,op:req.op}),stderr:''};}
         return {code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
       initView(panel,cx);await tasks[0];const tree=panel.render(cx);const row=byId(tree,${JSON.stringify('need-job:' + handle.id)});
-      row.events.on_click({},cx);await drain();panel.close();console.log(JSON.stringify({text:texts(row),requests,focus:commands}));`, feed);
-    expect(result.text).toEqual(['reviewer', 'npm test', 'failed', 'on', 'remote.invalid']);
-    expect(result.requests).toEqual([{op:'ping',generation:h.owner.generation},{op:'openJob',jobId:handle.id,generation:h.owner.generation}]);
-    expect(result.focus).toEqual([{name:'pane.focus',args:{terminal:'output.invalid/t1'}}]);
+      await drain();panel.close();console.log(JSON.stringify({posts:notifications,card:row!==undefined,requests,focus:commands}));`, feed);
+    // The parent agent receives the result. The panel needs no duplicate notice.
+    expect(result.posts).toEqual([]);
+    expect(result.card).toBe(false);
+    expect(result.requests).toEqual([]);
+    expect(result.focus).toEqual([]);
   } finally { source.dispose(); }
 });

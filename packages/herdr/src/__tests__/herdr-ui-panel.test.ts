@@ -61,23 +61,20 @@ describe('space panel projection', () => {
 });
 
 describe('needs you', () => {
-  test('waiting sessions, recent failed runs, memories and over-pace budget, one action each', () => {
+  test('waiting and failed sessions, one action each; failed runs and over-pace budget are not listed', () => {
     const failed = run('yarn-build', 'planner', { status: 'failed', finishedAt: NOW - 3 * 60000, result: 'exit 1\nmore' });
     const old = run('old-fail', 'planner', { status: 'failed', finishedAt: NOW - 30 * 3600000 });
-    const s = feed('planner', 'space-3', { runs: { rows: [failed, old, run('ok', 'planner', { status: 'done', finishedAt: NOW })], total: 3, truncated: false } });
+    const s = feed('planner', 'space-3', { runs: { rows: [failed, old, run('ok', 'planner', { status: 'done', finishedAt: NOW })], total: 3, truncated: false }, pace: pace({ projected: 6200 }) });
     const errored = feed('crashed', 'space-3', { status: { native: 'error', effective: 'error', message: null } });
-    const items = projectNotifications([s, errored], projectPace([feed('x', null, { pace: pace({ projected: 6200 }) })], NOW), NOW);
+    const items = projectNotifications([s, errored], NOW);
     expect(items.map(i => [i.kind, notificationText(i), i.action])).toEqual([
       ['failed', 'crashed failed', 'Focus'],
-      ['failed', 'yarn-build failed', 'Output'],
-      ['budget', 'Over budget pace projected 6,200 of 5,000', 'Usage'],
     ]);
-    expect(items[1].parts).toEqual([{ type: 'agent', icon: 'subagent', text: 'yarn-build' }, { type: 'text', text: 'failed' }]);
-    expect(items[1]).toMatchObject({ sessionId: 'planner', runId: 'yarn-build' });
+    expect(items[0]).toMatchObject({ sessionId: 'crashed' });
   });
   test('a disconnected or closed session is not reported as waiting', () => {
     const stale = feed('stale', 'space-3', { updatedAt: NOW - 60000, status: { native: 'blocked', effective: 'blocked', message: null } });
-    expect(projectNotifications([stale], projectPace([], NOW), NOW)).toEqual([]);
+    expect(projectNotifications([stale], NOW)).toEqual([]);
   });
 });
 
@@ -153,15 +150,15 @@ describe('panel demarcations (rendered by the strict mod API)', () => {
     expect(output.cost).toEqual([['1.3k'], 'JetBrains Mono', true, 48]);
     expect(output.missing).toEqual(['\u2013']);
   });
-  test('notification items render agents and machines as slim pills and commands as inline code', async () => {
-    const output = await runPanelScene<{ pills: unknown[]; text: string[] }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();
+  test('a failed command gets no card; a waiting card renders its agent as a slim pill', async () => {
+    const output = await runPanelScene<{ job: boolean; pill: unknown[]; text: string[] }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();a.status={native:'blocked',effective:'blocked',message:null};
       files[0]=JSON.stringify(a);props.labelContract={version:1,labels:{job:'spider.job',kind:'spider.kind',session:'spider.session',run:'spider.run',machine:'spider.machine',displayName:'spider.display-name'},kinds:{exec:'exec',execFile:'exec-file',batch:'batch'}};
       a.notifications=[{id:'job-result:j1',kind:'job-result',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now()-60000,title:'Job j1',body:'Exit 1',action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address},job:{id:'j1',runId:null,commandPreview:'make test build',machine:'build.invalid',address:'build.invalid/t9',exitCode:1,signal:null,finishedAt:Date.now()-60000}}];files[0]=JSON.stringify(a);api.terminals=()=>[];
-      initView(panel,cx);await tasks[0];const tree=panel.render(cx);const row=byId(tree,'need-job:j1');
-      const pills=[0,1,4].map(i=>{const p=byId(row,'pill-job:j1-'+i);return [texts(p),p.items.length,p.styles.rounded[0],p.styles.bg[0],p.styles.font_family[0]];});
-      console.log(JSON.stringify({pills,text:texts(row)}));`, feed('first', 'space-3'));
-    // Agent and machine: icon plus name in a slim pill; command: inline code (text only).
-    expect(output.pills).toEqual([[['first'], 2, 999, '#ffffff0d', 'JetBrains Mono'], [['make test build'], 1, 4, '#ffffff12', 'JetBrains Mono'], [['build.invalid'], 2, 999, '#ffffff0d', 'JetBrains Mono']]);
-    expect(output.text).toEqual(['first', 'make test build', 'failed', 'on', 'build.invalid']);
+      initView(panel,cx);await tasks[0];const tree=panel.render(cx);const row=byId(tree,'need-waiting:first');const p=byId(row,'pill-waiting:first-0');
+      console.log(JSON.stringify({job:Boolean(byId(tree,'need-job:j1')),pill:[texts(p),p.items.length,p.styles.rounded[0],p.styles.bg[0],p.styles.font_family[0]],text:texts(byId(tree,'spider-notifications'))}));`, feed('first', 'space-3'));
+    expect(output.job).toBe(false);
+    // Agent: icon plus name in a slim pill.
+    expect(output.pill).toEqual([['first'], 2, 999, '#ffffff0d', 'JetBrains Mono']);
+    expect(output.text).toEqual(['!', 'first', 'is waiting']);
   });
 });

@@ -4,9 +4,10 @@ import { makeKillHandler } from "../actions/kill";
 import { makeRunHandler, makeAsyncNotifier } from "../actions/run";
 import { RunStore } from "../run-store";
 import { freshDb, testScratchPath } from "./helpers/testutil";
-import { getChild, teardownAllAsync } from "../coordinators";
+import { getChild, unregisterChild, teardownAllAsync } from "../coordinators";
 import { type Db } from "@spider/db-core";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
+import { releaseShared } from '../child-registry';
 const dbs: Db[] = [];
 afterEach(async () => { await teardownAllAsync({ graceMs: 1 }); for(const db of dbs.splice(0)) db.close(); vi.restoreAllMocks(); });
 it("kill reports an unconfirmed identity as an error with the reason, not no-process", async () => {
@@ -65,6 +66,8 @@ it("pi's real message method queues shutdown for nextTurn instead of invoking it
 it("a throwing owned kill reports failure instead of claiming success", async () => {
   const db=freshDb();dbs.push(db);const ctx={db,sessionId:"throws",cwd:testScratchPath("cwd"),runDbPath:"fixture.db"};
   const result=await makeRunHandler({spawner:()=>({wait:()=>new Promise(()=>{}),detach(){},kill(){throw new Error("permission denied")}})})({agent:"worker",task:"work"},ctx);
-  const killed=await makeKillHandler()({id:result.details.run.id},ctx);
-  expect(killed.isError).toBe(true); expect(killed.content).toMatch(/permission denied/);
+  try {
+    const killed=await makeKillHandler()({id:result.details.run.id},ctx);
+    expect(killed.isError).toBe(true); expect(killed.content).toMatch(/permission denied/);
+  } finally { unregisterChild(ctx.sessionId, result.details.run.id); releaseShared(result.details.run.id); }
 });

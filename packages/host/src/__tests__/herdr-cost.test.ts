@@ -34,7 +34,7 @@ function fixture(readUsage: HostDataSourceOptions['readUsage'], initialNow = NOW
   let now = initialNow;
   const source = createHerdrDataSource({
     resolveRunDb: () => ({ db: openDbAt(runFile, 'worktree'), dbPath: runFile }), openApprovalDbs: () => ({ global: openDbAt(approvalFile, 'global'), repo: null }),
-    runEvents: { on: () => () => {} }, readJobJournal: async () => [], scheduler: { listTriggers: () => [], subscribe: () => () => {} },
+    runEvents: { on: () => () => {} }, scheduler: { listTriggers: () => [], subscribe: () => () => {} },
     readUsage, readConfig: () => ({ globalRoot: root, limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 } }), clock: () => now,
   });
   disposals.push(() => source.dispose());

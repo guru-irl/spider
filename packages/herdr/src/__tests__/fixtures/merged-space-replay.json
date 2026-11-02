@@ -1,0 +1,530 @@
+{
+  "journal": {
+    "version": 1,
+    "spaces": [
+      {
+        "name": "Group 1",
+        "id": "space-0",
+        "adopted": false
+      },
+      {
+        "name": "Group 2",
+        "id": "space-1",
+        "adopted": false
+      },
+      {
+        "name": "Group 3",
+        "id": "space-2",
+        "adopted": false
+      },
+      {
+        "name": "Group 4",
+        "id": "space-3",
+        "adopted": false
+      }
+    ],
+    "tabs": [
+      {
+        "target": {
+          "file": "/fixture/sessions/session-1.jsonl",
+          "sessionId": "session-1",
+          "name": "Session 1",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 1",
+          "spaceOrder": 0,
+          "sessionOrder": 0
+        },
+        "placement": {
+          "space": "space-0",
+          "tab": "tab-0",
+          "terminal": "terminal-0"
+        },
+        "result": {
+          "pid": 2000,
+          "startIdentity": "fixture:2000",
+          "sessionFile": "/fixture/sessions/session-1.jsonl",
+          "sessionId": "session-1",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 1 [spider:00000000000000000000000000000000]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-2.jsonl",
+          "sessionId": "session-2",
+          "name": "Session 2",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 1",
+          "spaceOrder": 0,
+          "sessionOrder": 1
+        },
+        "placement": {
+          "space": "space-0",
+          "tab": "tab-1",
+          "terminal": "terminal-1"
+        },
+        "result": {
+          "pid": 2001,
+          "startIdentity": "fixture:2001",
+          "sessionFile": "/fixture/sessions/session-2.jsonl",
+          "sessionId": "session-2",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 2 [spider:00000000000000000000000000000001]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-3.jsonl",
+          "sessionId": "session-3",
+          "name": "Session 3",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 1",
+          "spaceOrder": 0,
+          "sessionOrder": 2
+        },
+        "placement": {
+          "space": "space-0",
+          "tab": "tab-2",
+          "terminal": "terminal-2"
+        },
+        "result": {
+          "pid": 2002,
+          "startIdentity": "fixture:2002",
+          "sessionFile": "/fixture/sessions/session-3.jsonl",
+          "sessionId": "session-3",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 3 [spider:00000000000000000000000000000002]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-4.jsonl",
+          "sessionId": "session-4",
+          "name": "Session 4",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 1",
+          "spaceOrder": 0,
+          "sessionOrder": 3
+        },
+        "placement": {
+          "space": "space-0",
+          "tab": "tab-3",
+          "terminal": "terminal-3"
+        },
+        "result": {
+          "pid": 2003,
+          "startIdentity": "fixture:2003",
+          "sessionFile": "/fixture/sessions/session-4.jsonl",
+          "sessionId": "session-4",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 4 [spider:00000000000000000000000000000003]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-5.jsonl",
+          "sessionId": "session-5",
+          "name": "Session 5",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 2",
+          "spaceOrder": 1,
+          "sessionOrder": 0
+        },
+        "placement": {
+          "space": "space-1",
+          "tab": "tab-4",
+          "terminal": "terminal-4"
+        },
+        "result": {
+          "pid": 2004,
+          "startIdentity": "fixture:2004",
+          "sessionFile": "/fixture/sessions/session-5.jsonl",
+          "sessionId": "session-5",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 5 [spider:00000000000000000000000000000004]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-6.jsonl",
+          "sessionId": "session-6",
+          "name": "Session 6",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 2",
+          "spaceOrder": 1,
+          "sessionOrder": 1
+        },
+        "placement": {
+          "space": "space-1",
+          "tab": "tab-5",
+          "terminal": "terminal-5"
+        },
+        "result": {
+          "pid": 2005,
+          "startIdentity": "fixture:2005",
+          "sessionFile": "/fixture/sessions/session-6.jsonl",
+          "sessionId": "session-6",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 6 [spider:00000000000000000000000000000005]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-7.jsonl",
+          "sessionId": "session-7",
+          "name": "Session 7",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 2",
+          "spaceOrder": 1,
+          "sessionOrder": 2
+        },
+        "placement": {
+          "space": "space-1",
+          "tab": "tab-6",
+          "terminal": "terminal-6"
+        },
+        "result": {
+          "pid": 2006,
+          "startIdentity": "fixture:2006",
+          "sessionFile": "/fixture/sessions/session-7.jsonl",
+          "sessionId": "session-7",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 7 [spider:00000000000000000000000000000006]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-8.jsonl",
+          "sessionId": "session-8",
+          "name": "Session 8",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 3",
+          "spaceOrder": 2,
+          "sessionOrder": 0
+        },
+        "placement": {
+          "space": "space-2",
+          "tab": "tab-7",
+          "terminal": "terminal-7"
+        },
+        "result": {
+          "pid": 2007,
+          "startIdentity": "fixture:2007",
+          "sessionFile": "/fixture/sessions/session-8.jsonl",
+          "sessionId": "session-8",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 8 [spider:00000000000000000000000000000007]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-9.jsonl",
+          "sessionId": "session-9",
+          "name": "Session 9",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 3",
+          "spaceOrder": 2,
+          "sessionOrder": 1
+        },
+        "placement": {
+          "space": "space-2",
+          "tab": "tab-8",
+          "terminal": "terminal-8"
+        },
+        "result": {
+          "pid": 2008,
+          "startIdentity": "fixture:2008",
+          "sessionFile": "/fixture/sessions/session-9.jsonl",
+          "sessionId": "session-9",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 9 [spider:00000000000000000000000000000008]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-10.jsonl",
+          "sessionId": "session-10",
+          "name": "Session 10",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 3",
+          "spaceOrder": 2,
+          "sessionOrder": 2
+        },
+        "placement": {
+          "space": "space-2",
+          "tab": "tab-9",
+          "terminal": "terminal-9"
+        },
+        "result": {
+          "pid": 2009,
+          "startIdentity": "fixture:2009",
+          "sessionFile": "/fixture/sessions/session-10.jsonl",
+          "sessionId": "session-10",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 10 [spider:00000000000000000000000000000009]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-11.jsonl",
+          "sessionId": "session-11",
+          "name": "Session 11",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 4",
+          "spaceOrder": 3,
+          "sessionOrder": 0
+        },
+        "placement": {
+          "space": "space-3",
+          "tab": "tab-10",
+          "terminal": "terminal-10"
+        },
+        "result": {
+          "pid": 2010,
+          "startIdentity": "fixture:2010",
+          "sessionFile": "/fixture/sessions/session-11.jsonl",
+          "sessionId": "session-11",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 11 [spider:0000000000000000000000000000000a]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-12.jsonl",
+          "sessionId": "session-12",
+          "name": "Session 12",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 4",
+          "spaceOrder": 3,
+          "sessionOrder": 1
+        },
+        "placement": {
+          "space": "space-3",
+          "tab": "tab-11",
+          "terminal": "terminal-11"
+        },
+        "result": {
+          "pid": 2011,
+          "startIdentity": "fixture:2011",
+          "sessionFile": "/fixture/sessions/session-12.jsonl",
+          "sessionId": "session-12",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 12 [spider:0000000000000000000000000000000b]"
+      },
+      {
+        "target": {
+          "file": "/fixture/sessions/session-13.jsonl",
+          "sessionId": "session-13",
+          "name": "Session 13",
+          "cwd": "/fixture/project",
+          "extensionArguments": [],
+          "spaceName": "Group 4",
+          "spaceOrder": 3,
+          "sessionOrder": 2
+        },
+        "placement": {
+          "space": "space-3",
+          "tab": "tab-12",
+          "terminal": "terminal-12"
+        },
+        "result": {
+          "pid": 2012,
+          "startIdentity": "fixture:2012",
+          "sessionFile": "/fixture/sessions/session-13.jsonl",
+          "sessionId": "session-13",
+          "cwd": "/fixture/project"
+        },
+        "failure": null,
+        "label": "Session 13 [spider:0000000000000000000000000000000c]"
+      }
+    ],
+    "intents": [],
+    "retired": [],
+    "focused": true
+  },
+  "layout": {
+    "spaces": [
+      {
+        "id": "space-0",
+        "name": "Group 1 renamed",
+        "tabs": [
+          {
+            "id": "tab-0",
+            "name": "Group 1",
+            "terminal": "terminal-0",
+            "ownerSessionId": null,
+            "terminals": [
+              {
+                "terminal": "terminal-0",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-2",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-1",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-3",
+                "ownerSessionId": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "space-1",
+        "name": "Group 2",
+        "tabs": [
+          {
+            "id": "tab-4",
+            "name": "Group 2",
+            "terminal": "terminal-4",
+            "ownerSessionId": null,
+            "terminals": [
+              {
+                "terminal": "terminal-4",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-5",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-6",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-13",
+                "ownerSessionId": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "space-2",
+        "name": "Group 3",
+        "tabs": [
+          {
+            "id": "tab-7",
+            "name": "Group 3",
+            "terminal": "terminal-14",
+            "ownerSessionId": null,
+            "terminals": [
+              {
+                "terminal": "terminal-14",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-8",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-9",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-15",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-16",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-17",
+                "ownerSessionId": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "space-3",
+        "name": "Group 4",
+        "tabs": [
+          {
+            "id": "tab-10",
+            "name": "Group 4",
+            "terminal": "terminal-10",
+            "ownerSessionId": null,
+            "terminals": [
+              {
+                "terminal": "terminal-10",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-11",
+                "ownerSessionId": null
+              },
+              {
+                "terminal": "terminal-12",
+                "ownerSessionId": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "labels": {
+    "terminal-13": {
+      "spider.kind": "subagent-viewer"
+    },
+    "terminal-14": {},
+    "terminal-15": {},
+    "terminal-16": {
+      "spider.kind": "subagent-viewer"
+    },
+    "terminal-17": {
+      "spider.kind": "subagent-viewer"
+    }
+  },
+  "missing": [
+    "terminal-7"
+  ],
+  "liveOwners": [
+    {
+      "sessionId": "session-8",
+      "terminal": "terminal-14",
+      "pid": 3100,
+      "startIdentity": "fixture:3100",
+      "kind": "moved"
+    },
+    {
+      "sessionId": "session-9",
+      "terminal": "terminal-15",
+      "pid": 3200,
+      "startIdentity": "fixture:3200",
+      "kind": "duplicate"
+    }
+  ]
+}

@@ -107,9 +107,9 @@ for (const mode of ['fake', 'hc'] as const) test.skipIf(mode === 'hc' && !realHc
     expect(m.enabled()).toBe(false); expect(m.owner()).toBeNull();
     expect(await readFile(f.feed, 'utf8')).toBe(oldFeed);
     expect((await f.registry.list()).map(r => r.owner.terminal.socket)).toEqual([f.h.remoteSocket]);
-    expect(f.notices.filter(message => message.includes("this session's Herdr terminal belongs to a core that is no longer running; start a new session in Herdr"))).toHaveLength(1);
+    expect(f.notices.filter(message => message.includes("This session's Herdr pane belongs to a Herdr instance that has stopped. Close this session and open a new session in Herdr."))).toHaveLength(1);
     expect(await m.guard({ toolName: 'bash', input: { command: 'ssh remote.invalid true' } })).toBeUndefined();
-    expect(await m.guard({ toolName: 'bash', input: { on: 'remote.invalid', command: 'true' } })).toMatchObject({ block: true, reason: expect.stringContaining('herdr-disabled') });
+    expect(await m.guard({ toolName: 'bash', input: { on: 'remote.invalid', command: 'true' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
   } finally {
     for (const m of mounts.splice(0)) await m.dispose();
     for (const pid of oldProcesses) { try { process.kill(pid, 'SIGKILL'); } catch {} }
@@ -126,17 +126,17 @@ test('a same-ID core return notifies once but stays inactive until reload', asyn
     const calls = (await f.h.calls()).length;
     await delay(2200); expect((await f.h.calls()).length).toBe(calls); // Socket-only while absent: no hc autostart.
     await outage.recover();
-    await until(async () => f.notices.includes('Herdr core is back. /reload to reconnect.'), 'no recovery notice');
+    await until(async () => f.notices.includes("Herdr is running again. Run /reload to reconnect this session to the sidebar and panes."), 'no recovery notice');
     expect(m.enabled()).toBe(false); expect(m.owner()).toBeNull();
     expect(await readFile(f.feed, 'utf8')).toBe(oldFeed);
-    expect(f.notices.filter(message => message === 'Herdr core is back. /reload to reconnect.')).toHaveLength(1);
+    expect(f.notices.filter(message => message === "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.")).toHaveLength(1);
     expect(await m.guard({ toolName: 'bash', input: { command: 'ssh remote.invalid true' } })).toBeUndefined();
     await f.start(); expect(m.enabled(), f.notices.join('\n')).toBe(true);
     outage = await crashFakeCore(f.h); await m.guard({ toolName: 'bash', input: { command: 'true' } });
     await outage.recover();
-    await until(async () => f.notices.filter(message => message === 'Herdr core is back. /reload to reconnect.').length === 2, 'no second recovery notice', 2500);
+    await until(async () => f.notices.filter(message => message === "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.").length === 2, 'no second recovery notice', 2500);
     // One recovery notice per outage: the reload reactivated Herdr, so the second outage notifies again.
-    expect(f.notices.filter(message => message === 'Herdr core is back. /reload to reconnect.')).toHaveLength(2);
+    expect(f.notices.filter(message => message === "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.")).toHaveLength(2);
     expect(m.enabled()).toBe(false);
   } finally { for (const m of mounts.splice(0)) await m.dispose(); await f.h.close(); expect(await f.h.remainingOwnedResources()).toEqual([]); }
 }, 60000);
@@ -147,12 +147,12 @@ test('after a recovery notice, session shutdown cancels the next inactive watche
     const m = f.mounted(); await f.start();
     let outage = await crashFakeCore(f.h); await m.guard({ toolName: 'bash', input: { command: 'true' } });
     await outage.recover();
-    await until(async () => f.notices.includes('Herdr core is back. /reload to reconnect.'), 'no first recovery notice');
+    await until(async () => f.notices.includes("Herdr is running again. Run /reload to reconnect this session to the sidebar and panes."), 'no first recovery notice');
     f.nextSession(); await f.start(); expect(m.enabled(), f.notices.join('\n')).toBe(true);
     outage = await crashFakeCore(f.h); await m.guard({ toolName: 'bash', input: { command: 'true' } });
     await f.shutdown(); await outage.recover(); const calls = (await f.h.calls()).length;
     await delay(2500);
-    expect(f.notices.filter(message => message === 'Herdr core is back. /reload to reconnect.')).toHaveLength(1);
+    expect(f.notices.filter(message => message === "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.")).toHaveLength(1);
     expect((await f.h.calls()).length).toBe(calls);
     expect(m.enabled()).toBe(false);
   } finally { for (const m of mounts.splice(0)) await m.dispose(); await f.h.close(); expect(await f.h.remainingOwnedResources()).toEqual([]); }
@@ -166,11 +166,11 @@ test.skipIf(!realHc)('real hc holder recovery keeps the parent inactive and anno
     process.kill(before.pid, 'SIGKILL');
     await until(async () => !await isCoreAvailable(f.h.localEnv), 'core socket did not go down');
     await m.guard({ toolName: 'bash', input: { command: 'true' } }); expect(m.enabled()).toBe(false);
-    await until(async () => f.notices.includes('Herdr core is back. /reload to reconnect.'), 'holder returned without a notice');
+    await until(async () => f.notices.includes("Herdr is running again. Run /reload to reconnect this session to the sidebar and panes."), 'holder returned without a notice');
     const after = await f.h.cli(['server', 'status', '--json']) as typeof before;
     expect(after.core.id).toBe(before.core.id); expect(after.pid).not.toBe(before.pid);
     expect(m.enabled()).toBe(false); expect(m.owner()).toBeNull();
-    expect(f.notices.filter(message => message === 'Herdr core is back. /reload to reconnect.')).toHaveLength(1);
+    expect(f.notices.filter(message => message === "Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.")).toHaveLength(1);
     await f.start(); expect(m.enabled()).toBe(true);
   } finally { for (const m of mounts.splice(0)) await m.dispose(); await f.h.close(); expect(await f.h.remainingOwnedResources()).toEqual([]); console.log('real holder-recovery cleanup:', JSON.stringify(f.h.cleanupProof)); }
 }, 60000);
@@ -183,7 +183,7 @@ test.skipIf(!realHc)('a real process outside the claimed hc terminal publishes n
     expect(await f.registry.list()).toEqual([]);
     expect(f.noticeLevels).toEqual(['error']);
     expect(await access(f.feed).then(() => true, () => false)).toBe(false);
-    expect(f.notices.filter(message => message.includes("this process is not running inside this session's Herdr terminal"))).toHaveLength(1);
-    await f.start(); expect(f.notices.filter(message => message.includes("this session's Herdr terminal"))).toHaveLength(1);
+    expect(f.notices.filter(message => message.includes("This session isn't running in the Herdr pane it belongs to"))).toHaveLength(1);
+    await f.start(); expect(f.notices.filter(message => message.includes("This session isn't running in the Herdr pane it belongs to"))).toHaveLength(1);
   } finally { await f.h.close(); expect(await f.h.remainingOwnedResources()).toEqual([]); console.log('real external-caller cleanup:', JSON.stringify(f.h.cleanupProof)); }
 }, 60000);

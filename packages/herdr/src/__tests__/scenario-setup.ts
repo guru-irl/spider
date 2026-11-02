@@ -1,3 +1,4 @@
+import { runPanelScene } from './acceptance/i.js';
 // SPDX-License-Identifier: MIT
 /// <reference types="vite/client" />
 import assert from 'node:assert/strict';
@@ -15,7 +16,6 @@ import { openDbAt, paths } from '@spider/db-core';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { parseFeed } from '../../assets/shared/feed.js';
 import { createSessionIpcClient } from '../feed/ipc-client.js';
-import { createNotificationTracker } from '../../assets/mods/spider/notifications.js';
 import { HERDR_LABELS, HERDR_KINDS, type RunId, type SessionFeed } from '../contracts.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHerdrHarness, type HerdrHarness, type AcceptanceScenario, type OwnedResource } from './testutil.js';
@@ -258,7 +258,7 @@ export const scenarioShared: AcceptanceScenario = async h => {
   const mountPath = fileURLToPath(new URL('../../../host/src/herdr/mount.ts', import.meta.url));
   assert(await access(mountPath).then(() => true, () => false), 'Shared production mountHerdr must be assembled before acceptance');
   const packageRoot = fileURLToPath(new URL('../../../../', import.meta.url));
-  for (const entry of ['cli.mjs', 'viewer.mjs', 'remote-runtime.mjs']) {
+  for (const entry of ['cli.mjs', 'viewer.mjs', 'viewer-pi.mjs', 'feed-reader.mjs', 'remote-runtime.mjs', 'subagent-supervisor.mjs']) {
     assert(await access(join(packageRoot, 'dist/herdr', entry)).then(() => true, () => false), `Shared acceptance requires packaged dist/herdr/${entry}`);
   }
   const hostModules = import.meta.glob('../../../host/src/herdr/mount.ts');
@@ -394,18 +394,15 @@ try {
       await writeFile(join(diagnosticRoot, `shared-result-${h.mode}.json`), JSON.stringify({ result, errors: errors.map(String), messages }, null, 2));
       assert.equal(result.exitCode, 23); assert.equal(result.stdout, 'shared output\n'); assert.equal(result.stderr, 'shared diagnostic\n');
       await fire('tool_execution_end', { toolName: 'spider', result: { details: result } }, ctx);
-      feed = await waitFor(async () => {
-        const f = await readFeed(); return f?.notifications.some(n => n.kind === 'job-result' && n.scope === 'session' && n.sessionId === h.owner!.sessionId) ? f : null;
-      }, 'The shared remote job must produce an owner-scoped panel notification');
-      const posted: string[] = []; let seen: [string, number][] = [];
-      const tracker = createNotificationTracker({ read: () => seen, write: ids => { seen = ids; }, clock: () => feed.notifications[0].createdAt,
-        notify: notice => { posted.push(notice.id); } });
-      tracker.update([feed, feed], Date.now()); tracker.update([feed], Date.now());
-      const reloaded = createNotificationTracker({ read: () => seen, write: ids => { seen = ids; }, clock: () => feed.notifications[0].createdAt, notify: notice => { posted.push(notice.id); } });
-      reloaded.update([feed], Date.now());
-      assert(posted.length > 0, 'The shared panel must observe at least one real notification');
-      assert.equal(posted.length, 1, 'The shared command must produce exactly one panel notification');
-      assert.equal(new Set(posted).size, posted.length, 'Shared notifications must not duplicate after refresh or reload');
+      const currentFeed = await readFeed();
+      assert(currentFeed, 'The shared host retains its session feed');
+      feed = currentFeed;
+      assert.equal(feed.notifications.some(n => n.kind === 'job-result'), false, 'The parent result needs no duplicate feed notice');
+      const quiet = await runPanelScene<{posts:unknown[];commands:unknown[]}>(`
+        initView(panel,cx);await tasks[0];await panel.reload(cx);await drain();
+        console.log(JSON.stringify({posts:notifications,commands}));`,feed);
+      assert.deepEqual(quiet.posts, []); assert.deepEqual(quiet.commands, []);
+
     } finally { ipc.dispose(); }
     assert.deepEqual(setup.secondSetup, { writes: 0, launches: 0 });
     assert.deepEqual(setup.duplicateSessionWriters, []);

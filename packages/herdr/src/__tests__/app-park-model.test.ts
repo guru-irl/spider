@@ -67,3 +67,14 @@ test('a failed background core change leaves the pane present instead of falsely
     expect((await readFile(join(f.root, 'app-change-errors.jsonl'), 'utf8'))).toContain('Isolated core unavailable');
   } finally { await f.hc.dispose(); await f.close(); }
 });
+
+test('tab inventory reads all panes in the chosen tab and never substitutes another tab', async () => {
+  const f = await fixture();
+  try {
+    const placement = await f.app.ownerPlacement(f.address('t1'));
+    expect(await f.app.tabTerminals(placement)).toEqual(['t1', 't2']);
+    await f.app.command('terminal.park', { terminal: 't2' });
+    expect(await f.app.tabTerminals(placement)).toEqual(['t1']);
+    await expect(f.app.tabTerminals({ ...placement, tab: 'missing' as never })).rejects.toMatchObject({ code: 'owner-unplaced' });
+  } finally { await f.hc.dispose(); await f.close(); }
+});

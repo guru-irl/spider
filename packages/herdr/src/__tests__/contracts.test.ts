@@ -44,6 +44,7 @@ declare namespace Fixed {
   }
   export interface AppClient {
     ownerPlacement(address: TerminalAddress): Promise<OwnerPlacement>;
+    tabSpace?(tab: TabId): Promise<SpaceId | null>;
     awaitPane(viewer: TerminalAddress, owner: OwnerPlacement,
       options: { signal?: AbortSignal; timeoutMs: number }): Promise<PaneId>;
     command(name: string, args: Readonly<Record<string, unknown>>): Promise<AppReply>;
@@ -82,8 +83,15 @@ declare namespace Fixed {
     signal?: AbortSignal;
     onData?: (chunk: string) => void;
   }
+  export interface RemoteCopyRequest {
+    on: MachineName; owner: Owner; direction: 'to' | 'from'; local: string; remote: string; signal?: AbortSignal;
+  }
+  export interface RemoteCopyResult {
+    direction: 'to' | 'from'; machine: MachineName; source: string; destination: string; bytes: number; mode: number; sha256: string;
+  }
   export interface RemoteExecutionPort {
     execute(request: RemoteExecuteRequest): Promise<RemoteResult>;
+    copy?(request: RemoteCopyRequest): Promise<RemoteCopyResult>;
   }
   export interface JobExitEvidence { native: TerminalFinish; receipt: TerminalFinish }
   export interface JobFinish extends TerminalFinish { evidenceConflict?: boolean; exitEvidence?: JobExitEvidence }
@@ -103,6 +111,7 @@ declare namespace Fixed {
     };
     backgroundLogs?: { stdout: string; stderr: string };
     aborted?: boolean;
+    remoteAbortInfo?: string;
     retained?: boolean;
     retainedReason?: string;
     remote: { jobId: JobId; machine: MachineName; address: TerminalAddress | null };
@@ -150,13 +159,16 @@ export type FixedContractChecks = [
   Assert<Equal<Actual.HcClientOptions, Fixed.HcClientOptions>>,
   Assert<Equal<Actual.CoreIdentity, Fixed.CoreIdentity>>,
   Assert<Equal<Actual.HcClient, Fixed.HcClient>>,
-  Assert<Equal<Actual.AppClient, Fixed.AppClient>>,
+  Assert<Equal<Omit<Actual.AppClient, 'tabTerminals'>, Fixed.AppClient>>,
+  Assert<Equal<Actual.AppClient['tabTerminals'], (placement: Pick<Actual.OwnerPlacement, 'space' | 'tab'>) => Promise<readonly Actual.TerminalAddress[]>>>,
   Assert<Equal<Actual.OwnerPlacement, Fixed.OwnerPlacement>>,
   Assert<Equal<Actual.UploadedFile, Fixed.UploadedFile>>,
   Assert<Equal<Actual.PreparedProgram, Fixed.PreparedProgram>>,
   Assert<Equal<Actual.RemoteSource, Fixed.RemoteSource>>,
   Assert<Equal<Actual.RuntimeTarget, Fixed.RuntimeTarget>>,
   Assert<Equal<Actual.RemoteExecuteRequest, Fixed.RemoteExecuteRequest>>,
+  Assert<Equal<Actual.RemoteCopyRequest, Fixed.RemoteCopyRequest>>,
+  Assert<Equal<Actual.RemoteCopyResult, Fixed.RemoteCopyResult>>,
   Assert<Equal<Actual.RemoteExecutionPort, Fixed.RemoteExecutionPort>>,
   Assert<Equal<Actual.RemoteResult, Fixed.RemoteResult>>,
   Assert<Equal<Actual.ExecutionEnvironmentPolicy, Fixed.ExecutionEnvironmentPolicy>>,
@@ -181,8 +193,9 @@ declare namespace Wire {
   export type RunCursor = string & { readonly __kind: 'run-cursor' };
   export interface RunViewEvent { runId: RunId; id: number; type: string; text?: string; summary?: string; tool?: string; messageId?: string; streamed?: boolean }
   export interface TranscriptPage { text: string; events: RunViewEvent[] }
-  export type RunViewFrame = { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: Actual.RunSummary } }
+  export type RunViewFrame = { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: Actual.RunSummary; view?: { protocol: number; sessionFile?: string | null; model?: string | null; thinking?: string | null; contextWindow?: number | null } } }
     | { runId: RunId; cursor: RunCursor; kind: 'event'; data: TranscriptPage }
+    | { runId: RunId; cursor: RunCursor; kind: 'live'; data: { event: { type: string } & Record<string, unknown> } }
     | { runId: RunId; cursor: RunCursor; kind: 'gap'; data: { reason: string } }
     | { runId: RunId; cursor: RunCursor; kind: 'end'; data: { reason: 'finished' | 'disposed' | 'wrong-generation' | 'overflow' | 'run-not-owned' } };
   export type SteerReply = { queued: boolean; transformed?: boolean; error?: string } & (
@@ -195,16 +208,28 @@ declare namespace Wire {
   export type SessionIpcRequest = { op: 'ping'; generation: Generation }
     | { op: 'openView'; view: Fixed.ViewName; generation: Generation }
     | { op: 'openRun'; runId: RunId; generation: Generation }
+    | { op: 'killRun'; runId: RunId; generation: Generation }
+    | { op: 'killSession'; generation: Generation }
+    | { op: 'moveRun'; runId: RunId; destination: { kind: 'new' } | { kind: 'hide' } | { kind: 'tab'; tab: TabId }; generation: Generation }
+    | { op: 'moveSession'; destination: { kind: 'new' } | { kind: 'tab'; tab: TabId }; generation: Generation }
     | { op: 'openJob'; jobId: JobId; generation: Generation }
+    | { op: 'killJob'; jobId: JobId; generation: Generation }
+    | { op: 'moveJob'; jobId: JobId; viewer: TerminalAddress; destination: { kind: 'new' } | { kind: 'tab'; tab: TabId }; generation: Generation }
     | { op: 'steerRun'; runId: RunId; text: string; generation: Generation }
-    | { op: 'subscribeRun'; runId: RunId; cursor: RunCursor | null; generation: Generation };
+    | { op: 'subscribeRun'; runId: RunId; cursor: RunCursor | null; generation: Generation; view?: number };
   export interface SessionIpcEnvelope { v: 1; capability: string; request: SessionIpcRequest }
   export type IpcErrorCode = 'wrong-generation' | 'unauthorized' | 'unknown-op' | 'too-large' | 'not-found' | 'unavailable' | 'status-instance-unavailable' | 'refused';
   export type SteerRefusal = 'queued' | 'paused' | 'print-mode' | 'slash-prefixed' | 'wrong-owner' | 'dead-pipe';
   export type SessionIpcReply = { ok: true; op: 'ping'; status: { native: ProgramState | null; effective: ProgramState | null } }
     | { ok: true; op: 'openView' }
+    | { ok: true; op: 'killRun' }
+    | { ok: true; op: 'killSession' }
+    | { ok: true; op: 'moveSession' }
+    | { ok: true; op: 'moveRun'; viewer: TerminalAddress | null }
+    | { ok: true; op: 'moveJob'; viewer: TerminalAddress | null }
     | { ok: true; op: 'openRun'; viewer: TerminalAddress }
     | { ok: true; op: 'openJob'; viewer: TerminalAddress }
+    | { ok: true; op: 'killJob'; jobId: JobId }
     | { ok: true; op: 'steerRun'; acknowledgement: SteerReply }
     | { ok: false; code: Exclude<IpcErrorCode, 'refused'>; message: string; reason?: never }
     | { ok: false; code: 'refused'; message: string; reason?: SteerRefusal };

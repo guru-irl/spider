@@ -8,6 +8,7 @@ import { createBashTool, createLocalBashOperations } from '@earendil-works/pi-co
 import { createHcClient } from '@spider/herdr/client/hc';
 import { isCoreAvailable } from '@spider/herdr/client/liveness';
 import { HerdrError } from '@spider/herdr/client/parse';
+import { HERDR_NOTICES, herdrErrorNotice, inactiveHerdrNotice, inactiveHerdrGuardNotice, type InactiveReason } from '@spider/herdr/notices';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { registerHerdrJobs } from '@spider/herdr/jobs/register';
 import type { JobMonitor } from '@spider/herdr/jobs/monitor';
@@ -24,6 +25,9 @@ import { createExecutionEnvironmentPolicy, ordinaryExecutionEnvironment, sshShim
 import { readMachineSnapshot, type CacheDescriptor, type MachineSnapshot } from '@spider/herdr/ssh/cache';
 import type { HcClient, HerdrConfig, Owner, RemoteExecutionPort, ExecutionEnvironmentPolicy, MachineName } from '@spider/herdr';
 import { createRemoteFileResolver } from './remote-file.js';
+import { resolveMachine } from './machine.js';
+import { withRemoteCopy } from './copy.js';
+import { killOwnedJob, findOwnedKillJobs } from './kill-job.js';
 import { disabledHerdrEnvironment, createHostHerdrPorts, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
 import { controlConfig } from '../control.js';
 import { paths } from '@spider/db-core';
@@ -37,14 +41,14 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   let remoteFiles: ReturnType<typeof createRemoteFileResolver> | null = null;
   let context: ExtensionContext | null = null, disposed = false;
   let runtimeBytes: Buffer | null = null, childIdentity: string | null = null;
+  const runtimePaths = new Map<string, string>();
   let environment: ExecutionEnvironmentPolicy = ordinaryExecutionEnvironment;
-  let inheritedDescriptor: CacheDescriptor | null = null, inactiveReason = 'Child activation unavailable';
+  let inheritedDescriptor: CacheDescriptor | null = null, inactiveReason: InactiveReason = 'activation-problem';
   let activationEnv: Readonly<NodeJS.ProcessEnv> | null = null;
   let coreWatch: ReturnType<typeof setInterval> | undefined, coreProbe: Promise<void> | undefined;
   let coreLost = false, expectedHerdr = false;
   let activationMode: unknown = 'auto';
   const inactiveNotices = new Set<string>();
-  const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
   const inheritPolicy = () => {
     // The ssh package validates the inherited descriptor and its executable paths.
     const serialized = ordinaryExecutionEnvironment(process.env)[SSH_DESCRIPTOR_ENV];
@@ -52,16 +56,16 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   };
   const need = <T>(value: T | null): T => { if (!value) throw new HerdrError('herdr-unavailable', 'No active Herdr child execution'); return value; };
   const hc: HcClient = new Proxy({} as HcClient, { get(_target, key) { const c = need(client), value = Reflect.get(c, key); return typeof value === 'function' ? value.bind(c) : value; } });
-  const report = (error: unknown) => { try { options.reportError?.(error); } catch { /* Reporting must not break the embedding host. */ } };
-  const notice = (error: unknown, force = false) => {
+  const report = (error: unknown, notice?: string) => { try { if (options.reportError) options.reportError(error, notice); else process.stderr.write((notice ?? herdrErrorNotice(error)) + '\n'); } catch { /* Reporting must not break the embedding host. */ } };
+  const notice = (reason: InactiveReason, error?: unknown, force = false) => {
     if (!force && (activationMode === false || activationMode !== true && !expectedHerdr)) return;
     const sessionId = context?.sessionManager?.getSessionId?.() ?? '(child)';
     if (inactiveNotices.has(sessionId)) return;
     inactiveNotices.add(sessionId);
-    const message = `Herdr inactive: ${describe(error).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 1024)}`;
+    const message = error instanceof HerdrError ? herdrErrorNotice(error) : inactiveHerdrNotice(reason);
     try {
       if (context?.hasUI) context.ui.notify(message, activationMode === true ? 'error' : 'warning');
-      else if (options.reportError) report(error);
+      else if (options.reportError) report(error ?? new Error(message), message);
       else process.stderr.write(`${message}\n`);
     } catch { /* A notice must never disable the embedding host. */ }
   };
@@ -78,11 +82,11 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
         extensionArguments: explicitExtensionArguments(process.argv), hcAddress: owner?.terminal.address ?? null,
       });
       return true;
-    } catch (error) { inactiveReason = describe(error); notice(error, true); return false; }
+    } catch (error) { inactiveReason = 'child-presence'; notice(inactiveReason, error, true); return false; }
   };
   async function closeResources() {
     clearInterval(coreWatch); coreWatch = undefined; activationEnv = null;
-    runtimeBytes = null; childIdentity = null; remote = undefined; remoteFiles = null;
+    runtimeBytes = null; childIdentity = null; remote = undefined; remoteFiles = null; runtimePaths.clear();
     await monitor?.shutdown('reload'); monitor = null;
     output?.dispose(); output = null; await client?.dispose(); client = null; owner = null;
     environment = coreLost ? disabledHerdrEnvironment : ordinaryExecutionEnvironment;
@@ -95,8 +99,8 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
       if (await isCoreAvailable(env) || disposed || owner !== current || inheritedDescriptor !== descriptor) return;
       coreLost = true; inheritedDescriptor = null; owner = null;
       environment = disabledHerdrEnvironment; remote = undefined;
-      inactiveReason = 'Herdr core unavailable; use /reload to recover';
-      notice(new HerdrError('core-unavailable', inactiveReason), true);
+      inactiveReason = 'core-down';
+      notice(inactiveReason, new HerdrError('core-unavailable', 'Herdr core unavailable'), true);
       await closeResources();
     })().finally(() => { if (coreProbe === pending) coreProbe = undefined; });
     coreProbe = pending; return pending;
@@ -109,7 +113,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   const registrationPi = new Proxy(pi, { get(target, key) {
     if (key === 'on') return (name: string, handler: Function) => (pi.on as Function)(name, (event: unknown, ...args: unknown[]) =>
       Promise.resolve().then(() => handler(event ?? {}, ...args)).catch(async error => {
-        inactiveReason = describe(error); await closeResources().catch(report); notice(error, true);
+        inactiveReason = 'activation-problem'; await closeResources().catch(report); notice(inactiveReason, error, true);
       })) ?? (() => {});
     return Reflect.get(target, key);
   } });
@@ -118,7 +122,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
     try {
       await monitor?.shutdown('reload'); await closeResources(); context = ctx ?? null; config = null;
       coreLost = false; environment = ordinaryExecutionEnvironment; activationMode = 'auto'; expectedHerdr = Boolean(process.env.HC_TERMINAL_ID);
-      inactiveReason = 'Child activation unavailable'; inheritPolicy();
+      inactiveReason = 'activation-problem'; inheritPolicy();
       const processReady = await recordPresence(ctx);
       if (!ctx?.sessionManager) return;
       try {
@@ -131,26 +135,26 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
         else {
           const enabled = controlConfig('get', ctx.cwd, 'herdr.enabled'); activationMode = enabled;
           if (enabled === false) environment = disabledHerdrEnvironment;
-          const file = effectiveHerdrConfigPath(ctx.cwd); expectedHerdr ||= Boolean(file && existsSync(file));
+          const file = effectiveHerdrConfigPath(ctx.cwd, ctx); expectedHerdr ||= Boolean(file && existsSync(file));
           if (enabled !== false && file) config = parseHerdrConfig(JSON.parse(await readFile(file, 'utf8')));
           if (config && (enabled === true || enabled === 'auto')) config = { ...config, enabled };
         }
-      } catch (error) { inactiveReason = describe(error); notice(error); return; }
+      } catch (error) { inactiveReason = 'config-problem'; notice(inactiveReason, error); return; }
       if (environment === disabledHerdrEnvironment) inheritedDescriptor = null;
       if (!processReady) return;
       if (!config || config.enabled === false || !process.env.HC_TERMINAL_ID) {
-        inactiveReason = !config ? 'No Herdr configuration' : config.enabled === false ? 'herdr.enabled is false' : 'not inside Herdr';
-        notice(new HerdrError('herdr-unavailable', inactiveReason)); return;
+        inactiveReason = !config || config.enabled === false ? 'no-config' : 'outside';
+        notice(inactiveReason); return;
       }
       const sessionId = process.env.PI_SPIDER_TOP_SESSION_ID || process.env.PI_SPIDER_SESSION_ID;
       if (!sessionId || !process.env.PI_SUBAGENT_RUN_ID) {
-        inactiveReason = 'Child owner session or run identity is missing'; notice(new HerdrError('herdr-unavailable', inactiveReason)); return;
+        inactiveReason = 'child-missing'; notice(inactiveReason); return;
       }
       try {
         const env = Object.freeze({ ...process.env });
         if (!await isCoreAvailable(env)) {
           coreLost = true; inheritedDescriptor = null; environment = disabledHerdrEnvironment;
-          inactiveReason = 'Herdr core is not running'; notice(new HerdrError('core-unavailable', inactiveReason)); return;
+          inactiveReason = 'core-down'; notice(inactiveReason); return;
         }
         childIdentity = processStartIdentity(process.pid);
         if (!childIdentity) throw new HerdrError('child-identity-unavailable', 'Cannot establish the child job writer identity');
@@ -166,22 +170,23 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
         remoteFiles = createRemoteFileResolver(hc, config.machines, { manager: ctx.sessionManager, id: ctx.sessionManager.getSessionId() });
         output = createHostHerdrPorts({ hc, config, runtimeBytes, runtimePath: on => runtimePath(on) });
         if (!await recordPresence(ctx)) await closeResources();
-      } catch (error) { inactiveReason = describe(error); await closeResources(); notice(error); }
-    } catch (error) { inactiveReason = describe(error); await closeResources().catch(report); notice(error, true); }
+      } catch (error) { inactiveReason = 'activation-problem'; await closeResources(); notice(inactiveReason, error); }
+    } catch (error) { inactiveReason = 'activation-problem'; await closeResources().catch(report); notice(inactiveReason, error, true); }
     finally { watchCore(); }
   })];
   const runtimePath = (on: string) => {
-    const machine = need(config).machines.find(m => m.name === on);
-    if (!machine) throw new HerdrError('machine-unconfigured', 'Destination is not configured');
-    return runtimeInstallPath(machine.runtime.directory, need(runtimeBytes));
+    const path = runtimePaths.get(on);
+    if (!path) throw new HerdrError('runtime-target-unavailable', 'Destination runtime has not been resolved');
+    return path;
   };
   const jobs = registerHerdrJobs(registrationPi, { currentOwner: () => owner, jobIdsForToolResult, bind: m => {
     monitor = m;
-    remote = m ? createRemoteExecutor({ hc, jobs: m, prepare: (source, target) => need(remoteFiles).prepare(source, target), environmentPolicy: env => environment(env), clock: Date.now, logSink: async job => need(output).logReader(job.id), target: async on => {
-      const machine = need(config).machines.find(m => m.name === on); if (!machine) throw new HerdrError('machine-unconfigured', 'Destination is not configured');
+    remote = m ? withRemoteCopy(createRemoteExecutor({ hc, jobs: m, prepare: (source, target) => need(remoteFiles).prepare(source, target), environmentPolicy: env => environment(env), clock: Date.now, logSink: async (job, readerOptions) => need(output).logReader(job.id, readerOptions), target: async on => {
+      const resolved = await resolveMachine(hc, need(config).machines, on), machine = resolved.machine;
       const bytes = need(runtimeBytes);
-      return { on, ...machine.runtime, nodePath: machine.nodePath ?? 'node', environment: {}, runtimePath: runtimePath(on), runtimeSha256: sha256(bytes) };
-    } }) : undefined;
+      runtimePaths.set(resolved.on, runtimeInstallPath(machine.runtime.directory, bytes));
+      return { on: resolved.on, ...machine.runtime, nodePath: machine.nodePath ?? 'node', environment: {}, runtimePath: runtimePath(resolved.on), runtimeSha256: sha256(bytes) };
+    } }), hc, () => need(config).machines) : undefined;
   }, monitorOptions: () => ({ hc, clock: Date.now, journalRoot: join(need(config).globalRoot, 'herdr/jobs'), outputCollector: need(output).outputCollector, reportError: report,
     child: { id: process.env.PI_SUBAGENT_RUN_ID as import('@spider/herdr').RunId, pid: process.pid, startIdentity: need(childIdentity) },
   }) });
@@ -202,18 +207,18 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   }), () => process.env);
   const withCause = async (decision: ReturnType<typeof transportPolicy.checkShell>) => {
     const result = await decision;
-    return result.kind === 'refuse' && !owner ? { ...result, reason: `Herdr child inactive: ${inactiveReason}. ${result.reason}` } : result;
+    return result.kind === 'refuse' && !owner ? { ...result, reason: `${inactiveHerdrGuardNotice(inactiveReason)} ${result.reason}` } : result;
   };
   const policy = { checkArgv: (argv: readonly string[]) => withCause(transportPolicy.checkArgv(argv)), checkShell: (code: string) => withCause(transportPolicy.checkShell(code)) };
   const routing: RoutingPorts = { policy, environmentPolicy: env => environment(env), currentOwner: () => owner, createBashTool, createLocalBashOperations,
     enabled: () => Boolean(owner || inheritedDescriptor), readShellFile: async (file, on) => on ? need(remoteFiles).read(file, on as MachineName) : readFile(resolve(context?.cwd ?? process.cwd(), file), 'utf8'),
   };
-  return { owner: () => owner, enabled: () => Boolean(owner && config && config.enabled !== false), execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), environmentPolicy: env => environment(env) }), guard: async event => {
+  return { owner: () => owner, enabled: () => Boolean(owner && config && config.enabled !== false), findKillJobs: id => findOwnedKillJobs(id, need(owner), join(need(config).globalRoot, 'herdr/jobs')), killJob: id => killOwnedJob(id, need(owner), hc, need(config).machines, join(need(config).globalRoot, 'herdr/jobs'), remote), execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), environmentPolicy: env => environment(env) }), guard: async event => {
       await probeCore();
-      if (!owner && event.input.on !== undefined) return { block: true, reason: 'herdr-disabled: on requires an enabled live Herdr owner' };
+      if (!owner && event.input.on !== undefined) return { block: true, reason: coreLost ? HERDR_NOTICES.childCoreLost.text : HERDR_NOTICES.remoteDisabled.text };
       const refusal = await guardHerdrToolCall(event, routing);
       if (refusal) await probeCore();
-      if (coreLost) return event.input.on !== undefined ? { block: true, reason: 'herdr-disabled: on requires an enabled live Herdr owner' } : undefined;
+      if (coreLost) return event.input.on !== undefined ? { block: true, reason: HERDR_NOTICES.childCoreLost.text } : undefined;
       return refusal;
     },
     async dispose() { if (disposed) return; disposed = true; for (const off of offs) off(); await jobs.dispose(); await consoles.dispose(); await closeResources(); await presence.remove(identity); },

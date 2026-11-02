@@ -14,11 +14,11 @@ Spider keeps the session's Herdr status at `working` while its subagents are que
 
 Plain `ssh` and other SSH transports to a configured machine are refused, with a pointer to `on`. An audited admin command covers the cases that need a real SSH connection.
 
-The left sidebar lists your sessions with their subagent runs, consoles, and live commands, and a Machines section shows the status of each configured machine. Each subagent run gets a viewer with its own message box for steering.
+The left sidebar lists your sessions with their subagent runs, consoles, and live commands. Each subagent run gets a viewer with its own message box for steering.
 
 The spider panel shows, for the selected space, what needs your attention, each session's todos, triggers, and credits this month, and the month's credit pace.
 
-Setup opens your sessions in named spaces and tabs. After the core restarts, each restored shell offers to resume its saved session.
+Setup opens each space in one named tab with your sessions as panes. After the core restarts, each restored shell offers to resume its saved session.
 
 Setup also writes `hc` templates that start visible worker, reviewer, and watcher pi sessions. It installs a neutral black glass layout, a Dracula+ pi theme, two bundled fonts, and five Herdr keys that open spider views in pi without touching your draft.
 
@@ -26,8 +26,12 @@ Setup also writes `hc` templates that start visible worker, reviewer, and watche
 
 - Node.js `>=22.19.0` on the local machine, and Node.js `>=22.18.0` on every remote machine you use with `on`.
 - Pi `1.2.0`.
-- `hc` `0.1.16` and `herdr-app` `0.1.11`. Other versions are not supported.
+- `hc` `0.1.16` and `0.1.17`, with `herdr-app` `0.1.12`. Other versions are not supported.
 - macOS or Linux. A Linux machine reached from macOS is supported. On other platforms, the doctor reports a failure instead of falling back to local execution.
+
+The automated app stories use `hc` 0.1.16. Compatibility tests cover the 0.1.17 event snapshot and notification policy.
+
+Herdr 0.1.12 changes its mod API to string-only target ids and `watch()` root-path batches. Spider's mods already pass Herdr's own string ids and reload on any batch, so they need no change.
 
 Each remote machine must already be configured in `hc`. Spider validates machines but never adds or restarts them. To use a Node binary that is not on the remote `PATH`, set `nodePath` for that machine.
 
@@ -39,9 +43,9 @@ The host setting `herdr.enabled` controls the integration. It accepts `"auto"`, 
 - With `true`, the integration starts whenever pi runs inside a Herdr terminal and a configuration file exists. If it cannot start, spider reports an error.
 - With `false`, spider does not read the configuration file and runs as ordinary spider.
 
-When the integration does not start, spider continues as ordinary spider and tells you once per session. With `"auto"`, it shows the warning `Herdr unavailable: <reason>. Regular spider remains available.` With `true`, it shows the error `Herdr activation failed: <reason>. Regular spider remains available.` Without a UI, spider prints the message to stderr. The reason is, for example, `no Herdr configuration`, `not inside Herdr`, or `Herdr core is not running`. With `"auto"`, a session outside Herdr with no configuration file shows nothing. With `false`, spider shows nothing.
+When the integration does not start, spider continues as ordinary spider and explains the problem once per session. With `"auto"`, it shows a warning. With `true`, it shows an error. Without a UI, spider prints the message to stderr. With `"auto"`, a session outside Herdr with no configuration file shows nothing. With `false`, spider shows nothing.
 
-While the integration is off, a call with `on` fails with `herdr-disabled: on requires an enabled live Herdr owner`, and nothing runs locally instead.
+While the integration is off, a call with `on` explains that Herdr is off. The command never runs locally instead.
 
 Spider never starts or restarts a Herdr core. It checks that the core's socket accepts a connection before each `hc` call. If the core is down, the call fails with `core-unavailable` and `hc` is not started.
 
@@ -50,15 +54,15 @@ Spider never starts or restarts a Herdr core. It checks that the core's socket a
 If the core stops during a session, spider switches that session to ordinary spider. It removes the SSH rule and its shim, stops the session feed, and shows this warning once:
 
 ```text
-Herdr unavailable: Herdr core unavailable; use /reload to recover. Regular spider remains available.
+Herdr stopped responding, so the sidebar and panes can't follow this session for now. Everything else in spider still works. Run /reload once Herdr is running again.
 ```
 
-Calls with `on` then fail with `herdr-disabled`. Spider checks for the core every 2 seconds, but it does not reconnect on its own. When the same core is running again, spider shows `Herdr core is back. /reload to reconnect.` Run `/reload` in the session to turn the integration back on.
+Calls with `on` then fail. Spider checks for the core every 2 seconds, but it does not reconnect on its own. When the same core is running again, spider shows `Herdr is running again. Run /reload to reconnect this session to the sidebar and panes.` Run `/reload` in the session to turn the integration back on.
 
 If a different core replaced the one that the session's terminal belonged to, that terminal no longer exists in Herdr. The session stays inactive and shows this notice once:
 
 ```text
-this session's Herdr terminal belongs to a core that is no longer running; start a new session in Herdr
+This session's Herdr pane belongs to a Herdr instance that has stopped. Close this session and open a new session in Herdr.
 ```
 
 The same notice appears when such a session starts or reloads. Start the session again in a Herdr terminal of the running core.
@@ -84,7 +88,7 @@ To keep the file somewhere else, pass its absolute path to setup with `--config`
 `herdr.config` and `herdr.enabled` are global-only settings. Spider reads them only from the global `config.json`. If a repository's settings set either key, spider ignores that value and warns once per key:
 
 ```text
-herdr.config in <repository config file> is ignored: global scope only
+Spider ignores the repository's herdr.config setting. Move it to the global spider settings if you want to use it.
 ```
 
 To set either key with `spider control`, pass `scope:"global"`. Any other scope fails with `<key> is global-only; use scope:"global"`.
@@ -106,8 +110,8 @@ The file's `agentDirectory` must be the pi agent directory that your shell uses:
 	node <installed-package>/dist/herdr/cli.mjs setup --config <absolute-config-file>
 	```
 
-5. Setup lists the sessions it is waiting for. Close them, as described in [How setup opens your sessions](#how-setup-opens-your-sessions).
-6. Setup opens each configured session in a fresh terminal in its space and tab, then focuses the first space. It prints `Setup verified` with the number of file writes and visible probes.
+5. Setup lists any sessions it is waiting for. Close those sessions, as described in [How setup opens your sessions](#how-setup-opens-your-sessions). A rerun keeps verified live sessions open.
+6. On the first run, setup opens each configured session in its space and focuses the first space. It prints `Setup verified` with the number of file writes and visible probes.
 7. Run the printed doctor command to check the result.
 
 If setup fails after it starts opening sessions, it keeps its journal and ends the error with the exact command that undoes it:
@@ -132,8 +136,8 @@ Setup accepts these flags:
 Setup backs up every file it replaces before the first write and records each step in a journal under `<globalRoot>/herdr/setup`. It changes these things:
 
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
-2. The spider panel mod, plus clones of Herdr's current `agents`, `spaces`, `pane`, and `tabs` mods with spider's patches applied.
-3. The `spider-glass` layout and Herdr theme. Only the `theme` and `layout` fields of the app's settings change.
+2. The spider panel mod, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied.
+3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only the `theme` and `layout` fields of the app's settings change.
 4. Five key bindings in Herdr's terminal section. Other sections, including the Ctrl-V image paste binding, stay unchanged.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
@@ -155,18 +159,22 @@ Earlier versions installed a `spider-machines` mod for a Machines panel. Setup n
 
 ### How setup opens your sessions
 
-Setup opens each session listed in `spaces` in a fresh terminal. It never reuses a terminal that held an earlier session. It starts pi there with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`, so the session uses that directory even when the terminal's shell has a different setting. Before setup opens anything, it waits until no process holds the selected session files. It waits for two kinds of process:
+By default, setup creates one tab per space, named after the space, and opens its sessions as panes. `layout: "tabs"` opens one tab per session instead. When it starts a session, setup uses a fresh terminal and sets `PI_CODING_AGENT_DIR` to the configured `agentDirectory`. On a rerun, it keeps verified live sessions in their current terminals. Before setup starts a session, it waits until no process holds that session. It waits for two kinds of process:
 
 - A pi session that is one of the selected sessions. Setup prints `Close selected session <name>; PIDs: <list>`. Let its work finish or cancel it, then close it.
 - A pi process with no record. Setup prints `Unrecorded pi PID <pid>: /reload in that session, or closing it, clears this block.` Every pi session that loads spider records itself when it starts or reloads, whether or not the integration is on.
 
 Sessions that you did not select and that have a record can stay open. When `spaces` is empty, setup does not wait for any process.
 
-Setup waits up to 30 minutes, then stops with `cutover-deadline`. Close the listed sessions and run setup again.
+Setup prints each waiting message once and repeats it only when the listed sessions or blockers change. It waits up to 30 minutes, then stops with `cutover-deadline`. Close the listed sessions and run setup again.
 
 A session that was started with explicit `--extension` arguments cannot be opened by setup, because setup never replays them. Setup stops with `session-explicit-extensions`. Start that session by hand instead.
 
-A new tab can briefly show a temporary name until pi starts in it. If setup loses track of a session it was opening, it stops with `cutover-reconciliation-required` and does not open the session again. Do not open it by hand. Run setup again. It checks the tabs it created and the live session owners, then retries only after it proves the earlier attempt finished or opened nothing.
+A new tab can briefly show a temporary name until pi starts in it. For pane layouts, setup verifies each new terminal, then parks and keeps it beside the recorded pane. It records the move first, so a retry resumes the same terminal even if an app reply was lost. If setup loses track of a session it was opening, it stops with `cutover-reconciliation-required` and does not open the session again. Do not open it by hand. Run setup again.
+
+Setup identifies a live session by its session ID, current feed and heartbeat, and live pi process. It adopts the session's current terminal, even if the core restarted or the terminal changed. If no live terminal holds the session, setup can reopen it. If two terminals hold the same session ID, setup names both panes and leaves them alone. It continues with the other sessions, then reports `duplicate-live-session`.
+
+Setup adopts recorded sessions that you merged into one tab. It keeps the names you chose for the space and tab. Other panes stay in place and are not recorded as owned. Rollback refuses to close a tab containing those panes.
 
 ### Roll back
 
@@ -184,7 +192,7 @@ Without `--config`, rollback and the doctor use the same file as setup. See [Whe
 
 ## The configuration file
 
-The file is JSON. Every path must be absolute. Session, space, and machine names come only from this file, so keep it outside any repository.
+The file is JSON. Every path must be absolute. Keep the configuration outside any repository.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -194,10 +202,12 @@ The file is JSON. Every path must be absolute. Session, space, and machine names
 | `agentDirectory` | Required | The pi agent directory. It gets the pi theme, sessions start with it, and it must match the shell's pi agent directory. |
 | `globalRoot` | Required | Spider's global directory, which must match the one pi uses. Feeds, jobs, and setup journals live in its `herdr` folder. |
 | `shellRc` | Required | The bash or zsh rc file that gets the resume block. |
+| `layout` | `"panes"` | Default session layout for new space tabs. `"panes"` or `"tabs"`. A space can override it. |
 | `spaces` | Required | Ordered spaces. See [Spaces](#spaces). |
 | `machines` | Required | Remote machines. See [Machines](#machines). |
 | `fonts.body`, `fonts.label`, `fonts.paths` | Bundled body and label fonts, and Herdr's path font | Optional replacement fonts. Each has a `path` and a `license` file. |
-| `limits.auxiliaryPanes` | `2` | Auxiliary pane slots per tab, from 1 to 6. |
+| `limits.auxiliaryPanes` | `2` | Auxiliary pane slots shared by all sessions in a tab, from 1 to 6. |
+| `automaticSubagentPanes` | `false` | Let new subagent viewers open in free auxiliary slots automatically. Otherwise they stay parked until you open them. |
 | `limits.completedRows` | `50` | Finished rows kept per session in the sidebar. |
 | `limits.completedHours` | `24` | Hours a finished row stays in the sidebar. |
 | `retention.foregroundDays` | `7` | Days to keep logs and journals of finished foreground jobs. |
@@ -205,13 +215,32 @@ The file is JSON. Every path must be absolute. Session, space, and machine names
 
 ### Spaces
 
-Each space has a `name` and an ordered `sessions` list. A session selector is one of these:
+Each space has a `name`, an ordered `sessions` list, and an optional `layout` choice. The space's `layout` overrides the global `layout`. Both accept `"panes"` or `"tabs"`. Omitting both uses panes. Existing journalled tabs keep their placement on setup reruns, so an older configuration still works.
+
+```json
+{
+  "layout": "panes",
+  "spaces": [
+    { "name": "Planning", "sessions": [{ "name": "Planner" }, { "name": "Reviewer" }] },
+    { "name": "Work", "layout": "tabs", "sessions": [{ "name": "Builder" }] }
+  ]
+}
+```
+
+In pane mode, session order determines the initial arrangement:
+
+- One session fills the tab. Two sit side by side.
+- Three use one pane on the left and two stacked on the right, in that order.
+- Four use a 2 by 2 grid. Session order is top left, top right, bottom right, then bottom left.
+- Larger groups use `ceil(sqrt(session count))` columns. Setup opens the top row from left to right, then fills each column downwards. Column heights differ by at most one pane, with extra panes in the rightmost columns.
+
+A session selector is one of these:
 
 - `{ "file": "<absolute session file>" }`, the exact session file.
 - `{ "name": "<session name>" }`, the session's latest name.
 - `{ "name": "<session name>", "sessionId": "<id>" }`, required when two sessions share a name.
 
-Setup checks every selector before it writes anything. An ambiguous name stops setup with `session-selector-ambiguous`. A name that matches no session stops it with `session-selector-missing`. Name lookup reads only the end of each session file, so use a `file` selector for a session whose name was set long ago. Several sessions can share a repository and working directory. Each session opens in its last known live working directory, or else the working directory recorded in its session file.
+Setup checks every selector before it writes anything. An ambiguous name stops setup with `session-selector-ambiguous`. A name that matches no session stops it with `session-selector-missing`. Name lookup streams the whole session file in bounded chunks and uses the latest complete `session_info` name. File selectors use that name too, even when it was set near the start of a large file. Several sessions can share a repository and working directory. Each session opens in its last known live working directory, or else the working directory recorded in its session file.
 
 ### Machines
 
@@ -219,8 +248,8 @@ Each machine has these keys:
 
 | Key | Meaning |
 | --- | --- |
-| `name` | The exact `hc` machine name. This is the value you pass as `on`. |
-| `aliases` | Other names for the machine. The SSH rule refuses these too. |
+| `name` | The configured machine name. You can pass it as `on`. |
+| `aliases` | Other names for the machine. You can pass these as `on`, and the SSH rule refuses them. |
 | `nodePath` | Optional absolute Node path on the machine. Without it, spider uses `node` from the machine's `PATH`. |
 | `runtime.directory` | A private absolute directory on the machine for consoles and job files. Setup installs the runtime file in its parent directory. |
 | `runtime.cwd` | The working directory for remote commands, or `null`. With `null`, commands start in the machine's home directory. |
@@ -244,12 +273,23 @@ Before each launch, spider checks that the machine has the runtime that matches 
 
 These rules apply to `on`:
 
-- The name must match a configured machine exactly. An unknown name, a failed connection, or an inactive integration never falls back to local execution.
+- `on` accepts the configured name, the hc name, or an SSH target alias reported by hc. Names are case-insensitive. An unknown name, a failed connection, or an inactive integration never falls back to local execution.
 - A `batch` takes one top-level `on` for every entry. An `on` inside an entry is rejected with `batch-entry-on`.
 - With `exec_file`, `path` names a file on the remote machine. Your code runs there with `FILE_CONTENT` and `FILE_CONTENT_PATH` bound, as it does locally. A relative path needs a configured `runtime.cwd`, or the call fails with `remote-cwd-required`.
 - A language with no entry in the machine's `runtime.commands` fails before launch with `remote-language-unsupported`. Spider never uses a local interpreter instead.
 
 Output works as it does locally. Stdout and stderr stay separate, stdin is empty, and the model sees at most 10,000 bytes with secrets scrubbed. The complete output goes to private log files, which you can analyze with later calls. The result keeps the real exit code, and its details add the job ID, machine, terminal address, and receipt paths. A foreground command that writes more than 100 MiB is cancelled with `output-cap-exceeded`. The bytes it wrote stay in the logs.
+
+### Copy a file
+
+Use `exec` with `on` and a `copy` object. Use absolute paths on both machines.
+
+```text
+spider exec on:"build-box" copy:{direction:"to",local:"/local/file",remote:"/remote/file"}
+spider exec on:"build-box" copy:{direction:"from",local:"/local/returned-file",remote:"/remote/file"}
+```
+
+Each call reports the destination, size, mode, and SHA-256 digest. It preserves the file mode and supports text or binary files up to 64 MiB. The destination must not already exist. Spider transfers bounded text chunks through hc and checks the digest before reporting success.
 
 ### Agent consoles
 
@@ -257,7 +297,7 @@ Each session and each subagent run gets one console on each machine it uses. The
 
 The console shows each command's header, its stdout, its stderr with a label, and its exit code. When commands run at the same time, each line has a prefix for its job. A console cannot run commands or cancel jobs, and closing its pane leaves the jobs running.
 
-A subagent's consoles close when its run ends. A session's consoles close when you quit the session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps them open. If a session crashes, its consoles stay until a pi session next starts without a reload. That start removes session consoles whose owner is gone.
+A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps them open. A later startup removes abandoned consoles only when their owning session and run are both gone.
 
 ### Background jobs and timeouts
 
@@ -267,7 +307,13 @@ A subagent's consoles close when its run ends. A session's consoles close when y
 - With `background:true`, capture is durable from launch. An expired timeout detaches the job and returns `exitCode:null` with a `backgroundJob` receipt. `exitCode:null` means the outcome is not known yet.
 - With `background:true` and no `timeout`, the call waits for the real exit.
 
-Aborting a call cancels its remote job. Aborting a batch stops the current entry and skips the rest. Closing a pane never cancels a job.
+Aborting a call requests cancellation of its remote job and returns the output collected so far. The result states whether the job stopped or its state is unknown, and names its terminal and logs. If the state is unknown, the job may still be running. Use the reported terminal address to follow it. Aborting a batch stops the current entry and skips the rest. Closing a pane never cancels a job.
+
+To stop a detached remote job, call `spider kill id:"<job-id>"` with the full ID or a unique prefix. Spider accepts only jobs owned by the current session. It requests TERM for the job's process group and sends KILL after a grace period if owned processes remain. The `spider.job_done` notice reports `cancelled`. `kill id:"all"` still applies only to subagents.
+
+For an older runtime, spider signals only a uniquely identified group leader whose command contains the job's own program path. Otherwise it reports the runtime path and asks you to stop the job by hand.
+
+A shell can turn a signal into an exit code such as 143. The receipt and notice label that as a SIGTERM convention, not proof that the shell received a signal.
 
 A detached job keeps running after the call returns. When it finishes, spider posts a `spider.job_done` message to the owning session, at most once. The message has the job ID, machine, terminal address, outcome, a short scrubbed output summary, and receipt paths. Spider writes the result to disk before it posts the message, and it never delivers the message through terminal input.
 
@@ -283,7 +329,11 @@ A child finds the configuration file the same way as its session. See [Where the
 
 ## The left sidebar
 
-The left sidebar is Herdr's agents list, extended by setup. It lists each live pi session. Under a session, it lists the session's subagent runs by display name and the session's consoles. Under a run, it lists that run's consoles. Expand a console to see its live commands. A finished command leaves the list, and finished runs stay for `limits.completedHours`, up to `limits.completedRows` rows.
+The left sidebar is Herdr's agents list, extended by setup. It lists each live pi session. Under a session, it lists active subagent runs by display name and the session's consoles. Under a run, it lists that run's consoles. Expand a console to see its live commands. Parked runs remain visible while they are active. A finished command leaves the list, and finished runs stay for `limits.completedHours`, up to `limits.completedRows` rows.
+
+Finished rows are hidden by default. Click **N finished** under a session to show them, and **Hide finished** to hide them again. A finished parent stays visible when it has a running child. Each session has its own toggle.
+
+Use the chevron to the left of an agent icon to fold its children. The pill on a folded row counts active children and opens the list again. To pin or unpin an agent, hover over its icon and click the pin. The elapsed time stays visible.
 
 Thin thread lines join each row to its parent, so you can see how deep a row sits. An icon shows the row's kind: a terminal for a session, a robot for a subagent run, a list for a console, and a server for a command on a machine. A finished run shows a check. A command leaves the list when it finishes, and a failed command appears in the spider panel.
 
@@ -294,23 +344,18 @@ Clicking a row opens it:
 - A console row shows that agent's command history on the machine.
 - A command row opens an observer for that one job.
 
-Two filter chips sit above the list. Use them to show one machine or one agent. The filters apply to the rows under each session. Session rows always stay. Choose **All machines** or **All agents**, or click the x on a chip, to clear its filter. When the sidebar is collapsed to its rail and a filter is set, the rail shows **Clear**. Each installed copy of the sidebar keeps its own choices.
+Right-click a subagent row to open its viewer in a new tab or an existing tab. If the viewer already has a pane, the menu offers **Move to new tab**, **Move to tab**, and **Hide**. Hide parks the viewer without stopping the run. **Kill subagent** sends the kill request to the owning session. Finished runs with saved views have the same open options.
 
-### Machines
-
-The **Machines** section sits under the agents list. It lists every configured machine, for all spaces, with a server icon and the machine name. The row shows only the machine's status:
-
-- Connected: no mark.
-- Disconnected: a red x.
-- Stopped, connecting, or unknown to Herdr: the row is dimmed.
-
-Spider reads Herdr's machine list when the sidebar starts and every 15 seconds after that. Click a machine to filter the agents list to that machine's jobs. Click it again to clear the filter. The section is hidden when the sidebar is collapsed.
+The list includes agents from every machine. Use the sort control in the Agents header to group agents by space. When several agents share a tab, each spider session uses its session name, and other agents use their terminal titles.
 
 ### Panes
 
-Each tab has an auxiliary strip next to the agent pane, with `limits.auxiliaryPanes` slots (2 by default). Your main agent panes always stay visible. Spider never parks, moves, resizes, or hides them.
+Each tab shares `limits.auxiliaryPanes` auxiliary slots across all its sessions, 2 by default. Spider counts the viewer panes in the app layout, including viewers opened by another session process. Opening an auxiliary view never parks, moves, resizes, or hides your main agent panes.
+The close button in spider's pane header asks before closing a pi session. Cancel keeps the pane and session running. Confirm ends pi, but its supervised subagents keep running and reconnect when you resume the same session. Shell and mod panes still close normally. Spider does not park main sessions because Herdr cannot reliably give those terminals a pane again. The focused header also accepts `spider-pane.close`, which uses the same confirmation. It is not a new default key binding. Herdr's native `pane.close` command has no close hook, so a custom key binding or another mod that calls it directly can still close without asking. The move menu's explicit Kill session action instead stops its subagents before ending pi.
 
-Subagent viewers fill free slots on their own. When the strip is full, a new viewer stays parked, and its run keeps working and stays in the sidebar. Spider never closes a displayed pane to make room for an automatic viewer. Consoles and command observers open only when you click them.
+Subagent viewers stay parked by default. They keep running without a pane and appear under their parent in the sidebar. Open them from the sidebar, the spider panel, or an open or move menu. Consoles and command observers also wait for you to open them.
+
+Set `automaticSubagentPanes: true` to let new subagent viewers fill free auxiliary slots automatically. The setting is off by default. When the tab is full, a new viewer stays parked. Spider never closes a displayed pane to make room for an automatic viewer.
 
 When you open an item from the sidebar or the spider panel, spider does one of these things:
 
@@ -320,13 +365,17 @@ When you open an item from the sidebar or the spider panel, spider does one of t
 
 Closing an auxiliary pane frees its slot. When a command finishes, its observer keeps the saved output and shows `Finished, exit <code>. Close this pane when done.` until you close it. If the core goes away first, the observer shows `Disconnected. Close this pane when done.`
 
-Each viewer, console, and observer pane has a header with its name, its parent agent as a pill, and its working directory. A long directory is shortened in the middle, and the full path shows on hover. A viewer's header also shows **Can steer** for an RPC child, or **Read-only** for any other run.
+A subagent viewer has a bot icon, a run-name pill and a parent pill. It has no path or steering tag. A spacer keeps its status icons at the right. Console and command headers use a terminal icon and keep their name, parent pill and working directory. Long paths are shortened in the middle, with the full path on hover. Named pi sessions show the program logo, a session-name pill and the path. An unnamed session keeps its old header text.
 
-Closing a viewer, console, or observer, or the tab that holds it, never cancels a job or a run. To stop a remote command, abort the call or let its timeout expire.
+Right-click a terminal pane's header to move it to a new tab or another tab. The menu groups tabs by space and lists the current space first. A terminal can move only between tabs on its own machine. Herdr does not yet support moving mod panes. Herdr's terminal right-click menu cannot be extended, so use the pane header for these actions.
+
+The last menu item stops the item in that pane. It reads **Kill subagent**, **Kill command**, **Kill session…**, or **Kill terminal**. Killing a session asks for confirmation, then waits for its subagents to stop before killing the session's terminal. Cancel leaves both running. **Kill terminal** uses that same backend stop when the terminal owns a pi session; an ordinary shell is killed directly. Session kills require a live owning connection rather than falling back to an unsafe native kill. **Kill command** asks the owning session to cancel the remote process group.
+
+Closing a viewer, console, or observer, or the tab that holds it, never cancels a job or a run. To stop a remote command, abort the call, let its timeout expire, or use `spider kill` with its job ID.
 
 ## Raw SSH
 
-Inside Herdr, managed machines are reached through `on`. Plain `ssh` to a configured machine or alias is refused with `Raw SSH to a managed machine is unavailable; use spider exec with on:<machine>`, where `<machine>` is the configured name. The same check refuses `scp`, `sftp`, `rsync` over SSH, and `git` over SSH to a configured machine, with a message that also names the audited admin route.
+Inside Herdr, use `on` to reach managed machines. If plain `ssh` targets a configured machine or alias, spider blocks it and suggests `spider exec` with the machine's `on` value. The same check applies to `scp`, `sftp`, `rsync` over SSH, and `git` over SSH. See [The admin command](#the-admin-command) for repairs that need a direct SSH connection.
 
 The check covers shell `exec`, `exec_file`, every `batch` entry, the built-in bash tool, and `!` commands typed in pi. A shim on `PATH` covers `ssh` started from other programs. Other hosts pass through unchanged to the first `ssh` on your `PATH` after the shim. Subagents follow the same rule as their parent, and machine names match without regard to case. Ordinary shell commands still work in subagents.
 
@@ -375,19 +424,23 @@ The admin command creates a one-time token file for each use, passes the token t
 
 ## Watch and steer subagents
 
-Each subagent run that a session dispatches gets a viewer terminal, parented to the session's agent pane. The viewer shows the run's text, tool activity, escalations, and final result. It strips terminal control sequences, so a transcript cannot change your terminal.
+Each subagent run gets a viewer terminal, parented to the session's agent pane. The viewer uses the host's pi components and theme. It shows the task, steers, assistant markdown and thinking, tool calls and results, bash output, and session summaries. New messages stream while the child runs. Saved session files supply the completed messages. Terminal control sequences in those messages cannot change your terminal.
 
-The viewer has its own message box. Press Enter to send the text to the running child as a steer through the owning session. The viewer shows the real reply: delivered, accepted but not confirmed, consumed by an extension, refused, or delivery unknown. It does not resend a steer whose delivery is unknown.
+Press Ctrl+O to expand tool output, Ctrl+T to toggle thinking, and Ctrl+C to close the viewer. Large logs open at the tail and label omitted history. The footer shows the run and owner names, model, thinking level, context use, recorded token usage and cost, and run status. An unfinished status that the owner can no longer confirm is labelled `last known`. Missing values have explicit labels. `tail totals` means the viewer has loaded only part of the saved file.
 
-Only a running RPC child with a live pipe accepts a steer. For a queued, paused, finished, cancelled, failed, or print-mode run, the viewer explains why the box is disabled. Blank text, text that starts with `/`, and text over 16 KiB are refused.
+Only a running RPC child with a live pipe has an editor. Press Enter to send a steer through the owning session. The steer appears above the editor with its real delivery state. It disappears when the child records the instruction. A reply with unknown delivery never triggers a retry. Other runs have no editor and show `read-only` in the footer. Blank text, text that starts with `/`, and text over 16 KiB are refused.
 
-When the owning session quits, or its terminal closes, the viewer stays open and prints `Owning session closed. Saved log is read-only.` You can read the log but not steer. Close the viewer when you are done. During a reload, the viewer shows `[reconnecting]` and keeps its text, cursor, and draft. If the owning session stops updating its feed or is replaced, and stays that way for 30 seconds, the viewer prints `Owning session unavailable for 30 seconds. Saved log is read-only.` and stays open. If the owning session's feed file is gone for 30 seconds, the viewer closes.
+The viewer requires the host's pi 1.2.0 or later as a peer dependency. If pi cannot load, it explains why once and opens the text viewer. Different spider frame versions produce one compatibility notice, not unsupported live output.
 
-A viewer opens on its own once for each unfinished run. Spider does not automatically open a viewer for an already-finished run. If you close a viewer, later events from that run do not open it again. Open it from the sidebar instead.
+During `/reload`, the viewer reconnects silently and keeps its messages and draft. If the owner does not answer IPC for about 3 seconds, the footer shows `owner unreachable` until it recovers. Feed update times do not decide whether the owner is reachable.
 
-While the owning session is live, a viewer closes when its run finishes, fails, or is cancelled. It shows `This run is <status>.` and holds the final output for 2 seconds before closing. An automatic viewer that attaches after the run ends closes the same way. A viewer you open while the run is unfinished also closes when the run ends. Focusing an existing automatic viewer does not keep it open after completion.
+When the owning session quits or its terminal closes, the viewer stays open and shows `Owning session closed. Saved log is read-only.` Close the viewer when you are done. After 30 seconds without the owner, the saved log stays open and read-only. A replaced owner's viewer never reattaches, even if that session later resumes. A feed file that stays missing for 30 seconds also leaves the saved log open and read-only.
 
-Owner quit and replacement are exceptions. Those viewers stay open and read-only as described above, even when shutdown cancels the run. During `/reload`, the viewer reconnects.
+Spider starts one parked viewer for each unfinished run. Spider does not automatically start a viewer for an already-finished run. If you close a viewer, later events from that run do not open it again. Open it from the sidebar instead.
+
+While the owning session is live, a viewer closes when its run finishes, fails, or is cancelled. Its footer shows the final status, and it holds the output for 2 seconds before closing. An automatic viewer that starts after the run ends closes the same way. A viewer you open while the run is unfinished also closes when the run ends. Focusing an existing automatic viewer does not keep it open after completion.
+
+Owner quit and replacement are exceptions. Those viewers stay open and read-only while the parent is absent. The supervised subagent keeps running. Resuming the same session restores its live handle and lets the viewer reconnect and steer again. During `/reload`, the viewer reconnects without stopping the child.
 
 Opening an already-finished, failed, or cancelled run from the sidebar or the spider panel opens a saved read-only view until you close it. If the live viewer is still closing, spider waits for it to exit before opening the saved view. Viewers never start another subagent and never change how a child runs. Opening or closing a viewer does not change the agent pane.
 
@@ -395,28 +448,21 @@ Opening an already-finished, failed, or cancelled run from the sidebar or the sp
 
 ## Use the spider panel
 
-The panel is hidden by default. Click **Spider** next to **Files** and **Changes** at the top right to show it, and click it again to hide it. Herdr remembers the open panel for each space. The dock opens at 368 pixels wide and resizes from 280 to 900 pixels.
+The panel is hidden by default. Click **Spider**, marked with the web icon next to **Files** and **Changes** at the top right, to show it. Click it again to hide it. Herdr remembers the open panel for each space. The dock opens at 368 pixels wide and resizes from 280 to 900 pixels. The [shortcuts](#shortcuts) open spider views in pi without opening the panel.
 
 The panel shows the space that is selected in the sidebar. It has three parts: the notification list, the sessions, and the month bar. When something goes wrong, a problems group appears above the notifications.
 
 ### Notifications
 
-A bell heads the panel, with the number of items that need you. Under it, one row describes each item in words, with the agent and the machine as small pills and a command as inline code. The list can hold these items:
+A bell heads the panel, with the number of items that need you. The panel shows dismissible cards for a live session that is blocked or failed and for memories waiting for review. A waiting card does not show the question.
 
-- `<agent> is waiting`: a live session waits for you. The row does not show the question.
-- `<agent> failed`: a live session reports an error, or a subagent run failed in the last 24 hours.
-- ``<agent> `<command>` failed on <machine>``: a remote command failed in the last 24 hours. The exit code is in the command's output, not in the row.
-- `<machine> <state>`: a configured machine is not connected. The state is Herdr's word for it, such as `stopped`, or `unreachable` when Herdr does not list the machine.
-- `<n> memories to review`: memory candidates wait for approval.
-- `Over budget pace`: the projected month total exceeds `usage.monthlyBudget`.
-
-The whole row is the button. Click it, or move to it with Tab and press Enter or Space. A waiting or failed session focuses that session's agent pane. A failed run opens its viewer. A failed command focuses its output pane if that pane is still open. Otherwise the session that ran it opens the command's output in a free pane, or in a new tab when the layout is full. When that session is not live, the row is disabled. The memory row opens memory review in pi, and the budget row opens usage. A machine row has no action. The panel opens views through the owning session and never types into a pi editor.
+Click a session card to focus its pane. Click the memory card to open memory review in the panel. Use the dismiss control to hide a card until its underlying state changes. The panel never polls machines.
 
 ### Sessions
 
-The **Sessions** list has one row per session in the space. A session that has no tab in any space appears in every space. A row shows a terminal icon, the session name, small counts for live subagents and open todos, and the session's credits this month in the **Credits** column. The word `unavailable` means spider could not read the session's credits. While spider refreshes the figure, the row keeps showing the previous one. The row shows no status, because the sidebar shows it. A session that is not live has a dimmed name, and its tooltip names the state. A session whose feed is older than 10 seconds counts as disconnected.
+The **Sessions** list has one row per session in the space. A session that has no tab in any space appears in every space. A row shows a terminal icon, the session name, small counts for live subagents and open todos, and the session's credits this month in the **Credits** column. The word `unavailable` means spider could not read the session's credits. While spider refreshes the figure, the row keeps showing the previous one. The row shows no status, because the sidebar shows it. A session that is not live has a dimmed name, and its tooltip names the state. A session counts as disconnected after more than 20 seconds without a matching heartbeat.
 
-Click the terminal icon to focus the session. Click anywhere else on the row to expand it. An expanded row shows up to five open todos, a **+N more** link when there are more, the session's loop and schedule triggers with their next run time, and an **All todos, runs and usage** link that opens spider's todos view in that session.
+Click the terminal icon to focus the session. Click anywhere else on the row to expand it. An expanded row shows up to five open todos, a **+N more** link when there are more, the session's loop and schedule triggers with their next run time, and an **All todos, runs and usage** link that opens a session view in the panel.
 
 When the panel reads the session folder and finds no feeds, it says `No live sessions` and offers **Run doctor**. If it could not read the folder, the list says `Spider couldn't read the session feeds, so sessions may be missing here.`, shows the technical reason below it, and offers **Run doctor**. If every feed it found was skipped, the list says `Spider couldn't read any session feed.`
 
@@ -429,7 +475,6 @@ The panel reports these problems:
 - A session feed that is a link or a special file, larger than 1 MB, not valid, or unreadable. Spider skips it.
 - Feeds that together exceed what the panel reads at once. Spider hides the oldest sessions first.
 - A lost watch on the session folder. The panel then rereads the feeds every 8 seconds.
-- Herdr notices that could not be posted, and notice actions that did not run.
 - A run view, command output, memory review or spider view that did not open.
 - A doctor run that took longer than 30 seconds.
 
@@ -445,7 +490,7 @@ A slim bar at the bottom of the panel shows the month's credits: the month name,
 
 ### Herdr notices
 
-The panel also posts a Herdr notice once for a subagent result, an escalation, a finished job, and each budget threshold: 80 percent used, 100 percent used, and a projected overrun. A session notice focuses its session. A budget notice opens usage.
+The panel does not post Herdr toasts for feed notices. There are no budget, subagent-result, escalation or job-result toasts. Job results go to the agent that started the job through `spider.job_done`.
 
 ## The look
 
@@ -453,7 +498,7 @@ Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-
 
 - Surfaces are neutral black `#161618`. Text panes, the spider panel, and menus use it at 94 percent opacity.
 - Hover, selected, and raised fills are white at 7, 8, and 11 percent.
-- Panes have a 12-pixel radius and an 8-pixel gap, with no borders or focus outlines.
+- Panes have a 12-pixel radius, an 8-pixel gap, and a 1-pixel `#38383a` border. The focused pane uses the light grey accent for its border. The panel has the same radius and neutral border.
 - Herdr's window chrome uses neutral greys. Its only accent colours are red and amber, and they mark states, such as a failure or a session that waits for you.
 - The terminal palette and the pi theme are Dracula+. Pi's boxes use opaque neutral greys, because pi themes have no alpha.
 - Herdr's UI text uses the bundled Google Sans Flex. Paths, names, and numbers in spider's views use Herdr's bundled JetBrains Mono. Your terminal font does not change.
@@ -514,8 +559,7 @@ The spider panel's **Run doctor** button runs the same command.
 
 | Code | Cause | Fix |
 | --- | --- | --- |
-| `herdr-disabled` | A call passed `on` while the integration is off. | Start pi inside Herdr with a running core and a configuration file. |
-| `core-unavailable` | The `hc` core is not running. Spider does not start it. | Start the core yourself, then retry. If it stopped during a session, wait for `Herdr core is back. /reload to reconnect.`, then run `/reload` in that session. |
+| `core-unavailable` | The `hc` core is not running. Spider does not start it. | Start the core, then retry. If it stopped during a session, wait for the recovery notice and run `/reload` in that session. |
 | `global-root-mismatch` | The configuration's `globalRoot` differs from the spider global root. | Set `globalRoot` to the path that the message names, then run setup or the doctor again. |
 | `agent-directory-mismatch` | The configuration's `agentDirectory` differs from the pi agent directory of the shell that runs setup or rollback. | Change `agentDirectory` to the path that the message names, or set `PI_CODING_AGENT_DIR` in the shell to the configured path. |
 | `pinned-node-unavailable` | A Node binary that setup recorded is missing or unsupported. | Restore a supported Node at that path, or run setup again from a plain shell with a supported Node. |
@@ -523,7 +567,7 @@ The spider panel's **Run doctor** button runs the same command.
 | `runtime-root-invalid` | A machine's runtime directory is missing, is not a private directory owned by you, or the runtime cannot run there. | Fix the directory's owner and mode, then run setup again. |
 | `runtime-not-installed` | A remote call found the machine's runtime missing or outdated. | Run setup again. |
 | `native-notes-enabled` | The core's root `notes` key is not exactly `false`. | Fix the root `notes` key, then run setup again from a plain shell. |
-| `launch-notify-enabled` | A spider `hc run` omitted `--no-notify`. | Report it. Every spider launch must pass `--no-notify`. |
+| `launch-notify-enabled` | A spider launch permits native notifications. | Update spider, then run setup and the doctor again. |\n| `launch-history-unavailable` | The doctor could not read the core's terminal event snapshot. | Check that Herdr is running, then run the doctor again. |\n| `inspection-unavailable` | The doctor could not inspect a check, including a launch with no readable notification policy. | Follow the repair line for that check. For launch policy, run setup, start a spider pane or remote command, then run the doctor again. |\n| `installed-artifact-changed` | An installed spider mod or another checked file differs from this spider version. | For a mod, run setup again. For another file, follow the repair line. |\n| `upstream-source-unknown` | A built-in Herdr mod differs from the supported source. | Update spider or restore Herdr 0.1.12, then run setup again. |\n| `upstream-version-mismatch` | The installed Herdr app version is not supported. | Update spider, or use Herdr 0.1.12. |\n| `doctor-inspection-failed` | The doctor could not complete a check, including when a built-in source is not recognized. | Follow the message and repair line. |\n| `duplicate-live-session` | Two terminals hold the same session ID. Setup left both alone and continued with the other sessions. | Close one of the sessions, then run setup again. |
 | `key-binding-conflict` | A Herdr key is bound to something spider does not own. | Change the binding, or run setup with `--overwrite-unowned-keys`. |
 | `managed-artifact-changed` | A part of a file that setup owns was edited. | Restore the recorded value that the message names, then run setup again. |
 | `role-unresolved` | A configured role model is not available. | Fix that role in `models.defaults`, or sign in to its provider. |
@@ -546,10 +590,10 @@ Other symptoms:
 | Symptom | Cause and fix |
 | --- | --- |
 | A remote call fails with `release-timeout`, or with a spawn error that says `Payload release deadline expired`. | Spider could not confirm the job's terminal within 10 seconds, so the command never ran. Check that the core and the machine are healthy, then retry. |
-| Setup lists process IDs and waits. | These pi processes hold session files that setup needs, or have no record. Run `/reload` in an unrecorded session, or close it. Close each selected session. |
-| A panel session name is dimmed. | The session is not live. Its feed is older than 10 seconds, or the session closed. The tooltip names the state. |
+| Setup lists process IDs and waits. | These pi processes hold sessions that setup needs to open, or have no record. Run `/reload` in an unrecorded session, or close it. Close only the sessions that setup lists. |
+| A panel session name is dimmed. | The session is not live. Its heartbeat is more than 20 seconds old, or the session closed. The tooltip names the state. |
 | Status shows working with no visible activity. | The session has queued, running, or paused subagents. Open the agents list with Cmd-Shift-A. |
-| Pi shows `Herdr unavailable: <reason>` or `Herdr activation failed: <reason>`. | The integration did not start. The reason names the cause. See [Turn the integration on or off](#turn-the-integration-on-or-off). |
-| Pi shows `Herdr core is back. /reload to reconnect.` | The core stopped and is running again. Spider does not reconnect on its own. Run `/reload` in the session. |
-| Pi shows `this session's Herdr terminal belongs to a core that is no longer running`. | A new core replaced the session's core. Start the session again in a Herdr terminal. |
-| Pi or the CLI warns `herdr.config in <file> is ignored: global scope only`, or the same for `herdr.enabled`. | A repository's settings set a global-only key. Move the value to the global `config.json`, and delete it from the repository file. |
+| Pi says that Herdr features are off in the session. | The integration did not start. See [Turn the integration on or off](#turn-the-integration-on-or-off). |
+| Pi says Herdr is running again. | Spider does not reconnect on its own. Run `/reload` in the session. |
+| Pi says the session's Herdr pane belongs to an instance that has stopped. | A new core replaced the session's core. Close the session and open it again in Herdr. |
+| Pi or the CLI says it ignores the repository's `herdr.config` or `herdr.enabled` setting. | The key is global-only. Move the value to the global `config.json`, and delete it from the repository file. |

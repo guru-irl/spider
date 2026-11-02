@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: MIT
+import { afterEach, expect, test, vi } from 'vitest';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createTerminalRegistry, writePrivateJson } from '../../../herdr/src/sessions/registry.js';
+import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
+import { startSessionEndpoint } from '../../../herdr/src/feed/ipc-server.js';
+import { setupSpaces, readCutoverRecovery } from '../../../herdr/src/spaces/setup.js';
+import { setupHerdr } from '../../../herdr/src/setup/installer.js';
+import { processStartTime } from '../../../subagents/src/process-identity.js';
+import { cleanup, fixture } from './herdr-setup-fixture.js';
+
+vi.mock('node:child_process', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
+});
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+
+test('a reconciled setup does not repeat the initial app selection', async () => {
+  const f = await fixture(), script = join(f.h.root, 'app-selection.mjs'), log = join(f.h.root, 'app-selection-log');
+  const source = await readFile(script, 'utf8');
+  await writeFile(script, `import { appendFileSync } from 'node:fs';\n` + source.replace("else if (a[0] === 'do') {", `else if (a[0] === 'do') { appendFileSync(${JSON.stringify(log)}, a[1] + '\\n');`));
+  await setupHerdr(f.request, f.parts);
+  expect((await readFile(log, 'utf8')).trim().split('\n')).toEqual(['layout.switch', 'app.theme']);
+  const preflight = f.parts.preflight;
+  f.parts.preflight = async request => ({ ...await preflight(request), cutoverNeedsRecheck: true });
+  await setupHerdr(f.request, f.parts);
+  expect((await readFile(log, 'utf8')).trim().split('\n')).toEqual(['layout.switch', 'app.theme']);
+}, 60000);
+
+test('setup preflight adopts a live replacement terminal without retiring or relaunching it', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const root = join(f.request.config.globalRoot, 'herdr'), file = join(f.h.directories.agent, 'sessions/session-one.jsonl'), id = 'session-one', address = f.h.owner!.terminal.address;
+  await writeFile(file, JSON.stringify({ type: 'session', id, cwd: f.h.root }) + '\n');
+  f.request.config.spaces = [{ name: 'Group', sessions: [{ file }] }]; f.request.config.layout = 'panes';
+  const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
+  const owner = { ...f.h.owner!, sessionId: id as never, generation: 'current-generation' as never, sessionFile: file, cwd: f.h.root };
+  await createTerminalRegistry(root).record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } });
+  await createProcessPresence(root).record({ ...identity, sessionId: id as never, sessionFile: file, sessionName: 'Session', kind: 'top-level', hcAddress: address });
+  const endpoint = await startSessionEndpoint(owner, { currentOwner: () => owner, liveCapabilities: () => ({ native: 'idle', effective: 'idle' }), ownsRun: () => false, subscribeRun: () => ({ dispose() {} }), steerRun: () => { throw new Error('No runs'); }, openView() {}, openRun: () => null, ownsJob: () => false, openJob: () => null }, root);
+  cleanup.push(async () => { await endpoint.dispose(); });
+  const feed = { version: 1, sessionId: id, generation: owner.generation, revision: 1, updatedAt: Date.now(), owner, placement: null, lifecycle: 'live', status: { native: null, effective: null, message: null }, runs: { rows: [], total: 0, truncated: false }, todos: { rows: [], total: 0, truncated: false }, triggers: [], pace: { scope: 'session', used: null, budget: null, projected: null, remaining: null, periodStart: null, periodEnd: null, updatedAt: null, unavailableReason: null }, approvals: [], notifications: [], ipc: { address: endpoint.descriptor.address, capabilityFile: endpoint.descriptor.capabilityFile }, errors: [] };
+  await writePrivateJson(join(root, 'sessions', id, 'session.json'), feed);
+  const target = { file, sessionId: id, cwd: f.h.root, name: 'Session', spaceName: 'Group', spaceOrder: 0, sessionOrder: 0, extensionArguments: [] };
+  await writePrivateJson(join(root, 'spaces/spaces.json'), { version: 1, spaces: [{ name: 'Group', id: 'group', adopted: false }], tabs: [{ target, placement: { space: 'group', tab: 'old-tab', terminal: 'old-terminal' }, result: { pid: 999999, startIdentity: 'old', sessionId: id, sessionFile: file, cwd: f.h.root }, failure: null }], intents: [], retired: [], focused: true });
+  const script = join(f.h.root, 'reconcile-app.mjs'), binary = join(f.h.root, 'reconcile-app'), commands = join(f.h.root, 'reconcile-commands');
+  await writeFile(script, `import { appendFileSync } from 'node:fs';\nconst a=process.argv.slice(2);\nif(a[0]==='--version') console.log('herdr-app 0.1.12');\nelse if(a[0]==='ls') console.log(JSON.stringify({spaces:[{id:'group',name:'Group',tabs:[{id:'tab',name:'Group',terminals:[{terminal:${JSON.stringify(address)}}]}]}]}));\nelse { appendFileSync(${JSON.stringify(commands)},a.join(' ')+'\\n'); console.log('{}'); }\n`);
+  await writeFile(binary, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`, { mode: 0o700 });
+  f.request.config.app.binary = binary;
+  const parts = await f.ports.setupParts(f.request), before = await f.h.calls();
+  const result = await setupHerdr(f.request, parts);
+  expect(result.cutover?.terminals).toEqual([address]);
+  expect(result.cutover?.identities[id]).toBe(identity.startIdentity);
+  expect((await readCutoverRecovery(join(root, 'spaces'))).entries[0].placement.terminal).toBe(address);
+  expect(await readFile(commands).catch(() => null)).toBeNull();
+  const launches = (await f.h.calls()).slice(before.length).filter(call => call.argv[0] === 'run' && !call.argv.includes('--probe'));
+  expect(launches).toEqual([]);
+}, 60000);
+
+test('setup accepts a fresh new feed generation for the same live terminal and process', async () => {
+  const f = await fixture(), root = join(f.request.config.globalRoot, 'herdr');
+  const file = join(f.h.directories.agent, 'sessions/session-one.jsonl'), id = 'session-one', address = f.h.owner!.terminal.address;
+  await writeFile(file, JSON.stringify({ type: 'session', id, cwd: f.h.root }) + '\n');
+  f.request.config.spaces = [{ name: 'Group', sessions: [{ file }] }]; f.request.config.layout = 'panes';
+  const target = { file, sessionId: id, cwd: f.h.root, name: 'Session', spaceName: 'Group', spaceOrder: 0, sessionOrder: 0, extensionArguments: [] };
+  const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
+  const owner = { ...f.h.owner!, sessionId: id as never, generation: 'old-generation' as never, sessionFile: file, cwd: f.h.root };
+  await createTerminalRegistry(root).record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } });
+  await createProcessPresence(root).record({ ...identity, sessionId: id as never, sessionFile: file, sessionName: 'Session', kind: 'top-level', hcAddress: address });
+  const now = Date.now(), generation = 'new-generation';
+  const feed = { version: 1, sessionId: id, generation, revision: 1, updatedAt: now - 60_000, owner: { ...owner, generation }, placement: null, lifecycle: 'live', status: { native: null, effective: null, message: null }, runs: { rows: [], total: 0, truncated: false }, todos: { rows: [], total: 0, truncated: false }, triggers: [], pace: { scope: 'session', used: null, budget: null, projected: null, remaining: null, periodStart: null, periodEnd: null, updatedAt: null, unavailableReason: null }, approvals: [], notifications: [], ipc: null, errors: [] };
+  await writePrivateJson(join(root, 'sessions', id, 'session.json'), feed);
+  await writePrivateJson(join(root, 'sessions', id, 'heartbeat.json'), { version: 1, sessionId: id, generation, updatedAt: now });
+  const spaceRoot = join(root, 'spaces');
+  await writePrivateJson(join(spaceRoot, 'spaces.json'), { version: 1, spaces: [{ name: 'Group', id: 'group', adopted: false }], tabs: [{ target, placement: { space: 'group', tab: 'tab', terminal: address }, result: { ...identity, sessionId: id, sessionFile: file, cwd: f.h.root }, failure: null, tabName: 'Group' }], intents: [], retired: [], focused: true });
+  const script = join(f.h.root, 'read-layout.mjs'), binary = join(f.h.root, 'read-layout');
+  await writeFile(script, `console.log(JSON.stringify({spaces:[{id:'group',name:'Group',tabs:[{id:'tab',name:'Group',terminals:[{terminal:${JSON.stringify(address)}}]}]}]}));\n`);
+  await writeFile(binary, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`, { mode: 0o700 });
+  f.request.config.app.binary = binary;
+  const spaces = f.ports.spacePorts(f.request), reports: string[] = [];
+  spaces.reportLive = records => { for (const record of records) reports.push(String(record.pid)); };
+  spaces.verifyOwner = async () => { throw new Error('The saved generation is older'); };
+  spaces.app.command = async command => { throw new Error(`Unexpected command ${command}`); };
+  await writePrivateJson(join(root, 'sessions', id, 'heartbeat.json'), { version: 1, sessionId: id, generation: 'other-generation', updatedAt: now });
+  expect(await spaces.liveSessionFeed?.(target as never)).toBeNull();
+  await writePrivateJson(join(root, 'sessions', id, 'heartbeat.json'), { version: 1, sessionId: id, generation, updatedAt: now });
+  expect(await spaces.liveSessionFeed?.(target as never)).toMatchObject({ generation });
+  const result = await setupSpaces(f.request.config, spaces);
+  expect(result.launched).toMatchObject([{ ...identity, sessionId: id, sessionFile: file }]);
+  expect(result.tabs).toMatchObject([{ terminal: address, tab: 'tab' }]);
+  expect(reports).toEqual([]);
+  expect((await readCutoverRecovery(spaceRoot)).entries).toHaveLength(1);
+  const bytes = await readFile(join(root, 'sessions', id, 'session.json'));
+  expect(JSON.parse(bytes.toString()).generation).toBe(generation);
+}, 60000);

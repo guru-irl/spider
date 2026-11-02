@@ -18,11 +18,13 @@ const fixture = (name: string) => fileURLToPath(new URL(`../fixtures/${name}`, i
 const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
 const perl = ['-e', 'alarm shift; exec @ARGV'];
 const LEASE_MS = 12_000;
+interface DefaultOwnership { roots: string[]; namespaces: string[]; coreIds: string[]; runIds: string[]; jobIds: string[]; sessionIds: string[]; terminalIds: string[]; identitiesComplete: boolean }
+interface DefaultAssessment { clean: boolean; violations: unknown[]; foreignActivity: unknown[] }
 export interface RemoteMetadata {
   root: string; namespace: string; socket: string; env: Record<string, string>;
   node: string; nodePath: string; hc: string; coreBinary: string; ledger: string; lease: string;
   defaultCore: { hcBinary: string; socket: string; env: Record<string, string>; wasListening: boolean };
-  defaultBefore: unknown; coreId?: string; pid?: number; start?: string; guardianPid?: number; guardianStart?: string;
+  defaultBefore: unknown; ownership?: DefaultOwnership; coreId?: string; pid?: number; start?: string; guardianPid?: number; guardianStart?: string;
 }
 export interface RemoteProof {
   clean: boolean; rootRemoved: boolean; reason: string; survivors: unknown[];
@@ -30,7 +32,7 @@ export interface RemoteProof {
 }
 export interface RemoteSnapshot {
   rootExists: boolean; socketListening: boolean; coreAlive: boolean; guardianAlive: boolean;
-  rootProcesses: unknown[]; defaultAfter: unknown;
+  rootProcesses: unknown[]; defaultAfter: unknown; defaultAssessment: DefaultAssessment;
 }
 export interface RemoteDestination {
   readonly metadata: RemoteMetadata;
@@ -74,8 +76,57 @@ async function ready(proc: OwnedProcess, marker: string, log: string): Promise<n
   return Number(m[1]);
 }
 
+export async function ownedJournalIds(globalRoot: string): Promise<{ sessionIds: string[]; runIds: string[]; jobIds: string[]; terminalIds: string[]; identitiesComplete: boolean }> {
+  const sessionIds = new Set<string>(), runIds = new Set<string>(), jobIds = new Set<string>(), terminalIds = new Set<string>();
+  let identitiesComplete = true;
+  const directories = async (path: string) => {
+    try {
+      const entries = await readdir(path, { withFileTypes: true });
+      if (entries.some(entry => entry.isSymbolicLink() || entry.isDirectory() && !/^[a-zA-Z0-9_-]{1,160}$/.test(entry.name))) identitiesComplete = false;
+      return entries.filter(entry => entry.isDirectory() && /^[a-zA-Z0-9_-]{1,160}$/.test(entry.name));
+    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  };
+  const journal = async (path: string, sessionId: string) => {
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error('unsafe fixture job journal');
+      const value = JSON.parse(await readFile(path, 'utf8'));
+      if (value.version !== 1 || value.sessionId !== sessionId || !Array.isArray(value.jobs)) throw new Error('invalid fixture job journal');
+      for (const job of value.jobs) {
+        if (typeof job.id !== 'string' || job.owner?.sessionId !== sessionId) throw new Error('foreign fixture job');
+        jobIds.add(job.id); if (typeof job.runId === 'string') runIds.add(job.runId);
+        if (typeof job.phase?.address === 'string') terminalIds.add(job.phase.address.split('/').at(-1)!);
+      }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  };
+  const root = join(globalRoot, 'herdr/jobs/sessions');
+  for (const session of await directories(root)) {
+    sessionIds.add(session.name); const directory = join(root, session.name);
+    await journal(join(directory, 'jobs.json'), session.name);
+    for (const run of await directories(join(directory, 'runs'))) {
+      runIds.add(run.name); await journal(join(directory, 'runs', run.name, 'jobs.json'), session.name);
+    }
+  }
+  const feeds = join(globalRoot, 'herdr/sessions');
+  for (const session of await directories(feeds)) {
+    const path = join(feeds, session.name, 'session.json');
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error('unsafe fixture session feed');
+      const feed = JSON.parse(await readFile(path, 'utf8'));
+      if (feed.sessionId !== session.name || !Array.isArray(feed.runs?.rows)) throw new Error('invalid fixture session feed');
+      sessionIds.add(session.name);
+      for (const run of feed.runs.rows) { if (typeof run.id !== 'string') throw new Error('invalid fixture run'); runIds.add(run.id); }
+      if (feed.runs.truncated) identitiesComplete = false;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  if (!sessionIds.size) identitiesComplete = false;
+  return { sessionIds: [...sessionIds], runIds: [...runIds], jobIds: [...jobIds], terminalIds: [...terminalIds], identitiesComplete };
+}
+
 /** The remote folder is exclusively created before any daemon starts. No default namespace command mutates. */
-function preparation(stamp: string, guardianSource: string, initialLeaseMs: number, commandSeconds: number): string {
+function preparation(stamp: string, guardianSource: string, initialLeaseMs: number, commandSeconds: number, localRoot: string): string {
   const encoded = Buffer.from(guardianSource).toString('base64');
   return `
 import { mkdirSync, writeFileSync, realpathSync, lstatSync, rmSync } from 'node:fs';
@@ -98,7 +149,8 @@ const socket=env.XDG_RUNTIME_DIR+'/herdr-core/'+namespace+'.sock';
 for(const p of [socket,socket.replace(/\\.sock$/,'.holder.4294967295.sock')])if(Buffer.byteLength(p)>103)throw new Error('socket-path-too-long: relocate the owned remote folder');
 const helpers=await import('data:text/javascript;base64,'+${JSON.stringify(encoded)});
 const defaultCore={hcBinary:hc,socket:defaultSocket,env:original,wasListening:await helpers.listening(defaultSocket)};
-const defaultBefore=await helpers.defaultInventory(defaultCore);
+const ownership={roots:[root,${JSON.stringify(localRoot)}],namespaces:[namespace],coreIds:[],runIds:[],jobIds:[],sessionIds:[],terminalIds:[],identitiesComplete:false};
+const defaultBefore=await helpers.defaultInventory(defaultCore,ownership);
 let created=false;
 try {
   mkdirSync(root,{mode:448});created=true;
@@ -110,8 +162,8 @@ try {
   for(const [name,binary] of [['node',process.execPath],['hc',hc],['herdr-core',coreBinary]]) {
     writeFileSync(root+'/bin/'+name,'#!/bin/sh\\nexec /usr/bin/perl -e '+helpers.quote('alarm shift; exec @ARGV')+' ${commandSeconds} '+helpers.quote(binary)+' "$@"\\n',{mode:448});
   }
-  const metadata={root,namespace,socket,env,node:process.execPath,nodePath:root+'/bin/node',hc,coreBinary,defaultCore,defaultBefore,ledger:root+'/ledger.json',lease:root+'/lease.json'};
-  writeFileSync(metadata.ledger,JSON.stringify({version:1,id:${JSON.stringify(stamp)},root,state:'open',processes:[],cores:[{side:'dest',namespace,socket,hcBinary:hc,env}],defaultCore,defaultBefore}),{mode:384});
+  const metadata={root,namespace,socket,env,node:process.execPath,nodePath:root+'/bin/node',hc,coreBinary,defaultCore,defaultBefore,ownership,ledger:root+'/ledger.json',lease:root+'/lease.json'};
+  writeFileSync(metadata.ledger,JSON.stringify({version:1,id:${JSON.stringify(stamp)},root,state:'open',processes:[],cores:[{side:'dest',namespace,socket,hcBinary:hc,env}],defaultCore,defaultBefore,ownership}),{mode:384});
   writeFileSync(metadata.lease,JSON.stringify({version:1,expiresAt:Date.now()+${initialLeaseMs}}),{mode:384});
   console.log(JSON.stringify(metadata));
 } catch(error) {if(created)rmSync(root,{recursive:true});throw error;}`;
@@ -140,6 +192,7 @@ export async function createRemoteSuite(options: Extract<SuiteOptions, { tier: '
   let metadata: RemoteMetadata | undefined, guardian: OwnedProcess | undefined, supervisor: OwnedProcess | undefined;
   let closed: Promise<CleanupProof> | undefined, abandoned = false, observerDisconnected = false, remoteProof: RemoteProof | undefined;
   let localCores: Cores | undefined;
+  const observedTerminalIds = new Set<string>();
   let reconciling = true;
   const logs = join(base.evidenceDirectory, 'guardian.jsonl');
   const remoteRecord = base.ledger.path.replace(/\.json$/, '.remote.json');
@@ -161,12 +214,32 @@ export async function createRemoteSuite(options: Extract<SuiteOptions, { tier: '
     return result;
   };
   const node = (code: string, s = 30) => ssh(`exec env -i PATH="$PATH" HOME="$HOME" TMPDIR=${metadata ? quote(metadata.env.TMPDIR) : '"$HOME/spider-herdr-e2e-'+stamp+'/t"'} /usr/bin/perl -e 'alarm shift; exec @ARGV' ${s} ${metadata ? quote(metadata.node) : 'node'} --input-type=module -e ${quote(code)}`, s);
+  const syncOwnership = async (includeJobs: boolean) => {
+    const m = metadata!;
+    if (!m.ownership) throw new HarnessError('cleanup-unproved', 'remote ownership scope is missing');
+    if (includeJobs) {
+      if (!localCores) throw new HarnessError('cleanup-unproved', 'fixture core inventory is unavailable');
+      const addresses: string[] = [];
+      for (const side of ['local', 'dest'] as const) {
+        const inventory = parsed(await localCores.hc(['ls', '--all', '--json'], side), 'fixture terminal inventory').terminals;
+        if (!Array.isArray(inventory) || inventory.some(row => !row || typeof row.address !== 'string')) throw new HarnessError('cleanup-unproved', 'fixture terminal inventory is invalid');
+        addresses.push(...inventory.map(row => row.address as string).filter(address => !address.includes('/')));
+      }
+      const journalIds = await ownedJournalIds(base.directories.SPIDER_GLOBAL_ROOT);
+      for (const call of await localCores.records()) for (const arg of call.argv) if (/(?:^|\/)t[0-9a-z]+$/i.test(arg)) addresses.push(arg.split('/').at(-1)!);
+      Object.assign(m.ownership, journalIds, { terminalIds: [...new Set([...addresses, ...journalIds.terminalIds, ...observedTerminalIds])] });
+    }
+    parsed(await node(`const fs=await import('node:fs');const p=${JSON.stringify(m.ledger)},v=JSON.parse(fs.readFileSync(p,'utf8'));v.ownership=${JSON.stringify(m.ownership)};const t=p+'.ownership';fs.writeFileSync(t,JSON.stringify(v),{mode:384});fs.renameSync(t,p);console.log('{}');`), 'record fixture ownership');
+    await saveRemote('open');
+  };
   const snapshot = async (): Promise<RemoteSnapshot> => {
     const m = metadata!;
-    return parsed(await node(`${sourceForEval}\nconst m=${JSON.stringify(m)}; console.log(JSON.stringify({rootExists:existsSync(m.root),socketListening:await listening(m.socket),coreAlive:m.pid?processStart(m.pid)===m.start:false,guardianAlive:m.guardianPid?processStart(m.guardianPid)===m.guardianStart:false,rootProcesses:rootProcesses(m.root),defaultAfter:await defaultInventory(m.defaultCore)}));`), 'remote cleanup observation') as unknown as RemoteSnapshot;
+    return parsed(await node(`${sourceForEval}\nconst m=${JSON.stringify(m)}; const scope=m.ownership??{roots:[m.root],namespaces:[m.namespace],coreIds:[m.coreId].filter(Boolean),runIds:[],jobIds:[],sessionIds:[],terminalIds:[],identitiesComplete:false}; const defaultAfter=await defaultInventory(m.defaultCore,scope); console.log(JSON.stringify({rootExists:existsSync(m.root),socketListening:await listening(m.socket),coreAlive:m.pid?processStart(m.pid)===m.start:false,guardianAlive:m.guardianPid?processStart(m.guardianPid)===m.guardianStart:false,rootProcesses:rootProcesses(m.root),defaultAfter,defaultAssessment:assessDefaultInventory(m.defaultBefore,defaultAfter,scope)}));`), 'remote cleanup observation') as unknown as RemoteSnapshot;
   };
   const cleanupRemote = async (): Promise<RemoteSnapshot | null> => {
     if (!metadata) return null;
+    let ownershipFailure: unknown;
+    if (!abandoned) try { await syncOwnership(true); } catch (error) { ownershipFailure = error; }
     if (supervisor) { supervisor.child.stdin?.end(); await supervisor.exited; }
     if (!abandoned) {
       // Stop renewal first, then expire the existing lease atomically. This is the same guardian cleanup path.
@@ -175,7 +248,8 @@ export async function createRemoteSuite(options: Extract<SuiteOptions, { tier: '
     const after = await waitFor('remote folder, sockets and owned identities are gone', snapshot,
       s => !s.rootExists && !s.socketListening && !s.coreAlive && !s.guardianAlive && s.rootProcesses.length === 0,
       deadline(LEASE_MS + 40_000), { reconcileMs: 500 });
-    if (JSON.stringify(metadata.defaultBefore) !== JSON.stringify(after.defaultAfter)) throw new HarnessError('cleanup-unproved', 'remote default terminal identities changed', after);
+    if (ownershipFailure) throw new HarnessError('cleanup-unproved', 'fixture ownership could not be recorded', ownershipFailure);
+    if (!after.defaultAssessment.clean) throw new HarnessError('cleanup-unproved', 'remote default inventory contains harness-owned or unproved changes', after);
     if (!observerDisconnected && (!remoteProof?.clean || !remoteProof.rootRemoved)) throw new HarnessError('cleanup-unproved', 'guardian did not publish its successful root-removal proof', remoteProof);
     await base.evidence('remote-final.json', { metadata, after, guardian: remoteProof ?? null, observerDisconnected });
     await saveRemote('closed');
@@ -220,14 +294,14 @@ export async function createRemoteSuite(options: Extract<SuiteOptions, { tier: '
       observed = await waitFor('unfinished remote fixture reconciled', snapshot,
         s => !s.rootExists && !s.socketListening && !s.coreAlive && !s.guardianAlive && s.rootProcesses.length === 0,
         deadline(55_000), { reconcileMs: 500 });
-      if (JSON.stringify(record.metadata.defaultBefore) !== JSON.stringify(observed.defaultAfter)) throw new HarnessError('cleanup-unproved', 'previous remote default inventory differs', observed);
+      if (!observed.defaultAssessment.clean) throw new HarnessError('cleanup-unproved', 'previous remote default inventory contains harness-owned or unproved changes', observed);
       record.state = 'closed';
       await writeFile(path, JSON.stringify(record, null, 2), { mode: 0o600 });
       await base.evidence(`reconciled-${name}`, { metadata, observed });
       metadata = undefined;
     }
     reconciling = false;
-    metadata = parsed(await node(preparation(stamp, guardianSource, LEASE_MS * 3, seconds)), 'remote preparation') as unknown as RemoteMetadata;
+    metadata = parsed(await node(preparation(stamp, guardianSource, LEASE_MS * 3, seconds, base.root)), 'remote preparation') as unknown as RemoteMetadata;
     if (!metadata.root.endsWith(`/spider-herdr-e2e-${stamp}`) || metadata.namespace !== `e${stamp.slice(-6)}` || metadata.socket === metadata.defaultCore.socket) throw new HarnessError('isolation-unproved', 'remote preparation returned an unexpected root, namespace or socket');
     base.ledger.update(l => { l.remoteRoot = metadata!.root; });
     await saveRemote('open');
@@ -258,6 +332,8 @@ console.log(JSON.stringify({coreId:status.core.id,pid:status.pid,start}));`), 'r
     Object.assign(metadata, remoteStart);
     await saveRemote('open');
     const local = await startLocalCore(base);
+    metadata.ownership!.coreIds = [String(m.coreId), local.local.coreId];
+    await syncOwnership(false);
     Object.assign(base.pi.env, local.local.env);
     const transportConfig = ownedPath(base.root, join(base.root, 'ssh-transport.json'));
     await writeFile(transportConfig, JSON.stringify({ sshBinary, machine, log: join(base.evidenceDirectory, 'ssh-transport.jsonl'), prefix: `test -S ${quote(m.socket)} || exit 123;`, remoteEnv: m.env, seconds, env: transportEnv }), { mode: 0o600 });
@@ -266,6 +342,7 @@ console.log(JSON.stringify({coreId:status.core.id,pid:status.pid,start}));`), 'r
     await writeFile(sshWrapper, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture('remote-guardian.mjs'))} --transport ${quote(transportConfig)} "$@"\n`, { mode: 0o700 });
     const dest: CoreDescriptor = { side: 'dest', namespace: m.namespace, socket: m.socket as OwnedPath, env: m.env, coreId: String(m.coreId), pid: Number(m.pid) };
     const hc: Cores['hc'] = (argv, side = 'local', o) => {
+      for (const arg of argv) if (/(?:^|\/)t[0-9a-z]+$/i.test(arg)) observedTerminalIds.add(arg.split('/').at(-1)!);
       if (side === 'local') return runHc(local.wrapper, argv, local.local.env, o);
       const cwd = posix.resolve(o?.cwd ?? m.root);
       if (cwd !== m.root && !cwd.startsWith(m.root + '/')) throw new HarnessError('outside-owned-root', 'destination cwd is not inside the remote fixture');

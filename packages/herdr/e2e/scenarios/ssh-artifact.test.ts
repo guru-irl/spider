@@ -43,7 +43,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
       observations.push({ ...test, positive, refused });
       await suite.evidence('ssh-parsing.json', observations);
       expect(refused.exitCode, test.name).toBe(126);
-      expect(refused.stderr, test.name).toMatch(/on:/);
+      expect(refused.stderr, test.name).toMatch(/^Spider (couldn't|blocked)/);
       expect(await transport.records(), test.name).toHaveLength(before + 1);
     }
     // I4-R: last-known hosts still prove this route unmanaged. Cache expiry is not a blanket SSH ban.
@@ -59,7 +59,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
     expect((await transport.records()).at(-1)?.argv).toEqual(['outside.invalid']);
     for (const args of [['managed.invalid'], ['-o', 'ProxyCommand=ssh -W %h:%p outside.invalid', 'other.invalid']]) {
       const before = (await transport.records()).length, refused = await transport.run(args);
-      expect(refused.exitCode).toBe(126); expect(refused.stderr).toMatch(/on:/);
+      expect(refused.exitCode).toBe(126); expect(refused.stderr).toMatch(/^Spider couldn't check Herdr's machine list/);
       expect(await transport.records()).toHaveLength(before);
       observations.push({ name: 'I4-R same expired snapshot refuses managed or ambiguous route', args, refused });
     }

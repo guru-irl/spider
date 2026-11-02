@@ -136,14 +136,14 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   }
   try {
     const launches = await parts.launchHistory(request);
-    if (launches === null) warnings.push({ item: 'launches', code: 'inspection-unavailable', message: 'The core has no inspectable native notification policy for spider launches', repair: 'Use a core version that exposes terminal notify policy and rerun doctor.' });
+    if (launches === null) warnings.push({ item: 'launches', code: 'inspection-unavailable', message: 'Doctor could not inspect the native notification policy for all spider launches', repair: 'Run setup, start a spider pane or remote command, then rerun doctor.' });
     for (const launch of launches ?? [])
       if (launch.argv[0] === 'run' && !launch.argv.includes('--no-notify'))
-        fail('launches', 'launch-notify-enabled', 'A spider launch permits native notifications', 'Set noNotify:true on every spider hc run');
+        fail('launches', 'launch-notify-enabled', 'A spider launch permits native notifications', 'Update spider, then rerun setup and doctor.');
     if (launches !== null && !launches.some(launch => launch.argv[0] === 'run' && !launch.argv.includes('--no-notify'))) passed++;
   }
   catch (e) {
-    fail('launches', 'launch-history-unavailable', e instanceof Error ? e.message : String(e), 'Repair the launch audit and rerun doctor');
+    fail('launches', 'launch-history-unavailable', e instanceof Error ? e.message : String(e), 'Check that Herdr is running, then rerun doctor.');
   }
   try {
     const cached = await parts.cachedNodeObservations?.(request) ?? [];

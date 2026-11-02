@@ -1,8 +1,90 @@
 {
   "version": 1,
-  "upstreamVersion": "0.1.11",
+  "upstreamVersion": "0.1.12",
+  "sourceHashes": {
+    "agents": {
+      "main.js": "8fd808ca158ac3a6861de0177ce5d07ef789c53ee5e9f827f1135f7bee27fb0d",
+      "mod.json": "9990dc9eb8ac4c956f1d6f49ff1bf1691dc7eae7a38865c82ef5b9b229839a20"
+    },
+    "spaces": {
+      "main.js": "854ece3cfec4e895670d1452aa573e465b39d2f86c6ca242217c266ab1033aee",
+      "mod.json": "8357ce89d375376872b6db414b9555b26936b2e9d61e44275dc2e2bfe2a5783e"
+    },
+    "pane": {
+      "close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+      "main.js": "30df4c9b774414ca184b16f76c97c84f3cebd2ee411bea45c5c25b9d0ac65899",
+      "mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+      "split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+      "split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+      "unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+      "zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823"
+    },
+    "tabs": {
+      "main.js": "12d4ecc89dbf864d5a889f240adaea25590812e0be1835bbdb3e636fe14f51d3",
+      "mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+      "win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+      "win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+      "win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+      "win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+    },
+    "workspace-chrome": {
+      "archive.svg": "bcb4f7103eef0133d0fae701ed5b74c8a531e20f4d38d4f37a1a83af6b582540",
+      "branch.svg": "45c696f0f646e9471e9c77aa9e237c17c784cb3d8aaecf47bf5c6e05e7e67fcd",
+      "check.svg": "bb1d520e122285018a0b9d257b7f73d78156337a09706da2b5619a75c45aa231",
+      "chevron-down.svg": "be2f2e86753c4c6bc19b1cc196611b18597cc7a553580ed2bdf80f26a5e2440d",
+      "chevron-left.svg": "1a3db31d090bce6c795dbcbd1a95cb6bb074d0b2fcd8d26e5610211e10c8291f",
+      "chevron-right.svg": "280d2c796344a22fb6cb7086edc90868a27c7812405cffb9be66a3c5835aa898",
+      "circle-check.svg": "7d9e10a404a556a239ee33ad8a5b1e415ce39d505991760115d3a515cf387426",
+      "clock.svg": "0f3d2e2b3668e96889f182ef6ab2fb66aa54d48472e83be98bd239d81f64a9cc",
+      "file-text.svg": "b00717747452168438e35e9ec6828e779bcace9497e3f6dc63f7a618a80cf4f4",
+      "files.svg": "d0cb1467cd6c7b726d19d13f7aabeebaf094991605bd9fd4a47a6d084a575d24",
+      "folder-plus.svg": "b89f6eb87b75714f01b723971ba96ee6d6969d6a7cdb878989cd9981268d92eb",
+      "folder.svg": "9d7567649afffe0523114fcff3ac9da0504ac24cabc35e0b1dc0a4d90a34beb8",
+      "git-branch.svg": "d2f7cf0c6d1944b9453268f1155da2e93374fad83beeae5ab9a7d5e3584e2204",
+      "git-compare.svg": "2bc47e7dc3c5df4cfaf82de1fdc5bf9f1bbc7f790170d5d434ed7c4ffc86295f",
+      "layers.svg": "d63f7cec8a79eec4a60755af9f2549584a61c8e349ef9f7e9a6c4af2aeb73d9d",
+      "main.js": "4672339d910e866ab634905b475064b12fc4609e55793477fe0a138a1cb4083a",
+      "minus.svg": "709a2f4c02741159ea14691d4fb1cbcf68073b27ec4e738bc9a73d660f409d7c",
+      "mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+      "monitor.svg": "cbb2f05267714ca1ffa6411cf102bbba7da13743654e4fe518429b181cf19099",
+      "panel-left.svg": "2e67d422da7253a4efcfbc02e74c17104844d7fdb19d63210e18b2c03bfa0ab4",
+      "panel-right.svg": "85a85f016e5be2c50a3906161d190df94e3770d22e9069abf21649c9b7f36b1a",
+      "pin-off.svg": "265298d18044617313022b40f1e24bb4989fe1f18f33585786fc947bb1ab270a",
+      "pin.svg": "d4b9b5f5ef7f89e819316110ba8d8aa1d1998a30b03b4eeaf3323682890778dc",
+      "plus.svg": "109da7afa021037ac0278aa9f5e72fd53e2fa2ea1f8ea32fbf78e7d98e6301e6",
+      "search.svg": "7be6e7a558041594b46f0c22ccf0fd8d1f02458933b8038523323c874c7ad50b",
+      "server.svg": "41a942cb9c9011def4c0b9a05f4cd02f3fcc762e7617c09610bc23264786c3f7",
+      "settings.svg": "2f8dba8fb2a34431d93f83409b1058e95bf8cf3a54906f90d534a2d1a814b6e2",
+      "sidebar.svg": "2f5ce4d2f78c3740d874db721092360cd58b809dca2564ea3fb65480ed4a9471",
+      "spinner.svg": "00130fbac061db08cc967fdf2ae1378211a591c57cfb8f9b4018ec823fefea2d",
+      "square-pen.svg": "e46ff55127ad0510e9637cba346fcb5c672cf6e14e74815652358cece8a2889e",
+      "square.svg": "e475514f8a336eaa799db562ec89a87eacc5e9202c1b1f0e0ab387b6334b0d1b",
+      "terminal.svg": "a6f93e62a6ec412e6a214849be5b566cd21cff81d5570891c2e04e96c4dd964e",
+      "x.svg": "c1e53fc9bbe1a0a0b8183bcacf5ab7dbf160fd1f082594de3dcbba1cd5a71614"
+    }
+  },
   "mods": {
     "agents": [
+      {
+        "id": "move-menu-import",
+        "anchor": "import { v_flex, h_flex } from \"gpui-base\";",
+        "replacement": "import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex } from \"gpui-base\";"
+      },
+      {
+        "id": "move-menu-init",
+        "anchor": "  init(_props, cx) {",
+        "replacement": "  init(_props, cx) {\n    this.spiderFeedTimer = cx.timer;\n    if (spiderProps().moveMenu) { initMoveMenu(this, cx); return; }"
+      },
+      {
+        "id": "move-menu-render",
+        "anchor": "  render(cx) {",
+        "replacement": "  render(cx) {\n    if (spiderProps().moveMenu) return renderMoveMenu(this, cx);"
+      },
+      {
+        "id": "move-row-hook",
+        "anchor": "      .gap(0)\n      .items_center()\n      .text_size(12.5)",
+        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.kind === \"subagent\", el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), moveMenu: { kind: \"subagent\", key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
+      },
       {
         "id": "style-2",
         "anchor": "    if (a.status === \"blocked\" && compact) ",
@@ -21,12 +103,12 @@
       {
         "id": "children-imports",
         "anchor": "import { View, div, image, svg } from \"gpui-kit\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentFilterOptions, createAgentFilters, projectMachineRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { parseFeed, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nfunction spiderProps() { return props() ?? {}; }"
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nfunction spiderProps() { return props() ?? {}; }"
       },
       {
         "id": "combined-tree",
-        "anchor": "  tree(all, addr, lead = []) {\n    const kids = all.filter((k) => k.parent === addr && k.state === \"live\");\n    return kids.flatMap((k, i) => {\n      const last = i === kids.length - 1;\n      return [\n        { t: k, lines: [...lead, last ? \"\u2514\" : \"\u251c\"] },\n        ...this.tree(all, k.address, [...lead, last ? \"\" : \"\u2502\"]),\n      ];\n    });\n  }\n\n",
-        "replacement": "  tree(all, addr, lead = []) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return [];\n    const rows = this.projectChildren(all, addr);\n    const filters = this.filters()?.get() ?? { machine: null, agent: null };\n    const visible = selectAgentChildren(rows, filters, [...(this.expandedConsoles ?? [])]);\n    const remaining = new Map(), stems = [];\n    for (const row of visible) remaining.set(row.parentKey, (remaining.get(row.parentKey) ?? 0) + 1);\n    return visible.map(row => {\n      const siblings = remaining.get(row.parentKey) - 1; remaining.set(row.parentKey, siblings);\n      const lines = [...lead, ...stems.slice(0, row.depth), siblings ? \"\u251c\" : \"\u2514\"];\n      stems[row.depth] = siblings ? \"\u2502\" : \"\"; stems.length = row.depth + 1;\n      return { t: { ...row.terminal, ...row, spider: row.kind !== \"native\" }, lines };\n    });\n  }\n\n"
+        "anchor": "  tree(all, addr, lead = []) {\n    const kids = all.filter((k) => k.parent === addr && k.state === \"live\");\n    return kids.flatMap((k, i) => {\n      const last = i === kids.length - 1;\n      return [\n        { t: k, lines: [...lead, last ? \"└\" : \"├\"] },\n        ...this.tree(all, k.address, [...lead, last ? \"\" : \"│\"]),\n      ];\n    });\n  }\n\n",
+        "replacement": "  tree(all, addr, lead = []) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return [];\n    const rows = this.projectChildren(all, addr);\n    const selected = selectAgentChildren(rows, [...(this.expandedConsoles ?? [])]);\n    const byKey = new Map(rows.map(row => [row.key, row])), live = new Set();\n    for (const row of rows) if (!row.retained) {\n      for (let current = row; current && !live.has(current.key); current = byKey.get(current.parentKey)) live.add(current.key);\n    }\n    (this.spiderHiddenFinished ??= new Map()).set(addr, selected.filter(row => !live.has(row.key)).length);\n    const visible = this.spiderShowFinished?.has(addr) ? selected : selected.filter(row => live.has(row.key));\n    const remaining = new Map(), stems = [];\n    for (const row of visible) remaining.set(row.parentKey, (remaining.get(row.parentKey) ?? 0) + 1);\n    return visible.map(row => {\n      const siblings = remaining.get(row.parentKey) - 1; remaining.set(row.parentKey, siblings);\n      const lines = [...lead, ...stems.slice(0, row.depth), siblings ? \"├\" : \"└\"];\n      stems[row.depth] = siblings ? \"│\" : \"\"; stems.length = row.depth + 1;\n      return { t: { ...row.terminal, ...row, spider: row.kind !== \"native\" }, lines };\n    });\n  }\n\n"
       },
       {
         "id": "filter-replay",
@@ -41,12 +123,12 @@
       {
         "id": "live-child-priority",
         "anchor": "this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)",
-        "replacement": "this.tree(all, a.address).filter((s) => !s.t.retained).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)"
+        "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)"
       },
       {
         "id": "live-child-fold-color",
         "anchor": "const sts = subs.map((s) => kidStatus(s.t, this.listed));",
-        "replacement": "const sts = subs.filter((s) => !s.t.retained).map((s) => kidStatus(s.t, this.listed));"
+        "replacement": "const live = this.projectChildren(all, a.address).filter(child => !child.retained);\n      const sts = live.map(child => kidStatus(child, this.listed));"
       },
       {
         "id": "child-id",
@@ -61,7 +143,7 @@
       {
         "id": "child-details",
         "anchor": ".child(k.name || k.template || k.program?.name || k.address))",
-        "replacement": ".child(k.name || k.template || k.program?.name || k.address).tooltip([k.outcome, k.retained ? \"Saved output\" : null, k.completeness === \"unknown\" ? \"Output completeness unknown\" : null, !k.action ? \"No live endpoint\" : null, k.originalAddress].filter(Boolean).join(\" \u00b7 \")))"
+        "replacement": ".child(k.name || k.template || k.program?.name || k.address).tooltip([k.outcome, k.retained ? \"Saved output\" : null, k.completeness === \"unknown\" ? \"Output completeness unknown\" : null, !k.action ? \"No live endpoint\" : null, k.originalAddress].filter(Boolean).join(\" · \")))"
       },
       {
         "id": "deferred-chips",
@@ -71,17 +153,17 @@
       {
         "id": "feed-host-imports",
         "anchor": "import { agents, terminals, panes,",
-        "replacement": "import { readTextFile, exec, watchFolder, hc, agents, terminals, panes,"
+        "replacement": "import { readTextFile, exec, watchFolder, agents, terminals, panes,"
       },
       {
         "id": "feed-lifecycle",
         "anchor": "    this.folded = new Set();",
-        "replacement": "    this.folded = new Set();\n    this.spiderFeeds = [];\n    this.expandedConsoles = new Set();\n    const root = spiderProps().feedRoot;\n    if (root) {\n      const watchFeeds = cx => {\n        if (this.spiderWatching) return;\n        this.spiderWatching = true; this.spiderWatchFailed = false;\n        cx.spawn(async cx => {\n          try {\n            let next = watchFolder(root + \"/sessions\"); next.catch(() => {});\n            await this.reloadSpiderFeeds(); cx.notify();\n            for (;;) {\n              await next;\n              next = watchFolder(root + \"/sessions\"); next.catch(() => {});\n              this.spiderPendingReload = true;\n            }\n          } catch { this.spiderWatchFailed = true; this.spiderFeedError = \"Feed watch unavailable; retrying\"; cx.notify(); }\n          finally { this.spiderWatching = false; }\n        });\n      };\n      watchFeeds(cx);\n      cx.timer.every(5000, cx => {\n        const fallback = this.spiderWatchFailed && Date.now() - (this.spiderReloadAt ?? 0) >= 30000;\n        if (!this.spiderLoading) {\n          if (fallback) watchFeeds(cx);\n          else if (this.spiderPendingReload) cx.spawn(async cx => { await this.reloadSpiderFeeds(); cx.notify(); });\n        }\n      });\n    }\n    // The global Machines section: Herdr's connection list, on Herdr's own 15-second cadence.\n    if ((spiderProps().machines ?? []).length) {\n      const pollMachines = cx => cx.spawn(async cx => {\n        let next = null;\n        try { const reply = await hc([\"machine\", \"ls\", \"--json\"]); if (reply.code === 0) next = JSON.parse(reply.stdout).machines ?? null; } catch { next = null; }\n        if (JSON.stringify(next) !== JSON.stringify(this.spiderMachineInventory ?? null)) { this.spiderMachineInventory = next; cx.notify(); }\n      });\n      pollMachines(cx);\n      cx.timer.every(15000, pollMachines);\n    }"
+        "replacement": "    this.folded = new Set();\n    this.spiderFeeds = [];\n    this.expandedConsoles = new Set();\n    const root = spiderProps().feedRoot;\n    if (root) {\n      const watchFeeds = cx => {\n        if (this.spiderWatching) return;\n        this.spiderWatching = true; this.spiderWatchFailed = false;\n        cx.spawn(async cx => {\n          try {\n            let next = watchFolder(root + \"/sessions\"); next.catch(() => {});\n            await this.reloadSpiderFeeds(); cx.notify();\n            for (;;) {\n              await next;\n              next = watchFolder(root + \"/sessions\"); next.catch(() => {});\n              if (this.spiderClosed) return;\n              await this.reloadSpiderFeeds(); cx.notify();\n            }\n          } catch { this.spiderWatchFailed = true; this.spiderFeedError = \"Feed watch unavailable; retrying\"; cx.notify(); }\n          finally { this.spiderWatching = false; }\n        });\n      };\n      watchFeeds(cx);\n      cx.timer.every(FEED_REFRESH_MS, cx => {\n        if (this.spiderClosed || this.spiderLoading) return;\n        if (this.spiderWatchFailed) watchFeeds(cx);\n        else cx.spawn(async cx => { await this.reloadSpiderFeeds(); cx.notify(); });\n      });\n    }"
       },
       {
         "id": "feed-and-actions",
         "anchor": "  peek(addr) {\n",
-        "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, p.retention ?? {});\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  filters() {\n    const id = spiderProps().modId;\n    if (!id) return null;\n    return createAgentFilters(id, { read: shared, write: setShared });\n  }\n\n  reconcileFilters(all, list) {\n    const state = this.filters(); if (!state) return;\n    if (list.length) this.spiderSeenAgents = true;\n    if (!this.spiderSeenAgents) return;\n    const selected = state.get(), p = spiderProps();\n    if (p.feedRoot && !this.spiderFeedsLoaded) return;\n    if (!selected.machine && !selected.agent) return;\n    const rows = list.flatMap(a => this.projectChildren(all, a.address));\n    const next = { ...selected };\n    // A configured machine stays selected from the Machines section even with no jobs there.\n    const configured = new Set(projectMachineRows(p.machines, null).map(machine => machine.name));\n    if (next.machine && !configured.has(next.machine) && !rows.some(row => row.machine === next.machine)) next.machine = null;\n    if (next.agent && !rows.some(row => row.agentKey === next.agent)) next.agent = null;\n    if (next.machine && next.agent && !rows.some(row => row.machine === next.machine && row.agentKey === next.agent)) next.agent = null;\n    if (next.machine !== selected.machine || next.agent !== selected.agent) state.set(next);\n  }\n\n  clearFilters(t) {\n    const state = this.filters(), selected = state?.get();\n    if (!selected?.machine && !selected?.agent) return null;\n    return div().id(\"agents-clear-filters\").h(26).px(8).rounded(999).text_size(11).text_color(t.muted)\n      .cursor_pointer().hover(el => el.bg(\"#ffffff14\")).tooltip(\"Clear machine and agent filters\")\n      .on_click(() => state.set({ machine: null, agent: null })).child(\"Clear\");\n  }\n\n  filterControls(t, list = (this.spiderFeeds ?? []).map(feed => ({ address: feed.owner.terminal.address })), all = terminals()) {\n    const state = this.filters(); if (!state) return null;\n    const selected = state.get(), p = spiderProps();\n    const rows = list.flatMap(a => this.projectChildren(all, a.address));\n    const options = agentFilterOptions(all, this.spiderFeeds ?? [], p.labelContract);\n    options.machines = options.machines.filter(value => rows.some(row => row.machine === value.id && (!selected.agent || row.agentKey === selected.agent)));\n    options.agents = options.agents.filter(value => rows.some(row => row.agentKey === value.id && (!selected.machine || row.machine === selected.machine)));\n    if (selected.machine && !options.machines.some(value => value.id === selected.machine)) options.machines.unshift({ id: selected.machine, label: selected.machine });\n    const chip = (kind, allLabel, values) => {\n      const label = values.find(value => value.id === selected[kind])?.label ?? allLabel;\n      return h_flex().id(`agents-filter-${kind}`).h(24).px(8).gap(5).rounded(999).min_w(0).items_center()\n        .bg(selected[kind] ? \"#ffffff14\" : \"#00000000\").text_size(11).text_color(t.muted)\n        .hover(el => el.bg(\"#ffffff1f\").text_color(t.foreground)).cursor_pointer()\n        .tooltip(`Filter by ${kind}`)\n        .on_click(() => openOverlay({ mod: p.modId, kind: \"popup\", width: 240, height: Math.min(400, 44 + (values.length + 1) * 30),\n          props: { modId: p.modId, filterMenu: kind, filterOptions: options } }))\n        .child(div().truncate().child(label))\n        .when(!selected[kind], el => el.child(svg(\"mods/workspace-chrome/chevron-down.svg\").size(11).flex_none()))\n        // A set filter shows an x that clears it.\n        .when(Boolean(selected[kind]), el => el.child(div().id(`agents-filter-${kind}-clear`).flex_none().rounded(999).hover(el => el.text_color(t.foreground)).tooltip(`Clear the ${kind} filter`)\n          .on_click((_event, cx) => { cx?.stop_propagation?.(); state.set({ ...state.get(), [kind]: null }); cx?.notify?.(); })\n          .child(svg(\"mods/workspace-chrome/x.svg\").size(10))));\n    };\n    return h_flex().px(12).pb(6).gap(4).min_w(0)\n      .child(chip(\"machine\", \"All machines\", options.machines)).child(chip(\"agent\", \"All agents\", options.agents));\n  }\n\n  /** The global Machines section under Agents: every configured machine and its status. */\n  withMachines(el, t) {\n    const rows = projectMachineRows(spiderProps().machines, this.spiderMachineInventory);\n    if (!rows.length) return el;\n    const state = this.filters(), selected = state?.get() ?? { machine: null, agent: null };\n    const mono = spiderProps().fonts?.paths ?? \"JetBrains Mono\";\n    const tip = { connected: \"Connected\", disconnected: \"Disconnected\", unavailable: \"Stopped or unavailable\" };\n    return el.child(v_flex().id(\"spider-machines\").flex_none().pb(8).border_t(1).border_color(\"#2f2f32\")\n      .child(h_flex().px(16).h(41).pt(14).pb(5).flex_none().items_center().child(div().text_size(11.5).font_medium().text_color(t.dim).child(\"Machines\")))\n      .child(v_flex().px(8).children(rows.map(machine => {\n        const on = selected.machine === machine.name;\n        return h_flex().id(`machine-row-${machine.name}`).h(28).flex_none().px(8).gap(9).items_center().rounded(8).cursor_pointer()\n          .when(on, el => el.bg(t.selected)).when(!on, el => el.hover(s => s.bg(t.hover)))\n          .when(machine.status === \"unavailable\", el => el.opacity(0.5))\n          .tooltip(`${tip[machine.status]}. ${on ? \"Clear the machine filter\" : \"Show only this machine's jobs\"}`)\n          .on_click((_event, cx) => { if (state) state.set({ ...state.get(), machine: on ? null : machine.name }); cx?.notify?.(); })\n          .child(svg(\"mods/workspace-chrome/server.svg\").size(13).flex_none().text_color(t.dim))\n          .child(div().flex_1().min_w(0).truncate().font_family(mono).text_color(t.foreground).child(machine.name))\n          .when(machine.status === \"disconnected\", el => el.child(svg(\"mods/workspace-chrome/x.svg\").size(11).flex_none().text_color(t.ansi1 ?? \"#ff5555\")));\n      }))));\n  }\n\n  filterMenu(t) {\n    const p = spiderProps(), state = this.filters(); if (!state) return div().child(\"Filter persistence unavailable; run doctor\");\n    const kind = p.filterMenu, selected = state.get();\n    const values = [{ id: null, label: kind === \"machine\" ? \"All machines\" : \"All agents\" }, ...(kind === \"machine\" ? (p.filterOptions?.machines ?? []) : (p.filterOptions?.agents ?? []))];\n    return v_flex().w_full().max_h(400).p(5).overflow_y_scrollbar().bg(\"#161618f0\").text_size(12.8)\n      .children(values.map(value => h_flex().id(`agent-filter-${kind}-${value.id ?? \"all\"}`).h(30).px(8).gap(8).rounded(999).items_center()\n        .bg(selected[kind] === value.id ? \"#ffffff14\" : \"#00000000\").text_color(t.foreground).cursor_pointer()\n        .hover(el => el.bg(\"#ffffff1f\"))\n        .on_click(() => { state.set({ ...selected, [kind]: value.id }); closeOverlay(p.overlay); })\n        .child(div().flex_1().truncate().child(value.label))\n        .when(selected[kind] === value.id, el => el.child(svg(\"mods/workspace-chrome/check.svg\").size(12).flex_none()))));\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < 5000) { this.spiderPendingReload = true; return; }\n    this.spiderLoading = true;\n    this.spiderPendingReload = false;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      const loaded = await loadAgentFeeds(p.feedRoot + \"/sessions\", {\n        listSessionIds: async root => {\n          const reply = await exec(p.nodePath, [\"-e\", \"const fs = require(\\\"node:fs\\\"); const path = require(\\\"node:path\\\"); const root = process.argv[1]; let ids = []; try { ids = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && /^[a-zA-Z0-9_-]+$/.test(e.name)).map(e => e.name).sort().slice(0, 257).filter(id => { try { const s = fs.lstatSync(path.join(root, id, \\\"session.json\\\")); return s.isFile() && !s.isSymbolicLink(); } catch { return false; } }); } catch (e) { if (e.code !== \\\"ENOENT\\\") throw e; } process.stdout.write(JSON.stringify(ids));\", root]);\n          if (reply.code !== 0) throw new Error(\"Feed listing failed\");\n          const ids = JSON.parse(reply.stdout); if (!Array.isArray(ids) || !ids.every(id => typeof id === \"string\")) throw new Error(\"Invalid feed listing\");\n          return ids;\n        }, readTextFile, parseFeed,\n      });\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.truncated ? \"Session feed list truncated; run doctor\" : loaded.errors[0] ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
+        "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, p.retention ?? {});\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
       },
       {
         "id": "child-action",
@@ -91,27 +173,12 @@
       {
         "id": "feed-diagnostic",
         "anchor": ".child(v_flex().id(\"ag-list\")",
-        "replacement": ".when(!collapsed, el => el.child(this.filterControls(t, list, all)))\n      .when(collapsed, el => el.child(this.clearFilters(t)))\n      .when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .child(v_flex().id(\"ag-list\")"
-      },
-      {
-        "id": "machines-section",
-        "anchor": ".overflow_y_scrollbar().mode(\"always\").children(rows))",
-        "replacement": ".overflow_y_scrollbar().mode(\"always\").children(rows))\n      .when(!collapsed, el => this.withMachines(el, t))"
-      },
-      {
-        "id": "filter-popup-init",
-        "anchor": "    if (props()?.sortMenu) return;",
-        "replacement": "    if (spiderProps()?.sortMenu || spiderProps()?.filterMenu) return;"
-      },
-      {
-        "id": "filter-popup-render",
-        "anchor": "    if (props()?.sortMenu) return this.sortMenu(t);",
-        "replacement": "    if (spiderProps()?.sortMenu) return this.sortMenu(t);\n    if (spiderProps()?.filterMenu) return this.filterMenu(t);"
+        "replacement": ".when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .child(v_flex().id(\"ag-list\")"
       },
       {
         "id": "console-fold",
         "anchor": "      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))",
-        "replacement": "      .when(k.kind === \"console\", el => el.child(div().id(`console-fold-${k.key}`).w(18).h(22).rounded(999).items_center().flex().cursor_pointer()\n        .hover(el => el.bg(\"#ffffff14\"))\n        .tooltip(this.expandedConsoles?.has(k.key) ? \"Hide commands\" : \"Show commands\")\n        .on_click((_e, cx) => { cx.stop_propagation(); this.expandedConsoles ??= new Set(); this.expandedConsoles.has(k.key) ? this.expandedConsoles.delete(k.key) : this.expandedConsoles.add(k.key); cx.notify(); })\n        .child(svg(`mods/workspace-chrome/chevron-${this.expandedConsoles?.has(k.key) ? \"down\" : \"right\"}.svg`).size(11).flex_none())))\n      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))"
+        "replacement": "      .when(k.kind === \"console\", el => el.child(div().id(`console-fold-${k.key}`).size(20).flex_none().rounded(999).flex().items_center().justify_center().cursor_pointer()\n        .hover(el => el.bg(\"#ffffff14\"))\n        .tooltip(this.expandedConsoles?.has(k.key) ? \"Hide commands\" : \"Show commands\")\n        .on_click((_e, cx) => { cx.stop_propagation(); this.expandedConsoles ??= new Set(); this.expandedConsoles.has(k.key) ? this.expandedConsoles.delete(k.key) : this.expandedConsoles.add(k.key); cx.notify(); })\n        .child(svg(`mods/workspace-chrome/chevron-${this.expandedConsoles?.has(k.key) ? \"down\" : \"right\"}.svg`).size(11).flex_none())))\n      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))"
       },
       {
         "id": "standalone-empty-state",
@@ -119,14 +186,14 @@
         "replacement": "    if (!spiderProps().labelContract) return v_flex().w_full().p(12).gap(4)\n      .child(div().text_size(13).text_color(t.foreground).child(\"Agents unavailable\"))\n      .child(div().text_size(11.5).text_color(t.muted).child(\"Open a configured workspace or run doctor.\"));\n    const collapsed = narrow();"
       },
       {
-        "id": "child-filter-validation",
+        "id": "render-projection-begin",
         "anchor": "    const all = terminals();",
-        "replacement": "    const all = terminals();\n    this.spiderRenderRows = new Map();\n    try {\n    this.reconcileFilters(all, list);"
+        "replacement": "    const all = terminals();\n    this.spiderRenderRows = new Map();\n    try {\n"
       },
       {
         "id": "render-projection-end",
-        "anchor": "                .child(\"\u00bb\"),\n            ),\n        ),\n      );\n  }",
-        "replacement": "                .child(\"\u00bb\"),\n            ),\n        ),\n      );\n    } finally { this.spiderRenderRows = null; }\n  }"
+        "anchor": "                .child(\"»\"),\n            ),\n        ),\n      );\n  }",
+        "replacement": "                .child(\"»\"),\n            ),\n        ),\n      );\n    } finally { this.spiderRenderRows = null; }\n  }"
       },
       {
         "id": "copy-sort-popup",
@@ -140,13 +207,13 @@
       },
       {
         "id": "thread-keylines",
-        "anchor": ".children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()\n        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))\n        .when(l === \"\u2514\" || l === \"\u251c\", el => el.border_b(1.5).rounded_bl(6))))",
-        "replacement": ".children(s.lines.map(l => div().relative().w(16).h(26).flex_none()\n        .when(l === \"\u2502\" || l === \"\u251c\", el => el.child(div().absolute().left(7).top(-4).bottom(0).w(0).border_l(1.5).border_color(\"#3a3a3d\")))\n        .when(l === \"\u2514\" || l === \"\u251c\", el => el.child(div().absolute().left(7).top(-4).w(7).h(17).border_l(1.5).border_b(1.5).rounded_bl(6).border_color(\"#3a3a3d\")))))"
+        "anchor": ".children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()\n        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))\n        .when(l === \"└\" || l === \"├\", el => el.border_b(1.5).rounded_bl(6))))",
+        "replacement": ".children(s.lines.map(l => div().relative().w(16).h(26).flex_none()\n        .when(l === \"│\" || l === \"├\", el => el.child(div().absolute().left(7).top(-4).bottom(0).w(0).border_l(1.5).border_color(\"#3a3a3d\")))\n        .when(l === \"└\" || l === \"├\", el => el.child(div().absolute().left(7).top(-4).w(7).h(17).border_l(1.5).border_b(1.5).rounded_bl(6).border_color(\"#3a3a3d\")))))"
       },
       {
         "id": "thread-indent",
         "anchor": ".pl(39)",
-        "replacement": ".pl(9)"
+        "replacement": ".pl(17)"
       },
       {
         "id": "section-divider",
@@ -157,6 +224,16 @@
         "id": "one-list",
         "anchor": ": groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);",
         "replacement": ": byPriority ? list.flatMap(withKids) : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);"
+      },
+      {
+        "id": "agent-row-name",
+        "anchor": "    const label = (a) => {\n      const tab = tabs.find(tab => tab.id === a.tab);\n      return tab ? title(tab, lead(tab)) : a.title || a.program?.name || \"\";\n    };",
+        "replacement": "    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const sharedTab = id => panes().filter(p => p.tab === id && p.terminal && p.program?.agent).length > 1;\n    const label = (a) => {\n      const session = sessionName(a);\n      if (session) return session;\n      const tab = tabs.find(tab => tab.id === a.tab);\n      if (tab && sharedTab(tab.id)) return clean(a.title) || a.program?.name || title(tab, lead(tab));\n      return tab ? title(tab, lead(tab)) : a.title || a.program?.name || \"\";\n    };"
+      },
+      {
+        "id": "session-name-detail",
+        "anchor": "    const detail = new Map(list.map(a => [a.address, /^\\d+$/.test(label(a)) ? null : label(a)]));",
+        "replacement": "    const detail = new Map(list.map(a => [a.address, /^\\d+$/.test(label(a)) && !sessionName(a) && !(tabs.some(tab => tab.id === a.tab) && sharedTab(a.tab)) ? null : label(a)]));"
       },
       {
         "id": "mono-agent-name",
@@ -172,6 +249,56 @@
         "id": "mono-child-name",
         "anchor": ".child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted)",
         "replacement": ".child(div().flex_1().truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(on ? t.foreground : t.muted)"
+      },
+      {
+        "id": "finished-toggle-method",
+        "anchor": "  subRow(t, s, shown, compact) {\n",
+        "replacement": "  finishedToggle(t, addr) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().pl(38).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  subRow(t, s, shown, compact) {\n"
+      },
+      {
+        "id": "finished-toggle-row",
+        "anchor": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];",
+        "replacement": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address)];"
+      },
+      {
+        "id": "fold-pill-style",
+        "anchor": "        .id(`fold-${a.address}`)\n        .h(18)\n        .px(3)\n        .gap(3)\n        .flex()\n        .items_center()\n        .rounded(4)\n        .text_size(11)\n        .text_color(open ? t.dim : (t[top] ?? t.dim))\n        .cursor_pointer()\n        .hover((s) => s.bg(t.hover).text_color(t.foreground))",
+        "replacement": "        .id(`fold-${a.address}`)\n        .h(18)\n        .px(6)\n        .gap(4)\n        .flex()\n        .flex_none()\n        .items_center()\n        .rounded(999)\n        .bg(t.hover)\n        .text_size(11)\n        .text_color(open ? t.dim : (t[top] ?? t.dim))\n        .cursor_pointer()\n        .tooltip(`${live.length} subagent${live.length === 1 ? \"\" : \"s\"}`)\n        .hover((s) => s.bg(t.selected).text_color(t.foreground))"
+      },
+      {
+        "id": "fold-pill-icon",
+        "anchor": "        .child(svg(`mods/workspace-chrome/chevron-${open ? \"down\" : \"right\"}.svg`).size(11).flex_none())\n        .when(!open, (el) => el.child(String(subs.length)));",
+        "replacement": "        .child(svg(`mods/${spiderProps().modId ?? \"spider-agents\"}/bot.svg`).size(11).flex_none())\n        .child(String(live.length));"
+      },
+      {
+        "id": "fold-row-padding",
+        "anchor": "      return h_flex()\n        .id(`ag-${a.address}`)\n        .px(8)\n        .h(30)",
+        "replacement": "      return h_flex()\n        .id(`ag-${a.address}`)\n        .pl(2)\n        .pr(8)\n        .h(30)"
+      },
+      {
+        "id": "remove-row-pin",
+        "anchor": "      const pin = div()\n        .id(`pin-${a.address}`)\n        .flex_none()\n        .p(2)\n        .rounded(4)\n        .text_color(t.dim)\n        .cursor_pointer()\n        .hover((s) => s.bg(t.hover).text_color(t.foreground))\n        .tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n        .on_click((_e, cx) => {\n          cx.stop_propagation();\n          run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned });\n          // The row moves away from under the pointer, and no hover-out comes.\n          this.hovered = null;\n          cx.notify();\n        })\n        .child(svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13));",
+        "replacement": "      const hasChildren = subs.length > 0 || (this.spiderHiddenFinished?.get(a.address) ?? 0) > 0;"
+      },
+      {
+        "id": "remove-row-hover",
+        "anchor": "        .on_hover((on, cx) => {\n          if (on) this.hovered = a.address;\n          else if (this.hovered === a.address) this.hovered = null;\n          cx.notify();\n        })\n",
+        "replacement": "\n"
+      },
+      {
+        "id": "fold-and-pin-slots",
+        "anchor": "        .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)\n          .when(subs.length > 0, el => el.on_click((_e, cx) => {\n            cx.stop_propagation();\n            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);\n            cx.notify();\n          })).child(pic)))",
+        "replacement": "        .child(h_flex().flex_none().gap(3).items_center()\n          .child(div().id(`fold-slot-${a.address}`).size(11).flex_none()\n            .when(hasChildren, el => el.child(div().id(`fold-left-${a.address}`).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).cursor_pointer()\n              .hover(s => s.text_color(t.foreground)).tooltip(this.folded.has(a.address) ? \"Show subagents\" : \"Hide subagents\")\n              .on_click((_e, cx) => { cx.stop_propagation(); this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address); cx.notify(); })\n              .child(svg(`mods/workspace-chrome/chevron-${this.folded.has(a.address) ? \"right\" : \"down\"}.svg`).size(11)))))\n          .child(div().id(`agent-pin-${a.address}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()\n            .text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n            .on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned }); this.iconHovered = null; cx.notify(); })\n            .child(this.iconHovered === a.address ? svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13) : pic)))"
+      },
+      {
+        "id": "folded-count-only",
+        "anchor": "        .when(subs.length > 0, el => el.child(fold(a, subs)))",
+        "replacement": "        .when(hasChildren && this.folded.has(a.address) && this.projectChildren(all, a.address).some(child => !child.retained), el => el.child(fold(a, subs)))"
+      },
+      {
+        "id": "keep-elapsed-time",
+        "anchor": "        .when(this.hovered === a.address, el => el.child(pin))\n        .when(this.hovered !== a.address && Boolean(when), el => el.child(",
+        "replacement": "        .when(Boolean(when), el => el.child("
       }
     ],
     "spaces": [
@@ -179,16 +306,6 @@
         "id": "props-import",
         "anchor": "import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";",
         "replacement": "import { props, spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";"
-      },
-      {
-        "id": "style-1",
-        "anchor": ".when(!collapsed, el => el.child(\"Spaces\"))",
-        "replacement": ".when(!collapsed, el => el.child(\"Spaces\"))\n        .child(h_flex().gap(2).items_center()\n          .child(div().id(\"spider-panel\").px(collapsed ? 2 : 6).h(26).rounded(999).text_size(10.5).items_center().flex().hover(el => el.bg(t.hover).text_color(t.foreground))\n            .tooltip(\"Open Spider panel\").on_click(() => { run(\"layout.show\", { id: \"panel\" }); run(\"layout.select\", { stack: \"panel-body\", child: \"spider\" }); }).when(!collapsed, el => el.child(\"Spider\")).when(collapsed, el => el.child(svg(\"mods/workspace-chrome/layers.svg\").size(14)))))"
-      },
-      {
-        "id": "compact-dock-header",
-        "anchor": ".child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)",
-        "replacement": ".child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)\n        .when(collapsed, el => el.h(56).px(0).flex_col().justify_center().gap(2))"
       },
       {
         "id": "workspace-empty-state",
@@ -213,6 +330,26 @@
     ],
     "pane": [
       {
+        "id": "move-pane-import",
+        "anchor": "import { View, div, svg, image } from \"gpui-kit\";",
+        "replacement": "import { openOverlay } from \"herdr\";\nimport { View, div, svg, image } from \"gpui-kit\";"
+      },
+      {
+        "id": "move-pane-hook",
+        "anchor": "      .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })",
+        "replacement": "      .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })\n      .when(Boolean(p.terminal), el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...props(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: p.pane, terminal: p.terminal } } });\n      }))"
+      },
+      {
+        "id": "controlled-session-close",
+        "anchor": "  init() { this.hovered = false; }",
+        "replacement": "  init(_props, cx) {\n    this.hovered = false;\n    cx?.spawn(async (cx) => {\n      for (;;) {\n        const command = await nextCommand();\n        const p = this.me();\n        if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n      }\n    });\n  }\n\n  closePane(args) {\n    const p = this.me();\n    const kind = props()?.labelContract?.labels?.kind ?? \"spider.kind\";\n    const session = p?.terminal && (p.app === \"pi\" || p.program?.key === \"pi\" || terminals().find(t => t.address === p.terminal)?.labels?.[kind] === \"session\");\n    if (!session) { run(\"pane.close\", args); return; }\n    openOverlay({ mod: \"confirm\", kind: \"dialog\", width: 420, height: 190, props: {\n      title: \"Close this session?\", detail: \"This ends the pi session. Its subagents keep running. Resume the same session to reconnect.\",\n      command: { name: \"pane.close\", args }\n    } });\n  }"
+      },
+      {
+        "id": "confirm-session-close",
+        "anchor": "        run(command, args);",
+        "replacement": "        if (command === \"pane.close\") this.closePane(args);\n        else run(command, args);"
+      },
+      {
         "id": "style-1",
         "anchor": "      .bg(t.background)\n      .border_b(1)\n      .border_color(t.border)\n",
         "replacement": "      .bg(p.focused ? \"#ffffff14\" : \"#00000000\")\n"
@@ -220,7 +357,7 @@
       {
         "id": "style-2",
         "anchor": ".child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))",
-        "replacement": ".when(Boolean(spiderParent), el => el.child(div().flex_none().min_w(0).max_w(180).truncate().px(8).h(18).flex().items_center().rounded(999).bg(\"#ffffff14\").font_family(mono).text_size(11).text_color(t.muted ?? t.dim).tooltip(spiderParent).child(spiderParent)))\n      // The cwd is cut in the middle to fit the measured width (about 7 px per monospace character); the full path shows on hover.\n      .child(div().id(\"spider-path\").flex_1().min_w(0).overflow_hidden().whitespace_nowrap().text_ellipsis_middle().font_family(props()?.pathFont ?? \"JetBrains Mono\").text_size(11.5).text_color(t.dim).tooltip(folder(p.cwd))\n        .on_size_change((size, cx) => { if (size.width !== this.spiderPathWidth) { this.spiderPathWidth = size.width; cx.notify(); } })\n        .child(middlePath(folder(p.cwd), this.spiderPathWidth === undefined ? 80 : Math.max(1, Math.floor(this.spiderPathWidth / 7)))))\n      .when(Boolean(spiderSteer), el => el.child(div().flex_none().px(8).h(18).flex().items_center().rounded(999).bg(\"#ffffff0f\").text_size(10.5).text_color(t.dim).child(spiderSteer)))"
+        "replacement": ".when(Boolean(spiderParent), el => el.child(div().flex_none().min_w(0).max_w(180).truncate().px(8).h(18).flex().items_center().rounded(999).bg(\"#ffffff14\").font_family(mono).text_size(11).text_color(t.muted ?? t.dim).tooltip(spiderParent).child(spiderParent)))\n      // The cwd is cut in the middle to fit the measured width (about 7 px per monospace character); the full path shows on hover.\n      .child(spiderKind === \"subagent-viewer\" ? div().flex_1() : div().id(\"spider-path\").flex_1().min_w(0).overflow_hidden().whitespace_nowrap().text_ellipsis_middle().font_family(props()?.pathFont ?? \"JetBrains Mono\").text_size(11.5).text_color(t.dim).tooltip(folder(p.cwd))\n        .on_size_change((size, cx) => { if (size.width !== this.spiderPathWidth) { this.spiderPathWidth = size.width; cx.notify(); } })\n        .child(middlePath(folder(p.cwd), this.spiderPathWidth === undefined ? 80 : Math.max(1, Math.floor(this.spiderPathWidth / 7)))))"
       },
       {
         "id": "style-3",
@@ -230,7 +367,7 @@
       {
         "id": "style-4",
         "anchor": "import { panes, props, run, theme, home } from \"herdr\";",
-        "replacement": "import { panes, props, run, theme, home, terminals } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";"
+        "replacement": "import { panes, props, run, theme, home, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";"
       },
       {
         "id": "style-5",
@@ -245,12 +382,22 @@
       {
         "id": "spider-header-facts",
         "anchor": "    const pic = icon(p.program, 14, t.dim);",
-        "replacement": "    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = terminals().find((x) => x.address === p.terminal)?.labels ?? {};\n    const spiderKind = own[spiderLabels.kind ?? \"spider.kind\"];\n    const spiderRow = [\"subagent-viewer\", \"remote-observer\", \"remote-console\"].includes(spiderKind);\n    const spiderParent = spiderRow ? own[spiderLabels.parentName ?? \"spider.parent-name\"] ?? null : null;\n    const steerMode = spiderKind === \"subagent-viewer\" ? own[spiderLabels.steer ?? \"spider.steer\"] : undefined;\n    const spiderSteer = steerMode === undefined ? null : steerMode === \"rpc\" ? \"Can steer\" : \"Read-only\";\n    // hc only takes slug names; the readable name rides on a display-only label.\n    const spiderDisplay = own[spiderLabels.displayName ?? \"spider.display-name\"];\n    const spiderName = spiderDisplay ? spiderDisplay : spiderRow ? (name.replace(/(?:\\s*\\u00b7\\s*)?\\b(?:viewer|observer|console)\\b(?:\\s*\\u00b7\\s*)?/gi, \" \").trim() || name) : name;\n    const mono = props()?.pathFont ?? \"JetBrains Mono\";\n    const pic = icon(p.program, 14, t.dim);"
+        "replacement": "    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = terminals().find((x) => x.address === p.terminal)?.labels ?? {};\n    const spiderKind = own[spiderLabels.kind ?? \"spider.kind\"];\n    const spiderRow = [\"subagent-viewer\", \"remote-observer\", \"remote-console\"].includes(spiderKind);\n    const spiderParent = spiderRow ? own[spiderLabels.parentName ?? \"spider.parent-name\"] ?? null : null;\n    // hc only takes slug names; the readable name rides on a display-only label.\n    const spiderDisplay = own[spiderLabels.displayName ?? \"spider.display-name\"];\n    const spiderName = spiderDisplay ? spiderDisplay : spiderRow ? (name.replace(/(?:\\s*\\u00b7\\s*)?\\b(?:viewer|observer|console)\\b(?:\\s*\\u00b7\\s*)?/gi, \" \").trim() || name) : name;\n    const mono = props()?.pathFont ?? \"JetBrains Mono\";\n    const sessionName = spiderRow ? null : piSessionName(p.title);\n    const pic = icon(p.program, 14, t.dim, spiderKind);"
       },
       {
         "id": "spider-header-name",
         "anchor": ".child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))",
-        "replacement": ".child(div().flex_none().truncate().max_w(260).font_medium().when(spiderRow, el => el.font_family(mono)).text_color(t.foreground).child(spiderName))"
+        "replacement": ".child((sessionName ?? (spiderKind === \"subagent-viewer\" ? spiderName : null))\n        ? div().flex_none().min_w(0).max_w(220).truncate().px(8).h(18).flex().items_center().rounded(999).bg(\"#ffffff14\").font_family(mono).text_size(11).text_color(t.foreground).tooltip(sessionName ?? spiderName).child(sessionName ?? spiderName)\n        : div().flex_none().truncate().max_w(260).font_medium().when(spiderRow, el => el.font_family(mono)).text_color(t.foreground).child(spiderName))"
+      },
+      {
+        "id": "spider-pane-icon",
+        "anchor": "function icon(p, size, color) {",
+        "replacement": "function icon(p, size, color, kind) {\n  const fixed = kind === \"subagent-viewer\" ? \"mods/spider-agents/bot.svg\" : [\"remote-console\", \"remote-observer\"].includes(kind) ? \"mods/workspace-chrome/terminal.svg\" : null;\n  if (fixed) return svg(fixed).size(size).flex_none().text_color(color);"
+      },
+      {
+        "id": "pi-session-title",
+        "anchor": "function folder(cwd) {",
+        "replacement": "function piSessionName(title) {\n  return /^\\u03c0 - (.+) - [^/]*$/.exec(title ?? \"\")?.[1] ?? null;\n}\n\nfunction folder(cwd) {"
       }
     ],
     "tabs": [
@@ -263,6 +410,23 @@
         "id": "spider-button",
         "anchor": "      .when(enabled.includes(\"changes\"), el => el.child(panelButton(\"changes\", \"Changes\", \"mods/changes/changes.svg\")))",
         "replacement": "      .when(enabled.includes(\"changes\"), el => el.child(panelButton(\"changes\", \"Changes\", \"mods/changes/changes.svg\")))\n      .child(panelButton(\"spider\", \"Spider\", \"mods/spider-tabs/spider.svg\"))"
+      }
+    ],
+    "workspace-chrome": [
+      {
+        "id": "brand-rail-width",
+        "anchor": "window()?.platform === \"macos\" ? 76 : 44",
+        "replacement": "false ? 76 : 44"
+      },
+      {
+        "id": "brand-light-padding",
+        "anchor": "window()?.platform === \"macos\" && !window()?.fullscreen && !collapsed",
+        "replacement": "false && !collapsed"
+      },
+      {
+        "id": "brand-rail-toggle",
+        "anchor": "collapsed && window()?.platform === \"macos\"",
+        "replacement": "collapsed && false"
       }
     ]
   }

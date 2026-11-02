@@ -40,6 +40,7 @@ import { createProcessPresence } from '@spider/herdr/sessions/presence';
 import { createSessionLeases, assessSessionLiveness, type ProcessInventoryPorts } from '@spider/herdr/sessions/lease';
 import { createTerminalRegistry, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
+import { fixtureProcessDomain } from './fixture-process-domain.js';
 import { collectRemoteChunks, createFileLogSink, type LogSink, type RemoteLogLocation, type CollectedLogs } from '@spider/herdr/remote/transfer';
 import { sha256, type RuntimeRequest } from '@spider/herdr/remote/runtime';
 import { checkRemoteNodeVersion, isRuntimeRootProbe } from '@spider/herdr/remote/node-version';
@@ -78,13 +79,14 @@ export function createViewerPorts(argv: readonly string[], io: { stdin: Readable
 }
 
 export function createProcessInventory(root: string): ProcessInventoryPorts {
-  const presence = createProcessPresence(root), leases = createSessionLeases(root);
+  const presence = createProcessPresence(root), leases = createSessionLeases(root), domain = fixtureProcessDomain(root);
   const probe: ProcessInventoryPorts['probe'] = async pid => {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? { kind: 'absent' } : { kind: 'unknown' }; }
     const startIdentity = processStartTime(pid);
     return startIdentity ? { kind: 'live', startIdentity } : { kind: 'unknown' };
   };
   return { presence, leases, probe, async processes() {
+    if (domain) return domain.processes();
     // Same-user inventory remains read-only. An unreadable process is blocking, not absent.
     const rows = execFileSync('ps', ['-U', String(process.getuid?.() ?? 0), '-o', 'pid=,comm=,args='], { encoding: 'utf8' }).split('\n');
     return rows.flatMap(line => {

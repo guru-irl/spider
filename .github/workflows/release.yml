@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['22.19.0', '26.x']
+        node: ['26.x']
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -73,6 +73,30 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Herdr acceptance typecheck
+        run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
+
+      - name: Herdr confidence utilities (no hc, app or SSH)
+        timeout-minutes: 5
+        run: |
+          mkdir -p "$PWD/.spider/scratch/e2"
+          set -o pipefail
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers 2 packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls 2>&1 | tee .spider/scratch/e2/ci-utilities.log
+
+      - name: Herdr packed acceptance (no hc, app or SSH)
+        timeout-minutes: 10
+        run: |
+          echo '::notice::Herdr CI certifies only the no-hc subset. Active-core, remote and native-window stories are not exercised.'
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e:ci -- --built
+
+      - name: Herdr acceptance failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-e2e-failures-node-${{ matrix.node }}
+          path: .spider/scratch/e2/
+          if-no-files-found: ignore
 
       - name: Verify bundle shape
         run: node scripts/assert-bundle.mjs

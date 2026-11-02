@@ -13,6 +13,7 @@ import { backfillResponseMetadata, RESPONSE_METADATA_BYTES_PER_PASS } from "./re
 import { openUsageLedger, openUsageLedgerReadOnly, type UsageLedger, type ImportBatch } from "./ledger.js";
 import { acquireUsageLease, UsageLeaseError, type Lease } from "./lease.js";
 import { CounterPoller, counterSnapshotIsFresh } from "./counter.js";
+import { selectFixtureCounterTransport } from "./fixture-counter-transport.js";
 import type { BackfillState, ReconciliationView, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
 
 export type UsageWorkerDependencies = {
@@ -84,7 +85,7 @@ export async function bootUsageWorker(
   const guard = () => !stopped && !controller.signal.aborted && !!lease?.isCurrent(now);
   const stateBatch = (state: BackfillState): ImportBatch => ({ calls: [], runs: [], states: [], resetSources: [], sourceErrors: [], detailedRunIds: [], restoreAggregateRunIds: [], at: now(), commitGuard: guard, backfillState: state });
   function counter(): void {
-    poller = new CounterPoller({ ledger: ledger!, authPath: command.roots.authPath, enabled: poll, isChild: false, readOnly: !lease, now, fetch: dependencies.fetch ?? globalThis.fetch });
+    poller = new CounterPoller({ ledger: ledger!, authPath: command.roots.authPath, enabled: poll, isChild: false, readOnly: !lease, now, fetch: selectFixtureCounterTransport(command.roots.authPath, dependencies.fetch ?? globalThis.fetch) });
     poller.start();
     opened = true;
   }

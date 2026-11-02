@@ -45,6 +45,32 @@ npm run build
 - Code at the bundle's top level must not open a database or start optional model setup.
 - For changes to interactive rendering, follow [UI testing](docs/dev-ui-testing.md) and the [Output guidelines](docs/output-ui-guidelines.md).
 
+### CI shards and timing data
+
+CI runs only Node `26.x`. The `checks`, twelve `test` shards, `herdr-acceptance`,
+and `chrome` jobs run in parallel. Each shard uses two Vitest workers. The required
+`typecheck · test · build` check succeeds only when every job succeeds.
+`npm ci` runs the `prepare` build in each job.
+
+`scripts/vitest-sequencer.ts` assigns files by longest processing time first,
+using `scripts/test-durations.json`. It breaks ties by repository-relative path
+and runs slow files first. New files get the median recorded duration.
+
+To refresh the durations, download all twelve `test-results-*` artifacts from
+a completed CI run, then rebuild the file from their JSON reports:
+
+```bash
+gh run download RUN_ID --pattern 'test-results-*' --dir .spider/scratch/ci-reports
+node scripts/update-test-durations.mjs .spider/scratch/ci-reports/test-results-*/shard-*.json
+```
+
+The script uses each file's start and end times, including hooks. If the reports
+contain repeated observations, it keeps the longest. Commit the regenerated
+file. Use all shards from the same revision so removed paths disappear and new
+files get measured weights. To list a shard without running it, use
+`node scripts/list-test-shards.mjs 1/12`. This uses Vitest's file discovery and
+the configured sequencer. Vitest 4's `list --filesOnly` does not apply sharding.
+
 ## Package map and dependency rules
 
 | Package | Responsibility |

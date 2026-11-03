@@ -4,16 +4,17 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { normalizeRunStatus, type RunMeta } from "./ledger.js";
 import type { SourceInfo as ParserSource } from "./parse.js";
+import { summarizeRunEvents, type RunEvent, type RunEventFacts } from "./run-events.js";
+export type { RunEvent } from "./run-events.js";
 
 export type UsageRoots = { registryDb: string; sessionsDir: string; ledgerFile: string; authPath: string; leaseDir: string };
 /** Registry metadata can be absent in legacy databases. */
 export type SourceInfo = Omit<ParserSource, "run"> & { run: RunMeta | null };
-export type RunEvent = { dbPath: string; id: number; runId: string; sessionId: string | null; ts: number; type: string; payload: string | null };
 export type RunState = { dbPath: string; id: string; status: string | null; childMode: string | null };
 export type Discovery = {
   sources: readonly SourceInfo[]; runs: readonly RunMeta[]; errors: readonly { path: string; code: string; checkedPaths?: readonly string[] }[];
   /** Read-only snapshots, not handles. Optional for hand-built discovery inputs. */
-  runEvents?: readonly RunEvent[]; runStates?: readonly RunState[]; runDbs?: readonly string[]; runDbIdentities?: Readonly<Record<string, string>>;
+  runEvents?: RunEventFacts; runStates?: readonly RunState[]; runDbs?: readonly string[]; runDbIdentities?: Readonly<Record<string, string>>;
   /** Ledger destination supplied to the worker; never used to reconstruct open-ledger proof. */
   ledgerFile?: string;
 };
@@ -35,7 +36,8 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
   const sources = new Map<string, SourceInfo>();
   const stamps = new Map<string, string>();
   const heads = attributionHeads.get(roots) ?? new Map(); attributionHeads.set(roots, heads);
-  const runs: RunMeta[] = [], runEvents: RunEvent[] = [], runStates: RunState[] = [];
+  const runs: RunMeta[] = [], runStates: RunState[] = [];
+  const runEvents = summarizeRunEvents([]);
   const errors: { path: string; code: string; checkedPaths?: readonly string[] }[] = [];
   const runDbs: string[] = [];
   const runDbIdentities: Record<string, string> = {};
@@ -211,11 +213,17 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
           const context = columns.has("session_id") ? "session_id" : "NULL AS session_id";
           const events = db.prepare(`SELECT id,run_id,ts,type,payload,${context} FROM run_events
             WHERE type IN ('spider_usage','spider_usage_reported') ORDER BY id`);
-          for (const row of events.all() as Record<string, unknown>[]) {
-            const id = number(row.id), runId = text(row.run_id), ts = number(row.ts), type = text(row.type);
-            if (id === null || !runId || ts === null || !type) { errors.push({ path: dbPath, code: "invalid-run-event" }); continue; }
-            runEvents.push({ dbPath, id, runId, ts, type, sessionId: text(row.session_id), payload: text(row.payload) });
+          function* readEvents(): IterableIterator<RunEvent> {
+            for (const row of events.iterate() as IterableIterator<Record<string, unknown>>) {
+              const id = number(row.id), runId = text(row.run_id), ts = number(row.ts), type = text(row.type);
+              if (id === null || !runId || ts === null || !type) { errors.push({ path: dbPath, code: "invalid-run-event" }); continue; }
+              yield { dbPath, id, runId, ts, type, sessionId: text(row.session_id), payload: text(row.payload) };
+            }
           }
+          const facts = summarizeRunEvents(readEvents());
+          for (const [key, summary] of facts.runs) runEvents.runs.set(key, summary);
+          for (const event of facts.auxiliary) runEvents.auxiliary.push(event);
+          for (const diagnostic of facts.unknown) runEvents.unknown.push(diagnostic);
         } else errors.push({ path: dbPath, code: "legacy-run-events" });
       }
     } catch (error) { errors.push({ path: dbPath, code: code(error) }); }

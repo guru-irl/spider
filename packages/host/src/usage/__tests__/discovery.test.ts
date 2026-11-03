@@ -84,7 +84,10 @@ it("attributes parent sessions to the longest registered project root", async ()
 it("snapshots run usage and report markers without loading unrelated events", async () => {
   const project = join(root, "project"), file = join(project, ".spider/project.db"); registry(`('${project}','${project}',NULL,'${file}')`);
   db(file, "CREATE TABLE runs(id TEXT,session_id TEXT,agent TEXT,status TEXT,child_mode TEXT); INSERT INTO runs VALUES ('child','owner','worker','done','rpc'); CREATE TABLE run_events(id INTEGER,run_id TEXT,session_id TEXT,ts INTEGER,type TEXT,payload TEXT); INSERT INTO run_events VALUES (1,'child','owner',10,'spider_usage','{}'),(2,'child','owner',11,'spider_usage_reported',NULL),(3,'child','owner',12,'tool_result','not imported');");
-  const result = await discover(roots()); expect(result.runEvents?.map(e => e.type)).toEqual(["spider_usage", "spider_usage_reported"]); expect(result.runStates).toEqual([{ dbPath: file, id: "child", status: "done", childMode: "rpc" }]);
+  const result = await discover(roots());
+  expect([...result.runEvents!.runs.values()]).toEqual([{ runId: "child", markerCount: 1, markerTs: 11, markerSession: "owner",
+    usageCount: 1, usageSession: "owner", mixedSessions: false, lastUsageTs: 10, models: new Map() }]);
+  expect(result.runStates).toEqual([{ dbPath: file, id: "child", status: "done", childMode: "rpc" }]);
 });
 
 it("reports no missing child when another registered worktree contains its transcript", async () => {

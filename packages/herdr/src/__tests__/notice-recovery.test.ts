@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { it, expect, vi, afterEach } from 'vitest';
+import { spawn } from 'node:child_process';
 import { appendFile, open, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Owner } from '../contracts.js';
@@ -169,5 +170,81 @@ it('indexes a large session once for 129 jobs and skips confirmed notices in lat
   const later = h.monitor(); await later.activate({ ...owner, generation: 'later-generation' as Owner['generation'] }); await later.reconcile();
   await new Promise(resolve => setTimeout(resolve, 20));
   expect(vi.mocked(open).mock.calls.filter(([path]) => path === h.owner.sessionFile)).toHaveLength(1);
+  expect(h.notices).toHaveLength(0);
+});
+
+const header = (id: string) => JSON.stringify({ type: 'session', id }) + '\n';
+async function deadPid(): Promise<number> {
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+  await new Promise(resolve => child.once('exit', resolve));
+  return child.pid!;
+}
+
+it('a retried recovery task does not resend a notice it already resent', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl');
+  const first = h.monitor();
+  const a = await first.start(program, h.owner, on, { background: true }); await first.detach(a.id); h.complete(a.address);
+  const b = await first.start(program, h.owner, on, { background: true }); await first.detach(b.id); h.complete(b.address);
+  await vi.waitFor(() => expect(h.notices).toHaveLength(2));
+  await writeFile(h.owner.sessionFile, header(h.owner.sessionId));
+  await first.shutdown('reload'); h.notices.length = 0;
+  let now = 1000, failB = true; const failures: unknown[] = [];
+  const resumed = h.monitor({ clock: () => now, recordCleanupError: error => { failures.push(error); }, notifier: notice => {
+    if (notice.details.jobId === b.id && failB) { failB = false; throw new Error('one failed submit (stands in for a failed journal write)'); }
+    h.notices.push(notice);
+  } });
+  await resumed.activate({ ...h.owner, generation: 'g2' as Owner['generation'] });
+  await vi.waitFor(() => expect(failures).toHaveLength(1));
+  expect(h.notices.map(n => n.details.jobId)).toEqual([a.id]);
+  now += 60000; await resumed.reconcile();
+  await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId).read()).jobs.every(job => job.notice === 'submitted')).toBe(true));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(h.notices.filter(n => n.details.jobId === a.id)).toHaveLength(1);
+});
+
+it('a second live activation does not resend another live activation\'s in-flight notice', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl');
+  await writeFile(h.owner.sessionFile, header(h.owner.sessionId));
+  const live = h.monitor(), job = await live.start(program, h.owner, on, { background: true });
+  await live.detach(job.id); h.complete(job.address);
+  await vi.waitFor(() => expect(h.notices).toHaveLength(1));
+  // The first process's agent is streaming, so pi has queued the steer and not saved it yet.
+  const other = h.monitor(); await other.activate({ ...h.owner, generation: 'g-other' as Owner['generation'] });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(h.notices).toHaveLength(1);
+});
+
+it('a crash-cancelled foreground job gets no notice after a later reload', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl');
+  await writeFile(h.owner.sessionFile, header(h.owner.sessionId));
+  const first = h.monitor(), job = await first.start(program, h.owner, on, {});
+  await first.shutdown('reload');
+  const store = createJobStore(h.f.root, h.owner.sessionId), journal = await store.read();
+  journal.writer = { pid: await deadPid(), startIdentity: 'posix:gone', shutdown: null }; await store.write(journal);
+  const second = h.monitor(); await second.activate({ ...h.owner, generation: 'g2' as Owner['generation'] });
+  await vi.waitFor(() => expect(h.kills).toEqual([job.address]));
+  h.complete(job.address);
+  for (let i = 0; i < 3; i++) await second.reconcile();
+  await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ handoffCancelled: true, notice: 'observed', noticeMode: 'async', output: { complete: true } }));
+  expect(h.notices).toHaveLength(0);
+  await second.shutdown('reload');
+  const third = h.monitor(); await third.activate({ ...h.owner, generation: 'g3' as Owner['generation'] });
+  await new Promise(resolve => setTimeout(resolve, 300)); await third.reconcile();
+  expect(h.notices.map(n => n.content.split('\n')[0])).toEqual([]);
+});
+
+it('a saved notice whose submit call failed is acknowledged and its terminal released after restart', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl');
+  let fail = true;
+  const first = h.monitor({ notifier: notice => { if (fail) { fail = false; throw new Error('uncertain submit'); } h.notices.push(notice); } });
+  const job = await first.start(program, h.owner, on, { background: true }); await first.detach(job.id); h.complete(job.address);
+  const store = createJobStore(h.f.root, h.owner.sessionId);
+  await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ notice: 'submitted', noticeDelivered: false }));
+  const nonce = (await store.read()).jobs[0].nonce;
+  // pi saved the entry although the call reported failure.
+  await writeFile(h.owner.sessionFile, header(h.owner.sessionId) + JSON.stringify({ type: 'custom_message', customType: 'spider.job_done', details: { jobId: job.id, nonce } }) + '\n');
+  await first.shutdown('reload');
+  const resumed = h.monitor(); await resumed.activate({ ...h.owner, generation: 'g2' as Owner['generation'] });
+  await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ notice: 'observed', noticeSavedNonce: nonce, terminalReleased: true }));
   expect(h.notices).toHaveLength(0);
 });

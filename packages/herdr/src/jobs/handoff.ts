@@ -96,7 +96,7 @@ function markCrashJobs(journal: JobJournal, candidates: ReadonlySet<JobId>): voi
   if (crashJobs.size) journal.writer!.crashJobs = [...crashJobs];
 }
 /** A graceful shutdown is evidence, not an inference from a changed generation. */
-export async function prepareJobRecovery(journal: JobJournal, adopted: boolean, callerCrashed = false, readIdentity: WriterIdentityReader = readWriterIdentity): Promise<void> {
+export async function prepareJobRecovery(journal: JobJournal, adopted: boolean, callerCrashed = false, readIdentity: WriterIdentityReader = readWriterIdentity): Promise<boolean> {
   const previous = journal.writer, candidates = new Set(journal.jobs.map(job => job.id));
   if (!adopted && previous?.shutdown === null) {
     const identity = await readIdentity(previous.pid);
@@ -107,6 +107,7 @@ export async function prepareJobRecovery(journal: JobJournal, adopted: boolean, 
   }
   journal.writer = adopted && previous ? { ...previous } : { pid: process.pid, startIdentity: await asyncProcessStartIdentity(process.pid) ?? processStartIdentity(process.pid)!, shutdown: null, ...(previous?.crashJobs?.length ? { crashJobs: [...previous.crashJobs] } : {}) };
   if (callerCrashed) markCrashJobs(journal, candidates);
+  return previous !== undefined && (previous.shutdown !== null || callerCrashed);
 }
 /** Called before ordinary result reconciliation. Failed kills keep their durable intent. */
 export async function reconcileJobRecovery(journal: JobJournal, options: {

@@ -86,6 +86,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const outputWarnings = new Set<JobId>();
   const recoveringNotices = new Set<JobId>();
   let noticeRecoveryRead: Promise<() => void> | undefined;
+  let noticesApplied = false;
   let reconciliation: Promise<void> | undefined;
   function waitForEvents<T>(promise: Promise<T>, signal?: AbortSignal, unavailable = 'Herdr events are unavailable', deferStop = false, timeoutMs = 2000, timeoutCode = 'core-unavailable'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -348,17 +349,18 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         job.evidenceConflict = false; delete job.exitEvidence;
       }
     }
-    const noticeCandidates = noticeRecoveryCandidates(journal, nextOwner);
+    const previousWriterStopped = await prepareJobRecovery(journal, Boolean(options.adoptedRunId), options.callerCrashed);
+    const noticeCandidates = noticeRecoveryCandidates(journal, nextOwner, previousWriterStopped);
     for (const job of noticeCandidates) recoveringNotices.add(job.id);
     if (noticeCandidates.length) enqueueCleanup(`${nextOwner.sessionId}/notices`, async () => {
       const apply = await (noticeRecoveryRead ??= recoverJobNotices(noticeCandidates, nextOwner, lifetime.signal).catch(error => { noticeRecoveryRead = undefined; throw error; }));
       await serial(async () => {
         if (stopping || closed) return;
-        apply(); recoveringNotices.clear(); await persist();
+        if (!noticesApplied) { noticesApplied = true; apply(); recoveringNotices.clear(); }
+        await persist();
         for (const job of noticeCandidates) { await deliver(job); queueRelease(job); }
       });
     });
-    await prepareJobRecovery(journal, Boolean(options.adoptedRunId), options.callerCrashed);
     await persist();
     if (options.child) journal.child = { ...options.child, ended: false };
     if (!options.child && !options.adoptedRunId) handoff = createJobHandoff({ root: options.journalRoot, owner: nextOwner, hc: options.hc, closeAgentConsoles: options.closeAgentConsoles, reportError: report,

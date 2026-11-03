@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "remove": ["status"],
   "root": {
     "theme": "spider-glass",
     "ui_font": "Google Sans Flex",

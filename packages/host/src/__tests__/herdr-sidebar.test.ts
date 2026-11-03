@@ -55,6 +55,7 @@ beforeAll(async () => {
     { id: 'brand', content: { mod: 'workspace-chrome' } }, { id: 'sidebar', content: { mod: 'agents' } }, { id: 'spaces', content: { mod: 'spaces' } }, { id: 'tabs', content: { mod: 'tabs' } },
     { id: 'work-body', children: [{ id: 'main', content: { tab: 'active', pane: { header: { content: { mod: 'pane' } } } } },
       { id: 'panel', children: [{ id: 'panel-body', type: 'stack', children: [{ id: 'files' }, { id: 'changes' }] }] }] },
+    { id: 'status', type: 'block', size: { px: 28 }, content: { mod: 'workspace-status' } },
   ] }));
   await writeFile(join(h.directories.app, 'settings.json'), '{"theme":"stock"}');
   await writeFile(join(h.directories.agent, 'settings.json'), '{"theme":"stock"}');
@@ -100,7 +101,9 @@ else console.log('{"spaces":[]}');\n`);
           if (node.id === 'panel') { delete node.radius; delete node.border; delete node.padding; delete node.background; }
           for (const child of node.children ?? []) walk(child);
         };
-        walk(layout); bytes = Buffer.from(JSON.stringify(layout, null, 2));
+        walk(layout);
+        if (!layout.children.some((node: any) => node.id === 'status')) layout.children.push({ id: 'status', type: 'block', size: { px: 28 }, content: { mod: 'workspace-status' } });
+        bytes = Buffer.from(JSON.stringify(layout, null, 2));
       }
       return { ...plan, bytes };
     }));
@@ -179,6 +182,7 @@ describe('installed agents sidebar', () => {
     const old = upgradeEvidence;
     expect(find(old.previousLayout, 'main').content.pane.border).toEqual({ width: 0, color: '#00000000' });
     expect(find(old.previousLayout, 'panel').border).toBeUndefined();
+    expect(find(old.previousLayout, 'status').content.mod).toBe('workspace-status');
     expect(old.previousAgents).toContain('spider-look:machines-section');
     expect(old.previousAgents).toContain('filterControls');
     expect(old.previousIcon).toContain('<ellipse');
@@ -191,6 +195,7 @@ describe('installed agents sidebar', () => {
     const installed = JSON.parse(await readFile(join(appHome, 'layouts/spider-glass.json'), 'utf8'));
     expect(find(installed, 'main').content.pane.border).toEqual({ width: 1, color: '#38383a' });
     expect(find(installed, 'panel')).toMatchObject({ radius: 12, border: { width: 1, color: '#38383a' }, padding: 5, background: '#161618f0' });
+    expect(find(installed, 'status')).toBeUndefined();
     expect(await readFile(join(appHome, 'mods/spider-agents/main.js'), 'utf8')).not.toContain('filterControls');
     expect(await readFile(join(appHome, 'mods/spider-tabs/spider.svg'), 'utf8')).toContain('viewBox="0 0 56 56"');
     expect(await readFile(join(appHome, 'mods/spider-agents/chevron-up.svg'), 'utf8')).toContain('d="m18 15-6-6-6 6"');

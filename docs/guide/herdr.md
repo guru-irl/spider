@@ -499,6 +499,7 @@ Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-
 - Surfaces are neutral black `#161618`. Text panes, the spider panel, and menus use it at 94 percent opacity.
 - Hover, selected, and raised fills are white at 7, 8, and 11 percent.
 - Panes have a 12-pixel radius, an 8-pixel gap, and a 1-pixel `#38383a` border. The focused pane uses the light grey accent for its border. The panel has the same radius and neutral border.
+- The layout has no bottom status bar, leaving its space for panes.
 - Herdr's window chrome uses neutral greys. Its only accent colours are red and amber, and they mark states, such as a failure or a session that waits for you.
 - The terminal palette and the pi theme are Dracula+. Pi's boxes use opaque neutral greys, because pi themes have no alpha.
 - Herdr's UI text uses the bundled Google Sans Flex. Paths, names, and numbers in spider's views use Herdr's bundled JetBrains Mono. Your terminal font does not change.

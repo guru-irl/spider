@@ -1,4 +1,5 @@
-Unmodified built-in mods and stock layout from Herdr 0.1.12 by the Herdr authors.
+Built-in mods and the stock layout from Herdr 0.1.12 by the Herdr authors.
+All files are unmodified except layouts/spider-glass.json, which spider derived from layouts/main.json by applying its look edits and emptying the mod properties.
 Licensed under the Apache License, Version 2.0.
 The complete license is at licenses/herdr-apache-2.0.txt in the repository root.
 

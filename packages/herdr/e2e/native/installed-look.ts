@@ -38,10 +38,12 @@ export function validateInstalledLook(raw: unknown): InstalledLookReport {
   for (const [key, expected] of Object.entries({ chrome: '#00000000', canvas: '#00000000', hover: '#ffffff12', selected: '#ffffff14', raised: '#ffffff1c', border: '#00000000', popover: '#161618f0', surface: '#161618f0' })) equal(colors[key], expected, `layout ${key}`);
   const panes: Record<string, unknown>[] = [], work: Record<string, unknown>[] = [], panels: Record<string, unknown>[] = [];
   const walk = (node: Record<string, unknown>): void => {
+    if (node.id === 'status') throw new Error('installed-look: status bar must be absent');
     if (node.id === 'work-body') work.push(node);
     if (node.id === 'panel') panels.push(node);
     if (node.content && typeof node.content === 'object') {
       const content = object(node.content);
+      if (content.mod === 'workspace-status') throw new Error('installed-look: status bar must be absent');
       if (content.tab === 'active') panes.push(object(content.pane));
     }
     if (node.children !== undefined) {

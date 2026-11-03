@@ -27,7 +27,7 @@ export interface TerminalSummary {
   address: TerminalAddress; parent: TerminalAddress | null; labels: Readonly<Record<string, string>>;
   state: 'live' | 'finished'; status: ProgramStatus | null; exitCode: number | null;
   reason: string | null; signal: number | null; finishedAt: number | null;
-  notify?: boolean;
+  notify?: boolean; cols?: number; rows?: number;
 }
 export interface TerminalHandle { address: TerminalAddress; coreId: CoreId }
 export interface HcRunRequest {
@@ -87,6 +87,11 @@ export interface AppClientOptions { binary: string; env: Readonly<NodeJS.Process
 export type AppReply = { space?: SpaceId; tab?: TabId; pane?: PaneId; terminal?: TerminalAddress; pending?: boolean; error?: never }
   | { error: { code: string; message: string }; space?: never; tab?: never; pane?: never; terminal?: never };
 export interface OwnerPlacement { space: SpaceId; tab: TabId; pane: PaneId }
+export interface AppPaneInspection {
+	tabPanes(placement: Pick<OwnerPlacement, 'space' | 'tab'>): Promise<readonly { terminal: TerminalAddress; pane: PaneId }[]>;
+	tabIndex(placement: Pick<OwnerPlacement, 'space' | 'tab'>): Promise<number>;
+	focusedPane(): Promise<OwnerPlacement | null>;
+}
 export interface AppClient {
 	tabTerminals(placement: Pick<OwnerPlacement, 'space' | 'tab'>): Promise<readonly TerminalAddress[]>;
 	ownerPlacement(address: TerminalAddress): Promise<OwnerPlacement>;

@@ -90,6 +90,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
   let activeSpace: string | null = null, activeTab: string | null = null, focus: string | null = null;
   const spaces: Space[] = [], errors: string[] = [];
   const modPanes = new Map<string, { pane: string; mod: string }[]>();
+  const neighbors = new Map<string, Partial<Record<'right' | 'down', string>>>();
   const selections = new Map<string, { tab: string | null; focus: string | null }>();
   let layoutTree: unknown;
   let queue: Promise<void> = Promise.resolve();
@@ -182,6 +183,12 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       activeSpace = s.id; activeTab = t.id; focus = t.terminals[0].pane;
       return { reply: { space: s.id, tab: t.id, terminal: address } };
     }
+    if (name === 'tab.move') {
+      const tab = tabOf(String(args.id)); if (!tab) throw new AppBoundaryError('unknown-id', 'no tab with requested id');
+      const space = spaceOf(tab.id)!, index = Number(args.index);
+      space.tabs.splice(space.tabs.indexOf(tab), 1); space.tabs.splice(index - 1, 0, tab);
+      return { reply: { ok: true } };
+    }
     if (name === 'tab.rename' || name === 'tab.close') {
       const t = tabOf(String(args.id ?? activeTab));
       if (!t) throw new AppBoundaryError('unknown-id', 'no tab with requested id');
@@ -229,6 +236,12 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       activeSpace = s.id; activeTab = s.tabs.find(t => t.terminals.includes(p))!.id; focus = p.pane;
       return { reply: { ok: true } };
     }
+    if (name === 'pane.go') {
+      const direction = args.direction as 'right' | 'down';
+      const destination = focus ? neighbors.get(focus)?.[direction] : undefined;
+      if (destination) focus = destination;
+      return { reply: { ok: true } };
+    }
     if (name === 'terminal.park' || name === 'terminal.keep') {
       const address = String(args.terminal), row = await get(address);
       const existing = paneOf(address);
@@ -237,6 +250,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       if (name === 'terminal.keep' && (!s || row.state !== 'live')) throw new AppBoundaryError('unknown-id', 'no running terminal or space to keep it in');
       if (name === 'terminal.keep' && (address.includes('/') ? address.split('/')[0] : null) !== s!.machine) throw new AppBoundaryError('wrong-machine', 'terminal pane must stay on its own machine');
       const t = ['right', 'down'].includes(String(args.place)) ? tabOf(activeTab ?? '') : undefined;
+      const anchor = focus;
       const newTab = name === 'terminal.keep' ? { id: t?.id ?? fresh('tb', s!.machine), name: row.name ?? address, active: true, settled: false, terminals: [] } as Tab : undefined;
       const pane = name === 'terminal.keep' ? fresh('p', s!.machine) : undefined;
       const settled = (async () => {
@@ -244,10 +258,13 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
           coreObject(await options.hc(['label', address, `herdr.space=${name === 'terminal.keep' ? s!.id.split('/').at(-1) : ''}`, `herdr.tab=${newTab?.id.split('/').at(-1) ?? ''}`, '--json']));
           coreObject(await options.hc(['keep', address, ...(name === 'terminal.park' ? ['--off'] : []), '--json']));
           if (name === 'terminal.park') {
+            const removed = paneOf(address)?.pane;
+            if (removed) { neighbors.delete(removed); for (const links of neighbors.values()) for (const direction of ['right', 'down'] as const) if (links[direction] === removed) delete links[direction]; }
             for (const tab of spaces.flatMap(s => s.tabs)) tab.terminals = tab.terminals.filter(p => p.terminal !== address);
             cleanEmpty();
           } else {
             const target = t ?? newTab!; target.terminals.push({ pane: pane!, terminal: address });
+            if (t && anchor) { const links = neighbors.get(anchor) ?? {}; links[args.place as 'right' | 'down'] = pane!; neighbors.set(anchor, links); }
             if (!t) s!.tabs.push(target); activeTab = target.id; focus = pane!;
           }
         } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { setTimeout as delay } from 'node:timers/promises';
-import type { AppClient, AppClientOptions, AppReply, OwnerPlacement, PaneId, SpaceId, TabId, TerminalAddress } from '../contracts.js';
+import type { AppClient, AppClientOptions, AppPaneInspection, AppReply, OwnerPlacement, PaneId, SpaceId, TabId, TerminalAddress } from '../contracts.js';
 import { invokeCli } from './cli-transport.js';
 import { HerdrError, object, text } from './parse.js';
 function placements(value: unknown, address: TerminalAddress): OwnerPlacement[] {
@@ -20,10 +20,37 @@ function placements(value: unknown, address: TerminalAddress): OwnerPlacement[] 
   }
   return found;
 }
-export function createAppClient(options: AppClientOptions, operationSignal?: AbortSignal): AppClient {
+export function createAppClient(options: AppClientOptions, operationSignal?: AbortSignal): AppClient & AppPaneInspection {
   const env = Object.freeze({ ...options.env });
   const call = (args: readonly string[], signal: AbortSignal | undefined = operationSignal) => invokeCli(options.binary, args, env, undefined, undefined, { signal });
+  const tab = async (placement: Pick<OwnerPlacement, 'space' | 'tab'>) => {
+    const layout = object(await call(['ls']));
+    if (!Array.isArray(layout.spaces)) throw new HerdrError('app-disconnected', 'App layout document is unavailable');
+    const matches: { rows: { terminal: TerminalAddress; pane: PaneId }[]; index: number }[] = [];
+    for (const rawSpace of layout.spaces) {
+      const space = object(rawSpace);
+      if (space.id !== placement.space) continue;
+      if (!Array.isArray(space.tabs)) throw new HerdrError('invalid-reply', 'Invalid app tabs');
+      for (const [index, rawTab] of space.tabs.entries()) {
+        const candidate = object(rawTab);
+        if (candidate.id !== placement.tab) continue;
+        if (!Array.isArray(candidate.terminals)) throw new HerdrError('invalid-reply', 'Invalid app terminals');
+        matches.push({ index: index + 1, rows: candidate.terminals.map(value => {
+          const row = object(value); return { terminal: text(row.terminal) as TerminalAddress, pane: text(row.pane) as PaneId };
+        }) });
+      }
+    }
+    if (matches.length !== 1) throw new HerdrError(matches.length ? 'owner-ambiguous' : 'owner-unplaced', 'Owner tab has no unique observed layout');
+    return matches[0];
+  };
   return {
+    tabPanes: async placement => (await tab(placement)).rows,
+    tabIndex: async placement => (await tab(placement)).index,
+    focusedPane: async () => {
+      const value = object(await call(['status']));
+      if (value.space === null || value.tab === null || value.focused_pane === null) return null;
+      return { space: text(value.space) as SpaceId, tab: text(value.tab) as TabId, pane: text(value.focused_pane) as PaneId };
+    },
     tabTerminals: async placement => {
       const layout = object(await call(['ls']));
       if (!Array.isArray(layout.spaces)) throw new HerdrError('app-disconnected', 'App layout document is unavailable');

@@ -66,10 +66,12 @@ export function parseTerminal(value: unknown): TerminalSummary {
   const t = object(value); const labels = object(t.labels);
   for (const v of Object.values(labels)) if (typeof v !== 'string') throw new HerdrError('invalid-reply', 'Invalid terminal label');
   if (t.state !== 'live' && t.state !== 'finished') throw new HerdrError('invalid-reply', 'Invalid terminal state');
+  for (const value of [t.cols, t.rows]) if (value !== undefined && (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 65535)) throw new HerdrError('invalid-reply', 'Invalid terminal dimensions');
   return { address: text(t.address) as TerminalAddress, parent: nullableText(t.parent) as TerminalAddress | null,
     labels: labels as Record<string, string>, state: t.state, status: parseProgramStatus(t.status), exitCode: nullableInteger(t.exit_code),
     reason: nullableText(t.reason), signal: nullableInteger(t.signal), finishedAt: nullableInteger(t.finished_ms),
-    ...(typeof t.notify === 'boolean' ? { notify: t.notify } : {}) };
+    ...(typeof t.notify === 'boolean' ? { notify: t.notify } : {}),
+    ...(typeof t.cols === 'number' ? { cols: t.cols } : {}), ...(typeof t.rows === 'number' ? { rows: t.rows } : {}) };
 }
 export function absolutePath(value: unknown): string {
   const path = text(value); if (!isAbsolute(path)) throw new HerdrError('invalid-config', 'Configured path must be absolute'); return path;

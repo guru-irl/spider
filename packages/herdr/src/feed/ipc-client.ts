@@ -45,7 +45,8 @@ export function createSessionIpcClient(descriptor: IpcDescriptor): SessionIpcCli
       const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
       const fail = (error: Error) => { socket.destroy(); if (!settled) reject(error); };
       // A steer may spend 10 s queued plus 10 s awaiting its child acknowledgement.
-      socket.setTimeout(request.op === 'ping' && timeoutMs !== undefined ? Math.max(10, Math.min(10000, timeoutMs)) : request.op === 'steerRun' ? 25000 : 10000, () => fail(feedError('unavailable', 'IPC acknowledgement timed out.')));
+      // A user open has a 30 s placement budget plus app acknowledgements.
+      socket.setTimeout(request.op === 'ping' && timeoutMs !== undefined ? Math.max(10, Math.min(10000, timeoutMs)) : request.op === 'openRun' ? 45000 : request.op === 'steerRun' ? 25000 : 10000, () => fail(feedError('unavailable', 'IPC acknowledgement timed out.')));
       socket.once('connect', () => socket.write(text)); socket.on('error', fail);
       socket.once('close', () => { resolveClosed(); sockets.delete(socket); if (!settled) reject(feedError('unavailable', 'IPC disconnected before acknowledgement.')); });
       socket.on('data', data => {

@@ -145,6 +145,11 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     holds.set(job.id, setTimeout(() => { holds.delete(job.id); queueRelease(job); }, 2000));
   }
   const cleanup = sharedCleanup ?? createCleanupSweep(options.clock, error => { if (!lifetime.signal.aborted) options.reportError?.(error); });
+  const cleanupKeys = new Set<string>();
+  function enqueueCleanup(key: string, operation: () => Promise<void>): void {
+    if (stopping || closed) return;
+    cleanupKeys.add(key); cleanup.enqueue(key, operation);
+  }
   const releaseSkipped = new Set<JobId>();
   const cleanupOptions = () => ({ signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(1000)]), timeoutMs: 1000 });
   const cleanupCall = <T>(operation: () => Promise<T>) => {
@@ -184,7 +189,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
     if (recoveringNotices.has(job.id) || job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
-    cleanup.enqueue(releaseKey(job), () => releaseSettledTerminal(job, save));
+    enqueueCleanup(releaseKey(job), () => releaseSettledTerminal(job, save));
     scheduleMaintenance();
   }
   async function markSettled(job: JournalJob): Promise<void> { queueRelease(job); }
@@ -306,7 +311,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     for (const job of [...journal.jobs]) {
       if (recoveringNotices.has(job.id) || job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.callerOwned || job.detached || options.clock() - job.updatedAt <= 7 * 86400000) continue;
       if (job.localDirectory !== join(store.directory, 'logs', job.id)) continue;
-      cleanup.enqueue(`${releaseKey(job)}/prune`, async () => {
+      enqueueCleanup(`${releaseKey(job)}/prune`, async () => {
         if (stopping || closed) return;
         await cleanupCall(() => release(job)); await ensurePrivateDirectory(job.localDirectory);
         if (stopping || closed) return;
@@ -329,7 +334,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     }
     const noticeCandidates = noticeRecoveryCandidates(journal, nextOwner);
     for (const job of noticeCandidates) recoveringNotices.add(job.id);
-    if (noticeCandidates.length) cleanup.enqueue(`${nextOwner.sessionId}/notices`, async () => {
+    if (noticeCandidates.length) enqueueCleanup(`${nextOwner.sessionId}/notices`, async () => {
       const apply = await (noticeRecoveryRead ??= recoverJobNotices(noticeCandidates, nextOwner, lifetime.signal));
       await serial(async () => {
         if (stopping || closed) return;
@@ -407,6 +412,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   function shutdown(reason: 'reload' | 'quit'): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
     stopping = true; lifetime.abort(); if (maintenance) clearTimeout(maintenance);
+    if (sharedCleanup) for (const key of cleanupKeys) cleanup.cancel(key);
+    cleanupKeys.clear();
     const handoffShutdown = handoff?.shutdown(reason);
     if (timer) clearInterval(timer); for (const hold of holds.values()) clearTimeout(hold); holds.clear(); unsubscribe?.();
     return shutdownPromise = (async () => {

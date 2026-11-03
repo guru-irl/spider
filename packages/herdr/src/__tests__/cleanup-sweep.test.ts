@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { registerHerdrJobs } from '../jobs/register.js';
 import { createJobStore } from '../jobs/store.js';
 import { HerdrError } from '../client/parse.js';
-import type { TerminalAddress } from '../contracts.js';
+import type { RunId, TerminalAddress } from '../contracts.js';
+import { processStartIdentity } from '../jobs/handoff.js';
+import { createCleanupSweep } from '../jobs/cleanup.js';
 import { bounded, deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
 async function backlog(count = 1) {
@@ -124,6 +126,43 @@ it('settled legacy child journals release terminals without resending stale tool
   await vi.waitFor(() => expect(removed.mock.calls.map(([address]) => [address])).toEqual([[f.handles[0].address]]));
   expect(f.notices).toEqual([]);
   await vi.waitFor(async () => expect((await childStore.read()).jobs[0].terminalReleased).toBe(true));
+});
+
+it('releases a child terminal after an earlier adoption stopped with a queued release', async () => {
+  const f = await monitorFixture(), runId = 'retry-child' as RunId;
+  const child = f.monitor({ child: { id: runId, pid: process.pid, startIdentity: processStartIdentity(process.pid)! } });
+  const a = await child.start(program, f.owner, on, { background: true }), b = await child.start(program, f.owner, on, { background: true });
+  await child.detach(a.id); await child.detach(b.id); f.complete(a.address);
+  await vi.waitFor(() => expect(f.notices).toHaveLength(1)); await child.shutdown('quit');
+  const store = createJobStore(f.f.root, f.owner.sessionId, runId), journal = await store.read();
+  Object.assign(journal.jobs.find(job => job.id === a.id)!, { settledMarked: true, notice: 'observed', noticeDelivered: true, terminalReleased: false });
+  await store.write(journal);
+  const events = f.hc.events; let fail = true, failures = 0, now = 1000;
+  vi.spyOn(f.hc, 'events').mockImplementation(() => {
+    const view = events();
+    return { ...view, lookup: async address => {
+      if (address === b.address && fail) { failures++; throw new HerdrError('core-unavailable', 'Core is unavailable'); }
+      return view.lookup(address);
+    } };
+  });
+  const parent = f.monitor({ closeAgentConsoles: async () => {}, clock: () => now }); await parent.activate(f.owner);
+  await vi.waitFor(() => expect({ failures, views: f.liveViews() }).toEqual({ failures: 1, views: 1 }));
+  fail = false; now += 7200000; await parent.reconcile();
+  await vi.waitFor(async () => expect((await store.read()).jobs.find(job => job.id === a.id)?.terminalReleased).toBe(true));
+  expect(f.terminals.has(a.address)).toBe(false);
+  expect(f.errors).toEqual([]);
+});
+
+it('a cancelled active cleanup cannot remove or report against its replacement', async () => {
+  const blocked = deferred<void>(), reports: unknown[] = [], sweep = createCleanupSweep(() => 0, error => { reports.push(error); });
+  let started = false, replacement = false;
+  sweep.enqueue('job', async () => { started = true; await blocked.promise; throw new HerdrError('disposed', 'Stopped'); }); sweep.start();
+  try {
+    await vi.waitFor(() => expect(started).toBe(true));
+    sweep.cancel('job'); sweep.enqueue('job', async () => { replacement = true; }); blocked.resolve();
+    await vi.waitFor(() => expect(replacement).toBe(true));
+    expect(reports).toEqual([]);
+  } finally { blocked.resolve(); await sweep.dispose(); }
 });
 
 it('binds remote execution before any backlog cleanup starts', async () => {

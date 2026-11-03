@@ -5,14 +5,18 @@ import * as fs from "node:fs/promises";
 import { openDbReadOnly } from "@spider/db-core";
 import { openUsageLedger, type RunMeta, type UsageLedger } from "../ledger.js";
 import * as pricing from "../price.js";
-import type { Discovery, RunEvent, SourceInfo } from "../discovery.js";
+import type { Discovery as SourceDiscovery, RunEvent, SourceInfo } from "../discovery.js";
+import { summarizeRunEvents } from "../run-events.js";
+import type { IngestOptions } from "../ingest.js";
+type Discovery = Omit<SourceDiscovery, "runEvents"> & { runEvents?: readonly RunEvent[] };
 
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, open: vi.fn(actual.open) };
 });
 let actualOpen: typeof fs.open;
-let root: string, ledger: UsageLedger, ingest: typeof import("../ingest.js").ingestOnce;
+let root: string, ledger: UsageLedger;
+let ingest: (store: UsageLedger, input: Discovery, at: number, signal: AbortSignal, options?: IngestOptions) => ReturnType<typeof import("../ingest.js").ingestOnce>;
 const at = Date.parse("2026-10-04T12:00:00Z");
 const usage = { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 };
 function header(id = "session", extra = {}) { return { type: "session", id, timestamp: new Date(at - 1000).toISOString(), ...extra }; }
@@ -26,7 +30,7 @@ function scan(d: Discovery, signal = new AbortController().signal) { return inge
 function rows(sql = "SELECT * FROM calls ORDER BY source_file, entry_id"): any[] { const d = openDbReadOnly(join(root, "ledger.db"))!; try { return d.prepare(sql).all(); } finally { d.close(); } }
 function selected() { return rows("SELECT * FROM counted_calls ORDER BY entry_id"); }
 function event(id: number, r: RunMeta, purpose: string | undefined, ts = at): RunEvent { return { dbPath: r.dbPath, id, runId: r.id, sessionId: r.sessionId, ts, type: "spider_usage", payload: JSON.stringify({ provider: "github-copilot", model: "gpt-6.1-sol", usage, ...(purpose ? { purpose } : {}) }) }; }
-beforeEach(async () => { actualOpen = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).open; vi.mocked(fs.open).mockImplementation(actualOpen); root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-ingest-")); ledger = openUsageLedger(join(root, "ledger.db")); ({ ingestOnce: ingest } = await import("../ingest.js")); });
+beforeEach(async () => { actualOpen = (await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).open; vi.mocked(fs.open).mockImplementation(actualOpen); root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-ingest-")); ledger = openUsageLedger(join(root, "ledger.db")); const { ingestOnce } = await import("../ingest.js"); ingest = (store, input, ...args) => ingestOnce(store, { ...input, runEvents: summarizeRunEvents(input.runEvents ?? []) }, ...args); });
 afterEach(() => { vi.restoreAllMocks(); ledger.close(); rmSync(root, { recursive: true, force: true }); });
 
 it("keeps appended response/tool metadata equal to a full parse and counts repeated toolCallIds once", async () => {

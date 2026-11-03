@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { isToolUsageBucket, parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
+import { parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
 import { UsageJsonLine } from "./jsonl-projection.js";
 import { SessionMetadataCapture, forgetSessionMetadata } from "./session-metadata.js";
 import { normalizeRunStatus } from "./ledger.js";
 import type { Discovery, SourceInfo } from "./discovery.js";
+import { runEventKey, type RunEvent } from "./run-events.js";
 import type {
   CallRow, CoverageEdge, ImportBatch, ImportState, LedgerHealth, RunMeta,
   UsageLedger, SourceContext, PendingReport, SessionMeta,
@@ -26,8 +27,6 @@ export type IngestOptions = {
 };
 const CHUNK = 64 * 1024;
 const PREFIX = 4096;
-// These are direct UsageSinkFactory purposes, not arbitrary pi UsageEntry kinds.
-const AUX_PURPOSES = new Set(["memory-review", "skill-review", "learner", "skill-curate"]);
 type Line = {
   byteOffset: number;
   json: unknown;
@@ -245,12 +244,6 @@ function reconcileProof(discovery: Discovery, memory: Memory, reports: Report[],
   for (const report of reports)
     reportTime.set(report.runId, Math.min(reportTime.get(report.runId) ?? Infinity, report.ts));
   const states = new Map((discovery.runStates ?? []).map(s => [JSON.stringify([s.dbPath, s.id]), s]));
-  const events = new Map<string, NonNullable<Discovery["runEvents"]>[number][]>();
-  for (const event of discovery.runEvents ?? []) {
-    const k = JSON.stringify([event.dbPath, event.runId]), list = events.get(k) ?? [];
-    list.push(event);
-    events.set(k, list);
-  }
   const priorEdges = new Map(memory.edges.map(e => [key(e.reportRunId, e.includedRunId), e]));
   const transcriptPairs = new Set(reports.filter(r => r.owner).map(r => key(r.owner!, r.runId)));
   const unavailablePaths = new Set(discovery.errors.map(e => e.path));
@@ -267,17 +260,15 @@ function reconcileProof(discovery: Discovery, memory: Memory, reports: Report[],
       const parent = lookup.get(pair.reportRunId), child = lookup.get(pair.includedRunId);
       const context = contexts.get(pair.reportRunId), time = reportTime.get(pair.reportRunId);
       const childKey = JSON.stringify([child?.dbPath, child?.id]), parentKey = JSON.stringify([parent?.dbPath, parent?.id]);
-      const state = states.get(childKey), parentState = states.get(parentKey), childEvents = events.get(childKey) ?? [];
-      const markers = childEvents.filter(e => e.type === "spider_usage_reported");
-      const usage = childEvents.filter(e => e.type === "spider_usage");
+      const state = states.get(childKey), parentState = states.get(parentKey), facts = discovery.runEvents?.runs.get(childKey);
       if (parent && child && parent.dbPath === child.dbPath && context && child.sessionId === context && time !== undefined
         && child.endedAt !== null && state && ["done", "failed", "cancelled"].includes(state.status ?? "")
-        && state.childMode === "rpc" && parentState?.childMode === "rpc" && markers.length === 1 && usage.length > 0
-        && markers[0].sessionId === context && child.endedAt <= markers[0].ts && markers[0].ts < time
-        && usage.every(e => e.sessionId === context && e.ts <= markers[0].ts))
+        && state.childMode === "rpc" && parentState?.childMode === "rpc" && facts?.markerCount === 1 && facts.usageCount > 0
+        && facts.markerSession === context && child.endedAt <= facts.markerTs && facts.markerTs < time
+        && !facts.mixedSessions && facts.usageSession === context && facts.lastUsageTs <= facts.markerTs)
         evidence = "runs-db";
       else if (!context && priorEdges.get(k)?.evidence === "runs-db"
-        && child && child.endedAt !== null && markers.length === 1 && time !== undefined && markers[0].ts < time
+        && child && child.endedAt !== null && facts?.markerCount === 1 && time !== undefined && facts.markerTs < time
         && state && ["done", "failed", "cancelled"].includes(state.status ?? "")) {
         // File loss alone cannot disprove historical inclusion. A withdrawn marker can.
         evidence = "runs-db";
@@ -347,31 +338,14 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       runId: string;
     }[] = [];
     const expectedGroups = new Map<string, Set<string>>();
-    const markers = new Map<string, number>();
-    const runKey = (db: string, id: string) => JSON.stringify([db, id]);
+    const runKey = runEventKey;
     const runsByKey = new Map(discovery.runs.map(r => [runKey(r.dbPath, r.id), r]));
     const runsById = new Map(discovery.runs.map(r => [r.id, r]));
     const terminalRunIds = new Set((discovery.runStates ?? []).filter(r => ["done", "failed", "cancelled"].includes(r.status ?? "")).map(r => r.id));
-    for (const event of discovery.runEvents ?? [])
-      if (event.type === "spider_usage_reported") {
-        const k = runKey(event.dbPath, event.runId);
-        markers.set(k, Math.min(markers.get(k) ?? Infinity, event.ts));
-      }
-    for (const event of discovery.runEvents ?? []) {
-      if (event.type !== "spider_usage" || event.ts > (markers.get(runKey(event.dbPath, event.runId)) ?? Infinity))
-        continue;
-      let payload: Record<string, unknown>;
-      try {
-        payload = object(JSON.parse(event.payload ?? ""));
-      }
-      catch {
-        continue;
-      }
-      if (!text(payload.provider) || !text(payload.model))
-        continue;
-      const group = expectedGroups.get(event.runId) ?? new Set<string>();
-      group.add(JSON.stringify(isToolUsageBucket(payload.provider, payload.model) ? [null, null] : [payload.provider, payload.model]));
-      expectedGroups.set(event.runId, group);
+    for (const facts of discovery.runEvents?.runs.values() ?? []) {
+      const group = expectedGroups.get(facts.runId) ?? new Set<string>();
+      for (const [model, firstTs] of facts.models) if (firstTs <= facts.markerTs) group.add(model);
+      expectedGroups.set(facts.runId, group);
     }
     // Small headers suffice for fork origin traversal. No scan/body survives its source.
     function origin(source: SourceInfo, ts: number): SourceInfo | undefined {
@@ -535,18 +509,10 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
     // can reuse numeric ids without deleting or colliding with its predecessor.
     if (!options.skipShared) {
     const auxByDb = new Map<string, {
-      event: NonNullable<Discovery["runEvents"]>[number];
+      event: RunEvent;
       payload: Record<string, unknown>;
     }[]>();
-    const unknown = new Map<string, {
-      path: string;
-      purpose: string;
-      count: number;
-    }>();
-    const transcriptPurposes = new Set(["compaction", "branch_summary", "subagent", "spider-subagent", "cache_warm", "tools"]);
-    for (const event of discovery.runEvents ?? []) {
-      if (event.type !== "spider_usage")
-        continue;
+    for (const event of discovery.runEvents?.auxiliary ?? []) {
       let payload: Record<string, unknown>;
       try {
         payload = object(JSON.parse(event.payload ?? ""));
@@ -554,20 +520,11 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       catch {
         continue;
       }
-      const purpose = text(payload.purpose);
-      if (!purpose || transcriptPurposes.has(purpose))
-        continue;
-      if (!AUX_PURPOSES.has(purpose)) {
-        const k = JSON.stringify([event.dbPath, purpose]), diagnostic = unknown.get(k) ?? { path: event.dbPath, purpose, count: 0 };
-        diagnostic.count++;
-        unknown.set(k, diagnostic);
-        continue;
-      }
       const list = auxByDb.get(event.dbPath) ?? [];
       list.push({ event, payload });
       auxByDb.set(event.dbPath, list);
     }
-    for (const d of unknown.values())
+    for (const d of discovery.runEvents?.unknown ?? [])
       errors.push({ path: `${d.path}#unknown-aux:${d.purpose}`, code: `unknown-aux-purpose:${d.purpose}:${d.count}` });
     const unavailable = new Set(discovery.errors.map(e => e.path));
     for (const dbPath of discovery.runDbs ?? [])

@@ -254,8 +254,9 @@ export async function createHerdrHarness(mode: AcceptanceMode): Promise<HerdrHar
         for (const row of result) {
           const t = object(row); if (typeof t.pid === 'number') track(t.pid);
           const address = text(t.address); if (side === 'local' && address.includes('/')) continue;
-          if (t.state === 'live') await h.cli(['kill', address, '--json'], side);
-          await h.cli(['rm', address, '--json'], side);
+          const absent = (error: unknown) => { if (!(error instanceof HerdrError) || error.code !== 'not_found') throw error; };
+          if (t.state === 'live') await h.cli(['kill', address, '--json'], side).catch(absent);
+          await h.cli(['rm', address, '--json'], side).catch(absent);
         }
         observed[`${side}Terminals`] = object(await h.cli(['ls', '--all', '--json'], side)).terminals;
       }

@@ -227,7 +227,8 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       const { db, dbPath } = bindDb(o);
       try {
         const store = new RunStore(db), run = store.get(id), parent = run?.parent_run_id ? store.get(run.parent_run_id) : undefined;
-        const parentName = parent?.session_id === o.sessionId ? parent.name || parent.id : o.name || 'Agent';
+        const activeName = owner?.sessionId === o.sessionId && owner.generation === o.generation ? owner.name : o.name;
+        const parentName = parent?.session_id === o.sessionId ? parent.name || parent.id : activeName || 'Agent';
         const recorded = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1").get(id, o.sessionId) as { payload: string | null } | undefined;
         let directory: string | undefined;
         if (!recorded) directory = join(paths.scratch('project', o.cwd), 'subagent-sessions', id);
@@ -261,7 +262,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   const writeFeed = coalesceFeedWrites(async () => {
     const current = owner, currentSource = source;
     if (!current || !currentSource || stopped) return;
-    const feed = await currentSource.snapshot(current);
+    const feed = await currentSource.snapshot({ ...current });
     if (owner === current && !stopped) await publishSessionFeed(join(need(config).globalRoot, 'herdr'), feed);
   });
   const publish = () => { publishing = writeFeed(); return publishing; };
@@ -378,6 +379,14 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     coreProbe = pending; return pending;
   };
   const offs: (() => void)[] = [];
+  offs.push(registrationPi.on('session_info_changed', async (_event, ctx) => {
+    const current = owner;
+    if (!current || ctx.sessionManager.getSessionId() !== current.sessionId) return;
+    const name = pi.getSessionName?.() ?? null;
+    if (current.name === name) return;
+    current.name = name;
+    if (source && !stopped) await publish();
+  }));
   offs.push(registrationPi.on('session_start', async (_event, ctx) => {
     if (disposed) return;
     ++lifecycle;

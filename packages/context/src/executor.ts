@@ -941,6 +941,7 @@ export class PolyglotExecutor {
       // whole time and returns the TRUE exit code once the command actually exits.
       // Nothing "detaches" until a timeout genuinely elapses while still running.
       const timer: NodeJS.Timeout | undefined = timeout === undefined ? undefined : setTimeout(() => {
+        if (aborted) return;
         timedOut = true;
         if (background) {
           // R3 (background-brief): a launch is not a success. `exitCode: null` —
@@ -986,6 +987,8 @@ export class PolyglotExecutor {
       if (signal) {
         onAbort = () => {
           aborted = true;
+          timedOut = false;
+          clearTimeout(timer);
           killTree(proc);
         };
         signal.addEventListener("abort", onAbort, { once: true });

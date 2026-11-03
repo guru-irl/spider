@@ -94,6 +94,10 @@ export interface ExecDetails {
   /** True while the command is still executing (pi's `options.isPartial`). The exit code is
    *  not known yet, so the status line must not claim one. */
   running?: boolean;
+  /** True when a foreground timeout occurred before the result was returned. */
+  timedOut?: boolean;
+  /** True when a mixed batch includes a timed-out entry with unknown outcome. */
+  timedOutUnknown?: boolean;
   /** Set when the command was detached at a timeout handoff and is still running
    *  somewhere: the exit code is UNKNOWN, not 0 — a launch is not a success. `pid` is
    *  the supervisor's pid (the process-group leader on POSIX), advisory only.

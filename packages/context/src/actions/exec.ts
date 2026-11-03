@@ -168,7 +168,22 @@ function capExecOutput(text: string, logs?: { stdout: string; stderr: string }):
   return capBytes(text, budget) + capBytes(note, MAX_EXEC_OUTPUT_BYTES - budget);
 }
 
-const shape = (r: ExecResult) => {
+export const foregroundTimedOut = (r: { timedOut?: boolean; backgrounded?: boolean; outcome?: string }): boolean =>
+  r.timedOut === true && r.backgrounded !== true && r.outcome !== "timeout";
+
+function timeoutSummary(r: ExecResult, timeout: number | undefined): string {
+  const when = timeout === undefined ? "timed out" : timeout % 1000 === 0
+    ? `timed out after ${timeout / 1000} s` : `timed out after ${timeout} ms`;
+  if (r.outcome === "spawn-error") return `[${when}. Spider tried to stop the command, but it never started (spawn error).]`;
+  if (r.outcome === "unknown" || (r.outcome !== "signal" && r.outcome !== "aborted" && r.exitCode === null)) {
+    return `[${when}. Spider tried to stop the command, but its outcome is unknown.]`;
+  }
+  const ending = r.outcome === "signal" ? `the command ended by signal ${r.signal ?? "unknown"}`
+    : r.outcome === "aborted" ? "the command was aborted" : `the command's exit status was ${r.exitCode}`;
+  return `[${when}. Spider sent a stop, and ${ending}.]`;
+}
+
+const shape = (r: ExecResult, timeout?: number) => {
   let text = (r.remoteAbortInfo ? `${r.remoteAbortInfo}\n\n` : "") + r.stdout + (r.stderr ? "\n[stderr]\n" + r.stderr : "");
 
   // Structured discriminator (see executor.ts's ExecOutcome). Fall back to a
@@ -222,6 +237,7 @@ const shape = (r: ExecResult) => {
       `finished (exit ${r.exitCode})`;
     text += `\n\n[the command ${what}, but its job directory was retained — ${r.retainedReason ?? "possible live descendants"}.\n${logsLines}${receiptLine}Further output, if any, keeps landing in the logs above.]`;
   }
+  if (foregroundTimedOut(r)) text = `${timeoutSummary(r, timeout)}\n\n${text}`;
   return capExecOutput(text, r.remote ? r.backgroundLogs : undefined);
 };
 
@@ -246,7 +262,7 @@ export function isKnownFailureOutcome(outcome: string | undefined): boolean {
  *  self-contradicted the very text (`shape()`) returned alongside it ("outcome
  *  unknown… cannot be determined from here" with `isError: true` on the SAME result). */
 export function isExecError(res: { outcome?: string; exitCode: number | null; timedOut?: boolean; backgrounded?: boolean }): boolean {
-  const foregroundTimeout = res.timedOut === true && res.backgrounded !== true && res.outcome !== "timeout" && res.outcome !== "unknown";
+  const foregroundTimeout = foregroundTimedOut(res) && res.outcome !== "unknown";
   return foregroundTimeout || isKnownFailureOutcome(res.outcome) || (res.exitCode !== null && res.exitCode !== 0);
 }
 
@@ -285,7 +301,7 @@ export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; 
   // error, and an aborted run): "generic unknown is neutral" (timeout/unknown),
   // but "known signal/spawn-error/abort remains visibly failure", never laundered
   // into a neutral non-error just because `exitCode` happens to be `null`.
-  return { text: shape(res), details: res, isError: isExecError(res) };
+  return { text: shape(res, args.timeout), details: res, isError: isExecError(res) };
 }
 
 export async function runExecFile(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
@@ -314,17 +330,16 @@ export async function runExecFile(args: any, ctx: ExecCtx): Promise<{ text: stri
   // never passes `background` to `execute()` (so `"timeout"`/`"unknown"` are not reachable
   // through this path today), but the SAME rule as `runExec` applies regardless — this must
   // not silently regress the moment that changes.
-  return { text: shape(res), details: res, isError: isExecError(res) };
+  return { text: shape(res, args.timeout), details: res, isError: isExecError(res) };
 }
 
 function batchStatus(res: ExecResult): string {
-  if (res.outcome === "signal") return `signal ${res.signal ?? "unknown"}`;
-  if (res.outcome === "spawn-error") return "spawn error";
-  if (res.outcome === "aborted") {
-    return typeof res.exitCode === "number" ? `aborted · exit ${res.exitCode}` : "aborted";
-  }
-  if (typeof res.exitCode === "number") return `exit ${res.exitCode}`;
-  return res.outcome === "timeout" ? "detached · exit status unknown" : "exit status unknown";
+  const status = res.outcome === "signal" ? `signal ${res.signal ?? "unknown"}`
+    : res.outcome === "spawn-error" ? "spawn error"
+    : res.outcome === "aborted" ? (typeof res.exitCode === "number" ? `aborted · exit ${res.exitCode}` : "aborted")
+    : typeof res.exitCode === "number" ? `exit ${res.exitCode}`
+    : res.outcome === "timeout" ? "detached · exit status unknown" : "exit status unknown";
+  return foregroundTimedOut(res) ? `timed out · ${status}` : status;
 }
 
 export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string; details: any[]; isError: boolean }> {
@@ -333,6 +348,7 @@ export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string;
   }
   const ex = mk(ctx);
   const parts: string[] = [];
+  const timeoutNotices: { index: number; text: string }[] = [];
   let anyErr = false;
   const all: any[] = [];
   // A-H2: ONE streamer for the WHOLE batch (not one per command) — the result section is
@@ -349,7 +365,10 @@ export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string;
       // C-M2: details/isError are not model-facing. Name THIS entry's real outcome in
       // its header so the model can attribute a failure to the command that produced
       // it. Never synthesize a numeric code for signal/spawn/unknown outcomes.
-      parts.push(`── [${i + 1}] ${cmd.language} · ${batchStatus(res)} ──\n${res.stdout}${res.stderr ? "\n[stderr]\n" + res.stderr : ""}`);
+      const header = `── [${i + 1}] ${cmd.language} · ${batchStatus(res)} ──`;
+      const output = foregroundTimedOut(res) ? shape(res, cmd.timeout) : res.stdout + (res.stderr ? "\n[stderr]\n" + res.stderr : "");
+      if (foregroundTimedOut(res)) timeoutNotices.push({ index: i, text: `${header}\n${timeoutSummary(res, cmd.timeout)}` });
+      parts.push(`${header}\n${output}`);
       // A-H2: an abort mid-batch must stop the WHOLE batch, not just the currently running
       // command — without this check the loop would launch every remaining command right
       // after Escape killed the current one, so the abort silently did almost nothing.
@@ -358,7 +377,33 @@ export async function runBatch(args: any, ctx: ExecCtx): Promise<{ text: string;
   } finally {
     onData?.flush();
   }
-  return { text: capExecOutput(parts.join("\n\n")), details: all, isError: anyErr };
+  let text = parts.join("\n\n");
+  if (timeoutNotices.length && Buffer.byteLength(text) > MAX_EXEC_OUTPUT_BYTES) {
+    const relocated = new Set<number>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const prefix = timeoutNotices.filter(n => relocated.has(n.index)).map(n => n.text).join("\n\n");
+      const budget = MAX_EXEC_OUTPUT_BYTES - Buffer.byteLength(TRUNCATION_NOTE) - (prefix ? Buffer.byteLength(prefix + "\n\n") : 0);
+      let offset = 0;
+      for (const [i, part] of parts.entries()) {
+        const notice = timeoutNotices.find(n => n.index === i);
+        if (notice && !relocated.has(i) && offset + Buffer.byteLength(notice.text) > budget) {
+          relocated.add(i); changed = true;
+        }
+        offset += Buffer.byteLength(part) + 2;
+      }
+    }
+    const prefix = timeoutNotices.filter(n => relocated.has(n.index)).map(n => n.text).join("\n\n");
+    if (prefix) {
+      const withoutNotices = parts.map((part, i) => {
+        const notice = timeoutNotices.find(n => n.index === i && relocated.has(i));
+        return notice ? part.slice(notice.text.length).replace(/^\n\n/, "") : part;
+      }).join("\n\n");
+      text = `${prefix}\n\n${withoutNotices}`;
+    }
+  }
+  return { text: capExecOutput(text), details: all, isError: anyErr };
 }
 
 export function registerExecActions(register: (name: string, handler: (a: any, c: any) => any) => void): void {

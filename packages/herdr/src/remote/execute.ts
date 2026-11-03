@@ -69,7 +69,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
   const backgroundJob = { id: job.id, dir: job.localDirectory, manifest: join(job.localDirectory, 'job.json'), receipt: join(job.localDirectory, 'receipt.json'), logs };
   await atomicRuntimeFile(backgroundJob.manifest, JSON.stringify({ version: 1, id: job.id, machine: request.on, address: job.address, remoteDirectory: job.remoteDirectory, receipt: backgroundJob.receipt, logs }));
   let latest: CollectedLogs = { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, complete: false, capped: false, receipt: null };
-  let timedOut = false; let aborted = false;
+  let timedOut = false; let aborted = false; let timeoutCancelFailed = false;
   let finish: JobFinish | undefined; let finishedAt: number | undefined;
   let finishLost = false;
   let releaseCollection: (() => void) | undefined;
@@ -148,13 +148,17 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
         value.stderr ||= receipt.error ?? (receipt.outcome === 'release-timeout' ? 'Payload release deadline expired' : 'Payload could not start');
         return acknowledge(value);
       }
+      if (timeoutCancelFailed) {
+        try { await ports.jobs.detach(job.id); } catch { /* The paths and unknown state remain useful. */ }
+        return uncertainResult();
+      }
       if (!timedOut && request.timeout !== undefined && ports.clock() - startedAt >= request.timeout) {
         timedOut = true;
         if (request.background) {
           await ports.jobs.detach(job.id);
           return { ...result('timeout', null), backgrounded: true };
         }
-        await job.cancel('timeout');
+        try { await job.cancel('timeout'); } catch { timeoutCancelFailed = true; }
         continue; // Recollect the receipt and preserve the actual exit or signal, including a trapped HUP exit-zero.
       }
       if (finishLost || (finishedAt !== undefined && collectStartedAt - finishedAt >= 1000)) return acknowledge(result('unknown', null));

@@ -4,6 +4,88 @@ import { runExec, runExecFile, runBatch, trimChunksToBudget, makeStreamer, isExe
 const ctx = { cwd: process.cwd() };
 
 describe("exec actions", () => {
+  it("reports a local foreground timeout in milliseconds with its actual signal", async () => {
+    const result = await runExec({ language: "shell", code: "sleep 10", timeout: 125 }, ctx);
+    expect(result.text.startsWith("[timed out after 125 ms. Spider sent a stop, and the command ended by signal SIGKILL.]")).toBe(true);
+    expect(result.isError).toBe(true);
+  });
+
+  it("reports a foreground exec_file timeout", async () => {
+    const result = await runExecFile({ path: "package.json", language: "shell", code: "sleep 10", timeout: 125 }, ctx);
+    expect(result.text.startsWith("[timed out after 125 ms. Spider sent a stop, and the command ended by signal SIGKILL.]")).toBe(true);
+    expect(result.isError).toBe(true);
+  });
+
+  it("keeps a later batch timeout visible when earlier output is truncated", async () => {
+    const result = await runBatch({ commands: [
+      { language: "javascript", code: "process.stdout.write('x'.repeat(12000))" },
+      { language: "shell", code: "sleep 10", timeout: 125 },
+    ] }, ctx);
+    expect(result.text).toContain("── [2] shell · timed out · signal SIGKILL ──");
+    expect(result.text).toContain("[timed out after 125 ms. Spider sent a stop, and the command ended by signal SIGKILL.]");
+    expect(result.text.match(/── \[2\] shell · timed out · signal SIGKILL ──/g)).toHaveLength(1);
+    expect(result.text.match(/\[timed out after 125 ms\./g)).toHaveLength(1);
+    expect(result.isError).toBe(true);
+  });
+
+  it("keeps early and late timeout notices once each across a large batch", async () => {
+    const result = await runBatch({ commands: [
+      { language: "shell", code: "sleep 5", timeout: 125 },
+      { language: "shell", code: "yes x | head -c 20000" },
+      { language: "shell", code: "sleep 5", timeout: 250 },
+    ] }, ctx);
+    expect(result.text.match(/── \[1\] shell · timed out · signal SIGKILL ──/g)).toHaveLength(1);
+    expect(result.text.match(/── \[3\] shell · timed out · signal SIGKILL ──/g)).toHaveLength(1);
+    expect(result.text.match(/\[timed out after 125 ms\./g)).toHaveLength(1);
+    expect(result.text.match(/\[timed out after 250 ms\./g)).toHaveLength(1);
+    expect(result.text).toMatch(/truncated/i);
+    expect(result.isError).toBe(true);
+  });
+
+  it("reports the shell's exit when a descendant holds its output open", async () => {
+    const result = await runExec({ language: "shell", code: "sleep 5 & echo hi", timeout: 500 }, ctx);
+    expect(result.text.startsWith("[timed out after 500 ms. Spider sent a stop, and the command's exit status was 0.]")).toBe(true);
+    expect(result.text).not.toContain("Spider stopped the command");
+    expect(result.details).toMatchObject({ outcome: "exited", exitCode: 0, timedOut: true });
+    expect(result.isError).toBe(true);
+  });
+
+  it("keeps a single timeout line first when output exceeds the cap", async () => {
+    const result = await runExec({ language: "shell", code: "yes x | head -c 20000; sleep 5", timeout: 500 }, ctx);
+    expect(result.text.startsWith("[timed out after 500 ms. Spider sent a stop, and the command ended by signal SIGKILL.]")).toBe(true);
+    expect(result.text).toMatch(/truncated/i);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(10_000);
+    expect(result.isError).toBe(true);
+  });
+
+  it("does not repeat a batch timeout that already fits before truncation", async () => {
+    const result = await runBatch({ commands: [
+      { language: "shell", code: "yes x | head -c 20000; sleep 5", timeout: 500 },
+      { language: "shell", code: "echo after" },
+    ] }, ctx);
+    expect(result.text.match(/── \[1\] shell · timed out · signal SIGKILL ──/g)).toHaveLength(1);
+    expect(result.text.match(/\[timed out after 500 ms\./g)).toHaveLength(1);
+    expect(result.text).toMatch(/truncated/i);
+    expect(result.isError).toBe(true);
+  });
+
+  it("lets abort win when it fires after the timeout stop but before close", async () => {
+    const abort = new AbortController();
+    const kill = process.kill.bind(process);
+    let fired = false;
+    const spy = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      const result = kill(pid, signal);
+      if (pid < 0 && signal === "SIGKILL" && !fired) { fired = true; abort.abort(); }
+      return result;
+    });
+    try {
+      const result = await runExec({ language: "shell", code: "sleep 5", timeout: 125 }, { ...ctx, signal: abort.signal });
+      expect(result.details).toMatchObject({ outcome: "aborted", aborted: true, timedOut: false });
+      expect(result.text).not.toContain("timed out");
+      expect(result.isError).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+
   it("exec runs code and returns model-facing stdout text", async () => {
     const r = await runExec({ action: "exec", language: "javascript", code: "console.log('hi')" } as any, ctx);
     expect(r.text).toContain("hi");
@@ -100,6 +182,30 @@ describe("exec actions", () => {
       expect(isExecError({ exitCode: 2 })).toBe(true);
       expect(isExecError({ exitCode: null })).toBe(false);
     });
+  });
+
+  it.each([
+    ["exited", 0, false, false, false], ["exited", 0, true, false, true],
+    ["exited", 0, true, true, false], ["exited", 7, false, false, true],
+    ["signal", null, false, false, true], ["signal", null, true, false, true],
+    ["spawn-error", null, false, false, true], ["spawn-error", null, true, false, true],
+    ["aborted", 137, false, false, true], ["aborted", 137, true, false, true],
+    ["timeout", null, true, true, false], ["timeout", null, true, false, false],
+    ["unknown", null, true, false, false], ["unknown", null, false, false, false],
+    [undefined, null, true, false, true], [undefined, null, false, false, false],
+  ] as const)("classifies %s exit %s timeout %s background %s", (outcome, exitCode, timedOut, backgrounded, expected) => {
+    expect(isExecError({ outcome, exitCode, timedOut, backgrounded })).toBe(expected);
+  });
+
+  it("preserves the previous error rule across outcome, exit, and timeout flag combinations", () => {
+    const outcomes = ["exited", "signal", "spawn-error", "aborted", "timeout", "unknown", undefined];
+    const flags = [true, false, undefined];
+    for (const outcome of outcomes) for (const exitCode of [null, 0, 7]) for (const timedOut of flags) for (const backgrounded of flags) {
+      const previous = (timedOut === true && backgrounded !== true && outcome !== "timeout" && outcome !== "unknown")
+        || outcome === "signal" || outcome === "spawn-error" || outcome === "aborted"
+        || (exitCode !== null && exitCode !== 0);
+      expect(isExecError({ outcome, exitCode, timedOut, backgrounded })).toBe(previous);
+    }
   });
 
   it('a local foreground timeout remains an error even if the observed numeric exit is zero', () => {

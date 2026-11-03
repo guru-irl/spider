@@ -6,7 +6,7 @@ import * as move from '../../assets/agents/move.js';
 import { panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS } from '../../assets/shared/feed.js';
 import { HerdrLabelContract } from '../contracts.js';
 
-type Node = { id?: string; disabled?: boolean; events: Record<string, Function>; items: unknown[] };
+type Node = { id?: string; height?: number; marginY?: number; paddingTop?: number; paddingBottom?: number; flexNone?: boolean; mode?: string; textSize?: number; disabled?: boolean; events: Record<string, Function>; items: unknown[] };
 const data = new WeakMap<object, Node>();
 function element(): any {
   const node: Node = { events: {}, items: [] };
@@ -15,6 +15,13 @@ function element(): any {
     if (key === 'child') return (value: unknown) => { node.items.push(value); return proxy; };
     if (key === 'children') return (values: unknown[]) => { node.items.push(...values); return proxy; };
     if (key === 'id') return (id: string) => { node.id = id; return proxy; };
+    if (key === 'h') return (height: number) => { node.height = height; return proxy; };
+    if (key === 'my') return (marginY: number) => { node.marginY = marginY; return proxy; };
+    if (key === 'pt') return (paddingTop: number) => { node.paddingTop = paddingTop; return proxy; };
+    if (key === 'pb') return (paddingBottom: number) => { node.paddingBottom = paddingBottom; return proxy; };
+    if (key === 'flex_none') return () => { node.flexNone = true; return proxy; };
+    if (key === 'mode') return (mode: string) => { node.mode = mode; return proxy; };
+    if (key === 'text_size') return (textSize: number) => { node.textSize = textSize; return proxy; };
     if (key === 'disabled') return (value: boolean) => { node.disabled = value; return proxy; };
     if (key.startsWith('on_')) return (...args: unknown[]) => { node.events[key] = args.at(-1) as Function; return proxy; };
     return () => proxy;
@@ -24,6 +31,8 @@ function element(): any {
 function flatten(root: unknown): Node[] { const node = data.get(root as object); return node ? [node, ...node.items.flatMap(flatten)] : []; }
 function texts(root: unknown): string[] { return flatten(root).flatMap(node => node.items.filter((item): item is string => typeof item === 'string')); }
 function byId(root: unknown, id: string): Node { const result = flatten(root).find(node => node.id === id); if (!result) throw new Error(`Missing ${id}`); return result; }
+function listChildren(list: Node): Node[] { return list.items.map(item => data.get(item as object)!); }
+function totalHeight(list: Node): number { return listChildren(list).reduce((sum, child) => sum + (child.height ?? 0) + 2 * (child.marginY ?? 0), 0); }
 
 async function popup(propsValue: any, extra: Record<string, unknown> = {}, feeds: any[] = []) {
   let source = '';
@@ -46,6 +55,58 @@ async function popup(propsValue: any, extra: Record<string, unknown> = {}, feeds
   const drain = async () => { while (tasks.length) await Promise.all(tasks.splice(0)); };
   return { ...exported, instance, cx, calls, closed, overlays, notifications, drain };
 }
+
+async function heightPopup(extra: Record<string, unknown> = {}) {
+  const pane = { pane: 'p1', terminal: 'shell', tab: 't1', program: { key: 'shell' } };
+  const ui = await popup({ modId: 'spider-agents', labelContract: HerdrLabelContract,
+    moveMenu: { kind: 'pane', pane: 'p1', terminal: 'shell' } },
+    { panes: () => [pane], terminals: () => [{ address: 'shell', labels: {} }], ...extra });
+  await ui.drain(); return ui;
+}
+
+it('gives the main menu enough height for its actions and separator', async () => {
+  const ui = await heightPopup(), root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toContain('Move to tab');
+  const list = byId(root, 'move-menu-items');
+  expect(list.height).toBe(102);
+  expect(list.height).toBe(totalHeight(list));
+  expect(list.flexNone).toBe(true);
+  expect(listChildren(list).every(child => child.flexNone)).toBe(true);
+  expect(list.mode).toBeUndefined();
+});
+
+it('sizes the tab list for its back action, headings, and tabs', async () => {
+  const ui = await heightPopup();
+  byId(ui.renderMoveMenu(ui.instance, ui.cx), 'move-tabs').events.on_click({}, ui.cx);
+  const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toEqual(expect.arrayContaining(['Work', 'Review', 'Other', 'Notes']));
+  const list = byId(root, 'move-menu-items');
+  expect(list.height).toBe(151);
+  expect(listChildren(list).every(child => child.height !== undefined)).toBe(true);
+  expect(list.height).toBe(totalHeight(list));
+  expect(listChildren(list).every(child => child.flexNone)).toBe(true);
+});
+
+it('caps the height of a long tab list', async () => {
+  const ui = await heightPopup({ spaces: () => [{ id: 's1', name: 'Work', machine: null,
+    tabs: Array.from({ length: 20 }, (_, i) => ({ id: `t${i}`, name: `Tab ${i}` })) }] });
+  byId(ui.renderMoveMenu(ui.instance, ui.cx), 'move-tabs').events.on_click({}, ui.cx);
+  const list = byId(ui.renderMoveMenu(ui.instance, ui.cx), 'move-menu-items');
+  expect(list.height).toBe(380);
+  expect(list.height).toBe(Math.min(380, totalHeight(list)));
+  expect(totalHeight(list)).toBeGreaterThan(380);
+  expect(list.mode).toBe('always');
+  expect(list.flexNone).toBe(true);
+  expect(listChildren(list).every(child => child.flexNone)).toBe(true);
+});
+
+it('uses the menu text size when the pane is unavailable', async () => {
+  const ui = await popup({ modId: 'spider-agents', moveMenu: { kind: 'pane', pane: 'gone', terminal: 'shell' } });
+  await ui.drain();
+  const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toContain('Pane unavailable');
+  expect(flatten(root)[0].textSize).toBe(12.8);
+});
 
 it('opens a parked subagent in a selected tab through its owner', async () => {
   const descriptor = { version: 1, sessionId: 'owner', generation: 'gen', address: 'socket', capabilityFile: 'cap' };

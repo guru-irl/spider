@@ -142,12 +142,19 @@ function renderKillConfirmation(view, cx) {
       .child(button('move-kill-confirm', prompt.pending ? 'Stopping…' : 'Kill session', confirm)));
 }
 
+const ROW_HEIGHT = 31, SEPARATOR_HEIGHT = 9, HEADING_HEIGHT = 29, SEPARATOR_MARGIN = 4;
+
+// Popups size to their content, and a scroll container has no height of its own, so give the list one.
+function listHeight(items) {
+  return items.reduce((sum, item) => sum + (item.kind === 'separator' ? SEPARATOR_HEIGHT : item.kind === 'heading' ? HEADING_HEIGHT : ROW_HEIGHT), 0);
+}
+
 export function renderMoveMenu(view, cx) {
   const t = theme();
   if (view.moveConfirm) return renderKillConfirmation(view, cx);
-  if (view.moveLoading) return v_flex().p(12).bg(t.popover).text_color(t.muted).child('Loading session');
+  if (view.moveLoading) return v_flex().p(12).bg(t.popover).text_size(12.8).text_color(t.muted).child('Loading session');
   const target = targetFor(view);
-  if (!target) return v_flex().p(12).bg(t.popover).text_color(t.muted).child('Pane unavailable');
+  if (!target) return v_flex().p(12).bg(t.popover).text_size(12.8).text_color(t.muted).child('Pane unavailable');
   const items = actionsFor(target, view), selectable = items.filter(item => item.kind !== 'separator' && item.kind !== 'heading' && !item.disabled);
   if (view.moveAt >= selectable.length) view.moveAt = 0;
   const root = v_flex().id('move-menu').track_focus(view.moveHandle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
@@ -160,11 +167,13 @@ export function renderMoveMenu(view, cx) {
       else return;
       cx.notify();
     });
-  return root.child(v_flex().min_h(0).overflow_y_scrollbar().mode('always').children(items.map(item => {
-    if (item.kind === 'separator') return div().mx(7).my(4).h(1).bg(t.border);
-    if (item.kind === 'heading') return div().px(8).pt(9).pb(3).text_size(11).font_medium().text_color(t.muted).child(item.label);
+  const height = listHeight(items), list = v_flex().id('move-menu-items').flex_none().h(Math.min(380, height));
+  const scroll = height > 380 ? list.overflow_y_scrollbar().mode('always') : list.overflow_y_scrollbar();
+  return root.child(scroll.children(items.map(item => {
+    if (item.kind === 'separator') return div().mx(7).my(SEPARATOR_MARGIN).h(SEPARATOR_HEIGHT - 2 * SEPARATOR_MARGIN).flex_none().bg(t.border);
+    if (item.kind === 'heading') return div().h(HEADING_HEIGHT).flex_none().px(8).pb(3).flex().items_end().text_size(11).font_medium().text_color(t.muted).child(item.label);
     const index = selectable.indexOf(item);
-    return h_flex().id(`move-${item.id}`).h(31).px(8).rounded(7).items_center().text_color(item.disabled ? t.dim : t.foreground)
+    return h_flex().id(`move-${item.id}`).h(ROW_HEIGHT).flex_none().px(8).rounded(7).items_center().text_color(item.disabled ? t.dim : t.foreground)
       .when(Boolean(item.disabled), el => el.disabled(true))
       .when(index >= 0 && index === view.moveAt, el => el.bg(t.selected))
       .when(!item.disabled, el => el.hover(s => s.bg(t.hover)).cursor_pointer().on_click((_event, cx) => choose(view, target, item, cx)))

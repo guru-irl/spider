@@ -47,6 +47,24 @@ it('omits tabs on machines other than the terminal\'s machine', () => {
   expect(items[1].groups.map((group: { id: string }) => group.id)).toEqual(['s1', 's2']);
 });
 
+it.each([
+  ['remote terminal', {}],
+  ['remote console', { [HerdrLabelContract.labels.kind]: HerdrLabelContract.kinds.remoteConsole }],
+])('offers same-machine moves and terminal kill for a %s pane', (_name, terminalLabels) => {
+  const address = 'remote.invalid/t5';
+  const pane = { pane: 'remote.invalid/p5', terminal: address, tab: 'remote.invalid/t1', program: { key: 'shell' } };
+  const target = move.classifyPane(pane, { address, labels: terminalLabels }, [], HerdrLabelContract, 0);
+  const choices = [
+    { id: 'remote.invalid/s1', name: 'Remote', machine: 'remote.invalid', tabs: [{ id: 'remote.invalid/t1', name: 'Current' }, { id: 'remote.invalid/t2', name: 'Work' }] },
+    { id: 's1', name: 'Local', machine: null, tabs: [{ id: 't2', name: 'Local tab' }] },
+  ];
+  const items = move.menuItems(target, choices, 'remote.invalid/s1', pane.tab);
+  expect(target).toMatchObject({ kind: 'terminal', machine: 'remote.invalid' });
+  expect(labels(items)).toEqual(['Move to new tab', 'Move to tab', 'separator', 'Kill terminal']);
+  expect(items[1]).toMatchObject({ kind: 'tabs', groups: [{ id: 'remote.invalid/s1', name: 'Remote', tabs: [{ id: 'remote.invalid/t2', name: 'Work' }] }] });
+  expect(items.slice(0, 2).every((item: any) => !item.disabled)).toBe(true);
+});
+
 it('identifies session, subagent, command and plain terminal panes from their live identities', () => {
   expect((move as any).classifyPane).toBeTypeOf('function');
   const classify = (pane: unknown, terminal: unknown, feeds: unknown[], contract: unknown) => move.classifyPane(pane, terminal, feeds, contract, Date.now() - FEED_DISCONNECT_MS);

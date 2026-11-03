@@ -83,7 +83,17 @@
       {
         "id": "move-row-hook",
         "anchor": "      .gap(0)\n      .items_center()\n      .text_size(12.5)",
-        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.kind === \"subagent\", el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), moveMenu: { kind: \"subagent\", key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
+        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.kind === \"subagent\", el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"subagent\", key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
+      },
+      {
+        "id": "move-session-rail-hook",
+        "anchor": "          .on_click(() => run(\"pane.focus\", { pane: a.pane }))\n          .child(div().flex_1()",
+        "replacement": "          .when(Boolean(a.pane), el => el.on_mouse_down(\"right\", (_e, cx) => {\n            cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: a.pane, terminal: a.address } } });\n          }))\n          .on_click(() => run(\"pane.focus\", { pane: a.pane }))\n          .child(div().flex_1()"
+      },
+      {
+        "id": "move-session-row-hook",
+        "anchor": "        .when(a.focused, (el) => el.bg(t.selected))\n        .cursor_pointer()\n        .hover((s) => s.bg(t.hover))",
+        "replacement": "        .when(a.focused, (el) => el.bg(t.selected))\n        .cursor_pointer()\n        .hover((s) => s.bg(t.hover))\n        .when(Boolean(a.pane), el => el.on_mouse_down(\"right\", (_e, cx) => {\n          cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"pane\", pane: a.pane, terminal: a.address } } });\n        }))"
       },
       {
         "id": "style-2",

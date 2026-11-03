@@ -10,7 +10,7 @@ import { createAppClient } from '@spider/herdr/client/app';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { runSshShim, ordinaryExecutionEnvironment, SSH_DESCRIPTOR_ENV } from '@spider/herdr/ssh/shim';
 import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
-import type { JournalJob } from '@spider/herdr/jobs/store';
+import { createJobStore, type JournalJob } from '@spider/herdr/jobs/store';
 import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
@@ -578,6 +578,23 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           if (recorded?.after !== hash || !(await client(request).fileRead(machine.name, path)).equals(bytes)) return failure('runtime-digest-mismatch', `Installed runtime on ${machine.name} does not match this package`);
         }
         return { failures: [] };
+      }
+      if (item === 'jobs') {
+        const root = join(request.config.globalRoot, 'herdr/jobs'), information: DoctorInformation[] = [];
+        const directories = async (path: string) => {
+          try { return (await readdir(path, { withFileTypes: true })).filter(entry => entry.isDirectory() && /^[a-zA-Z0-9_-]{1,160}$/.test(entry.name)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+        };
+        for (const session of await directories(join(root, 'sessions'))) {
+          const sessionId = session.name as SessionId;
+          const stores = [createJobStore(root, sessionId), ...(await directories(join(root, 'sessions', session.name, 'runs'))).map(run => createJobStore(root, sessionId, run.name as RunId))];
+          for (const store of stores) for (const job of (await store.read()).jobs) {
+            if (!job.cleanupFailure || job.terminalReleased) continue;
+            const clean = (text: string) => text.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 160);
+            information.push({ item, code: 'cleanup-retrying', message: `Job ${clean(job.id)} on ${clean(job.machine)} is waiting for terminal cleanup. Last failure ${clean(job.cleanupFailure.code)}; ${job.cleanupFailure.attempts} attempts. Automatic retries continue.` });
+          }
+        }
+        return { failures: [], information };
       }
       if (item === 'status-instance') return { failures: [], warnings: [{ item, code: 'inspection-unavailable', message: 'The native status instance cannot be inspected from a standalone shell', repair: 'Inspect an active interactive owner and rerun doctor.' }] };
       if (['feed-permissions', 'feed-freshness', 'ipc-authentication'].includes(item)) {

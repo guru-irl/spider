@@ -194,7 +194,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
       runtimePaths.set(resolved.on, runtimeInstallPath(machine.runtime.directory, bytes));
       return { on: resolved.on, ...machine.runtime, nodePath: machine.nodePath ?? 'node', environment: {}, runtimePath: runtimePath(resolved.on), runtimeSha256: sha256(bytes) };
     } }), hc, () => need(config).machines) : undefined;
-  }, monitorOptions: () => ({ hc, clock: Date.now, journalRoot: join(need(config).globalRoot, 'herdr/jobs'), outputCollector: need(output).outputCollector, reportError: report,
+  }, monitorOptions: () => ({ hc, clock: Date.now, journalRoot: join(need(config).globalRoot, 'herdr/jobs'), outputCollector: need(output).outputCollector, reportError: report, recordCleanupError: error => options.reportError?.(error),
     child: { id: process.env.PI_SUBAGENT_RUN_ID as import('@spider/herdr').RunId, pid: process.pid, startIdentity: need(childIdentity) },
   }) });
   const consoles = registerChildAgentConsoleLifecycle(registrationPi, { hc, currentOwner: () => owner });

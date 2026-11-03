@@ -8,6 +8,8 @@ import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { doctorHerdr } from '../../../herdr/src/setup/doctor.js';
 import { readJournal, saveJournal, digest } from '../../../herdr/src/setup/backup.js';
+import { createJobStore } from '../../../herdr/src/jobs/store.js';
+import { monitorFixture, on, program } from '../../../herdr/src/__tests__/herdr-monitor-fixture.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { editUnrelated, claimCurrentHash, installedModFiles, startInteractiveShell, installedShells } from './herdr-setup-production-helpers.js';
 
@@ -16,6 +18,25 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+
+test('doctor shows terminal cleanup diagnostics without treating automatic retries as warnings', async () => {
+  const f = await fixture(), h = await monitorFixture(), jobs = h.monitor();
+  await jobs.start(program, h.owner, on, { background: true }); await jobs.shutdown('reload');
+  const journal = await createJobStore(h.f.root, h.owner.sessionId).read();
+  journal.jobs[0].cleanupFailure = { code: 'machine-unavailable', attempts: 2, firstAt: 1000, lastAt: 31000 };
+  const root = join(f.request.config.globalRoot, 'herdr/jobs');
+  await createJobStore(root, h.owner.sessionId).write(journal);
+  journal.child = { id: 'diagnostic-child' as never, pid: process.pid, startIdentity: 'ended', ended: true, settled: true };
+  journal.jobs[0].runId = journal.child.id;
+  await createJobStore(root, h.owner.sessionId, journal.child.id).write(journal);
+  const result = await (await f.ports.doctorParts(f.request)).inspect('jobs', f.request);
+  expect(result.failures).toEqual([]);
+  expect(result.warnings ?? []).toEqual([]);
+  expect(result.information).toEqual([
+    { item: 'jobs', code: 'cleanup-retrying', message: `Job ${journal.jobs[0].id} on remote.invalid is waiting for terminal cleanup. Last failure machine-unavailable; 2 attempts. Automatic retries continue.` },
+    { item: 'jobs', code: 'cleanup-retrying', message: `Job ${journal.jobs[0].id} on remote.invalid is waiting for terminal cleanup. Last failure machine-unavailable; 2 attempts. Automatic retries continue.` },
+  ]);
+});
 
 test('production CLI plan lists assets without changing files or launching probes', async () => {
   const f = await fixture(), output: string[] = [], errors: string[] = [];

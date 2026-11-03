@@ -70,14 +70,15 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
     const f = await installPanelFixture(suite), parent = await startPanelParent(f), main = placed(await f.app.ls()), gates = await suite.gates();
     const names = ['slots-a', 'slots-b', 'slots-c'], identities = new Map<string, ReturnType<typeof identityOf>>();
     await tools(f, parent, 'slots', [{ action: 'run', tasks: names.map(request) }], Object.fromEntries(names.map(name => [name, held(name)])) as any);
-    let sidebar: Awaited<ReturnType<typeof mountPanel>> | undefined, smallReady = false;
+    let sidebar: Awaited<ReturnType<typeof mountPanel>> | undefined;
+    let smallSize: { cols: number; rows: number } | undefined;
     try {
         for (const name of names) { const ready = await gates.ready(`held-${name}`, deadline(30000)); identities.set(name, identityOf(ready.pid)); }
         const feed = await waitFeed(parent, 'three running public children', value => value.runs.rows.length === 3), runs = await waitNativeViewerRuns(suite, feed);
         const automatic = placed(await f.app.ls());
         expect(automatic, 'automatic-viewers-stay-parked').toEqual(main);
         const dimensions = (await coreRows(suite)).find(row => row.address === parent.pi.terminal);
-        expect(dimensions.cols).toBeGreaterThanOrEqual(160); expect(dimensions.rows).toBeGreaterThanOrEqual(40);
+        expect(dimensions.cols).toBeGreaterThanOrEqual(161); expect(dimensions.rows).toBeGreaterThanOrEqual(42);
         sidebar = await mountPanel(f, 'spider-agents');
         const openedRuns = [] as typeof runs;
         let callsBefore = 0, actionsBefore = 0;
@@ -88,28 +89,34 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
                 expect(before.some(pane => pane.terminal === run.viewer)).toBe(false);
                 expect(run.status).toBe('running');
                 callsBefore = (await appCalls(suite)).length; actionsBefore = sidebar.actions.length;
+                smallSize = await shrinkOwner(suite, parent.pi.terminal);
             }
             await sidebar.host.waitForUi('actual parked child action', ui => ui.nodes.some(node => node.id === `sub-${run.id}`), 20000);
             await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
             const after = await waitFor('viewer is placed', async () => placed(await f.app.ls()), panes => panes.some(pane => pane.terminal === run.viewer), deadline(20000), { reconcileMs: 250 });
             expect(after.filter(pane => openedRuns.some(previous => previous.viewer === pane.terminal)), 'user-open-preserves-existing-aux-panes').toEqual(before.filter(pane => openedRuns.some(previous => previous.viewer === pane.terminal)));
             expect(mainOnly(main, after)).toEqual(main);
-            expect(after.find(pane => pane.terminal === run.viewer)?.tab).toBe(parent.placement.tab);
-            expect(await f.app.status()).toMatchObject({ tab: parent.placement.tab, agent: run.viewer });
+            const target = after.find(pane => pane.terminal === run.viewer)!;
+            if (openedRuns.length < 2) expect(target.tab).toBe(parent.placement.tab);
+            else {
+                const world = await f.app.ls() as any, space = world.spaces.find((space: any) => space.id === parent.placement.space);
+                const ownerIndex = space.tabs.findIndex((tab: any) => tab.id === parent.placement.tab);
+                expect(target.tab, 'small-owner-opens-after-owner-tab').not.toBe(parent.placement.tab);
+                expect(space.tabs[ownerIndex + 1]).toMatchObject({ id: target.tab, name: run.name });
+            }
+            expect(await f.app.status()).toMatchObject({ tab: target.tab, agent: run.viewer });
             openedRuns.push(run);
         }
         const after = placed(await f.app.ls());
         expect(runs.filter(run => after.some(pane => pane.terminal === run.viewer))).toHaveLength(3);
-        await f.app.command('pane.focus', { terminal: parent.pi.terminal });
-        await f.app.command('pane.go', { direction: 'down' });
-        expect(await f.app.status(), 'first-viewer-below-owner').toMatchObject({ tab: parent.placement.tab, agent: runs[0].viewer });
-        await f.app.command('pane.go', { direction: 'right' });
-        expect(await f.app.status(), 'second-viewer-right-of-first').toMatchObject({ tab: parent.placement.tab, agent: runs[1].viewer });
-        await f.app.command('pane.go', { direction: 'right' });
-        expect(await f.app.status(), 'third-viewer-right-of-second').toMatchObject({ tab: parent.placement.tab, agent: runs[2].viewer });
+        const ownerTab = (await f.app.ls() as any).spaces.flatMap((space: any) => space.tabs).find((tab: any) => tab.id === parent.placement.tab);
+        const reportedOrder = ownerTab.terminals.map((pane: any) => pane.terminal);
+        expect(reportedOrder.indexOf(runs[0].viewer), 'first-viewer-follows-owner').toBeGreaterThan(reportedOrder.indexOf(parent.pi.terminal));
+        expect(reportedOrder.indexOf(runs[1].viewer), 'second-viewer-follows-first').toBe(reportedOrder.indexOf(runs[0].viewer) + 1);
+        const fallback = after.find(pane => pane.terminal === runs[2].viewer)!;
         await activateChildAction(sidebar, `sub-${runs[2].id}`, { op: 'openRun', runId: runs[2].id });
         expect(placed(await f.app.ls())).toEqual(after);
-        expect(await f.app.status()).toMatchObject({ tab: parent.placement.tab, agent: runs[2].viewer });
+        expect(await f.app.status()).toMatchObject({ tab: fallback.tab, agent: runs[2].viewer });
         expect((await coreRows(suite)).filter(row => row.state === 'live' && row.labels['spider.kind'] === 'subagent-viewer' && row.labels['spider.run'] === runs[2].id)).toHaveLength(1);
         const existingAux = after.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal));
         const evictionCalls = (await appCalls(suite)).slice(callsBefore).filter(call => call.name === 'terminal.park' && existingAux.some(pane => pane.terminal === call.args.terminal) || call.name === 'pane.close' && existingAux.some(pane => pane.pane === call.args.pane) || call.name === 'tab.close' && existingAux.some(pane => pane.tab === call.args.id));
@@ -127,44 +134,16 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         expect(openRequests.map(command => command.exitCode)).toEqual([0, 0]);
         for (const action of unsupported) expect(action).toMatchObject({ name: 'terminal.peek', args: { terminal: runs[2].viewer }, state: 'failed', error: { code: 'app-error', message: 'unplaced terminal peek requires a native overlay' } });
         const last = after.find(pane => pane.terminal === runs[2].viewer)!;
-        await f.app.command('pane.close', { pane: last.pane });
+        await f.app.command('tab.close', { id: last.tab });
         const retained = await waitFeed(parent, 'closing the viewer leaves the actual child running', value => value.runs.rows.some(run => run.id === runs[2].id && run.status === 'running'));
         expect(identityAlive(identities.get(runs[2].name!)!)).toBe(true);
         const closed = placed(await f.app.ls());
         expect(closed.some(pane => pane.terminal === runs[2].viewer)).toBe(false);
         expect(closed.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal))).toEqual(after.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal)));
         expect(mainOnly(main, closed)).toEqual(main);
-        await suite.evidence('user-open-placement.json', { feed, retained, main, automatic, after, closed, evictionCalls, dimensions: { cols: dimensions.cols, rows: dimensions.rows } });
-        if (suite.options.tier === 'headless') {
-            const name = 'slots-d';
-            await tools(f, parent, 'slots-small', [{ action: 'run', ...request(name) }], { [name]: held(name) } as any);
-            const ready = await gates.ready(`held-${name}`, deadline(30000)); smallReady = true;
-            const smallFeed = await waitFeed(parent, 'small-owner run is visible', value => value.runs.rows.some(run => run.name === name));
-            const selectedFeed = { ...smallFeed, runs: { ...smallFeed.runs, rows: smallFeed.runs.rows.filter(run => run.name === name) } };
-            const smallRun = (await waitNativeViewerRuns(suite, selectedFeed))[0];
-            expect(smallRun).toBeDefined(); if (!smallRun) throw new Error('Small-owner run is missing');
-            const smallSize = await shrinkOwner(suite, parent.pi.terminal);
-            await sidebar.host.waitForUi('small-owner child action', ui => ui.nodes.some(node => node.id === `sub-${smallRun.id}`), 20000);
-            await activateChildAction(sidebar, `sub-${smallRun.id}`, { op: 'openRun', runId: smallRun.id });
-            const world = await f.app.ls() as any, smallAfter = placed(world), view = smallAfter.find(pane => pane.terminal === smallRun.viewer);
-            expect(view).toBeDefined(); if (!view) throw new Error('Small-owner viewer is missing');
-            const space = world.spaces.find((value: any) => value.id === parent.placement.space);
-            const ownerIndex = space.tabs.findIndex((tab: any) => tab.id === parent.placement.tab);
-            expect(view.space).toBe(parent.placement.space);
-            expect(view.tab, 'small-owner-opens-after-owner-tab').not.toBe(parent.placement.tab);
-            expect(space.tabs[ownerIndex + 1]?.id).toBe(view.tab);
-            expect(space.tabs[ownerIndex + 1]?.name).toBe(name);
-            expect(mainOnly(main, smallAfter)).toEqual(main);
-            expect(smallAfter.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal))).toEqual(closed.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal)));
-            expect(await f.app.status()).toMatchObject({ tab: view.tab, agent: smallRun.viewer });
-            await activateChildAction(sidebar, `sub-${smallRun.id}`, { op: 'openRun', runId: smallRun.id });
-            expect(placed(await f.app.ls())).toEqual(smallAfter);
-            await f.app.command('tab.close', { id: view.tab });
-            expect(identityAlive(identityOf(ready.pid))).toBe(true);
-            expect(mainOnly(main, placed(await f.app.ls()))).toEqual(main);
-            await suite.evidence('small-owner-placement.json', { size: smallSize, before: closed, after: smallAfter, view });
-        }
-    } finally { for (const name of names) gates.release(`held-${name}`); if (smallReady) gates.release('held-slots-d'); await sidebar?.close(); }
+        await suite.evidence('user-open-placement.json', { feed, retained, main, automatic, after, closed, evictionCalls, smallSize, reportedOrder, dimensions: { cols: dimensions.cols, rows: dimensions.rows } });
+
+    } finally { for (const name of names) gates.release(`held-${name}`); await sidebar?.close(); }
 }
 
 async function assertEvictionIsCaught(suite: Suite): Promise<void> {

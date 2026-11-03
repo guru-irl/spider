@@ -35,12 +35,13 @@ export function createAppClient(options: AppClientOptions, operationSignal?: Abo
         const candidate = object(rawTab);
         if (candidate.id !== placement.tab) continue;
         if (!Array.isArray(candidate.terminals)) throw new HerdrError('invalid-reply', 'Invalid app terminals');
-        matches.push({ index: index + 1, rows: candidate.terminals.map(value => {
-          const row = object(value); return { terminal: text(row.terminal) as TerminalAddress, pane: text(row.pane) as PaneId };
+        matches.push({ index: index + 1, rows: candidate.terminals.flatMap(value => {
+          const row = object(value);
+          return row.pane == null ? [] : [{ terminal: text(row.terminal) as TerminalAddress, pane: text(row.pane) as PaneId }];
         }) });
       }
     }
-    if (matches.length !== 1) throw new HerdrError(matches.length ? 'owner-ambiguous' : 'owner-unplaced', 'Owner tab has no unique observed layout');
+    if (matches.length !== 1) throw new HerdrError(matches.length ? 'tab-ambiguous' : 'tab-unplaced', 'Tab has no unique observed layout');
     return matches[0];
   };
   return {
@@ -48,7 +49,7 @@ export function createAppClient(options: AppClientOptions, operationSignal?: Abo
     tabIndex: async placement => (await tab(placement)).index,
     focusedPane: async () => {
       const value = object(await call(['status']));
-      if (value.space === null || value.tab === null || value.focused_pane === null) return null;
+      if (value.space == null || value.tab == null || value.focused_pane == null) return null;
       return { space: text(value.space) as SpaceId, tab: text(value.tab) as TabId, pane: text(value.focused_pane) as PaneId };
     },
     tabTerminals: async placement => {

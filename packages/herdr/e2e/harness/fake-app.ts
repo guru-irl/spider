@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { paneTree, paneOrder, splitPane, removePane, navigatePane, type PaneTree } from './pane-geometry.js';
 import { AppBoundaryError, appId, appObject, parseAppReply, validateAppCommand } from './app.js';
 import type { AppDriver, CommandResult } from './app.js';
 import type { RenderHost } from './render-host.js';
@@ -90,7 +91,17 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
   let activeSpace: string | null = null, activeTab: string | null = null, focus: string | null = null;
   const spaces: Space[] = [], errors: string[] = [];
   const modPanes = new Map<string, { pane: string; mod: string }[]>();
-  const neighbors = new Map<string, Partial<Record<'right' | 'down', string>>>();
+  const trees = new Map<string, PaneTree>();
+  const history: Record<string, number> = {}; let focusSequence = 0;
+  const tree = (tab: Tab) => {
+    if (!trees.has(tab.id)) trees.set(tab.id, paneTree([...tab.terminals.map(pane => pane.pane), ...(modPanes.get(tab.id) ?? []).map(pane => pane.pane)]));
+    return trees.get(tab.id)!;
+  };
+  const erase = (tab: Tab, pane: string) => { trees.set(tab.id, removePane(tree(tab), pane) ?? paneTree([])); };
+  const append = (tab: Tab, pane: string) => {
+    const root = tree(tab), last = paneOrder(root).at(-1);
+    trees.set(tab.id, last ? splitPane(root, last, pane, 'right') : paneTree([pane]));
+  };
   const selections = new Map<string, { tab: string | null; focus: string | null }>();
   let layoutTree: unknown;
   let queue: Promise<void> = Promise.resolve();
@@ -124,12 +135,12 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       if (row.state !== 'live' || row.address.includes('/') || paneOf(row.address)) continue;
       const s = spaces.find(s => s.id === row.labels['herdr.space']);
       const t = s?.tabs.find(t => t.id === row.labels['herdr.tab']);
-      if (s && t) t.terminals.push({ pane: fresh('p'), terminal: row.address });
+      if (s && t) { const pane = fresh('p'); append(t, pane); t.terminals.push({ pane, terminal: row.address }); }
     }
   };
   const world = async (): Promise<Record<string, unknown>> => {
     const rows = await inventory(); adopt(rows);
-    return { spaces: spaces.map(s => ({ ...s, active: s.id === activeSpace, tabs: s.tabs.map(t => ({ ...t, name: t.name || String(s.tabs.indexOf(t) + 1), active: t.id === activeTab, terminals: t.terminals.map(p => {
+    return { spaces: spaces.map(s => ({ ...s, active: s.id === activeSpace, tabs: s.tabs.map(t => ({ ...t, name: t.name || String(s.tabs.indexOf(t) + 1), active: t.id === activeTab, terminals: [...t.terminals].sort((a, b) => paneOrder(tree(t)).indexOf(a.pane) - paneOrder(tree(t)).indexOf(b.pane)).map(p => {
       const r = rows.find(r => r.address === p.terminal);
       return { ...p, status: r?.status ?? null, name: r?.name ?? null, app: null, sub_agents: rows.filter(r => r.state === 'live' && r.parent === p.terminal).map(r => r.address).sort() };
     }) })) })), recent: [] };
@@ -186,6 +197,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
     if (name === 'tab.move') {
       const tab = tabOf(String(args.id)); if (!tab) throw new AppBoundaryError('unknown-id', 'no tab with requested id');
       const space = spaceOf(tab.id)!, index = Number(args.index);
+      if (index > space.tabs.length) throw new AppBoundaryError('invalid-args', 'tab index exceeds its space');
       space.tabs.splice(space.tabs.indexOf(tab), 1); space.tabs.splice(index - 1, 0, tab);
       return { reply: { ok: true } };
     }
@@ -207,7 +219,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       const id = String(args.pane ?? focus);
       for (const [tab, panes] of modPanes) {
         if (panes.some(pane => pane.pane === id)) {
-          modPanes.set(tab, panes.filter(pane => pane.pane !== id)); cleanEmpty();
+          erase(tabOf(tab)!, id); modPanes.set(tab, panes.filter(pane => pane.pane !== id)); cleanEmpty();
           return { reply: { ok: true } };
         }
       }
@@ -218,6 +230,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       await get(p.terminal);
       coreObject(await options.hc(['keep', p.terminal, '--off', '--json']));
       coreObject(await options.hc(['kill', p.terminal, '--json']));
+      erase(tab, p.pane);
       for (const tab of spaces.flatMap(s => s.tabs)) tab.terminals = tab.terminals.filter(other => other !== p);
       cleanEmpty();
       return { reply: { ok: true } };
@@ -237,9 +250,8 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       return { reply: { ok: true } };
     }
     if (name === 'pane.go') {
-      const direction = args.direction as 'right' | 'down';
-      const destination = focus ? neighbors.get(focus)?.[direction] : undefined;
-      if (destination) focus = destination;
+      const tab = tabOf(activeTab ?? '');
+      if (tab && focus) focus = navigatePane(tree(tab), focus, String(args.direction), history);
       return { reply: { ok: true } };
     }
     if (name === 'terminal.park' || name === 'terminal.keep') {
@@ -259,13 +271,14 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
           coreObject(await options.hc(['keep', address, ...(name === 'terminal.park' ? ['--off'] : []), '--json']));
           if (name === 'terminal.park') {
             const removed = paneOf(address)?.pane;
-            if (removed) { neighbors.delete(removed); for (const links of neighbors.values()) for (const direction of ['right', 'down'] as const) if (links[direction] === removed) delete links[direction]; }
+            if (removed) for (const tab of spaces.flatMap(s => s.tabs)) if (paneOrder(tree(tab)).includes(removed)) erase(tab, removed);
             for (const tab of spaces.flatMap(s => s.tabs)) tab.terminals = tab.terminals.filter(p => p.terminal !== address);
             cleanEmpty();
           } else {
-            const target = t ?? newTab!; target.terminals.push({ pane: pane!, terminal: address });
-            if (t && anchor) { const links = neighbors.get(anchor) ?? {}; links[args.place as 'right' | 'down'] = pane!; neighbors.set(anchor, links); }
-            if (!t) s!.tabs.push(target); activeTab = target.id; focus = pane!;
+            const target = t ?? newTab!;
+            if (t && anchor) trees.set(t.id, splitPane(tree(t), anchor, pane!, args.place as 'right' | 'down'));
+            target.terminals.push({ pane: pane!, terminal: address });
+            if (!t) s!.tabs.push(target); activeTab = target.id; focus = pane!; history[focus] = ++focusSequence;
           }
         } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
       })();
@@ -290,6 +303,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       const result = queue.then(async () => {
         validateAppCommand(name, args);
         const out = await dispatch(name, args);
+        if (focus) history[focus] = ++focusSequence;
         const reply = parseAppReply(name, args, out.reply); options.record?.(name, args, reply);
         return { ...out, reply };
       });

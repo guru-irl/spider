@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { paneTree, paneBounds } from '../../e2e/harness/pane-geometry.ts';
 import { readFileSync, appendFileSync, watchFile, unwatchFile, writeFileSync, mkdirSync, existsSync, renameSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
@@ -12,6 +13,18 @@ const root = process.env.HERDR_FAKE_ROOT;
 if (!root) throw new Error('HERDR_FAKE_ROOT required');
 // The real core never exposes a half-written state to a concurrent reader. Replace the file in one step, as the daemon's save does.
 const saveCore = value => { const next = `${root}/core.json.${process.pid}.next`; writeFileSync(next, JSON.stringify(value)); renameSync(next, `${root}/core.json`); };
+function withDimensions(terminal) {
+  const appPath = `${root}/app.json`;
+  let bounds;
+  if (existsSync(appPath)) {
+    const app = JSON.parse(readFileSync(appPath, 'utf8'));
+    for (const tab of (app.spaces ?? []).flatMap(space => space.tabs)) {
+      const pane = tab.terminals.find(row => row.terminal === terminal.address)?.pane;
+      if (pane) bounds = paneBounds(tab.geometry ?? paneTree(tab.terminals.map(row => row.pane))).find(row => row.id === pane);
+    }
+  }
+  return { cols: Math.floor(320 * (bounds?.width ?? 1)) - (bounds && bounds.width < 1 ? 1 : 0), rows: Math.floor(80 * (bounds?.height ?? 1)) - (bounds && bounds.height < 1 ? 2 : 0), ...terminal };
+}
 const config = JSON.parse(readFileSync(`${root}/core.json`, 'utf8'));
 const argv = process.argv.slice(2);
 appendFileSync(`${root}/calls.jsonl`, JSON.stringify({ argv, pid: process.pid, parentPid: process.ppid, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('HC_') || ['PI_SUBAGENT_CHILD', 'PI_SUBAGENT_RUN_ID'].includes(k))) }) + '\n');
@@ -41,7 +54,7 @@ if (config.reply !== undefined) {
 } else if (argv[0] === 'get') {
   const terminal = config.terminals.find(t => t.address === argv[1]);
   if (!terminal) { console.error(JSON.stringify({ error: { kind: 'not_found', message: 'No such terminal' } })); process.exit(3); }
-  console.log(JSON.stringify(terminal));
+  console.log(JSON.stringify(withDimensions(terminal)));
 } else if (argv[0] === 'machine' && argv[1] === 'ls') {
   console.log(JSON.stringify({ machines: config.machines }));
 } else if (argv[0] === 'events') {
@@ -275,7 +288,7 @@ async function daemonMode() {
           reply(s, { address, agent: basename(program[0] || 'node'), cwd: t.cwd, parent, state: 'live', turn: 0 });
         } else if (['get', 'kill', 'rm', 'read', 'attach', 'label', 'keep'].includes(args[0])) {
           const t = state.terminals.find(t => t.address === terminal); if (!t) { s.end(JSON.stringify({ stderr: { error: { kind: 'not_found', message: 'No such terminal', hint: null } }, exitCode: 3 }) + '\n'); return; }
-          if (args[0] === 'get') { const { screenText, ...result } = t; reply(s, result); }
+          if (args[0] === 'get') { const { screenText, ...result } = t; reply(s, withDimensions(result)); }
           else if (args[0] === 'read') reply(s, { text: t.screenText || '', complete: true, how: 'history' });
           else if (args[0] === 'attach') { s.write(t.screenText || ''); if (t.state === 'finished') s.end(); else { const sinks = attaches.get(t.address) || new Set(); sinks.add(s); attaches.set(t.address, sinks); s.on('close', () => sinks.delete(s)); } }
           else if (args[0] === 'kill') { const child = payloads.get(t.address); if (child) { t.cancelled = true; process.kill(-child.pid, 'SIGHUP'); await new Promise(resolve => child.once('close', resolve)); } reply(s, {}); }

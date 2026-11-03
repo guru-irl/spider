@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { parseRunViewFrame, parseSessionIpcEnvelope, parseSessionIpcReply, type Disposable, type IpcDescriptor, type IpcErrorCode, type IpcMoveDestination, type JobId, type Owner, type RunCursor, type RunId, type RunViewFrame, type SessionIpcReply, type SteerReply, type TerminalAddress, type ViewName } from '../contracts.js';
 import { atomicPrivateWrite, feedError, privateDirectory, sweepSessionFeeds } from './publisher.js';
+export const OPEN_BUDGET_MS = 30_000;
+export const OPEN_CLIENT_TIMEOUT_MS = 60_000;
 export const MAX_FRAME_BYTES: number = 256 * 1024;
 export const MAX_TRANSCRIPT_BYTES: number = 64 * 1024;
 export const MAX_STEER_BYTES: number = 16 * 1024;
@@ -23,14 +25,14 @@ export interface SessionEndpointPorts {
   subscribeRun(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view: number }): Disposable | Promise<Disposable>;
   steerRun(runId: RunId, text: string): SteerReply | Promise<SteerReply>;
   openView(view: ViewName): void | Promise<void>;
-  openRun(runId: RunId): TerminalAddress | null | Promise<TerminalAddress | null>;
+  openRun(runId: RunId, signal?: AbortSignal): TerminalAddress | null | Promise<TerminalAddress | null>;
   killRun?(runId: RunId): void | Promise<void>;
   moveRun?(runId: RunId, destination: IpcMoveDestination): TerminalAddress | null | Promise<TerminalAddress | null>;
   moveSession?(destination: Exclude<IpcMoveDestination, { kind: 'hide' }>): void | Promise<void>;
   prepareSessionStop?(): Promise<void>;
   killSessionTerminal?(): void | Promise<void>;
   ownsJob(jobId: JobId): boolean | Promise<boolean>;
-  openJob(jobId: JobId): TerminalAddress | null | Promise<TerminalAddress | null>;
+  openJob(jobId: JobId, signal?: AbortSignal): TerminalAddress | null | Promise<TerminalAddress | null>;
   killJob?(jobId: JobId): void | Promise<void>;
   moveJob?(jobId: JobId, viewer: TerminalAddress, destination: Exclude<IpcMoveDestination, { kind: 'hide' }>): TerminalAddress | null | Promise<TerminalAddress | null>;
 }
@@ -59,6 +61,8 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
   };
   const live = () => { const current = ports.currentOwner(); return !disposed && current?.sessionId === sessionId && current.generation === generation; };
   const server = createServer(socket => {
+    const openAbort = new AbortController();
+    let openTimer: ReturnType<typeof setTimeout> | undefined;
     let pending = Buffer.alloc(0); let received = false; let subscription: Disposable | undefined; let endStream: ((reason: HandoffReason) => void) | undefined;
     const unsubscribe = () => { const previous = subscription; subscription = undefined; if (previous) release(previous); };
     const sendReply = (reply: SessionIpcReply, afterWrite?: () => void) => {
@@ -70,7 +74,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
     const shutdown = (reason: HandoffReason) => { if (endStream && !socket.destroyed) endStream(reason); else socket.destroy(); unsubscribe(); };
     sockets.set(socket, shutdown);
     socket.setTimeout(30000, () => socket.destroy()); socket.on('error', () => {});
-    socket.once('close', () => { sockets.delete(socket); unsubscribe(); });
+    socket.once('close', () => { openAbort.abort(); clearTimeout(openTimer); sockets.delete(socket); unsubscribe(); });
     const handle = async (bytes: Buffer) => {
       let text: string;
       try { text = new TextDecoder('utf8', { fatal: true }).decode(bytes); } catch { return fail('unavailable', 'Invalid UTF-8.'); }
@@ -89,7 +93,10 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
       if (!timingSafeEqual(Buffer.from(envelope.capability, 'hex'), Buffer.from(capability, 'hex'))) return fail('unauthorized');
       const request = envelope.request;
       if (request.generation !== generation || !live()) return fail('wrong-generation');
-      if (request.op === 'openRun') socket.setTimeout(50000);
+      if (request.op === 'openRun' || request.op === 'openJob') {
+        socket.setTimeout(OPEN_CLIENT_TIMEOUT_MS + 5000);
+        openTimer = setTimeout(() => openAbort.abort(), OPEN_BUDGET_MS);
+      }
       try {
         switch (request.op) {
           case 'ping': {
@@ -125,7 +132,9 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
               const viewer = await ports.moveJob(request.jobId, request.viewer, request.destination);
               return sendReply({ ok: true, op: 'moveJob', viewer });
             }
-            const viewer = await ports.openJob(request.jobId);
+            const viewer = await ports.openJob(request.jobId, openAbort.signal);
+            if (openAbort.signal.aborted) return fail('unavailable', 'open-aborted');
+            clearTimeout(openTimer);
             return viewer === null ? fail('not-found') : sendReply({ ok: true, op: 'openJob', viewer });
           }
 
@@ -134,7 +143,9 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
           ? sendReply({ ok: false, code: 'refused', reason: 'wrong-owner', message: 'Run is not owned by this session.' }) : fail('not-found');
         if (!live() || socket.destroyed) return fail('wrong-generation');
         if (request.op === 'openRun') {
-          const viewer = await ports.openRun(request.runId);
+          const viewer = await ports.openRun(request.runId, openAbort.signal);
+          if (openAbort.signal.aborted) return fail('unavailable', 'open-aborted');
+          clearTimeout(openTimer);
           return viewer === null ? fail('not-found') : sendReply({ ok: true, op: 'openRun', viewer });
         }
         if (request.op === 'moveRun') {
@@ -198,7 +209,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         if (!live()) end('wrong-generation');
         attached = true; pump();
       } catch (error) {
-        ports.reportError?.(error);
+        if (live() && !openAbort.signal.aborted) ports.reportError?.(error);
         if ((error as { code?: string } | null)?.code === 'run-not-owned') return fail('not-found');
         const code = (error as { code?: IpcErrorCode } | null)?.code;
         const canonical = code && errorCodes.includes(code) ? code : 'unavailable';

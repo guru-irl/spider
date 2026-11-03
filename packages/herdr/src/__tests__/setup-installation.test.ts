@@ -1,3 +1,4 @@
+import { writePlacementRepair } from '../jobs/placement-repairs.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from 'node:crypto';
@@ -616,4 +617,14 @@ test('an unchanged install still runs cutover recheck when the layout needs jour
   f.parts.preflight = preflight; await setupHerdr(f.request, f.parts);
   expect(cutover).toHaveBeenCalledTimes(2);
   expect(f.cutovers()).toBe(1);
+});
+
+
+test('doctor reports a durable failed pane repair after the actor exits', async () => {
+  const f = await fixture();
+  await writePlacementRepair(join(f.request.config.globalRoot, 'herdr/panes'), {
+    viewer: 'viewer' as never, app: 'fixture', coreId: 'core', anchor: { space: 'space', tab: 'tab', pane: 'foreign-pane' } as never, error: 'park-refused',
+  });
+  const report = await doctorHerdr(f.request, f.doctorParts);
+  expect(report.failures).toContainEqual(expect.objectContaining({ item: 'pane-repairs', code: 'pane-repair-pending', message: expect.stringContaining('foreign-pane') }));
 });

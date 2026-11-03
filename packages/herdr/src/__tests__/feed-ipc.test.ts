@@ -48,6 +48,26 @@ it('waits for a user-open placement that takes longer than the ordinary request 
   try { expect(await client.openRun(runId)).toMatchObject({ ok: true, op: 'openRun', viewer: 'viewer/t1' }); }
   finally { client.dispose(); timers.mockRestore(); await endpoint.dispose(); }
 });
+it('aborts a running open when its client closes, before any late placement', async () => {
+  let entered!: () => void, aborted!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const canceled = new Promise<void>(resolve => { aborted = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let placed = false;
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openRun: async (_id, signal?: AbortSignal) => {
+    entered(); signal?.addEventListener('abort', aborted, { once: true });
+    await gate;
+    if (signal?.aborted) throw new HerdrError('aborted', 'Open canceled');
+    placed = true; return 'viewer/t1' as Owner['terminal']['address'];
+  } }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  const opening = client.openRun(runId); const failed = expect(opening).rejects.toMatchObject({ code: 'unavailable' });
+  try {
+    await started; client.dispose(); await failed;
+    await Promise.race([canceled, new Promise((_, reject) => setTimeout(() => reject(new Error('server open was not aborted')), 500))]);
+    release(); expect(placed).toBe(false);
+  } finally { release(); client.dispose(); await endpoint.dispose(); }
+});
 it('uses the explicitly configured integration root for IPC', async () => {
   const configured = join(globalRoot, 'c');
   const endpoint = await startSessionEndpoint(owner, ports(), configured);
@@ -226,7 +246,7 @@ it('client preserves actual steering refusals and dispatches view and run opener
     p.steerRun = () => ({ accepted: false, delivered: false, queued: false, delivery: 'refused', error: 'Child finished during submission.' });
     expect(await client.steerRun(runId, 'raced')).toEqual({ ok: true, op: 'steerRun', acknowledgement: { accepted: false, delivered: false, queued: false, delivery: 'refused', error: 'Child finished during submission.' } });
     expect(await client.openView('todos')).toEqual({ ok: true, op: 'openView' }); expect(view).toHaveBeenCalledWith('todos');
-    expect(await client.openRun(runId)).toEqual({ ok: true, op: 'openRun', viewer: 'viewer/t1' }); expect(openRun).toHaveBeenCalledWith(runId);
+    expect(await client.openRun(runId)).toEqual({ ok: true, op: 'openRun', viewer: 'viewer/t1' }); expect(openRun).toHaveBeenCalledWith(runId, expect.any(AbortSignal));
     expect(await client.openRun('foreign' as RunId)).toMatchObject({ ok: false, code: 'not-found' }); expect(openRun).toHaveBeenCalledTimes(1);
     expect(await client.request({ op: 'openJob', jobId: 'job-a' as JobId, generation: owner.generation })).toEqual({ ok: true, op: 'openJob', viewer: 'observer/t1' });
     expect(await client.request({ op: 'openJob', jobId: 'foreign-job' as JobId, generation: owner.generation })).toMatchObject({ ok: false, code: 'not-found' });
@@ -237,7 +257,7 @@ it('opens only a journal-owned job through its injected observer opener', async 
   const endpoint = await startSessionEndpoint(owner, p, root); const client = createSessionIpcClient(endpoint.descriptor);
   try {
     expect(await client.request({ op: 'openJob', jobId: 'job-a' as JobId, generation: owner.generation })).toEqual({ ok: true, op: 'openJob', viewer: 'observer/t1' });
-    expect(openJob).toHaveBeenCalledWith('job-a');
+    expect(openJob).toHaveBeenCalledWith('job-a', expect.any(AbortSignal));
     expect(await client.request({ op: 'openJob', jobId: 'foreign-job' as JobId, generation: owner.generation })).toMatchObject({ ok: false, code: 'not-found' });
     expect(openJob).toHaveBeenCalledTimes(1);
   } finally { client.dispose(); await endpoint.dispose(); }

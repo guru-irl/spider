@@ -4,7 +4,7 @@ import { connect, type Socket } from 'node:net';
 import { lstat } from 'node:fs/promises';
 import { parseRunViewFrame, parseSessionIpcReply, type Disposable, type IpcDescriptor, type JobId, type RunCursor, type RunId, type RunViewFrame, type SessionIpcEnvelope, type SessionIpcReply, type SessionIpcRequest, type ViewName } from '../contracts.js';
 import { feedError, readPrivateText, rejectSymlinks } from './publisher.js';
-import { MAX_FRAME_BYTES } from './ipc-server.js';
+import { MAX_FRAME_BYTES, OPEN_CLIENT_TIMEOUT_MS } from './ipc-server.js';
 import { HerdrError } from '../client/parse.js';
 /** Never expose filesystem or socket error messages to panel diagnostics. */
 export function ipcFailureReply(error: unknown): SessionIpcReply {
@@ -45,8 +45,8 @@ export function createSessionIpcClient(descriptor: IpcDescriptor): SessionIpcCli
       const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
       const fail = (error: Error) => { socket.destroy(); if (!settled) reject(error); };
       // A steer may spend 10 s queued plus 10 s awaiting its child acknowledgement.
-      // A user open has a 30 s placement budget plus app acknowledgements.
-      socket.setTimeout(request.op === 'ping' && timeoutMs !== undefined ? Math.max(10, Math.min(10000, timeoutMs)) : request.op === 'openRun' ? 45000 : request.op === 'steerRun' ? 25000 : 10000, () => fail(feedError('unavailable', 'IPC acknowledgement timed out.')));
+      // Opens reserve time for cancellation receipts and bounded cleanup.
+      socket.setTimeout(request.op === 'ping' && timeoutMs !== undefined ? Math.max(10, Math.min(10000, timeoutMs)) : request.op === 'openRun' || request.op === 'openJob' ? OPEN_CLIENT_TIMEOUT_MS : request.op === 'steerRun' ? 25000 : 10000, () => fail(feedError('unavailable', 'IPC acknowledgement timed out.')));
       socket.once('connect', () => socket.write(text)); socket.on('error', fail);
       socket.once('close', () => { resolveClosed(); sockets.delete(socket); if (!settled) reject(feedError('unavailable', 'IPC disconnected before acknowledgement.')); });
       socket.on('data', data => {

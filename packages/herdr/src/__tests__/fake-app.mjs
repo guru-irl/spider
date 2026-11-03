@@ -1,12 +1,31 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
+import { paneTree, paneOrder, splitPane, removePane, navigatePane } from '../../e2e/harness/pane-geometry.ts';
 import { HERDR_LABELS } from '../contracts.ts';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 const root = process.env.HERDR_FAKE_ROOT;
 if (!root) throw new Error('HERDR_FAKE_ROOT required');
+const lockDirectory = join(root, 'app-commands'); mkdirSync(lockDirectory, { recursive: true });
+const ticket = join(lockDirectory, `${process.pid}.json`);
+const saveTicket = number => { const next = ticket + '.next'; writeFileSync(next, JSON.stringify({ pid: process.pid, number })); renameSync(next, ticket); };
+const tickets = () => readdirSync(lockDirectory).filter(name => name.endsWith('.json')).flatMap(name => {
+  const path = join(lockDirectory, name); let value;
+  try { value = JSON.parse(readFileSync(path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  try { process.kill(value.pid, 0); } catch (error) { if (error.code === 'ESRCH') { try { unlinkSync(path); } catch {} return []; } throw error; }
+  return [{ name, ...value }];
+});
+saveTicket(null);
+process.on('exit', () => { try { unlinkSync(ticket); } catch {} });
+process.on('SIGTERM', () => process.exit(143));
+const number = Math.max(0, ...tickets().map(value => value.number ?? 0)) + 1; saveTicket(number);
+const lockDeadline = Date.now() + 30000;
+while (tickets().some(value => value.pid !== process.pid && (value.number === null || value.number < number || value.number === number && value.name < `${process.pid}.json`))) {
+  if (Date.now() >= lockDeadline) throw new Error('Fake app command lock timed out');
+  await new Promise(resolve => setTimeout(resolve, 5));
+}
 // The real app runs one command at a time, so a reader never sees a half-written state. Replace the file in one step.
 const saveDoc = value => { const next = `${root}/app.json.${process.pid}.next`; writeFileSync(next, JSON.stringify(value)); renameSync(next, `${root}/app.json`); };
 const argv = process.argv.slice(2);
@@ -22,6 +41,9 @@ if (step) {
   if ('reply' in step) { console.log(JSON.stringify(step.reply)); process.exit(0); }
 }
 const doc = JSON.parse(readFileSync(`${root}/app.json`, 'utf8'));
+const tree = tab => tab.geometry ?? paneTree([...tab.terminals.map(row => row.pane), ...(tab.modPane ? [tab.modPane] : [])]);
+const erase = (tab, pane) => { if (tab.geometry) tab.geometry = removePane(tab.geometry, pane) ?? paneTree([]); };
+const focusPane = pane => { doc.focusedPane = pane; doc.focusHistory ??= {}; doc.focusHistory[pane] = doc.focusSequence = (doc.focusSequence ?? 0) + 1; };
 if (doc.error !== undefined) { console.log(JSON.stringify(doc)); process.exit(0); }
 if (argv[0] === 'status') {
   const space = doc.spaces?.find(space => space.active) ?? doc.spaces?.[0];
@@ -36,11 +58,11 @@ if (argv[0] === 'do' && ['tab.new', 'tab.move', 'pane.close', 'pane.go'].include
     const id = `kept-tab-${doc.nextKeptTab = (doc.nextKeptTab ?? 0) + 1}`, pane = `mod-${id}`;
     space.tabs.push({ id, name: arg('name') ?? '', terminals: [], modPane: pane });
     for (const candidate of doc.spaces) { candidate.active = candidate === space; for (const tab of candidate.tabs) tab.active = tab.id === id; }
-    doc.focusedPane = pane; saveDoc(doc); console.log(JSON.stringify({ space: space.id, tab: id, pane })); process.exit(0);
+    focusPane(pane); saveDoc(doc); console.log(JSON.stringify({ space: space.id, tab: id, pane })); process.exit(0);
   }
   if (argv[1] === 'tab.move') {
     const space = doc.spaces?.find(space => space.tabs.some(tab => tab.id === arg('id'))), index = Number(arg('index'));
-    if (!space || !Number.isInteger(index) || index < 1) { console.log(JSON.stringify({ error: 'no tab or index' })); process.exit(0); }
+    if (!space || !Number.isInteger(index) || index < 1 || index > space.tabs.length) { console.log(JSON.stringify({ error: 'no tab or index' })); process.exit(0); }
     const at = space.tabs.findIndex(tab => tab.id === arg('id')); const [tab] = space.tabs.splice(at, 1); space.tabs.splice(index - 1, 0, tab);
     saveDoc(doc); console.log('{}'); process.exit(0);
   }
@@ -48,11 +70,11 @@ if (argv[0] === 'do' && ['tab.new', 'tab.move', 'pane.close', 'pane.go'].include
     const space = doc.spaces?.find(space => space.tabs.some(tab => tab.modPane === arg('pane')));
     const tab = space?.tabs.find(tab => tab.modPane === arg('pane'));
     if (!tab) { console.log(JSON.stringify({ error: 'no mod pane' })); process.exit(0); }
-    delete tab.modPane; if (!tab.terminals.length) space.tabs = space.tabs.filter(item => item !== tab);
+    erase(tab, tab.modPane); delete tab.modPane; if (!tab.terminals.length) space.tabs = space.tabs.filter(item => item !== tab);
     saveDoc(doc); console.log('{}'); process.exit(0);
   }
-  const next = doc.neighbors?.[doc.focusedPane]?.[arg('direction')];
-  if (next) doc.focusedPane = next;
+  const current = doc.spaces.flatMap(space => space.tabs).find(tab => paneOrder(tree(tab)).includes(doc.focusedPane));
+  if (current) focusPane(navigatePane(tree(current), doc.focusedPane, arg('direction'), doc.focusHistory ?? {}));
   saveDoc(doc); console.log('{}'); process.exit(0);
 }
 if (argv[0] === 'do' && argv[1] === 'tab.rename') {
@@ -100,14 +122,14 @@ if (argv[0] === 'do' && ['terminal.keep', 'pane.focus'].includes(argv[1])) {
     } catch (error) { fail(String(error)); }
     const row = { terminal, pane };
     const tab = target ?? { id, name: running.name || terminal, terminals: [] };
+    if (target) tab.geometry = splitPane(tree(tab), doc.focusedPane, pane, place);
     tab.terminals.push(row); if (!target) space.tabs.push(tab);
-    if (target) { doc.neighbors ??= {}; doc.neighbors[doc.focusedPane] ??= {}; doc.neighbors[doc.focusedPane][place] = pane; }
     for (const candidate of doc.spaces) { candidate.active = candidate === space; for (const value of candidate.tabs) value.active = value === tab; }
-    doc.focusedPane = pane; saveDoc(doc);
+    focusPane(pane); saveDoc(doc);
     console.log(JSON.stringify({ pending: true, terminal, tab: id, pane })); process.exit(0);
   }
   for (const space of doc.spaces || []) { space.active = space === found.space; for (const tab of space.tabs || []) tab.active = tab === found.tab; }
-  doc.focusedPane = found.row.pane;
+  focusPane(found.row.pane);
   saveDoc(doc); console.log(JSON.stringify(argv[1] === 'pane.focus' ? { ok: true } : { pane: found.row.pane })); process.exit(0);
 }
 if (argv[0] === 'do' && argv[1] === 'terminal.park') {
@@ -120,7 +142,7 @@ if (argv[0] === 'do' && argv[1] === 'terminal.park') {
     execFileSync(binary, ['label', terminal, `${HERDR_LABELS.space}=`, `${HERDR_LABELS.tab}=`, '--json'], { timeout: 10000 });
     execFileSync(binary, ['keep', terminal, '--off', '--json'], { timeout: 10000 });
     const removed = (doc.spaces || []).flatMap(space => space.tabs).flatMap(tab => tab.terminals).find(row => row.terminal === terminal)?.pane;
-    if (removed && doc.neighbors) { delete doc.neighbors[removed]; for (const links of Object.values(doc.neighbors)) for (const direction of Object.keys(links)) if (links[direction] === removed) delete links[direction]; }
+    if (removed) for (const tab of doc.spaces.flatMap(space => space.tabs)) if (paneOrder(tree(tab)).includes(removed)) erase(tab, removed);
     for (const space of doc.spaces || []) {
       for (const tab of space.tabs || []) tab.terminals = tab.terminals.filter(row => row.terminal !== terminal);
       space.tabs = space.tabs.filter(tab => tab.terminals.length || tab.modPane);
@@ -138,8 +160,13 @@ if (argv[0] === 'ls' && !scenario.app?.holdAdoption && Array.isArray(doc.spaces)
     if (t.address.includes('/') || t.state !== 'live' || (scenario.app?.adoptionDelayMs && Date.now() - (t.created_ms || Date.now()) < scenario.app.adoptionDelayMs)) continue;
     const space = doc.spaces.find(s => s.id === t.labels?.[HERDR_LABELS.space]);
     const tab = space?.tabs.find(tb => tb.id === t.labels?.[HERDR_LABELS.tab]);
-    if (tab && !tab.terminals.some(row => row.terminal === t.address)) tab.terminals.push({ terminal: t.address, pane: `pane-${t.address}`, status: t.status });
+    if (tab && !tab.terminals.some(row => row.terminal === t.address)) {
+      const pane = `pane-${t.address}`, layout = tree(tab), last = paneOrder(layout).at(-1);
+      tab.geometry = last ? splitPane(layout, last, pane, 'right') : paneTree([pane]);
+      tab.terminals.push({ terminal: t.address, pane, status: t.status });
+    }
   }
+  for (const tab of doc.spaces.flatMap(space => space.tabs)) tab.terminals.sort((a, b) => paneOrder(tree(tab)).indexOf(a.pane) - paneOrder(tree(tab)).indexOf(b.pane));
   saveDoc(doc);
 }
 console.log(JSON.stringify(doc.error !== undefined || argv[0] === 'ls' ? doc : {}));

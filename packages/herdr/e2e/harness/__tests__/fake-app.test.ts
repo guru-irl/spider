@@ -110,6 +110,21 @@ describe('strict fake app against the core boundary', () => {
     await boundary.command('pane.go', { direction: 'down' });
     expect(await boundary.command('status', {})).toMatchObject({ space: main.space, tab: main.tab, agent: viewer.address });
   });
+  it('uses the most recently focused pane along the nearest bottom edge', async () => {
+    const core = coreBoundary(), app = createFakeAppBoundary({ hc: core.hc });
+    const owner = await app.command('space.new', { argv: ['sh'] });
+    const first = await core.hc(['run']) as { address: string };
+    await app.command('terminal.keep', { terminal: first.address, place: 'down' }); await app.drain();
+    const second = await core.hc(['run']) as { address: string };
+    await app.command('terminal.keep', { terminal: second.address, place: 'right' }); await app.drain();
+    await app.command('pane.focus', { terminal: owner.terminal });
+    await app.command('pane.go', { direction: 'down' });
+    expect(await app.command('status', {})).toMatchObject({ agent: second.address });
+    await app.command('pane.focus', { terminal: first.address });
+    await app.command('pane.focus', { terminal: owner.terminal });
+    await app.command('pane.go', { direction: 'down' });
+    expect(await app.command('status', {})).toMatchObject({ agent: first.address });
+  });
   it('creates a temporary mod tab without a shell and removes only its mod pane', async () => {
     const core = coreBoundary(), boundary = createFakeAppBoundary({ hc: core.hc });
     const main = await boundary.command('space.new', { name: 'Work', folder: '/owned/project', argv: ['/bin/sh'] });
@@ -281,4 +296,12 @@ it('focuses an empty mod pane before keeping a terminal beside it without a new 
   expect(world.spaces[0].tabs.map((tab: any) => tab.id)).toEqual([main.tab, placeholder.tab]);
   expect(world.spaces[0].tabs[1].terminals.map((row: any) => row.terminal)).toEqual([parked.address]);
   expect(core.calls.filter(argv => argv[0] === 'kill')).toEqual([]);
+});
+
+
+it('rejects a tab move past the end without changing tab order', async () => {
+  const core = coreBoundary(), app = createFakeAppBoundary({ hc: core.hc });
+  const first = await app.command('space.new', { argv: ['pi'] });
+  await expect(app.command('tab.move', { id: first.tab, index: 2 })).rejects.toMatchObject({ code: 'invalid-args' });
+  expect((await app.command('ls', {}) as any).spaces[0].tabs.map((tab: any) => tab.id)).toEqual([first.tab]);
 });

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
+import type { OwnerPlacement } from '../contracts.js';
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, test, expect } from 'vitest';
 import { parseHerdrConfig } from '../config.js';
 import type { MachineName, CoreId, HcRunRequest } from '../contracts.js';
 import { createHcClient } from '../client/hc.js';
 import { createAppClient } from '../client/app.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createClientFixture, terminal, type ClientFixture } from './testutil.js';
@@ -21,6 +24,11 @@ test('app placements and viewer acknowledgements accept documented native string
   const owner = await client.ownerPlacement(h.address('t1'));
   expect(owner).toEqual({ space: 'sp1', tab: 'tb1', pane: 'p1' });
   expect(await client.awaitPane(h.address('t2'), owner, { timeoutMs: 1000 })).toBe('p2');
+});
+test.each([null, -1, 1.5, 'wide', 70000])('treats a malformed terminal size as unknown (%s)', async cols => {
+  const h = await fixture(); await h.configure({ terminals: [{ ...terminal('t1'), cols, rows: 47 }] });
+  const result = await createHcClient({ binary: h.hcBinary, env: h.localEnv }).get(h.address('t1'));
+  expect(result.cols).toBeUndefined(); expect(result.rows).toBe(47);
 });
 test('reads the terminal dimensions reported by the core', async () => {
   const h = await fixture(); await h.configure({ terminals: [{ ...terminal('t1'), cols: 183, rows: 47 }] });
@@ -193,4 +201,46 @@ test('an isolation proof pins the selected core identity', async () => {
   const h = await fixture();
   const client = createHcClient({ binary: h.hcBinary, env: h.localEnv, isolationProof: { checkout: process.cwd(), sockets: [h.localSocket], sessionNamespace: h.namespace, coreIds: ['foreign-core' as CoreId] } });
   await expect(client.identity()).rejects.toMatchObject({ code: 'core-mismatch' });
+});
+
+
+test('serializes concurrent app mutations without losing a tab', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'space', tabs: [{ id: 'owner', terminals: [{ terminal: 't1', pane: 'p1' }] }] }] }));
+  const run = promisify(execFile);
+  const replies = await Promise.all(Array.from({ length: 16 }, () => run(h.appBinary, ['do', 'tab.new', '--space', 'space', '--mod', 'pane'], { env: h.localEnv })));
+  expect(new Set(replies.map(reply => JSON.parse(reply.stdout).tab)).size).toBe(16);
+  const world = await run(h.appBinary, ['ls'], { env: h.localEnv });
+  expect(JSON.parse(world.stdout).spaces[0].tabs).toHaveLength(17);
+});
+
+
+test('treats a missing focused pane as unknown instead of failing a user open', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'scenario.json'), JSON.stringify({ appSteps: [{ argvPrefix: ['status'], reply: { space: 'space', tab: 'tab' } }] }));
+  const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  expect(await app.focusedPane()).toBeNull();
+});
+
+
+test('inspects valid pane rows without rejecting an unrelated row missing its pane id', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'space', tabs: [{ id: 'tab', terminals: [{ terminal: 'owner', pane: 'p1' }, { terminal: 'unknown' }] }] }] }));
+  const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  expect(await app.tabPanes({ space: 'space', tab: 'tab' } as OwnerPlacement)).toEqual([{ terminal: 'owner', pane: 'p1' }]);
+  expect(await app.tabIndex({ space: 'space', tab: 'tab' } as OwnerPlacement)).toBe(1);
+});
+
+test('reports a missing inspected tab without blaming an owner terminal', async () => {
+  const h = await fixture(), app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  await expect(app.tabIndex({ space: 'space', tab: 'absent' } as OwnerPlacement)).rejects.toMatchObject({ code: 'tab-unplaced' });
+});
+
+
+test('rejects a unit fake tab move past the end without changing tab order', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'space', tabs: [{ id: 'tab', terminals: [{ terminal: 'owner', pane: 'p1' }] }] }] }));
+  const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  expect(await app.command('tab.move', { id: 'tab', index: 2 })).toMatchObject({ error: { code: 'app-error' } });
+  expect(await app.tabIndex({ space: 'space', tab: 'tab' } as OwnerPlacement)).toBe(1);
 });

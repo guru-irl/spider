@@ -20,7 +20,8 @@ export function createCleanupSweep(clock: () => number, report: (error: unknown)
       if (closed || active.size >= 4) break;
       if (entry.running || entry.nextAt > clock()) continue;
       entry.running = true;
-      const task = entry.operation().then(() => { pending.delete(key); }, error => {
+      const task = entry.operation().then(() => { if (pending.get(key) === entry) pending.delete(key); }, error => {
+        if (pending.get(key) !== entry) return;
         entry.failures++; entry.nextAt = clock() + Math.min(3600000, 30000 * 2 ** Math.min(entry.failures - 1, 7));
         if (!closed && !entry.reported) { entry.reported = true; report(error); }
       }).finally(() => { entry.running = false; active.delete(task); schedule(); });

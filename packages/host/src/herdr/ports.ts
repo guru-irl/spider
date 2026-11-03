@@ -10,6 +10,7 @@ import { createAppClient } from '@spider/herdr/client/app';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { runSshShim, ordinaryExecutionEnvironment, SSH_DESCRIPTOR_ENV } from '@spider/herdr/ssh/shim';
 import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
+import type { JournalJob } from '@spider/herdr/jobs/store';
 import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
@@ -244,10 +245,10 @@ export interface HostHerdrOptions {
   reportError?(error: unknown, notice?: string): void;
 }
 
-export async function readJobJournal(root: string, owner: Owner): Promise<readonly JobRecord[]> {
+export async function readJobJournal(root: string, owner: Owner): Promise<readonly JournalJob[]> {
   const file = join(root, 'sessions', owner.sessionId, 'jobs.json');
-  let jobs: JobRecord[] = [];
-  try { const journal = JSON.parse(await readFile(file, 'utf8')) as { version: number; jobs: JobRecord[] }; if (journal.version !== 1 || !Array.isArray(journal.jobs)) throw new HerdrError('invalid-job-journal', 'Invalid job journal'); jobs = journal.jobs.filter(job => job.owner.sessionId === owner.sessionId); }
+  let jobs: JournalJob[] = [];
+  try { const journal = JSON.parse(await readFile(file, 'utf8')) as { version: number; jobs: JournalJob[] }; if (journal.version !== 1 || !Array.isArray(journal.jobs)) throw new HerdrError('invalid-job-journal', 'Invalid job journal'); jobs = journal.jobs.filter(job => job.owner.sessionId === owner.sessionId); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   return [...jobs, ...(await readChildJobJournals(root, owner)).flatMap(journal => journal.jobs)];
 }

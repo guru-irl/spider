@@ -78,7 +78,8 @@ it('a failed crash cancellation is retried rather than marked cancelled while st
   const kill = h.hc.kill; let attempts = 0;
   h.hc.kill = async address => { if (++attempts === 1) throw new Error('transient kill failure'); await kill(address); };
   const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
-  expect(h.terminals.get(foreground.address)?.state).toBe('finished');
+  expect(h.terminals.has(foreground.address)).toBe(false);
+  expect((await createJobStore(h.f.root, h.owner.sessionId, 'retry-child' as never).read()).jobs[0]).toMatchObject({ phase: { kind: 'finished', result: { reason: 'cancelled' } }, terminalReleased: true });
   expect(attempts).toBe(2);
   expect(h.errors).toHaveLength(1);
 });

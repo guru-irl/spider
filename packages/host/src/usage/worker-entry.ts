@@ -85,9 +85,10 @@ export async function bootUsageWorker(
   const guard = () => !stopped && !controller.signal.aborted && !!lease?.isCurrent(now);
   const stateBatch = (state: BackfillState): ImportBatch => ({ calls: [], runs: [], states: [], resetSources: [], sourceErrors: [], detailedRunIds: [], restoreAggregateRunIds: [], at: now(), commitGuard: guard, backfillState: state });
   function counter(): void {
+    backfill = ledger!.getBackfillState();
     poller = new CounterPoller({ ledger: ledger!, authPath: command.roots.authPath, enabled: poll, isChild: false, readOnly: !lease, now,
       fetch: selectFixtureCounterTransport(command.roots.authPath, dependencies.fetch ?? globalThis.fetch),
-      onSaved: () => { try { publish(); } catch (failure) { error(failure); } },
+      onSaved: () => { try { publish(); } catch { /* The save committed. Retry publication on the next cycle. */ } },
     });
     poller.start();
     opened = true;

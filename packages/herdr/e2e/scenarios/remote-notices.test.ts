@@ -99,8 +99,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await snapshot(s, 'notice-dedup');
       await s.driver.key('\x03');
       await waitFor('editor cleared by the owned user before crash cases', () => s.driver.draft(), text => text === '', deadline(10000));
-      await proveCrashDelivery(s, false);
-      const recovered = await proveCrashDelivery(s, true);
+      const savedRecovery = await proveCrashDelivery(s, false);
+      const recovered = await proveCrashDelivery(savedRecovery, true);
       await snapshot(recovered, 'notice-crash');
     },
   },

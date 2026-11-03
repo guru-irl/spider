@@ -60,6 +60,8 @@ function targetFor(view) {
   const pane = panes().find(value => value.pane === source.pane && value.terminal === source.terminal);
   if (!pane) return null;
   const terminal = terminals().find(value => value.address === pane.terminal);
+  // An unknown terminal could be a command payload, so it gets no actions.
+  if (pane.terminal && !terminal) return null;
   const kind = terminal?.labels?.[p.labelContract?.labels?.kind], kinds = p.labelContract?.kinds ?? {};
   if (kind && [kinds.exec, kinds.execFile, kinds.batch].includes(kind)) return null;
   const target = classifyPane(pane, terminal, view.spiderFeeds ?? [], p.labelContract, Date.now() - FEED_DISCONNECT_MS);

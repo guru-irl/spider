@@ -381,6 +381,19 @@ it.each(['exec', 'exec-file', 'batch'])('does not move a %s payload from its pan
   expect(ui.calls).toEqual([]);
 });
 
+it('offers no actions for a pane header whose terminal is missing from the app list', async () => {
+  const terminal = 'alpha.invalid/payload';
+  const pane = { terminal, pane: 'alpha.invalid/p1', tab: 'alpha.invalid/t1' };
+  const ui = await popup({ ...rowProps, moveMenu: { kind: 'pane', pane: pane.pane, terminal } }, {
+    panes: () => [pane], terminals: () => [],
+  }, [ownerFeed]);
+  await ui.drain();
+  const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toEqual(['Pane unavailable']);
+  expect(flatten(root).filter(node => node.id?.startsWith('move-'))).toEqual([]);
+  expect(ui.calls).toEqual([]);
+});
+
 it.each((['exec', 'exec-file', 'batch'] as const).flatMap(kind => (['new', 'tab'] as const).map(destination => [kind, destination] as const)))
   ('moves the clicked %s observer to a %s destination', async (kind, destination) => {
   const terminal = 'alpha.invalid/payload', observer = 'observer-b';

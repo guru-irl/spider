@@ -350,7 +350,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     const noticeCandidates = noticeRecoveryCandidates(journal, nextOwner);
     for (const job of noticeCandidates) recoveringNotices.add(job.id);
     if (noticeCandidates.length) enqueueCleanup(`${nextOwner.sessionId}/notices`, async () => {
-      const apply = await (noticeRecoveryRead ??= recoverJobNotices(noticeCandidates, nextOwner, lifetime.signal));
+      const apply = await (noticeRecoveryRead ??= recoverJobNotices(noticeCandidates, nextOwner, lifetime.signal).catch(error => { noticeRecoveryRead = undefined; throw error; }));
       await serial(async () => {
         if (stopping || closed) return;
         apply(); recoveringNotices.clear(); await persist();

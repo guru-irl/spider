@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { createCandidateHistory } from "./fixtures/candidate-history.js";
 import { openDbReadOnly } from "@spider/db-core";
 
 let root: string;
@@ -107,6 +108,30 @@ it("reports only registry-derived candidates even with an unsupported cwd column
   db(file, `CREATE TABLE runs(id TEXT,cwd TEXT,task TEXT,result TEXT);INSERT INTO runs VALUES('child','${cwd}','large','large');`);
   const result = await discover(roots()); const missing = result.errors.find(e => e.code === "missing-source") as any;
   expect(missing.path).toBe(join(a, ".spider/scratch/subagent-sessions/child/child.jsonl")); expect(missing.checkedPaths).toContain(missing.path);
+});
+it("keeps a bounded path sample and exact candidate count while searching every registered root", async () => {
+  const input = createCandidateHistory(root, 2, 25);
+  const first = await discover(input), missing = first.errors.filter(error => error.code === "missing-source");
+  expect(missing).toHaveLength(2);
+  for (const diagnostic of missing) {
+    expect(diagnostic).toMatchObject({ checkedPathCount: 25 });
+    expect(diagnostic.checkedPaths).toHaveLength(8);
+    expect(diagnostic.checkedPaths?.[0]).toBe(diagnostic.path);
+  }
+  const target = missing[0].path.replace("-0000/", "-0024/"); touch(target);
+  const found = await discover(input);
+  expect(found.sources.map(source => source.path)).toEqual([target]);
+  expect(found.errors.filter(error => error.code === "missing-source")).toHaveLength(1);
+});
+it("bounds fork filename diagnostics and counts candidates beyond the sample", async () => {
+  const input = createCandidateHistory(root, 1, 1);
+  const initial = await discover(input), path = initial.errors.find(error => error.code === "missing-source")!.path;
+  mkdirSync(dirname(path), { recursive: true });
+  for (let i = 0; i < 12; i++) writeFileSync(join(dirname(path), `${i}_run-0000000-abcdef.jsonl`), JSON.stringify({ type: "session", id: "wrong" }) + "\n");
+  const result = await discover(input), diagnostic = result.errors.find(error => error.code === "missing-source")!;
+  expect(diagnostic).toMatchObject({ checkedPathCount: 13 });
+  expect(diagnostic.checkedPaths).toHaveLength(8);
+  expect(result.sources).toEqual([]);
 });
 it("never selects task/result blobs from runs", async () => {
   const a = join(root, "a"), file = join(a, ".spider/project.db"); registry(`('${a}','${a}',NULL,'${file}')`); runs(file, "child");

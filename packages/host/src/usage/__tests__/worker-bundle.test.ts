@@ -2,14 +2,16 @@ import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
 import { createFixtureHerdr } from "./fixtures/herdr-assets.js";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import Database from "better-sqlite3";
+import { createCandidateHistory } from "./fixtures/candidate-history.js";
 import { Worker } from "node:worker_threads";
 import type { UsageWorkerEvent } from "../protocol.js";
+import { USAGE_WORKER_RESOURCE_LIMITS } from "../runtime.js";
 const require = createRequire(import.meta.url);
 const { extensionShim } = require("../../../../../scripts/extension-shim.mjs");
 const children = new Set<ChildProcess>(), dirs: string[] = [];
@@ -38,17 +40,19 @@ it("finishes event-history ingestion within the worker heap budget", async () =>
   registry.exec("CREATE TABLE projects(project_key TEXT,db_path TEXT)");
   registry.prepare("INSERT INTO projects VALUES (?,?)").run(root, projectDb); registry.close();
   const db = new Database(projectDb);
-  db.exec("CREATE TABLE runs(id TEXT); INSERT INTO runs VALUES ('child'); CREATE TABLE run_events(id INTEGER PRIMARY KEY,run_id TEXT,ts INTEGER,type TEXT,payload TEXT)");
-  const insert = db.prepare("INSERT INTO run_events VALUES (?,'child',1,'spider_usage',?)");
+  // Adding a default after insertion supplies padding at read time, not per row.
+  db.exec("CREATE TABLE runs(id TEXT); INSERT INTO runs VALUES ('child'); CREATE TABLE run_events(id INTEGER PRIMARY KEY,run_id TEXT,ts INTEGER,type TEXT)");
+  const insert = db.prepare("INSERT INTO run_events VALUES (?,'child',1,'spider_usage')");
+  db.transaction(() => { for (let id = 1; id <= 10000; id++) insert.run(id); })();
   const payload = JSON.stringify({ provider: "fixture", model: "fixture-model", padding: "x".repeat(32768) });
-  db.transaction(() => { for (let id = 1; id <= 10000; id++) insert.run(id, payload); })();
-  insert.run(10001, JSON.stringify({ purpose: "learner", provider: "fixture", model: "fixture-model",
+  db.exec(`ALTER TABLE run_events ADD COLUMN payload TEXT DEFAULT '${payload}'`);
+  db.prepare("INSERT INTO run_events VALUES (10001,'child',1,'spider_usage',?)").run(JSON.stringify({ purpose: "learner", provider: "fixture", model: "fixture-model",
     usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } })); db.close();
   const worker = new Worker(built, {
     workerData: { spiderUsageWorker: 1, command: { type: "start", owner: `${process.pid}:history`, child: false, poll: false,
       roots: { registryDb, sessionsDir: join(root, "sessions"), ledgerFile: join(root, "usage.db"),
         authPath: join(root, "absent-auth.json"), leaseDir: join(root, "leases") } } },
-    resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 }, execArgv: [],
+    resourceLimits: USAGE_WORKER_RESOURCE_LIMITS, execArgv: [],
   });
   try {
     const result = await new Promise<string | { backfill: string; calls: number }>((resolve, reject) => {
@@ -60,6 +64,26 @@ it("finishes event-history ingestion within the worker heap budget", async () =>
       });
     });
     expect(result).toEqual({ backfill: "complete", calls: 1 });
+    expect(statSync(projectDb).size).toBeLessThan(1024 * 1024);
+  } finally { worker.postMessage({ type: "stop" }); await worker.terminate(); }
+});
+it("finishes missing-transcript discovery for two hundred thousand candidates within the worker budget", async () => {
+  const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "candidate-history-")); dirs.push(root);
+  const roots = createCandidateHistory(root);
+  const worker = new Worker(built, {
+    workerData: { spiderUsageWorker: 1, command: { type: "start", owner: `${process.pid}:candidates`, child: false, poll: false, roots } },
+    resourceLimits: USAGE_WORKER_RESOURCE_LIMITS, execArgv: [],
+  });
+  try {
+    const result = await new Promise<string | number>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error("candidate history deadline")), 20000);
+      worker.on("error", error => { clearTimeout(deadline); resolve((error as NodeJS.ErrnoException).code ?? "worker-error"); });
+      worker.on("message", (event: UsageWorkerEvent) => {
+        if (event.type === "error") { clearTimeout(deadline); resolve(event.code); }
+        if (event.type === "snapshot" && event.backfill === "complete") { clearTimeout(deadline); resolve(event.health.sourceErrors); }
+      });
+    });
+    expect(result).toBe(2001);
   } finally { worker.postMessage({ type: "stop" }); await worker.terminate(); }
 });
 it.each(["direct", "shim", "oom", "contended"])("fresh single-file bundle through %s keeps pi alive and owns its workers", async mode => {

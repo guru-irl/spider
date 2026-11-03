@@ -5,6 +5,7 @@ import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { UsageRoots } from "./discovery.js";
 import type { PanelUsage, SourceErrorDiagnostics, UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
 
+export const USAGE_WORKER_RESOURCE_LIMITS: Readonly<NonNullable<WorkerOptions["resourceLimits"]>> = Object.freeze({ maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 });
 export type UsageWorker = Pick<Worker, "on" | "off" | "postMessage" | "terminate" | "unref">;
 export type UsageRuntimeOptions = {
   /** Pass loadedBundle.url, which is native import.meta.url even behind pi's shim. */
@@ -78,7 +79,7 @@ export class UsageRuntime {
         delete env.NODE_OPTIONS;
         this.worker = (this.options.workerFactory ?? ((url, opts) => new Worker(url, opts)))(entry, {
           workerData: { spiderUsageWorker: 1, command },
-          resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 },
+          resourceLimits: USAGE_WORKER_RESOURCE_LIMITS,
           execArgv: [], // No inherited eval flags, inspector or arbitrary host preloads.
           env,
         });

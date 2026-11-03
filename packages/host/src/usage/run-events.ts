@@ -5,7 +5,7 @@ export type RunEventSummary = {
   runId: string;
   markerCount: number; markerTs: number; markerSession: string | null;
   usageCount: number; usageSession: string | null; mixedSessions: boolean; lastUsageTs: number;
-  /** Earliest observation of each report model group, before any report marker. */
+  /** Earliest observation of each report model group, regardless of report markers. */
   models: Map<string, number>;
 };
 export type RunEventFacts = {

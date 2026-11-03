@@ -410,6 +410,14 @@ it("persists all checked discovery paths in the source diagnostic", async () => 
   expect(JSON.parse(rows("SELECT source_error_paths FROM import_state")[0].source_error_paths)).toEqual(paths);
 });
 
+it("persists a bounded discovery sample and its total candidate count across reopen", async () => {
+  const paths = [join(root, "first.jsonl"), join(root, "second.jsonl")];
+  const error = { path: paths[0], code: "missing-source", checkedPaths: paths, checkedPathCount: 200 };
+  await scan(discovery([], [], { errors: [error] }));
+  ledger.close(); ledger = openUsageLedger(join(root, "ledger.db"));
+  expect(ledger.getSourceErrors()).toEqual([error]);
+  expect(JSON.parse(rows("SELECT source_error_paths FROM import_state")[0].source_error_paths)).toEqual({ checkedPaths: paths, checkedPathCount: 200 });
+});
 it("writes only new attribution rows and ignores unrelated historical branches", async () => {
   const p = source("p");
   write(p, [header(), ...Array.from({ length: 1000 }, (_, i) => ({ type: "label", id: `unused-${i}`, parentId: null })),

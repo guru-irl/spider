@@ -127,6 +127,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     return value;
   }
   const sameOwner = (other: Owner) => owner !== null && other.sessionId === owner.sessionId && other.generation === owner.generation && other.terminal.coreId === owner.terminal.coreId && other.terminal.terminalId === owner.terminal.terminalId && other.terminal.socket === owner.terminal.socket;
+  const hasExitData = (finish: TerminalFinish) => finish.exitCode !== null || finish.signal !== null;
   const addressOf = (job: JobRecord): TerminalAddress | null => 'address' in job.phase ? job.phase.address : null;
   const liveOriginal = (job: JournalJob): TerminalAddress | null => { const address = addressOf(job); return address && !job.uncertain && !job.originalFinish && job.phase.kind !== 'finished' && !lostOriginals.has(address) && !finishedOriginals.has(address) ? address : null; };
   async function release(job: JournalJob): Promise<void> {
@@ -157,6 +158,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
   }
   async function collect(job: JournalJob, signal?: AbortSignal): Promise<void> {
     if (journal.writer?.crashJobs?.includes(job.id)) return;
+    if (job.evidenceConflict && job.output?.complete) return;
     if (job.settledMarked && job.phase.kind === 'finished' && job.output?.complete) { await deliver(job); return; }
     const address = addressOf(job); if (!address || !job.nonce) return;
     if (stopping || closed) return;
@@ -175,7 +177,10 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
       .then(output => serial(() => applyOutput(job, output)), error => serial(async () => {
         if (signal?.aborted || lifetime.signal.aborted) return;
         expired = true;
-        if (!outputWarnings.has(job.id)) { outputWarnings.add(job.id); report(error); }
+        if (!outputWarnings.has(job.id)) {
+          outputWarnings.add(job.id);
+          report(error instanceof HerdrError && error.code === 'output-unavailable' ? new HerdrError(error.code, error.message, { jobId: job.id, machine: job.machine }) : error);
+        }
         await settleUnavailableOutput(job, address);
         if (job.phase.kind === 'finished' && job.output && !job.evidenceConflict) { await deliver(job); await markSettled(job); }
       }));
@@ -205,7 +210,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     if (!job.originalFinish && !job.terminalExpired && !job.uncertain) { await persist(); return; }
     // Preparation failures have wrapper exit codes; no payload exit exists yet.
     const nativeExitCode = receipt.finish.reason === 'spawn-error' ? 127 : receipt.finish.reason === 'release-timeout' ? 124 : receipt.finish.exitCode;
-    if (job.evidenceConflict || (job.originalFinish && !job.uncertain && (job.originalFinish.exitCode !== nativeExitCode || job.originalFinish.signal !== receipt.finish.signal))) {
+    if (job.evidenceConflict || (job.originalFinish && !job.uncertain && hasExitData(job.originalFinish) && (job.originalFinish.exitCode !== nativeExitCode || job.originalFinish.signal !== receipt.finish.signal))) {
       job.phase = { kind: 'disconnected', address, lastSeq: 0 }; job.evidenceConflict = true;
       if (job.originalFinish) job.exitEvidence ??= { native: { ...job.originalFinish }, receipt: { ...receipt.finish } };
       await persist();
@@ -265,6 +270,11 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     owner = nextOwner; store = createJobStore(options.journalRoot, nextOwner.sessionId, options.child?.id ?? options.adoptedRunId);
     journal = await store.read();
     persistedState = !options.child && !options.adoptedRunId ? undefined : JSON.stringify({ ...journal, revision: 0, updatedAt: 0 });
+    for (const job of journal.jobs) {
+      if (job.evidenceConflict && job.exitEvidence && !hasExitData(job.exitEvidence.native)) {
+        job.evidenceConflict = false; delete job.exitEvidence;
+      }
+    }
     await prepareJobRecovery(journal, Boolean(options.adoptedRunId), options.callerCrashed);
     await persist();
     if (options.child) journal.child = { ...options.child, ended: false };

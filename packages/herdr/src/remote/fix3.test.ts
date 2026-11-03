@@ -139,6 +139,202 @@ test('a completion notice links the actual published remote receipt', async () =
   } finally { await monitor.shutdown('reload'); }
 }, 15000);
 
+async function savedJob(f: Awaited<ReturnType<typeof fixture>>, originalFinish: JournalJob['originalFinish'], patch: Partial<JournalJob> = {}) {
+  const handle = f.jobs[0]; await handle.finished;
+  const wire = JSON.parse(await readFile(join(handle.remoteDirectory, 'request.json'), 'utf8'));
+  const journalRoot = join(f.root, 'restart-journal'), store = createJobStore(journalRoot, f.owner.sessionId, patch.runId);
+  const journal = await store.read();
+  journal.jobs.push({ version: 1, id: handle.id, kind: 'exec', owner: f.owner, machine: f.target.on,
+    phase: { kind: 'disconnected', address: handle.address, lastSeq: 0 }, viewer: null, localDirectory: handle.localDirectory, remoteDirectory: handle.remoteDirectory,
+    detached: true, noticeMode: 'async', notice: 'pending', nonce: wire.nonce, releaseDeadlineAt: Date.now(), originalFinish, output: null,
+    callerOwned: false, uncertain: false, evidenceConflict: false, noticeDelivered: false, settledMarked: false, terminalExpired: false, updatedAt: Date.now(), ...patch } satisfies JournalJob);
+  await store.write(journal);
+  f.hc.identity = async () => f.owner.terminal;
+  f.hc.events = () => ({ ready: Promise.resolve(), lookup: async () => null, subscribe: () => () => {}, dispose() {} });
+  f.hc.get = async () => { throw Object.assign(new Error('Not found'), { code: 'not_found' }); };
+  return { journalRoot, store };
+}
+
+async function runActivation(f: Awaited<ReturnType<typeof fixture>>, journalRoot: string, collect = f.output.outputCollector.collect, child?: { id: NonNullable<JournalJob['runId']>; pid: number; startIdentity: string }) {
+  let reads = 0;
+  const notices: JobNotice[] = [], errors: unknown[] = [];
+  const monitor = createJobMonitor({ hc: f.hc, outputCollector: { ...f.output.outputCollector, collect: async job => { reads++; return collect(job); } }, journalRoot, child,
+    observedJobMessages: async () => [], notifier: notice => { notices.push(notice); }, reportError: error => { errors.push(error); }, clock: Date.now });
+  try { await monitor.activate(f.owner); await monitor.reconcile(); }
+  finally { await monitor.shutdown('reload'); }
+  return { reads, notices, errors };
+}
+
+test('a restart stop is not exit evidence', async () => {
+  const f = await fixture();
+  await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
+  const restart = { exitCode: null, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, restart);
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
+  expect(job.evidenceConflict).toBe(false);
+  expect(job.settledMarked).toBe(true);
+  expect(first.reads).toBeGreaterThan(0);
+  expect(first.notices).toHaveLength(1);
+  expect(first.notices[0].content).toContain('signal=1');
+  expect(first.errors).toEqual([]);
+  const second = await runActivation(f, journalRoot);
+  expect(second).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test('heals an old restart conflict and delivers a pending notice once', async () => {
+  const f = await fixture();
+  await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
+  const restart = { exitCode: null, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
+  const receipt = { exitCode: null, signal: 1, reason: 'signal', finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, restart, { callerOwned: true, evidenceConflict: true, exitEvidence: { native: restart, receipt }, output: { complete: true, summary: 'Complete' } });
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
+  expect(job.evidenceConflict).toBe(false);
+  expect(job).not.toHaveProperty('exitEvidence');
+  expect(job.settledMarked).toBe(true);
+  expect(job.notice).toBe('submitted');
+  expect(job.noticeDelivered).toBe(true);
+  expect(first.reads).toBeGreaterThan(0);
+  expect(first.notices).toHaveLength(1);
+  expect(first.notices[0].details).toMatchObject({ exitCode: null, reason: 'signal', signal: 1 });
+  expect(first.errors).toEqual([]);
+  const second = await runActivation(f, journalRoot);
+  expect(second).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test.each(['holder_lost', 'server_stop', 'killed'])('a %s finish without exit data settles on the receipt', async reason => {
+  const f = await fixture();
+  await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
+  const native = { exitCode: null, signal: null, reason, finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, native);
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
+  expect(job.evidenceConflict).toBe(false);
+  expect(job.settledMarked).toBe(true);
+  expect(first.notices).toHaveLength(1);
+  expect(first.notices[0].details).toMatchObject({ exitCode: null, reason: 'signal', signal: 1 });
+  expect(first.errors).toEqual([]);
+  expect(await runActivation(f, journalRoot)).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test('heals an observed conflict with empty native exit data without another notice', async () => {
+  const f = await fixture();
+  await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
+  const native = { exitCode: null, signal: null, reason: 'holder_lost', finishedAt: Date.now() };
+  const receipt = { exitCode: null, signal: 1, reason: 'signal', finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, native, { notice: 'observed', noticeDelivered: true, evidenceConflict: true, exitEvidence: { native, receipt }, output: { complete: true, summary: 'Complete' } });
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
+  expect(job.evidenceConflict).toBe(false);
+  expect(job).not.toHaveProperty('exitEvidence');
+  expect(job.notice).toBe('observed');
+  expect(job.noticeDelivered).toBe(true);
+  expect(job.settledMarked).toBe(true);
+  expect(first.notices).toEqual([]);
+  expect(first.errors).toEqual([]);
+  expect(await runActivation(f, journalRoot)).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test('a child monitor heals a pending conflict and delivers its receipt once', async () => {
+  const f = await fixture();
+  await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
+  const native = { exitCode: null, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
+  const receipt = { exitCode: null, signal: 1, reason: 'signal', finishedAt: Date.now() };
+  const child = { id: 'run-one' as NonNullable<JournalJob['runId']>, pid: process.pid, startIdentity: 'writer' };
+  const { journalRoot, store } = await savedJob(f, native, { runId: child.id, callerOwned: true, evidenceConflict: true, exitEvidence: { native, receipt }, output: { complete: true, summary: 'Complete' } });
+  const first = await runActivation(f, journalRoot, f.output.outputCollector.collect, child);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
+  expect(job.evidenceConflict).toBe(false);
+  expect(job).not.toHaveProperty('exitEvidence');
+  expect(job.settledMarked).toBe(true);
+  expect(first.notices).toHaveLength(1);
+  expect(first.notices[0].details).toMatchObject({ runId: child.id, exitCode: null, reason: 'signal', signal: 1 });
+  expect(first.errors).toEqual([]);
+  expect(await runActivation(f, journalRoot, f.output.outputCollector.collect, child)).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test('a restart-labelled finish with a real exit code still conflicts with a different receipt', async () => {
+  const f = await fixture();
+  await f.execute('process.exitCode=17', { background: true });
+  const native = { exitCode: 0, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, native);
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase.kind).toBe('disconnected');
+  expect(job.evidenceConflict).toBe(true);
+  expect(job.exitEvidence).toMatchObject({ native: { exitCode: 0 }, receipt: { exitCode: 17 } });
+  expect(job.settledMarked).toBe(false);
+  expect(first.notices).toEqual([]);
+  expect(first.errors).toEqual([]);
+}, 15000);
+
+test('a saved conflict with a real restart-labelled exit remains a conflict', async () => {
+  const f = await fixture();
+  await f.execute('process.exitCode=17', { background: true });
+  const native = { exitCode: 0, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
+  const receipt = { exitCode: 17, signal: null, reason: 'exited', finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, native, { evidenceConflict: true, exitEvidence: { native, receipt }, output: { complete: true, summary: 'Complete' } });
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase.kind).toBe('disconnected');
+  expect(job.evidenceConflict).toBe(true);
+  expect(job.exitEvidence).toMatchObject({ native: { exitCode: 0 }, receipt: { exitCode: 17 } });
+  expect(job.settledMarked).toBe(false);
+  expect(first).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test('does not reread a real conflict after complete output', async () => {
+  const f = await fixture();
+  await f.execute('process.exitCode=17', { background: true });
+  const native = { exitCode: 0, signal: null, reason: 'exited', finishedAt: Date.now() };
+  const { journalRoot, store } = await savedJob(f, native);
+  const first = await runActivation(f, journalRoot);
+  const job = (await store.read()).jobs[0];
+  expect(job.phase.kind).toBe('disconnected');
+  expect(job.evidenceConflict).toBe(true);
+  expect(job.exitEvidence).toMatchObject({ native: { exitCode: 0 }, receipt: { exitCode: 17 } });
+  expect(job.output?.complete).toBe(true);
+  expect(first.reads).toBeGreaterThan(0);
+  expect(first.notices).toEqual([]);
+  expect(first.errors).toEqual([]);
+  const second = await runActivation(f, journalRoot);
+  expect(second).toEqual({ reads: 0, notices: [], errors: [] });
+}, 15000);
+
+test('an output timeout reports the job and machine and accepts a later receipt', async () => {
+  const f = await fixture();
+  await f.execute('process.exitCode=17', { background: true });
+  const { journalRoot, store } = await savedJob(f, { exitCode: null, signal: null, reason: 'holder_lost', finishedAt: Date.now() });
+  let release!: () => void, finishRead!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const readFinished = new Promise<void>(resolve => { finishRead = resolve; });
+  let readStarted = false;
+  const errors: unknown[] = [];
+  const monitor = createJobMonitor({ hc: f.hc, journalRoot, clock: Date.now, observedJobMessages: async () => [], notifier: () => {}, reportError: error => { errors.push(error); },
+    outputCollector: { ...f.output.outputCollector, collect: async job => {
+      readStarted = true;
+      try { await blocked; return await f.output.outputCollector.collect(job); } finally { finishRead(); }
+    } } });
+  const timeout = globalThis.setTimeout;
+  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => timeout(callback, ms === 60000 ? 20 : ms, ...args)) as typeof setTimeout);
+  try {
+    await monitor.activate(f.owner); await monitor.reconcile();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'output-unavailable', details: { jobId: f.jobs[0].id, machine: f.target.on } });
+    release(); await readFinished; await new Promise<void>(resolve => setImmediate(resolve)); await monitor.reconcile();
+    expect((await store.read()).jobs[0].phase).toMatchObject({ kind: 'finished', result: { exitCode: 17, reason: 'exited', signal: null } });
+  } finally {
+    release(); if (readStarted) await readFinished;
+    try { await monitor.shutdown('reload'); } finally { spy.mockRestore(); }
+  }
+}, 15000);
+
 test('the production collector saves the verified receipt locally after a detached job exits', async () => {
   const f = await fixture();
   const detached = await f.execute("setTimeout(()=>{console.log('background output');process.exitCode=17},200)", { timeout: 25, background: true });

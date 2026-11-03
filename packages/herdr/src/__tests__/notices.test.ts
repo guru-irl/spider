@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 import { HerdrError } from '../client/parse.js';
-import { HERDR_NOTICES, herdrErrorNotice } from '../notices.js';
+import { HERDR_NOTICES, herdrErrorNotice, herdrErrorNoticeKey } from '../notices.js';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
 import { killTarget } from '../../assets/agents/move.js';
 
@@ -91,6 +91,20 @@ describe('Herdr notices', () => {
 
   it('describes a missing command viewer launcher as a setup problem', () => {
     expect(herdrErrorNotice(new HerdrError('remote-observer-unavailable', 'missing launcher'))).toBe(HERDR_NOTICES.generic.text);
+  });
+
+  it('explains an output timeout without suggesting doctor', () => {
+    const error = new HerdrError('output-unavailable', 'private detail', { jobId: '01234567-89ab-4cde-8123-456789abcdef', machine: 'build-box.invalid' });
+    const message = herdrErrorNotice(error);
+    expect(message).toBe("Spider couldn't read output for job 01234567 on build-box.invalid. The result shows as unknown for now. The command itself isn't affected.");
+    expect(message).not.toMatch(/doctor/i);
+    expect(HERDR_NOTICES[herdrErrorNoticeKey(error)].action).toBeNull();
+  });
+
+  it('sanitizes output timeout identifiers and handles missing details', () => {
+    const error = new HerdrError('output-unavailable', 'private detail', { jobId: 'abcd\nxyz-more', machine: 'build\x1b[31m-box.invalid' });
+    expect(herdrErrorNotice(error)).toBe("Spider couldn't read output for job abcd?xyz on build??31m-box.invalid. The result shows as unknown for now. The command itself isn't affected.");
+    expect(herdrErrorNotice(new HerdrError('output-unavailable', 'private detail'))).toBe("Spider couldn't read output for job unknown on unknown. The result shows as unknown for now. The command itself isn't affected.");
   });
 
   it('gives an unknown error code and a concrete next step without exposing raw details', () => {

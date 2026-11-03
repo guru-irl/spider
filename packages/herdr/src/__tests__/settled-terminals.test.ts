@@ -5,7 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createJobStore } from '../jobs/store.js';
 import type { JobId, RunId, TerminalAddress } from '../contracts.js';
-import { processStartIdentity } from '../jobs/handoff.js';
+import { createJobHandoff, processStartIdentity } from '../jobs/handoff.js';
 import { HerdrError } from '../client/parse.js';
 import { deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
@@ -200,4 +200,29 @@ it('keeps an adopted submitted result until its parent observes the notice', asy
   observed.push(handle.id); await parent.reconcile();
   await vi.waitFor(async () => expect((await store.read()).child?.settled).toBe(true));
   expect(f.terminals.has(handle.address)).toBe(false);
+});
+
+it.each(['launch-failed', 'finished'] as const)('settles a child with released jobs and a pending %s only when no result is unread', async kind => {
+  const f = await monitorFixture(), runId = 'settlement-exception' as RunId;
+  const child = f.monitor({ child: { id: runId, pid: process.pid, startIdentity: processStartIdentity(process.pid)! } });
+  const handle = await child.start(program, f.owner, on, {});
+  f.complete(handle.address); await child.reconcile(); await child.consumeNotice(handle.id); await child.shutdown('reload');
+  const store = createJobStore(f.f.root, f.owner.sessionId, runId), journal = await store.read();
+  journal.child!.ended = true;
+  const released = journal.jobs[0]; released.settledMarked = true; released.terminalReleased = true;
+  journal.jobs.push({ ...released, id: 'pending-job' as JobId, notice: 'pending', noticeDelivered: false, terminalReleased: false,
+    settledMarked: kind === 'finished', output: kind === 'finished' ? released.output : null, originalFinish: kind === 'finished' ? released.originalFinish : null,
+    phase: kind === 'finished' ? released.phase : { kind: 'launch-failed', error: 'Launch failed' } });
+  await store.write(journal);
+  let adoptions = 0;
+  const handoff = createJobHandoff({ root: f.f.root, owner: f.owner, hc: f.hc, closeAgentConsoles: async () => {},
+    adopt: async () => { adoptions++; return { reconcile: async () => {}, shutdown: async () => {} }; },
+  });
+  try {
+    await handoff.reconcile();
+    const saved = await store.read();
+    expect({ settled: saved.child?.settled ?? false, adoptions }).toEqual(kind === 'launch-failed' ? { settled: true, adoptions: 0 } : { settled: false, adoptions: 1 });
+    expect(saved.jobs.map(job => job.notice)).toEqual(['observed', 'pending']);
+    expect(f.notices).toEqual([]);
+  } finally { await handoff.shutdown('reload'); }
 });

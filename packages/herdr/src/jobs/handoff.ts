@@ -191,6 +191,7 @@ export function createJobHandoff(options: {
     else await closeRunConsoles(consoleOwner, options.hc);
     closedConsoles.add(id);
   };
+  // Launch failures are returned by the tool call, so no result remains unread.
   const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked && job.notice !== 'pending' || job.phase.kind === 'launch-failed');
   const markSettled = async (journal: JobJournal) => {
     journal.child = { ...journal.child!, ended: true, settled: true };

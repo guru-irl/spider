@@ -17,6 +17,27 @@ vi.mock('node:child_process', async importOriginal => {
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
+test('production CLI plan lists assets without changing files or launching probes', async () => {
+  const f = await fixture(), output: string[] = [], errors: string[] = [];
+  const processes = join(f.h.directories.global, 'herdr/processes'); await mkdir(processes, { recursive: true });
+  const selected = join(f.h.root, 'selected.jsonl'); await writeFile(selected, JSON.stringify({ type: 'session', id: 'selected', cwd: f.h.root }) + '\n');
+  const config = JSON.parse(await readFile(f.request.configPath, 'utf8')); config.spaces = [{ name: 'Example', sessions: [{ file: selected }] }]; await writeFile(f.request.configPath, JSON.stringify(config));
+  await writeFile(join(processes, 'stale.json'), JSON.stringify({ version: 1, pid: 999999, startIdentity: 'missing', sessionId: 'stale', sessionFile: selected, sessionName: null, kind: 'top-level', mode: 'tui', extensionArguments: [], hcAddress: null }), { mode: 0o600 });
+  const fingerprint = async () => {
+    const rows: string[] = [];
+    const visit = async (directory: string): Promise<void> => { rows.push(directory + '/'); for (const entry of await readdir(directory, { withFileTypes: true })) { const path = join(directory, entry.name); if (entry.isDirectory()) await visit(path); else if (entry.isFile()) rows.push(`${path} ${digest(await readFile(path))}`); } };
+    for (const directory of [f.h.directories.app, f.h.directories.agent, f.h.directories.global]) await visit(directory);
+    return rows.sort();
+  };
+  const before = await fingerprint(), calls = await f.h.calls();
+  expect(await runHerdrCli(['setup', '--dry-run', '--config', f.request.configPath], { ...f.ports, stdout: text => output.push(text), stderr: text => errors.push(text) })).toBe(0);
+  expect(errors).toEqual([]);
+  expect(output.join('')).toContain(`write ${join(f.h.directories.app, 'mods/spider-panel/main.js')}`);
+  expect(output.join('')).toContain('Plan only');
+  expect(await fingerprint()).toEqual(before);
+  expect((await f.h.calls()).slice(calls.length).filter(call => call.argv[0] !== 'get' && !(call.argv[0] === 'server' && call.argv[1] === 'status'))).toEqual([]);
+});
+
 test('production installs each theme where its consumer reads it', async () => {
   const f = await fixture();
   const files = await f.parts.installFiles(f.request, f.context);
@@ -53,6 +74,30 @@ test('production refuses an unowned same-named mod before any backup', async () 
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'unowned-clone-collision' });
   expect(await readFile(path, 'utf8')).toBe('user owned');
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+});
+
+test('production carries saved mod state when layout props change', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const { modStoreFileName } = await import('../../../herdr/src/setup/mod-storage.js');
+  const layoutPath = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const layout = JSON.parse(await readFile(layoutPath, 'utf8'));
+  const props: unknown[] = [];
+  const visit = (value: any) => { if (!value || typeof value !== 'object') return; if (value.mod === 'spider-agents') props.push(value.props); for (const [key, child] of Object.entries(value)) if (key !== 'props') { if (Array.isArray(child)) child.forEach(visit); else visit(child); } };
+  visit(layout);
+  const data = join(f.h.directories.app, 'data/spider-agents'); await mkdir(data, { recursive: true });
+  const previous = join(data, modStoreFileName(props[0])); await writeFile(previous, JSON.stringify({ folded: '["example"]', timer: '42' }));
+  f.request.config.limits.completedRows = 7;
+  const result = await setupHerdr(f.request, f.parts);
+  const migrated = result.writes.filter(path => path.startsWith(data + '/'));
+  expect(migrated).toHaveLength(1);
+  expect(await readFile(migrated[0], 'utf8')).toBe(await readFile(previous, 'utf8'));
+  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
+  await writeFile(migrated[0], '{"timer":"99"}');
+  const errors: string[] = [];
+  expect(await runHerdrCli(['rollback', '--config', f.request.configPath], { ...f.ports, stdout() {}, stderr: text => errors.push(text) })).toBe(0);
+  expect(errors).toEqual([]);
+  expect(await readFile(migrated[0], 'utf8')).toBe('{"timer":"99"}');
+  expect(await readFile(previous, 'utf8')).toBe('{"folded":"[\\"example\\"]","timer":"42"}');
 });
 
 test('production reuses Node observations on an unchanged second setup', async () => {
@@ -244,4 +289,41 @@ test('doctor never passes unresolved role-template inspection', async () => {
   const f = await fixture();
   await writeFile(join(f.h.directories.global, 'config.json'), JSON.stringify({ 'models.defaults': { worker: 'unavailable', reviewer: 'unavailable', watcher: 'unavailable' } }));
   expect((await (await f.ports.doctorParts(f.request)).inspect('roles', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'role-unresolved', repair: expect.stringContaining('Choose an available configured model') }));
+});
+
+
+test.each([false, true])('replacement re-applies app selections without repeating session setup with running-in-place %s', async runningInPlace => {
+  const f = await fixture('fake', true); await setupHerdr(f.request, f.parts);
+  const settings = join(f.h.directories.app, 'settings.json');
+  const choice = '{"zoom":1.5,"theme":"nord","layout":"personal"}'; await writeFile(settings, choice);
+  const output: string[] = [], errors: string[] = [];
+  const ports = { ...f.ports, stdout: (text: string) => output.push(text), stderr: (text: string) => errors.push(text) };
+  expect(await runHerdrCli(['setup', '--config', f.request.configPath], ports)).toBe(1);
+  expect(errors.join('')).toContain('--replace-changed');
+  expect(errors.join('')).toContain('spider-glass');
+  if (runningInPlace) {
+    const preflight = f.parts.preflight;
+    f.parts.preflight = async request => ({ ...await preflight(request), recoveredCutover: { terminals: [], identities: {} }, cutoverActions: [] });
+  }
+  f.parts.cutover = async () => { throw new Error('Selection repair must not repeat session setup'); };
+  f.parts.reconcileCutover = f.parts.cutover;
+  expect(await setupHerdr({ ...f.request, replaceChanged: true }, f.parts).then(result => result.doctor.failures)).toEqual([]);
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.5, theme: 'spider-glass', layout: 'spider-glass' });
+  const entry = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)!;
+  expect(await readFile(entry.backup!, 'utf8')).toBe(choice);
+  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
+  await rollbackHerdr(f.request, f.parts);
+  expect(await readFile(settings, 'utf8')).toBe(choice);
+});
+
+test('overwriting a newly managed terminal key backs up and restores the user binding', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const path = join(f.h.directories.app, 'keys.json'), keys = JSON.parse(await readFile(path, 'utf8'));
+  keys.terminal['ctrl-b'] = 'personal.action'; await writeFile(path, JSON.stringify(keys));
+  const asset = join(f.root, 'packages/herdr/assets/keys.json'), desired = JSON.parse(await readFile(asset, 'utf8'));
+  desired.terminal['ctrl-b'] = 'spider.action'; await writeFile(asset, JSON.stringify(desired));
+  await setupHerdr({ ...f.request, overwriteUnownedKeys: true }, f.parts);
+  expect(JSON.parse(await readFile(path, 'utf8')).terminal['ctrl-b']).toBe('spider.action');
+  await rollbackHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(path, 'utf8')).terminal['ctrl-b']).toBe('personal.action');
 });

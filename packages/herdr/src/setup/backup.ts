@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, unlink, chmod, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, link, unlink, chmod, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { HerdrError, object, text } from '../client/parse.js';
 import type { TerminalAddress } from '../contracts.js';
 import type { InstallFile, NodeObservation, CutoverResult, RuntimeRootObservation } from './installer.js';
+import { changedSetupFilesNotice } from '../notices.js';
 import { isRuntimeRootProbe } from '../remote/node-version.js';
 export const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 export interface FileSnapshot {
@@ -76,6 +77,7 @@ export interface BackupEntry {
   terminalKeys?: Readonly<Record<string, string>>;
   managed?: ManagedPart;
   managedAfter?: string;
+  previous?: { before: string | null; backup: string | null; mode: number }[];
 }
 export interface SetupJournal {
   version: 1;
@@ -163,7 +165,13 @@ export async function atomicWrite(path: string, bytes: Buffer, mode = 0o600, exp
     await rejectSymlinks(path);
     if (expected !== undefined && (await snapshot(path)).hash !== expected)
       throw new HerdrError('concurrent-settings-edit', `Changed after preflight: ${path}`);
-    await rename(temporary, path);
+    if (expected === null) {
+      try { await link(temporary, path); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new HerdrError('concurrent-settings-edit', `Changed after preflight: ${path}`);
+        throw error;
+      }
+    } else await rename(temporary, path);
     await syncDirectory(dirname(path));
   }
   finally {
@@ -260,7 +268,15 @@ export async function readJournal(root: string): Promise<SetupJournal> {
     if (e.terminalKeys !== undefined)
       for (const [key, value] of Object.entries(object(e.terminalKeys)))
         terminalKeys[key] = text(value);
-    return { path: text(e.path), before: e.before === null ? null : text(e.before), after: text(e.after), backup: e.backup === null ? null : text(e.backup), mode: e.mode, ...(e.terminalKeys === undefined ? {} : { terminalKeys }), ...(e.managed === undefined ? {} : { managed: parseManagedPart(e.managed), managedAfter: typeof e.managedAfter === 'string' ? e.managedAfter : text(e.managedAfter) }) };
+    const previous = e.previous === undefined ? undefined : (() => {
+      if (!Array.isArray(e.previous)) throw new HerdrError('setup-journal-invalid', 'Invalid previous backups');
+      return e.previous.map(value => {
+        const baseline = object(value);
+        if (typeof baseline.mode !== 'number' || !Number.isInteger(baseline.mode)) throw new HerdrError('setup-journal-invalid', 'Invalid previous backup mode');
+        return { before: baseline.before === null ? null : text(baseline.before), backup: baseline.backup === null ? null : text(baseline.backup), mode: baseline.mode };
+      });
+    })();
+    return { ...(previous ? { previous } : {}), path: text(e.path), before: e.before === null ? null : text(e.before), after: text(e.after), backup: e.backup === null ? null : text(e.backup), mode: e.mode, ...(e.terminalKeys === undefined ? {} : { terminalKeys }), ...(e.managed === undefined ? {} : { managed: parseManagedPart(e.managed), managedAfter: typeof e.managedAfter === 'string' ? e.managedAfter : text(e.managedAfter) }) };
   });
   const probes = j.probes.map(value => { const p = object(value); return { machine: text(p.machine) as NodeObservation['machine'], nodePath: text(p.nodePath), version: text(p.version), coreStartedAt: text(p.coreStartedAt) }; });
   let cutover: CutoverResult | null = null;
@@ -305,15 +321,24 @@ function matchesAppSettingsTransition(path: string, part: ManagedPart, current: 
     return actual === managedProjection(original, one) || actual === managedProjection(planned, one);
   });
 }
-export async function validateFiles(files: readonly InstallFile[], journal: SetupJournal, overwriteKeys = false, appSettings?: AppSettingsTransition): Promise<void> {
+export interface FileAction {
+  path: string;
+  action: 'adopt' | 'write' | 'replace' | 'unchanged';
+  refusal?: { code: string; message: string };
+}
+export async function validateFiles(files: readonly InstallFile[], journal: SetupJournal, overwriteKeys = false, appSettings?: AppSettingsTransition, options: { replaceChanged?: boolean; planOnly?: boolean } = {}): Promise<FileAction[]> {
+  const actions: FileAction[] = [];
   const seen = new Set<string>();
   for (const f of files) {
     if (seen.has(f.path))
       throw new HerdrError('duplicate-install-path', `Repeated target: ${f.path}`);
     seen.add(f.path);
     const current = await snapshot(f.path);
+    if (f.copyFrom) { actions.push({ path: f.path, action: current.bytes === null ? 'write' : 'unchanged' }); continue; }
     const prior = journal.entries.find(e => e.path === f.path);
-    if (f.managed && prior) {
+    const identical = current.hash === digest(f.bytes);
+    let refusal = f.refusal;
+    if ((!identical || f.snapshotOnly) && f.managed && prior) {
       const part = prior.managed ?? f.managed;
       const recorded = prior.managedAfter ?? plannedProjection(f, part);
       const actual = managedProjection(current.bytes, part);
@@ -325,24 +350,39 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
           || f.snapshotOnly === true && matchesAppSettingsTransition(f.path, part, current.bytes, baseline, appSettings);
       }
       if (actual !== recorded && !restored)
-        throw new HerdrError('managed-artifact-changed', `Managed ${f.managed.kind} content changed in ${f.path}. Restore the recorded managed values ${recorded}, then rerun setup. Unrelated edits are preserved.`);
+        refusal = { code: 'managed-artifact-changed', message: `Managed content changed in ${f.path}. Restore these recorded managed values: ${recorded}` };
     }
-    const recovering = prior?.after === digest(f.bytes) && (current.hash === prior.after || current.hash === prior.before);
-    if (current.hash !== f.expected && !recovering) {
-      throw new HerdrError(f.collision === 'key' ? 'key-binding-conflict' : f.collision === 'clone' ? 'unowned-clone-collision' : 'concurrent-settings-edit', `Unowned or changed target: ${f.path}`);
+    const recovering = !journal.verified && prior?.after === digest(f.bytes) && (current.hash === prior.after || current.hash === prior.before);
+    if (!identical && current.hash !== f.expected && !recovering) {
+      if (!f.collision && f.managed) throw new HerdrError('concurrent-settings-edit', `Changed after preflight: ${f.path}`);
+      refusal ??= { code: f.collision === 'key' ? 'key-binding-conflict' : 'unowned-clone-collision', message: `Changed target ${f.path}` };
+    }
+    const owned = prior && (prior.after === current.hash || f.managed && prior.managedAfter === managedProjection(current.bytes, prior.managed ?? f.managed));
+    const action = (identical || f.snapshotOnly) && owned && !refusal ? 'unchanged'
+      : refusal ? 'replace' : identical ? 'adopt' : 'write';
+    const authorized = options.replaceChanged || f.terminalKeys !== undefined && overwriteKeys;
+    actions.push({ path: f.path, action, ...(refusal && !authorized ? { refusal } : {}) });
+    if (identical || refusal && authorized) {
+      f.expected = current.hash;
+      if (refusal && authorized) f.replaceBaseline = true;
     }
   }
+  const refused = actions.filter(action => action.refusal);
+  if (refused.length && !options.planOnly)
+    throw new HerdrError(refused[0].refusal!.code, changedSetupFilesNotice(refused), { files: refused });
+  return actions;
 }
 export async function prepareBackups(root: string, files: readonly InstallFile[], journal: SetupJournal): Promise<void> {
   for (const f of files) {
+    if (f.copyFrom) continue;
     const current = await snapshot(f.path);
     const after = digest(f.bytes);
     const prior = journal.entries.find(e => e.path === f.path);
-    if (current.hash === after && prior?.after === after || !f.managed && current.hash === after || prior?.after === after && current.hash === prior.before)
+    if (!f.replaceBaseline && (current.hash === after && prior?.after === after || prior?.after === after && current.hash === prior.before))
       continue;
     if (current.hash !== f.expected)
       throw new HerdrError('concurrent-settings-edit', `Changed between preflight and backup: ${f.path}`);
-    if (prior) {
+    if (prior && !f.replaceBaseline) {
       prior.after = after;
       if (f.terminalKeys) prior.terminalKeys = f.terminalKeys;
       if (f.managed) { prior.managed = f.managed; prior.managedAfter = plannedProjection(f, f.managed); }
@@ -376,7 +416,8 @@ export async function prepareBackups(root: string, files: readonly InstallFile[]
       }
       await syncDirectory(dirname(backup));
     }
-    const entry = { path: f.path, before: current.hash, after, backup, mode: current.mode, ...(f.terminalKeys ? { terminalKeys: f.terminalKeys } : {}), ...(f.managed ? { managed: f.managed, managedAfter: plannedProjection(f, f.managed) } : {}) };
+    const previous = prior && f.replaceBaseline ? [...(prior.previous ?? []), { before: prior.before, backup: prior.backup, mode: prior.mode }] : undefined;
+    const entry = { ...(previous ? { previous } : {}), path: f.path, before: current.hash, after, backup, mode: current.mode, ...(f.terminalKeys ? { terminalKeys: f.terminalKeys } : {}), ...(f.managed ? { managed: f.managed, managedAfter: plannedProjection(f, f.managed) } : {}) };
     journal.entries = [...journal.entries.filter(e => e.path !== f.path), entry];
   }
   await saveJournal(root, journal);
@@ -385,6 +426,14 @@ export async function applyFiles(files: readonly InstallFile[], journal: SetupJo
   const writes: string[] = [];
   for (const f of files) {
     const current = await snapshot(f.path);
+    if (f.copyFrom) {
+      if (current.bytes !== null) continue;
+      const source = await snapshot(f.copyFrom);
+      if (source.bytes === null) continue;
+      try { await atomicWrite(f.path, source.bytes, f.mode, null); writes.push(f.path); }
+      catch (error) { if (!(error instanceof HerdrError) || error.code !== 'concurrent-settings-edit') throw error; }
+      continue;
+    }
     if (f.snapshotOnly) {
       if (current.hash !== f.expected) throw new HerdrError('concurrent-settings-edit', `Changed after backup: ${f.path}`);
       continue;

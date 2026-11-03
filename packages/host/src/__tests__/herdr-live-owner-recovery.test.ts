@@ -2,11 +2,14 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createTerminalRegistry, writePrivateJson } from '../../../herdr/src/sessions/registry.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
 import { startSessionEndpoint } from '../../../herdr/src/feed/ipc-server.js';
-import { setupSpaces, readCutoverRecovery } from '../../../herdr/src/spaces/setup.js';
-import { setupHerdr } from '../../../herdr/src/setup/installer.js';
+import { setupSpaces, readCutoverRecovery, recordSessionMove } from '../../../herdr/src/spaces/setup.js';
+import { readJournal, saveJournal } from '../../../herdr/src/setup/backup.js';
+import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 
@@ -33,7 +36,9 @@ test('setup preflight adopts a live replacement terminal without retiring or rel
   const root = join(f.request.config.globalRoot, 'herdr'), file = join(f.h.directories.agent, 'sessions/session-one.jsonl'), id = 'session-one', address = f.h.owner!.terminal.address;
   await writeFile(file, JSON.stringify({ type: 'session', id, cwd: f.h.root }) + '\n');
   f.request.config.spaces = [{ name: 'Group', sessions: [{ file }] }]; f.request.config.layout = 'panes';
-  const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  await once(child, 'spawn'); cleanup.push(async () => { child.kill(); });
+  const identity = { pid: child.pid!, startIdentity: processStartTime(child.pid!)! };
   const owner = { ...f.h.owner!, sessionId: id as never, generation: 'current-generation' as never, sessionFile: file, cwd: f.h.root };
   await createTerminalRegistry(root).record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } });
   await createProcessPresence(root).record({ ...identity, sessionId: id as never, sessionFile: file, sessionName: 'Session', kind: 'top-level', hcAddress: address });
@@ -55,6 +60,14 @@ test('setup preflight adopts a live replacement terminal without retiring or rel
   expect(await readFile(commands).catch(() => null)).toBeNull();
   const launches = (await f.h.calls()).slice(before.length).filter(call => call.argv[0] === 'run' && !call.argv.includes('--probe'));
   expect(launches).toEqual([]);
+  const observed = await f.ports.spacePorts(f.request).layoutSnapshot();
+  expect(await recordSessionMove(join(root, 'spaces'), { sessionId: id, terminal: address }, observed)).toBe(true);
+  const exited = once(child, 'exit'); child.kill(); await exited;
+  await createProcessPresence(root).remove(identity);
+  await writeFile(script, `console.log(JSON.stringify({spaces:[{id:'group',name:'Group',tabs:[]}]}));\n`);
+  await rollbackHerdr(f.request, parts);
+  expect((await readCutoverRecovery(join(root, 'spaces'))).entries).toEqual([]);
+
 }, 60000);
 
 test('setup accepts a fresh new feed generation for the same live terminal and process', async () => {
@@ -84,6 +97,9 @@ test('setup accepts a fresh new feed generation for the same live terminal and p
   await writePrivateJson(join(root, 'sessions', id, 'heartbeat.json'), { version: 1, sessionId: id, generation: 'other-generation', updatedAt: now });
   expect(await spaces.liveSessionFeed?.(target as never)).toBeNull();
   await writePrivateJson(join(root, 'sessions', id, 'heartbeat.json'), { version: 1, sessionId: id, generation, updatedAt: now });
+  await writePrivateJson(join(root, 'sessions', id, 'session.json'), { ...feed, owner: { ...feed.owner, terminal: { ...feed.owner.terminal, coreId: 'stale-core' } } });
+  expect(await spaces.liveSessionFeed?.(target as never)).toBeNull();
+  await writePrivateJson(join(root, 'sessions', id, 'session.json'), feed);
   expect(await spaces.liveSessionFeed?.(target as never)).toMatchObject({ generation });
   const result = await setupSpaces(f.request.config, spaces);
   expect(result.launched).toMatchObject([{ ...identity, sessionId: id, sessionFile: file }]);
@@ -92,4 +108,13 @@ test('setup accepts a fresh new feed generation for the same live terminal and p
   expect((await readCutoverRecovery(spaceRoot)).entries).toHaveLength(1);
   const bytes = await readFile(join(root, 'sessions', id, 'session.json'));
   expect(JSON.parse(bytes.toString()).generation).toBe(generation);
+  const saved = await readJournal(f.request.journalRoot); saved.cutoverPending = true;
+  await saveJournal(f.request.journalRoot, saved);
+  await writePrivateJson(join(root, 'sessions', id, 'session.json'), { ...feed, owner: { ...feed.owner, terminal: { ...feed.owner.terminal, address: 'another-pane' } } });
+  const before = await f.h.calls(), parts = await f.ports.setupParts(f.request);
+  const pending = await parts.preflight(f.request);
+  expect(pending.cutoverActions?.join('\n')).toContain('Setup left "Session" running');
+  expect(pending.cutoverProvedAbsent).toBe(false);
+  expect((await f.h.calls()).slice(before.length).filter(call => call.argv[0] === 'run')).toEqual([]);
+
 }, 60000);

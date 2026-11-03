@@ -23,6 +23,68 @@ async function templateCommand(suite: Suite, path: string): Promise<{ bytes: Buf
 
 
 export const scenarios: readonly ScenarioDefinition[] = [
+  { id: storyId('H-setup-adopt'), title: 'Setup plans adoption and backs up explicit replacements without disturbing sessions', tiers: ['headless'],
+    async run(original) {
+      const { suite, config } = await installFresh(original);
+      const configPath = join(config.globalRoot, 'herdr/config.json');
+      const invoke = (...flags: string[]) => suite.invoke(process.execPath, [suite.packed.cli, 'setup', '--config', configPath, ...flags], suite.env);
+      const journalPath = join(config.globalRoot, 'herdr/setup/journal.json');
+      const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+      const path = join(config.app.home, 'mods/spider-panel/main.js'), originalBytes = await readFile(path);
+      const entry = journal.entries.find((entry: { path: string }) => entry.path === path); assert.ok(entry);
+      journal.entries = journal.entries.filter((entry: { path: string }) => entry.path !== path);
+      await writeFile(journalPath, JSON.stringify(journal));
+      const before = await fingerprintInstallation(suite, config);
+      const plan = await invoke('--dry-run'); await suite.evidence('adopt-plan.json', plan);
+      assert.equal(plan.exitCode, 0, plan.stderr); assert.ok(plan.stdout.includes(`adopt ${path}`));
+      assert.deepEqual(await fingerprintInstallation(suite, config), before);
+      const adopt = await invoke(); assert.equal(adopt.exitCode, 0, adopt.stderr); assert.match(adopt.stdout, /0 file writes/);
+      const adopted = JSON.parse(await readFile(journalPath, 'utf8')).entries.find((entry: { path: string }) => entry.path === path);
+      assert.ok(adopted); assert.deepEqual(await readFile(adopted.backup), originalBytes);
+      const edited = Buffer.concat([originalBytes, Buffer.from('\n// local preference\n')]); await writeFile(path, edited);
+      const refused = await invoke(); assert.notEqual(refused.exitCode, 0); assert.ok(refused.stderr.includes(path)); assert.match(refused.stderr, /--replace-changed/);
+      const replacePlan = await invoke('--dry-run'); assert.notEqual(replacePlan.exitCode, 0); assert.ok(replacePlan.stdout.includes(`replace ${path}`)); assert.deepEqual(await readFile(path), edited);
+      const replace = await invoke('--replace-changed'); await suite.evidence('replace.json', replace); assert.equal(replace.exitCode, 0, replace.stderr);
+      const replacement = JSON.parse(await readFile(journalPath, 'utf8')).entries.find((entry: { path: string }) => entry.path === path);
+      assert.deepEqual(await readFile(replacement.backup), edited); assert.deepEqual(await readFile(path), originalBytes);
+      const settled = await fingerprintInstallation(suite, config), twice = await invoke(); assert.equal(twice.exitCode, 0, twice.stderr); assert.match(twice.stdout, /0 file writes/); assert.deepEqual(await fingerprintInstallation(suite, config), settled);
+    },
+  },
+  { id: storyId('H-setup-replace'), title: 'Setup restores a parked session to its own tab without another writer or empty tab', tiers: ['headless'],
+    async run(original) {
+      const { suite, config, app } = await prepareInstallInputs(original);
+      const cwd = await suite.project('parked');
+      const first = await createNamedSession(suite, 'First', cwd, 'first');
+      const second = await createNamedSession(suite, 'Second', cwd, 'second');
+      config.layout = 'tabs'; config.spaces = [{ name: 'Work', sessions: [{ file: first.file }, { file: second.file }] }];
+      const initial = await runSetup(suite, config); assert.equal(initial.exitCode, 0, initial.stderr);
+      const selectedOwners = async () => (await readPresence(suite)).filter(row => row.kind === 'top-level' && [first.sessionId, second.sessionId].includes(String(row.sessionId))).map(row => ({ sessionId: row.sessionId, pid: Number(row.pid), startIdentity: row.startIdentity, terminal: String(row.hcAddress) })).sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId)));
+      const owners = await selectedOwners(); assert.equal(owners.length, 2);
+      const owner = owners.find(row => row.sessionId === second.sessionId)!;
+      assert.ok(identityAlive(identityOf(owner.pid)));
+      await app.command('terminal.park', { terminal: owner.terminal });
+      type World = { spaces: { id: string; tabs: { id: string; name: string; terminals: { terminal: string; pane: string }[] }[] }[] };
+      const world = () => app.ls() as Promise<World>;
+      await waitFor('second session is parked while its process stays live', world, value => !value.spaces.flatMap(space => space.tabs).some(tab => tab.terminals.some(row => row.terminal === owner.terminal)), deadline(10000));
+      const restored = await runSetup(suite, initial.configPath); await suite.evidence('parked-setup.json', restored);
+      assert.equal(restored.exitCode, 0, restored.stderr);
+      const placed = await world(), tabs = placed.spaces[0].tabs;
+      assert.deepEqual(tabs.map(tab => tab.name), ['First', 'Second']);
+      assert.deepEqual(tabs.map(tab => tab.terminals.map(row => row.terminal)), [owners.filter(row => row.sessionId === first.sessionId).map(row => row.terminal), [owner.terminal]]);
+      assert.ok(identityAlive(identityOf(owner.pid)));
+      assert.deepEqual(await selectedOwners(), owners);
+      const stable = (value: World) => value.spaces.map(space => ({ id: space.id, tabs: space.tabs.map(tab => ({ id: tab.id, name: tab.name, terminals: tab.terminals.map(row => ({ terminal: row.terminal, pane: row.pane })) })) }));
+      const files = await fingerprintInstallation(suite, config), starts = (await readObserved(suite.pi.observerDir)).filter(row => row.type === 'session_start' && [first.sessionId, second.sessionId].includes(String(row.sessionId)));
+      const calls = (await suite.cores!.records()).length;
+      const repeated = await runSetup(suite, initial.configPath); assert.equal(repeated.exitCode, 0, repeated.stderr);
+      assert.deepEqual(stable(await world()), stable(placed));
+      assert.deepEqual(await fingerprintInstallation(suite, config), files);
+      assert.deepEqual(await selectedOwners(), owners);
+      assert.deepEqual((await readObserved(suite.pi.observerDir)).filter(row => row.type === 'session_start' && [first.sessionId, second.sessionId].includes(String(row.sessionId))), starts);
+      assert.equal((await suite.cores!.records()).slice(calls).filter(call => ['keep', 'label', 'kill', 'rm'].includes(call.argv[0]) && owners.some(owner => owner.terminal === call.argv[1])).length, 0);
+      await suite.evidence('parked-repeat.json', { placed, repeated, owners });
+    },
+  },
   { id: storyId('S06'), title: 'A second setup only probes each runtime root without writes, uploads or focus changes', tiers: ['headless', 'app'],
     async run(original) {
       const { suite, config, app } = await installFresh(original);

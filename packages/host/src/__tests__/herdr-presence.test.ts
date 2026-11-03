@@ -78,7 +78,8 @@ test('a pending launch lease holds only its own target before presence is record
 });
 
 test('process inventory matches pi executables, not unrelated pi arguments', async () => {
-  processRows = '401 less less pi\n402 grep grep pi-coding-agent\n403 pi pi\n404 /fixture/bin/pi /fixture/bin/pi\n405 node node /fixture/pi-coding-agent/dist/cli.js\n';
+  const nodePid = process.platform === 'linux' ? 99999999 : 405;
+  processRows = `401 less less less pi\n402 grep grep grep pi-coding-agent\n403 pi pi pi\n404 /fixture/bin/pi pi /fixture/bin/pi\n${nodePid} node node node /fixture/pi-coding-agent/dist/cli.js\n`;
   const processes = await createProcessInventory(root).processes();
-  expect(processes.map(process => process.pid)).toEqual([403, 404, 405]);
+  expect(processes.map(process => process.pid)).toEqual([403, 404, nodePid]);
 });

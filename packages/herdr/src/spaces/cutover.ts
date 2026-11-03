@@ -34,12 +34,14 @@ export async function startCutover(initial: SessionManifest, ports: CutoverPorts
     let blocked = false;
     for (const target of manifest.sessions) {
       refuseExplicitExtensions(target.name ?? target.sessionId ?? target.file ?? 'unresolved session', target.extensionArguments);
-      if (target.file === null) continue;
+      if (target.file === null || ports.excludeFiles?.has(target.file)) continue;
       const existing = await ports.alreadyLaunched?.(target);
+      if (ports.excludeFiles?.has(target.file)) continue;
       if (existing) { reused.set(target.file, existing); continue; }
       const liveness = await assessSessionLiveness(target.file, ports.processInventory);
       if (liveness.kind !== 'free') { blocked = true; messages.add(`Close selected session ${target.name ?? target.sessionId ?? target.file}; PIDs: ${liveness.pids.join(', ')}`); }
     }
+    manifest = include(manifest);
     const unknownMessages = new Set<string>();
     if (manifest.sessions.some(target => !target.file || !reused.has(target.file))) {
       if (inventory.unknownPids.length || inventory.uncertainPids.length) blocked = true;

@@ -30,7 +30,7 @@ async function absent(path: string) {
   assert.equal(info, null, `fresh installation unexpectedly contains ${path}`);
 }
 async function assertNoInstalled(suite: Suite) {
-  for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'machines']) await absent(join(suite.directories.HERDR_APP_HOME, 'mods', `spider-${name}`));
+  for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'machines']) await absent(join(suite.directories.HERDR_APP_HOME, 'mods', `spider-${name}`));
   await absent(join(suite.directories.HERDR_APP_HOME, 'layouts/spider-glass.json'));
   if (suite.options.tier !== 'remote') await absent(join(suite.root, 'r'));
 }
@@ -50,7 +50,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
     const result = await runSetup(suite, config); await suite.evidence('setup.json', result);
     assert.equal(result.exitCode, 0, result.stderr || result.stdout);
     const installed = await readInstalled(suite);
-    assert.deepEqual(Object.keys(installed.mods).sort(), ['spider-agents', 'spider-pane', 'spider-panel', 'spider-spaces', 'spider-tabs']);
+    assert.deepEqual(Object.keys(installed.mods).sort(), ['spider-agents', 'spider-chrome', 'spider-pane', 'spider-panel', 'spider-spaces', 'spider-tabs']);
     await absent(join(config.app.home, 'mods/spider-machines'));
     for (const [name, path] of Object.entries(installed.mods)) {
       const check = await app.check(suite.ownPath(path)); await suite.evidence(`check-${name}.json`, check);

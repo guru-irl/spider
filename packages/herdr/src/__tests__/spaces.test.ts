@@ -24,14 +24,14 @@ beforeEach(async () => {
   layout = { spaces: [] }; splits = [];
   const processInventory = { presence: createProcessPresence(root), leases: createSessionLeases(root), processes: async () => unknown ? [{ pid: 999, startIdentity: 'unknown', classification: 'pi' as const }] : [], probe: async (pid: number) => probes.get(pid) ?? { kind: 'absent' as const } };
   const results = new Map<string, LaunchedSession>(); const errors = new Map<string, Error>();
-  const parked = new Map<string, { terminal: TerminalAddress; ownerSessionId: string | null }>(); let focused: string | undefined;
+  const parked = new Map<string, { terminal: TerminalAddress; ownerSessionId: string | null }>(); let focused: string | undefined; let nextTab = 0; const placeholders = new Set<string>();
   async function allocate(name: string, spaceName: string, spaceId: SpaceId | null, argv: readonly string[], existingTab?: LayoutSnapshot['spaces'][number]['tabs'][number]) {
     const flags = (flag: string) => argv[argv.indexOf(flag) + 1];
     expect(argv.slice(0, 7)).toEqual([process.execPath, '-e', 'process.env.PI_CODING_AGENT_DIR=process.argv[1].slice("PI_CODING_AGENT_DIR=".length);process.argv.splice(1,2);import(require("node:url").pathToFileURL(process.argv[1]).href)', `PI_CODING_AGENT_DIR=${root}`, process.execPath, join(root, 'cli.mjs'), 'resume']);
     let space = layout.spaces.find(s => s.id === spaceId);
     if (!space) { space = { id: `space-${layout.spaces.length}` as SpaceId, name: spaceName, tabs: [] }; layout.spaces.push(space); }
     const terminal = `fresh-${nextPid}` as TerminalAddress;
-    const tab = existingTab ?? { id: `${space.id}-tab-${space.tabs.length}` as TabId, name, ownerSessionId: null as string | null, terminal, terminals: [] };
+    const tab = existingTab ?? { id: `${space.id}-tab-${nextTab++}` as TabId, name, ownerSessionId: null as string | null, terminal, terminals: [] };
     if (!existingTab) space.tabs.push(tab);
     const row = { terminal, ownerSessionId: null as string | null }; (tab.terminals ??= []).push(row);
     try {
@@ -47,10 +47,15 @@ beforeEach(async () => {
     reportLive: rows => { listed = rows.map(r => ({ name: r.sessionName, pid: r.pid })); }, reportBlocked: message => { messages.push(message); }, notesDisabled: async () => notes,
     waitForChange: async () => { waits++; ticks += 100; if (waits === 1) probes.set(100, { kind: 'absent' }); else unknown = false; },
     layoutSnapshot: async () => structuredClone(layout), launcher: { nodePath: process.execPath, cliPath: join(root, 'cli.mjs'), configPath: join(root, 'config.json') },
-    app: { tabTerminals: async () => [], ownerPlacement: async address => { for (const space of layout.spaces) for (const tab of space.tabs) if (tab.terminals ? tab.terminals.some(t => t.terminal === address) : tab.terminal === address) return { space: space.id, tab: tab.id, pane: `pane-${address}` as import('../contracts.js').PaneId }; throw new HerdrError('owner-unplaced', 'Not placed'); }, awaitPane: async address => (await ports.app.ownerPlacement(address)).pane, command: async (command, args) => {
+    app: { tabTerminals: async () => [], ownerPlacement: async address => { for (const space of layout.spaces) for (const tab of space.tabs) if (tab.terminals ? tab.terminals.some(t => t.terminal === address) : tab.terminal === address) return { space: space.id, tab: tab.id, pane: `pane-${address}` as import('../contracts.js').PaneId }; throw new HerdrError('owner-unplaced', 'Not placed'); }, awaitPane: async (address, expected) => { const placement = await ports.app.ownerPlacement(address); if (placement.tab !== expected.tab || placement.space !== expected.space) throw new HerdrError('pane-timeout', 'Terminal did not reach the expected tab'); return placement.pane; }, command: async (command, args) => {
       if (command === 'space.new') return allocate(args.tab as string, args.name as string, null, args.argv as string[]);
+      if (command === 'tab.new' && args.mod === 'pane') {
+        const space = layout.spaces.find(space => space.id === args.space)!;
+        const tab = { id: `empty-${nextTab++}` as TabId, name: String(args.name), terminal: null, terminals: [], ownerSessionId: null };
+        space.tabs.push(tab); placeholders.add(`pane-${tab.id}`); return { space: space.id, tab: tab.id, pane: `pane-${tab.id}` as never };
+      }
       if (command === 'tab.new') return allocate(args.name as string, '', args.space as SpaceId, args.argv as string[]);
-      if (command === 'pane.focus') { focused = String(args.terminal); return {}; }
+      if (command === 'pane.focus') { focused = String(args.terminal ?? args.pane); return {}; }
       if (command === 'terminal.park') {
         for (const space of layout.spaces) for (const tab of [...space.tabs]) {
           const row = tab.terminals?.find(t => t.terminal === args.terminal);
@@ -59,13 +64,20 @@ beforeEach(async () => {
         return { pending: true };
       }
       if (command === 'terminal.keep') {
-        for (const space of layout.spaces) for (const tab of space.tabs) if (tab.terminals?.some(t => t.terminal === focused)) {
+        for (const space of layout.spaces) for (const tab of space.tabs) if (tab.terminals?.some(t => t.terminal === focused) || focused === `pane-${tab.id}`) {
           const row = parked.get(String(args.terminal)); if (!row) throw new Error('Expected a parked allocation');
-          tab.terminals.push(row); parked.delete(row.terminal); splits.push({ anchor: focused!, direction: String(args.place) });
-          return { pending: true };
+          if (args.place === 'tab') {
+            const kept = { id: `kept-${nextTab++}` as TabId, name: row.terminal, terminal: row.terminal, ownerSessionId: row.ownerSessionId, terminals: [row] };
+            space.tabs.push(kept); parked.delete(row.terminal); focused = row.terminal;
+            return { pending: true, tab: kept.id, terminal: row.terminal };
+          }
+          if (!['right', 'down'].includes(String(args.place))) throw new Error('Unsupported keep placement');
+          tab.terminals!.push(row); parked.delete(row.terminal); splits.push({ anchor: focused!, direction: String(args.place) });
+          return { pending: true, tab: tab.id, terminal: row.terminal };
         }
         throw new Error('Keep target not found');
       }
+      if (command === 'pane.close') { if (!placeholders.delete(String(args.pane))) return { error: { code: 'app-error', message: 'no such pane' } }; for (const space of layout.spaces) space.tabs = space.tabs.filter(tab => tab.terminals?.length || args.pane !== `pane-${tab.id}`); return {}; }
       if (command === 'tab.rename') { const tab = layout.spaces.flatMap(s => s.tabs).find(t => t.id === args.id); if (tab) tab.name = args.name as string; return {}; }
       if (command === 'tab.close') { for (const space of layout.spaces) space.tabs = space.tabs.filter(t => t.id !== args.id); return {}; }
       if (command === 'space.select') return {}; throw new Error('Unexpected app command');
@@ -77,6 +89,16 @@ beforeEach(async () => {
 afterEach(async () => rm(root, { recursive: true, force: true }));
 async function addSession(id: string, name: string) {
   const file = join(root, `${id}.jsonl`); await writeFile(file, [JSON.stringify({ type: 'session', version: 3, id, cwd: root }), JSON.stringify({ type: 'session_info', name: 'old name' }), JSON.stringify({ type: 'session_info', name })].join('\n') + '\n'); files.push(file); config.spaces[0].sessions.push({ file }); return file;
+}
+function ownerFeed(result: Awaited<ReturnType<typeof setupSpaces>>, sessionId: string) {
+  const index = result.launched.findIndex(owner => owner.sessionId === sessionId);
+  if (index < 0) return null;
+  const owner = result.launched[index];
+  return { sessionId: owner.sessionId, owner: { sessionId: owner.sessionId, sessionFile: owner.sessionFile, cwd: owner.cwd, terminal: { address: result.tabs[index].terminal } } } as never;
+}
+async function confirmOwners(result: Awaited<ReturnType<typeof setupSpaces>>) {
+  for (const [index, owner] of result.launched.entries()) await ports.processInventory.presence.record({ ...owner, sessionName: owner.sessionId, kind: 'top-level', hcAddress: result.tabs[index].terminal });
+  ports.liveSessionFeed = async target => ownerFeed(result, target.sessionId);
 }
 it('cutover lists names and blocks an unrecorded process before opening files', async () => {
   const file = await addSession('s0', 'named session'); for (let i = 1; i < 10; i++) await addSession(`s${i}`, `session ${i}`);
@@ -611,6 +633,53 @@ it('recovers all spaces from a mixed merged layout with moved and duplicate live
   expect(recovered.entries.find(entry => entry.target.sessionId === 'session-8')?.placement).toMatchObject({ terminal: 'terminal-14', tab: 'tab-7' });
 });
 
+it('plans no cutover for a recorded session running in the same tab under a new terminal and core', async () => {
+  const file = await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0], placement = initial.tabs[0];
+  const address = 'replacement' as TerminalAddress;
+  layout.spaces[0].tabs[0].terminal = address;
+  layout.spaces[0].tabs[0].terminals = [{ terminal: address, ownerSessionId: 'one' }];
+  await ports.processInventory.presence.record({ pid: owner.pid, startIdentity: owner.startIdentity, sessionId: owner.sessionId, sessionFile: file, sessionName: 'First', kind: 'top-level', hcAddress: address });
+  ports.terminalState = async current => current.terminal === address ? 'live' : 'absent';
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address } } } as never);
+  ports.coreIdentity = async () => ({ coreId: 'restarted' as never, socket: join(root, 'fixture.sock'), sessionNamespace: 'fixture' });
+  ports.app.command = async () => { throw new Error('No app changes allowed'); };
+  const before = await readFile(join(ports.journalRoot, 'spaces.json'));
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(await readFile(join(ports.journalRoot, 'spaces.json'))).toEqual(before);
+  const result = await setupSpaces(config, ports);
+  expect(result.tabs).toEqual([{ ...placement, terminal: address }]);
+  expect(writers).toEqual(['one']);
+  expect(probes.get(owner.pid)).toEqual({ kind: 'live', startIdentity: owner.startIdentity });
+});
+
+it('plans no cutover for live sessions already sharing a merged tab', async () => {
+  await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports), firstTab = layout.spaces[0].tabs[0];
+  firstTab.name = 'Combined'; firstTab.terminals = initial.tabs.map(tab => ({ terminal: tab.terminal, ownerSessionId: null }));
+  layout.spaces[0].tabs = [firstTab];
+  for (const [index, owner] of initial.launched.entries()) await ports.processInventory.presence.record({ pid: owner.pid, startIdentity: owner.startIdentity, sessionId: owner.sessionId, sessionFile: owner.sessionFile, sessionName: index ? 'Second' : 'First', kind: 'top-level', hcAddress: initial.tabs[index].terminal });
+  ports.liveSessionFeed = async target => { const index = initial.launched.findIndex(owner => owner.sessionId === target.sessionId), owner = initial.launched[index]; return { sessionId: target.sessionId, owner: { sessionId: target.sessionId, sessionFile: owner.sessionFile, cwd: root, terminal: { address: initial.tabs[index].terminal } } } as never; };
+  ports.app.command = async () => { throw new Error('Already running sessions must not move'); };
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect((await setupSpaces(config, ports)).tabs.map(tab => tab.tab)).toEqual([firstTab.id, firstTab.id]);
+  expect(writers).toEqual(['one', 'two']);
+});
+
+it.each([true, false])('leaves an unproved visible running session alone with confirmed feed %s', async fresh => {
+  config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports), tab = layout.spaces[0].tabs[0];
+  for (const [index, owner] of initial.launched.entries()) await ports.processInventory.presence.record({ pid: owner.pid, startIdentity: owner.startIdentity, sessionId: owner.sessionId, sessionFile: owner.sessionFile, sessionName: index ? 'Second' : 'First', kind: 'top-level', hcAddress: initial.tabs[index].terminal });
+  ports.liveSessionFeed = async target => { const index = initial.launched.findIndex(owner => owner.sessionId === target.sessionId), owner = initial.launched[index]; return { sessionId: target.sessionId, owner: { sessionId: target.sessionId, sessionFile: owner.sessionFile, cwd: root, terminal: { address: initial.tabs[index].terminal } } } as never; };
+  if (!fresh) ports.liveSessionFeed = async () => null;
+  tab.terminals!.find(row => row.terminal === initial.tabs[0].terminal)!.ownerSessionId = 'another-session';
+  const before = structuredClone(layout);
+  ports.app.command = async () => { throw new Error('Already running sessions must not move'); };
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one', 'two']);
+});
+
 it('does not ask live owners to close when an unrelated pi is unrecorded', async () => {
   await addSession('one', 'First'); await addSession('two', 'Second');
   const initial = await setupSpaces(config, ports);
@@ -685,7 +754,11 @@ it('does not reuse an owner whose heartbeat disappears after preflight', async (
   let reads = 0;
   (ports as any).liveSessionFeed = async () => ++reads === 1 ? { sessionId: 'one', generation: 'new', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address } } } : null;
   ports.verifyOwner = async () => { throw new HerdrError('owner-activation-unconfirmed', 'Owner is no longer confirmed'); };
-  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'owner-activation-unconfirmed' });
+  const before = structuredClone(layout);
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  expect(messages).toEqual([expect.stringContaining('Setup left "First" running')]);
+  expect(layout).toEqual(before);
+  expect(waits).toBe(0);
   expect(writers).toEqual(['one']);
 });
 
@@ -702,7 +775,7 @@ it('adopts a live session by id when its file path has changed', async () => {
   const priorState = ports.terminalState!;
   ports.terminalState = async placement => placement.terminal === address ? 'live' : priorState(placement);
   (ports as any).liveSessionFeed = async () => null;
-  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'owner-activation-unconfirmed' });
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced', message: expect.stringContaining('Setup left "First" running') });
   expect(writers).toEqual(['one']);
   (ports as any).liveSessionFeed = async () => ({ sessionId: 'one', generation: 'new', owner: { sessionId: 'one', sessionFile: currentFile, cwd: root, terminal: { address } } });
   const result = await setupSpaces(config, ports);
@@ -719,7 +792,7 @@ it('reopens a session whose old terminal now holds a different live session', as
   tab.terminals!.find(row => row.terminal === old.terminal)!.ownerSessionId = null;
   const previous = ports.verifyOwner;
   ports.verifyOwner = async (target, placement, signal) => placement.terminal === old.terminal ? Promise.reject(new HerdrError('owner-session-switched', 'A different session is open')) : previous(target, placement, signal);
-  (ports as any).liveSessionFeed = async () => null;
+  ports.liveSessionFeed = async target => target.sessionId === 'one' ? null : ownerFeed(initial, target.sessionId);
   const notices: string[] = []; ports.reportLayout = message => notices.push(message);
   const result = await setupSpaces(config, ports);
   expect(writers).toEqual(['one', 'two', 'one']);
@@ -755,12 +828,13 @@ it('restores a parked live session to its shared tab without launching another w
   const initial = await setupSpaces(config, ports), parked = initial.tabs[0];
   await ports.app.command('terminal.park', { terminal: parked.terminal });
   const result = await setupSpaces(config, ports);
-  expect(result.tabs.find(row => row.terminal === parked.terminal)?.tab).toBe(parked.tab);
+  expect(result.tabs.map(tab => tab.tab)).toEqual([parked.tab, parked.tab]);
   expect(layout.spaces[0].tabs[0].terminals?.map(row => row.terminal)).toContain(parked.terminal);
-  expect(result.launched).toEqual(initial.launched); expect(writers).toEqual(['one', 'two']);
+  expect(probes.get(initial.launched[0].pid)?.kind).toBe('live');
+  expect(writers).toEqual(['one', 'two']);
 });
 
-it.each(['terminal.park', 'terminal.keep'])('a lost %s reply resumes the same known terminal without a second launch', async operation => {
+it.each(['terminal.park', 'terminal.keep'])('a lost %s reply restores placement without launching another writer', async operation => {
   config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
   const command = ports.app.command; let lost = false;
   ports.app.command = async (name, args) => { const reply = await command(name, args); if (name === operation && !lost) { lost = true; throw new Error('lost move reply'); } return reply; };
@@ -864,4 +938,223 @@ it('does not retry unrelated keep failures', async () => {
   ports.app.command = async (name, args) => name === 'terminal.keep' ? (++attempts, { error: { code: 'app-error', message: 'permission denied' } }) : command(name, args);
   await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'app-error', message: 'permission denied' });
   expect(attempts).toBe(1);
+});
+
+
+it('reports every unproved running pane and opens independent sessions before refusing', async () => {
+  await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports);
+  for (const tab of layout.spaces[0].tabs) tab.terminals![0].ownerSessionId = 'another-session';
+  const before = structuredClone(layout.spaces[0].tabs);
+  await addSession('three', 'Third');
+  const error = await setupSpaces(config, ports).then(() => null, error => error);
+  expect(error).toMatchObject({ code: 'running-session-unplaced' });
+  expect(error.message).toContain('Setup left "First" running');
+  expect(error.message).toContain('Setup left "Second" running');
+  expect(error.message).toContain('/reload');
+  expect(error.message).toContain('/herdr-setup');
+  expect(error.message).not.toContain('Rollback:');
+  expect(messages).toHaveLength(2);
+  expect(writers).toEqual(['one', 'two', 'three']);
+  expect(layout.spaces[0].tabs.slice(0, 2)).toEqual(before);
+  expect(initial.launched.every(owner => probes.get(owner.pid)?.kind === 'live')).toBe(true);
+});
+
+it('plans to leave an unconfirmed parked live pane running without reopening it', async () => {
+  config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports);
+  await ports.app.command('terminal.park', { terminal: initial.tabs[1].terminal });
+  ports.liveSessionFeed = async () => null;
+  const before = structuredClone(layout);
+  expect((await spaceSetup.planSpaceCutover(config, ports)).join('\n')).toContain('Setup left "Second" running');
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one', 'two']);
+});
+
+it('does not plan an owner-conflicting pane as running in place', async () => {
+  const file = await addSession('one', 'First'), initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  await ports.processInventory.presence.record({ ...owner, sessionName: 'First', kind: 'top-level', hcAddress: initial.tabs[0].terminal });
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: initial.tabs[0].terminal } } } as never);
+  layout.spaces[0].tabs[0].terminals![0].ownerSessionId = 'another-session';
+  expect(await spaceSetup.planSpaceCutover(config, ports)).not.toEqual([]);
+  expect(writers).toEqual(['one']);
+});
+
+
+it('plans from the preflight snapshot without repeating layout or live-feed reads', async () => {
+  const file = await addSession('one', 'First'), initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  await ports.processInventory.presence.record({ ...owner, sessionName: 'First', kind: 'top-level', hcAddress: initial.tabs[0].terminal });
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: initial.tabs[0].terminal } } } as never);
+  const snapshot = await ports.layoutSnapshot(), recovery = await readCutoverRecovery(ports.journalRoot, snapshot, config, ports);
+  ports.layoutSnapshot = async () => { throw new Error('Preflight already read the layout'); };
+  ports.liveSessionFeed = async () => { throw new Error('Preflight already read live owners'); };
+  expect(await (spaceSetup.planSpaceCutover as any)(config, ports, { snapshot, recovery })).toEqual([]);
+  expect(writers).toEqual(['one']);
+});
+
+
+it('restores a lone parked live session into a process-free pane tab', async () => {
+  config.layout = 'panes'; await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), terminal = initial.tabs[0].terminal;
+  await confirmOwners(initial);
+  await ports.app.command('terminal.park', { terminal });
+  expect(layout.spaces[0].tabs).toEqual([]);
+  const result = await setupSpaces(config, ports);
+  expect(result.tabs[0].terminal).toBe(terminal);
+  expect(layout.spaces[0].tabs).toHaveLength(1);
+  expect(layout.spaces[0].tabs[0].terminals).toEqual([{ terminal, ownerSessionId: 'one' }]);
+  expect(layout.spaces[0].tabs[0].name).toBe('Space A');
+  expect(probes.get(initial.launched[0].pid)?.kind).toBe('live');
+  expect(writers).toEqual(['one']);
+  const before = structuredClone(layout), journal = await readFile(join(ports.journalRoot, 'spaces.json'), 'utf8');
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  const command = vi.spyOn(ports.app, 'command');
+  await setupSpaces(config, ports);
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(await readFile(join(ports.journalRoot, 'spaces.json'), 'utf8')).toBe(journal);
+  expect(writers).toEqual(['one']);
+});
+
+it('re-anchors an interrupted pane move when its recorded destination has disappeared', async () => {
+  config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
+  const command = ports.app.command; let lost = false;
+  ports.app.command = async (name, args) => { const reply = await command(name, args); if (name === 'terminal.park' && !lost) { lost = true; throw new Error('lost park'); } return reply; };
+  await expect(setupSpaces(config, ports)).rejects.toThrow('lost park');
+  await ports.app.command('terminal.park', { terminal: 'fresh-500' });
+  const result = await setupSpaces(config, ports);
+  expect(result.tabs.map(tab => tab.terminal)).toEqual(['fresh-500', 'fresh-501']);
+  expect(layout.spaces[0].tabs).toHaveLength(1);
+  expect(layout.spaces[0].tabs[0].terminals).toHaveLength(2);
+  expect(writers).toEqual(['one', 'two']);
+});
+
+
+it('skips a session whose feed names another pane while opening the remaining selections', async () => {
+  const file = await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  await ports.processInventory.presence.record({ ...owner, sessionName: 'First', kind: 'top-level', hcAddress: initial.tabs[0].terminal });
+  ports.liveSessionFeed = async target => target.sessionId === 'one' ? ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: initial.tabs[1].terminal } } } as never) : ownerFeed(initial, target.sessionId);
+  const verify = ports.verifyOwner;
+  ports.verifyOwner = async (...args) => { if (args[0].sessionId === 'one') throw new HerdrError('owner-activation-unconfirmed', 'Pane belongs to another session'); return verify(...args); };
+  await addSession('three', 'Third');
+  const error = await setupSpaces(config, ports).then(() => null, error => error);
+  expect(error).toMatchObject({ code: 'running-session-unplaced' });
+  expect(error.message).toContain('Setup left "First" running');
+  expect(messages).toHaveLength(1);
+  expect(writers).toEqual(['one', 'two', 'three']);
+  expect(layout.spaces[0].tabs.slice(0, 2).map(tab => tab.terminal)).toEqual(initial.tabs.map(tab => tab.terminal));
+});
+
+
+it('plans to finish a journalled move even while its live pane is still visible in the temporary tab', async () => {
+  config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
+  const command = ports.app.command;
+  ports.app.command = async (name, args) => { if (name === 'terminal.park') throw new Error('park not yet applied'); return command(name, args); };
+  await expect(setupSpaces(config, ports)).rejects.toThrow('park not yet applied');
+  const recovery = await readCutoverRecovery(ports.journalRoot);
+  for (const entry of recovery.entries) await ports.processInventory.presence.record({ ...entry.result!, sessionName: entry.target.name, kind: 'top-level', hcAddress: entry.placement.terminal });
+  ports.liveSessionFeed = async target => { const entry = recovery.entries.find(entry => entry.target.sessionId === target.sessionId)!; return { sessionId: target.sessionId, owner: { sessionId: target.sessionId, sessionFile: entry.target.file, cwd: root, terminal: { address: entry.placement.terminal } } } as never; };
+  expect((await spaceSetup.planSpaceCutover(config, ports)).join('\n')).toMatch(/Re-place.*Second/);
+  ports.app.command = command;
+  await setupSpaces(config, ports);
+  expect(layout.spaces[0].tabs).toHaveLength(1);
+  expect(layout.spaces[0].tabs[0].terminals).toHaveLength(2);
+  expect(writers).toEqual(['one', 'two']);
+});
+
+
+it.each(['tabs', 'panes'] as const)('restores a parked session only into its own tab with %s layout', async requestedLayout => {
+  config.layout = 'tabs'; await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports), first = structuredClone(layout.spaces[0].tabs[0]);
+  await confirmOwners(initial);
+  config.layout = requestedLayout;
+  await ports.app.command('terminal.park', { terminal: initial.tabs[1].terminal });
+  const result = await setupSpaces(config, ports);
+  expect(layout.spaces[0].tabs).toHaveLength(2);
+  expect(layout.spaces[0].tabs[0]).toEqual(first);
+  expect(layout.spaces[0].tabs[1]).toMatchObject({ name: 'Second', terminals: [{ terminal: initial.tabs[1].terminal, ownerSessionId: 'two' }] });
+  expect(result.tabs[1].tab).not.toBe(initial.tabs[0].tab);
+  expect(probes.get(initial.launched[1].pid)?.kind).toBe('live');
+  expect(writers).toEqual(['one', 'two']);
+  const before = structuredClone(layout), journal = await readFile(join(ports.journalRoot, 'spaces.json'), 'utf8');
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  const command = vi.spyOn(ports.app, 'command');
+  await setupSpaces(config, ports);
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(await readFile(join(ports.journalRoot, 'spaces.json'), 'utf8')).toBe(journal);
+  expect(writers).toEqual(['one', 'two']);
+});
+
+it.each([
+  ['parked', 'missing-feed'], ['visible', 'missing-feed'],
+  ['parked', 'owner-activation-unconfirmed'], ['visible', 'owner-activation-unconfirmed'],
+  ['parked', 'owner-terminal-finished'], ['visible', 'owner-terminal-finished'],
+] as const)('skips an unproved %s owner with %s and finishes independent sessions', async (placement, reason) => {
+  config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[1], terminal = initial.tabs[1].terminal;
+  await ports.processInventory.presence.record({ ...owner, sessionName: 'Second', kind: 'top-level', hcAddress: terminal });
+  if (placement === 'parked') await ports.app.command('terminal.park', { terminal });
+  let feedReads = 0;
+  ports.liveSessionFeed = async target => target.sessionId !== 'two' ? ownerFeed(initial, target.sessionId) : reason !== 'missing-feed' ? ({ sessionId: 'two', owner: { sessionId: 'two', sessionFile: owner.sessionFile, cwd: root, terminal: { address: ++feedReads === 1 ? terminal : initial.tabs[0].terminal } } } as never) : null;
+  const verify = ports.verifyOwner;
+  ports.verifyOwner = async (...args) => {
+    if (args[0].sessionId === 'two') {
+      if (reason === 'missing-feed') { waits++; ticks += 30000; }
+      throw new HerdrError(reason === 'missing-feed' ? 'owner-activation-unconfirmed' : reason, 'New owner did not activate within 30 seconds');
+    }
+    return verify(...args);
+  };
+  await addSession('three', 'Third');
+  const before = structuredClone(layout);
+  const error = await setupSpaces(config, ports).then(() => null, error => error);
+  expect(error).toMatchObject({ code: 'running-session-unplaced' });
+  expect(error.message).toContain('Setup left "Second" running');
+  expect(error.message).toContain('/reload in that session');
+  expect(error.message).toContain('/herdr-setup');
+  expect(error.message).not.toContain('Rollback:');
+  expect(messages).toEqual([expect.stringContaining('Setup left "Second" running')]);
+  expect(writers).toEqual(['one', 'two', 'three']);
+  expect(probes.get(owner.pid)?.kind).toBe('live');
+  expect(layout.spaces[0].tabs.flatMap(tab => tab.terminals ?? []).filter(row => row.terminal === terminal)).toHaveLength(placement === 'parked' ? 0 : 1);
+  const location = (snapshot: LayoutSnapshot) => snapshot.spaces.flatMap(space => space.tabs.filter(tab => tab.terminals?.some(row => row.terminal === terminal)).map(tab => ({ space: space.id, tab: tab.id })));
+  expect(location(layout)).toEqual(location(before));
+  expect(layout.spaces[0].tabs.filter(tab => !tab.terminals?.length)).toEqual([]);
+  expect(waits).toBe(0);
+  expect(ticks).toBe(0);
+  const completed = (await readCutoverRecovery(ports.journalRoot)).recoveredCutover!;
+  ports.liveSessionFeed = async target => target.sessionId === 'two' ? null : ownerFeed(completed, target.sessionId);
+  const plan = (await spaceSetup.planSpaceCutover(config, ports)).join('\n');
+  expect(plan).toContain('Setup left "Second" running');
+  expect(plan).not.toMatch(/Re-place.*Second/);
+  const after = structuredClone(layout), command = vi.spyOn(ports.app, 'command');
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  expect(command).not.toHaveBeenCalled();
+  expect(messages).toEqual([expect.stringContaining('Setup left "Second" running'), expect.stringContaining('Setup left "Second" running')]);
+  expect(waits).toBe(0);
+  expect(layout).toEqual(after);
+  expect(writers).toEqual(['one', 'two', 'three']);
+  expect(before.spaces[0].tabs[0].terminals?.every(row => after.spaces[0].tabs.flatMap(tab => tab.terminals ?? []).some(value => value.terminal === row.terminal))).toBe(true);
+});
+
+it.each(['tab.new', 'pane.close'] as const)('recovers a lost %s reply while replacing a lone parked pane without empty tabs', async operation => {
+  config.layout = 'panes'; await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), terminal = initial.tabs[0].terminal;
+  await confirmOwners(initial);
+  await ports.app.command('terminal.park', { terminal });
+  const command = ports.app.command; let lost = false;
+  ports.app.command = async (name, args) => { const reply = await command(name, args); if (name === operation && !lost) { lost = true; throw new Error('lost placeholder reply'); } return reply; };
+  await expect(setupSpaces(config, ports)).rejects.toThrow('lost placeholder reply');
+  await setupSpaces(config, ports);
+  expect(layout.spaces[0].tabs).toHaveLength(1);
+  expect(layout.spaces[0].tabs[0]).toMatchObject({ name: 'Space A', terminals: [{ terminal, ownerSessionId: 'one' }] });
+  expect(writers).toEqual(['one']);
+  expect(probes.get(initial.launched[0].pid)?.kind).toBe('live');
+  const before = structuredClone(layout), noCommands = vi.spyOn(ports.app, 'command');
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  await setupSpaces(config, ports);
+  expect(noCommands).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one']);
 });

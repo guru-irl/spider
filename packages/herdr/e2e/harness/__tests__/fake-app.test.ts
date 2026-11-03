@@ -248,3 +248,19 @@ describe('strict fake app against the core boundary', () => {
     await expect(other.command('terminal.park', { terminal: 't1' })).rejects.toThrow(/wrong terminal/);
   });
 });
+
+
+it('focuses an empty mod pane before keeping a terminal beside it without a new tab', async () => {
+  const core = coreBoundary(), app = createFakeAppBoundary({ hc: core.hc });
+  const main = await app.command('space.new', { name: 'Work', argv: ['/bin/sh'] });
+  const placeholder = await app.command('tab.new', { space: main.space, name: 'Destination', mod: 'pane' });
+  const parked = await core.hc(['run']) as { address: string };
+  expect(await app.command('pane.focus', { pane: placeholder.pane })).toEqual({ ok: true });
+  await app.command('terminal.keep', { terminal: parked.address, place: 'right' });
+  await app.drain();
+  await app.command('pane.close', { pane: placeholder.pane });
+  const world = await app.command('ls', {}) as any;
+  expect(world.spaces[0].tabs.map((tab: any) => tab.id)).toEqual([main.tab, placeholder.tab]);
+  expect(world.spaces[0].tabs[1].terminals.map((row: any) => row.terminal)).toEqual([parked.address]);
+  expect(core.calls.filter(argv => argv[0] === 'kill')).toEqual([]);
+});

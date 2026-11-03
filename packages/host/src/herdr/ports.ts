@@ -1,16 +1,16 @@
 import { spawn } from 'node:child_process';
-import { constants as fileFlags } from 'node:fs';
+import { constants as fileFlags, readlinkSync } from 'node:fs';
 import { stripVTControlCharacters } from 'node:util';
 import { realpath, stat, appendFile, open } from 'node:fs/promises';
 import { scrubSecrets } from '@spider/memory';
-import { ModelRuntime, ModelRegistry, getAgentDir } from '@earendil-works/pi-coding-agent';
+import { ModelRuntime, ModelRegistry, getAgentDir, type CreateModelRuntimeOptions } from '@earendil-works/pi-coding-agent';
 import { createHcClient, invokeCli } from '@spider/herdr/client/hc';
 import { invokeCli as invokeAppCli } from '@spider/herdr/client/cli-transport';
 import { createAppClient } from '@spider/herdr/client/app';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { runSshShim, ordinaryExecutionEnvironment, SSH_DESCRIPTOR_ENV } from '@spider/herdr/ssh/shim';
 import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
-import { preflightSpaces, setupSpaces, readCutoverRecovery, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
+import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
@@ -64,8 +64,18 @@ export function disabledHerdrEnvironment(env: Readonly<NodeJS.ProcessEnv>): Read
 
 export { createViewerPorts } from '../../../herdr/src/viewers/ports.js';
 
-export function createProcessInventory(root: string): ProcessInventoryPorts {
-  const presence = createProcessPresence(root), leases = createSessionLeases(root), domain = fixtureProcessDomain(root);
+export function isPiProcessRow(platform: NodeJS.Platform, row: { title: string; executable: string; args: string }): boolean {
+  const title = row.title.split(/[/\\]/).pop()!;
+  const executable = (platform === 'linux' ? row.executable || row.args.trim().split(/\s+/, 1)[0] : row.executable).split(/[/\\]/).pop()!;
+  const pi = /^(?:pi|pi-coding-agent)(?:\.exe)?$/.test(title);
+  const nodeEntry = /^(?:node|nodejs)(?:\.exe)?$/.test(executable) && /^\S+\s+\S*[/\\]pi-coding-agent[/\\]dist[/\\](?:bundle[/\\])?cli\.m?js(?:\s|$)/.test(row.args);
+  return pi || nodeEntry;
+}
+
+export function createProcessInventory(root: string, readOnly = false): ProcessInventoryPorts {
+  const storedPresence = createProcessPresence(root);
+  const presence = readOnly ? { ...storedPresence, remove: async () => {} } : storedPresence;
+  const leases = createSessionLeases(root), domain = fixtureProcessDomain(root);
   const probe: ProcessInventoryPorts['probe'] = async pid => {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? { kind: 'absent' } : { kind: 'unknown' }; }
     const startIdentity = processStartTime(pid);
@@ -74,14 +84,17 @@ export function createProcessInventory(root: string): ProcessInventoryPorts {
   return { presence, leases, probe, async processes() {
     if (domain) return domain.processes();
     // Same-user inventory remains read-only. An unreadable process is blocking, not absent.
-    const rows = execFileSync('ps', ['-U', String(process.getuid?.() ?? 0), '-o', 'pid=,comm=,args='], { encoding: 'utf8' }).split('\n');
+    // Keep the mutable process title and the untruncated executable name on macOS.
+    const rows = execFileSync('ps', ['-U', String(process.getuid?.() ?? 0), '-o', process.platform === 'darwin' ? 'pid=,comm=,ucomm=,args=' : 'pid=,comm=,comm=,args='], { encoding: 'utf8' }).split('\n');
     return rows.flatMap(line => {
-      const match = /^\s*(\d+)\s+(\S+)(?:\s+(.*))?$/.exec(line); if (!match) return [];
-      const executable = match[2].split(/[/\\]/).pop()!;
-      const pi = /^(?:pi|pi-coding-agent)(?:\.exe)?$/.test(executable);
-      const nodeEntry = /^(?:node|nodejs)(?:\.exe)?$/.test(executable) && /^\S+\s+\S*[/\\]pi-coding-agent[/\\]dist[/\\](?:bundle[/\\])?cli\.m?js(?:\s|$)/.test(match[3] ?? '');
-      if (!pi && !nodeEntry) return [];
-      const pid = Number(match[1]); return [{ pid, startIdentity: processStartTime(pid), classification: 'pi' as const }];
+      const match = /^\s*(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/.exec(line); if (!match) return [];
+      const pid = Number(match[1]);
+      let executable = match[3];
+      if (process.platform === 'linux') {
+        try { executable = readlinkSync(`/proc/${pid}/exe`); } catch { executable = ''; }
+      }
+      if (!isPiProcessRow(process.platform, { title: match[2], executable, args: match[4] ?? '' })) return [];
+      return [{ pid, startIdentity: processStartTime(pid), classification: 'pi' as const }];
     });
   } };
 }
@@ -324,7 +337,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     } finally { if (address) { await hc.kill(address).catch(() => {}); await hc.rm(address).catch(() => {}); } await stream.dispose(); }
   };
   const spacePorts = (request: SetupRequest): SpaceSetupPorts => {
-    const root = join(request.config.globalRoot, 'herdr'), inventory = createProcessInventory(root), registry = createTerminalRegistry(root);
+    const root = join(request.config.globalRoot, 'herdr'), inventory = createProcessInventory(root, request.dryRun), registry = createTerminalRegistry(root);
     const hc = client(request), app = createAppClient({ binary: request.config.app.binary, env: appEnv(request) });
     return { journalRoot: join(root, 'spaces'), app, registry, processInventory: inventory,
       coreIdentity: () => hc.identity(),
@@ -354,7 +367,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const feed = value === null ? null : parseFeed(JSON.stringify(value));
           if (!feed || feed.sessionId !== target.sessionId || !await sessionFeedIsFresh(root, feed, Date.now())) return null;
           const core = await hc.identity();
-          return feed.owner.terminal.socket === core.socket && feed.owner.terminal.sessionNamespace === core.sessionNamespace ? feed : null;
+          return feed.owner.terminal.coreId === core.coreId && feed.owner.terminal.socket === core.socket && feed.owner.terminal.sessionNamespace === core.sessionNamespace ? feed : null;
         } catch { return null; }
       },
       verifyOwner: async (target, placement, signal) => {
@@ -420,7 +433,17 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     return filesFor(files, context);
   };
   const templates = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
-    const runtime = await ModelRuntime.create({ authPath: join(request.config.agentDirectory, 'auth.json'), modelsPath: join(request.config.agentDirectory, 'models.json'), modelsStorePath: join(request.config.agentDirectory, 'models-cache.json'), allowModelNetwork: false });
+    const options: CreateModelRuntimeOptions = { authPath: join(request.config.agentDirectory, 'auth.json'), modelsPath: join(request.config.agentDirectory, 'models.json'), modelsStorePath: join(request.config.agentDirectory, 'models-cache.json'), allowModelNetwork: false };
+    if (request.dryRun) {
+      const base = import.meta.resolve('@earendil-works/pi-coding-agent');
+      const { ReadOnlyAuthStorage } = await import(new URL('./core/auth-storage.js', base).href) as { ReadOnlyAuthStorage: new (path: string) => NonNullable<CreateModelRuntimeOptions['credentials']> };
+      const { InMemoryCodingAgentModelsStore } = await import(new URL('./core/models-store.js', base).href) as { InMemoryCodingAgentModelsStore: new () => NonNullable<CreateModelRuntimeOptions['modelsStore']> };
+      options.credentials = new ReadOnlyAuthStorage(options.authPath!);
+      options.modelsStore = new InMemoryCodingAgentModelsStore();
+      const cache = JSON.parse((await snapshot(options.modelsStorePath!)).bytes?.toString('utf8') ?? '{}') as Record<string, Parameters<NonNullable<CreateModelRuntimeOptions['modelsStore']>['write']>[1]>;
+      for (const [provider, entry] of Object.entries(cache)) await options.modelsStore.write(provider, entry);
+    }
+    const runtime = await ModelRuntime.create(options);
     const registry = new ModelRegistry(runtime);
     const layer = readLayer(join(request.config.globalRoot, 'config.json'));
     if (layer.error) throw new HerdrError('global-config-invalid', layer.error);
@@ -619,7 +642,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       // Root probes made during this setup run. Verification reuses them instead of launching another per machine.
       const rootProbes = new Map<string, string>(), rootKey = (launch: HcRunRequest) => JSON.stringify([launch.on, launch.argv]);
       const probeRoot = async (launch: HcRunRequest) => { const output = await probe(request, launch); rootProbes.set(rootKey(launch), output); return output; };
-      const runSpaces = async (request: SetupRequest, context: SetupContext, selectApp: boolean) => {
+      const selectApp = async () => {
+        for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await spaces.app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
+      };
+      const runSpaces = async (request: SetupRequest, context: SetupContext, selectLook: boolean) => {
         const aborter = new AbortController(), abort = () => aborter.abort();
         process.once('SIGINT', abort); process.once('SIGTERM', abort);
         let result;
@@ -628,9 +654,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const recovery = result.conflicts?.length ? await readCutoverRecovery(spaces.journalRoot) : null;
         const owners = recovery ? recovery.entries.flatMap(entry => entry.result ? [entry.result] : []) : result.launched;
         const cutover = { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(owners.map(owner => [owner.sessionId, owner.startIdentity])) };
-        if (selectApp && !result.conflicts?.length) {
-          for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await spaces.app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
-        }
+        if (selectLook && !result.conflicts?.length) await selectApp();
         await context.recordCutover(cutover);
         if (result.conflicts?.length) throw new HerdrError('duplicate-live-session', result.conflicts.map(conflict => duplicateSessionNotice(conflict.sessionId, conflict.terminals)).join('\n'));
         return cutover;
@@ -641,12 +665,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           rootProbes.clear();
           // This exported G check is before any backup or asset/config staging.
           await preflightSpaces(request.config, spaces, { adoptExistingSpaces: request.adoptExistingSpaces });
-          const identity = await hc.identity(), recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot(), request.config, spaces), saved = await readJournal(request.journalRoot);
+          const identity = await hc.identity(), snapshot = await spaces.layoutSnapshot(), recovery = await readCutoverRecovery(spaces.journalRoot, snapshot, request.config, spaces), saved = await readJournal(request.journalRoot);
           let recoveredCutover: import('@spider/herdr/setup/installer').CutoverResult | undefined, cutoverProvedAbsent = false;
           if (saved.cutoverPending) {
             const verified: import('@spider/herdr/spaces/cutover').LaunchedSession[] = [];
             for (const entry of recovery.entries) {
-              if (recovery.conflicts?.some(conflict => conflict.sessionId === entry.target.sessionId)) continue;
+              if (recovery.conflicts?.some(conflict => conflict.sessionId === entry.target.sessionId) || recovery.unplacedSessions?.includes(entry.target.sessionId)) continue;
               const state = await spaces.terminalState!(entry.placement);
               if (state === 'live') { verified.push(entry.confirmedLive && entry.result ? entry.result : await spaces.verifyOwner(entry.target, entry.placement)); continue; }
               const live = await assessSessionLiveness(entry.target.file, selectedProcessInventory(request.config, spaces.processInventory));
@@ -654,10 +678,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
               if (live.kind !== 'free' || process?.kind === 'unknown' || process?.kind === 'live' && process.startIdentity === entry.result!.startIdentity) throw new HerdrError('cutover-reconciliation-required', 'A recorded tab still has a possible session owner');
             }
             for (const intent of recovery.pendingIntents ?? []) if ((await assessSessionLiveness(intent.target.file, selectedProcessInventory(request.config, spaces.processInventory))).kind !== 'free') throw new HerdrError('cutover-reconciliation-required', 'An unresolved allocation still has a possible writer');
-            cutoverProvedAbsent = verified.length === 0 && !recovery.conflicts?.length;
+            cutoverProvedAbsent = verified.length === 0 && !recovery.conflicts?.length && !recovery.unplacedSessions?.length;
             recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.entries.flatMap(entry => { const result = verified.find(r => r.sessionId === entry.target.sessionId) ?? entry.result; return result ? [[result.sessionId, result.startIdentity]] : []; })) };
           } else if (recovery.recoveredCutover) recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.recoveredCutover.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
-          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, fingerprint: digest(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'))), coreIdentity: identity, mods: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome'].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
+          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot, recovery }), fingerprint: digest(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'))), coreIdentity: identity, mods: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome'].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
         stageLook: (request, context) => stagedLook(request, context),
         installFiles: async (request, context) => {
@@ -717,8 +741,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
             }
           }
         },
+        selectApp,
         cutover: (request, context) => runSpaces(request, context, true),
         reconcileCutover: (request, context) => runSpaces(request, context, false),
+        persistCutover: async request => {
+          const result = await reconcileSpaceJournal(request.config, spaces);
+          if (!result) throw new HerdrError('cutover-reconciliation-required', 'No confirmed session owners remain');
+          return { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(result.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
+        },
         verify: async request => doctorHerdr(request, { ...await doctorParts(request), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
         rollback: async result => {
           const recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot());

@@ -14,7 +14,7 @@ import type { RemoteSuite } from '../harness/remote.js';
 
 const cases = [
   ['ambiguous', /session-selector-ambiguous/], ['duplicate-file', /session-selector-duplicate/],
-  ['missing-anchor', /patch-anchor|patch.*missing|anchor/i], ['repeated-anchor', /patch-anchor|patch.*ambiguous|anchor/i],
+  ['replaced-built-in-source', /upstream-source-unknown/], ['duplicated-built-in-source', /upstream-source-unknown/],
   ['keys', /key-binding-conflict/], ['symlink', /destination-symlink/],
   ['old-node', /remote-node-unavailable/], ['missing-node', /remote-node-unavailable/],
 ] as const;
@@ -34,9 +34,9 @@ export const scenarios: readonly ScenarioDefinition[] = [{
           assert.notEqual(one.sessionId, two.sessionId);
           config.spaces = [{ name: 'Group', sessions: label === 'ambiguous' ? [{ name: 'Duplicate' }] : [{ file: one.file }, { file: one.file }] }];
         }
-        if (label === 'missing-anchor' || label === 'repeated-anchor') {
+        if (label === 'replaced-built-in-source' || label === 'duplicated-built-in-source') {
           const main = join(config.app.home, 'mods/agents/main.js'); const source = await readFile(main);
-          await writeFile(main, label === 'missing-anchor' ? 'export default function() {}\n' : Buffer.concat([source, source]));
+          await writeFile(main, label === 'replaced-built-in-source' ? 'export default function() {}\n' : Buffer.concat([source, source]));
         }
         if (label === 'keys') {
           const fragment = JSON.parse(await readFile(join(suite.packed.root, 'packages/herdr/assets/keys.json'), 'utf8'));

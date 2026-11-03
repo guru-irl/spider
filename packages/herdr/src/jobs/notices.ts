@@ -37,16 +37,16 @@ async function savedNotices(owner: Owner, expected: ReadonlyMap<JobId, string>, 
 }
 export function noticeRecoveryCandidates(journal: JobJournal, owner: Owner): JournalJob[] {
   if (journal.child || !owner.sessionFile) return [];
-  return journal.jobs.filter(job => job.noticeMode === 'async' && job.notice === 'observed' && job.noticeSavedNonce !== job.nonce && (job.noticeObservedGeneration ?? job.owner.generation) !== owner.generation);
+  return journal.jobs.filter(job => job.noticeMode === 'async' && (job.notice === 'observed' || job.notice === 'submitted') && job.noticeSavedNonce !== job.nonce && (job.noticeObservedGeneration ?? job.owner.generation) !== owner.generation);
 }
 /** Read outside the journal queue. Apply the result only through its writer. */
 export async function recoverJobNotices(jobs: readonly JournalJob[], owner: Owner, signal?: AbortSignal): Promise<() => void> {
   const saved = await savedNotices(owner, new Map(jobs.map(job => [job.id, job.nonce])), signal);
   return () => {
     for (const job of jobs) {
-      if (job.notice !== 'observed' || job.noticeSavedNonce === job.nonce || job.noticeObservedGeneration === owner.generation) continue;
+      if (job.notice !== 'observed' && job.notice !== 'submitted' || job.noticeSavedNonce === job.nonce || job.noticeObservedGeneration === owner.generation) continue;
       if (!saved.has(job.id)) { job.notice = 'pending'; job.noticeDelivered = false; delete job.noticeObservedGeneration; }
-      else { job.noticeObservedGeneration = owner.generation; job.noticeSavedNonce = job.nonce; }
+      else { job.notice = 'observed'; job.noticeDelivered = true; job.noticeObservedGeneration = owner.generation; job.noticeSavedNonce = job.nonce; }
     }
   };
 }

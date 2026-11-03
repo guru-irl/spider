@@ -4,6 +4,8 @@ import { appendFile, open, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Owner } from '../contracts.js';
 import { createJobStore } from '../jobs/store.js';
+import { registerHerdrJobs } from '../jobs/register.js';
+import type { JobMonitor, JobNotice } from '../jobs/monitor.js';
 import { monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -37,6 +39,42 @@ it.each(['absent', 'saved', 'wrong-nonce', 'legacy', 'same-generation', 'quoted-
   expect((await store.read()).jobs[0]).toMatchObject({ notice: 'observed', noticeObservedGeneration: owner.generation });
   await resumed.reconcile();
   expect(h.notices).toHaveLength(resends);
+});
+
+it.each(['saved', 'absent', 'legacy'] as const)('recovers a submitted notice after restart with %s evidence', async evidence => {
+  const h = await monitorFixture(), hooks = new Map<string, Function>();
+  let owner = { ...h.owner, sessionFile: join(h.f.root, 'session.jsonl') }, bound: JobMonitor | null = null;
+  const branch: unknown[] = [], sent: JobNotice[] = [];
+  const registration = registerHerdrJobs({
+    on(name: string, handler: Function) { hooks.set(name, handler); return () => {}; },
+    sendMessage(notice: JobNotice) { sent.push(notice); },
+  } as never, {
+    currentOwner: () => owner, monitorOptions: () => h.options, jobIdsForToolResult: () => [], bind: value => { bound = value; },
+  });
+  const ctx = { sessionManager: { getBranch: () => branch } };
+  try {
+    await hooks.get('session_start')!({}, ctx);
+    const first = bound!, job = await first.start(program, owner, on, { background: true });
+    await first.detach(job.id); h.complete(job.address);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const store = createJobStore(h.f.root, owner.sessionId), nonce = (await store.read()).jobs[0].nonce;
+    if (evidence !== 'absent') branch.push({ type: 'custom_message', customType: 'spider.job_done', details: { jobId: job.id, ...(evidence === 'legacy' ? {} : { nonce, generation: owner.generation }) } });
+    await writeFile(owner.sessionFile, [{ type: 'session', id: owner.sessionId }, ...branch].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    await hooks.get('session_shutdown')!({ reason: 'reload' });
+    owner = { ...owner, generation: 'restarted-generation' as Owner['generation'] }; sent.length = 0;
+    await hooks.get('session_start')!({ reason: 'reload' }, ctx);
+    const resumed = bound!;
+    await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject(evidence === 'absent'
+      ? { notice: 'submitted', noticeDelivered: true }
+      : { notice: 'observed', noticeSavedNonce: nonce, terminalReleased: true }));
+    if (evidence === 'absent') {
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      await hooks.get('message_end')!({ message: sent[0] });
+    }
+    await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ notice: 'observed', terminalReleased: true }));
+    await resumed.reconcile(); await resumed.reconcile();
+    expect(sent).toHaveLength(evidence === 'absent' ? 1 : 0);
+  } finally { await registration.dispose(); }
 });
 
 it('activates and launches new work while a saved-notice read is blocked', async () => {

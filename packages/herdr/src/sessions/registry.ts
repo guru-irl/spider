@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { constants } from 'node:fs';
 import { mkdir, realpath, lstat, open, rename, unlink, readdir } from 'node:fs/promises';
-import { dirname, basename, join, isAbsolute } from 'node:path';
+import { dirname, basename, join, isAbsolute, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Owner, TerminalIdentity } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
@@ -57,7 +57,10 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
   finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
 }
 export async function jsonFiles(directory: string): Promise<string[]> {
-  await privateDirectory(directory); return (await readdir(directory)).filter(f => f.endsWith('.json')).sort().map(f => join(directory, f));
+  try {
+    if (await realpath(directory) !== resolve(directory)) throw new HerdrError('unsafe-state-path', 'State readers cannot traverse symlinked directories');
+    return (await readdir(directory)).filter(f => f.endsWith('.json')).sort().map(f => join(directory, f));
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
 }
 export function recordedExtensionArguments(value: readonly string[]): readonly string[] {
   if (!Array.isArray(value) || value.some(v => typeof v !== 'string' || !v || v.includes('\0'))) throw new HerdrError('launch-environment-invalid', 'Recorded extension arguments are invalid');

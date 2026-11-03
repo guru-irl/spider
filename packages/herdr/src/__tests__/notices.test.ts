@@ -116,3 +116,14 @@ describe('Herdr notices', () => {
       .toBe("Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine (constructor).");
   });
 });
+
+
+it('shows actionable setup refusals with every session name in the panel', () => {
+  const notice = herdrErrorNotice(new HerdrError('running-session-unplaced', 'internal fallback', { sessions: ['First', 'Second'] }));
+  expect(herdrErrorNoticeKey(new HerdrError('running-session-unplaced', ''))).not.toBe('generic');
+  expect(notice).toContain('Setup left "Second" running');
+  expect(notice).toContain('Setup left "First" running');
+  expect(notice).toContain('/reload in that session');
+  expect(notice).toContain('/herdr-setup prints the command.');
+  expect(notice).not.toContain('running-session-unplaced');
+});

@@ -7,6 +7,7 @@ import { doctorHerdr, type DoctorParts, type DoctorFailure } from './doctor.js';
 import type { IpcDescriptor, SessionIpcRequest, SessionIpcReply } from '../contracts.js';
 import { parsePanelIpcArgv } from '../../assets/shared/feed.js';
 import { HerdrError } from '../client/parse.js';
+import { changedSetupFilesNotice } from '../notices.js';
 import { ipcFailureReply } from '../feed/ipc-client.js';
 import { runAdminCli, ADMIN_USAGE } from '../ssh/admin-cli.js';
 export interface MemoryReviewTarget { scope: 'global' | 'repo'; repoKey: string | null; uuid: string }
@@ -29,7 +30,7 @@ export interface HerdrCliPorts {
   stdout(text: string): void;
   stderr(text: string): void;
 }
-const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  setup [--config <absolute-user-file>] [--overwrite-unowned-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
+const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  setup [--dry-run] [--replace-changed] [--config <absolute-user-file>] [--overwrite-unowned-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
 function verificationFailures(details: unknown): readonly DoctorFailure[] {
   if (!details || typeof details !== 'object' || !('failures' in details) || !Array.isArray(details.failures)) return [];
   return details.failures.filter((issue): issue is DoctorFailure => issue !== null && typeof issue === 'object'
@@ -92,6 +93,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     const command = argv[0];
     let configPath: string | undefined;
     let overwrite = false;
+    let dryRun = false, replaceChanged = false;
     let allowStaging = false;
     let cutover = false;
     const adoptExistingSpaces: string[] = [];
@@ -125,6 +127,8 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       }
       else if (command === 'resume' && flag === '--cutover')
         cutover = true;
+      else if (command === 'setup' && flag === '--dry-run') dryRun = true;
+      else if (command === 'setup' && flag === '--replace-changed') replaceChanged = true;
       else if (command === 'setup' && flag === '--overwrite-unowned-keys')
         overwrite = true;
       else if (command === 'setup' && flag === '--allow-staging-app')
@@ -138,7 +142,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     // Require explicit runtime composition rather than implicit live configuration defaults.
     if (!ports)
       throw new HerdrError('setup-composition-unavailable', 'Installer composition is required; refusing implicit live configuration defaults');
-    const request = { ...await ports.request(configPath), overwriteUnownedKeys: overwrite, allowStagingApp: allowStaging, adoptExistingSpaces };
+    const request = { ...await ports.request(configPath), dryRun, replaceChanged, overwriteUnownedKeys: overwrite, allowStagingApp: allowStaging, adoptExistingSpaces };
     if (command === 'setup' || command === 'rollback') await ports.assertAgentDirectory?.(request);
     if (command === 'resume-offer') {
       if (!ports.resumeOffer) throw new HerdrError('setup-composition-unavailable', 'Resume offer composition is required');
@@ -167,6 +171,14 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       return (await readJournal(request.journalRoot)).entries.length ? 3 : 0;
     }
     const result = await setupHerdr(request, parts);
+    if (result.plan) {
+      for (const file of result.plan.files) stdout(`${file.action} ${file.path}${file.refusal ? ' (needs --replace-changed)' : ''}\n`);
+      for (const action of result.plan.cutover) stdout(`cutover ${action}\n`);
+      if (!result.plan.cutover.length) stdout('cutover none\n');
+      const refused = result.plan.files.filter(file => file.refusal);
+      if (refused.length) { stderr(changedSetupFilesNotice(refused) + '\n'); return 1; }
+      stdout('Plan only. No files or sessions changed.\n'); return 0;
+    }
     stdout(`Setup verified: ${result.writes.length} file writes, ${result.probes.length} visible probes\n`);
     return 0;
   }

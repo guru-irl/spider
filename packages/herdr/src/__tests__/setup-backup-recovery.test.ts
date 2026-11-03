@@ -16,32 +16,35 @@ import { fixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js'
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, chmod: vi.fn(actual.chmod), readFile: vi.fn(actual.readFile), rename: vi.fn(actual.rename), open: vi.fn(actual.open), unlink: vi.fn(actual.unlink) };
+  return { ...actual, chmod: vi.fn(actual.chmod), readFile: vi.fn(actual.readFile), rename: vi.fn(actual.rename), link: vi.fn(actual.link), open: vi.fn(actual.open), unlink: vi.fn(actual.unlink) };
 });
 registerSetupCleanup();
 
-const renameCases = Array.from({ length: 16 }, (_, index) => ['before', 'after'].map(timing => [timing, index] as const)).flat();
+const publicationCases = Array.from({ length: 16 }, (_, index) => ['before', 'after'].map(timing => [timing, index] as const)).flat();
 
-test.each(renameCases)('verified backup recovery resumes %s installed file rename %i', async (timing, index) => {
+test.each(publicationCases)('verified backup recovery resumes %s installed file publication %i', async (timing, index) => {
   const f = await fixture();
   let writes = 0;
   let crashed = false;
-  vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+  const publish = (operation: typeof realFs.rename) => async (from: Parameters<typeof realFs.rename>[0], to: Parameters<typeof realFs.rename>[1]) => {
     const target = String(to);
     const isInstalled = target !== join(f.request.journalRoot, 'journal.json') && target.startsWith(f.h.root + '/');
     const fail = isInstalled && writes++ === index && !crashed;
     if (fail && timing === 'before') {
       crashed = true;
-      throw new Error('crash before rename');
+      throw new Error('crash before publication');
     }
-    await realFs.rename(from, to);
+    await operation(from, to);
     if (fail && timing === 'after') {
       crashed = true;
-      throw new Error('crash after rename');
+      throw new Error('crash after publication');
     }
-  });
-  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow(`crash ${timing} rename`);
+  };
+  vi.mocked(fs.rename).mockImplementation(publish(realFs.rename));
+  vi.mocked(fs.link).mockImplementation(publish(realFs.link));
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow(`crash ${timing} publication`);
   vi.mocked(fs.rename).mockImplementation(realFs.rename);
+  vi.mocked(fs.link).mockImplementation(realFs.link);
   await setupHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(f.settings, 'utf8'))).toEqual({ theme: 'dracula-plus-glass', unrelated: 'keep' });
   const journal = await readJournal(f.request.journalRoot);

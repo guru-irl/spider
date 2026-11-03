@@ -20,6 +20,56 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 registerSetupCleanup();
 
+test('CLI plan mode lists every file without a journal, probes or cutover', async () => {
+  const f = await fixture(), output: string[] = [], errors: string[] = [];
+  await mkdir(dirname(f.paths.layout), { recursive: true });
+  await writeFile(f.paths.layout, '{"name":"spider-glass"}');
+  await mkdir(dirname(f.paths.font), { recursive: true }); await writeFile(f.paths.font, 'user font');
+  const before = await f.h.calls();
+  const ports: HerdrCliPorts = { request: async () => f.request, setupParts: async () => f.parts, doctorParts: async () => f.doctorParts, stdout: text => output.push(text), stderr: text => errors.push(text) };
+  expect(await runHerdrCli(['setup', '--dry-run'], ports)).toBe(1);
+  expect(output.join('')).toContain(`adopt ${f.paths.layout}`);
+  expect(output.join('')).toContain(`replace ${f.paths.font}`);
+  expect(output.join('')).toContain(`write ${f.paths.spider}`);
+  expect(output.join('')).toContain('cutover');
+  expect(errors.join('')).toContain('--replace-changed');
+  expect(await realFs.stat(f.request.journalRoot).then(() => true, () => false)).toBe(false);
+  expect(await f.h.calls()).toEqual(before);
+  expect(await readFile(f.paths.font, 'utf8')).toBe('user font');
+  expect(f.cutovers()).toBe(0);
+  expect(await runHerdrCli(['setup', '--dry-run', '--replace-changed'], ports)).toBe(0);
+});
+
+test('proved running sessions bypass cutover after a core restart and terminal replacement', async () => {
+  const f = await fixture(), first = await setupHerdr(f.request, f.parts);
+  const preflight = f.parts.preflight;
+  const recovered = { terminals: ['replacement' as never], identities: { session: 'current' } };
+  f.parts.preflight = async request => ({ ...await preflight(request), coreIdentity: { ...f.h.owner!.terminal, coreId: 'restarted' as never }, recoveredCutover: recovered, cutoverNeedsRecheck: true, cutoverActions: [] });
+  f.parts.cutover = async () => { throw new Error('Must not disturb running sessions'); };
+  f.parts.reconcileCutover = async () => { throw new Error('Must not repeat session setup'); };
+  const result = await setupHerdr(f.request, f.parts);
+  expect(result.cutover).toEqual(recovered);
+  expect(result.writes).toEqual([]);
+  expect((await readJournal(f.request.journalRoot)).cutover).toEqual(recovered);
+  expect((await f.h.hc.get(first.cutover!.terminals[0])).state).toBe('live');
+  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
+});
+
+test('saved mod state is available before the updated layout becomes visible', async () => {
+  const f = await fixture(), stage = f.parts.stageLook;
+  let path = '/path/to/old';
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify({ content: { mod: 'spider-agents', props: { path } } })) } : file);
+  await setupHerdr(f.request, f.parts);
+  const data = join(f.request.config.app.home, 'data/spider-agents'); await mkdir(data, { recursive: true });
+  await writeFile(join(data, 'store-94630e0b396dc745.json'), '{"timer":"42"}');
+  const observed: string[] = [];
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { await realFs.rename(from, to); if (to === f.paths.layout) observed.push(await readFile(join(data, 'store-97d9d849eea9eed8.json'), 'utf8')); });
+  const runtime = f.parts.ensureRuntime;
+  f.parts.ensureRuntime = async (...args) => { await writeFile(join(data, 'store-94630e0b396dc745.json'), '{"timer":"43"}'); return runtime(...args); };
+  path = '/path/to/new'; await setupHerdr(f.request, f.parts);
+  expect(observed).toEqual(['{"timer":"43"}']);
+});
+
 test('runtime bootstrap follows verified uploads and precedes cutover', async () => {
   const f = await fixture();
   const order: string[] = [];

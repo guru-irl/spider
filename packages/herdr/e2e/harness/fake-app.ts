@@ -221,6 +221,8 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
       return dispatch('pane.focus', { terminal: args.terminal });
     }
     if (name === 'pane.focus') {
+      const modTab = typeof args.pane === 'string' ? [...modPanes].find(([, panes]) => panes.some(pane => pane.pane === args.pane))?.[0] : undefined;
+      if (modTab) { activeSpace = spaceOf(modTab)!.id; activeTab = modTab; focus = String(args.pane); return { reply: { ok: true } }; }
       const p = spaces.flatMap(s => s.tabs).flatMap(t => t.terminals).find(p => args.pane ? p.pane === args.pane : p.terminal === args.terminal);
       if (!p) throw new AppBoundaryError('unknown-id', 'no such pane');
       const s = spaces.find(s => s.tabs.some(t => t.terminals.includes(p)))!;

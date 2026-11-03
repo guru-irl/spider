@@ -2,8 +2,14 @@
 import { HerdrError } from './client/parse.js';
 
 interface Notice { text: string; action: string | null }
-type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'outputUnavailable' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished';
+type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'outputUnavailable' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished' | 'setupUnplaced';
 
+export function changedSetupFilesNotice(files: readonly { path: string; refusal?: { message: string } }[]): string {
+  return `Setup found changed files. Restore the recorded values below, or rerun setup with --replace-changed to back up and replace these files.\n${files.map(file => `  ${file.path}${file.refusal ? `\n    ${file.refusal.message}` : ''}`).join('\n')}`;
+}
+export function runningSessionUnplacedNotice(name: string): string {
+  return `Setup left ${JSON.stringify(name)} running and didn't move or reopen it, because it couldn't confirm that the pane belongs to that session. Run /reload in that session, then run setup again. /herdr-setup prints the command.`;
+}
 export function switchedSessionNotice(): string {
   return 'This pane now has a different session. Setup will leave that session alone.';
 }
@@ -31,6 +37,7 @@ export function rollbackForeignPanesNotice(space: string, tab: string, terminals
 
 /** Messages are kept here so pi and stderr show the same advice. */
 export const HERDR_NOTICES: Readonly<Record<NoticeCode, Notice>> = {
+  setupUnplaced: { text: "Setup couldn't confirm a running session's pane. Run /reload in that session, then run setup again. /herdr-setup prints the setup and doctor commands.", action: '/reload' },
   chainReloaded: { text: 'The chain stopped during /reload. These steps did not start. <steps>. Start the remaining steps as a new run.', action: 'Start the remaining steps' },
   chainClosed: { text: 'The chain stopped when the parent session closed. These steps did not start. <steps>. Start the remaining steps as a new run.', action: 'Start the remaining steps' },
   killAmbiguous: { text: 'That ID is ambiguous. Choose a full ID from these matches and try again.', action: 'Choose a full ID' },
@@ -121,6 +128,7 @@ function errorGroup(codes: readonly string[], notice: NoticeCode): Record<string
 }
 const errors: Readonly<Record<string, NoticeCode>> = {
   ...errorGroup(['unsafe-feed-path', 'feed-too-large', 'invalid-feed'], 'feedRefresh'),
+  'running-session-unplaced': 'setupUnplaced',
   'lease-token-invalid': 'sessionHandoff', 'session-may-be-live': 'sessionBusy',
   'core-unavailable': 'coreDown', 'terminal-core-mismatch': 'retired', 'core-mismatch': 'retired',
   'events-disconnected': 'eventsLost', 'terminal-registry-bookkeeping': 'terminalRecords', 'output-unavailable': 'outputUnavailable',
@@ -143,6 +151,10 @@ export function herdrErrorNoticeKey(error: unknown): NoticeCode {
 export function herdrErrorNotice(error: unknown): string {
   if (!(error instanceof HerdrError)) return HERDR_NOTICES.generic.text;
   const known = Object.hasOwn(errors, error.code) ? errors[error.code] : undefined;
+  if (known === 'setupUnplaced') {
+    const sessions = (error.details as { sessions?: unknown } | undefined)?.sessions;
+    if (Array.isArray(sessions) && sessions.length && sessions.every(name => typeof name === 'string')) return sessions.map(runningSessionUnplacedNotice).join('\n');
+  }
   if (known === 'outputUnavailable') {
     const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
     const clean = (value: unknown, limit: number) => typeof value === 'string' ? value.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, limit) || 'unknown' : 'unknown';

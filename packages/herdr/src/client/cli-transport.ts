@@ -33,9 +33,9 @@ export async function invokeCli(binary: string, argv: readonly string[], env: Re
     const aborted = () => stop(new HerdrError('cli-aborted', 'CLI request aborted', { pid: child.pid, timeoutMs }));
     const deadline = setTimeout(() => stop(new HerdrError('cli-timeout', `CLI request exceeded ${timeoutMs} ms`, { pid: child.pid, timeoutMs })), timeoutMs);
     options.signal?.addEventListener('abort', aborted, { once: true });
-    const overflow = (limit: number) => stop(new HerdrError('reply-too-large', `CLI reply exceeded its byte limit (${limit} bytes)`, { pid: child.pid, limit }));
-    child.stdout.on('data', (bytes: Buffer) => { if (failure) return; size += bytes.length; if (size > maxBytes) overflow(maxBytes); else stdout.push(bytes); });
-    child.stderr.on('data', (bytes: Buffer) => { if (failure) return; errorSize += bytes.length; if (errorSize > Math.min(maxBytes, SINGLE_REPLY_BYTES)) overflow(Math.min(maxBytes, SINGLE_REPLY_BYTES)); else stderr.push(bytes); });
+    const overflow = (limit: number, source: 'reply' | 'error-output') => stop(new HerdrError('reply-too-large', `CLI reply exceeded its byte limit (${limit} bytes)`, { pid: child.pid, limit, source }));
+    child.stdout.on('data', (bytes: Buffer) => { if (failure) return; size += bytes.length; if (size > maxBytes) overflow(maxBytes, 'reply'); else stdout.push(bytes); });
+    child.stderr.on('data', (bytes: Buffer) => { if (failure) return; errorSize += bytes.length; if (errorSize > Math.min(maxBytes, SINGLE_REPLY_BYTES)) overflow(Math.min(maxBytes, SINGLE_REPLY_BYTES), 'error-output'); else stderr.push(bytes); });
     child.once('error', error => stop(new HerdrError((error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing-hc' : 'spawn-error', error.message, { pid: child.pid })));
     child.once('close', (code, signal) => {
       if (finished) return;

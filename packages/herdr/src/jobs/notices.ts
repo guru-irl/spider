@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { open } from 'node:fs/promises';
+import { open, type FileHandle } from 'node:fs/promises';
 import type { Generation, JobId, Owner } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import type { JobJournal, JournalJob } from './store.js';
@@ -14,9 +14,24 @@ export function jobNoticeIdentity(value: unknown): JobNoticeIdentity | null {
   if (generation !== undefined && (typeof generation !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(generation))) return null;
   return { jobId: details.jobId as JobId, ...(nonce === undefined ? {} : { nonce }), ...(generation === undefined ? {} : { generation: generation as Generation }) };
 }
+function openSavedSession(path: string, signal?: AbortSignal): Promise<FileHandle> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, file?: FileHandle) => {
+      if (settled) { if (file) void file.close().catch(() => {}); return; }
+      settled = true; clearTimeout(deadline); signal?.removeEventListener('abort', aborted);
+      if (error) reject(error); else resolve(file!);
+    };
+    const aborted = () => finish(new HerdrError('aborted', 'Saved notice recovery stopped'));
+    const deadline = setTimeout(() => finish(new HerdrError('session-read-timeout', 'Saved session open timed out')), 1000);
+    signal?.addEventListener('abort', aborted, { once: true });
+    void open(path, 'r').then(file => finish(undefined, file), error => finish(error));
+    if (signal?.aborted) aborted();
+  });
+}
 async function savedNotices(owner: Owner, expected: ReadonlyMap<JobId, string>, signal?: AbortSignal): Promise<Set<JobId>> {
   let file;
-  try { file = await open(owner.sessionFile!, 'r'); }
+  try { file = await openSavedSession(owner.sessionFile!, signal); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set(); throw error; }
   const lines = file.readLines({ autoClose: false, signal }), notices = new Set<JobId>();
   let header = false;

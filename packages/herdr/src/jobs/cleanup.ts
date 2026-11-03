@@ -11,8 +11,13 @@ export function createCleanupSweep(clock: () => number, report: (error: unknown)
   const active = new Set<Promise<void>>();
   let started = false, closed = false, timer: ReturnType<typeof setTimeout> | undefined;
   function schedule(): void {
-    if (!started || closed || timer) return;
-    timer = setTimeout(() => { timer = undefined; pump(); }, 0);
+    if (!started || closed) return;
+    if (timer) { clearTimeout(timer); timer = undefined; }
+    if (active.size >= 4) return;
+    let nextAt = Infinity;
+    for (const entry of pending.values()) if (!entry.running) nextAt = Math.min(nextAt, entry.nextAt);
+    if (!Number.isFinite(nextAt)) return;
+    timer = setTimeout(() => { timer = undefined; pump(); }, Math.max(0, nextAt - clock()));
     timer.unref();
   }
   function pump(): void {
@@ -27,10 +32,11 @@ export function createCleanupSweep(clock: () => number, report: (error: unknown)
       }).finally(() => { entry.running = false; active.delete(task); schedule(); });
       active.add(task);
     }
+    schedule();
   }
   return {
     enqueue(key, operation) { if (closed) return; if (!pending.has(key)) pending.set(key, { operation, failures: 0, nextAt: 0, reported: false, running: false }); schedule(); },
-    cancel(key) { pending.delete(key); },
+    cancel(key) { pending.delete(key); schedule(); },
     start() { started = true; schedule(); },
     async dispose() { closed = true; if (timer) clearTimeout(timer); await Promise.all(active); pending.clear(); },
   };

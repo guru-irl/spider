@@ -85,7 +85,7 @@ export function createHcEventStream(options: HcClientOptions): HcEventStream {
       while (offset < bytes.length) {
         const end = bytes.indexOf(10, offset), chunk = bytes.subarray(offset, end < 0 ? bytes.length : end);
         pendingBytes += chunk.length;
-        if (pendingBytes > maxRecordBytes) { fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes)`)); return; }
+        if (pendingBytes > maxRecordBytes) { fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes)`, { source: 'event-record' })); return; }
         if (chunk.length) pending.push(chunk);
         if (end < 0) break;
         const line = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
@@ -117,7 +117,7 @@ export function createHcEventStream(options: HcClientOptions): HcEventStream {
         } catch (error) { fail(error instanceof Error ? error : new HerdrError('invalid-reply', 'Invalid event')); return; }
       }
     });
-    child.stderr.on('data', (bytes: Buffer) => { stderrBytes += bytes.length; if (stderrBytes > maxErrorBytes) fail(new HerdrError('reply-too-large', `Event stderr exceeded its byte limit (${maxErrorBytes} bytes)`)); });
+    child.stderr.on('data', (bytes: Buffer) => { stderrBytes += bytes.length; if (stderrBytes > maxErrorBytes) fail(new HerdrError('reply-too-large', `Event stderr exceeded its byte limit (${maxErrorBytes} bytes)`, { source: 'error-output' })); });
     child.once('error', error => fail(new HerdrError((error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing-hc' : 'events-disconnected', error.message)));
     child.once('close', () => {
       clearInterval(watchdog); children.delete(child);

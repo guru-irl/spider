@@ -6,7 +6,8 @@ import type { Owner } from '../contracts.js';
 import { createJobStore } from '../jobs/store.js';
 import { registerHerdrJobs } from '../jobs/register.js';
 import type { JobMonitor, JobNotice } from '../jobs/monitor.js';
-import { monitorFixture, on, program } from './herdr-monitor-fixture.js';
+import { bounded, deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
+import { recoverJobNotices } from '../jobs/notices.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -94,6 +95,57 @@ it('activates and launches new work while a saved-notice read is blocked', async
     await expect(resumed.start(program, owner, on, { background: true })).resolves.toHaveProperty('id');
   } finally { release(); await activation; }
   await vi.waitFor(() => expect(h.notices).toHaveLength(1));
+});
+
+it('retries a failed recovery read rather than caching its rejection', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl');
+  const first = h.monitor(), job = await first.start(program, h.owner, on, { background: true });
+  await first.detach(job.id); h.complete(job.address);
+  await vi.waitFor(() => expect(h.notices).toHaveLength(1)); await first.consumeNotice(job.id); await first.shutdown('reload'); h.notices.length = 0;
+  await writeFile(h.owner.sessionFile, JSON.stringify({ type: 'session', id: h.owner.sessionId }) + '\n');
+  let reads = 0, now = 1000; const failures: unknown[] = [];
+  vi.mocked(open).mockImplementation((path, flags, mode) => {
+    if (path === h.owner.sessionFile && ++reads === 1) return Promise.reject(Object.assign(new Error('Read failed'), { code: 'EACCES' }));
+    return actual.open(path, flags, mode);
+  });
+  const resumed = h.monitor({ clock: () => now, recordCleanupError: error => { failures.push(error); } });
+  await resumed.activate({ ...h.owner, generation: 'retry-generation' as Owner['generation'] });
+  await vi.waitFor(() => expect(failures).toHaveLength(1));
+  now += 60000; await resumed.reconcile();
+  await vi.waitFor(() => expect(h.notices).toHaveLength(1));
+  await resumed.consumeNotice(job.id);
+  await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId).read()).jobs[0].terminalReleased).toBe(true));
+  expect(reads).toBe(2);
+});
+
+it('stops recovery while session open is hung and closes the late file handle', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl');
+  const first = h.monitor(), job = await first.start(program, h.owner, on, { background: true });
+  await first.detach(job.id); h.complete(job.address);
+  await vi.waitFor(() => expect(h.notices).toHaveLength(1)); await first.consumeNotice(job.id); await first.shutdown('reload');
+  await writeFile(h.owner.sessionFile, JSON.stringify({ type: 'session', id: h.owner.sessionId }) + '\n');
+  const file = await actual.open(h.owner.sessionFile, 'r'), close = vi.spyOn(file, 'close'), blocked = deferred<void>(); let opening = false;
+  vi.mocked(open).mockImplementation(async (path, flags, mode) => {
+    if (path !== h.owner.sessionFile) return actual.open(path, flags, mode);
+    opening = true; await blocked.promise; return file;
+  });
+  const resumed = h.monitor(); await resumed.activate({ ...h.owner, generation: 'stop-generation' as Owner['generation'] });
+  try {
+    await vi.waitFor(() => expect(opening).toBe(true));
+    await expect(bounded(resumed.shutdown('reload'))).resolves.toBeUndefined();
+  } finally { blocked.resolve(); await resumed.shutdown('reload'); }
+  await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+});
+
+it('bounds session open even without shutdown and closes a handle returned after the deadline', async () => {
+  const h = await monitorFixture(); h.owner.sessionFile = join(h.f.root, 'session.jsonl'); await writeFile(h.owner.sessionFile, '');
+  const file = await actual.open(h.owner.sessionFile, 'r'), close = vi.spyOn(file, 'close'), blocked = deferred<void>();
+  vi.mocked(open).mockImplementation(async () => { await blocked.promise; return file; });
+  vi.useFakeTimers(); let failure: unknown;
+  const recovery = recoverJobNotices([], h.owner).catch(error => { failure = error; });
+  try { await vi.advanceTimersByTimeAsync(1000); expect(failure).toMatchObject({ code: 'session-read-timeout' }); }
+  finally { blocked.resolve(); await recovery; vi.useRealTimers(); }
+  await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
 });
 
 it('indexes a large session once for 129 jobs and skips confirmed notices in later generations', async () => {

@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createClientFixture, terminal, type ClientFixture } from './testutil.js';
 import { invokeCli as transport } from '../client/cli-transport.js';
 import { createHcClient, invokeCli as core } from '../client/hc.js';
+import { remoteUnavailableNotice } from '../notices.js';
 
 const fixtures: ClientFixture[] = [];
 const clients: ReturnType<typeof createHcClient>[] = [];
@@ -56,6 +57,24 @@ it.each([
   await view.dispose();
   await new Promise(resolve => setTimeout(resolve, 2700));
   expect((await f.calls()).filter(call => call.argv[0] === 'events')).toHaveLength(1);
+});
+
+it.each([
+  ['reply', false, false, 'a reply exceeded its byte limit'],
+  ['error-output', false, true, 'error output exceeded its byte limit'],
+  ['event-record', true, false, 'an event record exceeded its byte limit'],
+  ['error-output', true, true, 'error output exceeded its byte limit'],
+] as const)('identifies %s overflow from events=%s stderr=%s without exposing raw output', async (source, events, stderr, cause) => {
+  const f = await fixture();
+  await f.configure(stderr ? { failure: { kind: 'private-kind', message: 'private-text'.repeat(256) } } : { reply: JSON.stringify({ padding: 'x'.repeat(2048) }) + '\n' });
+  let request: Promise<unknown>;
+  if (events) {
+    const client = createHcClient({ binary: f.hcBinary, env: f.localEnv, maxReplyBytes: 1024 }); clients.push(client); request = client.events().ready;
+  } else request = transport(f.hcBinary, ['server', 'status', '--json'], f.localEnv, 1024);
+  const error = await request.catch(error => error);
+  expect(error).toMatchObject({ code: 'reply-too-large', details: { source } });
+  const notice = remoteUnavailableNotice(error, 'session', 'monitor');
+  expect(notice).toContain(cause); expect(notice).not.toContain('private-');
 });
 
 it('copies each event record only once across many pipe chunks', async () => {

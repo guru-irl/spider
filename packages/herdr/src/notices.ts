@@ -115,7 +115,7 @@ export const HERDR_NOTICES: Readonly<Record<NoticeCode, Notice>> = {
 };
 
 const remoteFailureCauses: Readonly<Record<string, string>> = {
-  'reply-too-large': 'the terminal list exceeded its byte limit',
+  'reply-too-large': 'a reply exceeded its byte limit',
   'invalid-reply': 'a reply could not be read',
   'missing-hc': 'the core command could not start',
   'spawn-error': 'the core command could not start',
@@ -125,11 +125,17 @@ const remoteFailureCauses: Readonly<Record<string, string>> = {
   'core-mismatch': 'this pane belongs to a stopped instance',
   'invalid-config': 'the configuration could not be read',
 };
+const overflowFailureCauses: Readonly<Record<string, string>> = {
+  'event-record': 'an event record exceeded its byte limit',
+  'error-output': 'error output exceeded its byte limit',
+};
 export function remoteUnavailableNotice(error: unknown, scope: 'session' | 'subagent', stage: 'activation' | 'monitor'): string {
   const key = herdrErrorNoticeKey(error);
   if (scope === 'session' && ['retired', 'coreDown', 'configProblem'].includes(key)) return HERDR_NOTICES[key].text;
   const code = error instanceof HerdrError ? error.code : '';
-  const cause = Object.hasOwn(remoteFailureCauses, code) ? remoteFailureCauses[code] : 'the connection could not be established';
+  const source = error instanceof HerdrError ? (error.details as { source?: unknown } | undefined)?.source : undefined;
+  const cause = code === 'reply-too-large' && typeof source === 'string' && Object.hasOwn(overflowFailureCauses, source) ? overflowFailureCauses[source]
+    : Object.hasOwn(remoteFailureCauses, code) ? remoteFailureCauses[code] : 'the connection could not be established';
   return HERDR_NOTICES[scope === 'subagent' ? 'remoteUnavailableChild' : 'remoteUnavailable'].text.replace('<stage>', stage === 'monitor' ? 'job monitor' : 'activation').replace('<cause>', cause);
 }
 

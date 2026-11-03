@@ -138,7 +138,7 @@ it('shows actionable setup refusals with every session name in the panel', () =>
 });
 
 it.each([
-  ['reply-too-large', 'the terminal list exceeded its byte limit'],
+  ['reply-too-large', 'a reply exceeded its byte limit'],
   ['invalid-reply', 'a reply could not be read'],
   ['missing-hc', 'the core command could not start'],
   ['spawn-error', 'the core command could not start'],

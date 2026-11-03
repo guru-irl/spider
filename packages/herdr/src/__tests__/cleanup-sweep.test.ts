@@ -196,6 +196,20 @@ it('warns once per machine only after a day of repeated cleanup failures, includ
   expect(f.errors).toEqual([]);
 });
 
+it('retries cleanup on its backoff timer and does not delay newly queued work', async () => {
+  vi.useFakeTimers(); let attempts = 0, fresh = false;
+  const sweep = createCleanupSweep(Date.now, () => {});
+  try {
+    sweep.enqueue('retry', async () => { if (++attempts === 1) throw new Error('Try again'); }); sweep.start();
+    await vi.advanceTimersByTimeAsync(0); expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(10000);
+    sweep.enqueue('fresh', async () => { fresh = true; }); await vi.advanceTimersByTimeAsync(0);
+    expect(fresh).toBe(true); expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(19999); expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1); expect(attempts).toBe(2);
+  } finally { await sweep.dispose(); vi.useRealTimers(); }
+});
+
 it('binds remote execution before any backlog cleanup starts', async () => {
   const f = await backlog(12), get = vi.spyOn(f.hc, 'get').mockRejectedValue(new Error('unreachable'));
   const hooks = new Map<string, Function>(); let bound = false;

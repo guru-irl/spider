@@ -69,16 +69,27 @@ export function createHcEventStream(options: HcClientOptions): HcEventStream {
     // only a core exiting in this unavoidable check-then-call gap can race us.
     const child = spawn(options.binary, ['events', '--json'], { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
     const stopChild = createChildTerminator(child);
-    children.set(child, stopChild); child.stdin.end(); let pending = Buffer.alloc(0); let stderrBytes = 0;
-    let lastAt = Date.now(); let initial = true; let failed = false;
+    children.set(child, stopChild); child.stdin.end(); let pending: Buffer[] = []; let pendingBytes = 0; let stderrBytes = 0;
+    let lastAt = Date.now(); let initial = true; let failed = false; let terminalFailure = false;
     const watchdog = setInterval(() => { if (Date.now() - lastAt >= 30000) void stopChild(); }, 1000); watchdog.unref();
-    const fail = (error: Error) => { if (failed) return; failed = true; rejectReady(error); void stopChild(); };
+    const fail = (error: Error) => {
+      if (failed) return;
+      failed = true; terminalFailure = error instanceof HerdrError && ['reply-too-large', 'invalid-reply'].includes(error.code);
+      pending = []; pendingBytes = 0; rejectReady(error);
+      if (terminalFailure) { ready = Promise.reject(error); void ready.catch(() => {}); }
+      void stopChild();
+    };
     child.stdout.on('data', (bytes: Buffer) => {
       if (disposed || failed) return;
-      pending = Buffer.concat([pending, bytes]); let end: number;
-      while ((end = pending.indexOf(10)) >= 0) {
-        const line = pending.subarray(0, end); pending = pending.subarray(end + 1);
-        if (line.length > maxRecordBytes) { fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes)`)); return; }
+      let offset = 0;
+      while (offset < bytes.length) {
+        const end = bytes.indexOf(10, offset), chunk = bytes.subarray(offset, end < 0 ? bytes.length : end);
+        pendingBytes += chunk.length;
+        if (pendingBytes > maxRecordBytes) { fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes)`)); return; }
+        if (chunk.length) pending.push(chunk);
+        if (end < 0) break;
+        const line = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+        pending = []; pendingBytes = 0; offset = end + 1;
         try {
           const event = parseEvent(parseJson(line)); if (!event) continue;
           if (!initial && generation !== undefined && event.generation !== undefined && event.generation !== generation) continue;
@@ -105,13 +116,12 @@ export function createHcEventStream(options: HcClientOptions): HcEventStream {
           for (const listener of [...listeners]) listener(event);
         } catch (error) { fail(error instanceof Error ? error : new HerdrError('invalid-reply', 'Invalid event')); return; }
       }
-      if (pending.length > maxRecordBytes) fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes; unterminated)`));
     });
     child.stderr.on('data', (bytes: Buffer) => { stderrBytes += bytes.length; if (stderrBytes > maxErrorBytes) fail(new HerdrError('reply-too-large', `Event stderr exceeded its byte limit (${maxErrorBytes} bytes)`)); });
     child.once('error', error => fail(new HerdrError((error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing-hc' : 'events-disconnected', error.message)));
     child.once('close', () => {
       clearInterval(watchdog); children.delete(child);
-      if (disposed) return;
+      if (disposed || terminalFailure) return;
       if (initial) rejectReady(new HerdrError('events-disconnected', 'Event transport closed before its snapshot'));
       resetReady();
       reconnect = setTimeout(() => { void launch(); }, Math.min(250 * 2 ** attempt++, 2000)); reconnect.unref();

@@ -38,6 +38,18 @@ function targetFor(view) {
       pane: panes().some(pane => pane.terminal === source.terminal && source.terminal),
       active: active && Boolean(descriptor), machine: source.terminal?.includes('/') ? source.terminal.split('/')[0] : null };
   }
+  if (source.kind === 'console' || source.kind === 'remote') {
+    const terminal = terminals().find(value => value.address === source.terminal);
+    if (!terminal) return null;
+    const pane = panes().find(value => value.terminal === source.terminal);
+    const target = classifyPane(pane ?? { terminal: source.terminal }, terminal, view.spiderFeeds ?? [], p.labelContract, Date.now() - FEED_DISCONNECT_MS);
+    if (source.kind === 'console' && (target.kind !== 'terminal' || terminal.labels?.[p.labelContract?.labels?.kind] !== p.labelContract?.kinds?.remoteConsole)) return null;
+    if (source.kind === 'remote' && (target.kind !== 'command' || target.key !== source.key)) return null;
+    const descriptor = target.descriptor ?? (source.kind === 'remote' && !p.feedRoot && source.action?.kind === 'ipc'
+      && source.action.descriptor?.sessionId === terminal.labels?.[p.labelContract?.labels?.session] ? source.action.descriptor : null);
+    return { ...target, descriptor, pane: Boolean(pane), direct: source.kind === 'remote' };
+  }
+  if (source.kind !== 'pane') return null;
   const pane = panes().find(value => value.pane === source.pane && value.terminal === source.terminal);
   if (!pane) return null;
   const target = classifyPane(pane, terminals().find(value => value.address === pane.terminal), view.spiderFeeds ?? [], p.labelContract, Date.now() - FEED_DISCONNECT_MS);
@@ -54,7 +66,7 @@ async function callOwner(descriptor, request) {
   if (result.code !== 0 || !reply?.ok) throw new Error(reply?.message ?? 'Session action failed');
 }
 
-async function movePlain(terminal, destination, cx) {
+async function movePlain(terminal, destination, cx, allowParked) {
   const p = props() ?? {};
   const current = () => {
     const pane = panes().find(value => value.terminal === terminal);
@@ -63,17 +75,27 @@ async function movePlain(terminal, destination, cx) {
     return space ? { space: space.id, tab: pane.tab, pane: pane.pane } : null;
   };
   const source = current();
-  if (!source) throw new Error('The terminal pane is unavailable');
-  const targetSpace = destination.kind === 'tab' ? spaces().find(space => space.tabs.some(tab => tab.id === destination.tab))?.id : source.space;
-  if (!targetSpace) throw new Error('The target tab is unavailable');
+  if (!source && !allowParked) throw new Error('The terminal pane is unavailable');
   const machine = terminal.includes('/') ? terminal.split('/')[0] : null;
+  const candidates = spaces().filter(space => (space.machine ?? null) === machine);
+  let targetSpace = destination.kind === 'tab' ? spaces().find(space => space.tabs.some(tab => tab.id === destination.tab))?.id
+    : source?.space ?? candidates.find(space => space.id === focused()?.space)?.id ?? candidates[0]?.id;
+  let newTab = null;
+  // The app adopts a labeled terminal into a missing space without launching a shell.
+  if (!targetSpace && destination.kind === 'new' && allowParked && !source) {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    const prefix = machine ? machine + '/' : '';
+    targetSpace = `${prefix}sp-${id}`; newTab = `${prefix}tb-${id}`;
+  }
+  if (!targetSpace) throw new Error('The target tab is unavailable');
   const targetMachine = targetSpace.includes('/') ? targetSpace.split('/')[0] : null;
   if (machine !== targetMachine) throw new Error('A terminal cannot move to another machine');
   const local = value => machine && value.startsWith(machine + '/') ? value.slice(machine.length + 1) : value;
-  await moveTerminal(terminal, { ...destination, space: targetSpace }, {
+  const target = newTab ? { kind: 'tab', tab: newTab, space: targetSpace } : { ...destination, space: targetSpace };
+  await moveTerminal(terminal, target, {
     now: Date.now, timeoutMs: 20000, sleep: ms => cx.sleep(ms),
     placement: async () => current(), targetPane: async () => null,
-    tabExists: async tab => spaces().some(space => space.tabs.some(value => value.id === tab)),
+    tabExists: async tab => tab === newTab || spaces().some(space => space.tabs.some(value => value.id === tab)),
     run: (name, args) => run(name, args),
     createTab: async space => {
       if (!p.appBinary) throw new Error('The app executable is unavailable');
@@ -110,7 +132,7 @@ function choose(view, target, item, cx) {
       if (item.id === 'kill') await killTarget(target, { ipc: callOwner, run, confirm: spec => { view.moveConfirm = { ...spec, pending: false }; cx.notify(); } });
       else {
         const destination = item.id === 'hide' ? { kind: 'hide' } : item.tab ? { kind: 'tab', tab: item.tab } : { kind: 'new' };
-        await moveTarget(target, destination, { ipc: callOwner, movePlain: (terminal, dest) => movePlain(terminal, dest, cx) });
+        await moveTarget(target, destination, { ipc: callOwner, movePlain: (terminal, dest) => movePlain(terminal, dest, cx, target.pane === false) });
       }
       if (!view.moveConfirm) closeOverlay(props().overlay);
     } catch (error) {

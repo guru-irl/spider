@@ -108,6 +108,138 @@ it('uses the menu text size when the pane is unavailable', async () => {
   expect(flatten(root)[0].textSize).toBe(12.8);
 });
 
+async function remoteRowPopup(kind: 'console' | 'remote', placed: boolean, connected = true, withoutSpace = false) {
+  const terminal = `alpha.invalid/${kind}`, key = kind === 'console' ? `console:${terminal}` : 'job';
+  const feed = { sessionId: 'owner', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
+    ipc: { address: 'socket', capabilityFile: 'cap' }, owner: { terminal: { address: 'parent' } }, runs: { rows: [] } };
+  const labels = { 'spider.kind': kind === 'console' ? 'remote-console' : 'exec', 'spider.session': 'owner',
+    'spider.machine': 'alpha.invalid', ...(kind === 'remote' ? { 'spider.job': 'job' } : {}) };
+  let pane: any = placed ? { pane: 'alpha.invalid/p1', terminal, tab: 'alpha.invalid/t1' } : null;
+  const commands: any[] = [];
+  const spaces: { id: string; name: string; machine: string | null; tabs: { id: string; name: string }[] }[] = [{ id: 's0', name: 'Local', machine: null, tabs: [{ id: 't0', name: 'Local tab' }] }];
+  if (!withoutSpace) spaces.push({ id: 'alpha.invalid/s1', name: 'Remote', machine: 'alpha.invalid', tabs: [{ id: 'alpha.invalid/t1', name: 'Current' }, { id: 'alpha.invalid/t2', name: 'Target' }] });
+  const ui = await popup({ modId: 'spider-agents', nodePath: 'node', cliPath: 'cli', appBinary: 'app', feedRoot: '/fixture/feed', overlay: 'overlay', labelContract: HerdrLabelContract,
+    moveMenu: { kind, key, terminal, action: { kind: 'ipc', descriptor: { version: 1, sessionId: 'owner', generation: 'gen', ...feed.ipc } } } }, {
+    spaces: () => spaces, panes: () => pane ? [pane] : [], terminals: () => [{ address: terminal, labels }], focused: () => ({ space: 's0', tab: 't0' }),
+    run: (name: string, args: any) => { commands.push([name, args]); if (name === 'terminal.park') pane = null; },
+    hc: async (args: string[]) => { commands.push(['hc', args]); const tab = args.find(arg => arg.startsWith('herdr.tab='))!.slice('herdr.tab='.length);
+      const space = args.find(arg => arg.startsWith('herdr.space='))!.slice('herdr.space='.length);
+      if (!spaces.some(value => value.id === `alpha.invalid/${space}`)) spaces.push({ id: `alpha.invalid/${space}`, name: 'Remote', machine: 'alpha.invalid', tabs: [{ id: `alpha.invalid/${tab}`, name: 'New' }] });
+      pane = { pane: 'alpha.invalid/p2', terminal, tab: `alpha.invalid/${tab}` }; return { code: 0, stdout: '', stderr: '' }; },
+    exec: async (binary: string, args: string[]) => {
+      commands.push([binary, args]);
+      if (binary === 'app') {
+        spaces[1].tabs.push({ id: 'alpha.invalid/new', name: 'New' });
+        return { code: 0, stdout: JSON.stringify({ space: 'alpha.invalid/s1', tab: 'alpha.invalid/new', pane: 'alpha.invalid/placeholder' }), stderr: '' };
+      }
+      const request = JSON.parse(args[args.indexOf('--request') + 1]);
+      return { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, jobId: request.jobId }), stderr: '' };
+    },
+  }, connected ? [feed] : []);
+  await ui.drain();
+  return { ...ui, terminal, commands, placement: () => pane };
+}
+
+it.each([
+  ['console', true, 'Move to new tab', 'Move to tab', 'Kill terminal'],
+  ['console', false, 'Open in new tab', 'Open in tab', 'Kill terminal'],
+  ['remote', true, 'Move to new tab', 'Move to tab', 'Kill command'],
+  ['remote', false, 'Open in new tab', 'Open in tab', 'Kill command'],
+] as const)('shows the %s row menu with pane=%s', async (kind, placed, first, second, kill) => {
+  const ui = await remoteRowPopup(kind, placed), root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toEqual([first, second, kill]);
+  const children = listChildren(byId(root, 'move-menu-items'));
+  expect(children.map(child => child.id ?? 'separator')).toEqual(['move-new', 'move-tabs', 'separator', 'move-kill']);
+});
+
+it.each([
+  ['console', true, 'new'], ['console', false, 'new'], ['console', true, 'tab'], ['console', false, 'tab'],
+  ['remote', true, 'new'], ['remote', false, 'new'], ['remote', true, 'tab'], ['remote', false, 'tab'],
+] as const)('places the %s row with pane=%s in a %s tab', async (kind, placed, destination) => {
+  const ui = await remoteRowPopup(kind, placed); let root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toContain(placed ? 'Move to new tab' : 'Open in new tab');
+  if (destination === 'tab') {
+    byId(root, 'move-tabs').events.on_click({}, ui.cx); root = ui.renderMoveMenu(ui.instance, ui.cx);
+    expect(texts(root)).not.toContain('Local tab');
+    byId(root, 'move-tab-alpha.invalid/t2').events.on_click({}, ui.cx);
+  } else byId(root, 'move-new').events.on_click({}, ui.cx);
+  await ui.drain();
+  expect(ui.placement()).toMatchObject({ terminal: ui.terminal, tab: destination === 'new' ? 'alpha.invalid/new' : 'alpha.invalid/t2' });
+  expect(ui.commands.filter((entry: any[]) => entry[0] === 'terminal.park')).toHaveLength(placed ? 1 : 0);
+  expect(ui.commands.some((entry: any[]) => entry[0] === 'app' && entry[1].includes('alpha.invalid/s1'))).toBe(destination === 'new');
+  expect(ui.commands.some((entry: any[]) => ['window.focus', 'window.activate', 'app.focus'].includes(entry[0]) || Array.isArray(entry[1]) && entry[1].some((arg: string) => arg === 'pi' || arg.endsWith('/pi')))).toBe(false);
+  expect(ui.closed).toEqual(['overlay']); expect(ui.notifications).toEqual([]);
+});
+
+it.each(['console', 'remote'] as const)('opens a parked %s in a new tab when its machine has no space', async kind => {
+  const ui = await remoteRowPopup(kind, false, true, true), root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toContain('Open in new tab');
+  byId(root, 'move-new').events.on_click({}, ui.cx); await ui.drain();
+  expect(ui.placement()).toMatchObject({ terminal: ui.terminal, tab: expect.stringMatching(/^alpha\.invalid\//) });
+  expect(ui.commands.filter((entry: any[]) => entry[0] === 'hc')).toHaveLength(1);
+  expect(ui.commands.some((entry: any[]) => ['window.focus', 'window.activate', 'app.focus'].includes(entry[0]) || Array.isArray(entry[1]) && entry[1].some((arg: string) => arg === 'pi' || arg.endsWith('/pi')))).toBe(false);
+  expect(ui.closed).toEqual(['overlay']); expect(ui.notifications).toEqual([]);
+});
+
+it.each([['console', true], ['console', false], ['remote', true], ['remote', false]] as const)('kills the %s row target with pane=%s', async (kind, placed) => {
+  const ui = await remoteRowPopup(kind, placed), root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toContain(kind === 'console' ? 'Kill terminal' : 'Kill command');
+  byId(root, 'move-kill').events.on_click({}, ui.cx); await ui.drain();
+  if (kind === 'console') expect(ui.commands).toEqual([['terminal.kill', { terminal: ui.terminal }]]);
+  else {
+    const sent = ui.commands.find((entry: any[]) => entry[0] === 'node')!;
+    expect(JSON.parse(sent[1][sent[1].indexOf('--request') + 1])).toEqual({ op: 'killJob', jobId: 'job', generation: 'gen' });
+    expect(ui.commands.some((entry: any[]) => entry[0] === 'terminal.kill')).toBe(false);
+  }
+  expect(ui.closed).toEqual(['overlay']); expect(ui.notifications).toEqual([]);
+});
+
+it('disables command kill when the owner is unavailable', async () => {
+  const ui = await remoteRowPopup('remote', false, false), root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toContain('Kill command');
+  expect(byId(root, 'move-kill').disabled).toBe(true);
+  expect(byId(root, 'move-kill').events.on_click).toBeUndefined();
+});
+
+it('uses the command row owner when no feed directory is configured', async () => {
+  const terminal = 'alpha.invalid/job', descriptor = { version: 1, sessionId: 'owner', generation: 'gen', address: 'socket', capabilityFile: 'cap' };
+  const ui = await popup({ modId: 'spider-agents', nodePath: 'node', cliPath: 'cli', overlay: 'overlay', labelContract: HerdrLabelContract,
+    moveMenu: { kind: 'remote', key: 'job', terminal, action: { kind: 'ipc', descriptor } } },
+    { terminals: () => [{ address: terminal, labels: { 'spider.kind': 'exec', 'spider.job': 'job', 'spider.session': 'owner' } }] });
+  const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(byId(root, 'move-kill').events.on_click).toBeTypeOf('function');
+  byId(root, 'move-kill').events.on_click({}, ui.cx); await ui.drain();
+  const sent = ui.calls.find((value: any) => value.binary === 'node');
+  expect(JSON.parse(sent.args[sent.args.indexOf('--request') + 1])).toEqual({ op: 'killJob', jobId: 'job', generation: 'gen' });
+  expect(ui.notifications).toEqual([]);
+});
+
+it('refuses a console row if the clicked pane is classified as a session', async () => {
+  const terminal = 'alpha.invalid/item';
+  const pane = { pane: 'alpha.invalid/p1', terminal, tab: 'alpha.invalid/t1', program: { key: 'pi' } };
+  const ui = await popup({ modId: 'spider-agents', labelContract: HerdrLabelContract,
+    moveMenu: { kind: 'console', key: `console:${terminal}`, terminal } },
+    { panes: () => [pane], terminals: () => [{ address: terminal, labels: { 'spider.kind': 'remote-console' } }] });
+  const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toEqual(['Pane unavailable']);
+});
+
+it('does not reopen a pane-header terminal that disappears before the move', async () => {
+  let pane: any = { pane: 'p1', terminal: 'shell', tab: 't1', program: { key: 'shell' } };
+  const commands: any[] = [];
+  const ui = await popup({ modId: 'spider-agents', overlay: 'overlay', labelContract: HerdrLabelContract,
+    moveMenu: { kind: 'pane', pane: 'p1', terminal: 'shell' } }, {
+    panes: () => pane ? [pane] : [], terminals: () => [{ address: 'shell', labels: {} }],
+    hc: async (args: string[]) => { commands.push(args); pane = { pane: 'p2', terminal: 'shell', tab: 't2' }; return { code: 0, stdout: '', stderr: '' }; },
+  });
+  await ui.drain(); let root = ui.renderMoveMenu(ui.instance, ui.cx);
+  byId(root, 'move-tabs').events.on_click({}, ui.cx); root = ui.renderMoveMenu(ui.instance, ui.cx);
+  pane = null; byId(root, 'move-tab-t2').events.on_click({}, ui.cx); await ui.drain();
+  expect(commands).toEqual([]);
+  expect(ui.notifications).toMatchObject([{ title: 'Move failed', body: 'The terminal pane is unavailable' }]);
+  expect(ui.closed).toEqual([]);
+});
+
 it('opens a parked subagent in a selected tab through its owner', async () => {
   const descriptor = { version: 1, sessionId: 'owner', generation: 'gen', address: 'socket', capabilityFile: 'cap' };
   const ui = await popup({ modId: 'spider-agents', nodePath: 'node', cliPath: 'cli', overlay: 'overlay', labelContract: HerdrLabelContract,

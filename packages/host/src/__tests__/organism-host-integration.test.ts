@@ -10,7 +10,7 @@ import {
   SessionManager, SettingsManager, type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { openGlobal, openProject, openRepo, resolveProject, setGlobalDbPathForTests, type Db } from "@spider/db-core";
-import { addMemory, listActive, listPending } from "@spider/memory";
+import { addMemory, getEmbedderState, listActive, listPending } from "@spider/memory";
 import spiderExtension, { SPIDER_PARAMETERS, buildActionCtx } from "../extension";
 import { dispatch } from "../dispatch";
 import { controlConfig } from "../control";
@@ -39,6 +39,8 @@ afterEach(async () => {
   for (const db of handles.splice(0)) db.close();
   setGlobalDbPathForTests(null);
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
+  // A real provider that starts here can fail and leave process-wide state that later doctor checks report.
+  expect(getEmbedderState().state, "a real embedding provider started during this test").toBe("uninitialized");
 });
 
 async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?: boolean; scratchRoot?: string; persisted?: boolean }) {

@@ -34,7 +34,7 @@ describe('CI acceptance contract', () => {
         expect(checks.steps.findIndex(item => item.name === 'Install')).toBeLessThan(checks.steps.indexOf(typecheck));
       }
       const command = job.steps[utilities]!.run!;
-      expect(command).toContain('packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls');
+      expect(command).toContain('packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/harness/__tests__/pi-observations.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls');
       expect(command).toContain('-u SPIDER_HERDR_APP_TESTS');
       expect(job.steps[subset]!.run).toContain('npm run test:herdr:e2e:ci -- --built');
       expect(job.steps[artifacts]!.if).toBe('failure()');

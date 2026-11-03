@@ -28,10 +28,11 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
   const subscriptions = [
     pi.on('session_start', async (event, ctx) => {
       if (disposed) return;
-      await stop(event?.reason === 'reload' ? 'reload' : 'quit');
+      const stopping = stop(event?.reason === 'reload' ? 'reload' : 'quit'), generation = activation;
+      await stopping;
+      if (disposed || generation !== activation) return;
       const owner = ports.currentOwner(ctx);
       if (!owner) return;
-      const generation = activation;
       const options = ports.monitorOptions(owner, ctx);
       const next = createJobMonitor({ ...options,
         observedJobMessages: async () => (ctx?.sessionManager?.getBranch?.() ?? []).flatMap(entry => { const id = noticeId(entry); return id ? [id] : []; }),
@@ -42,11 +43,16 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
           pi.sendMessage(notice, { triggerTurn: true, deliverAs: 'steer' });
         },
       });
-      try { await next.activate(owner); monitor = next; ports.bind(next); }
+      try {
+        await next.activate(owner);
+        if (disposed || generation !== activation) { await next.shutdown('reload'); return; }
+        monitor = next; ports.bind(next);
+      }
       catch (error) {
-        ports.activationFailed?.(error);
+        const current = !disposed && generation === activation;
+        if (current) ports.activationFailed?.(error);
         try { await next.shutdown('reload'); }
-        finally { options.reportError?.(error); }
+        finally { if (current) options.reportError?.(error); }
       }
     }),
     pi.on('session_shutdown', async event => { await stop(event?.reason === 'reload' ? 'reload' : 'quit'); }),

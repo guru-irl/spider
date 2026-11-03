@@ -386,7 +386,7 @@ it('core loss disables routing and local shims once and reload recovers', async 
     await vi.waitFor(() => expect(f.mount.enabled()).toBe(false), { timeout: 5000 });
     const calls = (await f.calls()).length;
     for (let attempt = 0; attempt < 2; attempt++) expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', code: 'ssh managed.invalid' } })).toBeUndefined();
-    expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', on: 'remote.invalid', code: 'printf no' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
+    expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', on: 'remote.invalid', code: 'printf no' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr stopped responding') });
     const environment = f.mount.execution().environmentPolicy(inherited);
     expect(environment.SPIDER_HERDR_SSH_DESCRIPTOR).toBeUndefined(); expect(environment.PATH?.split(':')).not.toContain(f.shimDirectory);
     expect(f.mount.execution().remote).toBeUndefined(); expect(f.notices).toHaveLength(1); expect(String(f.notices[0])).toContain('/reload');

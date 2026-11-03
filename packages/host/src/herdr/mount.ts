@@ -367,7 +367,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         if (!replacement) return;
       }
       if (disposed || stopped || owner !== current) return;
-      stopped = true; coreLost = true; environment = disabledHerdrEnvironment; policy = null; remote = undefined;
+      stopped = true; coreLost = true; remoteUnavailableReason = HERDR_NOTICES[replacement ? 'retired' : 'coreDown'].text; environment = disabledHerdrEnvironment; policy = null; remote = undefined;
       if (replacement) { coreNotice(ctx, 'ownershipNotices', 'retired'); await pruneOldCoreMappings(replacement); }
       else inactiveNotice(ctx, 'auto', 'core-down');
       await closeFeed();
@@ -387,7 +387,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     await closeFeed(); await closeResources(); context = ctx; config = null; coreLost = false; remoteUnavailableReason = undefined;
     let activationMode: unknown = 'auto', expected = Boolean(process.env.HC_TERMINAL_ID);
     const disabled = (reason: InactiveReason, error?: unknown) => {
-      if (error !== undefined) remoteUnavailableReason = remoteUnavailableNotice(error, 'session', 'activation');
+      if (error !== undefined) remoteUnavailableReason = remoteUnavailableNotice(reason === 'config-problem' ? new HerdrError('invalid-config', '') : error, 'session', 'activation');
       inactiveNotice(ctx, activationMode, reason, expected, error);
     };
     try {
@@ -676,12 +676,13 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   offs.push(registrationPi.on('session_shutdown', async event => { ++lifecycle; await coreProbe?.catch(report); await closeFeed(event.reason === 'quit'); await closeResources(); context = null; }));
   const guard: HerdrMount['guard'] = async event => {
     if (owner && !stopped) await probeCore(owner);
-    if (!remote && remoteUnavailableReason && event.input.on !== undefined) return { block: true, reason: remoteUnavailableReason };
+    if (coreLost && event.input.on !== undefined) return { block: true, reason: remoteUnavailableReason ?? HERDR_NOTICES.guardCore.text };
+    if (!coreLost && !remote && remoteUnavailableReason && event.input.on !== undefined) return { block: true, reason: remoteUnavailableReason };
     if (!owner || stopped || config?.enabled === false || !config) return event.input.on !== undefined ? { block: true, reason: HERDR_NOTICES.remoteDisabled.text } : undefined;
     return guardHerdrToolCall(event, routingPorts);
   };
   return { owner: () => owner, enabled: () => Boolean(owner && !stopped), findKillJobs: id => findOwnedKillJobs(id, need(owner), journalRoot()), killJob: id => cancelJob(id, need(owner)), prepareSessionReplacement: () => closeFeed(false, 'wrong-generation'),
-    prepareSessionQuit: async () => { try { await endpoint?.dispose(); } catch (error) { report(error); } finally { endpoint = null; } }, execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), ...(!remote && remoteUnavailableReason ? { remoteUnavailableReason } : {}), environmentPolicy: env => environment(env), ...(owner && config ? { supervisorHcBinary: config.core.binary } : {}) }), guard,
+    prepareSessionQuit: async () => { try { await endpoint?.dispose(); } catch (error) { report(error); } finally { endpoint = null; } }, execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), ...(!remote ? { remoteUnavailableReason: remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text } : {}), environmentPolicy: env => environment(env), ...(owner && config ? { supervisorHcBinary: config.core.binary } : {}) }), guard,
     async dispose() { if (disposed) return; disposed = true; ++lifecycle; for (const off of offs) off(); await coreProbe?.catch(report); agentConsoles.dispose(); await closeFeed(); await viewers.dispose(); await jobs.dispose(); status.dispose(); shortcuts?.dispose(); await routing?.dispose(); await sessions.dispose(); await closeResources(); },
   };
 }

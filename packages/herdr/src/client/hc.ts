@@ -10,7 +10,7 @@ import { HERDR_LABELS } from '../contracts.js';
 import { createHcEventStream } from './events.js';
 import { HerdrError, parseCore, parseTerminal, object, text, selectedSocket } from './parse.js';
 
-export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes: number = 1024 * 1024, input?: Buffer): Promise<unknown> {
+export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes?: number, input?: Buffer): Promise<unknown> {
   const environment = Object.freeze({ ...env, HC_SOCKET: selectedSocket(env) });
   await requireCoreAvailable(environment);
   // hc has no no-autostart mode. Keep the unavoidable check-then-call race to

@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
 import { build } from 'vite';
-import { createHerdrHarness, createClientFixture } from './testutil.js';
+import { createHerdrHarness, createClientFixture, terminal as fixtureTerminal } from './testutil.js';
 import { createJobMonitor, type JobMonitor, type JobNotice } from '../jobs/monitor.js';
 import { createHostHerdrPorts, createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
 import { createJobStore } from '../jobs/store.js';
@@ -18,7 +18,7 @@ import type { HcClient, Owner, JobId, TerminalAddress, TerminalSummary } from '.
 import { setupHerdr, runtimeInstallPath, standardHerdrConfigPath } from '../setup/installer.js';
 import type { HerdrConfig, RunId } from '../contracts.js';
 
-async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false) {
+async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSnapshot = false) {
   const h = await createHerdrHarness(mode); let monitor: JobMonitor | undefined;
   let child: TerminalChild | undefined;
   let output: ReturnType<typeof createHostHerdrPorts> | undefined;
@@ -50,6 +50,12 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false) {
       });
     } finally { await installer.dispose(); }
     output = createHostHerdrPorts({ hc: h.hc, config, runtimeBytes: runtime, runtimePath: () => runtimeInstallPath(config.machines[0].runtime.directory, runtime) });
+    if (largeSnapshot) {
+      const existing = (await h.cli(['ls', '--all', '--json']) as { terminals: unknown[] }).terminals;
+      const terminals = [...existing, ...Array.from({ length: 8000 }, (_, i) => fixtureTerminal(`large-${i}`))];
+      expect(Buffer.byteLength(JSON.stringify({ terminals }))).toBeGreaterThan(1024 * 1024);
+      await h.emitCore({ type: 'snapshot', seq: 10000, terminals });
+    }
     const setupCallCount = mode === 'fake' ? (await h.calls()).length : 0;
     const notices: JobNotice[] = [], errors: unknown[] = [];
     const parentMonitor = () => createJobMonitor({ hc: h.hc, clock: Date.now, journalRoot: join(config.globalRoot, 'herdr/jobs'), outputCollector: output!.outputCollector, observedJobMessages: async () => [], notifier: notice => { notices.push(notice); }, reportError: error => errors.push(error) });
@@ -120,9 +126,16 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false) {
     }
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) { const closed = new Promise<void>(resolve => child!.once('exit', () => resolve())); child.kill('SIGKILL'); await closed; }
-    await monitor?.shutdown('reload'); output?.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
+    await monitor?.shutdown('reload'); output?.dispose();
+    if (largeSnapshot) {
+      const rows = (await h.cli(['ls', '--all', '--json']) as { terminals: { address: string }[] }).terminals;
+      await h.emitCore({ type: 'snapshot', seq: 1000000, terminals: rows.filter(row => !row.address.startsWith('large-')) });
+      await expect.poll(async () => ((await h.cli(['ls', '--all', '--json']) as { terminals: unknown[] }).terminals.length)).toBeLessThan(8000);
+    }
+    await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
   }
 }
+it('session and child activate with a large snapshot and remote exec returns its output', async () => { await scenario('fake', false, true); }, 60000);
 it('the real-child regression detects the legacy missing-policy branch in an isolated compiled artifact', async () => { await scenario('fake', true); }, 45000);
 it('real Node child runs direct exec against fake hc and hands off a background job after SIGKILL', async () => { await scenario('fake'); }, 45000);
 const hcAvailable = await access(process.env.SPIDER_HERDR_HC_BINARY ?? join(homedir(), '.local/bin/hc')).then(() => true, () => false);

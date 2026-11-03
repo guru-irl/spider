@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process';
 import { requireCoreAvailable } from './liveness.js';
 import { createChildTerminator } from './child-termination.js';
+import { SINGLE_REPLY_BYTES, TERMINAL_LIST_BYTES } from './limits.js';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { HcClientOptions, HcEvent, HcEventStream, TerminalAddress, TerminalSummary, TerminalFinish } from '../contracts.js';
 import { HerdrError, object, integer, text, nullableInteger, parseProgramStatus, parseTerminal, parseJson, selectedSocket } from './parse.js';
@@ -30,6 +31,8 @@ function parseEvent(value: unknown): HcEvent | null {
 
 export function createHcEventStream(options: HcClientOptions): HcEventStream {
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
+  const maxRecordBytes = options.maxReplyBytes ?? TERMINAL_LIST_BYTES;
+  const maxErrorBytes = Math.min(options.maxReplyBytes ?? SINGLE_REPLY_BYTES, SINGLE_REPLY_BYTES);
   const terminals = new Map<TerminalAddress, TerminalSummary>();
   const listeners = new Set<(event: HcEvent) => void>();
   const children = new Map<ChildProcessWithoutNullStreams, () => Promise<void>>();
@@ -75,7 +78,7 @@ export function createHcEventStream(options: HcClientOptions): HcEventStream {
       pending = Buffer.concat([pending, bytes]); let end: number;
       while ((end = pending.indexOf(10)) >= 0) {
         const line = pending.subarray(0, end); pending = pending.subarray(end + 1);
-        if (line.length > (options.maxReplyBytes ?? 1024 * 1024)) { fail(new HerdrError('reply-too-large', 'Event record exceeded its byte limit')); return; }
+        if (line.length > maxRecordBytes) { fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes)`)); return; }
         try {
           const event = parseEvent(parseJson(line)); if (!event) continue;
           if (!initial && generation !== undefined && event.generation !== undefined && event.generation !== generation) continue;
@@ -102,9 +105,9 @@ export function createHcEventStream(options: HcClientOptions): HcEventStream {
           for (const listener of [...listeners]) listener(event);
         } catch (error) { fail(error instanceof Error ? error : new HerdrError('invalid-reply', 'Invalid event')); return; }
       }
-      if (pending.length > (options.maxReplyBytes ?? 1024 * 1024)) fail(new HerdrError('reply-too-large', 'Unterminated event exceeded its byte limit'));
+      if (pending.length > maxRecordBytes) fail(new HerdrError('reply-too-large', `Event record exceeded its byte limit (${maxRecordBytes} bytes; unterminated)`));
     });
-    child.stderr.on('data', (bytes: Buffer) => { stderrBytes += bytes.length; if (stderrBytes > (options.maxReplyBytes ?? 1024 * 1024)) fail(new HerdrError('reply-too-large', 'Event stderr exceeded its byte limit')); });
+    child.stderr.on('data', (bytes: Buffer) => { stderrBytes += bytes.length; if (stderrBytes > maxErrorBytes) fail(new HerdrError('reply-too-large', `Event stderr exceeded its byte limit (${maxErrorBytes} bytes)`)); });
     child.once('error', error => fail(new HerdrError((error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing-hc' : 'events-disconnected', error.message)));
     child.once('close', () => {
       clearInterval(watchdog); children.delete(child);

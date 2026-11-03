@@ -7,6 +7,7 @@ import type { ProcessPresenceStore } from './presence.js';
 import { canonicalSessionFile, type LaunchEnvironment, type TerminalRegistry } from './registry.js';
 import type { ProcessIdentity, ProcessInventoryPorts, SessionLease, SessionLeases } from './lease.js';
 import { herdrErrorNotice } from '../notices.js';
+import { HerdrError } from '../client/parse.js';
 export interface SessionRegistrationPorts extends ProcessInventoryPorts {
   currentSession(ctx: ExtensionContext): ProcessPresence; owner(): Owner | null;
   registry: TerminalRegistry; presence: ProcessPresenceStore; leases: SessionLeases;
@@ -39,9 +40,18 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     const canonical = await canonicalSessionFile(file); const existing = held.get(canonical); if (existing) return existing;
     const token = ports.env?.SPIDER_HERDR_LEASE_TOKEN;
     try {
-      const lease = token && ports.env?.SPIDER_HERDR_LEASE_FILE === canonical ? await ports.leases.adopt(canonical, token, ports.processIdentity) : await ports.leases.claim(canonical, ports.processIdentity, ownInventory, active() ? { mode: 'switch', sessionId } : { mode: 'bookkeeping' });
+      const claim = () => ports.leases.claim(canonical, ports.processIdentity, ownInventory, active() ? { mode: 'switch', sessionId } : { mode: 'bookkeeping' });
+      const lease = token && ports.env?.SPIDER_HERDR_LEASE_FILE === canonical ? await adoptOrClaim(canonical, token, claim) : await claim();
       held.set(canonical, lease); return lease;
     } catch (error) { if (active()) throw error; return undefined; }
+  }
+  // The launch token only lets this process take over the lease its launcher wrote. That lease is gone when an earlier
+  // build released it at reload, and it carries a new token once this process has claimed it afresh. In both cases, claim
+  // it the way sessions without a launch token do. With Herdr active, the liveness check refuses a session that another
+  // live process holds. With Herdr inactive, the claim only records ownership, as it does for every session.
+  async function adoptOrClaim(canonical: string, token: string, claim: () => Promise<SessionLease>): Promise<SessionLease> {
+    try { return await ports.leases.adopt(canonical, token, ports.processIdentity); }
+    catch (error) { if (error instanceof HerdrError && error.code === 'lease-token-invalid') return claim(); throw error; }
   }
 
   async function activation(ctx: ExtensionContext): Promise<void> {

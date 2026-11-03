@@ -44,6 +44,7 @@ it('sets the display title through OSC without allowing a title to inject termin
   await writeFile(join(f.directory, 'console.json'), publication({ version: 1, title: 'Builder\u001b]2;injected\u0007\n · remote.invalid' }));
   f.start(); await f.until('\u001b]0;Builder]2;injected · remote.invalid\u0007');
   expect(f.output().match(/\u001b\]0;/g)).toHaveLength(1); expect(f.output()).not.toContain('\u001b]2;'); expect(f.output().match(/\u0007/g)).toHaveLength(1);
+  expect(f.output().replace(/\x1b\]0;[^\x00-\x1f\x7f-\x9f]*\x07/g, '').replace(/\x1b\[(?:0|2|31|32)m/g, '')).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
 });
 it.each(['console.json', 'head.json', 'command-0.json'])('retries torn and checksum-failing host publication %s without a wrong action', async name => {
   const f = await fixture(); const job = await f.job('one', 0, 'correct command');

@@ -24,7 +24,7 @@ export interface RemoteChunkIndex { version: 1; jobId: string; nonce: string; he
 export interface RuntimeReceipt {
   version: 1; jobId: string; nonce: string; requestSha256: string; indexSha256: string;
   outcome: 'exited' | 'signal' | 'spawn-error' | 'release-timeout' | 'cancelled';
-  exitCode: number | null; signal: string | null; signalHint?: string; finishedAt: number; stdoutBytes: number; stderrBytes: number; error?: string;
+  exitCode: number | null; signal: string | null; signalHint?: string; startedAt?: number; finishedAt: number; stdoutBytes: number; stderrBytes: number; error?: string;
 }
 export const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 /** A shell may encode a signal as 128 + N; this is a hint, not proof of a signal. */
@@ -166,6 +166,7 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
   const offsets = { stdout: 0, stderr: 0 };
   let indexBytes = JSON.stringify(index);
   let indexPublished = false;
+  let payloadStartedAt: number | undefined;
   const initializedLogs = new Set<PayloadStream>();
   const receipt = async (outcome: RuntimeReceipt['outcome'], exitCode: number | null, signal: string | null, error?: string) => {
     if (!indexPublished) {
@@ -177,7 +178,7 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
     }
     for (const stream of initializedLogs) { const file = await open(join(directory, stream + '.log'), 'r+'); try { await file.sync(); } finally { await file.close(); } }
     const hint = outcome === 'exited' ? signalHint(exitCode) : undefined;
-    const result: RuntimeReceipt = { version: 1, jobId: request.jobId, nonce: request.nonce, requestSha256, indexSha256: sha256(indexBytes), outcome, exitCode, signal, ...(hint ? { signalHint: hint } : {}), finishedAt: Date.now(), stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr, ...(error ? { error } : {}) };
+    const result: RuntimeReceipt = { version: 1, jobId: request.jobId, nonce: request.nonce, requestSha256, indexSha256: sha256(indexBytes), outcome, exitCode, signal, ...(hint ? { signalHint: hint } : {}), ...(payloadStartedAt !== undefined ? { startedAt: payloadStartedAt } : {}), finishedAt: Date.now(), stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr, ...(error ? { error } : {}) };
     const bytes = JSON.stringify(result); await atomicRuntimeFile(join(directory, 'receipt.json'), bytes); await atomicRuntimeFile(join(directory, 'receipt.json.sha256'), sha256(bytes));
   };
   let child: ReturnType<typeof spawn> | undefined;
@@ -246,6 +247,7 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
     await verifyInputs();
     if (cancellation) { await receipt('signal', null, cancellation); return terminate(cancellation); }
     if (performance.now() >= deadline) { await receipt('release-timeout', null, null); return 124; }
+    payloadStartedAt = Date.now();
     child = spawn(request.argv[0], [...request.argv.slice(1)], { cwd: request.cwd ?? undefined, env: destinationEnvironment(process.env, request.env, tmpDir), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     cancelWatcher = setInterval(() => {
       if (checkingCancel || explicitCancel || !child?.pid) return;
@@ -339,7 +341,20 @@ function consoleText(text: string): string {
 }
 const consoleDim = (text: string) => `\x1b[2m${text}\x1b[0m`;
 const consoleColor = (color: 31 | 32, text: string) => `\x1b[${color}m${text}\x1b[0m`;
-const consoleSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+let consoleSegmenter: Intl.Segmenter | null | undefined;
+function* consoleGraphemes(text: string): Iterable<string> {
+  if (consoleSegmenter === undefined) consoleSegmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+  if (consoleSegmenter) { for (const { segment } of consoleSegmenter.segment(text)) yield segment; }
+  else yield* text;
+}
+function* consoleTokens(text: string): Iterable<string> {
+  let offset = 0;
+  for (const match of text.matchAll(/\\x[0-9a-f]{2}/g)) {
+    yield* consoleGraphemes(text.slice(offset, match.index));
+    yield match[0]; offset = match.index + match[0].length;
+  }
+  yield* consoleGraphemes(text.slice(offset));
+}
 function consoleCellWidth(text: string): number {
   if (/^[\p{Mark}\u200d\ufe0e\ufe0f]+$/u.test(text)) return 0;
   const code = text.codePointAt(0)!;
@@ -349,25 +364,36 @@ function consoleCellWidth(text: string): number {
     code >= 0xff00 && code <= 0xff60 || code >= 0xffe0 && code <= 0xffe6 || code >= 0x20000 && code <= 0x3fffd
   ) ? 2 : 1;
 }
+function consoleContent(text: string): string {
+  if (!text.includes('\t')) return consoleText(text);
+  let result = ''; let column = 0;
+  for (const segment of consoleGraphemes(text)) {
+    if (segment === '\n' || segment === '\r\n') { result += segment === '\n' ? '\n' : '\\x0d\n'; column = 0; }
+    else if (segment === '\t') { const spaces = 8 - column % 8; result += ' '.repeat(spaces); column += spaces; }
+    else { const safe = consoleText(segment); result += safe; column += safe === segment ? consoleCellWidth(segment) : safe.length; }
+  }
+  return result;
+}
 function consoleRows(text: string, width: number): string[] {
   const rows: string[] = []; let row = ''; let cells = 0;
-  for (const { segment } of consoleSegmenter.segment(text)) {
-    const size = consoleCellWidth(segment);
+  for (const segment of consoleTokens(text)) {
+    const size = segment.startsWith('\\x') ? segment.length : consoleCellWidth(segment);
     if (row && cells + size > width) { rows.push(row); row = ''; cells = 0; }
+    if (size > width) { rows.push('…'); continue; }
     row += segment; cells += size;
   }
   if (row || rows.length === 0) rows.push(row);
   return rows;
 }
 function consoleWidth(text: string): number {
-  let width = 0; for (const { segment } of consoleSegmenter.segment(text)) width += consoleCellWidth(segment); return width;
+  let width = 0; for (const segment of consoleTokens(text)) width += segment.startsWith('\\x') ? segment.length : consoleCellWidth(segment); return width;
 }
 function consoleClip(text: string, width: number): string {
   if (width <= 0) return '';
   if (consoleWidth(text) <= width) return text;
   let clipped = ''; let cells = 0;
-  for (const { segment } of consoleSegmenter.segment(text)) {
-    const size = consoleCellWidth(segment);
+  for (const segment of consoleTokens(text)) {
+    const size = segment.startsWith('\\x') ? segment.length : consoleCellWidth(segment);
     if (cells + size > width - 1) break;
     clipped += segment; cells += size;
   }
@@ -398,7 +424,7 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
     const width = columns();
     let prefix = `◆ ${tool} ${tag(job)}`;
     if (job.tagged && width !== undefined && consoleWidth(prefix.trimEnd()) > width) prefix = `◆ ${tag(job)}${tool} `;
-    const text = consoleText(command.command.split('\n')[0]);
+    const text = consoleContent(command.command.split('\n')[0]);
     if (continued) {
       const suffix = ' (continued)';
       const available = width === undefined ? undefined : width - consoleWidth(prefix) - consoleWidth(suffix);
@@ -422,10 +448,14 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
     if (!text) return;
     const prefix = `  ${tag(job)}`; const width = columns();
     const gutter = stream === 'stderr' ? consoleColor(31, '│ ') : consoleDim('│ ');
-    const lines = consoleText(text).split('\n');
+    const lines = consoleContent(text).split('\n');
     if (lines.at(-1) === '') lines.pop();
     for (const line of lines) {
-      const rows = width === undefined ? [line] : consoleRows(line, Math.max(1, width - prefix.length - 2));
+      if (width !== undefined && width <= prefix.length + 2) {
+        write(`${consoleDim(consoleClip(prefix + '│ ', width))}\n`);
+        continue;
+      }
+      const rows = width === undefined ? [line] : consoleRows(line, width - prefix.length - 2);
       for (const row of rows) write(`${prefix}${gutter}${row}\n`);
     }
   };
@@ -449,7 +479,7 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
       const head = parseRuntimePublication(await readBoundedFile(join(directory, 'head.json'), 1024));
       if (head.version === 1 && Number.isSafeInteger(head.count) && (head.count as number) >= next) {
         // Bound admissions per tick without limiting the number of concurrent jobs.
-        let admissions = 0;
+        let admissions = 0; const admitted = new Set<Active>();
         while (next < (head.count as number) && admissions++ < 32) {
           let value: Record<string, unknown>;
           try { value = parseRuntimePublication(await readBoundedFile(join(directory, `command-${next}.json`), 8192)); }
@@ -461,12 +491,12 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
           if (active.size === 0) nextTag = 1;
           const job: Active = { command, tag: nextTag++, tagged: active.size > 0, nextChunk: 0, offsets: { stdout: 0, stderr: 0 }, decoders: { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') } };
           for (const existing of active.values()) {
-            if (!existing.tagged) { existing.tagged = true; header(existing, true); }
+            if (!existing.tagged) { existing.tagged = true; if (!admitted.has(existing)) header(existing, true); }
           }
-          active.set(command.jobId, job);
-          header(job);
+          active.set(command.jobId, job); admitted.add(job);
           next++;
         }
+        for (const job of admitted) header(job);
       }
     } catch { /* Missing, oversized or partial heads do not stop existing jobs' output. */ }
     const batch: [string, Active][] = [];
@@ -489,17 +519,20 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
         const receipt = record(JSON.parse((await readBoundedFile(join(job.command.directory, 'receipt.json'), 8192)).toString()));
         if (receipt.version !== 1 || receipt.jobId !== jobId || !Number.isSafeInteger(receipt.stdoutBytes) || !Number.isSafeInteger(receipt.stderrBytes) || (receipt.stdoutBytes as number) < 0 || (receipt.stderrBytes as number) < 0 || job.offsets.stdout < (receipt.stdoutBytes as number) || job.offsets.stderr < (receipt.stderrBytes as number)) continue;
         for (const stream of ['stdout', 'stderr'] as const) display(job, stream, job.decoders[stream].end());
-        let result: string;
-        if (receipt.outcome === 'signal' && typeof receipt.signal === 'string') result = consoleColor(31, `✗ signal ${consoleText(receipt.signal)}`);
+        let result: string; let color: 2 | 31 | 32;
+        if (receipt.outcome === 'signal' && typeof receipt.signal === 'string') { color = 31; result = `✗ signal ${consoleText(receipt.signal).replace(/\n/g, '\\x0a')}`; }
         else if (receipt.outcome === 'exited' && Number.isInteger(receipt.exitCode)) {
-          const elapsed = typeof receipt.finishedAt === 'number' && Number.isFinite(receipt.finishedAt) && receipt.finishedAt >= job.command.startedAt ? ` · ${((receipt.finishedAt - job.command.startedAt) / 1000).toFixed(1)} s` : '';
+          const elapsed = typeof receipt.startedAt === 'number' && Number.isFinite(receipt.startedAt) && typeof receipt.finishedAt === 'number' && Number.isFinite(receipt.finishedAt) && receipt.finishedAt >= receipt.startedAt ? ` · ${((receipt.finishedAt - receipt.startedAt) / 1000).toFixed(1)} s` : '';
           const code = receipt.exitCode as number;
-          result = consoleColor(code === 0 ? 32 : 31, `${code === 0 ? '✓' : '✗'} exit ${code}${elapsed}`);
+          color = code === 0 ? 32 : 31; result = `${code === 0 ? '✓' : '✗'} exit ${code}${elapsed}`;
         } else {
           const label = receipt.outcome === 'lost' ? 'output lost' : receipt.outcome === 'cancelled' ? 'cancelled' : receipt.outcome === 'spawn-error' ? 'could not start' : receipt.outcome === 'release-timeout' ? 'release timed out' : 'outcome unknown';
-          result = consoleDim(`○ ${label}`);
+          color = 2; result = `○ ${label}`;
         }
-        await releaseConsoleHold(job.command.directory, directory); write(`  ${tag(job)}${result}\n`); active.delete(jobId);
+        const prefix = `  ${tag(job)}`; const width = columns();
+        if (width !== undefined && width <= prefix.length) { result = consoleClip(prefix + result, width); }
+        else { result = prefix + (color === 2 ? consoleDim(width === undefined ? result : consoleClip(result, width - prefix.length)) : consoleColor(color, width === undefined ? result : consoleClip(result, width - prefix.length))); }
+        await releaseConsoleHold(job.command.directory, directory); write(`${result}\n`); active.delete(jobId);
       } catch { /* A receipt may be absent or still being published. */ }
     }
     try { await delay(options.pollMs ?? 100, undefined, { signal: options.signal }); }

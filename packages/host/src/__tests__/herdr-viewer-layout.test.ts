@@ -129,9 +129,16 @@ it.each([{ gated: false }, { gated: true }])('reload does not move a viewer from
     await f.app.command('terminal.park', { terminal: first.viewer });
     await f.app.command('terminal.keep', { terminal: first.viewer, place: 'tab' });
     const placement = await f.app.ownerPlacement(first.viewer);
-    await f.emit('session_shutdown', { reason: 'reload' }); await f.emit('session_start');
+    let shutdownFinished = false;
+    const shutdown = f.emit('session_shutdown', { reason: 'reload' }).then(() => { shutdownFinished = true; });
+    if (gated) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(shutdownFinished).toBe(false);
+    }
     release();
+    await shutdown;
     if (gated) await oldOpenerSettled;
+    await f.emit('session_start');
     const feed = await createViewerFeedSource(f.feedRoot, f.feed.sessionId).read();
     if (!feed?.ipc) throw new Error('Reload did not publish its endpoint');
     reloaded = createSessionIpcClient({ version: 1, sessionId: feed.sessionId, generation: feed.generation, ...feed.ipc });

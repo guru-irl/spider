@@ -177,8 +177,9 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
     pending.set(runId, promise); return promise;
   }
   async function stop(): Promise<void> {
-    activationAbort.abort(); epoch++; active = null; unsubscribe?.(); unsubscribe = undefined;
-    reservations.clear(); pending.clear();
+    activationAbort.abort(); const version = ++epoch; active = null; unsubscribe?.(); unsubscribe = undefined;
+    await Promise.allSettled([...pending.values()]);
+    if (version === epoch) reservations.clear();
   }
   pi.on('session_start', async () => {
     await stop(); const currentOwner = ports.owner(); if (!currentOwner || process.env.PI_SUBAGENT_CHILD === '1') return;

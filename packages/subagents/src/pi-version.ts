@@ -5,8 +5,8 @@ import { findPiPackageRootFromEntry } from "./pi-spawn";
 interface Compatibility { fallback: boolean; warning?: string }
 const cached = new Map<string, Compatibility>();
 
-/** Resolve exactly the PATH/custom binary (or Windows node script) being launched. */
-function resolveLaunchEntry(binary: string, cwd: string): string | undefined {
+/** Resolve the selected pi executable or CLI script. */
+function resolveLaunchEntry(binary: string, cwd: string, nodeScript = false): string | undefined {
   const explicit = isAbsolute(binary) || /[/\\]/.test(binary);
   const candidates = explicit ? [resolve(cwd, binary)] : (process.env.PATH ?? "").split(delimiter).flatMap(dir => {
     const entry = resolve(cwd, dir, binary);
@@ -14,7 +14,7 @@ function resolveLaunchEntry(binary: string, cwd: string): string | undefined {
   });
   for (const candidate of candidates) {
     try {
-      accessSync(candidate, constants.X_OK);
+      accessSync(candidate, nodeScript ? constants.R_OK : constants.X_OK);
       if (statSync(candidate).isFile()) return realpathSync(candidate);
     } catch { /* Continue PATH search exactly as the launcher does. */ }
   }
@@ -39,9 +39,9 @@ function launchCacheKey(entry: string): string {
 }
 
 /** Metadata only, never a subprocess. Failed/unknown lookups are cached too. */
-export function piRpcCompatibility(spawn: { command: string; args: string[] }, cwd: string): Compatibility {
-  const binary = spawn.args[0] ?? spawn.command;
-  const entry = resolveLaunchEntry(binary, cwd);
+export function piRpcCompatibility(spawn: { command: string; args: string[]; piEntry?: string }, cwd: string): Compatibility {
+  const binary = spawn.piEntry ?? spawn.command;
+  const entry = resolveLaunchEntry(binary, cwd, spawn.piEntry !== undefined);
   const key = entry ? launchCacheKey(entry) : JSON.stringify([binary, cwd, process.env.PATH, process.env.PATHEXT]);
   const prior = cached.get(key);
   if (prior) return prior;

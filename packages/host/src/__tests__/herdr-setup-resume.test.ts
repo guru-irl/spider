@@ -6,8 +6,17 @@ import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 
+const launch = vi.hoisted(() => ({ bin: '', agent: '' }));
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, spawn: (command: string, args: readonly string[], options: import('node:child_process').SpawnOptions) => {
+    if (launch.bin && (command !== 'pi' || !args.includes('--session') || options.env?.PATH !== launch.bin || options.env.PI_CODING_AGENT_DIR !== launch.agent)) throw new Error('Unexpected session launcher');
+    return actual.spawn(command, args, options);
+  } };
+});
+
 let root = '';
-afterEach(async () => { vi.unstubAllEnvs(); if (root) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { launch.bin = ''; vi.unstubAllEnvs(); if (root) await rm(root, { recursive: true, force: true }); });
 
 it.each([undefined, 'different-agent'])('resume pins the configured pi directory when the shell has %s', async shellDirectory => {
   const scratch = resolve('.spider/scratch/tmp'); await mkdir(scratch, { recursive: true });
@@ -24,8 +33,9 @@ it.each([undefined, 'different-agent'])('resume pins the configured pi directory
   const pi = join(bin, 'pi.mjs');
   await writeFile(pi, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(receipt)}, JSON.stringify({ agentDirectory: process.env.PI_CODING_AGENT_DIR, argv: process.argv.slice(2), cwd: process.cwd() }));\nsetTimeout(() => process.exit(0), 500);\n`);
   await writeFile(join(bin, 'pi'), `#!/bin/sh\nexec '${process.execPath}' '${pi}' "$@"\n`, { mode: 0o700 });
+  launch.bin = bin; launch.agent = configured;
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, SPIDER_GLOBAL_ROOT: root,
-    PATH: bin + ':' + process.env.PATH };
+    PATH: bin };
   delete env.PI_CODING_AGENT_DIR;
   if (shellDirectory !== undefined) env.PI_CODING_AGENT_DIR = join(root, shellDirectory);
   const cli = configFixtureCwd(createProductionHerdrCliPorts(root, env), root), errors: string[] = [];

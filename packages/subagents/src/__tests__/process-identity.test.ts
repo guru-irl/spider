@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { testScratchPath } from "./helpers/testutil";
 import { checkProcessIdentity, processCommand, looksLikeSubagent } from "../process-identity";
 
 describe("processCommand", () => {
@@ -18,6 +22,29 @@ describe("processCommand", () => {
   });
 });
 
+const identityRoots: string[] = [];
+afterEach(() => { for (const root of identityRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it("recognizes the running entry within the pi package", () => {
+  const root = testScratchPath(`pi-identity-${randomUUID()}`); identityRoots.push(root);
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent" }));
+  const entry = join(root, "src", "cli.ts"); writeFileSync(entry, "// entry\n");
+  expect(looksLikeSubagent(1, () => `node ${entry} --mode rpc --session /p/subagent-sessions/r/r.jsonl`)).toBe(true);
+});
+
+it("recognizes a pi entry whose path contains spaces", () => {
+  const root = testScratchPath(`pi-identity-${randomUUID()}`); identityRoots.push(root);
+  mkdirSync(join(root, "space dir"), { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent" }));
+  const entry = join(root, "space dir", "cli.js"); writeFileSync(entry, "// entry\n");
+  expect(looksLikeSubagent(1, () => `node ${entry} --mode rpc --session /p/subagent-sessions/r/r.jsonl`)).toBe(true);
+});
+
+it("does not mistake a Node flag value for the pi entry", () => {
+  expect(looksLikeSubagent(1, () => "node --title pi /opt/other.js --mode rpc --session /p/subagent-sessions/r/r.jsonl")).toBe(false);
+});
+
 describe("looksLikeSubagent", () => {
   it("returns true when command looks like a spawned pi subagent", () => {
     const probe = () => "pi --mode json -p --session /path/to/.spider/scratch/subagent-sessions/r1/r1.jsonl Task: do it";
@@ -27,6 +54,14 @@ describe("looksLikeSubagent", () => {
   it("returns true when command is node running pi with --mode json -p", () => {
     const probe = () => "node /usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js --mode json -p --session /x/session.jsonl Task: work";
     expect(looksLikeSubagent(12345, probe)).toBe(true);
+  });
+
+  it("rejects Node flags and unrelated scripts before the pi entry", () => {
+    const args = "--mode rpc --session /p/subagent-sessions/r/r.jsonl";
+    const cli = "/opt/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+    expect(looksLikeSubagent(12345, () => `node --require /opt/preload.cjs --max-old-space-size=256 ${cli} ${args}`)).toBe(false);
+    expect(looksLikeSubagent(12345, () => `node -r/opt/preload.cjs ${cli} ${args}`)).toBe(false);
+    expect(looksLikeSubagent(12345, () => `node /opt/other.js ${cli} ${args}`)).toBe(false);
   });
 
   it("returns false when command is a different program", () => {

@@ -144,6 +144,12 @@ if(a[0]==='terminal-shell') {
       if (value.kind === __KIND__) { value.seen = (value.seen ?? 0) + 1; await fs.writeFile(file, JSON.stringify(value)); if (value.seen === value.at) { value.kind = 'spent'; await fs.writeFile(file, JSON.stringify(value)); process.kill(process.pid, 'SIGKILL'); } }
     }`;
   await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, ssr: { noExternal: true }, plugins: [{ name: 'journal-faults', transform(code, id) {
+    if (id.endsWith('/host/src/herdr/ports.ts')) {
+      const site = "const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1),";
+      if (!code.includes(site)) throw new Error('Session launcher site not found');
+      const guard = `if (spawnRequest.argv[0] !== 'pi' || spawnRequest.env.PATH?.split(':')[0] !== ${JSON.stringify(bin)} || spawnRequest.env.PI_CODING_AGENT_DIR !== ${JSON.stringify(h.directories.agent)}) throw new Error('Unexpected session launcher'); `;
+      return code.replace(site, guard + site);
+    }
     if (id.endsWith('/sessions/registry.ts')) return code.replace('await rename(temporary, path);', `await rename(temporary, path); if(path.endsWith('/spaces.json')) {${fault.replace('__KIND__', "'spaces'")}}`);
     if (id.endsWith('/setup/backup.ts')) {
       const site = /await atomicWrite\(path, bytes, (?:0o600|384), current.hash\);/;

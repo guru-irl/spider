@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildChildSpawnSpec } from "../pi-args";
 import { looksLikeSubagent } from "../process-identity";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function spec(mode?: "rpc" | "print") {
   const scratch = resolve(".spider/scratch/thinking-policy-tests/rpc-launch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "case-")); roots.push(root);
@@ -13,8 +13,10 @@ function spec(mode?: "rpc" | "print") {
 }
 describe("RPC launch contract", () => {
   it("sends the task only through RPC, names the session before extensions start", () => {
+    vi.stubEnv("PI_SUBAGENT_PI_BINARY", undefined);
     const s = spec();
-    expect(s.argv.slice(1, 3)).toEqual(["--mode", "rpc"]);
+    const piArgsStart = s.argv[0] === process.execPath ? 2 : 1;
+    expect(s.argv.slice(piArgsStart, piArgsStart + 2)).toEqual(["--mode", "rpc"]);
     expect(s.argv).not.toContain("-p");
     const exclusions = s.argv[s.argv.indexOf("--exclude-tools") + 1].split(",");
     expect(exclusions).toContain("intercom");

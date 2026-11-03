@@ -97,7 +97,7 @@ export default function(pi) {
   });
 }
 `);
-  await writeFile(wrapper, `#!/bin/sh\nexport PI_CODING_AGENT_DIR=${quote(h.directories.agent)}\nexport SPIDER_GLOBAL_ROOT=${quote(h.directories.global)}\nexport TMPDIR=${quote(h.directories.tmp)}\n${quote(process.execPath)} -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.argv.slice(2)))' ${quote(argvFile)} "$@"\nexec ${quote(process.execPath)} ${quote(piCli)} "$@"\n`);
+  await writeFile(wrapper, `#!/bin/sh\nexport HOME=${quote(h.root)}\nexport PATH=${quote(join(h.root, 'missing'))}\nexport PI_CODING_AGENT_DIR=${quote(h.directories.agent)}\nexport SPIDER_GLOBAL_ROOT=${quote(h.directories.global)}\nexport TMPDIR=${quote(h.directories.tmp)}\n${quote(process.execPath)} -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.argv.slice(2)))' ${quote(argvFile)} "$@"\nexec ${quote(process.execPath)} ${quote(piCli)} "$@"\n`);
   await chmod(wrapper, 0o700);
   const options: RoleTemplateOptions = { piExecutable: wrapper, instructionPaths: { worker: join(h.directories.agent, 'worker.md'), reviewer: join(h.directories.agent, 'reviewer.md'), watcher: join(h.directories.agent, 'watcher.md') } };
   const templates = generateRoleTemplates(policy, registry, options);

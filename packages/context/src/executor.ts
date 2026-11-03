@@ -503,6 +503,7 @@ export class PolyglotExecutor {
   #projectRootResolver: () => string;
   #runtimeMap: RuntimeMap | undefined;
   #remote?: RemoteExecutionPort;
+  #remoteUnavailableReason?: string;
   #owner?: Owner;
   #environmentPolicy?: ExecutionEnvironmentPolicy;
   get #runtimes(): RuntimeMap { return this.#runtimeMap ??= detectRuntimes(); }
@@ -515,6 +516,7 @@ export class PolyglotExecutor {
     runtimes?: RuntimeMap;
     spawn?: typeof spawn;
     remote?: RemoteExecutionPort;
+    remoteUnavailableReason?: string;
     owner?: Owner;
     environmentPolicy?: ExecutionEnvironmentPolicy;
   }) {
@@ -529,6 +531,7 @@ export class PolyglotExecutor {
     }
     this.#runtimeMap = opts?.runtimes;
     this.#remote = opts?.remote;
+    this.#remoteUnavailableReason = opts?.remoteUnavailableReason;
     this.#owner = opts?.owner;
     this.#environmentPolicy = opts?.environmentPolicy;
     this.#spawnProcess = opts?.spawn ?? spawn;
@@ -627,7 +630,7 @@ export class PolyglotExecutor {
   }
 
   async #executeRemote(source: RemoteSource, opts: ExecuteOptions): Promise<ExecResult> {
-    if (!this.#remote) throw Object.assign(new Error("Herdr remote execution is unavailable; on never falls back to local execution"), { code: "herdr-unavailable" });
+    if (!this.#remote) throw Object.assign(new Error(this.#remoteUnavailableReason ?? "Herdr remote execution is unavailable; on never falls back to local execution"), { code: "herdr-unavailable" });
     if (!this.#owner) throw Object.assign(new Error("Remote execution requires a validated owner"), { code: "owner-unavailable" });
     return this.#remote.execute({ source, kind: opts.kind ?? (source.kind === 'file' ? 'exec-file' : 'exec'), on: opts.on as MachineName, owner: this.#owner, timeout: opts.timeout, background: opts.background, signal: opts.signal, onData: opts.onData });
   }

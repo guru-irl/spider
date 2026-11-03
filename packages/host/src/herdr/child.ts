@@ -8,7 +8,7 @@ import { createBashTool, createLocalBashOperations } from '@earendil-works/pi-co
 import { createHcClient } from '@spider/herdr/client/hc';
 import { isCoreAvailable } from '@spider/herdr/client/liveness';
 import { HerdrError } from '@spider/herdr/client/parse';
-import { HERDR_NOTICES, herdrErrorNotice, inactiveHerdrNotice, inactiveHerdrGuardNotice, type InactiveReason } from '@spider/herdr/notices';
+import { HERDR_NOTICES, herdrErrorNotice, remoteUnavailableNotice, inactiveHerdrNotice, inactiveHerdrGuardNotice, type InactiveReason } from '@spider/herdr/notices';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { registerHerdrJobs } from '@spider/herdr/jobs/register';
 import type { JobMonitor } from '@spider/herdr/jobs/monitor';
@@ -48,6 +48,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   let coreWatch: ReturnType<typeof setInterval> | undefined, coreProbe: Promise<void> | undefined;
   let coreLost = false, expectedHerdr = false;
   let activationMode: unknown = 'auto';
+  let remoteUnavailableReason: string | undefined;
   const inactiveNotices = new Set<string>();
   const inheritPolicy = () => {
     // The ssh package validates the inherited descriptor and its executable paths.
@@ -58,6 +59,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   const hc: HcClient = new Proxy({} as HcClient, { get(_target, key) { const c = need(client), value = Reflect.get(c, key); return typeof value === 'function' ? value.bind(c) : value; } });
   const report = (error: unknown, notice?: string) => { try { if (options.reportError) options.reportError(error, notice); else process.stderr.write((notice ?? herdrErrorNotice(error)) + '\n'); } catch { /* Reporting must not break the embedding host. */ } };
   const notice = (reason: InactiveReason, error?: unknown, force = false) => {
+    if (error !== undefined) remoteUnavailableReason = remoteUnavailableNotice(error, 'subagent', 'activation');
     if (!force && (activationMode === false || activationMode !== true && !expectedHerdr)) return;
     const sessionId = context?.sessionManager?.getSessionId?.() ?? '(child)';
     if (inactiveNotices.has(sessionId)) return;
@@ -121,6 +123,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
     if (disposed || process.env.PI_SUBAGENT_CHILD !== '1') return;
     try {
       await monitor?.shutdown('reload'); await closeResources(); context = ctx ?? null; config = null;
+      remoteUnavailableReason = undefined;
       coreLost = false; environment = ordinaryExecutionEnvironment; activationMode = 'auto'; expectedHerdr = Boolean(process.env.HC_TERMINAL_ID);
       inactiveReason = 'activation-problem'; inheritPolicy();
       const processReady = await recordPresence(ctx);
@@ -179,8 +182,10 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
     if (!path) throw new HerdrError('runtime-target-unavailable', 'Destination runtime has not been resolved');
     return path;
   };
-  const jobs = registerHerdrJobs(registrationPi, { currentOwner: () => owner, jobIdsForToolResult, bind: m => {
+  const jobs = registerHerdrJobs(registrationPi, { currentOwner: () => owner, jobIdsForToolResult,
+    activationFailed: error => { remoteUnavailableReason = remoteUnavailableNotice(error, 'subagent', 'monitor'); }, bind: m => {
     monitor = m;
+    if (m) remoteUnavailableReason = undefined;
     remote = m ? withRemoteCopy(createRemoteExecutor({ hc, jobs: m, prepare: (source, target) => need(remoteFiles).prepare(source, target), environmentPolicy: env => environment(env), clock: Date.now, logSink: async (job, readerOptions) => need(output).logReader(job.id, readerOptions), target: async on => {
       const resolved = await resolveMachine(hc, need(config).machines, on), machine = resolved.machine;
       const bytes = need(runtimeBytes);
@@ -213,8 +218,9 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   const routing: RoutingPorts = { policy, environmentPolicy: env => environment(env), currentOwner: () => owner, createBashTool, createLocalBashOperations,
     enabled: () => Boolean(owner || inheritedDescriptor), readShellFile: async (file, on) => on ? need(remoteFiles).read(file, on as MachineName) : readFile(resolve(context?.cwd ?? process.cwd(), file), 'utf8'),
   };
-  return { owner: () => owner, enabled: () => Boolean(owner && config && config.enabled !== false), findKillJobs: id => findOwnedKillJobs(id, need(owner), join(need(config).globalRoot, 'herdr/jobs')), killJob: id => killOwnedJob(id, need(owner), hc, need(config).machines, join(need(config).globalRoot, 'herdr/jobs'), remote), execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), environmentPolicy: env => environment(env) }), guard: async event => {
+  return { owner: () => owner, enabled: () => Boolean(owner && config && config.enabled !== false), findKillJobs: id => findOwnedKillJobs(id, need(owner), join(need(config).globalRoot, 'herdr/jobs')), killJob: id => killOwnedJob(id, need(owner), hc, need(config).machines, join(need(config).globalRoot, 'herdr/jobs'), remote), execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), ...(!remote && remoteUnavailableReason ? { remoteUnavailableReason } : {}), environmentPolicy: env => environment(env) }), guard: async event => {
       await probeCore();
+      if (!coreLost && !remote && remoteUnavailableReason && event.input.on !== undefined) return { block: true, reason: remoteUnavailableReason };
       if (!owner && event.input.on !== undefined) return { block: true, reason: coreLost ? HERDR_NOTICES.childCoreLost.text : HERDR_NOTICES.remoteDisabled.text };
       const refusal = await guardHerdrToolCall(event, routing);
       if (refusal) await probeCore();

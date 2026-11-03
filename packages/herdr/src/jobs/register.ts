@@ -8,6 +8,7 @@ export interface JobRegistrationPorts {
   currentOwner(ctx: ExtensionContext): Owner | null;
   monitorOptions(owner: Owner, ctx: ExtensionContext): Omit<JobMonitorOptions, 'notifier' | 'observedJobMessages'>;
   bind(monitor: JobMonitor | null): void;
+  activationFailed?(error: unknown): void;
   jobIdsForToolResult(result: unknown): readonly JobId[];
 }
 function noticeId(value: unknown): JobId | null {
@@ -42,7 +43,11 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
         },
       });
       try { await next.activate(owner); monitor = next; ports.bind(next); }
-      catch (error) { await next.shutdown('reload'); options.reportError?.(error); }
+      catch (error) {
+        ports.activationFailed?.(error);
+        try { await next.shutdown('reload'); }
+        finally { options.reportError?.(error); }
+      }
     }),
     pi.on('session_shutdown', async event => { await stop(event?.reason === 'reload' ? 'reload' : 'quit'); }),
     pi.on('tool_execution_end', async event => {

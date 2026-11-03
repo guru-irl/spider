@@ -36,7 +36,10 @@ async function scenario(mode: 'fake' | 'hc') {
   const address = `remote.invalid/${consoles[0].address}` as TerminalAddress;
   let screen = ''; const deadline = Date.now() + 5000;
   while (!screen.includes('#2 ✗ exit 23') && Date.now() < deadline) { screen = (await h.hc.read(address, { lines: 200 })).replace(/\x1b\[[0-9;]*m/g, ''); await delay(25); }
-  expect(screen).toContain(`#1 ${first.remote.jobId.slice(0, 8)} · #2 ${second.remote.jobId.slice(0, 8)}`);
+  expect(screen).toMatch(/◆ exec #1 .*\(continued\)/);
+  expect(screen).toContain('◆ exec #2 ');
+  expect(screen).toContain(first.remote.jobId.slice(0, 8));
+  expect(screen).toContain(second.remote.jobId.slice(0, 8));
   expect(screen).toContain('│ first output');
   expect(screen).toContain('#2 │ second output');
   expect(screen).toContain('#2 │ diagnostic');

@@ -384,14 +384,40 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
   const programRoot = dirname(dirname(directory));
   const write = options.write ?? (text => { process.stdout.write(text); });
   const instance = options.instance ?? randomUUID(); let lastTitle: string | undefined;
-  type Active = { command: ConsoleCommand; tag: number; nextChunk: number; offsets: Record<PayloadStream, number>; decoders: Record<PayloadStream, StringDecoder> };
+  type Active = { command: ConsoleCommand; tag: number; tagged: boolean; nextChunk: number; offsets: Record<PayloadStream, number>; decoders: Record<PayloadStream, StringDecoder> };
   const active = new Map<string, Active>();
   let next = 0; let lastHeartbeat = -Infinity; let nextTag = 1;
   const columns = () => {
     const value = options.columns ?? process.stdout.columns;
     return Number.isInteger(value) && value > 0 ? value : undefined;
   };
-  const tag = (job: Active) => active.size > 1 ? `#${job.tag} ` : '';
+  const tag = (job: Active) => job.tagged ? `#${job.tag} ` : '';
+  const header = (job: Active, continued = false) => {
+    const { command } = job;
+    const tool = command.tool === 'batch' || command.tool === 'exec_file' ? command.tool : 'exec';
+    const width = columns();
+    let prefix = `◆ ${tool} ${tag(job)}`;
+    if (job.tagged && width !== undefined && consoleWidth(prefix.trimEnd()) > width) prefix = `◆ ${tag(job)}${tool} `;
+    const text = consoleText(command.command.split('\n')[0]);
+    if (continued) {
+      const suffix = ' (continued)';
+      const available = width === undefined ? undefined : width - consoleWidth(prefix) - consoleWidth(suffix);
+      const left = available === undefined ? prefix + text + suffix : available >= 0 ? prefix + consoleClip(text, available) + suffix : consoleClip(prefix.trimEnd(), width!);
+      write(`\n${consoleDim(left)}\n`);
+      return;
+    }
+    const left = `${prefix}${text}`;
+    const right = `${consoleTime(command.startedAt)} · ${command.jobId.slice(0, 8)}`;
+    if (width === undefined) write(`\n${left}  ${consoleDim(right)}\n`);
+    else {
+      const minimum = consoleWidth(prefix.trimEnd());
+      const meta = consoleClip(right, Math.min(consoleWidth(right), Math.max(0, width - minimum - 2)));
+      const leftWidth = width - consoleWidth(meta) - (meta ? 2 : 0);
+      const clipped = leftWidth === minimum ? prefix.trimEnd() : consoleClip(left, leftWidth);
+      const gap = Math.max(0, width - consoleWidth(clipped) - consoleWidth(meta));
+      write(`\n${clipped}${' '.repeat(gap)}${meta ? consoleDim(meta) : ''}\n`);
+    }
+  };
   const display = (job: Active, stream: PayloadStream, text: string) => {
     if (!text) return;
     const prefix = `  ${tag(job)}`; const width = columns();
@@ -433,26 +459,12 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
           catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') { next++; continue; } break; }
           const command = value as unknown as ConsoleCommand;
           if (active.size === 0) nextTag = 1;
-          const job: Active = { command, tag: nextTag++, nextChunk: 0, offsets: { stdout: 0, stderr: 0 }, decoders: { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') } };
+          const job: Active = { command, tag: nextTag++, tagged: active.size > 0, nextChunk: 0, offsets: { stdout: 0, stderr: 0 }, decoders: { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') } };
+          for (const existing of active.values()) {
+            if (!existing.tagged) { existing.tagged = true; header(existing, true); }
+          }
           active.set(command.jobId, job);
-          if (active.size === 2) {
-            const first = active.values().next().value!;
-            write(`${consoleDim(`  ○ concurrent · #${first.tag} ${first.command.jobId.slice(0, 8)} · #${job.tag} ${job.command.jobId.slice(0, 8)}`)}\n`);
-          }
-          const tool = command.tool === 'batch' || command.tool === 'exec_file' ? command.tool : 'exec';
-          const prefix = `◆ ${tool} ${tag(job)}`;
-          const left = `${prefix}${consoleText(command.command.split('\n')[0])}`;
-          const right = `${consoleTime(command.startedAt)} · ${command.jobId.slice(0, 8)}`;
-          const width = columns();
-          if (width === undefined) write(`\n${left}  ${consoleDim(right)}\n`);
-          else {
-            const minimum = consoleWidth(prefix.trimEnd());
-            const meta = consoleClip(right, Math.min(consoleWidth(right), Math.max(0, width - minimum - 2)));
-            const leftWidth = width - consoleWidth(meta) - (meta ? 2 : 0);
-            const clipped = leftWidth === minimum ? prefix.trimEnd() : consoleClip(left, leftWidth);
-            const gap = Math.max(0, width - consoleWidth(clipped) - consoleWidth(meta));
-            write(`\n${clipped}${' '.repeat(gap)}${meta ? consoleDim(meta) : ''}\n`);
-          }
+          header(job);
           next++;
         }
       }

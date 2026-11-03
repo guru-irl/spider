@@ -68,7 +68,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const text = await waitFor('later job console exit before older release', () => consoleText(suite, console.address), t => t.includes('#2 ✗ exit 7'), deadline(15000));
       assert.ok(text.includes('long-start')); assert.ok(!text.includes('long-finish'));
       assert.ok(text.includes('#2 │ split:雪🙂é')); assert.ok(text.includes('#2 │ short-error'));
-      assert.ok(text.includes(`#1 ${long.remote!.jobId.slice(0, 8)} · #2 ${fast.remote!.jobId.slice(0, 8)}`));
+      assert.match(text, /◆ exec #1 .*\(continued\)/); assert.ok(text.includes('◆ exec #2 '));
+      assert.ok(text.includes(long.remote!.jobId.slice(0, 8))); assert.ok(text.includes(fast.remote!.jobId.slice(0, 8)));
       expect(() => assert.ok(text.includes('split:local-garbage'))).toThrow();
       assert.equal(await held.effect(), null);
       await typeInObservedConsole(suite, console.address, "printf 'observer-must-not-execute'\r\x03");
@@ -77,6 +78,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await held.release(); await oneNotice(s, long.remote!.jobId);
       const final = await waitFor('long console exit after release', () => consoleText(suite, console.address), t => t.includes('✗ exit 23'), deadline(20000));
       assert.ok(final.indexOf('short-finish') < final.indexOf('long-finish'));
+      assert.ok(final.includes('#1 │ long-finish')); assert.ok(final.includes('#1 ✗ exit 23'));
       await snapshot(s, 'console-streams');
     },
   },

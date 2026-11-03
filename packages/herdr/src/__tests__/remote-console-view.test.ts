@@ -97,7 +97,7 @@ it.each([
   expect(f.text()).toContain(result);
   expect(f.raw()).toContain(`\x1b[${color}m`);
 });
-it('labels concurrent streams and removes the tag when only one job remains', async () => {
+it('keeps stream tags after an overlapping job finishes', async () => {
   const f = await fixture(); const first = await f.job('firstjob', 'first command'); f.start(); await f.waitText('first command');
   await first.stream('stdout', 'alone before\n'); await f.waitText('alone before');
   const second = await f.job('secondjob', 'second command'); await f.waitText('second command');
@@ -108,9 +108,53 @@ it('labels concurrent streams and removes the tag when only one job remains', as
   expect(f.text()).toMatch(/│ alone before/);
   expect(f.text()).toMatch(/#1.*│ first concurrent/);
   expect(f.text()).toMatch(/#2.*│ second concurrent/);
-  expect(f.text()).toMatch(/│ alone after/);
-  expect(f.text()).not.toMatch(/#\d+.*│ alone (?:before|after)/);
-  expect(f.text()).toMatch(/#1.*firstjob.*#2.*secondjo/);
+  expect(f.text()).toMatch(/#1.*│ alone after/);
+  expect(f.text()).not.toMatch(/#\d+.*│ alone before/);
+  expect(f.text()).toMatch(/#2.*✓ exit 0/);
+  expect(f.text()).toMatch(/#1.*✓ exit 0/);
+});
+it('identifies both headers when an already visible command overlaps', async () => {
+  const f = await fixture(72); const first = await f.job('firstjob', 'first command', 'batch');
+  f.start(); await f.waitText('first command');
+  const second = await f.job('secondjob', 'second command', 'exec_file'); await f.waitText('second command');
+  await second.finish('exited', 0); await second.settled();
+  await first.stream('stderr', 'late failure\n'); await first.finish('exited', 1); await first.settled();
+  expect(f.text()).toMatch(/◆ batch #1 first command.*\(continued\)/);
+  expect(f.text()).toMatch(/◆ exec_file #2 second command/);
+  expect(f.text()).not.toContain('○ concurrent');
+  expect(f.text()).toMatch(/#1.*│ late failure\n\s*#1.*✗ exit 1/);
+});
+it('shows no tags for a command that never overlaps', async () => {
+  const f = await fixture(); const job = await f.job('singlejob', 'single command');
+  await job.stream('stdout', 'single output\n'); await job.finish('exited', 0); f.start(); await job.settled();
+  expect(f.text()).toContain('single command');
+  expect(f.text()).toContain('│ single output');
+  expect(f.text()).toContain('✓ exit 0');
+  expect(f.text()).not.toMatch(/#\d+/);
+});
+it('keeps overlapping header tags visible in a narrow terminal', async () => {
+  const f = await fixture(12); const first = await f.job('firstjob', 'first command', 'batch');
+  f.start(); await f.waitText('◆ batch');
+  const second = await f.job('secondjob', 'second command', 'exec_file'); await f.waitText('#2');
+  await second.finish('exited', 0); await second.settled();
+  await first.finish('exited', 0); await first.settled();
+  const headers = f.text().split('\n').filter(line => line.startsWith('◆'));
+  expect(headers.some(line => line.includes('#1'))).toBe(true);
+  expect(headers.some(line => line.includes('#2'))).toBe(true);
+  expect(headers.every(line => line.length <= 12)).toBe(true);
+});
+it('starts a new untagged block after all overlapping jobs settle', async () => {
+  const f = await fixture(); const first = await f.job('firstjob', 'first command');
+  f.start(); await f.waitText('first command');
+  const second = await f.job('secondjob', 'second command'); await f.waitText('second command');
+  await second.finish('exited', 0); await second.settled(); await first.finish('exited', 0); await first.settled();
+  const start = f.text().length;
+  const third = await f.job('thirdjob', 'third command'); await third.stream('stdout', 'third output\n');
+  await third.finish('exited', 0); await third.settled();
+  expect(f.text().slice(start)).toContain('third command');
+  expect(f.text().slice(start)).toContain('│ third output');
+  expect(f.text().slice(start)).toContain('✓ exit 0');
+  expect(f.text().slice(start)).not.toMatch(/#\d+/);
 });
 it('keeps the tool header within a narrow terminal', async () => {
   const f = await fixture(12); const job = await f.job('abcdef123456', 'a long command');

@@ -133,7 +133,10 @@ export interface PiObservations {
 export async function readObserved(directory: string, pid?: number): Promise<ObservedEvent[]> {
   const files = pid === undefined ? (await readdir(directory).catch(() => [])).filter(f => f.endsWith('.jsonl')) : [`${pid}.jsonl`];
   const out: ObservedEvent[] = [];
-  for (const file of files) for (const line of (await readFile(join(directory, file), 'utf8').catch(() => '')).split('\n')) if (line) out.push(JSON.parse(line));
+  for (const file of files) {
+    const lines = (await readFile(join(directory, file), 'utf8').catch(() => '')).split('\n');
+    for (const line of lines.slice(0, -1)) if (line) out.push(JSON.parse(line));
+  }
   return out.sort((a, b) => a.at - b.at);
 }
 /** Observations for one pi process (by PID) read from the observer's log, watched with a bounded reconcile. */

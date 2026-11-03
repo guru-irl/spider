@@ -329,13 +329,53 @@ export async function runRemoteRuntime(requestFile: string): Promise<number> {
 }
 
 export interface ConsoleCommand {
-  version: 1; jobId: string; directory: string; command: string; startedAt: number;
+  version: 1; jobId: string; directory: string; command: string; startedAt: number; tool?: 'exec' | 'batch' | 'exec_file';
 }
 export interface RemoteConsoleOptions {
-  signal?: AbortSignal; pollMs?: number; write?: (text: string) => void; instance?: string;
+  signal?: AbortSignal; pollMs?: number; write?: (text: string) => void; instance?: string; columns?: number;
 }
 function consoleText(text: string): string {
-  return text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, character => `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`);
+  return text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, character => `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+const consoleDim = (text: string) => `\x1b[2m${text}\x1b[0m`;
+const consoleColor = (color: 31 | 32, text: string) => `\x1b[${color}m${text}\x1b[0m`;
+const consoleSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+function consoleCellWidth(text: string): number {
+  if (/^[\p{Mark}\u200d\ufe0e\ufe0f]+$/u.test(text)) return 0;
+  const code = text.codePointAt(0)!;
+  return /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(text) || code >= 0x1100 && (
+    code <= 0x115f || code === 0x2329 || code === 0x232a || code >= 0x2e80 && code <= 0xa4cf ||
+    code >= 0xac00 && code <= 0xd7a3 || code >= 0xf900 && code <= 0xfaff || code >= 0xfe10 && code <= 0xfe6f ||
+    code >= 0xff00 && code <= 0xff60 || code >= 0xffe0 && code <= 0xffe6 || code >= 0x20000 && code <= 0x3fffd
+  ) ? 2 : 1;
+}
+function consoleRows(text: string, width: number): string[] {
+  const rows: string[] = []; let row = ''; let cells = 0;
+  for (const { segment } of consoleSegmenter.segment(text)) {
+    const size = consoleCellWidth(segment);
+    if (row && cells + size > width) { rows.push(row); row = ''; cells = 0; }
+    row += segment; cells += size;
+  }
+  if (row || rows.length === 0) rows.push(row);
+  return rows;
+}
+function consoleWidth(text: string): number {
+  let width = 0; for (const { segment } of consoleSegmenter.segment(text)) width += consoleCellWidth(segment); return width;
+}
+function consoleClip(text: string, width: number): string {
+  if (width <= 0) return '';
+  if (consoleWidth(text) <= width) return text;
+  let clipped = ''; let cells = 0;
+  for (const { segment } of consoleSegmenter.segment(text)) {
+    const size = consoleCellWidth(segment);
+    if (cells + size > width - 1) break;
+    clipped += segment; cells += size;
+  }
+  return clipped + '…';
+}
+function consoleTime(time: number): string {
+  const date = new Date(time);
+  return [date.getHours(), date.getMinutes(), date.getSeconds()].map(value => String(value).padStart(2, '0')).join(':');
 }
 /** A view only. No payload argv is read, no process is spawned and no job receives a signal. */
 export async function runRemoteConsole(directory: string, options: RemoteConsoleOptions = {}): Promise<void> {
@@ -344,11 +384,24 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
   const programRoot = dirname(dirname(directory));
   const write = options.write ?? (text => { process.stdout.write(text); });
   const instance = options.instance ?? randomUUID(); let lastTitle: string | undefined;
-  type Active = { command: ConsoleCommand; nextChunk: number; offsets: Record<PayloadStream, number>; decoders: Record<PayloadStream, StringDecoder> };
+  type Active = { command: ConsoleCommand; tag: number; nextChunk: number; offsets: Record<PayloadStream, number>; decoders: Record<PayloadStream, StringDecoder> };
   const active = new Map<string, Active>();
-  let next = 0; let lastHeartbeat = -Infinity;
-  const display = (jobId: string, stream: PayloadStream, text: string) => {
-    if (text) for (const line of consoleText(text).split('\n').filter((line, index, lines) => line !== '' || index < lines.length - 1)) write(`[${jobId} ${stream}] ${line}\n`);
+  let next = 0; let lastHeartbeat = -Infinity; let nextTag = 1;
+  const columns = () => {
+    const value = options.columns ?? process.stdout.columns;
+    return Number.isInteger(value) && value > 0 ? value : undefined;
+  };
+  const tag = (job: Active) => active.size > 1 ? `#${job.tag} ` : '';
+  const display = (job: Active, stream: PayloadStream, text: string) => {
+    if (!text) return;
+    const prefix = `  ${tag(job)}`; const width = columns();
+    const gutter = stream === 'stderr' ? consoleColor(31, '│ ') : consoleDim('│ ');
+    const lines = consoleText(text).split('\n');
+    if (lines.at(-1) === '') lines.pop();
+    for (const line of lines) {
+      const rows = width === undefined ? [line] : consoleRows(line, Math.max(1, width - prefix.length - 2));
+      for (const row of rows) write(`${prefix}${gutter}${row}\n`);
+    }
   };
   while (!options.signal?.aborted) {
     const now = Date.now();
@@ -356,7 +409,11 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
       const meta = parseRuntimePublication(await readBoundedFile(join(directory, 'console.json'), 4096));
       if (meta.version === 1 && typeof meta.title === 'string') {
         const title = meta.title.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 512);
-        if (title !== lastTitle) { write(`\x1b]0;${title}\x07`); lastTitle = title; }
+        if (title !== lastTitle) {
+          const width = columns();
+          write(`\x1b]0;${title}\x07${width === undefined ? title : consoleClip(title, width)}\n${consoleDim('─'.repeat(Math.min(width ?? 50, 200)))}\n`);
+          lastTitle = title;
+        }
       }
     } catch { /* A torn or checksum-failing host title is retried without blocking output. */ }
     if (now - lastHeartbeat >= 10000 || now < lastHeartbeat) {
@@ -375,8 +432,28 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
           try { if (!(await lstat(value.directory)).isDirectory()) { next++; continue; } }
           catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') { next++; continue; } break; }
           const command = value as unknown as ConsoleCommand;
-          write(`\n[${command.jobId}] ${new Date(command.startedAt).toISOString()} · ${consoleText(command.command.split('\n')[0])}\n`);
-          active.set(command.jobId, { command, nextChunk: 0, offsets: { stdout: 0, stderr: 0 }, decoders: { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') } }); next++;
+          if (active.size === 0) nextTag = 1;
+          const job: Active = { command, tag: nextTag++, nextChunk: 0, offsets: { stdout: 0, stderr: 0 }, decoders: { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') } };
+          active.set(command.jobId, job);
+          if (active.size === 2) {
+            const first = active.values().next().value!;
+            write(`${consoleDim(`  ○ concurrent · #${first.tag} ${first.command.jobId.slice(0, 8)} · #${job.tag} ${job.command.jobId.slice(0, 8)}`)}\n`);
+          }
+          const tool = command.tool === 'batch' || command.tool === 'exec_file' ? command.tool : 'exec';
+          const prefix = `◆ ${tool} ${tag(job)}`;
+          const left = `${prefix}${consoleText(command.command.split('\n')[0])}`;
+          const right = `${consoleTime(command.startedAt)} · ${command.jobId.slice(0, 8)}`;
+          const width = columns();
+          if (width === undefined) write(`\n${left}  ${consoleDim(right)}\n`);
+          else {
+            const minimum = consoleWidth(prefix.trimEnd());
+            const meta = consoleClip(right, Math.min(consoleWidth(right), Math.max(0, width - minimum - 2)));
+            const leftWidth = width - consoleWidth(meta) - (meta ? 2 : 0);
+            const clipped = leftWidth === minimum ? prefix.trimEnd() : consoleClip(left, leftWidth);
+            const gap = Math.max(0, width - consoleWidth(clipped) - consoleWidth(meta));
+            write(`\n${clipped}${' '.repeat(gap)}${meta ? consoleDim(meta) : ''}\n`);
+          }
+          next++;
         }
       }
     } catch { /* Missing, oversized or partial heads do not stop existing jobs' output. */ }
@@ -393,15 +470,24 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
           const bytes = Buffer.from(chunk.data, 'base64');
           if (bytes.length > RAW_CHUNK_BYTES || bytes.toString('base64') !== chunk.data) break;
           job.offsets[chunk.stream] += bytes.length; job.nextChunk++;
-          display(jobId, chunk.stream, job.decoders[chunk.stream].write(bytes));
+          display(job, chunk.stream, job.decoders[chunk.stream].write(bytes));
         } catch { break; } // Missing or partial chunks are retried without blocking other jobs.
       }
       try {
         const receipt = record(JSON.parse((await readBoundedFile(join(job.command.directory, 'receipt.json'), 8192)).toString()));
         if (receipt.version !== 1 || receipt.jobId !== jobId || !Number.isSafeInteger(receipt.stdoutBytes) || !Number.isSafeInteger(receipt.stderrBytes) || (receipt.stdoutBytes as number) < 0 || (receipt.stderrBytes as number) < 0 || job.offsets.stdout < (receipt.stdoutBytes as number) || job.offsets.stderr < (receipt.stderrBytes as number)) continue;
-        for (const stream of ['stdout', 'stderr'] as const) display(jobId, stream, job.decoders[stream].end());
-        const exit = Number.isInteger(receipt.exitCode) ? String(receipt.exitCode) : typeof receipt.signal === 'string' ? `signal ${consoleText(receipt.signal)}` : String(receipt.outcome ?? 'unknown');
-        await releaseConsoleHold(job.command.directory, directory); write(`[${jobId} exit] ${exit}\n`); active.delete(jobId);
+        for (const stream of ['stdout', 'stderr'] as const) display(job, stream, job.decoders[stream].end());
+        let result: string;
+        if (receipt.outcome === 'signal' && typeof receipt.signal === 'string') result = consoleColor(31, `✗ signal ${consoleText(receipt.signal)}`);
+        else if (receipt.outcome === 'exited' && Number.isInteger(receipt.exitCode)) {
+          const elapsed = typeof receipt.finishedAt === 'number' && Number.isFinite(receipt.finishedAt) && receipt.finishedAt >= job.command.startedAt ? ` · ${((receipt.finishedAt - job.command.startedAt) / 1000).toFixed(1)} s` : '';
+          const code = receipt.exitCode as number;
+          result = consoleColor(code === 0 ? 32 : 31, `${code === 0 ? '✓' : '✗'} exit ${code}${elapsed}`);
+        } else {
+          const label = receipt.outcome === 'lost' ? 'output lost' : receipt.outcome === 'cancelled' ? 'cancelled' : receipt.outcome === 'spawn-error' ? 'could not start' : receipt.outcome === 'release-timeout' ? 'release timed out' : 'outcome unknown';
+          result = consoleDim(`○ ${label}`);
+        }
+        await releaseConsoleHold(job.command.directory, directory); write(`  ${tag(job)}${result}\n`); active.delete(jobId);
       } catch { /* A receipt may be absent or still being published. */ }
     }
     try { await delay(options.pollMs ?? 100, undefined, { signal: options.signal }); }

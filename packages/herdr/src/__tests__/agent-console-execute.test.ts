@@ -35,11 +35,12 @@ async function scenario(mode: 'fake' | 'hc') {
   expect(consoles).toHaveLength(1); expect(fixture.started).toHaveLength(2);
   const address = `remote.invalid/${consoles[0].address}` as TerminalAddress;
   let screen = ''; const deadline = Date.now() + 5000;
-  while (!screen.includes(`[${second.remote.jobId} exit] 23`) && Date.now() < deadline) { screen = await h.hc.read(address, { lines: 200 }); await delay(25); }
-  expect(screen).toContain(`[${first.remote.jobId} stdout] first output`);
-  expect(screen).toContain(`[${second.remote.jobId} stdout] second output`);
-  expect(screen).toContain(`[${second.remote.jobId} stderr] diagnostic`);
-  expect(screen).toContain(`[${second.remote.jobId} exit] 23`);
+  while (!screen.includes('#2 ✗ exit 23') && Date.now() < deadline) { screen = (await h.hc.read(address, { lines: 200 })).replace(/\x1b\[[0-9;]*m/g, ''); await delay(25); }
+  expect(screen).toContain(`#1 ${first.remote.jobId.slice(0, 8)} · #2 ${second.remote.jobId.slice(0, 8)}`);
+  expect(screen).toContain('│ first output');
+  expect(screen).toContain('#2 │ second output');
+  expect(screen).toContain('#2 │ diagnostic');
+  expect(screen).toContain('#2 ✗ exit 23');
   await h.hc.kill(address); await h.hc.rm(address);
   expect((await h.hc.get(first.remote.address!)).state).toBe('live'); expect(fixture.cancellations).toEqual([]);
   await h.hc.fileWrite(on, marker, Buffer.from('finish'));

@@ -55,6 +55,15 @@ it('creates one named, labelled remote console under parallel command launches',
     expect(command.command).toBe(`echo job-${index}`); expect(command.jobId).toBe(`job-${index}`);
   }
 }, 20000);
+it.each(['batch', 'exec_file'] as const)('publishes the %s tool for the console header', async tool => {
+  const { h, launch } = await fixture(); const request = await launch();
+  const withTool = tool === 'batch'
+    ? { ...request, kind: 'batch' as const }
+    : { ...request, source: { kind: 'file' as const, language: 'shell' as const, path: '/fixture/script.sh', code: 'echo file' } };
+  const console = await consoleModule.ensureAgentConsole(withTool, h.hc, h.localEnv);
+  const envelope = JSON.parse((await h.hc.fileRead(request.on, join(console!.directory, 'command-0.json'))).toString());
+  expect(JSON.parse(envelope.body)).toMatchObject({ jobId: request.job!.id, tool });
+}, 20000);
 it.skipIf(process.env.SPIDER_HERDR_E2E !== '1' || !existsSync(process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc')))('real isolated hc serializes parallel console creation (requires installed hc and SPIDER_HERDR_E2E=1)', async () => {
   const { h, launch } = await fixture('hc');
   const requests = await Promise.all(Array.from({ length: 8 }, () => launch()));

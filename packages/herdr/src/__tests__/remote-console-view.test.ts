@@ -5,6 +5,8 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { runRemoteConsole } from '../remote/runtime.js';
 import { createFixtureRoot } from '../../e2e/harness/environment.js';
 
@@ -47,13 +49,13 @@ async function fixture(columns?: number) {
     await writeFile(join(directory, `command-${count}.json`), publication({ version: 1, jobId: id, directory: dir, command, startedAt, ...(tool ? { tool } : {}) }));
     await writeFile(join(directory, 'head.json'), publication({ version: 1, count: ++count }));
     let nextChunk = 0; const offsets = { stdout: 0, stderr: 0 };
-    const stream = async (name: 'stdout' | 'stderr', text: string) => {
+    const stream = async (name: 'stdout' | 'stderr', text: string | Buffer) => {
       const bytes = Buffer.from(text);
       await writeFile(join(dir, `chunk-${String(nextChunk++).padStart(8, '0')}.json`), JSON.stringify({ stream: name, offset: offsets[name], data: bytes.toString('base64') }));
       offsets[name] += bytes.length;
     };
-    const finish = async (outcome: string, exitCode: number | null, signal: string | null = null) => {
-      await writeFile(join(dir, 'receipt.json'), JSON.stringify({ version: 1, jobId: id, nonce: '0123456789abcdef', requestSha256: '0'.repeat(64), indexSha256: '1'.repeat(64), outcome, exitCode, signal, finishedAt: startedAt + 12300, stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr }));
+    const finish = async (outcome: string, exitCode: number | null, signal: string | null = null, times: { startedAt?: number; finishedAt?: number } = { startedAt, finishedAt: startedAt + 12300 }) => {
+      await writeFile(join(dir, 'receipt.json'), JSON.stringify({ version: 1, jobId: id, nonce: '0123456789abcdef', requestSha256: '0'.repeat(64), indexSha256: '1'.repeat(64), outcome, exitCode, signal, ...times, stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr }));
     };
     const settled = async () => {
       await waitFor(async () => { try { await access(join(dir, '.spider-console-hold')); return false; } catch { return true; } });
@@ -96,6 +98,16 @@ it.each([
   await job.finish(outcome, code, signal); f.start(); await job.settled();
   expect(f.text()).toContain(result);
   expect(f.raw()).toContain(`\x1b[${color}m`);
+});
+it('uses remote receipt timestamps and omits duration for a legacy receipt', async () => {
+  const f = await fixture();
+  const remote = await f.job('remote', 'remote clock');
+  await remote.finish('exited', 0, null, { startedAt: 10000, finishedAt: 12500 });
+  f.start(); await remote.settled();
+  const legacy = await f.job('legacy', 'legacy clock');
+  await legacy.finish('exited', 0, null, { finishedAt: startedAt + 99000 }); await legacy.settled();
+  expect(f.text()).toContain('✓ exit 0 · 2.5 s');
+  expect(f.text().match(/✓ exit 0[^\n]*/g)).toEqual(['✓ exit 0 · 2.5 s', '✓ exit 0']);
 });
 it('keeps stream tags after an overlapping job finishes', async () => {
   const f = await fixture(); const first = await f.job('firstjob', 'first command'); f.start(); await f.waitText('first command');
@@ -143,6 +155,17 @@ it('keeps overlapping header tags visible in a narrow terminal', async () => {
   expect(headers.some(line => line.includes('#2'))).toBe(true);
   expect(headers.every(line => line.length <= 12)).toBe(true);
 });
+it('prints one tagged header per command when two arrive together', async () => {
+  const f = await fixture(72);
+  const first = await f.job('firstjob', 'first command');
+  const second = await f.job('secondjob', 'second command');
+  await first.finish('exited', 0); await second.finish('exited', 0);
+  f.start(); await first.settled(); await second.settled();
+  expect(f.text().match(/◆[^\n]*first command/g)).toHaveLength(1);
+  expect(f.text()).toMatch(/◆ exec #1 first command/);
+  expect(f.text()).toMatch(/◆ exec #2 second command/);
+  expect(f.text()).not.toContain('(continued)');
+});
 it('starts a new untagged block after all overlapping jobs settle', async () => {
   const f = await fixture(); const first = await f.job('firstjob', 'first command');
   f.start(); await f.waitText('first command');
@@ -164,10 +187,94 @@ it('keeps the tool header within a narrow terminal', async () => {
   expect(header).toMatch(/^◆ exec/);
   expect(header).toContain('12');
 });
+it('loads and renders without Intl using a code-point fallback', async () => {
+  const f = await fixture(20); const job = await f.job('fallback', 'command');
+  await job.stream('stdout', '漢 output\n'); await job.finish('exited', 0);
+  const moduleUrl = new URL('../remote/runtime.ts', import.meta.url).href;
+  const script = `globalThis.Intl = undefined; const { runRemoteConsole } = await import(${JSON.stringify(moduleUrl)}); await runRemoteConsole(${JSON.stringify(f.directory)}, { signal: AbortSignal.timeout(500), pollMs: 5, columns: 20, write: text => process.stdout.write(text) });`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 5000, cwd: fileURLToPath(new URL('../../../..', import.meta.url)) });
+  expect(result.status, result.stderr).toBe(0);
+  expect(plain(result.stdout)).toContain('│ 漢 output');
+  expect(plain(result.stdout)).toContain('✓ exit 0');
+});
+it('fits title, headers, tagged output and results in widths one through 24', async () => {
+  for (let columns = 1; columns <= 24; columns++) {
+    const f = await fixture(columns); await f.title('title 漢');
+    const first = await f.job('first', 'command 漢'); const second = await f.job('second', 'another');
+    await first.stream('stdout', '漢x\n'); await second.stream('stderr', 'error\n');
+    await first.finish('exited', 3); await second.finish('exited', 0); f.start();
+    await first.settled(); await second.settled();
+    for (const line of f.text().split('\n')) {
+      const cells = [...line].reduce((sum, char) => sum + (char === '漢' ? 2 : 1), 0);
+      expect(cells, `width ${columns}, row ${JSON.stringify(line)}`).toBeLessThanOrEqual(columns);
+    }
+  }
+});
+it('keeps escaped controls together when wrapping output', async () => {
+  const f = await fixture(9); const job = await f.job('escape', 'wrap');
+  await job.stream('stdout', 'abcd\x1bZ\n'); await job.finish('exited', 0); f.start(); await job.settled();
+  expect(f.text()).toContain('│ abcd\n  │ \\x1bZ');
+});
+it('does not let a signal name create a new terminal row', async () => {
+  const f = await fixture(); const job = await f.job('signal', 'finish');
+  await job.finish('signal', null, 'SIGTERM\nforged'); f.start(); await job.settled();
+  expect(f.text()).toContain('✗ signal SIGTERM\\x0aforged');
+  expect(f.text()).not.toContain('\nforged');
+});
+it('replaces an escaped control that cannot fit in a narrow content row', async () => {
+  const f = await fixture(7); const job = await f.job('escape', 'wrap');
+  await job.stream('stdout', '\x1bX\n'); await job.finish('exited', 0); f.start(); await job.settled();
+  expect(f.text()).toContain('│ …\n  │ X');
+  expect(f.text()).not.toContain('\\x1');
+});
+it('never leaves a partial escaped control when clipping a header', async () => {
+  const f = await fixture(31); const job = await f.job('abcdefgh', 'x\x1bZ');
+  await job.finish('exited', 0); f.start(); await job.settled();
+  expect(f.text()).toContain('◆ exec x…');
+  expect(f.text()).not.toMatch(/\\(?:x[0-9a-f]?)?…/);
+});
+it('expands tabs at eight-column stops in command and output content', async () => {
+  const f = await fixture(80); const job = await f.job('tabs', 'ab\tcd\tend');
+  await job.stream('stdout', 'ok  \tgithub.com/x/pkg\t0.12s\nname\tsize\n');
+  await job.stream('stderr', '漢\tx\n'); await job.finish('exited', 0); f.start(); await job.settled();
+  expect(f.text()).toContain('ab      cd      end');
+  expect(f.text()).toContain('│ ok      github.com/x/pkg        0.12s');
+  expect(f.text()).toContain('│ name    size');
+  expect(f.text()).toContain('│ 漢      x');
+  expect(f.raw()).not.toContain('\t');
+});
+it('resets tab stops after CRLF', async () => {
+  const f = await fixture(80); const job = await f.job('crlf', 'lines');
+  await job.stream('stdout', 'a\r\n\tz\n'); await job.finish('exited', 0); f.start(); await job.settled();
+  expect(f.text()).toContain('│ a\\x0d\n  │         z');
+});
 it('hard-wraps output at the terminal width with a gutter on each row', async () => {
   const f = await fixture(24); const job = await f.job('first', 'wrap');
   await job.stream('stdout', 'abcdefghijklmnopqrstuvwxyz\n'); await job.finish('exited', 0); f.start(); await job.settled();
   expect(f.text()).toContain('│ abcdefghijklmnopqrst\n  │ uvwxyz');
+});
+it.each([undefined, 80, 7])('sanitizes controls in every console path at width %s', async columns => {
+  const f = await fixture(columns);
+  const hostile = '\x1b]52;c;eA==\x07\x1b]8;;https://example.invalid\x07link\x1b]8;;\x07\x1b[200~text\x1b[201~\x1b[10A\x1b[H\u009b\x1b';
+  await f.title('title ' + hostile);
+  const job = await f.job('hostile', 'command ' + hostile);
+  await job.stream('stdout', 'stdout ' + hostile + '\n');
+  await job.stream('stderr', 'stderr ' + hostile + '\n');
+  await job.stream('stdout', Buffer.from([0x72, 0x61, 0x77, 0x20, 0x9b, 0x0a, 0xc2]));
+  await job.stream('stdout', Buffer.from([0x9b, 0x0a]));
+  await job.finish('signal', null, 'signal ' + hostile);
+  f.start(); await job.settled();
+  const raw = f.raw();
+  const titles = raw.match(/\x1b\]0;[^\x00-\x1f\x7f-\x9f]*\x07/g) ?? [];
+  expect(titles).toHaveLength(1);
+  const content = raw.replace(/\x1b\]0;[^\x00-\x1f\x7f-\x9f]*\x07/g, '').replace(/\x1b\[(?:0|2|31|32)m/g, '');
+  expect(content).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+  if (columns === undefined || columns === 80) {
+    expect(content).toContain('command \\x1b]52');
+    expect(content).toContain('stderr \\x1b]52');
+    expect(content).toContain('signal \\x1b]52');
+    expect(content).toContain('\\x9b');
+  }
 });
 it('escapes terminal controls from output instead of executing them', async () => {
   const f = await fixture(); const job = await f.job('first', 'show controls');

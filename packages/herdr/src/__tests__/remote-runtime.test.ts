@@ -133,6 +133,19 @@ async function runtimeThroughHc(mode: 'fake' | 'hc'): Promise<void> {
   }
 }
 describe('destination runtime', () => {
+  it('records launch and finish on the destination clock after release', async () => {
+    const job = await runtime('setTimeout(() => {}, 50)', { direct: true });
+    await job.ready(); await new Promise(resolve => setTimeout(resolve, 120));
+    const releasedAt = Date.now(); await job.release();
+    expect((await job.finished).code).toBe(0);
+    const receipt = await job.receipt();
+    expect(receipt.startedAt).toBeTypeOf('number');
+    expect(receipt.startedAt).toBeGreaterThanOrEqual(releasedAt);
+    expect(receipt.finishedAt).toBeGreaterThanOrEqual(receipt.startedAt + 50);
+    expect(receipt.finishedAt).toBeLessThanOrEqual(Date.now());
+    const collected = await collectRemoteChunks(fileClient(), await location(job), memorySink().sink);
+    expect(collected.receipt?.startedAt).toBe(receipt.startedAt);
+  });
   it('creates a console hold before readiness and before the shortest payload can settle', async () => {
     const job = await runtime('process.exitCode=0', { console: true, direct: true }); await job.ready();
     await expect(access(join(job.root, '.spider-console-hold'))).resolves.toBeUndefined();

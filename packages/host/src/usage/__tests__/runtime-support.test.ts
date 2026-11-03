@@ -131,7 +131,7 @@ it("a rejected commit cannot retain session attribution or coverage proof", asyn
   writeFileSync(report.path, JSON.stringify({ type: "usage", id: "rep", timestamp: new Date(at + 10).toISOString(), kind: "subagent", note: "worker (outer)", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } }) + "\n");
   const child = { ...run, id: "inner", parentRunId: "outer", sessionId: "uncommitted-head", endedAt: at + 1 };
   const events = [{ dbPath: "fixture.db", runId: "inner", sessionId: "uncommitted-head", id: 1, ts: at + 2, type: "spider_usage", payload: "{}" }, { dbPath: "fixture.db", runId: "inner", sessionId: "uncommitted-head", id: 2, ts: at + 3, type: "spider_usage_reported", payload: "{}" }];
-  await ingestOnce(ledger, { sources: [report], runs: [run, child], errors: [], runStates: [{ dbPath: "fixture.db", id: "outer", status: "done", childMode: "rpc" }, { dbPath: "fixture.db", id: "inner", status: "done", childMode: "rpc" }], runEvents: summarizeRunEvents(events) }, at + 20, AbortSignal.any([]));
+  await ingestOnce(ledger, { sources: [report], runs: [run, child], errors: [], runStates: [{ dbPath: "fixture.db", id: "outer", status: "done", childMode: "rpc" }, { dbPath: "fixture.db", id: "inner", status: "done", childMode: "rpc" }], runEvents: summarizeRunEvents(events) }, at + 20, new AbortController().signal);
   expect(ledger.getProof().edges).toContainEqual({ reportRunId: "outer", includedRunId: "inner", evidence: "unknown" });
 });
 
@@ -158,7 +158,7 @@ it("stat-skipped source heads still prove changed DB coverage after a worker res
   await ingestOnce(ledger, d, at + 20, new AbortController().signal);
   ledger.close(); ledger = openUsageLedger(join(root, "usage.db"));
   const runEvents = [{ dbPath: "fixture.db", runId: "inner", sessionId: "outer-session", id: 1, ts: at + 2, type: "spider_usage", payload: "{}" }, { dbPath: "fixture.db", runId: "inner", sessionId: "outer-session", id: 2, ts: at + 3, type: "spider_usage_reported", payload: "{}" }];
-  await ingestOnce(ledger, { ...d, runEvents: summarizeRunEvents(runEvents) }, at + 30, AbortSignal.any([]), { sourcePaths: [] });
+  await ingestOnce(ledger, { ...d, runEvents: summarizeRunEvents(runEvents) }, at + 30, new AbortController().signal, { sourcePaths: [] });
   expect(ledger.getProof().edges).toContainEqual({ reportRunId: "outer", includedRunId: "inner", evidence: "runs-db" });
 });
 

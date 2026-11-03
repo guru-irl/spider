@@ -89,6 +89,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
       if (!timingSafeEqual(Buffer.from(envelope.capability, 'hex'), Buffer.from(capability, 'hex'))) return fail('unauthorized');
       const request = envelope.request;
       if (request.generation !== generation || !live()) return fail('wrong-generation');
+      if (request.op === 'openRun') socket.setTimeout(50000);
       try {
         switch (request.op) {
           case 'ping': {

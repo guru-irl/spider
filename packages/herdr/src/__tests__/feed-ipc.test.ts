@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { connect, createServer, type Socket } from 'node:net';
+import { connect, createServer, Socket } from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { build } from 'vite';
@@ -38,6 +38,16 @@ async function rawIpc(address: string, envelope: unknown): Promise<Record<string
 async function envelope(descriptor: IpcDescriptor, request: unknown): Promise<unknown> { return { v: 1, capability: await readFile(descriptor.capabilityFile, 'utf8'), request }; }
 beforeEach(async () => { await mkdir(globalRoot, { recursive: true }); vi.stubEnv('SPIDER_GLOBAL_ROOT', globalRoot); });
 afterEach(async () => { vi.unstubAllEnvs(); await rm(globalRoot, { recursive: true, force: true }); });
+it('waits for a user-open placement that takes longer than the ordinary request deadline', async () => {
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openRun: async () => { await delay(350); return 'viewer/t1' as Owner['terminal']['address']; } }, root);
+  const original = Socket.prototype.setTimeout;
+  const timers = vi.spyOn(Socket.prototype, 'setTimeout').mockImplementation(function (this: Socket, ms: number, callback?: () => void) {
+    return original.call(this, ms ? ms / 100 : ms, callback);
+  });
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try { expect(await client.openRun(runId)).toMatchObject({ ok: true, op: 'openRun', viewer: 'viewer/t1' }); }
+  finally { client.dispose(); timers.mockRestore(); await endpoint.dispose(); }
+});
 it('uses the explicitly configured integration root for IPC', async () => {
   const configured = join(globalRoot, 'c');
   const endpoint = await startSessionEndpoint(owner, ports(), configured);

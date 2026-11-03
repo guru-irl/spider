@@ -586,7 +586,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         const result = await makeMessageHandler()({ to: id, message: text }, options.actionContext(need(context)));
         return result.details as SteerReply;
       }, openView: view => views[view](need(context)),
-      openRun: async id => (await need(panes).acquire('subagent', id, current, { timeoutMs: 30_000 }))?.viewer ?? null,
+      openRun: async id => (await need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, ownerRelative: true }))?.viewer ?? null,
       moveRun: async (id, destination) => (await need(panes).moveRun(id, current, destination, { timeoutMs: 20_000 }))?.viewer ?? null,
       moveSession: destination => moveOwnedSession({ sessionId: current.sessionId, terminal: current.terminal.address, coreId: current.terminal.coreId }, destination, {
         app: need(app), hc: need(client), journalRoot: join(need(config).globalRoot, 'herdr/spaces'), placementRoot: join(need(config).globalRoot, 'herdr/panes'),

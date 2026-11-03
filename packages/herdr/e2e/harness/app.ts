@@ -32,13 +32,13 @@ const commands: Readonly<Record<string, readonly string[]>> = {
   ls: [], status: [],
   'space.new': ['name', 'folder', 'tab', 'argv', 'task', 'machine'], 'space.select': ['id', 'index'],
   'tab.new': ['name', 'space', 'folder', 'argv', 'task', 'mod', 'props'],
-  'tab.rename': ['id', 'name'], 'tab.close': ['id', 'confirmed'],
-  'pane.focus': ['pane', 'terminal'], 'pane.close': ['pane'], 'terminal.peek': ['terminal'], 'terminal.park': ['terminal'], 'terminal.keep': ['terminal', 'place'],
+  'tab.rename': ['id', 'name'], 'tab.close': ['id', 'confirmed'], 'tab.move': ['id', 'index'],
+  'pane.focus': ['pane', 'terminal'], 'pane.close': ['pane'], 'pane.go': ['direction'], 'terminal.peek': ['terminal'], 'terminal.park': ['terminal'], 'terminal.keep': ['terminal', 'place'],
   'layout.switch': ['name'], 'layout.show': ['id'], 'layout.hide': ['id'],
   'layout.select': ['stack', 'child'], 'app.theme': ['name'],
 };
 const required: Readonly<Record<string, readonly string[]>> = {
-  'terminal.peek': ['terminal'], 'terminal.park': ['terminal'], 'terminal.keep': ['terminal'],
+  'terminal.peek': ['terminal'], 'terminal.park': ['terminal'], 'terminal.keep': ['terminal'], 'tab.move': ['id'], 'pane.go': ['direction'],
   'layout.show': ['id'], 'layout.hide': ['id'], 'layout.select': ['stack', 'child'], 'app.theme': ['name'],
 };
 export function validateAppCommand(name: string, args: Record<string, unknown>): void {
@@ -59,6 +59,8 @@ export function validateAppCommand(name: string, args: Record<string, unknown>):
   for (const key of required[name] ?? []) {
     if (typeof args[key] !== 'string' || !(args[key] as string).trim()) throw new AppBoundaryError('missing-argument', `${name} needs ${key}`);
   }
+  if (name === 'tab.move' && (!Number.isSafeInteger(args.index) || (args.index as number) < 1)) throw new AppBoundaryError('invalid-args', 'tab.move needs a one-based index');
+  if (name === 'pane.go' && !['left', 'right', 'up', 'down'].includes(String(args.direction))) throw new AppBoundaryError('invalid-args', 'unsupported pane direction');
   if (name === 'pane.focus' && Number(args.pane !== undefined) + Number(args.terminal !== undefined) !== 1) throw new AppBoundaryError('invalid-args', 'pane.focus needs one target');
   if (name === 'terminal.keep' && args.place !== undefined && !['right', 'down', 'tab'].includes(String(args.place))) throw new AppBoundaryError('invalid-args', 'unsupported terminal.keep place');
 }

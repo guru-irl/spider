@@ -22,6 +22,24 @@ test('app placements and viewer acknowledgements accept documented native string
   expect(owner).toEqual({ space: 'sp1', tab: 'tb1', pane: 'p1' });
   expect(await client.awaitPane(h.address('t2'), owner, { timeoutMs: 1000 })).toBe('p2');
 });
+test('reads the terminal dimensions reported by the core', async () => {
+  const h = await fixture(); await h.configure({ terminals: [{ ...terminal('t1'), cols: 183, rows: 47 }] });
+  const result = await createHcClient({ binary: h.hcBinary, env: h.localEnv }).get(h.address('t1'));
+  expect(result).toMatchObject({ cols: 183, rows: 47 });
+});
+test('reads pane focus and ordered tabs from the app', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'sp1', tabs: [
+    { id: 'tb0', terminals: [{ terminal: 't0', pane: 'p0' }] },
+    { id: 'tb1', terminals: [{ terminal: 't1', pane: 'p1' }, { terminal: 't2', pane: 'p2' }] },
+  ] }] }));
+  await writeFile(join(h.root, 'scenario.json'), JSON.stringify({ appSteps: [{ argvPrefix: ['status'], reply: { space: 'sp1', tab: 'tb1', focused_pane: 'p1' } }] }));
+  const client = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  const owner = await client.ownerPlacement(h.address('t1'));
+  expect(await client.tabPanes!(owner)).toEqual([{ terminal: 't1', pane: 'p1' }, { terminal: 't2', pane: 'p2' }]);
+  expect(await client.tabIndex!(owner)).toBe(2);
+  expect(await client.focusedPane!()).toEqual({ space: 'sp1', tab: 'tb1', pane: 'p1' });
+});
 test('preserves the isolated caller and rejects a foreign socket', async () => {
   const h = await fixture();
   const client = createHcClient({ binary: h.hcBinary, env: h.localEnv });

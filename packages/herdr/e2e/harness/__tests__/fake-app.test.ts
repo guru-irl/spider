@@ -92,6 +92,24 @@ describe('strict fake app against the core boundary', () => {
     try { await expect(daemon.appRequest(socket, 'tab.rename', { id: 'tb1', name: 'A' })).rejects.toThrow(/UTF-8/); }
     finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
+  it('moves a tab to a one-based position in its space', async () => {
+    const core = coreBoundary(), boundary = createFakeAppBoundary({ hc: core.hc });
+    const main = await boundary.command('space.new', { name: 'Work', folder: '/owned/project', argv: ['/bin/sh'] });
+    const other = await boundary.command('tab.new', { space: main.space, mod: 'pane' });
+    const viewer = await boundary.command('tab.new', { space: main.space, mod: 'pane' });
+    await boundary.command('tab.move', { id: viewer.tab, index: 2 });
+    const world: any = await boundary.command('ls', {});
+    expect(world.spaces[0].tabs.map((tab: any) => tab.id)).toEqual([main.tab, viewer.tab, other.tab]);
+  });
+  it('navigates from a split owner to its new viewer', async () => {
+    const core = coreBoundary(), boundary = createFakeAppBoundary({ hc: core.hc });
+    const main = await boundary.command('space.new', { name: 'Work', folder: '/owned/project', argv: ['/bin/sh'] });
+    const viewer = await core.hc(['run']) as { address: string };
+    await boundary.command('terminal.keep', { terminal: viewer.address, place: 'down' }); await boundary.drain();
+    await boundary.command('pane.focus', { terminal: main.terminal });
+    await boundary.command('pane.go', { direction: 'down' });
+    expect(await boundary.command('status', {})).toMatchObject({ space: main.space, tab: main.tab, agent: viewer.address });
+  });
   it('creates a temporary mod tab without a shell and removes only its mod pane', async () => {
     const core = coreBoundary(), boundary = createFakeAppBoundary({ hc: core.hc });
     const main = await boundary.command('space.new', { name: 'Work', folder: '/owned/project', argv: ['/bin/sh'] });

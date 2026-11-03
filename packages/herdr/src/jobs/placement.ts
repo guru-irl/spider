@@ -3,16 +3,16 @@
 import { randomUUID } from 'node:crypto';
 import { withProcessLock } from '../sessions/registry.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { AppClient, AuxiliaryPanes, HcClient, JobId, Owner, OwnerPlacement, PaneReservation, RunId, TerminalAddress, ViewerLauncher } from '../contracts.js';
+import type { AppClient, AppPaneInspection, AuxiliaryPanes, HcClient, JobId, Owner, OwnerPlacement, PaneReservation, RunId, TerminalAddress, ViewerLauncher } from '../contracts.js';
 import type { JobSlot } from './monitor.js';
 import { HerdrError } from '../client/parse.js';
 import { herdrErrorNotice } from '../notices.js';
 import { HERDR_LABELS, HERDR_KINDS } from '../contracts.js';
 import { moveTerminal, type MoveDestination } from '../../assets/agents/move.js';
-export interface PaneAcquireOptions { signal?: AbortSignal; timeoutMs: number; automatic?: boolean; userInitiated?: boolean }
+export interface PaneAcquireOptions { signal?: AbortSignal; timeoutMs: number; automatic?: boolean; userInitiated?: boolean; ownerRelative?: boolean }
 export interface AuxiliaryPaneOptions {
   hc: HcClient;
-  app: AppClient;
+  app: AppClient & Partial<AppPaneInspection>;
   appForSignal?(signal: AbortSignal): AppClient;
   subagentViewer: ViewerLauncher;
   discardSubagentViewer(runId: RunId, owner: Owner, viewer: TerminalAddress): Promise<void>;
@@ -137,6 +137,111 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       await delay(50, undefined, { signal: displayOptions.signal });
     }
   }
+  async function ownerTabFallback(s: Slot, viewer: TerminalAddress, displayOptions: PaneAcquireOptions, displayName?: string): Promise<PaneReservation> {
+    if (!options.app.tabIndex) throw new HerdrError('unavailable', 'Tab position is unavailable');
+    const owner = await options.app.ownerPlacement(s.owner.terminal.address);
+    if (owner.space !== s.placement.space || owner.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
+    const reply = await options.app.command('tab.new', { space: owner.space, mod: 'pane', ...(displayName ? { name: displayName } : {}) });
+    if (reply.error) throw new HerdrError(reply.error.code, reply.error.message);
+    if (!reply.tab || !reply.pane || reply.space && reply.space !== owner.space) throw new HerdrError('invalid-reply', 'New tab has no pane in the owner space');
+    const target = { space: owner.space, tab: reply.tab, pane: reply.pane };
+    try {
+      const machine = viewer.includes('/') ? viewer.slice(0, viewer.indexOf('/')) : null;
+      const local = (id: string) => machine && id.startsWith(`${machine}/`) ? id.slice(machine.length + 1) : id;
+      await options.hc.setLabels(viewer, { [HERDR_LABELS.space]: local(target.space), [HERDR_LABELS.tab]: local(target.tab) });
+      const pane = await options.app.awaitPane(viewer, target, displayOptions);
+      const close = await options.app.command('pane.close', { pane: target.pane });
+      if (close.error) throw new HerdrError(close.error.code, close.error.message);
+      const ownerIndex = await options.app.tabIndex(owner);
+      const moved = await options.app.command('tab.move', { id: target.tab, index: ownerIndex + 1 });
+      if (moved.error) throw new HerdrError(moved.error.code, moved.error.message);
+      if (await options.app.tabIndex(target) !== await options.app.tabIndex(owner) + 1) throw new HerdrError('owner-tab-changed', 'New tab was not placed after its owner');
+      await focus(viewer);
+      return acknowledged(s, viewer, { ...target, pane });
+    } catch (error) {
+      const cleanup = await options.app.command('pane.close', { pane: target.pane });
+      if (cleanup.error && code(cleanup.error) !== 'not_found') report(cleanup.error);
+      throw error;
+    }
+  }
+  async function showBelowOwner(s: Slot, viewer: TerminalAddress, displayOptions: PaneAcquireOptions, displayName?: string): Promise<PaneReservation> {
+    const app = options.app;
+    if (!app.focusedPane || !app.tabPanes || !app.tabIndex) return ownerTabFallback(s, viewer, displayOptions, displayName);
+    const owner = await app.ownerPlacement(s.owner.terminal.address);
+    if (owner.space !== s.placement.space || owner.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
+    const same = (a: OwnerPlacement | null, b: OwnerPlacement) => a?.space === b.space && a.tab === b.tab && a.pane === b.pane;
+    const select = async (target: OwnerPlacement) => {
+      const result = await app.command('pane.focus', { pane: target.pane });
+      if (result.error) return false;
+      return same(await app.focusedPane!(), target);
+    };
+    const neighbor = async (target: OwnerPlacement, direction: 'down' | 'right') => {
+      if (!await select(target)) return { safe: false, pane: null };
+      const result = await app.command('pane.go', { direction });
+      if (result.error) return { safe: true, pane: null };
+      const current = await app.focusedPane!();
+      if (!current || current.space !== owner.space || current.tab !== owner.tab) return { safe: false, pane: null };
+      return { safe: true, pane: current.pane === target.pane ? null : current.pane };
+    };
+    let anchor = owner, direction: 'down' | 'right' = 'down';
+    const below = await neighbor(owner, 'down');
+    if (!below.safe) return ownerTabFallback(s, viewer, displayOptions, displayName);
+    const ownViewer = async (pane: OwnerPlacement['pane']) => {
+      const row = (await app.tabPanes!(owner)).find(item => item.pane === pane);
+      if (!row) return null;
+      const terminal = await options.hc.get(row.terminal).catch(error => { if (code(error) === 'not_found') return null; throw error; });
+      const labels = terminal?.labels;
+      return labels?.[HERDR_LABELS.kind] === HERDR_KINDS.subagentViewer && labels[HERDR_LABELS.session] === s.owner.sessionId
+        && labels[HERDR_LABELS.ownerCore] === s.owner.terminal.coreId && labels[HERDR_LABELS.ownerTerminal] === s.owner.terminal.terminalId ? row.terminal : null;
+    };
+    let anchorTerminal = s.owner.terminal.address;
+    const first = below.pane && await ownViewer(below.pane);
+    if (below.pane && first) {
+      anchor = { ...owner, pane: below.pane }; anchorTerminal = first; direction = 'right';
+      const seen = new Set([anchor.pane]);
+      while (true) {
+        const next = await neighbor(anchor, 'right');
+        if (!next.safe) return ownerTabFallback(s, viewer, displayOptions, displayName);
+        if (!next.pane || seen.has(next.pane)) break;
+        const terminal = await ownViewer(next.pane);
+        if (!terminal) break;
+        seen.add(next.pane); anchor = { ...owner, pane: next.pane }; anchorTerminal = terminal;
+      }
+    }
+    const existing = new Set<TerminalAddress>([s.owner.terminal.address]);
+    for (const row of await app.tabPanes(owner)) {
+      const terminal = await ownViewer(row.pane);
+      if (terminal) existing.add(terminal);
+    }
+    for (const address of existing) {
+      const terminal = await options.hc.get(address);
+      if ((terminal.cols ?? 0) < 80 || (terminal.rows ?? 0) < 20) return ownerTabFallback(s, viewer, displayOptions, displayName);
+    }
+    const size = await options.hc.get(anchorTerminal);
+    // The core reports terminal cells, not pane geometry. Halving them approximates a split.
+    const cols = size.cols ?? 0, rows = size.rows ?? 0;
+    if (direction === 'down' ? cols < 80 || Math.floor(rows / 2) < 20 : Math.floor(cols / 2) < 80 || rows < 20)
+      return ownerTabFallback(s, viewer, displayOptions, displayName);
+    if (!await select(anchor)) return ownerTabFallback(s, viewer, displayOptions, displayName);
+    const result = await app.command('terminal.keep', { terminal: viewer, place: direction });
+    if (result.error) throw new HerdrError(result.error.code, result.error.message);
+    const deadline = options.clock() + displayOptions.timeoutMs;
+    let placed: OwnerPlacement | null = null;
+    while (!placed) {
+      check(displayOptions.signal);
+      placed = await app.ownerPlacement(viewer).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
+      if (placed && result.pane && placed.pane !== result.pane) placed = null;
+      if (!placed && options.clock() >= deadline) throw new HerdrError('pane-timeout', 'Viewer pane was not acknowledged');
+      if (!placed) await delay(50, undefined, { signal: displayOptions.signal });
+    }
+    const adjacent = placed.space === owner.space && placed.tab === owner.tab ? await neighbor(anchor, direction) : { safe: false, pane: null };
+    if (!adjacent.safe || adjacent.pane !== placed.pane) {
+      await awaitAbsent(viewer, true);
+      return ownerTabFallback(s, viewer, displayOptions, displayName);
+    }
+    await focus(viewer);
+    return acknowledged(s, viewer, placed);
+  }
   async function show(token: JobSlot, viewer: TerminalAddress, displayOptions: PaneAcquireOptions): Promise<PaneReservation | null> {
     const s = slot(token);
     if (viewer === s.owner.terminal.address) throw new HerdrError('agent-pane-protected', 'An agent terminal cannot be an auxiliary pane');
@@ -161,6 +266,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       const current = await options.app.ownerPlacement(s.owner.terminal.address);
       if (current.space !== s.placement.space || current.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
       for (const ended of displayed(g)) if (ended.removedTerminal) await removeSlot(ended);
+      if (explicit && s.kind === 'subagent' && displayOptions.ownerRelative) return showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName]);
       let occupancy = await occupied(s);
       if (displayOptions.automatic && occupancy >= limit) {
         await awaitAbsent(viewer, true);

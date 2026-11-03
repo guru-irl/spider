@@ -5,6 +5,8 @@ import { HerdrError, object } from '../client/parse.js';
 export interface CloneNames { agents: string; spaces: string; pane: string; tabs: string; spider: string; chrome: string; bodyFont?: string; props?: Partial<Record<'agents' | 'spaces' | 'pane' | 'tabs' | 'spider' | 'chrome', Readonly<Record<string, unknown>>>> }
 export interface GlassLayout { [key: string]: unknown }
 
+const removedNodeIds: readonly string[] = edits.remove;
+
 export function buildGlassLayout(currentMain: unknown, names: CloneNames): GlassLayout {
   const root = structuredClone(object(currentMain));
   const nodes: Record<string, unknown>[] = [];
@@ -12,7 +14,9 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
     nodes.push(node);
     if (node.children !== undefined) {
       if (!Array.isArray(node.children)) throw new HerdrError('layout-anchor-mismatch', 'Layout children must be nodes');
-      for (const child of node.children) walk(object(child));
+      const children = node.children.map(object).filter(child => typeof child.id !== 'string' || !removedNodeIds.includes(child.id));
+      node.children = children;
+      for (const child of children) walk(child);
     }
   };
   walk(root);

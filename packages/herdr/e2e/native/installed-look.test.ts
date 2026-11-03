@@ -17,6 +17,14 @@ describe('installed look observations', () => {
     expect(report.contrast.some(row => row.token === 'text' && row.ratio >= 4.5)).toBe(true);
     expect(report.contrast.find(row => row.token === 'borderMuted')?.required).toBe(0);
   });
+  it.each([
+    { found: 'its node id', node: { id: 'status', content: { mod: 'other-mod' } } },
+    { found: 'its mod', node: { id: 'other', content: { mod: 'workspace-status' } } },
+  ])('rejects a bottom status bar found by $found', ({ node }) => {
+    const actual = observations();
+    (actual.layout as any).children.push(node);
+    expect(() => validateInstalledLook(actual)).toThrow(/status bar/);
+  });
   it('catches wrong active theme, tinted panes, missing keys and changed paste', () => {
     const active = observations(); (active.appSettings as Record<string, unknown>).theme = 'other';
     expect(() => validateInstalledLook(active)).toThrow(/active app theme/);

@@ -90,7 +90,7 @@ describe.skipIf(!fixtureRoot)('Spider top-bar button against shipped Herdr 0.1.1
   });
 
   test('the glass layout routes the shipped top bar through the tabs clone without changing the source', async () => {
-    const source = JSON.parse(await readFile(join(fixtureRoot!, '../layouts/main.json'), 'utf8'));
+    const source = JSON.parse(await readFile(new URL('./fixtures/herdr-0.1.12/layouts/main.json', import.meta.url), 'utf8'));
     const before = structuredClone(source);
     const result = buildGlassLayout(source, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome' });
     function mods(node: any): string[] { return [node.content?.mod, ...(node.children ?? []).flatMap(mods)].filter(Boolean); }

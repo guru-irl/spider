@@ -18,7 +18,7 @@ import type { HcClient, Owner, JobId, TerminalAddress, TerminalSummary } from '.
 import { setupHerdr, runtimeInstallPath, standardHerdrConfigPath } from '../setup/installer.js';
 import type { HerdrConfig, RunId } from '../contracts.js';
 
-async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSnapshot = false) {
+async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSnapshot = false, monitorFailure = false) {
   const h = await createHerdrHarness(mode); let monitor: JobMonitor | undefined;
   let child: TerminalChild | undefined;
   let output: ReturnType<typeof createHostHerdrPorts> | undefined;
@@ -62,8 +62,12 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     monitor = parentMonitor();
     const messages: any[] = [], waiters: { predicate: (message: any) => boolean; resolve: (message: any) => void }[] = [];
     let stderr = '';
+    if (monitorFailure) {
+      await monitor.activate(h.owner!);
+      await h.scenario({ steps: [{ argvPrefix: ['events'], reply: { seq: 'invalid', terminals: [] } }] });
+    }
     child = await startTerminalChild(h, join(dist, 'child.mjs'), { ...h.localEnv, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'child-run', PI_SUBAGENT_RUN_NAME: 'worker', PI_SPIDER_SESSION_ID: h.owner!.sessionId, PI_SPIDER_TOP_SESSION_ID: h.owner!.sessionId, SPIDER_GLOBAL_ROOT: config.globalRoot, SPIDER_CHILD_FIXTURE_CONFIG: configPath, SPIDER_CHILD_FIXTURE_CWD: h.root, SPIDER_CHILD_FIXTURE_PACKAGE: h.root });
-    await monitor.activate(h.owner!);
+    if (!monitorFailure) await monitor.activate(h.owner!);
     child.stderr!.on('data', bytes => { stderr += bytes; });
     createInterface({ input: child.stdout! }).on('line', line => { const message = JSON.parse(line); messages.push(message); for (const waiter of [...waiters]) if (waiter.predicate(message)) { waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(message); } });
     const message = (predicate: (message: any) => boolean) => {
@@ -79,6 +83,10 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     const bash = await message(m => m.id === 'plain-bash'); expect(bash.type, bash.reason ?? bash.error).toBe('result'); expect(JSON.stringify(bash.result.content)).toContain('bash-ok');
     child.stdin!.write(JSON.stringify({ id: 'foreground', action: 'exec', on: 'remote.invalid', language: 'javascript', code: "console.log('returned to child');console.error('child diagnostic');process.exitCode=23" }) + '\n');
     const foreground = await message(m => m.id === 'foreground');
+    if (monitorFailure) {
+      expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringMatching(/Herdr remote execution is unavailable in this subagent.*Herdr job monitor failed.*Expected an integer/) });
+      return;
+    }
     if (legacyChildPolicy) { expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringContaining('Herdr is off in this session') }); return; }
     expect(foreground.type, foreground.error).toBe('result'); expect(foreground.result.details).toMatchObject({ stdout: 'returned to child\n', stderr: 'child diagnostic\n', exitCode: 23 });
     child.stdin!.write(JSON.stringify({ id: 'managed-ssh', action: 'bash', command: '/usr/bin/ssh managed.invalid' }) + '\n');
@@ -138,6 +146,7 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
   }
 }
+it('a real child exec names its failed event stream without relying on stderr', async () => { await scenario('fake', false, false, true); }, 45000);
 it('session and child activate with a large snapshot and remote exec returns its output', async () => { await scenario('fake', false, true); }, 60000);
 it('the real-child regression detects the legacy missing-policy branch in an isolated compiled artifact', async () => { await scenario('fake', true); }, 45000);
 it('real Node child runs direct exec against fake hc and hands off a background job after SIGKILL', async () => { await scenario('fake'); }, 45000);

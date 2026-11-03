@@ -109,7 +109,7 @@ for (const mode of ['fake', 'hc'] as const) test.skipIf(mode === 'hc' && !realHc
     expect((await f.registry.list()).map(r => r.owner.terminal.socket)).toEqual([f.h.remoteSocket]);
     expect(f.notices.filter(message => message.includes("This session's Herdr pane belongs to a Herdr instance that has stopped. Close this session and open a new session in Herdr."))).toHaveLength(1);
     expect(await m.guard({ toolName: 'bash', input: { command: 'ssh remote.invalid true' } })).toBeUndefined();
-    expect(await m.guard({ toolName: 'bash', input: { on: 'remote.invalid', command: 'true' } })).toMatchObject({ block: true, reason: expect.stringContaining('Herdr is off in this session') });
+    expect(await m.guard({ toolName: 'bash', input: { on: 'remote.invalid', command: 'true' } })).toMatchObject({ block: true, reason: expect.stringMatching(/Herdr activation failed.*Herdr instance that has stopped/) });
   } finally {
     for (const m of mounts.splice(0)) await m.dispose();
     for (const pid of oldProcesses) { try { process.kill(pid, 'SIGKILL'); } catch {} }

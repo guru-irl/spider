@@ -7,6 +7,7 @@ export interface ExecCtx {
   cwd: string;
   owner?: Owner;
   remote?: RemoteExecutionPort;
+  remoteUnavailableReason?: string;
   environmentPolicy?: ExecutionEnvironmentPolicy;
   /**
    * Called with a cumulative, capped snapshot of output while the command is
@@ -37,7 +38,7 @@ const TRUNCATION_NOTE =
   "under .spider/scratch/ and analyse it there (grep/head/wc/awk), or narrow the command " +
   "itself. For session/run history, query the DB rather than dumping logs.]";
 
-const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd, remote: ctx.remote, owner: ctx.owner, environmentPolicy: ctx.environmentPolicy });
+const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd, remote: ctx.remote, remoteUnavailableReason: ctx.remoteUnavailableReason, owner: ctx.owner, environmentPolicy: ctx.environmentPolicy });
 
 /** Throttle interval for partial updates. pi's bash tool throttles for the same reason:
  *  a chatty command emits hundreds of chunks a second and repainting on each one costs
@@ -269,7 +270,7 @@ export function isExecError(res: { outcome?: string; exitCode: number | null; ti
 export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; details: any; isError: boolean }> {
   if (args.copy !== undefined) {
     if (typeof args.on !== 'string' || !args.on) throw new Error('File copy requires an on destination');
-    if (!ctx.remote?.copy || !ctx.owner) throw new Error('Remote file copy requires an active Herdr owner');
+    if (!ctx.remote?.copy || !ctx.owner) throw Object.assign(new Error(ctx.remoteUnavailableReason ?? 'Remote file copy requires an active Herdr owner'), { code: 'herdr-unavailable' });
     const copy = args.copy;
     if (!copy || typeof copy !== 'object' || !['to', 'from'].includes(copy.direction) || typeof copy.local !== 'string' || typeof copy.remote !== 'string' || !isAbsolute(copy.local) || !posix.isAbsolute(copy.remote) || copy.local.includes('\0') || copy.remote.includes('\0')) throw new Error('File copy requires direction to or from and absolute local and remote paths');
     if (args.code !== undefined || args.language !== undefined || args.background !== undefined || args.timeout !== undefined) throw new Error('File copy cannot be combined with code, language, background, or timeout');

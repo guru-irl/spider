@@ -21,6 +21,11 @@ it('offers move or open actions for subagent rows and places kill last', () => {
   expect(saved.at(-1).disabled).toBe(true);
 });
 
+it('keeps the Move verb for a pane header with unspecified pane presence', () => {
+  const items = move.menuItems({ kind: 'command', descriptor: { generation: 'gen' } }, spaces, 's1', 't1');
+  expect(labels(items).slice(0, 2)).toEqual(['Move to new tab', 'Move to tab']);
+});
+
 it('offers the right kill action for each terminal pane and none for a mod pane', () => {
   expect((move as any).menuItems).toBeTypeOf('function');
   const menu = (move as any).menuItems;

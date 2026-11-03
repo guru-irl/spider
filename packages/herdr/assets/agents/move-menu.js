@@ -40,19 +40,29 @@ function targetFor(view) {
   }
   if (source.kind === 'console' || source.kind === 'remote') {
     const terminal = terminals().find(value => value.address === source.terminal);
-    if (!terminal) return null;
+    if (!terminal || terminal.state !== 'live') return null;
     const pane = panes().find(value => value.terminal === source.terminal);
     const target = classifyPane(pane ?? { terminal: source.terminal }, terminal, view.spiderFeeds ?? [], p.labelContract, Date.now() - FEED_DISCONNECT_MS);
     if (source.kind === 'console' && (target.kind !== 'terminal' || terminal.labels?.[p.labelContract?.labels?.kind] !== p.labelContract?.kinds?.remoteConsole)) return null;
-    if (source.kind === 'remote' && (target.kind !== 'command' || target.key !== source.key)) return null;
+    const names = p.labelContract?.labels ?? {}, kinds = p.labelContract?.kinds ?? {};
+    if (source.kind === 'remote' && (target.kind !== 'command' || target.key !== source.key
+      || ![kinds.exec, kinds.execFile, kinds.batch].includes(terminal.labels?.[names.kind]))) return null;
     const descriptor = target.descriptor ?? (source.kind === 'remote' && !p.feedRoot && source.action?.kind === 'ipc'
-      && source.action.descriptor?.sessionId === terminal.labels?.[p.labelContract?.labels?.session] ? source.action.descriptor : null);
-    return { ...target, descriptor, pane: Boolean(pane), direct: source.kind === 'remote' };
+      && source.action.descriptor?.sessionId === terminal.labels?.[names.session] ? source.action.descriptor : null);
+    if (source.kind === 'console') return { ...target, descriptor, pane: Boolean(pane) };
+    const observer = terminals().find(value => value.state === 'live' && value.labels?.[names.kind] === kinds.remoteObserver
+      && value.labels?.[names.job] === source.key && value.labels?.[names.session] === terminal.labels?.[names.session]
+      && panes().some(item => item.terminal === value.address));
+    const address = observer?.address ?? null;
+    return { ...target, descriptor, terminal: address, pane: Boolean(observer), machine: address?.includes('/') ? address.split('/')[0] : null };
   }
   if (source.kind !== 'pane') return null;
   const pane = panes().find(value => value.pane === source.pane && value.terminal === source.terminal);
   if (!pane) return null;
-  const target = classifyPane(pane, terminals().find(value => value.address === pane.terminal), view.spiderFeeds ?? [], p.labelContract, Date.now() - FEED_DISCONNECT_MS);
+  const terminal = terminals().find(value => value.address === pane.terminal);
+  const kind = terminal?.labels?.[p.labelContract?.labels?.kind], kinds = p.labelContract?.kinds ?? {};
+  if (kind && [kinds.exec, kinds.execFile, kinds.batch].includes(kind)) return null;
+  const target = classifyPane(pane, terminal, view.spiderFeeds ?? [], p.labelContract, Date.now() - FEED_DISCONNECT_MS);
   if (target.kind === 'session' && !target.descriptor && view.moveUnmanaged) target.unmanaged = true;
   return target;
 }
@@ -64,6 +74,7 @@ async function callOwner(descriptor, request) {
   const result = await exec(argv[0], argv.slice(1));
   const reply = parseSessionIpcReply(result.stdout.trim());
   if (result.code !== 0 || !reply?.ok) throw new Error(reply?.message ?? 'Session action failed');
+  return reply;
 }
 
 async function movePlain(terminal, destination, cx, allowParked) {
@@ -95,6 +106,7 @@ async function movePlain(terminal, destination, cx, allowParked) {
   await moveTerminal(terminal, target, {
     now: Date.now, timeoutMs: 20000, sleep: ms => cx.sleep(ms),
     placement: async () => current(), targetPane: async () => null,
+    placementMatches: newTab ? placement => (spaces().find(space => space.id === placement.space)?.machine ?? null) === machine : undefined,
     tabExists: async tab => tab === newTab || spaces().some(space => space.tabs.some(value => value.id === tab)),
     run: (name, args) => run(name, args),
     createTab: async space => {

@@ -59,11 +59,19 @@ export function journalOwnsTerminal(text, terminal) {
 
 /** A session controls its own panes; ordinary terminals have no owner endpoint. */
 export async function moveTarget(target, destination, ports) {
-  if (target.kind === 'terminal' || target.kind === 'command' && target.direct || target.kind === 'session' && target.unmanaged) return ports.movePlain(target.terminal, destination);
+  if (target.kind === 'terminal' || target.kind === 'session' && target.unmanaged) return ports.movePlain(target.terminal, destination);
   if (!target.descriptor) throw new Error('The owning session is unavailable');
   const generation = target.descriptor.generation;
   if (target.kind === 'subagent' && target.key) return ports.ipc(target.descriptor, { op: 'moveRun', runId: target.key, destination, generation });
-  if (target.kind === 'command' && target.key && target.terminal) return ports.ipc(target.descriptor, { op: 'moveJob', jobId: target.key, viewer: target.terminal, destination, generation });
+  if (target.kind === 'command' && target.key) {
+    let viewer = target.terminal;
+    if (!viewer) {
+      const reply = await ports.ipc(target.descriptor, { op: 'openJob', jobId: target.key, generation });
+      if (reply?.op !== 'openJob' || typeof reply.viewer !== 'string' || !reply.viewer) throw new Error('The command observer is unavailable');
+      viewer = reply.viewer;
+    }
+    return ports.ipc(target.descriptor, { op: 'moveJob', jobId: target.key, viewer, destination, generation });
+  }
   if (target.kind === 'session') return ports.ipc(target.descriptor, { op: 'moveSession', destination, generation });
   throw new Error('The pane cannot be moved');
 }
@@ -147,13 +155,16 @@ export async function moveTerminal(terminal, destination, ports) {
       }
       await command('terminal.keep', { terminal, place: destination.kind === 'new' ? 'tab' : 'right' });
     }
-    const placement = await wait(value => value !== null && (destination.kind === 'tab' ? value.tab === destination.tab : !previous || value.tab !== previous.tab));
+    const matches = value => value !== null && (ports.placementMatches ? ports.placementMatches(value)
+      : destination.kind === 'tab' ? value.tab === destination.tab : !previous || value.tab !== previous.tab);
+    const placement = await wait(matches);
     await ports.changed(placement);
     if (placeholder) await command('pane.close', { pane: placeholder.pane });
     await command('pane.focus', { terminal });
     return placement;
   } catch (error) {
     let placement = await ports.placement(terminal);
+    if (placement && ports.placementMatches && !ports.placementMatches(placement)) placement = null;
     if (!placement && previous && ports.adopt) {
       try {
         await ports.adopt(terminal, { space: previous.space, tab: previous.tab });

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { HcClient, HcEvent, JobId, Owner, PreparedProgram, RunId, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
+import type { CoreId, MachineName, HcClient, HcEvent, JobId, Owner, PreparedProgram, RunId, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createJobMonitor, type JobMonitorOptions, type JobNotice } from '../jobs/monitor.js';
 import { createJobStore } from '../jobs/store.js';
 import { processStartIdentity, createJobHandoff } from '../jobs/handoff.js';
@@ -18,7 +18,7 @@ async function fixture() {
   const owner = { sessionId: 'owner', generation: 'g1', terminal: { coreId: 'core', terminalId: 't-owner', address: 't-owner', socket: f.localSocket, sessionNamespace: 'fl' }, cwd: f.root, sessionFile: null, name: null } as Owner;
   const listeners = new Set<(event: HcEvent) => void>(), terminals = new Map<TerminalAddress, TerminalSummary>();
   const notices: JobNotice[] = [], launches: Parameters<HcClient['run']>[0][] = [], kills: TerminalAddress[] = [], markers: string[] = [];
-  const hc: HcClient = { identity: async () => owner.terminal, caller: async () => owner.terminal, machines: async () => [], setLabels: async () => {},
+  const hc: HcClient = { identity: async () => owner.terminal, caller: async () => owner.terminal, machines: async () => [{ id: 'remote-core' as CoreId, name: 'remote.invalid' as MachineName, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }], setLabels: async () => {},
     events: () => { let own: ((event: HcEvent) => void) | undefined; return { ready: Promise.resolve(), lookup: async address => terminals.get(address) ?? null, subscribe: listener => { own = listener; listeners.add(listener); queueMicrotask(() => listener({ type: 'snapshot', seq: 1, terminals: [...terminals.values()] })); return () => listeners.delete(listener); }, dispose: () => { if (own) listeners.delete(own); } }; },
     run: async request => { launches.push(request); const address = `remote.invalid/t${launches.length}` as TerminalAddress; const terminal: TerminalSummary = { address, parent: owner.terminal.address, labels: request.labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null }; terminals.set(address, terminal); return { address, coreId: 'remote-core' as never }; },
     get: async address => { const terminal = terminals.get(address); if (!terminal) throw Object.assign(new Error('missing'), { code: 'not_found' }); return terminal; }, read: async () => '', kill: async address => { kills.push(address); }, rm: async () => {}, fileRead: async () => Buffer.alloc(0), fileWrite: async (_on, path) => { markers.push(path); },
@@ -77,12 +77,12 @@ describe('remote child handoff', () => {
     // Abandon the extension without a graceful quit, just as a killed process leaves its journal.
     await child.shutdown('reload'); const parent = h.monitor(); await parent.activate(h.owner);
     expect(h.kills).toEqual([]); processChild.kill('SIGKILL'); await exited; await parent.reconcile();
-    expect(h.kills).toEqual([foreground.address]);
+    await vi.waitFor(() => expect(h.kills).toEqual([foreground.address]), { timeout: 5000 });
     h.complete(background.address); await parent.reconcile(); await parent.reconcile();
-    expect(h.notices.map(n => ({ job: n.details.jobId, run: n.details.runId }))).toEqual([{ job: background.id, run: 'run-one' }]);
-    expect(h.markers.filter(path => path.endsWith('.spider-settled'))).toHaveLength(1);
+    await vi.waitFor(() => expect(h.notices.map(n => ({ job: n.details.jobId, run: n.details.runId }))).toEqual([{ job: background.id, run: 'run-one' }]), { timeout: 5000 });
+    await vi.waitFor(() => expect(h.markers.filter(path => path.endsWith('.spider-settled'))).toHaveLength(1));
     await parent.shutdown('reload'); const reloaded = h.monitor(); await reloaded.activate({ ...h.owner, generation: 'g2' as never }); await reloaded.reconcile();
-    expect(h.notices).toHaveLength(1); expect(h.kills).toEqual([foreground.address]);
+    expect(h.notices).toHaveLength(1); await vi.waitFor(() => expect(h.kills).toEqual([foreground.address]), { timeout: 5000 });
   });
   it('parent cancels a foreground launch recovered from labels after the child journal lost its reply', async () => {
     const h = await fixture(), child = h.monitor({ child: childRun('run-one') });
@@ -90,8 +90,8 @@ describe('remote child handoff', () => {
     const store = createJobStore(h.f.root, h.owner.sessionId, 'run-one' as RunId), journal = await store.read();
     journal.jobs[0].phase = { kind: 'preparing' }; await store.write(journal); h.kills.length = 0;
     const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
-    expect(h.kills).toEqual([job.address]);
-    await parent.reconcile(); expect(h.kills).toEqual([job.address]);
+    await vi.waitFor(() => expect(h.kills).toEqual([job.address]), { timeout: 5000 });
+    await parent.reconcile(); await vi.waitFor(() => expect(h.kills).toEqual([job.address]), { timeout: 5000 });
   });
   it('adopts background work even when the child died before its detach timeout', async () => {
     const h = await fixture(), child = h.monitor({ child: childRun('run-one') });
@@ -99,7 +99,7 @@ describe('remote child handoff', () => {
     const parent = h.monitor(); await parent.activate(h.owner); await parent.shutdown('quit');
     expect(h.kills).toEqual([]);
     const reloaded = h.monitor(); await reloaded.activate(h.owner); h.complete(job.address); await reloaded.reconcile();
-    expect(h.notices.map(n => n.details.jobId)).toEqual([job.id]);
+    await vi.waitFor(() => expect(h.notices.map(n => n.details.jobId)).toEqual([job.id]), { timeout: 5000 });
   });
   it('parent reload does not touch a live child job and takes over after graceful child exit', async () => {
     const h = await fixture(), child = h.monitor({ child: childRun('run-one') });
@@ -107,7 +107,7 @@ describe('remote child handoff', () => {
     const parent = h.monitor(); await parent.activate(h.owner); await parent.shutdown('reload');
     const reloaded = h.monitor(); await reloaded.activate({ ...h.owner, generation: 'g2' as never }); expect(h.kills).toEqual([]);
     await child.shutdown('quit'); await reloaded.reconcile(); h.complete(job.address); await reloaded.reconcile();
-    expect(h.notices.map(n => n.details.jobId)).toEqual([job.id]);
+    await vi.waitFor(() => expect(h.notices.map(n => n.details.jobId)).toEqual([job.id]), { timeout: 5000 });
   });
   it('a child-consumed result is never replayed to the parent on handoff', async () => {
     const h = await fixture(), child = h.monitor({ child: childRun('run-one') });

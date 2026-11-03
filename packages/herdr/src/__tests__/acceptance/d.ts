@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { expect } from 'vitest';
 import { strict as assert } from 'node:assert';
 import { mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 import { join, resolve, dirname, basename } from 'node:path';
@@ -100,7 +101,7 @@ export async function acceptanceD(h: HerdrHarness): Promise<void> {
     assert.equal(await readFile(join(handle.localDirectory, 'stderr.log'), 'utf8'), 'separate-error\n');
     await jobs.reconcile(); assert.equal(JSON.parse(await readFile(messages, 'utf8')).length, 1);
     assert.match(basename(handle.remoteDirectory), /^[0-9a-f]{32}$/); assert.equal((await stat(handle.remoteDirectory)).mode & 0o777, 0o700);
-    const marker = JSON.parse((await client.fileRead('remote.invalid' as JobRecord['machine'], join(handle.remoteDirectory, '.spider-settled'))).toString()); assert.equal(marker.jobId, handle.id); assert.equal(marker.version, 1);
+    await expect.poll(async () => JSON.parse((await client.fileRead('remote.invalid' as JobRecord['machine'], join(handle.remoteDirectory, '.spider-settled'))).toString()), { timeout: 10000 }).toMatchObject({ jobId: handle.id, version: 1 });
   } catch (error) {
     await writeFile(join(dirname(h.root), `d-failure-${basename(h.root)}.json`), JSON.stringify({ error: String(error), calls: await h.calls(), remoteCalls: await h.calls('remote') }, null, 2));
     throw error;

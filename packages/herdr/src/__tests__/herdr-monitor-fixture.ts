@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach } from 'vitest';
 import { join } from 'node:path';
-import type { HcClient, HcEvent, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
+import type { CoreId, MachineName, HcClient, HcEvent, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createJobMonitor, type JobMonitor, type JobMonitorOptions, type JobNotice } from '../jobs/monitor.js';
 import { createClientFixture, type ClientFixture } from './testutil.js';
 
@@ -44,7 +44,7 @@ export async function monitorFixture(): Promise<MonitorFixture> {
     emit({ type: 'finished', terminal: address, data: finish, seq: 2 });
   };
   const hc: HcClient = {
-    identity: async () => owner.terminal, caller: async () => owner.terminal, machines: async () => [], setLabels: async () => {},
+    identity: async () => owner.terminal, caller: async () => owner.terminal, machines: async () => [{ id: 'remote-core' as CoreId, name: 'remote.invalid' as MachineName, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }], setLabels: async () => {},
     events: () => { views++; const subscriptions = new Set<(event: HcEvent) => void>(); return {
       ready: Promise.resolve(), lookup: async address => terminals.get(address) ?? null,
       subscribe: listener => { listeners.add(listener); subscriptions.add(listener); return () => { listeners.delete(listener); subscriptions.delete(listener); }; },

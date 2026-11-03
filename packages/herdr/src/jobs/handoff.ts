@@ -176,6 +176,7 @@ export interface JobHandoff {
 export function createJobHandoff(options: {
   root: string; owner: Owner; hc: HcClient;
   adopt(runId: RunId, signal?: AbortSignal, callerCrashed?: boolean): Promise<AdoptedJobMonitor>;
+  releaseSettled?(journal: JobJournal): Promise<void>;
   processIdentity?(pid: number): string | null | Promise<string | null>;
   closeAgentConsoles?: CloseAgentConsoles;
   reportError?(error: unknown): void;
@@ -197,48 +198,62 @@ export function createJobHandoff(options: {
     await store.write(journal); cacheSettled(store.path, journal);
   };
   const lifetime = new AbortController();
-  let reconciliation: Promise<void> | undefined;
+  const running = new Map<RunId, Promise<void>>();
+  const scans = new Set<Promise<void>>();
   const reportedRuns = new Set<RunId>();
   const reportRun = (error: unknown, id: RunId) => { if (!lifetime.signal.aborted && !reportedRuns.has(id)) { reportedRuns.add(id); options.reportError?.(error); } };
+  const reconcileRun = async (journal: JobJournal) => {
+    const child = journal.child!;
+    if (lifetime.signal.aborted) return;
+    if (child.settled) { await options.releaseSettled?.(journal); return; }
+    let monitor = adopted.get(child.id);
+    if (!monitor) {
+      if (!child.ended && await (options.processIdentity ?? asyncProcessStartIdentity)(child.pid) === child.startIdentity) return;
+      if (child.ended || settled(journal)) await closeConsoles(child.id);
+      if (lifetime.signal.aborted) return;
+      if (settled(journal)) { await markSettled(journal); closedConsoles.delete(child.id); return; }
+      monitor = await options.adopt(child.id, lifetime.signal, !child.ended);
+      if (lifetime.signal.aborted) { await monitor.shutdown('reload'); return; }
+      adopted.set(child.id, monitor);
+    }
+    await monitor.reconcile();
+    const latest = await createJobStore(options.root, options.owner.sessionId, child.id).read();
+    if (!closedConsoles.has(child.id)) {
+      if (!await foregroundJobsStopped(latest, options.hc) || lifetime.signal.aborted) return;
+      await closeConsoles(child.id);
+    }
+    if (!settled(latest)) return;
+    await monitor.shutdown('reload');
+    await markSettled(latest);
+    adopted.delete(child.id);
+    closedConsoles.delete(child.id);
+    reportedRuns.delete(child.id);
+  };
   const reconcile = async () => {
     const journals = await readChildJobJournals(options.root, options.owner, reportRun);
-    await Promise.all(journals.map(async journal => {
-      try {
-      const child = journal.child!;
-      if (lifetime.signal.aborted || child.settled && settled(journal)) return;
-      let monitor = adopted.get(child.id);
-      if (!monitor) {
-        if (!child.ended && await (options.processIdentity ?? asyncProcessStartIdentity)(child.pid) === child.startIdentity) return;
-        if (child.ended || settled(journal)) await closeConsoles(child.id);
-        if (lifetime.signal.aborted) return;
-        if (settled(journal)) { await markSettled(journal); closedConsoles.delete(child.id); return; }
-        monitor = await options.adopt(child.id, lifetime.signal, !child.ended);
-        adopted.set(child.id, monitor);
+    let index = 0;
+    await Promise.all(Array.from({ length: Math.min(4, journals.length) }, async () => {
+      while (index < journals.length && !lifetime.signal.aborted) {
+        const journal = journals[index++], id = journal.child!.id;
+        if (running.has(id)) continue;
+        if (running.size >= 4) return;
+        const task = reconcileRun(journal).catch(error => reportRun(error, id)).finally(() => { running.delete(id); });
+        running.set(id, task);
+        await task;
       }
-      await monitor.reconcile();
-      const latest = await createJobStore(options.root, options.owner.sessionId, child.id).read();
-      if (!closedConsoles.has(child.id)) {
-        if (!await foregroundJobsStopped(latest, options.hc) || lifetime.signal.aborted) return;
-        await closeConsoles(child.id);
-      }
-      if (!settled(latest)) return;
-      await monitor.shutdown('reload');
-      await markSettled(latest);
-      adopted.delete(child.id);
-      closedConsoles.delete(child.id);
-      reportedRuns.delete(child.id);
-      } catch (error) { reportRun(error, journal.child!.id); }
     }));
   };
   return {
     reconcile() {
       if (lifetime.signal.aborted) return Promise.resolve();
-      return reconciliation ??= reconcile().finally(() => { reconciliation = undefined; });
+      const task = reconcile().finally(() => { scans.delete(task); });
+      scans.add(task);
+      return task;
     },
     async shutdown(reason) {
       lifetime.abort();
       const existing = new Set(adopted.values()), stopping = [...existing].map(monitor => monitor.shutdown(reason));
-      await reconciliation?.catch(() => {});
+      await Promise.allSettled([...scans]);
       const results = await Promise.allSettled([...stopping, ...[...adopted.values()].filter(monitor => !existing.has(monitor)).map(monitor => monitor.shutdown(reason))]);
       for (const result of results) if (result.status === 'rejected') options.reportError?.(result.reason);
       adopted.clear(); closedConsoles.clear();

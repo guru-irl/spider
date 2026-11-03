@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createJobStore } from '../jobs/store.js';
 import { finish, monitorFixture, on, program } from './herdr-monitor-fixture.js';
@@ -37,13 +37,14 @@ it('child crash cancels foreground with its cause and adopts background only onc
   await child.shutdown('reload');
   const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
   const store = createJobStore(h.f.root, h.owner.sessionId, 'crashed-child' as never);
+  await vi.waitFor(async () => expect((await store.read()).jobs.find(job => job.id === foreground.id)?.settledMarked).toBe(true), { timeout: 5000 });
   const cancelled = (await store.read()).jobs.find(job => job.id === foreground.id)!;
   expect(h.kills).toEqual([foreground.address]);
   expect(cancelled.phase).toMatchObject({ kind: 'finished', result: { reason: 'cancelled' } });
   expect(cancelled.output?.summary).toContain('caller crashed');
   expect(cancelled.settledMarked).toBe(true);
   h.complete(background.address); await parent.reconcile(); await parent.reconcile();
-  expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1);
+  await vi.waitFor(() => expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1), { timeout: 5000 });
   expect(h.notices.filter(notice => notice.details.jobId === foreground.id).length).toBeLessThanOrEqual(1);
   await parent.shutdown('reload'); const reloaded = h.monitor(); await reloaded.activate(h.owner);
   expect(h.kills).toEqual([foreground.address]);
@@ -67,7 +68,7 @@ it('session crash cancels its foreground but adopts background before detach', a
   expect(h.kills).toEqual([foreground.address]);
   const next = h.monitor(); await next.activate(h.owner);
   h.complete(background.address); await next.reconcile(); await next.reconcile();
-  expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1);
+  await vi.waitFor(() => expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1), { timeout: 5000 });
   expect(h.errors).toEqual([]);
 });
 
@@ -78,8 +79,8 @@ it('a failed crash cancellation is retried rather than marked cancelled while st
   const kill = h.hc.kill; let attempts = 0;
   h.hc.kill = async address => { if (++attempts === 1) throw new Error('transient kill failure'); await kill(address); };
   const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
-  expect(h.terminals.has(foreground.address)).toBe(false);
-  expect((await createJobStore(h.f.root, h.owner.sessionId, 'retry-child' as never).read()).jobs[0]).toMatchObject({ phase: { kind: 'finished', result: { reason: 'cancelled' } }, terminalReleased: true });
+  await vi.waitFor(() => expect(h.terminals.has(foreground.address)).toBe(false), { timeout: 7000 });
+  await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId, 'retry-child' as never).read()).jobs[0]).toMatchObject({ phase: { kind: 'finished', result: { reason: 'cancelled' } }, terminalReleased: true }), { timeout: 5000 });
   expect(attempts).toBe(2);
   expect(h.errors).toHaveLength(1);
 });
@@ -91,6 +92,7 @@ it('a lost kill reply still records caller-crash cancellation after retry', asyn
   const kill = h.hc.kill;
   h.hc.kill = async address => { await kill(address); throw new Error('lost kill reply'); };
   const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
+  await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId, 'lost-kill-child' as never).read()).jobs[0].phase).toMatchObject({ kind: 'finished', result: { reason: 'cancelled' } }), { timeout: 5000 });
   const journal = await createJobStore(h.f.root, h.owner.sessionId, 'lost-kill-child' as never).read();
   expect(journal.jobs[0].phase).toMatchObject({ kind: 'finished', result: { reason: 'cancelled' } });
   expect(h.kills).toEqual([foreground.address]);
@@ -111,6 +113,7 @@ it('a clean child end keeps its original signal result rather than crash cancell
   const child = h.monitor({ child: { id: 'clean-child' as never, pid: process.pid, startIdentity: 'previous-process' } });
   await child.start(program, h.owner, on, {}); await child.shutdown('quit');
   const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
+  await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId, 'clean-child' as never).read()).jobs[0].phase).toMatchObject({ kind: 'finished', result: { reason: 'killed' } }), { timeout: 5000 });
   const journal = await createJobStore(h.f.root, h.owner.sessionId, 'clean-child' as never).read();
   expect(journal.jobs[0].phase).toMatchObject({ kind: 'finished', result: { reason: 'killed' } });
 });

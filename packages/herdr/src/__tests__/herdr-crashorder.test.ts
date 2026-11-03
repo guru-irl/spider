@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { createJobStore } from '../jobs/store.js';
 import { finish, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 import type { JobMonitorOptions } from '../jobs/monitor.js';
@@ -32,15 +32,15 @@ it('keeps a crashed child console open through failed cancellation and an unconf
   expect(closed).toEqual([]);
   await parent.reconcile();
   // A successful signal acknowledgement is not proof the process has stopped.
-  expect(attempts).toBe(2);
+  await vi.waitFor(() => expect(attempts).toBe(2), { timeout: 5000 });
   expect(closed).toEqual([]);
   expect(h.terminals.get(foreground.address)?.state).toBe('live');
   h.complete(foreground.address); await parent.reconcile(); await parent.reconcile();
-  expect(closed).toEqual(['crashed-order']);
+  await vi.waitFor(() => expect(closed).toEqual(['crashed-order']), { timeout: 5000 });
   expect(h.terminals.get(background.address)?.state).toBe('live');
   h.complete(background.address); await parent.reconcile(); await parent.reconcile();
-  expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1);
-  expect((await createJobStore(h.f.root, h.owner.sessionId, 'crashed-order' as never).read()).child?.settled).toBe(true);
+  await vi.waitFor(() => expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1), { timeout: 5000 });
+  await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId, 'crashed-order' as never).read()).child?.settled).toBe(true), { timeout: 7000 });
 });
 
 it('an undiscovered foreground launch holds console cleanup until its labelled terminal is recovered', async () => {
@@ -54,8 +54,9 @@ it('an undiscovered foreground launch holds console cleanup until its labelled t
   h.hc.kill = async address => { h.kills.push(address); h.complete(address); };
   const parent = h.monitor(); await parent.activate(h.owner); await parent.reconcile();
   expect(closed).toEqual([]);
+  await vi.waitFor(async () => expect((await store.read()).writer?.crashJobs).toContain(foreground.id), { timeout: 5000 });
   h.terminals.set(foreground.address, terminal); h.emit({ type: 'created', terminal: foreground.address, seq: 3, data: terminal });
   await parent.reconcile();
-  expect(h.kills).toEqual([foreground.address]);
-  expect(closed).toEqual(['lost-order']);
+  await vi.waitFor(() => expect(h.kills).toEqual([foreground.address]), { timeout: 5000 });
+  await vi.waitFor(() => expect(closed).toEqual(['lost-order']), { timeout: 5000 });
 });

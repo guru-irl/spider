@@ -28,18 +28,19 @@ declare namespace Fixed {
     maxReplyBytes?: number;
   }
   export interface CoreIdentity { coreId: CoreId; socket: string; sessionNamespace: string }
+  export interface HcCallOptions { signal?: AbortSignal; timeoutMs?: number }
   export interface HcClient {
     identity(): Promise<CoreIdentity>;
     caller(env: Readonly<NodeJS.ProcessEnv>): Promise<TerminalIdentity>;
-    machines(): Promise<MachineSummary[]>;
+    machines(options?: HcCallOptions): Promise<MachineSummary[]>;
     run(request: HcRunRequest): Promise<TerminalHandle>;
-    get(address: TerminalAddress): Promise<TerminalSummary>;
+    get(address: TerminalAddress, options?: HcCallOptions): Promise<TerminalSummary>;
     read(address: TerminalAddress, options: { lines: number }): Promise<string>;
     kill(address: TerminalAddress): Promise<void>;
-    rm(address: TerminalAddress): Promise<void>;
+    rm(address: TerminalAddress, options?: HcCallOptions): Promise<void>;
     setLabels(address: TerminalAddress, labels: Readonly<Record<string, string | null>>): Promise<void>;
     fileRead(on: MachineName, path: string): Promise<Buffer>;
-    fileWrite(on: MachineName, path: string, bytes: Buffer): Promise<void>;
+    fileWrite(on: MachineName, path: string, bytes: Buffer, options?: HcCallOptions): Promise<void>;
     events(): HcEventStream;
   }
   export interface AppClient {
@@ -158,6 +159,7 @@ export type FixedContractChecks = [
   Assert<Equal<Actual.TestIsolationProof, Fixed.TestIsolationProof>>,
   Assert<Equal<Actual.HcClientOptions, Fixed.HcClientOptions>>,
   Assert<Equal<Actual.CoreIdentity, Fixed.CoreIdentity>>,
+  Assert<Equal<Actual.HcCallOptions, Fixed.HcCallOptions>>,
   Assert<Equal<Actual.HcClient, Fixed.HcClient>>,
   Assert<Equal<Omit<Actual.AppClient, 'tabTerminals'>, Fixed.AppClient>>,
   Assert<Equal<Actual.AppClient['tabTerminals'], (placement: Pick<Actual.OwnerPlacement, 'space' | 'tab'>) => Promise<readonly Actual.TerminalAddress[]>>>,

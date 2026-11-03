@@ -5,6 +5,8 @@ import { PassThrough } from 'node:stream';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { invokeCli as invokeCore } from '../client/hc.js';
+import { createClientFixture } from './testutil.js';
 import { invokeCli } from '../client/cli-transport.js';
 import { HerdrError } from '../client/parse.js';
 
@@ -116,4 +118,12 @@ describe('CLI request deadlines', () => {
     expect(vi.getTimerCount()).toBe(0);
     child.emit('close', null, 'SIGKILL');
   });
+});
+
+it('core calls honor cleanup deadlines and reap the CLI instead of leaving it running', async () => {
+  const core = await createClientFixture(), f = fixture('slow');
+  try {
+    await expect(invokeCore(process.execPath, f.argv, { ...f.env, ...core.localEnv }, undefined, undefined, { timeoutMs: 100 })).rejects.toMatchObject({ code: 'cli-timeout' });
+    expect(alive(Number(readFileSync(f.pidFile, 'utf8')))).toBe(false);
+  } finally { await core.close(); }
 });

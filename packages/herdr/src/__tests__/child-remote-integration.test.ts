@@ -84,13 +84,15 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     child.stdin!.write(JSON.stringify({ id: 'foreground', action: 'exec', on: 'remote.invalid', language: 'javascript', code: "console.log('returned to child');console.error('child diagnostic');process.exitCode=23" }) + '\n');
     const foreground = await message(m => m.id === 'foreground');
     if (monitorFailure) {
-      expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringMatching(/Herdr remote execution is unavailable in this subagent.*Herdr job monitor failed.*Expected an integer/) });
+      expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringMatching(/Remote execution is unavailable in this subagent.*job monitor failed because a reply could not be read/) });
       return;
     }
     if (legacyChildPolicy) { expect(foreground).toMatchObject({ type: 'refused', reason: expect.stringContaining('Herdr is off in this session') }); return; }
     expect(foreground.type, foreground.error).toBe('result'); expect(foreground.result.details).toMatchObject({ stdout: 'returned to child\n', stderr: 'child diagnostic\n', exitCode: 23 });
     child.stdin!.write(JSON.stringify({ id: 'managed-ssh', action: 'bash', command: '/usr/bin/ssh managed.invalid' }) + '\n');
     const ssh = await message(m => m.id === 'managed-ssh'); expect(ssh).toMatchObject({ type: 'refused', reason: expect.stringContaining('on:remote.invalid') });
+    const childStore = createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId);
+    await expect.poll(async () => (await childStore.read()).jobs[0]?.terminalReleased, { timeout: 7000 }).toBe(true);
     await expect(h.hc.get(foreground.result.details.remote.address)).rejects.toMatchObject({ code: 'not_found' });
     const journal = await createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId).read();
     expect(journal.jobs[0]).toMatchObject({ owner: { sessionId: h.owner!.sessionId, terminal: { terminalId: h.owner!.terminal.terminalId } }, runId: 'child-run', kind: 'exec', terminalReleased: true });
@@ -106,15 +108,17 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     // A parent reload must leave a live child writer and its payload untouched.
     await monitor.shutdown('reload'); monitor = parentMonitor(); await monitor.activate({ ...h.owner!, generation: 'reloaded-parent' as never });
     expect(notices).toEqual([]); child.kill('SIGKILL'); await exit; await monitor.reconcile();
-    await expect(h.hc.get(consoleAddress)).rejects.toMatchObject({ code: 'not_found' });
+    await vi.waitFor(async () => { await expect(h.hc.get(consoleAddress)).rejects.toMatchObject({ code: 'not_found' }); }, { timeout: 7000 });
     const done = new Promise<void>((resolve, reject) => { const deadline = Date.now() + 15000; const timer = setInterval(() => { void monitor!.reconcile().then(() => { if (notices.length) { clearInterval(timer); resolve(); } else if (Date.now() > deadline) { clearInterval(timer); reject(new Error('Handoff completion timeout')); } }, error => { clearInterval(timer); reject(error); }); }, 100); });
     await done; await monitor.reconcile();
     expect(notices.map(n => ({ runId: n.details.runId, jobId: n.details.jobId, exitCode: n.details.exitCode }))).toEqual([{ runId: 'child-run', jobId: background.result.details.remote.jobId, exitCode: 29 }]);
     expect(await readFile(join(background.result.details.backgroundJob.dir, 'stdout.log'), 'utf8')).toBe('survived child\n');
+    await expect.poll(async () => (await childStore.read()).jobs.find(job => job.id === background.result.details.remote.jobId), { timeout: 5000 }).toMatchObject({ settledMarked: true, notice: 'submitted', noticeDelivered: true });
     const adopted = (await createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId).read()).jobs.find(job => job.id === background.result.details.remote.jobId)!;
     expect(adopted).toMatchObject({ settledMarked: true, notice: 'submitted', noticeDelivered: true });
     expect(await h.hc.get(adopted.phase.kind === 'finished' ? adopted.phase.address : '' as TerminalAddress)).toMatchObject({ state: 'finished' });
     observed.push(adopted.id); await monitor.reconcile();
+    await expect.poll(async () => (await childStore.read()).child?.settled, { timeout: 7000 }).toBe(true);
     await expect(h.hc.get(background.result.details.remote.address)).rejects.toMatchObject({ code: 'not_found' });
     const runStore = createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId);
     expect((await runStore.read()).child).toMatchObject({ ended: true, settled: true });
@@ -239,6 +243,6 @@ it.each(['activation', 'periodic'] as const)('an unreachable ended child discove
     const launched = await within(starting, trigger === 'periodic' ? 5000 : 1000, 'New remote launch waited behind an unreachable child');
     expect(launched.address).toBe('healthy.invalid/t3');
     const healthyStore = createJobStore(f.root, owner.sessionId, 'b-healthy' as RunId);
-    await expect.poll(async () => (await healthyStore.read()).child?.settled, { timeout: 2000 }).toBe(true);
+    await expect.poll(async () => (await healthyStore.read()).child?.settled, { timeout: 5000 }).toBe(true);
   } finally { unblock(); await activation?.catch(() => {}); await starting?.catch(() => {}); await parent.shutdown('reload'); for (const child of children) await child.shutdown('reload'); await f.close(); }
 }, 15000);

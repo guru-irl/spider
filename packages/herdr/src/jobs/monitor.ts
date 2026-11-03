@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { createCleanupSweep, type CleanupSweep } from './cleanup.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { releaseRemoteJob } from './observer.js';
@@ -61,7 +62,7 @@ export interface JobMonitor extends JobPort {
   shutdown(reason: 'reload' | 'quit'): Promise<void>;
 }
 /** One writer and one event subscription per owning pi activation. No payload retry path exists. */
-export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
+export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: CleanupSweep): JobMonitor {
   let owner: Owner | null = null;
   let store: ReturnType<typeof createJobStore>;
   let journal: JobJournal;
@@ -70,6 +71,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
   let stream: ReturnType<HcClient['events']> | undefined;
   let unsubscribe: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let activated = false;
   let closed = false;
   let stopping = false;
   let queue: Promise<unknown> = Promise.resolve();
@@ -136,31 +138,53 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     if (observer) { try { await observer.release(); } finally { observers.delete(job.id); } }
   }
   function holdFinal(job: JournalJob): void {
-    if (holds.has(job.id) || !observers.has(job.id)) return;
-    holds.set(job.id, setTimeout(() => { holds.delete(job.id); void serial(() => release(job)).catch(report); }, 2000));
+    if (holds.has(job.id)) return;
+    holds.set(job.id, setTimeout(() => { holds.delete(job.id); queueRelease(job); }, 2000));
   }
-  async function releaseSettledTerminal(job: JournalJob): Promise<void> {
-    if (job.terminalReleased || !job.settledMarked || job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.evidenceConflict) return;
+  const cleanup = sharedCleanup ?? createCleanupSweep(options.clock, error => { if (!lifetime.signal.aborted) options.reportError?.(error); });
+  const releaseSkipped = new Set<JobId>();
+  const cleanupOptions = () => ({ signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(1000)]), timeoutMs: 1000 });
+  const cleanupCall = <T>(operation: () => Promise<T>) => {
+    if (lifetime.signal.aborted) return Promise.reject(new HerdrError('disposed', 'Job monitor is stopping'));
+    return waitForEvents(operation(), undefined, 'Job terminal cleanup timed out', false, 5000, 'cleanup-timeout');
+  };
+  async function confirmMissing(address: TerminalAddress): Promise<void> {
+    if (!address.includes('/')) return;
+    const name = address.slice(0, address.lastIndexOf('/'));
+    const machines = await cleanupCall(() => options.hc.machines(cleanupOptions()));
+    if (!machines.some(machine => machine.state === 'connected' && (machine.name === name || machine.aliases.some(alias => alias === name))))
+      throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires a connected machine');
+  }
+  async function releaseSettledTerminal(job: JournalJob, save: () => Promise<void>): Promise<void> {
+    if (job.terminalReleased || releaseSkipped.has(job.id) || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict) return;
+    if (!job.settledMarked) {
+      const marker = Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: job.phase.result.finishedAt }));
+      await cleanupCall(() => options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), marker, cleanupOptions()));
+      if (lifetime.signal.aborted) return;
+      job.settledMarked = true; await save();
+    }
+    if (job.notice !== 'observed' || holds.has(job.id)) return;
     const address = job.phase.address;
     try {
-      const terminal = await waitForEvents(options.hc.get(address));
+      const terminal = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
       const labels = terminal.labels;
-      if (terminal.state !== 'finished' || labels[HERDR_LABELS.job] !== job.id || labels[HERDR_LABELS.session] !== job.owner.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== job.owner.terminal.terminalId || labels[HERDR_LABELS.kind] !== job.kind || job.runId && labels[HERDR_LABELS.run] !== job.runId) return;
-      await release(job);
-      await options.hc.rm(address);
+      if (terminal.state !== 'finished' || labels[HERDR_LABELS.job] !== job.id || labels[HERDR_LABELS.session] !== job.owner.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== job.owner.terminal.terminalId || labels[HERDR_LABELS.kind] !== job.kind || (labels[HERDR_LABELS.run] ?? undefined) !== job.runId) { releaseSkipped.add(job.id); return; }
+      if (lifetime.signal.aborted) return;
+      await cleanupCall(() => release(job));
+      await cleanupCall(() => options.hc.rm(address, cleanupOptions()));
     } catch (error) {
       if (!(error && typeof error === 'object' && 'code' in error && error.code === 'not_found')) throw error;
+      await confirmMissing(address);
     }
-    job.terminalReleased = true; await persist();
+    if (!lifetime.signal.aborted) { job.terminalReleased = true; await save(); }
   }
-  async function markSettled(job: JournalJob): Promise<void> {
-    if (job.phase.kind !== 'finished' || !job.output?.complete || (!job.noticeDelivered && !job.terminalExpired) || (!job.originalFinish && !job.terminalExpired) || job.evidenceConflict) return;
-    if (!job.settledMarked) {
-      await options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: job.phase.result.finishedAt })));
-      job.settledMarked = true; await persist();
-    }
-    await releaseSettledTerminal(job);
+  const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
+  function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
+    if (job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
+    cleanup.enqueue(releaseKey(job), () => releaseSettledTerminal(job, save));
+    scheduleMaintenance();
   }
+  async function markSettled(job: JournalJob): Promise<void> { queueRelease(job); }
   async function deliver(job: JournalJob): Promise<void> {
     if (stopping || closed || job.noticeMode !== 'async' || job.notice !== 'pending' || job.phase.kind !== 'finished' || !job.output) return;
     const result = job.phase.result;
@@ -238,7 +262,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
   }
   async function reconcileJob(job: JournalJob, signal?: AbortSignal): Promise<void> {
     if (job.phase.kind === 'launch-failed') return;
-    if (job.settledMarked) { await deliver(job); await releaseSettledTerminal(job); return; }
+    if (job.settledMarked || job.phase.kind === 'finished' && job.output?.complete) { await deliver(job); queueRelease(job); return; }
     let address = addressOf(job);
     if (!address && discovered.has(job.id)) { address = discovered.get(job.id)!; job.phase = { kind: 'disconnected', address, lastSeq: 0 }; await persist(); }
     if (address) {
@@ -275,10 +299,14 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     for (const job of [...journal.jobs]) {
       if (job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.callerOwned || job.detached || options.clock() - job.updatedAt <= 7 * 86400000) continue;
       if (job.localDirectory !== join(store.directory, 'logs', job.id)) continue;
-      await releaseSettledTerminal(job);
-      if (!job.terminalReleased) continue;
-      await release(job); await ensurePrivateDirectory(job.localDirectory); await rm(job.localDirectory, { recursive: true });
-      journal.jobs = journal.jobs.filter(j => j.id !== job.id); await persist();
+      cleanup.enqueue(`${releaseKey(job)}/prune`, async () => {
+        if (stopping || closed) return;
+        await cleanupCall(() => release(job)); await ensurePrivateDirectory(job.localDirectory);
+        if (stopping || closed) return;
+        await rm(job.localDirectory, { recursive: true });
+        await serial(async () => { journal.jobs = journal.jobs.filter(j => j.id !== job.id); await persist(); });
+        cleanup.cancel(releaseKey(job));
+      });
     }
   }
   async function activate(nextOwner: Owner, signal?: AbortSignal): Promise<void> {
@@ -296,7 +324,21 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     await persist();
     if (options.child) journal.child = { ...options.child, ended: false };
     if (!options.child && !options.adoptedRunId) handoff = createJobHandoff({ root: options.journalRoot, owner: nextOwner, hc: options.hc, closeAgentConsoles: options.closeAgentConsoles, reportError: report,
-      adopt: async (runId, signal, callerCrashed) => { const monitor = createJobMonitor({ ...options, adoptedRunId: runId, callerCrashed }); try { await monitor.activate(nextOwner, signal); return monitor; } catch (error) { await monitor.shutdown('reload'); throw error; } },
+      releaseSettled: async childJournal => {
+        const childStore = createJobStore(options.journalRoot, nextOwner.sessionId, childJournal.child!.id);
+        for (const job of childJournal.jobs) {
+          if (job.phase.kind !== 'finished' || !job.output?.complete) continue;
+          // A settled child cannot consume another notice or write its journal again.
+          job.notice = 'observed'; job.noticeDelivered = true;
+          queueRelease(job, () => serial(async () => {
+            const latest = await childStore.read(), target = latest.jobs.find(value => value.id === job.id);
+            if (!target) return;
+            target.notice = 'observed'; target.noticeDelivered = true; target.settledMarked = job.settledMarked; target.terminalReleased = job.terminalReleased;
+            latest.revision++; await childStore.write(latest);
+          }));
+        }
+      },
+      adopt: async (runId, signal, callerCrashed) => { const monitor = createJobMonitor({ ...options, adoptedRunId: runId, callerCrashed }, cleanup); try { await monitor.activate(nextOwner, signal); return monitor; } catch (error) { await monitor.shutdown('reload'); throw error; } },
     });
     const identity = await options.hc.identity();
     if (identity.coreId !== nextOwner.terminal.coreId || identity.socket !== nextOwner.terminal.socket || identity.sessionNamespace !== nextOwner.terminal.sessionNamespace) throw new HerdrError('job-owner-mismatch', 'Owning terminal is on another core');
@@ -328,24 +370,32 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
       }).catch(report);
     });
     await waitForEvents(stream.ready, signal);
-    if (options.adoptedRunId) for (const job of journal.jobs) if (job.callerOwned) job.detached = true;
+    if (options.adoptedRunId) for (const job of journal.jobs) { if (job.callerOwned) job.detached = true; if (job.notice === 'submitted') { job.notice = 'observed'; job.noticeDelivered = true; } }
     // A resumed activation has no surviving tool waiters. Tool-consumed results were already marked observed.
     for (const job of journal.jobs) if (job.noticeMode === 'tool' && job.notice !== 'observed') job.noticeMode = 'async';
     await reconcileAll(signal);
     if (!options.adoptedRunId) { timer = setInterval(() => { void reconcile().catch(report); }, 2000); timer.unref(); }
   }
+  let maintenance: ReturnType<typeof setTimeout> | undefined;
+  function scheduleMaintenance(): void {
+    if (!activated || sharedCleanup || stopping || closed || maintenance || !handoff && journal.jobs.length === 0) return;
+    maintenance = setTimeout(() => { maintenance = undefined; if (stopping || closed) return; cleanup.start(); void handoff?.reconcile().catch(report); }, 0);
+    maintenance.unref();
+  }
   async function drainCollections(): Promise<void> { await Promise.all([...collections.values()].map(({ task, firstIncomplete }) => Promise.race([task, firstIncomplete]))); }
   function reconcile(): Promise<void> {
-    return reconciliation ??= (async () => { await serial(() => reconcileAll()); await drainCollections(); await handoff?.reconcile().catch(report); })()
+    return reconciliation ??= (async () => { await serial(() => reconcileAll()); await drainCollections(); scheduleMaintenance(); })()
       .finally(() => { reconciliation = undefined; });
   }
   function shutdown(reason: 'reload' | 'quit'): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
-    stopping = true; lifetime.abort();
+    stopping = true; lifetime.abort(); if (maintenance) clearTimeout(maintenance);
+    const handoffShutdown = handoff?.shutdown(reason);
     if (timer) clearInterval(timer); for (const hold of holds.values()) clearTimeout(hold); holds.clear(); unsubscribe?.();
     return shutdownPromise = (async () => {
       // Abort event waits before draining the writer, rather than queue shutdown
       // behind a reconcile waiting for a core that nobody is allowed to start.
+      if (!sharedCleanup) await cleanup.dispose();
       await queue;
       await drainCollections().catch(report);
       await queue;
@@ -360,7 +410,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
           if (address && !job.detached && !(options.child && job.callerOwned) && !job.handoffCancelled) await attempt(() => options.hc.kill(address));
         }
         for (const job of journal?.jobs ?? []) await attempt(() => release(job));
-        await attempt(() => handoff?.shutdown(reason));
+        await attempt(() => handoffShutdown);
         if (journal?.child && options.child && reason !== 'reload') journal.child.ended = true;
         if (journal?.writer && !options.adoptedRunId) journal.writer.shutdown = reason;
         if (owner) await attempt(persist);
@@ -368,10 +418,10 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     })();
   }
   return {
-    activate: async (nextOwner, signal) => { await serial(() => activate(nextOwner, signal)); await drainCollections(); await handoff?.reconcile().catch(report); },
+    activate: async (nextOwner, signal) => { await serial(() => activate(nextOwner, signal)); await drainCollections(); activated = true; scheduleMaintenance(); },
     reconcile,
     start: async (program, nextOwner, on, startOptions) => {
-      if (!owner) await serial(() => activate(nextOwner, startOptions.signal));
+      if (!owner) { await serial(() => activate(nextOwner, startOptions.signal)); activated = true; scheduleMaintenance(); }
       const job = await serial(async () => {
         if (closed || stopping) throw new HerdrError('disposed', 'Job monitor is stopping');
         if (!sameOwner(nextOwner)) throw new HerdrError('job-owner-mismatch', 'Cannot launch for a foreign owner');

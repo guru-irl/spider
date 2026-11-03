@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { access, readFile, symlink, unlink, writeFile, stat } from 'node:fs/promises';
 import { createJobStore } from '../jobs/store.js';
 import { registerHerdrJobs } from '../jobs/register.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { JobMonitor } from '../jobs/monitor.js';
 import { join } from 'node:path';
-import type { HcEvent, HcEventStream, HcClient, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
+import type { CoreId, MachineName, HcEvent, HcEventStream, HcClient, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createClientFixture } from './testutil.js';
 import { createJobMonitor, type JobMonitorOptions, type JobNotice, type JobOutput } from '../jobs/monitor.js';
 
@@ -29,7 +29,7 @@ async function fixture() {
   let now = 1000;
   const emit = (e: HcEvent) => listener?.(e);
   const hc: HcClient = {
-    setLabels: async () => {}, identity: async () => owner.terminal, caller: async () => owner.terminal, machines: async () => [], events: () => stream,
+    setLabels: async () => {}, identity: async () => owner.terminal, caller: async () => owner.terminal, machines: async () => [{ id: 'remote-core' as CoreId, name: 'remote.invalid' as MachineName, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }], events: () => stream,
     run: async request => {
       launches.push(request);
       const address = 'remote.invalid/t2' as TerminalAddress;
@@ -319,14 +319,14 @@ describe('in-process jobs', () => {
   it('keeps background, incomplete and unconsumed directories beyond seven days', async () => {
     const h = await fixture(); const jobs = h.monitor(); const handle = await jobs.start(program, h.owner, 'remote.invalid' as never, { background: true });
     await jobs.consumeNotice(handle.id); h.setNow(1000 + 8 * 86400000); await jobs.reconcile();
-    expect((await stat(handle.localDirectory)).isDirectory()).toBe(true); expect(h.removed).toEqual([handle.address]);
+    expect((await stat(handle.localDirectory)).isDirectory()).toBe(true); await vi.waitFor(() => expect(h.removed).toEqual([handle.address]), { timeout: 3500 });
   });
 
   it('writes a remote settled marker only after known completion and notice consumption', async () => {
     const h = await fixture(); const writes: string[] = []; h.options.hc.fileWrite = async (_on, path) => { if (path.endsWith('/.spider-settled')) writes.push(path); };
     const jobs = h.monitor(); const handle = await jobs.start(program, h.owner, 'remote.invalid' as never, {});
     await jobs.reconcile(); expect(writes).toEqual([]);
-    await jobs.consumeNotice(handle.id); expect(writes).toEqual([join(handle.remoteDirectory, '.spider-settled')]);
+    await jobs.consumeNotice(handle.id); await vi.waitFor(() => expect(writes).toEqual([join(handle.remoteDirectory, '.spider-settled')]));
   });
 
   it('a receipt cannot settle a still-live retained original terminal', async () => {
@@ -348,7 +348,7 @@ describe('in-process jobs', () => {
     const h = await fixture(); h.setEarly(false); const writes: string[] = []; h.options.hc.fileWrite = async (_on, path) => { if (path.endsWith('/.spider-settled')) writes.push(path); };
     const jobs = h.monitor(); const handle = await jobs.start(program, h.owner, 'remote.invalid' as never, {}); h.terminals.clear();
     h.setOutput({ complete: true, summary: 'complete logs', receipt: { jobId: handle.id, nonce: 'private-nonce', finish } }); await jobs.reconcile();
-    expect(writes).toEqual([join(handle.remoteDirectory, '.spider-settled')]); expect(h.notices).toEqual([]);
+    await vi.waitFor(() => expect(writes).toEqual([join(handle.remoteDirectory, '.spider-settled')])); expect(h.notices).toEqual([]);
   });
 
   it('a live or unknown job never gets a remote settled marker across reconcile', async () => {
@@ -362,13 +362,13 @@ describe('in-process jobs', () => {
     const h = await fixture(); const writes: string[] = []; h.options.hc.fileWrite = async (_on, path) => { if (path.endsWith('/.spider-settled')) writes.push(path); };
     const jobs = h.monitor(); const handle = await jobs.start(program, h.owner, 'remote.invalid' as never, {});
     h.setSubmitFailure(); await expect(jobs.detach(handle.id)).rejects.toThrow(); await jobs.reconcile(); expect(writes).toEqual([]);
-    h.observed.add(handle.id); await jobs.reconcile(); expect(writes).toEqual([join(handle.remoteDirectory, '.spider-settled')]);
+    h.observed.add(handle.id); await jobs.reconcile(); await vi.waitFor(() => expect(writes).toEqual([join(handle.remoteDirectory, '.spider-settled')]));
   });
 
   it('cleans only consumed complete foreground logs after seven days', async () => {
     const h = await fixture(); const jobs = h.monitor(); const handle = await jobs.start(program, h.owner, 'remote.invalid' as never, {});
-    await jobs.consumeNotice(handle.id); h.setNow(1000 + 7 * 86400000 + 1); await jobs.reconcile();
-    await expect(access(handle.localDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(h.removed).toEqual([handle.address]);
+    await jobs.consumeNotice(handle.id); await vi.waitFor(() => expect(h.removed).toEqual([handle.address]), { timeout: 3500 }); h.setNow(1000 + 7 * 86400000 + 1); await jobs.reconcile();
+    await vi.waitFor(async () => { await expect(access(handle.localDirectory)).rejects.toMatchObject({ code: 'ENOENT' }); });
+    await vi.waitFor(() => expect(h.removed).toEqual([handle.address]), { timeout: 3500 });
   });
 });

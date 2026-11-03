@@ -27,8 +27,9 @@ it('an ended-run cleanup failure does not disable parent activation and is retri
   let attempts = 0;
   const parent = h.monitor({ closeAgentConsoles: async () => { if (++attempts === 1) throw new Error('transient console failure'); } });
   await expect(parent.activate(h.owner)).resolves.toBeUndefined();
+  await vi.waitFor(() => expect(attempts).toBe(1));
   await parent.reconcile();
-  expect(attempts).toBe(2);
+  await vi.waitFor(() => expect(attempts).toBe(2));
   expect(h.kills).toEqual([]);
   expect(h.errors).toHaveLength(1);
 });

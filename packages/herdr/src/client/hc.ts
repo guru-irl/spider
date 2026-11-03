@@ -5,17 +5,17 @@ import childProcess from 'node:child_process';
 import { requireCoreAvailable } from './liveness.js';
 import { realpathSync, existsSync } from 'node:fs';
 import { resolve, relative, dirname, basename, join, isAbsolute, sep } from 'node:path';
-import type { HcClient, HcClientOptions, TerminalId, HcEventStream, Disposable, MachineName, MachineSummary, CoreId } from '../contracts.js';
+import type { HcClient, HcClientOptions, HcCallOptions, TerminalId, HcEventStream, Disposable, MachineName, MachineSummary, CoreId } from '../contracts.js';
 import { HERDR_LABELS } from '../contracts.js';
 import { createHcEventStream } from './events.js';
 import { HerdrError, parseCore, parseTerminal, object, text, selectedSocket } from './parse.js';
 
-export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes?: number, input?: Buffer): Promise<unknown> {
+export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes?: number, input?: Buffer, callOptions: HcCallOptions = {}): Promise<unknown> {
   const environment = Object.freeze({ ...env, HC_SOCKET: selectedSocket(env) });
-  await requireCoreAvailable(environment);
+  await requireCoreAvailable(environment, callOptions.signal);
   // hc has no no-autostart mode. Keep the unavoidable check-then-call race to
   // this immediate spawn; a core exiting in that gap can still be auto-started.
-  return invokeTransport(binary, argv, environment, maxBytes, input);
+  return invokeTransport(binary, argv, environment, maxBytes, input, callOptions);
 }
 function physicalPath(path: string): string {
   const tail: string[] = []; let parent = resolve(path);
@@ -56,22 +56,22 @@ export async function processContainsCaller(pid: unknown, env: Readonly<NodeJS.P
 export function createHcClient(options: HcClientOptions): HcClient & Disposable {
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
   guardTestSocket({ ...options, env });
-  const call = (argv: readonly string[], input?: Buffer) => invokeCli(options.binary, argv, env, options.maxReplyBytes, input);
+  const call = (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions);
   let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
   const identity: HcClient['identity'] = async () => {
     const core = parseCore(await call(['server', 'status', '--json']), env);
     if (selectedCore !== undefined && selectedCore !== core.coreId) throw new HerdrError('core-mismatch', "this session's Herdr terminal belongs to a core that is no longer running; start a new session in Herdr", core);
     selectedCore = core.coreId; return core;
   };
-  const get: HcClient['get'] = async address => {
-    const terminal = parseTerminal(await call(['get', address, '--json']));
+  const get: HcClient['get'] = async (address, callOptions) => {
+    const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
     if (terminal.address !== address) throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address');
     return terminal;
   };
   let eventStream: HcEventStream | undefined;
   let disposal: Promise<void> | undefined;
-  const machines: HcClient['machines'] = async () => {
-    const rows = object(await call(['machine', 'ls', '--json'])).machines;
+  const machines: HcClient['machines'] = async callOptions => {
+    const rows = object(await call(['machine', 'ls', '--json'], undefined, callOptions)).machines;
     if (!Array.isArray(rows)) throw new HerdrError('invalid-reply', 'Expected machine list');
     return rows.map(value => {
       const m = object(value); const name = text(m.name);
@@ -81,7 +81,8 @@ export function createHcClient(options: HcClientOptions): HcClient & Disposable 
     });
   };
   const machineValidations = new Map<MachineName, { promise: Promise<MachineSummary>; expiresAt: number | null }>();
-  const machine = (on: MachineName): Promise<MachineSummary> => {
+  const machine = (on: MachineName, callOptions?: HcCallOptions): Promise<MachineSummary> => {
+    if (callOptions) return machines(callOptions).then(rows => { const match = rows.find(row => row.name === on); if (!match) throw new HerdrError('machine-not-found', 'No configured machine matches on'); return match; });
     const now = Date.now(), cached = machineValidations.get(on);
     if (cached && (cached.expiresAt === null || now < cached.expiresAt)) return cached.promise;
     for (const [name, entry] of machineValidations) if (entry.expiresAt !== null && now >= entry.expiresAt) machineValidations.delete(name);
@@ -128,7 +129,7 @@ export function createHcClient(options: HcClientOptions): HcClient & Disposable 
       return { address: text(object(await call(argv)).address) as import('../contracts.js').TerminalAddress, coreId };
     },
     kill: async address => { await call(['kill', address, '--json']); },
-    rm: async address => { await call(['rm', address, '--json']); },
+    rm: async (address, callOptions) => { await call(['rm', address, '--json'], undefined, callOptions); },
     setLabels: async (address, labels) => {
       const entries = Object.entries(labels);
       const allowedKeys: readonly string[] = Object.values(HERDR_LABELS);
@@ -137,7 +138,7 @@ export function createHcClient(options: HcClientOptions): HcClient & Disposable 
       await call(['label', address, ...entries.map(([key, value]) => `${key}=${value ?? ''}`), '--json']);
     },
     fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); return Buffer.from(reply.text); },
-    fileWrite: async (on, path, bytes) => { await machine(on); await call(['file', 'write', '--json', '--on', on, path], bytes); },
+    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions); },
     events: () => {
       if (disposal) throw new HerdrError('disposed', 'Hc client disposed');
       const source = eventStream ??= createHcEventStream({ ...options, env });

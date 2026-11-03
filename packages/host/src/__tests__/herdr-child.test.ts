@@ -196,6 +196,7 @@ it('the parent opens a child job from its run journal with session and owner che
     await f.emit('session_start', { reason: 'startup' });
     const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "console.log('child journal output')" }, { cwd: f.h.root, ...f.mount.execution() });
     expect(result.details).toMatchObject({ stdout: 'child journal output\n', exitCode: 0 });
+    await f.emit('session_shutdown', { reason: 'reload' });
     const journal = createJobStore(join(f.config.globalRoot, 'herdr/jobs'), f.h.owner!.sessionId, run.id as never), before = await readFile(journal.path, 'utf8');
     store.finish(run.id, { status: 'done', result: 'child journal output' });
     vi.stubEnv('PI_SUBAGENT_CHILD', '0');

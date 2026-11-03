@@ -68,18 +68,19 @@ export interface HcClientOptions {
 	env: Readonly<NodeJS.ProcessEnv>;
 	maxReplyBytes?: number;
 }
+export interface HcCallOptions { signal?: AbortSignal; timeoutMs?: number }
 export interface HcClient {
 	identity(): Promise<CoreIdentity>;
 	caller(env: Readonly<NodeJS.ProcessEnv>): Promise<TerminalIdentity>;
-	machines(): Promise<MachineSummary[]>;
+	machines(options?: HcCallOptions): Promise<MachineSummary[]>;
 	run(request: HcRunRequest): Promise<TerminalHandle>;
-	get(address: TerminalAddress): Promise<TerminalSummary>;
+	get(address: TerminalAddress, options?: HcCallOptions): Promise<TerminalSummary>;
 	read(address: TerminalAddress, options: { lines: number }): Promise<string>;
 	kill(address: TerminalAddress): Promise<void>;
-	rm(address: TerminalAddress): Promise<void>;
+	rm(address: TerminalAddress, options?: HcCallOptions): Promise<void>;
 	setLabels(address: TerminalAddress, labels: Readonly<Record<string, string | null>>): Promise<void>;
 	fileRead(on: MachineName, path: string): Promise<Buffer>;
-	fileWrite(on: MachineName, path: string, bytes: Buffer): Promise<void>;
+	fileWrite(on: MachineName, path: string, bytes: Buffer, options?: HcCallOptions): Promise<void>;
 	events(): HcEventStream;
 }
 export interface AppClientOptions { binary: string; env: Readonly<NodeJS.ProcessEnv> }

@@ -9,10 +9,10 @@ import { parseHerdrConfig } from '../config.js';
 import { prepareRemoteProgram } from '../../../context/src/remote-plan.js';
 import { executeRemote, type RemoteExecutionPorts } from './execute.js';
 import { sha256, installRuntimeDirectory } from './runtime.js';
-import { createJobMonitor, type JobNotice } from '../jobs/monitor.js';
+import { createJobMonitor, type JobNotice, type JobMonitorOptions } from '../jobs/monitor.js';
 import { createJobStore, type JournalJob } from '../jobs/store.js';
 import { doctorHerdr, type DoctorParts } from '../setup/doctor.js';
-import type { HcClient, JobRecord, JobHandle, JobId, Owner, MachineName, TerminalAddress } from '../contracts.js';
+import type { CoreId, HcClient, JobRecord, JobHandle, JobId, Owner, MachineName, TerminalAddress } from '../contracts.js';
 
 const roots: string[] = [];
 const children = new Set<ReturnType<typeof spawn>>();
@@ -152,15 +152,20 @@ async function savedJob(f: Awaited<ReturnType<typeof fixture>>, originalFinish: 
   f.hc.identity = async () => f.owner.terminal;
   f.hc.events = () => ({ ready: Promise.resolve(), lookup: async () => null, subscribe: () => () => {}, dispose() {} });
   f.hc.get = async () => { throw Object.assign(new Error('Not found'), { code: 'not_found' }); };
+  f.hc.machines = async () => [{ id: 'destination-core' as CoreId, name: f.target.on, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }];
   return { journalRoot, store };
 }
 
-async function runActivation(f: Awaited<ReturnType<typeof fixture>>, journalRoot: string, collect = f.output.outputCollector.collect, child?: { id: NonNullable<JournalJob['runId']>; pid: number; startIdentity: string }) {
+async function runActivation(f: Awaited<ReturnType<typeof fixture>>, journalRoot: string, options: { settled?: boolean; child?: JobMonitorOptions['child'] } = {}) {
+  const { child } = options;
   let reads = 0;
   const notices: JobNotice[] = [], errors: unknown[] = [];
-  const monitor = createJobMonitor({ hc: f.hc, outputCollector: { ...f.output.outputCollector, collect: async job => { reads++; return collect(job); } }, journalRoot, child,
+  const monitor = createJobMonitor({ hc: f.hc, outputCollector: { ...f.output.outputCollector, collect: async job => { reads++; return f.output.outputCollector.collect(job); } }, journalRoot, child,
     observedJobMessages: async () => [], notifier: notice => { notices.push(notice); }, reportError: error => { errors.push(error); }, clock: Date.now });
-  try { await monitor.activate(f.owner); await monitor.reconcile(); }
+  try {
+    await monitor.activate(f.owner); await monitor.reconcile();
+    if (options.settled) await expect.poll(async () => (await createJobStore(journalRoot, f.owner.sessionId, child?.id).read()).jobs[0].settledMarked).toBe(true);
+  }
   finally { await monitor.shutdown('reload'); }
   return { reads, notices, errors };
 }
@@ -170,7 +175,7 @@ test('a restart stop is not exit evidence', async () => {
   await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
   const restart = { exitCode: null, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
   const { journalRoot, store } = await savedJob(f, restart);
-  const first = await runActivation(f, journalRoot);
+  const first = await runActivation(f, journalRoot, { settled: true });
   const job = (await store.read()).jobs[0];
   expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
   expect(job.evidenceConflict).toBe(false);
@@ -189,7 +194,7 @@ test('heals an old restart conflict and delivers a pending notice once', async (
   const restart = { exitCode: null, signal: null, reason: 'stopped_by_restart', finishedAt: Date.now() };
   const receipt = { exitCode: null, signal: 1, reason: 'signal', finishedAt: Date.now() };
   const { journalRoot, store } = await savedJob(f, restart, { callerOwned: true, evidenceConflict: true, exitEvidence: { native: restart, receipt }, output: { complete: true, summary: 'Complete' } });
-  const first = await runActivation(f, journalRoot);
+  const first = await runActivation(f, journalRoot, { settled: true });
   const job = (await store.read()).jobs[0];
   expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
   expect(job.evidenceConflict).toBe(false);
@@ -210,7 +215,7 @@ test.each(['holder_lost', 'server_stop', 'killed'])('a %s finish without exit da
   await f.execute("process.kill(process.pid, 'SIGHUP')", { background: true });
   const native = { exitCode: null, signal: null, reason, finishedAt: Date.now() };
   const { journalRoot, store } = await savedJob(f, native);
-  const first = await runActivation(f, journalRoot);
+  const first = await runActivation(f, journalRoot, { settled: true });
   const job = (await store.read()).jobs[0];
   expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
   expect(job.evidenceConflict).toBe(false);
@@ -227,7 +232,7 @@ test('heals an observed conflict with empty native exit data without another not
   const native = { exitCode: null, signal: null, reason: 'holder_lost', finishedAt: Date.now() };
   const receipt = { exitCode: null, signal: 1, reason: 'signal', finishedAt: Date.now() };
   const { journalRoot, store } = await savedJob(f, native, { notice: 'observed', noticeDelivered: true, evidenceConflict: true, exitEvidence: { native, receipt }, output: { complete: true, summary: 'Complete' } });
-  const first = await runActivation(f, journalRoot);
+  const first = await runActivation(f, journalRoot, { settled: true });
   const job = (await store.read()).jobs[0];
   expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
   expect(job.evidenceConflict).toBe(false);
@@ -247,7 +252,7 @@ test('a child monitor heals a pending conflict and delivers its receipt once', a
   const receipt = { exitCode: null, signal: 1, reason: 'signal', finishedAt: Date.now() };
   const child = { id: 'run-one' as NonNullable<JournalJob['runId']>, pid: process.pid, startIdentity: 'writer' };
   const { journalRoot, store } = await savedJob(f, native, { runId: child.id, callerOwned: true, evidenceConflict: true, exitEvidence: { native, receipt }, output: { complete: true, summary: 'Complete' } });
-  const first = await runActivation(f, journalRoot, f.output.outputCollector.collect, child);
+  const first = await runActivation(f, journalRoot, { settled: true, child });
   const job = (await store.read()).jobs[0];
   expect(job.phase).toMatchObject({ kind: 'finished', result: { exitCode: null, reason: 'signal', signal: 1 } });
   expect(job.evidenceConflict).toBe(false);
@@ -256,7 +261,7 @@ test('a child monitor heals a pending conflict and delivers its receipt once', a
   expect(first.notices).toHaveLength(1);
   expect(first.notices[0].details).toMatchObject({ runId: child.id, exitCode: null, reason: 'signal', signal: 1 });
   expect(first.errors).toEqual([]);
-  expect(await runActivation(f, journalRoot, f.output.outputCollector.collect, child)).toEqual({ reads: 0, notices: [], errors: [] });
+  expect(await runActivation(f, journalRoot, { child })).toEqual({ reads: 0, notices: [], errors: [] });
 }, 15000);
 
 test('a restart-labelled finish with a real exit code still conflicts with a different receipt', async () => {

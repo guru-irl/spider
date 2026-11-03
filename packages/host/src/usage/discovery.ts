@@ -2,7 +2,7 @@ import { open, readdir, realpath, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
-import { normalizeRunStatus, type RunMeta } from "./ledger.js";
+import { normalizeRunStatus, type RunMeta, type SourceError } from "./ledger.js";
 import type { SourceInfo as ParserSource } from "./parse.js";
 import { summarizeRunEvents, type RunEvent, type RunEventFacts } from "./run-events.js";
 export type { RunEvent } from "./run-events.js";
@@ -12,7 +12,7 @@ export type UsageRoots = { registryDb: string; sessionsDir: string; ledgerFile: 
 export type SourceInfo = Omit<ParserSource, "run"> & { run: RunMeta | null };
 export type RunState = { dbPath: string; id: string; status: string | null; childMode: string | null };
 export type Discovery = {
-  sources: readonly SourceInfo[]; runs: readonly RunMeta[]; errors: readonly { path: string; code: string; checkedPaths?: readonly string[] }[];
+  sources: readonly SourceInfo[]; runs: readonly RunMeta[]; errors: readonly SourceError[];
   /** Read-only snapshots, not handles. Optional for hand-built discovery inputs. */
   runEvents?: RunEventFacts; runStates?: readonly RunState[]; runDbs?: readonly string[]; runDbIdentities?: Readonly<Record<string, string>>;
   /** Ledger destination supplied to the worker; never used to reconstruct open-ledger proof. */
@@ -38,7 +38,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
   const heads = attributionHeads.get(roots) ?? new Map(); attributionHeads.set(roots, heads);
   const runs: RunMeta[] = [], runStates: RunState[] = [];
   const runEvents = summarizeRunEvents([]);
-  const errors: { path: string; code: string; checkedPaths?: readonly string[] }[] = [];
+  const errors: SourceError[] = [];
   const runDbs: string[] = [];
   const runDbIdentities: Record<string, string> = {};
   async function canonical(path: string): Promise<string> { try { return await realpath(path); } catch { return resolve(path); } }
@@ -169,12 +169,18 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
           if (!rootsToCheck.has(r.scratch)) rootsToCheck.set(r.scratch, r);
         }
         const checkedPaths: string[] = [];
+        let checkedPathCount = 0;
+        const rememberPath = (path: string) => {
+          checkedPathCount++;
+          // Flatten the bounded sample so joins retain no intermediate strings.
+          if (checkedPaths.length < 8) checkedPaths.push(Buffer.from(path).toString());
+        };
         let found = false;
         for (const [scratch, candidate] of rootsToCheck) {
           const path = join(scratch, "subagent-sessions", id, `${id}.jsonl`);
           // The canonical root was listed above, including symlink targets. An
           // absent run directory rules out this candidate without a per-file stat.
-          checkedPaths.push(path);
+          rememberPath(path);
           if (!scratchIndex.get(scratch)?.has(id)) continue;
           const errorStart = errors.length;
           if (await add(path, candidate.project, candidate.repo, run)) { found = true; break; }
@@ -188,7 +194,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
             for (const file of (await list(directory)).sort((a, b) => a.name.localeCompare(b.name))) {
               if (!file.isFile() || !file.name.endsWith(`_${id}.jsonl`)) continue;
               const forkPath = join(directory, file.name);
-              checkedPaths.push(forkPath);
+              rememberPath(forkPath);
               const handle = await open(forkPath, "r");
               let matches = false;
               try {
@@ -205,7 +211,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
           } catch (error) { if (code(error) !== "ENOENT") errors.push({ path: directory, code: code(error) }); }
           if (found) break;
         }
-        if (!found) errors.push({ path: checkedPaths[0], code: "missing-source", checkedPaths });
+        if (!found) errors.push({ path: checkedPaths[0], code: "missing-source", checkedPaths, checkedPathCount });
       }
       if (tables.has("run_events")) {
         const columns = new Set((db.prepare("PRAGMA table_info(run_events)").all() as { name: string }[]).map(row => row.name));

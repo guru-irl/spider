@@ -113,6 +113,13 @@ export type LedgerHealth = {
 };
 export type CoverageEvidence = "transcript" | "runs-db" | "unknown";
 export type CoverageEdge = { reportRunId: string; includedRunId: string; evidence: CoverageEvidence };
+export type SourceError = {
+  path: string; code: string;
+  /** Candidate sample. Older callers may supply the full list without a count. */
+  checkedPaths?: readonly string[];
+  /** Total candidates considered, including paths omitted from the sample. */
+  checkedPathCount?: number;
+};
 export type ImportBatch = {
   calls: readonly CallRow[]; runs: readonly RunMeta[]; states: readonly ImportState[];
   sessions?: readonly SessionMeta[];
@@ -128,7 +135,7 @@ export type ImportBatch = {
   /** Compatibility only. Selection depends on raw facts, not these old signals. */
   detailedRunIds: readonly string[]; restoreAggregateRunIds: readonly string[];
   resetSources: readonly { path: string; generation: number }[];
-  sourceErrors: readonly { path: string; code: string; checkedPaths?: readonly string[] }[]; at: number;
+  sourceErrors: readonly SourceError[]; at: number;
   sourceContexts?: readonly { path: string; context: SourceContext }[];
   pendingReports?: readonly PendingReport[];
   removePendingReports?: readonly { path: string; runId: string }[];
@@ -151,7 +158,7 @@ export interface UsageLedger {
   readonly leases: UsageLeaseStore;
   /** False means the lease fence rejected the entire transaction. */
   apply(batch: ImportBatch): boolean;
-  getSourceErrors(): readonly { path: string; code: string; checkedPaths?: readonly string[] }[];
+  getSourceErrors(): readonly SourceError[];
   getSourceErrorDiagnostics(limit: number): ReturnType<typeof readSourceErrorDiagnostics>;
   getProgress(): { calls: number; sources: number; parseErrors: number; sourceErrors: number; lastIngestAt: number | null };
   getPublishedSnapshot(): Extract<UsageWorkerEvent, { type: "snapshot" }> | undefined;
@@ -609,7 +616,8 @@ function createLedger(db: Db): UsageLedger {
         for (const error of batch.sourceErrors) {
           if (error.code === "metadata-parse-error") continue; // Billing owns malformed-line counts.
           putError.run({ ...error, path: error.code.startsWith("metadata-") ? `metadata:source:${error.path}` : error.path,
-            checkedPaths: error.checkedPaths ? JSON.stringify(error.checkedPaths) : null, at: batch.at });
+            checkedPaths: error.checkedPaths ? JSON.stringify(error.checkedPathCount === undefined ? error.checkedPaths
+              : { checkedPaths: error.checkedPaths, checkedPathCount: error.checkedPathCount }) : null, at: batch.at });
         }
         return true;
       }).immediate();
@@ -626,7 +634,11 @@ function createLedger(db: Db): UsageLedger {
     getSourceErrorDiagnostics(limit) { return readSourceErrorDiagnostics(db, limit); },
     getSourceErrors() {
       return (db.prepare("SELECT path, source_error_code AS code, source_error_paths AS checkedPaths FROM import_state WHERE source_error_code IS NOT NULL").all() as { path: string; code: string; checkedPaths: string | null }[])
-        .map(({ checkedPaths, ...row }) => ({ ...row, ...(checkedPaths === null ? {} : { checkedPaths: JSON.parse(checkedPaths) }) }));
+        .map(({ checkedPaths, ...row }) => {
+          if (checkedPaths === null) return row;
+          const paths = JSON.parse(checkedPaths) as readonly string[] | Pick<SourceError, "checkedPaths" | "checkedPathCount">;
+          return { ...row, ...(Array.isArray(paths) ? { checkedPaths: paths } : paths) };
+        });
     },
     getSourceContext(path, roots) {
       const row = context.get(path) as { header: string; tailHash: string } | undefined;

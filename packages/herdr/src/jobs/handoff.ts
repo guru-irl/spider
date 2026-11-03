@@ -190,7 +190,7 @@ export function createJobHandoff(options: {
     else await closeRunConsoles(consoleOwner, options.hc);
     closedConsoles.add(id);
   };
-  const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked && job.terminalReleased || job.phase.kind === 'launch-failed');
+  const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked || job.phase.kind === 'launch-failed');
   const markSettled = async (journal: JobJournal) => {
     journal.child = { ...journal.child!, ended: true, settled: true };
     journal.revision++;

@@ -14,8 +14,8 @@ it.each(['session', 'subagent'].flatMap(scope => ['activation', 'monitor'].map(s
   vi.stubEnv('PI_SUBAGENT_RUN_ID', 'cause-run'); vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', 'cause-session');
   const f = await mountedFixture('fake', 'rpc', false, scope === 'subagent', true, true);
   try {
-    const cause = stage === 'monitor' ? new HerdrError('reply-too-large', 'Event record exceeded its byte limit') : new HerdrError('caller-probe-unavailable', 'Cannot verify the Herdr terminal process ancestry');
-    const message = stage === 'monitor' ? /Remote execution is unavailable.*job monitor failed because the terminal list exceeded its byte limit/ : /Remote execution is unavailable.*activation failed because the connection could not be established/;
+    const cause = stage === 'monitor' ? new HerdrError('reply-too-large', 'Event record exceeded its byte limit', { source: 'event-record' }) : new HerdrError('caller-probe-unavailable', 'Cannot verify the Herdr terminal process ancestry');
+    const message = stage === 'monitor' ? /Remote execution is unavailable.*job monitor failed because an event record exceeded its byte limit/ : /Remote execution is unavailable.*activation failed because the connection could not be established/;
     let fault: { mockRestore(): void };
     if (stage === 'monitor') {
       const create = monitors.createJobMonitor;

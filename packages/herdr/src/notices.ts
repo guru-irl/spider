@@ -2,7 +2,7 @@
 import { HerdrError } from './client/parse.js';
 
 interface Notice { text: string; action: string | null }
-type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished';
+type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'outputUnavailable' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished';
 
 export function switchedSessionNotice(): string {
   return 'This pane now has a different session. Setup will leave that session alone.';
@@ -88,6 +88,7 @@ export const HERDR_NOTICES: Readonly<Record<NoticeCode, Notice>> = {
   remoteStart: { text: "Spider couldn't start the remote command. Your session and local commands still work. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   remoteNotInstalled: { text: "Spider couldn't start the remote command because Herdr isn't set up on that machine. Your session and local commands still work. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   remoteDisabled: { text: "Spider couldn't run this command on another machine because Herdr is off in this session. Local commands still work. Check that Herdr is running and enabled, then run /reload or open a new session in Herdr.", action: '/reload' },
+  outputUnavailable: { text: "Spider couldn't read output for job <job> on <machine>. The result shows as unknown for now. The command itself isn't affected.", action: null },
   generic: { text: "Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   sessionKillFailed: { text: 'Subagents stopped, but the terminal could not close. Try Kill session again.', action: 'Kill session' },
   feedRefresh: { text: "Spider couldn't refresh the session list in Herdr. Your sessions may still be running. Run /reload to reconnect.", action: '/reload' },
@@ -122,7 +123,7 @@ const errors: Readonly<Record<string, NoticeCode>> = {
   ...errorGroup(['unsafe-feed-path', 'feed-too-large', 'invalid-feed'], 'feedRefresh'),
   'lease-token-invalid': 'sessionHandoff', 'session-may-be-live': 'sessionBusy',
   'core-unavailable': 'coreDown', 'terminal-core-mismatch': 'retired', 'core-mismatch': 'retired',
-  'events-disconnected': 'eventsLost', 'terminal-registry-bookkeeping': 'terminalRecords',
+  'events-disconnected': 'eventsLost', 'terminal-registry-bookkeeping': 'terminalRecords', 'output-unavailable': 'outputUnavailable',
   'ssh-unavailable': 'sshMissing', 'invalid-config': 'configProblem', 'unsupported-version': 'unsupported',
   'app-disconnected': 'appDisconnected', unavailable: 'temporarilyUnavailable', 'child-identity-unavailable': 'childPresence',
   'caller-mismatch': 'callerMismatch', 'invalid-reply': 'badReply', 'reply-too-large': 'badReply', 'viewer-usage': 'viewerFailed', 'session-unavailable': 'viewNoSession',
@@ -142,6 +143,11 @@ export function herdrErrorNoticeKey(error: unknown): NoticeCode {
 export function herdrErrorNotice(error: unknown): string {
   if (!(error instanceof HerdrError)) return HERDR_NOTICES.generic.text;
   const known = Object.hasOwn(errors, error.code) ? errors[error.code] : undefined;
+  if (known === 'outputUnavailable') {
+    const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
+    const clean = (value: unknown, limit: number) => typeof value === 'string' ? value.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, limit) || 'unknown' : 'unknown';
+    return HERDR_NOTICES.outputUnavailable.text.replace('<job>', clean(details.jobId, 8)).replace('<machine>', clean(details.machine, 100));
+  }
   if (known) return HERDR_NOTICES[known].text;
   // Error codes can originate in external replies. Never let them add control characters or prose.
   const code = error.code.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 100) || 'unknown';

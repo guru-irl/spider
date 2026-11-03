@@ -11,7 +11,7 @@ import { HerdrError } from '../client/parse.js';
 export type AgentConsoleOwner = Owner & { runId?: RunId };
 export interface AgentConsoleLaunch {
   owner: Owner; on: MachineName; target: RuntimeTarget; source: RemoteSource; job?: JobHandle;
-  startedAt?: number; enabled?: boolean;
+  startedAt?: number; enabled?: boolean; kind?: Parameters<JobPort['start']>[3]['kind'];
 }
 export interface AgentConsoleLifecyclePorts {
   hc: HcClient; currentOwner(ctx: ExtensionContext): Owner | null; env?: Readonly<NodeJS.ProcessEnv>;
@@ -120,7 +120,9 @@ export async function ensureAgentConsole(request: AgentConsoleLaunch, hc: HcClie
       state = { owner, handle: { ...handle, directory }, directory, count }; consoles.set(key, state);
     }
     if (!request.job) return state.handle;
-    const command: ConsoleCommand = { version: 1, jobId: request.job.id, directory: request.job.remoteDirectory, command: request.source.code.split('\n')[0].slice(0, 1024), startedAt: request.startedAt ?? Date.now() };
+    const kind = request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec');
+    const tool = kind === 'exec-file' ? 'exec_file' : kind;
+    const command: ConsoleCommand = { version: 1, jobId: request.job.id, directory: request.job.remoteDirectory, command: request.source.code.split('\n')[0].slice(0, 1024), startedAt: request.startedAt ?? Date.now(), tool };
     const bytes = encodeRuntimePublication({ ...command });
     if (bytes.length > 8192) throw new HerdrError('console-command-invalid', 'Console descriptor exceeded its bound');
     await hc.fileWrite(request.on, join(state.directory, `command-${state.count}.json`), bytes);

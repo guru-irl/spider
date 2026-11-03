@@ -65,17 +65,17 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const fast = await call(s, 'split', { action: 'exec', on: s.machine, language: 'shell', code: split.code });
       exactResult(fast, 'split:雪🙂é\nshort-finish\n', 'interleaved-error\nshort-error\n', 7);
       const console = await consoleFor(s);
-      const text = await waitFor('later job console exit before older release', () => consoleText(suite, console.address), t => t.includes(`[${fast.remote!.jobId} exit] 7`), deadline(15000));
+      const text = await waitFor('later job console exit before older release', () => consoleText(suite, console.address), t => t.includes('#2 ✗ exit 7'), deadline(15000));
       assert.ok(text.includes('long-start')); assert.ok(!text.includes('long-finish'));
-      assert.ok(text.includes('split:雪🙂é')); assert.ok(text.includes(`[${fast.remote!.jobId} stderr]`));
-      assert.ok(text.includes(`[${fast.remote!.jobId}]`));
+      assert.ok(text.includes('#2 │ split:雪🙂é')); assert.ok(text.includes('#2 │ short-error'));
+      assert.ok(text.includes(`#1 ${long.remote!.jobId.slice(0, 8)} · #2 ${fast.remote!.jobId.slice(0, 8)}`));
       expect(() => assert.ok(text.includes('split:local-garbage'))).toThrow();
       assert.equal(await held.effect(), null);
       await typeInObservedConsole(suite, console.address, "printf 'observer-must-not-execute'\r\x03");
       const phase = await call(s, 'post-input', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'input-phase-complete\\n'" });
       exactResult(phase, 'input-phase-complete\n', '', 0); assert.equal(await held.effect(), null);
       await held.release(); await oneNotice(s, long.remote!.jobId);
-      const final = await waitFor('long console exit after release', () => consoleText(suite, console.address), t => t.includes(`[${long.remote!.jobId} exit] 23`), deadline(20000));
+      const final = await waitFor('long console exit after release', () => consoleText(suite, console.address), t => t.includes('✗ exit 23'), deadline(20000));
       assert.ok(final.indexOf('short-finish') < final.indexOf('long-finish'));
       await snapshot(s, 'console-streams');
     },
@@ -127,8 +127,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await removeDestination(suite, s.machine, remoteDirectory);
       const next = await call(s, 'after-prune', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'new-after-prune\\n'; exit 3" });
       exactResult(next, 'new-after-prune\n', '', 3); assert.equal((await consoleFor(s)).address, console.address);
-      const text = await waitFor('console replay after pruned job', () => consoleText(suite, console.address), t => t.includes(`[${next.remote!.jobId} exit] 3`), deadline(20000));
-      assert.ok(text.includes('new-after-prune'));
+      const text = await waitFor('console replay after pruned job', () => consoleText(suite, console.address), t => t.includes('✗ exit 3'), deadline(20000));
+      assert.ok(text.includes('new-after-prune')); assert.ok(text.includes(next.remote!.jobId.slice(0, 8)));
       assert.equal((await readFile(suite.ownPath(value.backgroundJob!.logs.stdout))).toString(), 'before-reload\nafter-reload\n');
       expect(() => assert.ok(text.includes('invented-after-prune'))).toThrow();
       await snapshot(s, 'reload-history');

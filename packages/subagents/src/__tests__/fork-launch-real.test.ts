@@ -29,8 +29,10 @@ function fixture() {
   return { root, agentDir, parentFile, parentSessionId: parent.getSessionId(), parentText: readFileSync(parentFile, "utf8") };
 }
 function offline(spec: ChildSpawnSpec, agentDir: string) {
-  return { ...spec, argv: [process.execPath, join(piRoot, "dist/cli.js"), ...spec.argv.slice(1), "--offline", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes"],
-    env: { ...spec.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_CODING_AGENT_DIR: agentDir, FORK_EVIDENCE: join(agentDir, "evidence.json") } };
+  const modeIndex = spec.argv.indexOf("--mode");
+  if (modeIndex < 0) throw new Error("Missing child mode");
+  return { ...spec, argv: [process.execPath, join(piRoot, "dist/cli.js"), ...spec.argv.slice(modeIndex), "--offline", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes"],
+    env: { ...spec.env, HOME: dirname(agentDir), PATH: join(agentDir, "missing"), PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_CODING_AGENT_DIR: agentDir, FORK_EVIDENCE: join(agentDir, "evidence.json") } };
 }
 for (const childMode of ["rpc", "print"] as const) {
   it.each([false, true])(`real pi: ${childMode} ID-based fork starts with parent history and its own session (different cwd=%s)`, async elsewhere => {

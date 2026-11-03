@@ -61,7 +61,7 @@ This package does not own:
 | `event-tailer.ts` | `RunEventTailer` polls `run_events` for the run ids it tracks and republishes them on the in-process event bus, which feeds the live UI. |
 | `child-reporter.ts` | `makeChildReporter` and `attachChildReporter` provide the child-side hooks (tool start and end, assistant messages, turns, shutdown). From inside the child process, these hooks write `run_events` and finalize the run row. |
 | `pi-args.ts` | `buildPiArgs` and `buildChildSpawnSpec` build the full argv and environment for a child `pi` invocation, including the `PI_SUBAGENT_*` and `PI_SPIDER_*` environment variables. |
-| `pi-spawn.ts` | `getPiSpawnCommand` resolves which command to run for `pi` itself. That is an explicit override env var, a resolved Windows CLI script, or `pi` on `PATH`. |
+| `pi-spawn.ts` | `getPiSpawnCommand` selects the child pi command. |
 | `spawn-default.ts` | `defaultSpawner` spawns a detached process group. It gives the child RPC pipes that the parent owns, or ignores stdio in print mode. |
 | `rpc-child.ts` | Implements strict LF-JSONL drainage, prompt and steer acknowledgements, dialog cancellation, settled completion, and abort. |
 | `child-intercom.ts` | Resolves the enabled, installed intercom resources through Pi's public package manager. It does not install missing packages. |
@@ -96,7 +96,7 @@ separately, and defines `registerSubagentActions`.
 | `buildPiArgs`, `buildChildSpawnSpec`, `thinkingFromModel`, `stripThinkingSuffix` | Build a child's argv and environment, and parse the `model:thinking` suffix on the input. Children receive separate model and thinking flags. |
 | `applyThinkingSuffix` | A legacy exported helper. Production dispatch does not use it. |
 | `SUBAGENT_CHILD_ENV`, `SUBAGENT_RUN_ID_ENV`, `SUBAGENT_CHILD_AGENT_ENV`, `SUBAGENT_CHILD_INDEX_ENV`, `SUBAGENT_FANOUT_CHILD_ENV`, `SUBAGENT_ORCHESTRATOR_TARGET_ENV`, `SUBAGENT_INTERCOM_SESSION_NAME_ENV`, `SPIDER_DB_PATH_ENV`, `SPIDER_SESSION_ID_ENV` | The names of the environment variables that the parent passes to the child. |
-| `getPiSpawnCommand`, `resolveWindowsPiCliScript`, `resolvePiPackageRoot`, `resolveInstalledPiPackageRoot`, `findPiPackageRootFromEntry` | Resolve the command that launches `pi` for a child process. |
+| `getPiSpawnCommand`, `resolvePiCliScript`, `resolveWindowsPiCliScript`, `resolvePiPackageRoot`, `findPiPackageRootFromEntry` | Resolve the command that launches `pi` for a child process. |
 | `defaultSpawner` | The real `Spawner`, backed by `child_process`. |
 | `qualifyModelProvider`, `listPiModels`, `ListedModel` | Add a provider prefix to a bare model id, from pi's live list of available models. |
 | `makeChildReporter`, `attachChildReporter`, `isSubagentChild` | The child-side event hooks described under Key modules. |
@@ -128,6 +128,13 @@ the resolved project, `pi`, `@spider/models`) and calls the registered `run`
 handler with it. The sections below describe what happens next.
 
 ### Child lifecycle and steering
+
+A child uses `PI_SUBAGENT_PI_BINARY` when it is nonempty. Otherwise, when the
+parent is plain Node and the nearest package to its running entry is pi, the
+child uses that Node and the same entry. Spider does not copy the parent's
+Node command-line flags. Bun, Electron, Node single-executable applications,
+SDK hosts and other parents use `pi` on `PATH`. Herdr resume and role panes
+also use `pi` on `PATH`.
 
 `subagents.childMode` defaults to `"rpc"`. With `"print"`, new launches use the
 legacy argv. An RPC child gets its name before its extensions start, and it
@@ -246,7 +253,7 @@ binaries to print mode, without an orchestrator target. That fallback does not
 make older hosts supported. The compatibility reason appears in run tool
 details, run events and completion output. It never appears in the persisted
 result or in a chain or pipeline handoff. Spider reads the metadata from the
-resolved PATH binary or from `PI_SUBAGENT_PI_BINARY`, and caches it by
+resolved pi CLI, PATH binary, or `PI_SUBAGENT_PI_BINARY`, and caches it by
 resolved path plus file mtime and size. It never launches pi to get the
 metadata. On PATH, spider uses the first executable file and skips
 directories. Upgrades to the CLI or to package metadata invalidate the cache.

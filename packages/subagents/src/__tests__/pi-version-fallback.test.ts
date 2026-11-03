@@ -25,6 +25,13 @@ function binary(version: unknown, failure?: "unreadable" | "missing") {
   if (failure !== "missing") writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version, bin: { pi: "dist/cli.js" } }));
   return { entry, root };
 }
+async function usePathFallback() {
+  const spawn = await import("../pi-spawn");
+  const get = spawn.getPiSpawnCommand;
+  vi.spyOn(spawn, "getPiSpawnCommand").mockImplementation(args => get(args, {
+    argv1: join(process.cwd(), "missing-parent.js"),
+  }));
+}
 const cases: Array<[string, "print" | "rpc"]> = [
   ["0.80.0", "print"], ["0.84.9", "print"], ["0.85.0", "print"],
   ["0.85.1-beta.1", "print"], ["0.85.1-0", "print"], ["0.85.1-beta+build", "print"],
@@ -104,6 +111,7 @@ it("caches metadata per resolved binary, not the host process or another pi inst
   expect(state.reads).toBeGreaterThan(0);
 });
 it.skipIf(process.platform === "win32")("resolves PATH pi symlinks rather than the host pi dependency", async () => {
+  await usePathFallback();
   const fixture = binary("0.85.0"); const binDir = join(fixture.root, "bin"); mkdirSync(binDir);
   symlinkSync(fixture.entry, join(binDir, "pi"));
   vi.stubEnv("PI_SUBAGENT_PI_BINARY", undefined); vi.stubEnv("PATH", binDir);
@@ -182,6 +190,7 @@ it.each(["fallback", "steer", "both"])("shutdown with %s diagnostics queues the 
 });
 
 it.skipIf(process.platform === "win32")("PATH chooses the first executable file, skipping directories and non-executable entries", async () => {
+  await usePathFallback();
   const older = binary("0.85.0"), newer = binary("0.87.0");
   const invalid = join(newer.root, "invalid"), nonexec = join(older.root, "nonexec");
   const oldBin = join(older.root, "bin"), newBin = join(newer.root, "bin");
@@ -199,6 +208,7 @@ it.skipIf(process.platform === "win32")("PATH chooses the first executable file,
 });
 
 it.skipIf(process.platform === "win32")("relative PATH entries resolve against the child cwd, not the host cwd", async () => {
+  await usePathFallback();
   const fixture = binary("0.85.0"); const binDir = join(fixture.root, "bin"); mkdirSync(binDir);
   symlinkSync(fixture.entry, join(binDir, "pi"));
   vi.stubEnv("PI_SUBAGENT_PI_BINARY", undefined); vi.stubEnv("PATH", "bin");

@@ -1,6 +1,7 @@
 import { commandEnv } from "@spider/db-core";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { findPiPackageRootFromEntry } from "./pi-spawn";
 
 /** Identity captured immediately after spawn. Linux ticks avoid second-resolution reuse. */
 export function processStartTime(pid: number): string | null {
@@ -51,6 +52,28 @@ export function processCommand(pid: number): string | null {
   }
 }
 
+function isNodePiCommand(command: string): boolean {
+  const line = command.trim();
+  let rest: string;
+  if (line.startsWith(process.execPath + " ")) {
+    rest = line.slice(process.execPath.length + 1);
+  } else {
+    const match = /^(\S+)\s+(.+)$/.exec(line);
+    const executable = match?.[1].split(/[/\\]/).at(-1) ?? "";
+    if (!match || !/^(?:node|nodejs)(?:\.exe)?$/.test(executable)) return false;
+    rest = match[2];
+  }
+  const entry = /^(.+?)\s+--mode(?:=|\s+)(?:rpc|json)(?:\s|$)/.exec(rest)?.[1];
+  if (!entry || entry.startsWith("-")) return false;
+  let realEntry: string;
+  try { realEntry = realpathSync(entry); }
+  catch {
+    return !/\s/.test(entry) && (entry.split(/[/\\]/).at(-1) === "pi" || /[/\\]@earendil-works[/\\]pi-coding-agent[/\\]dist[/\\](?:bundle[/\\])?cli\.js$/.test(entry));
+  }
+  try { return !!findPiPackageRootFromEntry(realEntry); }
+  catch { return false; }
+}
+
 /**
  * True when pid's command line still looks like a spawned subagent.
  * 
@@ -80,10 +103,7 @@ export function looksLikeSubagent(
   const hasRpcMode = /(?:^|\s)--mode(?:=|\s+)rpc(?:\s|$)/.test(cmd);
   const basename = (s: string) => s.split(/[/\\]/).at(-1) ?? "";
   const directPi = /^pi(?:\.cmd|\.exe)?$/.test(basename(tokens[0]));
-  const nodePi = /^node(?:\.exe)?$/.test(basename(tokens[0])) && !!tokens[1] && (
-    basename(tokens[1]) === "pi" || /[/\\]@earendil-works[/\\]pi-coding-agent[/\\]dist[/\\]cli\.js$/.test(tokens[1])
-  );
-  const piExecutable = directPi || nodePi;
+  const piExecutable = directPi || isNodePiCommand(cmd);
   if (hasFork) {
     if (!piExecutable || !(hasRpcMode || hasJsonMode && hasPFlag) || !runId) return false;
     const flag = (name: string): string | undefined => {

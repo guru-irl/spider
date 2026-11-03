@@ -37,11 +37,13 @@ for (const context of ["fresh", "fork"] as const) {
         const spec = buildChildSpawnSpec({ runId: "profile", sessionId: "owner", agent: "reviewer", task: "check tools", context,
           parentSessionId: "owner", parentSessionFile, childIndex: 0, dbPath: join(root, "project.db"), scratchRoot: root, cwd: root, childMode,
           model: "spider-offline-profile/fixture", childExtensionPath: probeExtension });
-        const args = [join(piRoot, "dist/cli.js"), ...spec.argv.slice(1), "--offline", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes"];
+        const modeIndex = spec.argv.indexOf("--mode");
+        if (modeIndex < 0) throw new Error("Missing child mode");
+        const args = [join(piRoot, "dist/cli.js"), ...spec.argv.slice(modeIndex), "--offline", "--no-skills", "--no-context-files", "--no-prompt-templates", "--no-themes"];
         if (tools) args.push("--tools", tools);
         const events: unknown[] = [];
         const handle = defaultSpawner({ ...spec, argv: [process.execPath, ...args],
-          env: { ...spec.env, PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_CODING_AGENT_DIR: agentDir,
+          env: { ...spec.env, HOME: root, PATH: join(root, "missing"), PI_OFFLINE: "1", PI_TELEMETRY: "0", PI_CODING_AGENT_DIR: agentDir,
             PROFILE_EVIDENCE: evidence, PROFILE_TARGET: target }, onRpcEvent: event => { events.push(event); } });
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {

@@ -15,6 +15,16 @@ import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { configFixtureCwd } from '../../../host/src/__tests__/herdr-config-fixture.js';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
+
+const launch = vi.hoisted(() => ({ bin: '', agent: '' }));
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, spawn: (command: string, args: readonly string[], options: import('node:child_process').SpawnOptions) => {
+    if (launch.bin && (command !== 'pi' || !args.includes('--session') || options.env?.PATH !== launch.bin || options.env.PI_CODING_AGENT_DIR !== launch.agent)) throw new Error('Unexpected session launcher');
+    return actual.spawn(command, args, options);
+  } };
+});
+
 let root: string;
 const terminal = { coreId: 'core-one', terminalId: 't1', address: 't1', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } as TerminalIdentity;
 const probes = new Map<number, ProcessProbe>();
@@ -28,7 +38,7 @@ beforeEach(async () => {
   inv = inventory(); ports = { leases: inv.leases, processInventory: inv, processIdentity: { pid: 101, startIdentity: 'start:101' }, publishMapping: async () => {}, env: { API_TOKEN: 'secret', SPIDER_HERDR_LEASE_TOKEN: 'inherited', SPIDER_HERDR_SSH_BYPASS: '1', PATH: '/safe' },
     spawnPi: async request => { opened.push({ file: request.sessionFile, env: request.env, argv: request.argv }); probes.set(102, { kind: 'live', startIdentity: 'start:102' }); return { pid: 102, startIdentity: 'start:102' }; } };
 });
-afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { launch.bin = ''; vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 async function session(id = 's1') { const file = join(root, `${id}.jsonl`); await writeFile(file, JSON.stringify({ type: 'session', version: 3, id, cwd: root }) + '\n'); return file; }
 function request(file: string) { return { sessionFile: file, sessionId: 's1' as SessionId, cwd: root, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } }; }
 describe('session ownership', () => {
@@ -320,11 +330,11 @@ it('the production CLI distinguishes everyday resume from internal cutover check
   const file = await session(), bin = join(root, 'bin'); await mkdir(bin);
   await writeFile(join(bin, 'ps'), '#!/bin/sh\nif [ "$1" = -U ]; then printf "999 pi pi\\n"; exit 0; fi\nexec /bin/ps "$@"\n'); await chmod(join(bin, 'ps'), 0o700);
   await writeFile(join(bin, 'pi'), `#!/bin/sh\nexec ${process.execPath} -e 'setTimeout(()=>process.exit(0),200)'\n`); await chmod(join(bin, 'pi'), 0o700);
-  vi.stubEnv('PATH', bin + ':' + dirname(process.execPath) + ':' + process.env.PATH);
   const configPath = join(root, 'config.json'); await writeFile(configPath, JSON.stringify({ enabled: true, app: { binary: join(root, 'unused-app'), home: join(root, 'app') }, core: { binary: join(root, 'unused-hc'), config: join(root, 'core.toml') }, agentDirectory: join(root, 'agent'), globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [] }));
   vi.stubEnv('SPIDER_GLOBAL_ROOT', root);
   vi.stubEnv('PI_CODING_AGENT_DIR', join(root, 'agent'));
   execFileSync('git', ['init', '-q', root]);
+  launch.bin = bin; launch.agent = join(root, 'agent'); vi.stubEnv('PATH', bin);
   const cli = configFixtureCwd(createProductionHerdrCliPorts(root, process.env), root), errors: string[] = []; cli.stderr = message => errors.push(message);
   const args = ['resume', '--config', configPath, '--file', file, '--session-id', 's1', '--cwd', root];
   try {

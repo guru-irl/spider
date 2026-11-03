@@ -50,9 +50,9 @@ async function savedNotices(owner: Owner, expected: ReadonlyMap<JobId, string>, 
     return notices;
   } finally { lines.close(); await file.close(); }
 }
-export function noticeRecoveryCandidates(journal: JobJournal, owner: Owner): JournalJob[] {
+export function noticeRecoveryCandidates(journal: JobJournal, owner: Owner, previousWriterStopped: boolean): JournalJob[] {
   if (journal.child || !owner.sessionFile) return [];
-  return journal.jobs.filter(job => job.noticeMode === 'async' && (job.notice === 'observed' || job.notice === 'submitted') && job.noticeSavedNonce !== job.nonce && (job.noticeObservedGeneration ?? job.owner.generation) !== owner.generation);
+  return journal.jobs.filter(job => !job.handoffCancelled && job.noticeMode === 'async' && (job.notice === 'observed' || job.notice === 'submitted' && previousWriterStopped) && job.noticeSavedNonce !== job.nonce && (job.noticeObservedGeneration ?? job.owner.generation) !== owner.generation);
 }
 /** Read outside the journal queue. Apply the result only through its writer. */
 export async function recoverJobNotices(jobs: readonly JournalJob[], owner: Owner, signal?: AbortSignal): Promise<() => void> {

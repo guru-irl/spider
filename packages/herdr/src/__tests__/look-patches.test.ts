@@ -139,6 +139,7 @@ function ui(): Element {
     if (key === 'children') return (values: unknown[]) => { o.children.push(...values); return proxy; };
     if (key === 'id') return (id: string) => { o.id = id; return proxy; };
     if (key === 'on_click') return (fn: () => void) => { o.click = fn; return proxy; };
+    if (key === 'on_mouse_down') return (button: string, fn: Function) => { o[`mouse_${button}`] = fn; return proxy; };
     if (key === 'bg') return (value: string) => { o.background = value; return proxy; };
     if (key === 'font_family') return (value: string) => { o.family = value; return proxy; };
     return () => proxy;
@@ -176,6 +177,43 @@ it('keeps owner actions and running rows live for twenty seconds, then disconnec
 });
 const fixturePresent = Boolean(process.env.SPIDER_HERDR_MOD_FIXTURE);
 describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_FIXTURE; no app window)', () => {
+  it.each([268, 76])('opens the clicked session menu at sidebar width %i', async width => {
+    const patched = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const opened: unknown[] = [], calls: unknown[] = [], config = { modId: 'spider-sidebar', labelContract: contract, feedRoot: '/fixture' };
+    const ports = { View: class {}, div: ui, h_flex: ui, v_flex: ui, image: ui, svg: ui, projectAgentChildren, filterTopLevelAgents,
+      agents: () => [{ address: 'remote.invalid/t5', pane: 'remote.invalid/p5', status: 'working', seq: 1 }, { address: 't6', pane: null, status: 'working', seq: 2 }],
+      terminals: () => [], panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}), shared: () => null, setShared: () => {}, setAgentOrder: () => {},
+      openOverlay: (spec: unknown) => opened.push(spec), closeOverlay: () => {}, props: () => config, window: () => ({}), layout: () => ({ id: 'sidebar', size: { px: width } }),
+      run: (name: string, args: unknown) => calls.push([name, args]), localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } };
+    const Agents = loadView(patched.agents.files['main.js'], ports), view = new Agents();
+    view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = []; view.listed = new Map();
+    const rows = elements(view.render({})), row = rows.find(el => el.id === 'ag-remote.invalid/t5')!, parked = rows.find(el => el.id === 'ag-t6')!;
+    expect(row.mouse_right).toBeTypeOf('function');
+    let stopped = 0;
+    (row.mouse_right as Function)({}, { stop_propagation: () => { stopped++; } });
+    expect(stopped).toBe(1);
+    expect(opened).toEqual([{ mod: 'spider-agents', kind: 'popup', width: 280, height: 420,
+      props: { ...config, modId: 'spider-agents', moveMenu: { kind: 'pane', pane: 'remote.invalid/p5', terminal: 'remote.invalid/t5' } } }]);
+    expect(parked.mouse_right).toBeUndefined();
+    (row.click as Function)();
+    expect(calls).toEqual([['pane.focus', { pane: 'remote.invalid/p5' }]]);
+  });
+
+  it('opens the subagent menu with the owning mod identity', async () => {
+    const patched = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const opened: unknown[] = [], config = { modId: 'spider-sidebar', labelContract: contract };
+    const Agents = loadView(patched.agents.files['main.js'], { View: class {}, div: ui, h_flex: ui, v_flex: ui, svg: ui, image: ui,
+      props: () => config, terminals: () => [], openOverlay: (spec: unknown) => opened.push(spec) });
+    const view = new Agents(); view.listed = new Map();
+    const item = { kind: 'subagent', key: 'run-one', address: 'viewer', originalAddress: 'viewer', action: null, retained: false, status: 'working', spider: true };
+    const row = elements(view.subRow({}, { t: item, lines: [] }, null, false)).find(el => el.id === 'sub-run-one')!;
+    let stopped = 0;
+    (row.mouse_right as Function)({}, { stop_propagation: () => { stopped++; } });
+    expect(stopped).toBe(1);
+    expect(opened).toEqual([{ mod: 'spider-agents', kind: 'popup', width: 280, height: 420,
+      props: { ...config, modId: 'spider-agents', moveMenu: { kind: 'subagent', key: 'run-one', terminal: 'viewer', action: null, retained: false } } }]);
+  });
+
   it('one patched agents tree merges both child kinds and suppresses top-level replay', async () => {
     const patched = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const all = [terminal('remote.invalid/t2', 't1', HERDR_KINDS.exec, 'job-one'), terminal('t3', 't1', HERDR_KINDS.remoteObserver, 'job-one'), terminal('t4', 't1', HERDR_KINDS.subagentViewer, 'run-one')];

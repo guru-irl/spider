@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { createJobStore } from '../jobs/store.js';
 import { finish, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 import type { JobMonitorOptions } from '../jobs/monitor.js';
+import type { RunId } from '../contracts.js';
 
 async function fixture() {
   const h = await monitorFixture();
@@ -41,6 +42,22 @@ it('keeps a crashed child console open through failed cancellation and an unconf
   h.complete(background.address); await parent.reconcile(); await parent.reconcile();
   await vi.waitFor(() => expect(h.notices.filter(notice => notice.details.jobId === background.id)).toHaveLength(1), { timeout: 5000 });
   await vi.waitFor(async () => expect((await createJobStore(h.f.root, h.owner.sessionId, 'crashed-order' as never).read()).child?.settled).toBe(true), { timeout: 7000 });
+});
+
+it('a child cancellation reconciles native completion even when its output arrived first', async () => {
+  const h = await fixture(), runId = 'late-finish' as RunId;
+  const child = h.monitor({ child: { id: runId, pid: process.pid, startIdentity: 'gone-writer' } });
+  const foreground = await child.start(program, h.owner, on, {}); await child.shutdown('reload');
+  h.hc.kill = async address => { h.kills.push(address); };
+  const adopted = h.monitor({ adoptedRunId: runId, callerCrashed: true });
+  await adopted.activate(h.owner);
+  expect(h.terminals.get(foreground.address)?.state).toBe('live');
+  const store = createJobStore(h.f.root, h.owner.sessionId, runId);
+  h.complete(foreground.address);
+  await vi.waitFor(async () => expect((await store.read()).jobs[0].output?.complete).toBe(true));
+  await adopted.reconcile();
+  await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ phase: { kind: 'finished', result: { reason: 'cancelled' } }, originalFinish: finish, settledMarked: true }));
+  expect(h.kills).toEqual([foreground.address]);
 });
 
 it('an undiscovered foreground launch holds console cleanup until its labelled terminal is recovered', async () => {

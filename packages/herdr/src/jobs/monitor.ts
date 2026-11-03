@@ -262,7 +262,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   }
   async function reconcileJob(job: JournalJob, signal?: AbortSignal): Promise<void> {
     if (job.phase.kind === 'launch-failed') return;
-    if (job.settledMarked || job.phase.kind === 'finished' && job.output?.complete) { await deliver(job); queueRelease(job); return; }
+    const awaitingNativeFinish = job.handoffCancelled && !job.uncertain && !job.originalFinish && !job.terminalExpired;
+    if (job.settledMarked || job.phase.kind === 'finished' && job.output?.complete && !awaitingNativeFinish) { await deliver(job); queueRelease(job); return; }
     let address = addressOf(job);
     if (!address && discovered.has(job.id)) { address = discovered.get(job.id)!; job.phase = { kind: 'disconnected', address, lastSeq: 0 }; await persist(); }
     if (address) {

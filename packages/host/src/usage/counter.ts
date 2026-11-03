@@ -245,7 +245,7 @@ export class CounterPoller {
     this.pendingSave = undefined; this.pendingError = undefined;
     this.current.latest = snapshot; this.current.lastSuccessAt = snapshot.ts;
     this.current.availability = "available"; this.current.errorCode = null;
-    this.options.onSaved?.();
+    try { this.options.onSaved?.(); } catch { /* Observers cannot invalidate a committed snapshot. */ }
   }
   private tick(retryStarted?: number): void {
     if (!this.started || !this.enabled || this.options.isChild) return;

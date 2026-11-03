@@ -11,10 +11,14 @@ import { dashboardBatch, dashboardCall } from "./fixtures/dashboard-ledger.js";
 import { ingestOnce } from "../ingest.js";
 import { acquireUsageLease, UsageLeaseError } from "../lease.js";
 import type { UsageWorkerEvent } from "../protocol.js";
-const reads = vi.hoisted(() => ({ health: 0, summaries: 0, calibration: 0, month: 0, failMonth: false, followers: [] as UsageLedger[] }));
+const reads = vi.hoisted(() => ({ health: 0, summaries: 0, calibration: 0, month: 0, failMonth: false, failPublish: false, followers: [] as UsageLedger[] }));
 vi.mock("../ledger.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../ledger.js")>();
-  return { ...actual, openUsageLedgerReadOnly: (file: string) => {
+  return { ...actual, openUsageLedger: (file: string) => {
+    const store = actual.openUsageLedger(file), apply = store.apply.bind(store);
+    store.apply = batch => { if (reads.failPublish && batch.publishedSnapshot) throw new Error("fixture publish failure"); return apply(batch); };
+    return store;
+  }, openUsageLedgerReadOnly: (file: string) => {
     const store = actual.openUsageLedgerReadOnly(file);
     if (store) { reads.followers.push(store); const health = store.health.bind(store), summarize = store.summarize.bind(store);
       store.health = () => { reads.health++; return health(); };
@@ -39,7 +43,7 @@ class Port extends EventEmitter {
 let root: string, ports: Port[];
 const metadataBudget = 64 * 1024;
 const at = Date.parse("2026-10-04T12:00:00Z");
-beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-entry-")); ports = []; reads.followers = []; reads.month=0; reads.failMonth=false; vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); })); });
+beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-entry-")); ports = []; reads.followers = []; reads.month=0; reads.failMonth=false; reads.failPublish=false; vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); })); });
 afterEach(async () => {
   for (const port of ports) { port.emit("message", { type: "stop" }); await vi.waitFor(() => expect(port.closed).toBe(true)); }
   vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); rmSync(root, { recursive: true, force: true });
@@ -126,6 +130,53 @@ it.each([false, true])("publishes a saved counter before the next ingest cycle, 
     if (writer.raw.inTransaction) writer.exec("ROLLBACK"); writer.close();
     p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
   }
+});
+it.each([false, true])("startup counter publication preserves a complete ledger before ingestion ends, early=%s", async early => {
+  vi.useFakeTimers();
+  const c = command(false, true), p = port();
+  const store = openUsageLedger(c.roots.ledgerFile);
+  store.apply({ ...dashboardBatch([]), backfillState: "complete" }); store.close();
+  writeFileSync(c.roots.authPath, JSON.stringify({ "github-copilot": { type: "oauth", refresh: "fixture-token", access: "fixture-access", expires: 0 } }));
+  let release!: () => void, respond!: (response: Response) => void, entered = false, finished = false;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const response = new Promise<Response>(resolve => { respond = resolve; });
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, fetch: () => response,
+    discover: async () => { entered = true; await blocked; finished = true; return { sources: [], runs: [], errors: [] }; } });
+  try {
+    if (!early) await vi.advanceTimersByTimeAsync(0);
+    respond(new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { credits_used: 9 } } })));
+    if (early) for (let i = 0; i < 20; i++) await Promise.resolve();
+    await vi.waitFor(() => expect(snapshots(p).at(-1)?.counter.latest?.creditsUsed).toBe(9));
+    expect(finished).toBe(false);
+    expect(snapshots(p).map(snapshot => snapshot.backfill)).toEqual(["complete"]);
+    const check = openUsageLedger(c.roots.ledgerFile);
+    try {
+      expect(check.getBackfillState()).toBe("complete");
+      expect(check.getPublishedSnapshot()).toMatchObject({ backfill: "complete", counter: { latest: { creditsUsed: 9 } } });
+    } finally { check.close(); }
+    await vi.advanceTimersByTimeAsync(0); expect(entered).toBe(true);
+  } finally { release(); await vi.advanceTimersByTimeAsync(0); }
+});
+it("a failed counter publication leaves a committed save and completed backfill healthy", async () => {
+  vi.useFakeTimers();
+  const c = command(false, true), p = port();
+  writeFileSync(c.roots.authPath, JSON.stringify({ "github-copilot": { type: "oauth", refresh: "fixture-token", access: "fixture-access", expires: 0 } }));
+  let respond!: (response: Response) => void;
+  const response = new Promise<Response>(resolve => { respond = resolve; });
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, fetch: () => response,
+    discover: async () => ({ sources: [], runs: [], errors: [] }) });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  reads.failPublish = true;
+  respond(new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { credits_used: 9 } } })));
+  await vi.advanceTimersByTimeAsync(0);
+  const check = openUsageLedger(c.roots.ledgerFile);
+  try {
+    expect(check.latestCounter()?.creditsUsed).toBe(9);
+    expect(check.getBackfillState()).toBe("complete");
+    expect(p.events.filter(event => event.type === "error")).toEqual([]);
+    reads.failPublish = false; p.emit("message", { type: "refresh" });
+    await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", counter: { availability: "available", latest: { creditsUsed: 9 } } }));
+  } finally { reads.failPublish = false; check.close(); }
 });
 it("a lease lost during pending ingestion fences writes and switches to read-only refresh", async () => {
   vi.useFakeTimers(); const c = command(), p = port(); let clock = at, release!: () => void, finished = false;

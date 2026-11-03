@@ -231,6 +231,24 @@ it("save failures are sanitized and not advertised as fresh snapshots", async ()
   expect(options.ledger.latestCounter()).toBeUndefined();
 });
 
+it.each([false, true])("a throwing save observer cannot invalidate a committed counter, retried=%s", async retried => {
+  const { poller, options } = await setup({ onSaved: () => { throw new Error("fixture observer failure"); } });
+  let writer: Database.Database | undefined;
+  if (retried) options.fetch = async () => ({ ok: true, status: 200, json: async () => {
+    writer = new Database(testFiles.get(options.ledger)!); writer.exec("BEGIN IMMEDIATE"); return valid;
+  } }) as Response;
+  try {
+    poller.start(); await settle();
+    if (retried) {
+      expect(options.ledger.latestCounter()).toBeUndefined();
+      writer!.exec("ROLLBACK"); await vi.advanceTimersByTimeAsync(40000);
+    }
+    expect(options.ledger.latestCounter()?.creditsUsed).toBe(7);
+    expect(poller.state()).toMatchObject({ availability: "available", errorCode: null, lastSuccessAt: 1000, latest: { creditsUsed: 7 } });
+    await vi.advanceTimersByTimeAsync(40000);
+    expect(poller.state()).toMatchObject({ availability: "available", errorCode: null });
+  } finally { if (writer?.inTransaction) writer.exec("ROLLBACK"); writer?.close(); }
+});
 it("a follower serves the owner's ledger snapshot with its age, not a failure (I3)", async () => {
   const a = await setup(); a.poller.start(); await settle();
   vi.setSystemTime(2000);

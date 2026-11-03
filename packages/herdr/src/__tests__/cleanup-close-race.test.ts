@@ -19,6 +19,27 @@ it.each(['kill', 'rm'])('close tolerates a terminal removed between inventory an
   expect(h.cleanupProof).toMatchObject({ remaining: [], defaultCoreUnchanged: true });
 });
 
+it('reports the identity and state of a terminal left after cleanup', async () => {
+  const h = await createHerdrHarness('fake'); await h.start();
+  const cli = h.cli; let address = '';
+  h.cli = async (argv, side) => {
+    const result = await cli(argv, side);
+    if (!address && side === 'local' && argv[0] === 'ls') {
+      const created = await cli(['run', '--name', 'late-viewer', '--label', 'spider.kind=subagent-viewer', '--', h.nodeBinary, '-e', 'setInterval(()=>{},1000)']);
+      address = (created as { address: string }).address;
+    }
+    return result;
+  };
+  let message = '';
+  try { await h.close(); } catch (error) { message = String(error); }
+  expect(message).toContain(address);
+  expect(message).toContain('late-viewer');
+  expect(message).toContain('spider.kind');
+  expect(message).toContain('subagent-viewer');
+  expect(message).toContain('live');
+  expect(address).not.toBe('');
+});
+
 it('close still reports failures other than an already removed terminal', async () => {
   const h = await createHerdrHarness('fake'); await h.start();
   const cli = h.cli; let failed = false;

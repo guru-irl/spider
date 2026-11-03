@@ -153,7 +153,7 @@ describe('external run viewer', () => {
     try { await handlers.get('session_start')!(); await expect(registration.peek(runId)).rejects.toThrow('Viewer reservation acknowledged a different terminal'); expect(releases).toHaveLength(1); }
     finally { await registration.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
-  it('cancels an in-flight parked viewer launch when its session shuts down', async () => {
+  it('waits for an in-flight parked viewer launch to roll back on shutdown', async () => {
     const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     const handlers = new Map<string, () => Promise<void>>(); const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI;
     const nativeRun = h.hc.run; let created: TerminalAddress | null = null; let release!: () => void; let entered!: () => void; const gate = new Promise<void>(r => { release = r; }); const began = new Promise<void>(r => { entered = r; });
@@ -162,8 +162,12 @@ describe('external run viewer', () => {
       ipcDescriptor: () => ({ ...descriptor, sessionId: h.owner!.sessionId, generation: h.owner!.generation }), ownedRunEvents: { list: async () => [runId], subscribe: () => () => {} },
       panes: { acquire: async () => null, release: async () => {}, park: async () => {}, dispose: () => {} } });
     try {
-      const start = handlers.get('session_start')!(); await began; await handlers.get('session_shutdown')!(); release(); await start;
-      await expect.poll(() => created).not.toBeNull(); await expect.poll(async () => h.hc.get(created!).then(() => 'live', error => error.code)).toBe('not_found');
+      const start = handlers.get('session_start')!(); await began;
+      let stopped = false;
+      const shutdown = handlers.get('session_shutdown')!().then(() => { stopped = true; });
+      await flush(); expect(stopped).toBe(false);
+      release(); await shutdown; await start;
+      expect(created).not.toBeNull(); await expect(h.hc.get(created!)).rejects.toMatchObject({ code: 'not_found' });
     } finally { release(); h.hc.run = nativeRun; await registration.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
   it('reloads a newer feed generation in the same terminal and ignores old generations', async () => {

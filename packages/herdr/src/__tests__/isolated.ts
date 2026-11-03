@@ -263,7 +263,14 @@ export async function createHerdrHarness(mode: AcceptanceMode): Promise<HerdrHar
       if (existsSync(localSocket)) { const machines = object(await h.cli(['machine', 'ls', '--json'])).machines; if (Array.isArray(machines) && machines.some(m => object(m).name === 'remote.invalid')) await h.cli(['machine', 'rm', 'remote.invalid', '--json']); observed.machines = object(await h.cli(['machine', 'ls', '--json'])).machines; }
       // Removing the machine clears local remote mirrors. Both independent cores must now be empty.
       if (existsSync(localSocket)) observed.localTerminals = object(await h.cli(['ls', '--all', '--json'])).terminals;
-      for (const key of ['localTerminals', 'remoteTerminals', 'machines']) if (observed[key] !== undefined && (!Array.isArray(observed[key]) || (observed[key] as unknown[]).length)) throw new HerdrError('cleanup-unproved', 'Owned core or machine inventory is not empty', observed);
+      for (const key of ['localTerminals', 'remoteTerminals', 'machines']) if (observed[key] !== undefined && (!Array.isArray(observed[key]) || (observed[key] as unknown[]).length)) {
+        const summary = Object.fromEntries(Object.entries(observed).map(([name, rows]) => [name, Array.isArray(rows) ? rows.map(row => {
+          if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+          const { address, id, name, labels, state } = row as Record<string, unknown>;
+          return { address, id, name, labels, state };
+        }) : rows]));
+        throw new HerdrError('cleanup-unproved', `Owned core or machine inventory is not empty: ${JSON.stringify(summary)}`, observed);
+      }
       } catch (error) { cleanupError = error; }
       finally {
         for (const client of clients) { try { await client.dispose(); } catch (error) { cleanupError ??= error; } }

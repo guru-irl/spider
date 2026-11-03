@@ -9,7 +9,7 @@ import { processToolContent } from '../../../host/src/routing/safety.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { acceptanceC, createRemoteTestFixture } from './acceptance/c.js';
 import { createExpiredRemoteFixture } from './herdr-expired-fixture.js';
-import type { RemoteExecuteRequest, MachineName, JobHandle } from '../contracts.js';
+import type { RemoteExecuteRequest, MachineName, JobHandle, JobId } from '../contracts.js';
 const harnesses: HerdrHarness[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -36,6 +36,84 @@ async function hupTimeout(mode: 'fake' | 'hc'): Promise<void> {
   expect(f.cancellations).toEqual([{ id: f.started[0].id, reason: 'timeout' }]);
 }
 describe('remote result adapter', () => {
+  it('reports a foreground timeout and the SIGHUP receipt to the caller', async () => {
+    const { ctx } = await fixture();
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }, ctx);
+    expect(result.text.startsWith('[timed out after 1 s. Spider sent a stop, and the command ended by signal SIGHUP.]')).toBe(true);
+    expect(result.isError).toBe(true);
+  }, 20000);
+  it('reports a trapped timeout with the actual exit zero', async () => {
+    const { ctx } = await fixture();
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "process.on('SIGHUP', () => process.exit(0)); setInterval(() => {}, 1000)", timeout: 1000 }, ctx);
+    expect(result.text.startsWith("[timed out after 1 s. Spider sent a stop, and the command's exit status was 0.]")).toBe(true);
+    expect(result.isError).toBe(true);
+  }, 20000);
+  it('labels a timed out batch item and names its timeout', async () => {
+    const { ctx } = await fixture();
+    const result = await runBatch({ on: 'remote.invalid', commands: [{ language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }] }, ctx);
+    expect(result.text).toContain('── [1] javascript · timed out · signal SIGHUP ──');
+    expect(result.text).toContain('[timed out after 1 s. Spider sent a stop, and the command ended by signal SIGHUP.]');
+    expect(result.isError).toBe(true);
+  }, 20000);
+  it('labels a timed out batch item that exits zero', async () => {
+    const { ctx } = await fixture();
+    const result = await runBatch({ on: 'remote.invalid', commands: [{ language: 'javascript', code: "process.on('SIGHUP', () => process.exit(0)); setInterval(() => {}, 1000)", timeout: 1000 }] }, ctx);
+    expect(result.text).toContain('── [1] javascript · timed out · exit 0 ──');
+    expect(result.text).toContain("[timed out after 1 s. Spider sent a stop, and the command's exit status was 0.]");
+    expect(result.isError).toBe(true);
+  }, 20000);
+  it('reports an indeterminate timeout without claiming the command stopped', async () => {
+    const { ctx } = await fixture();
+    ctx.remote.execute = async () => ({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'unknown', remote: { jobId: 'test-job' as JobId, machine: 'remote.invalid' as MachineName, address: null } });
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: '0', timeout: 1000 }, ctx);
+    expect(result.text.startsWith('[timed out after 1 s. Spider tried to stop the command, but its outcome is unknown.]')).toBe(true);
+    expect(result.isError).toBe(false);
+  }, 20000);
+  it('lets abort win when it races a timeout cancellation', async () => {
+    const { f, ctx } = await fixture(); const abort = new AbortController();
+    const start = f.ports.jobs.start;
+    f.ports.jobs.start = async (...args) => {
+      const job = await start(...args); const cancel = job.cancel;
+      job.cancel = async reason => { if (reason === 'timeout') abort.abort(); await cancel(reason); };
+      return job;
+    };
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }, { ...ctx, signal: abort.signal });
+    expect(result.details).toMatchObject({ outcome: 'aborted', aborted: true, timedOut: false });
+    expect(result.text).not.toContain('timed out');
+    expect(result.isError).toBe(true);
+  }, 20000);
+  it('returns an unknown timeout with job paths when cancellation throws', async () => {
+    const { f, ctx } = await fixture(); const start = f.ports.jobs.start;
+    f.ports.jobs.start = async (...args) => {
+      const job = await start(...args);
+      job.cancel = async () => { throw new Error('Transport unavailable'); };
+      return job;
+    };
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }, ctx);
+    expect(result.details).toMatchObject({ outcome: 'unknown', exitCode: null, timedOut: true });
+    expect(result.details.backgroundJob.receipt).toBe(join(f.started[0].localDirectory, 'receipt.json'));
+    expect(result.details.backgroundLogs).toEqual({ stdout: join(f.started[0].localDirectory, 'stdout.log'), stderr: join(f.started[0].localDirectory, 'stderr.log') });
+    expect(result.text.startsWith('[timed out after 1 s. Spider tried to stop the command, but its outcome is unknown.]')).toBe(true);
+    expect(result.text).toContain(result.details.backgroundJob.receipt);
+    expect(result.text).toContain(result.details.backgroundLogs.stdout);
+    expect(result.text).toContain(result.details.backgroundLogs.stderr);
+    expect(result.isError).toBe(false);
+  }, 20000);
+  it('reports a timeout whose command never started', async () => {
+    const { ctx } = await fixture();
+    ctx.remote.execute = async () => ({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'spawn-error', remote: { jobId: 'test-job' as JobId, machine: 'remote.invalid' as MachineName, address: null } });
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: '0', timeout: 1000 }, ctx);
+    expect(result.text.startsWith('[timed out after 1 s. Spider tried to stop the command, but it never started (spawn error).]')).toBe(true);
+    expect(result.isError).toBe(true);
+  }, 20000);
+  it('keeps the existing detached wording for a background timeout', async () => {
+    const { ctx } = await fixture();
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000, background: true }, ctx);
+    expect(result.text).toContain('[detached. The command has not finished, so its exit status is unknown.');
+    expect(result.text).toContain('Wait for the spider.job_done notice in this session. Do not poll or schedule checks.');
+    expect(result.text).not.toContain('Spider stopped the command');
+    expect(result.isError).toBe(false);
+  }, 20000);
   it('a child uses the same executor and receives its own output and exit code', async () => {
     const { f, request } = await fixture(); vi.stubEnv('PI_SUBAGENT_CHILD', '1');
     const result = await executeRemote(request("console.log('child output');process.exitCode=23"), f.ports);

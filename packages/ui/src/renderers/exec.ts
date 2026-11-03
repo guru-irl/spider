@@ -59,6 +59,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   const expanded = ctx.expanded === true;
   const trim = resultTrimmer(expanded);
   const out: string[] = [""];
+  const timeoutLabel = (label: string) => details.timedOut ? `timed out · ${label}` : label;
 
   // Command block — EXPANDED ONLY. The call header already shows the first lines while the
   // command runs; on ctrl+o we show the whole script, which the header deliberately clips.
@@ -89,6 +90,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const icon = statusIcon(theme, "fail");
     const metaParts = [details.failures.join(", "), `${details.outLines} lines`];
     if (details.unknownCount) metaParts.push(`${details.unknownCount} unknown`);
+    if (details.timedOutUnknown) metaParts.push("timed out · outcome unknown");
     out.push(trim(` ${icon} ${theme.fg("muted", metaParts.join(" · "))}`, width, ""));
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(0, 1);
@@ -110,7 +112,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const indeterminate = details.outcome === "unknown";
     out.push(trim(
       indeterminate
-        ? ` ${statusIcon(theme, "on")} ${theme.fg("muted", `outcome unknown · ${details.outLines} lines`)}`
+        ? ` ${statusIcon(theme, "on")} ${theme.fg("muted", `${timeoutLabel("outcome unknown")} · ${details.outLines} lines`)}`
         : ` ${statusIcon(theme, "on")} ${theme.fg("muted", `detached · pid ${d.pid ?? "?"} · exit unknown · ${details.outLines} lines so far`)}`,
       width, ""));
     if (d.jobDir) out.push(trim(` ${theme.fg("dim", "⎿ ")}${theme.fg("muted", `logs: ${d.jobDir}`)}`, width, ""));
@@ -142,7 +144,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
       details.outcome === "spawn-error" ? "spawn error" :
       details.outcome === "aborted" ? `aborted · exit ${details.exitCode}` :
       `exit ${details.exitCode}`;
-    const meta = [label, `${details.outLines} lines`];
+    const meta = [timeoutLabel(label), `${details.outLines} lines`];
     if (details.ms !== undefined) meta.push(`${details.ms}ms`);
     meta.push("logs retained");
     out.push(trim(` ${icon} ${theme.fg("muted", meta.join(" · "))}`, width, ""));
@@ -184,8 +186,9 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     // F-1: a KNOWN signal/spawn-error batch failure that ALSO has at least one
     // genuinely unknown entry alongside it must disclose both facts — never
     // collapse the mix down to just the named failure.
-    const metaParts = [`${label}`, `${details.outLines} lines`];
+    const metaParts = [timeoutLabel(label), `${details.outLines} lines`];
     if (known && details.unknownCount) metaParts.push(`${details.unknownCount} unknown`);
+    if (details.timedOutUnknown) metaParts.push("timed out · outcome unknown");
     out.push(trim(
       ` ${icon} ${theme.fg("muted", metaParts.join(" · "))}`,
       width, ""));
@@ -196,11 +199,12 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   }
 
   const icon = statusIcon(theme, details.ok ? "ok" : "fail");
-  const meta = [`exit ${details.exitCode}`, `${details.outLines} lines`];
+  const meta = [timeoutLabel(`exit ${details.exitCode}`), `${details.outLines} lines`];
   if (details.ms !== undefined) meta.push(`${details.ms}ms`);
   // M-c: mixed batch failure+unknown discloses BOTH facts, not just the
   // aggregate numeric failure.
   if (details.unknownCount) meta.push(`${details.unknownCount} unknown`);
+  if (details.timedOutUnknown) meta.push("timed out · outcome unknown");
   out.push(trim(` ${icon} ${theme.fg("muted", meta.join(" · "))}`, width, ""));
   const preview = details.preview ?? [];
   const shown = expanded ? preview : preview.slice(0, 1);

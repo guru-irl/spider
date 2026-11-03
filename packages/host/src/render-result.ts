@@ -14,7 +14,7 @@ import {
   type StageResult,
   type MemoryRecord,
 } from "@spider/memory";
-import { renderImportResult, isKnownFailureOutcome } from "@spider/context";
+import { renderImportResult, isKnownFailureOutcome, foregroundTimedOut, isExecError } from "@spider/context";
 import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
@@ -353,19 +353,22 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     // default for any hypothetical shape that predates it) is genuinely unknown.
     const isNumericFail = (r: any) => typeof r?.exitCode === "number" && r.exitCode !== 0;
     const isKnownFailOutcome = (r: any) => isKnownFailureOutcome(r?.outcome);
+    const isTimeoutFailure = (r: any) => foregroundTimedOut(r) && r?.outcome !== "unknown";
     const isUnknownEntry = (r: any) => r?.exitCode === null && !isKnownFailOutcome(r);
     // C-H2: a human-readable label for ONE entry's real failure — never a code that
     // entry did not itself produce. `aborted` always carries the real `137` sentinel
     // (executor.ts), so it is named explicitly rather than falling through to a bare
     // "exit 137" that reads like an ordinary numeric failure.
-    const failLabel = (r: any): string =>
-      r?.outcome === "signal" ? `signal ${typeof r?.signal === "string" ? r.signal : "?"}`
-      : r?.outcome === "spawn-error" ? "spawn error"
-      : r?.outcome === "aborted" ? `aborted${typeof r?.exitCode === "number" ? ` · exit ${r.exitCode}` : ""}`
-      : `exit ${r?.exitCode ?? "unknown"}`;
+    const failLabel = (r: any): string => {
+      const label = r?.outcome === "signal" ? `signal ${typeof r?.signal === "string" ? r.signal : "?"}`
+        : r?.outcome === "spawn-error" ? "spawn error"
+        : r?.outcome === "aborted" ? `aborted${typeof r?.exitCode === "number" ? ` · exit ${r.exitCode}` : ""}`
+        : `exit ${r?.exitCode ?? "unknown"}`;
+      return foregroundTimedOut(r) ? `timed out · ${label}` : label;
+    };
     const anyNumericFail = arr.some(isNumericFail);
     const anyKnownFailOutcome = arr.some(isKnownFailOutcome);
-    const anyFail = anyNumericFail || anyKnownFailOutcome;
+    const anyFail = anyNumericFail || anyKnownFailOutcome || arr.some(isTimeoutFailure);
     const anyUnknown = arr.some(isUnknownEntry);
     const unknownCount = arr.filter(isUnknownEntry).length;
     // M-b: an EMPTY batch (no commands at all) is neutral/no-results, never the
@@ -374,7 +377,7 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     // "unknown" rendering as any other indeterminate outcome.
     const empty = arr.length === 0;
     const ok = empty ? true : (!anyFail && !anyUnknown);
-    const failEntries = arr.filter((r) => isNumericFail(r) || isKnownFailOutcome(r));
+    const failEntries = arr.filter((r) => isNumericFail(r) || isKnownFailOutcome(r) || isTimeoutFailure(r));
     // C-H2: EVERY distinct failure kind present, in first-seen order, deduplicated —
     // never just the first. A numeric fail + a signal death used to collapse into one
     // fabricated "exit 1" that named neither honestly; a second/third distinct signal
@@ -392,7 +395,7 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     //    failing entry is a real numeric exit AND they all agree on the same value;
     //    otherwise there is no one "the batch's exit code" and this stays null —
     //    `failures` below carries the truth instead of a fabricated stand-in.
-    const allNumericFailuresAgree = anyNumericFail && !anyKnownFailOutcome && new Set(failEntries.map((r) => r.exitCode)).size === 1;
+    const allNumericFailuresAgree = failEntries.length > 0 && !anyKnownFailOutcome && failEntries.every((r) => typeof r.exitCode === "number") && new Set(failEntries.map((r) => r.exitCode)).size === 1;
     const exitCode: number | null = empty
       ? null
       : arr.length === 1
@@ -412,6 +415,8 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     const firstFail = failEntries[0];
     return {
       kind, commands, ok, exitCode, outLines, preview,
+      ...(distinctFailures.length === 1 && firstFail && foregroundTimedOut(firstFail) || arr.length === 1 && foregroundTimedOut(arr[0]) ? { timedOut: true } : {}),
+      ...(arr.length > 1 && arr.some(r => isUnknownEntry(r) && foregroundTimedOut(r)) ? { timedOutUnknown: true } : {}),
       ...(firstFail?.outcome ? { outcome: firstFail.outcome as any } : {}),
       ...(typeof firstFail?.signal === "string" ? { signal: firstFail.signal } : {}),
       ...(distinctFailures.length > 0 ? { failures: distinctFailures } : {}),
@@ -448,7 +453,7 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     const hasHandle = !!job || typeof r.pid === "number";
     return {
       kind, commands: [cmd], ok: false, exitCode: null, outcome: outcome as any,
-      outLines: outArr.length, preview: outArr.slice(-8),
+      outLines: outArr.length, preview: outArr.slice(-8), timedOut: foregroundTimedOut(r),
       ...(hasHandle ? {
         detached: {
           ...(typeof r.pid === "number" ? { pid: r.pid } : {}),
@@ -471,8 +476,8 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
     // the empty-batch case. `null` here (not `0`) keeps this branch's own
     // "never fabricate 0" contract even for a shape no current caller emits.
     return {
-      kind, commands: [cmd], ok: rawExit === 0, exitCode: rawExit === undefined ? null : rawExit,
-      outLines: outArr.length, preview: outArr.slice(-8),
+      kind, commands: [cmd], ok: rawExit === 0 && !isExecError(r), exitCode: rawExit === undefined ? null : rawExit,
+      outLines: outArr.length, preview: outArr.slice(-8), timedOut: foregroundTimedOut(r),
       outcome: outcome as any,
       ...(typeof r.signal === "string" ? { signal: r.signal } : {}),
       retained: {
@@ -490,7 +495,7 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
   if (r.exitCode === null) {
     return {
       kind, commands: [cmd], ok: false, exitCode: null, outcome: outcome as any,
-      outLines: outArr.length, preview: outArr.slice(-8),
+      outLines: outArr.length, preview: outArr.slice(-8), timedOut: foregroundTimedOut(r),
       ...(typeof r.signal === "string" ? { signal: r.signal } : {}),
     };
   }
@@ -500,7 +505,7 @@ function toExecDetails(action: string, args: any, details: any, partialText?: st
   // at all), which defaults to 0.
   const rawExit = r.exitCode;
   const exitCode = Number(rawExit ?? 0);
-  return { kind, commands: [cmd], ok: exitCode === 0, exitCode, outLines: outArr.length, preview: outArr.slice(-8) };
+  return { kind, commands: [cmd], ok: exitCode === 0 && !isExecError({ ...r, exitCode }), exitCode, outLines: outArr.length, preview: outArr.slice(-8), timedOut: foregroundTimedOut(r) };
 }
 
 /** Map the indexContent result → IndexDetails for renderIndexResult (index action only). */

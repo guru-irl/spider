@@ -115,6 +115,48 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(out).toMatch(/exit 0/);
   });
 
+  it.each([
+    ["exec", { stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGHUP", timedOut: true }, "timed out · signal SIGHUP"],
+    ["exec_file", { stdout: "", stderr: "", exitCode: 0, outcome: "exited", timedOut: true }, "timed out · exit 0"],
+    ["batch", [{ stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGHUP", timedOut: true }], "timed out · signal SIGHUP"],
+    ["batch", [{ stdout: "", stderr: "", exitCode: 0, outcome: "exited", timedOut: true }], "timed out · exit 0"],
+  ] as const)("shows %s foreground timeout without success", (action, details, status) => {
+    const out = lines(action, details, { commands: [{ code: "run" }] }).join("\n");
+    expect(out).toContain(status);
+    expect(out).toContain("✗");
+    expect(out).not.toContain("✓");
+  });
+
+  it("distinguishes a timeout exit zero from another batch failure", () => {
+    const out = lines("batch", [
+      { stdout: "", stderr: "", exitCode: 0, outcome: "exited", timedOut: true },
+      { stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGTERM", timedOut: false },
+    ], { commands: [{ code: "first" }, { code: "second" }] }).join("\n");
+    expect(out).toContain("timed out · exit 0");
+    expect(out).toContain("signal SIGTERM");
+    expect(out).toContain("✗");
+    expect(out).not.toContain("✓");
+  });
+
+  it("shows a foreground timeout with unknown outcome without inventing success or failure", () => {
+    const out = lines("exec", { stdout: "", stderr: "", exitCode: null, outcome: "unknown", timedOut: true, backgroundJob: { dir: "job", receipt: "job/receipt" } }).join("\n");
+    expect(out).toContain("timed out · outcome unknown");
+    expect(out).toContain("job/receipt");
+    expect(out).not.toContain("✓");
+    expect(out).not.toContain("✗");
+  });
+
+  it("shows an unknown timeout alongside a separate batch failure", () => {
+    const out = lines("batch", [
+      { stdout: "", stderr: "", exitCode: null, outcome: "unknown", timedOut: true },
+      { stdout: "", stderr: "", exitCode: 2, outcome: "exited", timedOut: false },
+    ], { commands: [{ code: "first" }, { code: "second" }] }).join("\n");
+    expect(out).toContain("timed out · outcome unknown");
+    expect(out).toContain("exit 2");
+    expect(out).toContain("✗");
+    expect(out).not.toContain("✓");
+  });
+
   it("batch aggregates exit codes and marks failure", () => {
     const out = lines("batch", [
       { stdout: "ok", stderr: "", exitCode: 0, timedOut: false },

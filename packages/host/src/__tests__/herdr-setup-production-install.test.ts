@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, readdir, unlink, chmod, stat } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve, join, dirname } from 'node:path';
 import { verifiedHerdrFile } from '../herdr/ports.js';
@@ -33,9 +33,42 @@ test('doctor shows terminal cleanup diagnostics without treating automatic retri
   expect(result.failures).toEqual([]);
   expect(result.warnings ?? []).toEqual([]);
   expect(result.information).toEqual([
-    { item: 'jobs', code: 'cleanup-retrying', message: `Job ${journal.jobs[0].id} on remote.invalid is waiting for terminal cleanup. Last failure machine-unavailable; 2 attempts. Automatic retries continue.` },
-    { item: 'jobs', code: 'cleanup-retrying', message: `Job ${journal.jobs[0].id} on remote.invalid is waiting for terminal cleanup. Last failure machine-unavailable; 2 attempts. Automatic retries continue.` },
+    { item: 'jobs', code: 'cleanup-retrying', message: '2 terminals on remote.invalid are waiting for cleanup. Last failure machine-unavailable. Oldest failure at 1000 ms since epoch. Retries run while each owning session is open.' },
   ]);
+});
+
+test('doctor reads every job file without changing modes and isolates corrupt journals', async () => {
+  const f = await fixture(), h = await monitorFixture(), jobs = h.monitor();
+  await jobs.start(program, h.owner, on, { background: true }); await jobs.shutdown('reload');
+  const journal = await createJobStore(h.f.root, h.owner.sessionId).read();
+  journal.jobs[0].cleanupFailure = { code: 'machine-unavailable', attempts: 2, firstAt: 1000, lastAt: 31000 };
+  const root = join(f.request.config.globalRoot, 'herdr/jobs');
+  const good = createJobStore(root, h.owner.sessionId), corrupt = createJobStore(root, 'a-corrupt' as never);
+  await good.write(journal); await mkdir(corrupt.directory, { recursive: true });
+  await writeFile(corrupt.path, '{"private-parser-detail":');
+  const empty = join(root, 'sessions/z-empty'); await mkdir(empty, { recursive: true });
+  const directories = [good.directory, corrupt.directory, empty];
+  for (const directory of directories) await chmod(directory, 0o750);
+  const modes = await Promise.all(directories.map(async directory => (await stat(directory)).mode));
+  const contents = await Promise.all(directories.map(directory => readdir(directory)));
+  const result = await (await f.ports.doctorParts(f.request)).inspect('jobs', f.request);
+  expect(result.failures).toEqual([]);
+  expect(result.information).toContainEqual({ item: 'jobs', code: 'job-journal-unreadable', message: `Could not read job journal ${corrupt.path}.` });
+  expect(result.information?.filter(line => line.code === 'cleanup-retrying')).toHaveLength(1);
+  expect(JSON.stringify(result)).not.toMatch(/private-parser-detail|Expected|JSON at position/);
+  expect(await Promise.all(directories.map(async directory => (await stat(directory)).mode))).toEqual(modes);
+  expect(await Promise.all(directories.map(directory => readdir(directory)))).toEqual(contents);
+});
+
+test('doctor job inspection preserves directory permissions when journals are absent', async () => {
+  const f = await fixture();
+  const directory = join(f.request.config.globalRoot, 'herdr/jobs/sessions/empty');
+  await mkdir(directory, { recursive: true }); await chmod(directory, 0o750);
+  const mode = (await stat(directory)).mode;
+  const result = await (await f.ports.doctorParts(f.request)).inspect('jobs', f.request);
+  expect(result.failures).toEqual([]);
+  expect((await stat(directory)).mode).toBe(mode);
+  expect(await readdir(directory)).toEqual([]);
 });
 
 test('production CLI plan lists assets without changing files or launching probes', async () => {

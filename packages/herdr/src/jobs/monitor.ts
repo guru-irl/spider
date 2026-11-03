@@ -65,7 +65,7 @@ export interface JobMonitor extends JobPort {
   shutdown(reason: 'reload' | 'quit'): Promise<void>;
 }
 /** One writer and one event subscription per owning pi activation. No payload retry path exists. */
-export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: CleanupSweep, warnedMachines: Set<string> = new Set<string>()): JobMonitor {
+export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: CleanupSweep): JobMonitor {
   let owner: Owner | null = null;
   let store: ReturnType<typeof createJobStore>;
   let journal: JobJournal;
@@ -179,7 +179,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     try {
       const terminal = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
       const labels = terminal.labels;
-      if (terminal.state !== 'finished' || labels[HERDR_LABELS.job] !== job.id || labels[HERDR_LABELS.session] !== job.owner.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== job.owner.terminal.terminalId || labels[HERDR_LABELS.kind] !== job.kind || (labels[HERDR_LABELS.run] ?? undefined) !== job.runId) { releaseSkipped.add(job.id); return; }
+      if (terminal.state !== 'finished' || labels[HERDR_LABELS.job] !== job.id || labels[HERDR_LABELS.session] !== job.owner.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== job.owner.terminal.terminalId || labels[HERDR_LABELS.kind] !== job.kind || (labels[HERDR_LABELS.run] ?? undefined) !== job.runId) { releaseSkipped.add(job.id); if (job.cleanupFailure) { delete job.cleanupFailure; await save(); } return; }
       if (lifetime.signal.aborted) return;
       await cleanupCall(() => release(job));
       await cleanupCall(() => options.hc.rm(address, cleanupOptions()));
@@ -192,18 +192,14 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
     if (recoveringNotices.has(job.id) || job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
-    if (job.cleanupFailure?.warned) warnedMachines.add(job.machine);
     enqueueCleanup(releaseKey(job), async () => {
       try { await releaseSettledTerminal(job, save); }
       catch (error) {
         if (lifetime.signal.aborted) throw error;
         const previous = job.cleanupFailure, now = options.clock();
         const code = error instanceof HerdrError ? error.code.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 100) : 'cleanup-failed';
-        const failure = job.cleanupFailure = { code, attempts: (previous?.attempts ?? 0) + 1, firstAt: previous?.firstAt ?? now, lastAt: now, ...(previous?.warned ? { warned: true } : {}) };
-        const warn = code !== 'core-unavailable' && failure.attempts >= 8 && now - failure.firstAt >= 86400000 && !warnedMachines.has(job.machine);
-        if (warn) { warnedMachines.add(job.machine); failure.warned = true; }
+        job.cleanupFailure = { code, attempts: (previous?.attempts ?? 0) + 1, firstAt: previous?.firstAt ?? now, lastAt: now };
         await save();
-        if (warn) report(new HerdrError('cleanup-machine-stalled', 'Job terminal cleanup needs attention', { machine: job.machine }));
         throw error;
       }
     });
@@ -333,8 +329,11 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         await cleanupCall(() => release(job)); await ensurePrivateDirectory(job.localDirectory);
         if (stopping || closed) return;
         await rm(job.localDirectory, { recursive: true });
-        await serial(async () => { journal.jobs = journal.jobs.filter(j => j.id !== job.id); await persist(); });
-        cleanup.cancel(releaseKey(job));
+        await serial(async () => {
+          if (stopping || closed) return;
+          journal.jobs = journal.jobs.filter(j => j.id !== job.id); await persist();
+          cleanup.cancel(releaseKey(job));
+        });
       });
     }
   }
@@ -379,7 +378,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         }
         await cleanup.flush(childJournal.jobs.map(releaseKey));
       },
-      adopt: async (runId, signal, callerCrashed) => { const monitor = createJobMonitor({ ...options, adoptedRunId: runId, callerCrashed }, cleanup, warnedMachines); try { await monitor.activate(nextOwner, signal); return monitor; } catch (error) { await monitor.shutdown('reload'); throw error; } },
+      adopt: async (runId, signal, callerCrashed) => { const monitor = createJobMonitor({ ...options, adoptedRunId: runId, callerCrashed }, cleanup); try { await monitor.activate(nextOwner, signal); return monitor; } catch (error) { await monitor.shutdown('reload'); throw error; } },
     });
     const identity = await options.hc.identity();
     if (identity.coreId !== nextOwner.terminal.coreId || identity.socket !== nextOwner.terminal.socket || identity.sessionNamespace !== nextOwner.terminal.sessionNamespace) throw new HerdrError('job-owner-mismatch', 'Owning terminal is on another core');

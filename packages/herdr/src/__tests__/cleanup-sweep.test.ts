@@ -78,11 +78,15 @@ it.each(['uncertain', 'foreign', 'unmarked'])('prunes seven day logs independent
 it('does not recheck a relabelled terminal on every reconcile', async () => {
   const f = await backlog(), get = vi.spyOn(f.hc, 'get'), removed = vi.spyOn(f.hc, 'rm');
   f.terminals.get(f.handles[0].address)!.labels = {};
+  const journal = await f.store.read();
+  journal.jobs[0].cleanupFailure = { code: 'machine-unavailable', attempts: 2, firstAt: 1000, lastAt: 31000 };
+  await f.store.write(journal);
   const jobs = f.monitor(); await jobs.activate(f.owner);
   await vi.waitFor(() => expect(get).toHaveBeenCalled());
   for (let i = 0; i < 4; i++) await jobs.reconcile();
   expect(get).toHaveBeenCalledTimes(1);
   expect(removed).not.toHaveBeenCalled();
+  await vi.waitFor(async () => expect((await f.store.read()).jobs[0].cleanupFailure).toBeUndefined());
 });
 
 it('does not release a parent job terminal carrying a child run label', async () => {
@@ -180,14 +184,14 @@ it('records transient cleanup failures without UI warnings and clears them after
   ]));
 });
 
-it('warns once per machine only after a day of repeated cleanup failures, including across reload', async () => {
+it('keeps repeated cleanup failures quiet across long delays and reload', async () => {
   const f = await backlog(3); vi.spyOn(f.hc, 'get').mockRejectedValue(new HerdrError('machine-unavailable', 'Machine is offline'));
   let now = 1000; const jobs = f.monitor({ clock: () => now }); await jobs.activate(f.owner);
   for (let attempt = 1; attempt <= 8; attempt++) {
     await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === attempt)).toBe(true));
     if (attempt < 8) { expect(f.errors).toEqual([]); now += 4 * 3600000; await jobs.reconcile(); }
   }
-  expect(f.errors).toMatchObject([{ code: 'cleanup-machine-stalled', details: { machine: on } }]);
+  expect(f.errors).toEqual([]);
   now += 4 * 3600000; await jobs.reconcile();
   await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === 9)).toBe(true));
   await jobs.shutdown('reload'); f.errors.length = 0;

@@ -585,15 +585,23 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           try { return (await readdir(path, { withFileTypes: true })).filter(entry => entry.isDirectory() && /^[a-zA-Z0-9_-]{1,160}$/.test(entry.name)); }
           catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
         };
+        const machines = new Map<string, { count: number; code: string; firstAt: number; lastAt: number }>();
         for (const session of await directories(join(root, 'sessions'))) {
           const sessionId = session.name as SessionId;
           const stores = [createJobStore(root, sessionId), ...(await directories(join(root, 'sessions', session.name, 'runs'))).map(run => createJobStore(root, sessionId, run.name as RunId))];
-          for (const store of stores) for (const job of (await store.read()).jobs) {
-            if (!job.cleanupFailure || job.terminalReleased) continue;
-            const clean = (text: string) => text.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 160);
-            information.push({ item, code: 'cleanup-retrying', message: `Job ${clean(job.id)} on ${clean(job.machine)} is waiting for terminal cleanup. Last failure ${clean(job.cleanupFailure.code)}; ${job.cleanupFailure.attempts} attempts. Automatic retries continue.` });
+          for (const store of stores) {
+            let journal;
+            try { journal = await store.read({ readOnly: true }); }
+            catch { information.push({ item, code: 'job-journal-unreadable', message: `Could not read job journal ${store.path}.` }); continue; }
+            for (const job of journal.jobs) {
+              if (!job.cleanupFailure || job.terminalReleased) continue;
+              const failure = job.cleanupFailure, previous = machines.get(job.machine);
+              machines.set(job.machine, { count: (previous?.count ?? 0) + 1, code: previous && previous.lastAt > failure.lastAt ? previous.code : failure.code, firstAt: Math.min(previous?.firstAt ?? failure.firstAt, failure.firstAt), lastAt: Math.max(previous?.lastAt ?? failure.lastAt, failure.lastAt) });
+            }
           }
         }
+        const clean = (text: string) => text.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 160);
+        for (const [machine, failure] of machines) information.push({ item, code: 'cleanup-retrying', message: `${failure.count} terminal${failure.count === 1 ? '' : 's'} on ${clean(machine)} ${failure.count === 1 ? 'is' : 'are'} waiting for cleanup. Last failure ${clean(failure.code)}. Oldest failure at ${failure.firstAt} ms since epoch. Retries run while each owning session is open.` });
         return { failures: [], information };
       }
       if (item === 'status-instance') return { failures: [], warnings: [{ item, code: 'inspection-unavailable', message: 'The native status instance cannot be inspected from a standalone shell', repair: 'Inspect an active interactive owner and rerun doctor.' }] };

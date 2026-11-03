@@ -2,7 +2,7 @@
 import { HerdrError } from './client/parse.js';
 
 interface Notice { text: string; action: string | null }
-type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'remoteUnavailable' | 'outputUnavailable' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished' | 'setupUnplaced';
+type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'remoteUnavailable' | 'remoteUnavailableChild' | 'outputUnavailable' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished' | 'setupUnplaced';
 
 export function changedSetupFilesNotice(files: readonly { path: string; refusal?: { message: string } }[]): string {
   return `Setup found changed files. Restore the recorded values below, or rerun setup with --replace-changed to back up and replace these files.\n${files.map(file => `  ${file.path}${file.refusal ? `\n    ${file.refusal.message}` : ''}`).join('\n')}`;
@@ -95,7 +95,8 @@ export const HERDR_NOTICES: Readonly<Record<NoticeCode, Notice>> = {
   remoteStart: { text: "Spider couldn't start the remote command. Your session and local commands still work. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   remoteNotInstalled: { text: "Spider couldn't start the remote command because Herdr isn't set up on that machine. Your session and local commands still work. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   remoteDisabled: { text: "Spider couldn't run this command on another machine because Herdr is off in this session. Local commands still work. Check that Herdr is running and enabled, then run /reload or open a new session in Herdr.", action: '/reload' },
-  remoteUnavailable: { text: 'Herdr remote execution is unavailable in this <scope> because its Herdr <stage> failed (<cause>). Local commands still work. Run /reload to reconnect. If that does not help, use the Run doctor button in the spider panel, or run /herdr-setup to print the doctor command for this machine.', action: '/reload' },
+  remoteUnavailable: { text: 'Remote execution is unavailable in this session. The <stage> failed because <cause>. Local commands still work. Run /reload to reconnect. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.', action: '/reload' },
+  remoteUnavailableChild: { text: 'Remote execution is unavailable in this subagent. The <stage> failed because <cause>. Local commands still work. Report back so the parent can restore Herdr and start a new run.', action: 'Report back' },
   outputUnavailable: { text: "Spider couldn't read output for job <job> on <machine>. The result shows as unknown for now. The command itself isn't affected.", action: null },
   generic: { text: "Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   sessionKillFailed: { text: 'Subagents stopped, but the terminal could not close. Try Kill session again.', action: 'Kill session' },
@@ -112,10 +113,23 @@ export const HERDR_NOTICES: Readonly<Record<NoticeCode, Notice>> = {
   templateWatcher: { text: "Spider couldn't update the Herdr watcher shortcut because its model is unavailable. Choose an available watcher model in spider's global settings.", action: 'Choose an available watcher model' },
 };
 
+const remoteFailureCauses: Readonly<Record<string, string>> = {
+  'reply-too-large': 'the terminal list exceeded its byte limit',
+  'invalid-reply': 'a reply could not be read',
+  'missing-hc': 'the core command could not start',
+  'spawn-error': 'the core command could not start',
+  'core-unavailable': 'the core stopped responding',
+  'events-disconnected': 'the event stream disconnected',
+  'terminal-core-mismatch': 'this pane belongs to a stopped instance',
+  'core-mismatch': 'this pane belongs to a stopped instance',
+  'invalid-config': 'the configuration could not be read',
+};
 export function remoteUnavailableNotice(error: unknown, scope: 'session' | 'subagent', stage: 'activation' | 'monitor'): string {
-  const message = error instanceof Error ? error.message : 'Unknown activation error';
-  const cause = message.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 300).replace(/[.\s]+$/, '') || 'Unknown activation error';
-  return HERDR_NOTICES.remoteUnavailable.text.replace('<scope>', scope).replace('<stage>', stage === 'monitor' ? 'job monitor' : 'activation').replace('<cause>', () => cause);
+  const key = herdrErrorNoticeKey(error);
+  if (scope === 'session' && ['retired', 'coreDown', 'configProblem'].includes(key)) return HERDR_NOTICES[key].text;
+  const code = error instanceof HerdrError ? error.code : '';
+  const cause = Object.hasOwn(remoteFailureCauses, code) ? remoteFailureCauses[code] : 'the connection could not be established';
+  return HERDR_NOTICES[scope === 'subagent' ? 'remoteUnavailableChild' : 'remoteUnavailable'].text.replace('<stage>', stage === 'monitor' ? 'job monitor' : 'activation').replace('<cause>', cause);
 }
 
 export type InactiveReason = 'no-config' | 'outside' | 'core-down' | 'nested' | 'config-problem' | 'activation-problem' | 'child-missing' | 'child-presence';

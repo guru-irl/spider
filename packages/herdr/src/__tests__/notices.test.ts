@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 import { HerdrError } from '../client/parse.js';
-import { HERDR_NOTICES, herdrErrorNotice, herdrErrorNoticeKey } from '../notices.js';
+import { HERDR_NOTICES, herdrErrorNotice, herdrErrorNoticeKey, remoteUnavailableNotice } from '../notices.js';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
 import { killTarget } from '../../assets/agents/move.js';
 
@@ -126,4 +126,27 @@ it('shows actionable setup refusals with every session name in the panel', () =>
   expect(notice).toContain('/reload in that session');
   expect(notice).toContain('/herdr-setup prints the command.');
   expect(notice).not.toContain('running-session-unplaced');
+});
+
+it.each([
+  ['reply-too-large', 'the terminal list exceeded its byte limit'],
+  ['invalid-reply', 'a reply could not be read'],
+  ['missing-hc', 'the core command could not start'],
+  ['spawn-error', 'the core command could not start'],
+  ['unknown-external-code', 'the connection could not be established'],
+])('remote failure %s uses catalog wording rather than external text', (code, cause) => {
+  const notice = remoteUnavailableNotice(new HerdrError(code, 'private-terminal /private/binary untrusted-core-text'), 'session', 'monitor');
+  expect(notice).toContain(cause);
+  expect(notice).not.toMatch(/private-terminal|private\/binary|untrusted-core-text/);
+  expect(notice).toContain('Use Run doctor in the spider panel');
+});
+
+it.each([['terminal-core-mismatch', 'retired'], ['core-unavailable', 'coreDown'], ['invalid-config', 'configProblem']] as const)('remote %s keeps its specific recovery guidance', (code, key) => {
+  expect(remoteUnavailableNotice(new HerdrError(code, 'untrusted'), 'session', 'activation')).toBe(HERDR_NOTICES[key].text);
+});
+
+it('subagent failures name an action the child can take instead of UI commands', () => {
+  const notice = remoteUnavailableNotice(new HerdrError('invalid-reply', 'private'), 'subagent', 'monitor');
+  expect(notice).toContain('Report back so the parent can restore Herdr and start a new run');
+  expect(notice).not.toMatch(/\/reload|Run doctor|\/herdr-setup|private/);
 });

@@ -2,6 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import * as monitors from '../jobs/monitor.js';
 import { registerHerdrJobs } from '../jobs/register.js';
 import { createJobHandoff, processStartIdentity, readChildJobJournals } from '../jobs/handoff.js';
 import { createJobStore } from '../jobs/store.js';
@@ -71,4 +72,26 @@ it('periodic child identity checks do not block the parent event loop', async ()
   expect(ticked).toBe(true);
   expect(Date.now() - began).toBeLessThan(500);
   await bounded(pending, 3000);
+});
+
+it.each(['resolve', 'reject'])('a stale activation cannot %s over the newer generation', async outcome => {
+  const h = await monitorFixture(), gate = deferred(), hooks = new Map<string, Function>();
+  const create = monitors.createJobMonitor, created: ReturnType<typeof create>[] = [];
+  const spy = vi.spyOn(monitors, 'createJobMonitor').mockImplementation(options => {
+    const monitor = create(options), first = created.length === 0;
+    const wrapped = { ...monitor, activate: async (...args: Parameters<typeof monitor.activate>) => { if (first) { await gate.promise; if (outcome === 'reject') throw new Error('stale failure'); } await monitor.activate(...args); } };
+    created.push(wrapped); return wrapped;
+  });
+  const failures: unknown[] = [], bound: unknown[] = [];
+  const registration = registerHerdrJobs({ on(name: string, handler: Function) { hooks.set(name, handler); return () => {}; }, sendMessage() {} } as never, {
+    currentOwner: () => h.owner, monitorOptions: () => h.options, jobIdsForToolResult: () => [], bind: value => { if (value) bound.push(value); }, activationFailed: error => { failures.push(error); },
+  });
+  try {
+    const first = hooks.get('session_start')!({}, {});
+    await vi.waitFor(() => expect(created).toHaveLength(1));
+    await hooks.get('session_start')!({}, {});
+    gate.resolve(); await first;
+    expect(bound).toEqual([created[1]]);
+    expect(failures).toEqual([]);
+  } finally { gate.resolve(); await registration.dispose(); await Promise.all(created.map(monitor => monitor.shutdown('reload'))); spy.mockRestore(); }
 });

@@ -853,7 +853,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
     // Context packages reuse module-level functions. Wrap even those handlers so
     // registry identity always identifies one activation, not a shared function.
     const invoke: ActionHandler = (args, ctx) => {
-      if (args.on !== undefined && !herdr?.enabled()) throw new Error(HERDR_NOTICES.remoteDisabled.text);
+      if (args.on !== undefined && !herdr?.enabled()) throw Object.assign(new Error(herdr?.execution().remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text), { code: 'herdr-unavailable' });
       return handler(args, { ...ctx, ...herdr?.execution() });
     };
     const ownedHandler = name === 'kill' ? routeKillAction(() => herdr, invoke) : invoke;

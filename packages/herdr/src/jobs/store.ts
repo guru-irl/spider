@@ -22,7 +22,7 @@ export interface JournalJob extends JobRecord {
   settledMarked: boolean;
   terminalExpired: boolean;
   terminalReleased?: boolean;
-  cleanupFailure?: { code: string; attempts: number; firstAt: number; lastAt: number; warned?: boolean };
+  cleanupFailure?: { code: string; attempts: number; firstAt: number; lastAt: number };
   updatedAt: number;
   handoffCancelled?: boolean;
 }
@@ -77,7 +77,7 @@ export function parseJobJournal(value: unknown, sessionId: SessionId): JobJourna
     if (output && typeof output.summary !== 'string') throw new HerdrError('invalid-journal', 'Invalid output summary');
     if (v.commandPreview !== undefined && (typeof v.commandPreview !== 'string' || v.commandPreview.length > 180 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(v.commandPreview))) throw new HerdrError('invalid-journal', 'Invalid command preview');
     const cleanup = v.cleanupFailure === undefined ? undefined : object(v.cleanupFailure);
-    const cleanupFailure = cleanup ? { code: text(cleanup.code), attempts: integer(cleanup.attempts), firstAt: integer(cleanup.firstAt), lastAt: integer(cleanup.lastAt), ...(cleanup.warned === undefined ? {} : { warned: boolean(cleanup.warned) }) } : undefined;
+    const cleanupFailure = cleanup ? { code: text(cleanup.code), attempts: integer(cleanup.attempts), firstAt: integer(cleanup.firstAt), lastAt: integer(cleanup.lastAt) } : undefined;
     return { version: 1, ...(cleanupFailure ? { cleanupFailure } : {}), ...(v.noticeSavedNonce === undefined ? {} : { noticeSavedNonce: text(v.noticeSavedNonce) }), ...(v.noticeObservedGeneration === undefined ? {} : { noticeObservedGeneration: id(v.noticeObservedGeneration) as Owner['generation'] }), ...(v.terminalReleased === undefined ? {} : { terminalReleased: boolean(v.terminalReleased) }), ...(exitEvidence ? { exitEvidence } : {}), ...(v.commandPreview === undefined ? {} : { commandPreview: v.commandPreview as string }), id: id(v.id) as JobId, ...(v.runId === undefined ? {} : { runId: id(v.runId) as RunId }), ...(v.handoffCancelled === undefined ? {} : { handoffCancelled: boolean(v.handoffCancelled) }), owner, machine: text(v.machine) as JobRecord['machine'], kind: v.kind as JobRecord['kind'], phase, viewer: nullableText(v.viewer) as JobRecord['viewer'], remoteDirectory: typeof v.remoteDirectory === 'string' && v.remoteDirectory === '' ? '' : absolutePath(v.remoteDirectory), localDirectory: absolutePath(v.localDirectory), detached: boolean(v.detached), noticeMode: v.noticeMode as JobRecord['noticeMode'], notice: v.notice as JobRecord['notice'], nonce: typeof v.nonce === 'string' ? v.nonce : text(v.nonce), releaseDeadlineAt: integer(v.releaseDeadlineAt), originalFinish: v.originalFinish === null ? null : parseFinish(v.originalFinish), output: output ? { complete: boolean(output.complete), summary: output.summary as string } : null, callerOwned: boolean(v.callerOwned), uncertain: boolean(v.uncertain), evidenceConflict: boolean(v.evidenceConflict), noticeDelivered: boolean(v.noticeDelivered), settledMarked: boolean(v.settledMarked), terminalExpired: boolean(v.terminalExpired), updatedAt: integer(v.updatedAt) };
   });
   if (new Set(jobs.map(j => j.id)).size !== jobs.length) throw new HerdrError('invalid-journal', 'Duplicate journal job');
@@ -100,26 +100,25 @@ export function parseJobJournal(value: unknown, sessionId: SessionId): JobJourna
   return { version: 1, sessionId, revision: integer(j.revision), updatedAt: integer(j.updatedAt), jobs, ...(child ? { child } : {}), ...(writer ? { writer } : {}) };
 }
 /** All existing components must be real directories, never symbolic links. */
-export async function ensurePrivateDirectory(path: string): Promise<void> {
+export async function ensurePrivateDirectory(path: string, readOnly = false): Promise<void> {
   if (!isAbsolute(path)) throw new HerdrError('invalid-journal-root', 'A journal root must be absolute');
   let current = parse(path).root;
   for (const component of resolve(path).slice(current.length).split('/').filter(Boolean)) {
     current = join(current, component);
-    try { await mkdir(current, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (!readOnly) try { await mkdir(current, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     const st = await lstat(current); if (!st.isDirectory() || st.isSymbolicLink()) throw new HerdrError('unsafe-journal-path', 'Journal directories cannot be symlinks');
   }
-  await chmod(path, 0o700);
+  if (!readOnly) await chmod(path, 0o700);
 }
-export interface JobStore { path: string; directory: string; read(): Promise<JobJournal>; write(journal: JobJournal): Promise<void> }
+export interface JobStore { path: string; directory: string; read(options?: { readOnly?: boolean }): Promise<JobJournal>; write(journal: JobJournal): Promise<void> }
 export function createJobStore(root: string, sessionId: SessionId, runId?: RunId): JobStore {
   id(sessionId); if (runId !== undefined) id(runId);
   const directory = runId === undefined ? join(root, 'sessions', sessionId) : join(root, 'sessions', sessionId, 'runs', runId), path = join(directory, 'jobs.json');
   return {
     path, directory,
-    read: async (): Promise<JobJournal> => {
-      await ensurePrivateDirectory(directory);
+    read: async (options): Promise<JobJournal> => {
       let file;
-      try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+      try { await ensurePrivateDirectory(directory, options?.readOnly); file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, sessionId, revision: 0, updatedAt: 0, jobs: [] }; throw error; }
       try {
         const st = await file.stat(); if (!st.isFile() || st.size > MAX_BYTES) throw new HerdrError('invalid-journal', 'Job journal is not a bounded file');

@@ -235,3 +235,19 @@ it('child presence tolerates a partial embedding context and ignores parent-mode
     expect(await presence.list()).toEqual([]); expect((await f.h.calls()).length).toBe(calls);
   } finally { await f.close(); }
 }, 30000);
+
+it('child cleanup retries retain diagnostics without printing repair advice', async () => {
+  const f = await childFixture();
+  const { createJobStore } = await import('../../../herdr/src/jobs/store.js');
+  const { herdrErrorNotice } = await import('../../../herdr/src/notices.js');
+  try {
+    await f.emit('session_start', { reason: 'startup' });
+    await f.h.scenario({ steps: [{ argvPrefix: ['rm'], stderr: { error: { kind: 'machine-unavailable', message: 'Machine is offline' } }, exitCode: 3 }] });
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "console.log('finished')" }, { cwd: f.h.root, ...f.mount.execution() });
+    const store = createJobStore(join(f.config.globalRoot, 'herdr/jobs'), f.h.owner!.sessionId, 'child-run' as never);
+    await vi.waitFor(async () => expect((await store.read()).jobs[0].cleanupFailure?.code).toBe('machine-unavailable'), { timeout: 7000 });
+    expect(result.details).toMatchObject({ stdout: 'finished\n', exitCode: 0 });
+    expect(f.errors.map(herdrErrorNotice).join('')).not.toMatch(/Run doctor|\/reload/);
+    expect(f.errors).toEqual([]);
+  } finally { await f.h.scenario({ steps: [] }); await f.close(); }
+}, 30000);

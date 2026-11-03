@@ -51,6 +51,27 @@ it('opens a menu for the clicked subagent including saved views', async () => {
   expect(opened[1]).toMatchObject({ props: { moveMenu: { key: 'live', terminal: 'viewer' } } });
 });
 
+it.each(['console', 'remote'])('opens a menu for the clicked %s row', async kind => {
+  const source = (await cloned()).agents.files['main.js'], opened: any[] = [];
+  const Agents = view(source, { props: () => common, openOverlay: (spec: unknown) => opened.push(spec), terminals: () => [], theme: () => colors, run() {} });
+  const instance = new Agents(); instance.listed = new Map(); instance.expandedConsoles = new Set();
+  const action = { kind: 'ipc', descriptor: { sessionId: 'owner', generation: 'gen' } };
+  const row = instance.subRow(colors, { t: { kind, key: 'key', address: 'alpha.invalid/item', originalAddress: 'alpha.invalid/item', name: 'item', status: 'working', action }, lines: [] }, null, false);
+  expect(row.events.right).toBeTypeOf('function');
+  let stopped = 0;
+  row.events.right({}, { stop_propagation() { stopped++; } });
+  expect(stopped).toBe(1);
+  expect(opened).toMatchObject([{ mod: 'spider-agents', kind: 'popup', props: { moveMenu: { kind, key: 'key', terminal: 'alpha.invalid/item' } } }]);
+});
+
+it('does not attach a child menu to native rows', async () => {
+  const source = (await cloned()).agents.files['main.js'];
+  const Agents = view(source, { props: () => common, terminals: () => [], theme: () => colors, run() {} });
+  const instance = new Agents(); instance.listed = new Map(); instance.expandedConsoles = new Set();
+  const row = instance.subRow(colors, { t: { kind: 'native', key: 'native', address: 'native', name: 'native', status: 'working' }, lines: [] }, null, false);
+  expect(row.events.right).toBeUndefined();
+});
+
 it('renders the separate menu for move popup props without starting sidebar watchers', async () => {
   const source = (await cloned()).agents.files['main.js'];
   let initialized = 0, timers = 0;

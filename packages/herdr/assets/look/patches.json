@@ -83,7 +83,7 @@
       {
         "id": "move-row-hook",
         "anchor": "      .gap(0)\n      .items_center()\n      .text_size(12.5)",
-        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.kind === \"subagent\", el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: \"subagent\", key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
+        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when([\"subagent\", \"console\", \"remote\"].includes(k.kind), el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: k.kind, key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
       },
       {
         "id": "move-session-rail-hook",

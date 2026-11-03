@@ -23,14 +23,14 @@ export function classifyPane(pane, terminal, feeds, contract, freshAfter) {
   return { ...base, kind: 'terminal' };
 }
 
-/** Build the same menu for pane headers and subagent rows. */
+/** Build the same menu for pane headers and child rows. */
 export function menuItems(target, spaces, currentSpace, currentTab) {
   if (target.kind === 'mod') return [];
   const groups = spaces.filter(space => (space.machine ?? null) === (target.machine ?? null)).map(space => ({ id: space.id, name: space.name,
     tabs: space.tabs.filter(tab => tab.id !== currentTab).map(tab => ({ id: tab.id, name: tab.name })) }))
     .filter(space => space.tabs.length);
   groups.sort((a, b) => Number(b.id === currentSpace) - Number(a.id === currentSpace));
-  const verb = target.kind === 'subagent' && !target.pane ? 'Open' : 'Move';
+  const verb = target.pane === false ? 'Open' : 'Move';
   const unavailable = target.kind !== 'terminal' && target.descriptor === null && !target.unmanaged;
   const items = [
     { kind: 'action', id: 'new', label: `${verb} to new tab`, disabled: unavailable },
@@ -59,7 +59,7 @@ export function journalOwnsTerminal(text, terminal) {
 
 /** A session controls its own panes; ordinary terminals have no owner endpoint. */
 export async function moveTarget(target, destination, ports) {
-  if (target.kind === 'terminal' || target.kind === 'session' && target.unmanaged) return ports.movePlain(target.terminal, destination);
+  if (target.kind === 'terminal' || target.kind === 'command' && target.direct || target.kind === 'session' && target.unmanaged) return ports.movePlain(target.terminal, destination);
   if (!target.descriptor) throw new Error('The owning session is unavailable');
   const generation = target.descriptor.generation;
   if (target.kind === 'subagent' && target.key) return ports.ipc(target.descriptor, { op: 'moveRun', runId: target.key, destination, generation });

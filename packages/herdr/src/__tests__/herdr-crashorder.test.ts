@@ -27,6 +27,7 @@ it('keeps a crashed child console open through failed cancellation and an unconf
   h.hc.kill = async address => { h.kills.push(address); if (++attempts === 1) throw new Error('kill failed'); };
   const closed: string[] = [];
   h.options.closeAgentConsoles = async owner => { closed.push(owner.runId); };
+  h.options.observedJobMessages = async () => h.notices.map(notice => notice.details.jobId);
   const parent = h.monitor(); await parent.activate(h.owner);
   expect(closed).toEqual([]);
   await parent.reconcile();

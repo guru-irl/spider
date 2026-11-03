@@ -319,7 +319,7 @@ describe('in-process jobs', () => {
   it('keeps background, incomplete and unconsumed directories beyond seven days', async () => {
     const h = await fixture(); const jobs = h.monitor(); const handle = await jobs.start(program, h.owner, 'remote.invalid' as never, { background: true });
     await jobs.consumeNotice(handle.id); h.setNow(1000 + 8 * 86400000); await jobs.reconcile();
-    expect((await stat(handle.localDirectory)).isDirectory()).toBe(true); expect(h.removed).toEqual([]);
+    expect((await stat(handle.localDirectory)).isDirectory()).toBe(true); expect(h.removed).toEqual([handle.address]);
   });
 
   it('writes a remote settled marker only after known completion and notice consumption', async () => {

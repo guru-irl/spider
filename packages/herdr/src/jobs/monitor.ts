@@ -139,10 +139,27 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     if (holds.has(job.id) || !observers.has(job.id)) return;
     holds.set(job.id, setTimeout(() => { holds.delete(job.id); void serial(() => release(job)).catch(report); }, 2000));
   }
+  async function releaseSettledTerminal(job: JournalJob): Promise<void> {
+    if (job.terminalReleased || !job.settledMarked || job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.evidenceConflict) return;
+    const address = job.phase.address;
+    try {
+      const terminal = await waitForEvents(options.hc.get(address));
+      const labels = terminal.labels;
+      if (terminal.state !== 'finished' || labels[HERDR_LABELS.job] !== job.id || labels[HERDR_LABELS.session] !== job.owner.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== job.owner.terminal.terminalId || labels[HERDR_LABELS.kind] !== job.kind || job.runId && labels[HERDR_LABELS.run] !== job.runId) return;
+      await release(job);
+      await options.hc.rm(address);
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'not_found')) throw error;
+    }
+    job.terminalReleased = true; await persist();
+  }
   async function markSettled(job: JournalJob): Promise<void> {
-    if (job.settledMarked || job.phase.kind !== 'finished' || !job.output?.complete || (!job.noticeDelivered && !job.terminalExpired) || (!job.originalFinish && !job.terminalExpired) || job.evidenceConflict) return;
-    await options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: job.phase.result.finishedAt })));
-    job.settledMarked = true; await persist();
+    if (job.phase.kind !== 'finished' || !job.output?.complete || (!job.noticeDelivered && !job.terminalExpired) || (!job.originalFinish && !job.terminalExpired) || job.evidenceConflict) return;
+    if (!job.settledMarked) {
+      await options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: job.phase.result.finishedAt })));
+      job.settledMarked = true; await persist();
+    }
+    await releaseSettledTerminal(job);
   }
   async function deliver(job: JournalJob): Promise<void> {
     if (stopping || closed || job.noticeMode !== 'async' || job.notice !== 'pending' || job.phase.kind !== 'finished' || !job.output) return;
@@ -221,7 +238,7 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
   }
   async function reconcileJob(job: JournalJob, signal?: AbortSignal): Promise<void> {
     if (job.phase.kind === 'launch-failed') return;
-    if (job.settledMarked) { await deliver(job); return; }
+    if (job.settledMarked) { await deliver(job); await releaseSettledTerminal(job); return; }
     let address = addressOf(job);
     if (!address && discovered.has(job.id)) { address = discovered.get(job.id)!; job.phase = { kind: 'disconnected', address, lastSeq: 0 }; await persist(); }
     if (address) {
@@ -258,8 +275,8 @@ export function createJobMonitor(options: JobMonitorOptions): JobMonitor {
     for (const job of [...journal.jobs]) {
       if (job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.callerOwned || job.detached || options.clock() - job.updatedAt <= 7 * 86400000) continue;
       if (job.localDirectory !== join(store.directory, 'logs', job.id)) continue;
-      const terminal = await waitForEvents(stream!.lookup(job.phase.address), signal);
-      if (terminal && terminal.state === 'finished' && terminal.labels[HERDR_LABELS.job] === job.id) await options.hc.rm(job.phase.address);
+      await releaseSettledTerminal(job);
+      if (!job.terminalReleased) continue;
       await release(job); await ensurePrivateDirectory(job.localDirectory); await rm(job.localDirectory, { recursive: true });
       journal.jobs = journal.jobs.filter(j => j.id !== job.id); await persist();
     }

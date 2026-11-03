@@ -4,14 +4,14 @@ import { constants } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { open, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AppClient, HcClient, JobRecord, PaneReservation, RunId, TerminalAddress } from '../contracts.js';
 import { HERDR_LABELS, HERDR_KINDS } from '../contracts.js';
 import type { JobSlot } from './monitor.js';
 import type { AuxiliaryPaneActor } from './placement.js';
 import { ensurePrivateDirectory } from './store.js';
-import { HerdrError, parseTerminal } from '../client/parse.js';
+import { HerdrError, parseTerminal, object, nullableInteger } from '../client/parse.js';
 import { invokeCli } from '../client/hc.js';
 import { requireCoreAvailable } from '../client/liveness.js';
 import { createChildTerminator } from '../client/child-termination.js';
@@ -54,11 +54,36 @@ export async function runRemoteObserver(options: ObserverProgramOptions): Promis
   catch (error) { if (closed()) return 0; throw error; }
   if (closed()) return 0;
   if (options.signal?.aborted) throw new HerdrError('aborted', 'Observer program aborted');
-  const terminal = () => invokeCli(options.hcBinary, ['get', options.address, '--json'], env).then(parseTerminal);
+  const missing = (error: unknown) => error instanceof HerdrError && error.code === 'not_found';
+  const localFile = async (name: string, tail = false) => {
+    const file = await open(join(dirname(options.exitFile), name), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const info = await file.stat();
+      if (!info.isFile() || !tail && info.size > 65536) throw new HerdrError('invalid-observer-output', 'Saved output is not a bounded regular file');
+      const bytes = Buffer.alloc(Math.min(info.size, 65536));
+      const { bytesRead } = await file.read(bytes, 0, bytes.length, tail ? Math.max(0, info.size - bytes.length) : 0);
+      return bytes.subarray(0, bytesRead);
+    } finally { await file.close(); }
+  };
+  const terminal = async () => {
+    try { return await invokeCli(options.hcBinary, ['get', options.address, '--json'], env).then(parseTerminal); }
+    catch (error) {
+      if (!missing(error)) throw error;
+      const receipt = object(JSON.parse((await localFile('receipt.json')).toString('utf8')));
+      if (receipt.version !== 1) throw new HerdrError('invalid-observer-output', 'Saved receipt version is unavailable');
+      return { state: 'finished' as const, exitCode: nullableInteger(receipt.exitCode) };
+    }
+  };
   const readSavedOutput = async () => {
-    const reply = await invokeCli(options.hcBinary, ['read', options.address, '--lines', '100', '--json'], env);
-    if (!reply || typeof reply !== 'object' || !('text' in reply) || typeof reply.text !== 'string') throw new HerdrError('invalid-observer-output', 'Saved terminal output is unavailable');
-    process.stdout.write(reply.text);
+    try {
+      const reply = await invokeCli(options.hcBinary, ['read', options.address, '--lines', '100', '--json'], env);
+      if (!reply || typeof reply !== 'object' || !('text' in reply) || typeof reply.text !== 'string') throw new HerdrError('invalid-observer-output', 'Saved terminal output is unavailable');
+      process.stdout.write(reply.text);
+    } catch (error) {
+      if (!missing(error)) throw error;
+      process.stdout.write(await localFile('stdout.log', true));
+      process.stdout.write(await localFile('stderr.log', true));
+    }
   };
   let finishedBeforeAttach = false;
   if (options.holdOpen) { try { finishedBeforeAttach = (await terminal()).state === 'finished'; } catch { /* Attach still reports a transport failure. */ } }

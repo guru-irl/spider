@@ -479,7 +479,13 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     if (!job || !('address' in job.phase) || !await on(job.machine)
       || runId && !withStore(current, store => store.get(runId)?.session_id === current.sessionId)) return null;
     let terminal;
-    try { terminal = await hc.get(job.phase.address); } catch (error) { if (error instanceof HerdrError && error.code === 'not_found') return null; throw error; }
+    try { terminal = await hc.get(job.phase.address); }
+    catch (error) {
+      if (!(error instanceof HerdrError) || error.code !== 'not_found') throw error;
+      return job.terminalReleased && job.phase.kind === 'finished' && job.notice === 'observed' && job.output?.complete
+        && job.owner.terminal.coreId === current.terminal.coreId && job.owner.terminal.terminalId === current.terminal.terminalId
+        && job.owner.terminal.socket === current.terminal.socket && job.owner.terminal.sessionNamespace === current.terminal.sessionNamespace ? { ...job, owner: current } : null;
+    }
     const labels = terminal.labels;
     if (terminal.address !== job.phase.address || labels[HERDR_LABELS.job] !== id || labels[HERDR_LABELS.kind] !== job.kind
       || labels[HERDR_LABELS.session] !== current.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId

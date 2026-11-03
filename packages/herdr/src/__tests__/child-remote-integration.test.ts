@@ -57,8 +57,8 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
       await h.emitCore({ type: 'snapshot', seq: 10000, terminals });
     }
     const setupCallCount = mode === 'fake' ? (await h.calls()).length : 0;
-    const notices: JobNotice[] = [], errors: unknown[] = [];
-    const parentMonitor = () => createJobMonitor({ hc: h.hc, clock: Date.now, journalRoot: join(config.globalRoot, 'herdr/jobs'), outputCollector: output!.outputCollector, observedJobMessages: async () => [], notifier: notice => { notices.push(notice); }, reportError: error => errors.push(error) });
+    const notices: JobNotice[] = [], errors: unknown[] = [], observed: JobId[] = [];
+    const parentMonitor = () => createJobMonitor({ hc: h.hc, clock: Date.now, journalRoot: join(config.globalRoot, 'herdr/jobs'), outputCollector: output!.outputCollector, observedJobMessages: async () => observed, notifier: notice => { notices.push(notice); }, reportError: error => errors.push(error) });
     monitor = parentMonitor();
     const messages: any[] = [], waiters: { predicate: (message: any) => boolean; resolve: (message: any) => void }[] = [];
     let stderr = '';
@@ -83,9 +83,9 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     expect(foreground.type, foreground.error).toBe('result'); expect(foreground.result.details).toMatchObject({ stdout: 'returned to child\n', stderr: 'child diagnostic\n', exitCode: 23 });
     child.stdin!.write(JSON.stringify({ id: 'managed-ssh', action: 'bash', command: '/usr/bin/ssh managed.invalid' }) + '\n');
     const ssh = await message(m => m.id === 'managed-ssh'); expect(ssh).toMatchObject({ type: 'refused', reason: expect.stringContaining('on:remote.invalid') });
-    const terminal = await h.hc.get(foreground.result.details.remote.address);
-    expect(terminal.labels).toMatchObject({ 'spider.session': h.owner!.sessionId, 'spider.owner-terminal': h.owner!.terminal.terminalId, 'spider.run': 'child-run', 'spider.kind': 'exec' });
+    await expect(h.hc.get(foreground.result.details.remote.address)).rejects.toMatchObject({ code: 'not_found' });
     const journal = await createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId).read();
+    expect(journal.jobs[0]).toMatchObject({ owner: { sessionId: h.owner!.sessionId, terminal: { terminalId: h.owner!.terminal.terminalId } }, runId: 'child-run', kind: 'exec', terminalReleased: true });
     expect(journal.child?.pid).toBe(child.pid); expect(journal.jobs[0].viewer).toBeNull(); expect(journal.jobs[0].notice).toBe('observed');
     child.stdin!.write(JSON.stringify({ id: 'background', action: 'exec', on: 'remote.invalid', language: 'javascript', background: true, timeout: 100, code: "setTimeout(()=>{console.log('survived child');process.exitCode=29},2500)" }) + '\n');
     const background = await message(m => m.id === 'background');
@@ -105,6 +105,9 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     expect(await readFile(join(background.result.details.backgroundJob.dir, 'stdout.log'), 'utf8')).toBe('survived child\n');
     const adopted = (await createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId).read()).jobs.find(job => job.id === background.result.details.remote.jobId)!;
     expect(adopted).toMatchObject({ settledMarked: true, notice: 'submitted', noticeDelivered: true });
+    expect(await h.hc.get(adopted.phase.kind === 'finished' ? adopted.phase.address : '' as TerminalAddress)).toMatchObject({ state: 'finished' });
+    observed.push(adopted.id); await monitor.reconcile();
+    await expect(h.hc.get(background.result.details.remote.address)).rejects.toMatchObject({ code: 'not_found' });
     const runStore = createJobStore(join(config.globalRoot, 'herdr/jobs'), h.owner!.sessionId, 'child-run' as RunId);
     expect((await runStore.read()).child).toMatchObject({ ended: true, settled: true });
     const before = await readFile(runStore.path, 'utf8'); await monitor.reconcile();
@@ -154,7 +157,7 @@ it('handoff releases a settled run monitor and never re-adopts it after reload',
   const options = { root: f.root, owner, hc: {} as HcClient,
     closeAgentConsoles: async (o: Owner & { runId: RunId }) => { consoles.push(o.runId); },
     adopt: async (id: RunId) => { adopted.push(id); return {
-      reconcile: async () => { const j = await store.read(); j.jobs[0].settledMarked = true; j.jobs[0].noticeDelivered = true; j.jobs[0].notice = 'observed'; await store.write(j); },
+      reconcile: async () => { const j = await store.read(); j.jobs[0].settledMarked = true; j.jobs[0].noticeDelivered = true; j.jobs[0].notice = 'observed'; j.jobs[0].terminalReleased = true; await store.write(j); },
       shutdown: async (reason: 'quit' | 'reload') => { stopped.push(reason); },
     }; },
   };
@@ -199,7 +202,8 @@ it.each(['activation', 'periodic'] as const)('an unreachable ended child discove
     get: async address => { const row = terminals.get(address); if (!row) throw Object.assign(new Error('missing'), { code: 'not_found' }); return row; }, read: async () => '', kill: async () => {}, rm: async () => {}, fileRead: async () => Buffer.alloc(0), fileWrite: async () => {},
   };
   const finish = { exitCode: 0, reason: 'exited', signal: null, finishedAt: Date.now() };
-  const options = { hc, journalRoot: f.root, clock: Date.now, observedJobMessages: async () => [], notifier: () => {},
+  const observed: JobId[] = [];
+  const options = { hc, journalRoot: f.root, clock: Date.now, observedJobMessages: async () => observed, notifier: (notice: JobNotice) => { observed.push(notice.details.jobId); },
     closeAgentConsoles: async (child: Owner & { runId: RunId }) => { if (trigger === 'periodic' && blocked && child.runId === 'a-stuck') { entered(); await barrier; } },
     outputCollector: { prepare: async (program: import('../contracts.js').PreparedProgram, job: import('../contracts.js').JobRecord) => ({ program: { ...program, directory: join(f.root, 'programs', job.id) }, nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000 }),
       collect: async (job: import('../contracts.js').JobRecord) => { if (trigger === 'activation' && blocked && job.machine === 'stuck.invalid') { entered(); await barrier; } const done = 'address' in job.phase && terminals.get(job.phase.address)?.state === 'finished'; return { complete: done, summary: done ? 'done' : '', receipt: done ? { jobId: job.id, nonce: 'nonce', finish } : null }; },

@@ -295,7 +295,7 @@ describe('in-process jobs', () => {
     finally { await unlink(store.path); await writeFile(store.path, bytes); }
   });
 
-  it('registration starts only on session_start and posts direct pi follow-ups without changing the draft', async () => {
+  it('registration starts only on session_start and steers job notices to the agent without changing the draft', async () => {
     const h = await fixture(); let bound: JobMonitor | null = null;
     const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
     const sent: { message: JobNotice; options: unknown }[] = []; let draft = 'unfinished draft';
@@ -306,7 +306,7 @@ describe('in-process jobs', () => {
     await handlers.get('session_start')?.({ type: 'session_start', reason: 'startup' }, ctx);
     expect(bound).not.toBeNull();
     const monitor = bound as unknown as JobMonitor; const handle = await monitor.start(program, h.owner, 'remote.invalid' as never, {}); await monitor.detach(handle.id);
-    expect(sent[0].message.details.exitCode).toBe(23); expect(sent[0].options).toEqual({ triggerTurn: true, deliverAs: 'followUp' }); expect(draft).toBe('unfinished draft');
+    expect(sent[0].message.details.exitCode).toBe(23); expect(sent[0].options).toEqual({ triggerTurn: true, deliverAs: 'steer' }); expect(draft).toBe('unfinished draft');
     await handlers.get('session_shutdown')?.({ type: 'session_shutdown', reason: 'reload' }, ctx); expect(bound).toBeNull();
   });
 

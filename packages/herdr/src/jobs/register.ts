@@ -36,7 +36,9 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
         observedJobMessages: async () => (ctx?.sessionManager?.getBranch?.() ?? []).flatMap(entry => { const id = noticeId(entry); return id ? [id] : []; }),
         notifier: notice => {
           if (disposed || generation !== activation) throw new HerdrError('activation-ended', 'Notice remains uncertain after its owning activation ended');
-          pi.sendMessage(notice, { triggerTurn: true, deliverAs: 'followUp' });
+          // A busy agent reads follow-ups only after all its work ends, so it would keep waiting on a finished job.
+          // Steering arrives when the current step ends. From pi 1.2 on it cancels no tool calls.
+          pi.sendMessage(notice, { triggerTurn: true, deliverAs: 'steer' });
         },
       });
       try { await next.activate(owner); monitor = next; ports.bind(next); }

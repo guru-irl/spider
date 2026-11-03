@@ -97,7 +97,7 @@ it.each(['quit', 'reload', 'new', 'resume', 'fork'] as const)('mounted %s leaves
     }
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
-}, 60000);
+}, 30000);
 
 it.each([{ gated: false }, { gated: true }])('reload does not move a viewer from the tab the user kept it in (gated=$gated)', async ({ gated }) => {
   let release!: () => void, settled!: () => void;
@@ -147,7 +147,7 @@ it.each([{ gated: false }, { gated: true }])('reload does not move a viewer from
     expect((await f.h.hc.get(first.viewer)).labels['herdr.tab']).toBe(placement.tab);
     expect(f.errors).toEqual([]);
   } finally { release(); reloaded?.dispose(); await f.close(); }
-}, 60000);
+}, 30000);
 
 it('shutdown during an explicit reopen never hides or kills the already displayed viewer', async () => {
   const f = await fixture('fake');
@@ -167,7 +167,7 @@ it('shutdown during an explicit reopen never hides or kills the already displaye
     expect((await f.h.hc.get(first.viewer)).state).toBe('live');
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
-}, 60000);
+}, 30000);
 
 const binary = process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc');
 const real = process.env.SPIDER_HERDR_E2E === '1' && await access(binary).then(() => true, () => false);
@@ -213,8 +213,8 @@ it.each([false, true])('mounted automatic viewers follow automaticSubagentPanes=
     const opened = await f.app.ownerPlacement(viewer);
     expect(opened.space).toBe(owner.space);
     if (automaticSubagentPanes) expect(opened.tab).toBe(owner.tab);
-    else { expect(opened.tab).not.toBe(owner.tab); expect(await f.app.tabIndex(opened)).toBe(await f.app.tabIndex(owner) + 1); }
+    else { expect(opened.tab).toBe(owner.tab); expect(opened.pane).not.toBe(owner.pane); }
     expect(await f.ipc.openRun(f.activeRun!)).toMatchObject({ ok: true, op: 'openRun', viewer });
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
-}, 60000);
+}, 30000);

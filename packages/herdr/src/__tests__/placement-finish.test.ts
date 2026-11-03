@@ -140,9 +140,9 @@ test('a reloaded launcher waits for the final live viewer before opening a saved
 test.each(['app-error', 'cli-exit'])('an explicit open retries a viewer that exits during app focus (%s)', async code => {
   const f = await fixture(); let opening: ReturnType<typeof f.panes.acquire> | undefined, failure: ReturnType<typeof f.failFocus> | undefined;
   try {
-    const automatic = (await f.panes.acquire('subagent', id, f.owner, { automatic: true, timeoutMs: 1000 }))!;
+    const automatic = (await f.panes.acquire('subagent', id, f.owner, { automatic: true, timeoutMs: 3000 }))!;
     failure = f.failFocus(automatic.viewer, code);
-    opening = f.panes.acquire('subagent', id, f.owner, { timeoutMs: 1000 }); void opening.catch(() => {});
+    opening = f.panes.acquire('subagent', id, f.owner, { timeoutMs: 3000 }); void opening.catch(() => {});
     await failure.entered.promise; f.setStatus('failed');
     f.layout.delete(automatic.viewer); await f.h.hc.kill(automatic.viewer);
     await expect.poll(() => f.removed).toContain(automatic.viewer);

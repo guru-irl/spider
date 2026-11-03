@@ -108,7 +108,7 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
 }
 
 interface LockTicket extends ProcessIdentity { version: 1; number: number | null }
-export interface ProcessLockOptions { identity?: ProcessIdentity; probe?(pid: number): Promise<ProcessProbe>; timeoutMs?: number }
+export interface ProcessLockOptions { signal?: AbortSignal; identity?: ProcessIdentity; probe?(pid: number): Promise<ProcessProbe>; timeoutMs?: number }
 /** A bakery lock: each contender owns a unique ticket, so stale reclamation never unlinks a new owner's lock. */
 export async function withProcessLock<T>(root: string, key: string, operation: () => Promise<T>, options: ProcessLockOptions = {}): Promise<T> {
   const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
@@ -142,11 +142,12 @@ export async function withProcessLock<T>(root: string, key: string, operation: (
     await writePrivateJson(path, { version: 1, ...identity, number });
     const deadline = Date.now() + (options.timeoutMs ?? 5000);
     for (;;) {
+      if (options.signal?.aborted) throw new HerdrError('aborted', 'Lock acquisition aborted');
       const rows = await tickets();
       const blocked = rows.some(r => r.name !== name && (r.ticket.number === null || r.ticket.number < number || r.ticket.number === number && r.name < name));
       if (!blocked) return await operation();
       if (Date.now() >= deadline) throw new HerdrError('lock-occupied', 'Another live process owns the operation lock');
-      await delay(10);
+      await delay(10, undefined, { signal: options.signal });
     }
   } finally { await unlink(path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
 }

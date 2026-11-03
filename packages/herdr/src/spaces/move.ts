@@ -13,6 +13,7 @@ export interface SessionMovePorts {
   hc: Pick<HcClient, 'setLabels'>;
   journalRoot: string;
   placementRoot?: string;
+  appIdentity?: string;
   layoutSnapshot(): Promise<LayoutSnapshot>;
   clock(): number;
   signal?: AbortSignal;
@@ -49,7 +50,5 @@ export async function moveOwnedSession(owner: { sessionId: string; terminal: Ter
     });
   };
   if (!ports.placementRoot) return perform();
-  const keys = [...new Set([`${owner.coreId}:${source.space}:${source.tab}`, ...(destination.kind === 'tab' ? [`${owner.coreId}:${targetSpace}:${destination.tab}`] : [])])].sort();
-  const lock = async (index: number): Promise<void> => index === keys.length ? perform() : withProcessLock(ports.placementRoot!, keys[index], () => lock(index + 1), { timeoutMs: 20000 });
-  await lock(0);
+  await withProcessLock(ports.placementRoot, `${ports.appIdentity ?? 'app'}:${owner.coreId}:focus`, perform, { timeoutMs: 20000, signal: ports.signal });
 }

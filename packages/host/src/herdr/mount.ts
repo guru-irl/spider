@@ -442,7 +442,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       const appOptions = { binary: config.app.binary, env };
       app = createAppClient(appOptions);
       observerAbort = new AbortController();
-      panes = createAuxiliaryPanes({ hc, app, automaticSubagentPanes: config.automaticSubagentPanes, placementRoot: join(config.globalRoot, 'herdr/panes'), appForSignal: signal => createAppClient(appOptions, signal), subagentViewer: launcher, discardSubagentViewer: launcher.discard, remoteObserver: openJobObserver, limit: config.limits.auxiliaryPanes, clock: Date.now, reportError: report });
+      panes = createAuxiliaryPanes({ hc, app, automaticSubagentPanes: config.automaticSubagentPanes, placementRoot: join(config.globalRoot, 'herdr/panes'), appIdentity: config.app.home, appForSignal: signal => createAppClient(appOptions, signal), subagentViewer: launcher, discardSubagentViewer: launcher.discard, remoteObserver: openJobObserver, limit: config.limits.auxiliaryPanes, clock: Date.now, reportError: report });
       const aliases = Object.fromEntries(config.machines.map(m => [m.name, m.aliases]));
       cache = createMachineCache({ hc, identity: terminal, directory: join(config.globalRoot, 'herdr/ssh'), aliases, reportFailure: report }); await cache.ready;
       policy = createTransportPolicy(createSshPolicy(cache), () => env);
@@ -586,10 +586,10 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         const result = await makeMessageHandler()({ to: id, message: text }, options.actionContext(need(context)));
         return result.details as SteerReply;
       }, openView: view => views[view](need(context)),
-      openRun: async id => (await need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, ownerRelative: true }))?.viewer ?? null,
+      openRun: async (id, signal) => (await need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, signal, ownerRelative: true }))?.viewer ?? null,
       moveRun: async (id, destination) => (await need(panes).moveRun(id, current, destination, { timeoutMs: 20_000 }))?.viewer ?? null,
       moveSession: destination => moveOwnedSession({ sessionId: current.sessionId, terminal: current.terminal.address, coreId: current.terminal.coreId }, destination, {
-        app: need(app), hc: need(client), journalRoot: join(need(config).globalRoot, 'herdr/spaces'), placementRoot: join(need(config).globalRoot, 'herdr/panes'),
+        app: need(app), appIdentity: need(config).app.home, hc: need(client), journalRoot: join(need(config).globalRoot, 'herdr/spaces'), placementRoot: join(need(config).globalRoot, 'herdr/panes'),
         layoutSnapshot: () => readAppLayout(need(config).app.binary, { ...process.env, HERDR_APP_HOME: need(config).app.home }), clock: Date.now,
       }),
       prepareSessionStop: async () => {
@@ -607,7 +607,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       killRun: killViaOwner,
       ownsJob: async id => await observerJob(id, current) !== null,
       moveJob: async (id, viewer, destination) => (await need(panes).moveJob(id, current, viewer, destination, { timeoutMs: 20_000 }))?.viewer ?? null,
-      openJob: async id => (await need(panes).acquire('remote', id, current, { timeoutMs: 30_000 }))?.viewer ?? null,
+      openJob: async (id, signal) => (await need(panes).acquire('remote', id, current, { timeoutMs: 30_000, signal }))?.viewer ?? null,
       killJob: async id => { await cancelJob(id, current); },
     }, join(need(config).globalRoot, 'herdr'), need(config).limits.completedHours);
     source = createHerdrDataSource({ resolveRunDb: bindDb,

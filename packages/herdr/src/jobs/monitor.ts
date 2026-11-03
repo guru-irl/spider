@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createCleanupSweep, type CleanupSweep } from './cleanup.js';
+import { noticeRecoveryCandidates, recoverJobNotices } from './notices.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { releaseRemoteJob } from './observer.js';
@@ -28,7 +29,7 @@ export interface JobNotice {
   customType: 'spider.job_done';
   content: string;
   display: true;
-  details: { jobId: JobId; runId?: RunId; machine: string; address: TerminalAddress; exitCode: number | null; reason: string; signal: number | null; complete: boolean; localDirectory: string; remoteDirectory: string };
+  details: { jobId: JobId; nonce: string; generation: Owner['generation']; runId?: RunId; machine: string; address: TerminalAddress; exitCode: number | null; reason: string; signal: number | null; complete: boolean; localDirectory: string; remoteDirectory: string };
 }
 export interface JobSlot { id: string }
 export interface JobObserver { viewer: TerminalAddress; release(): Promise<void> }
@@ -81,6 +82,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const outputBudgetMs = 60000;
   const collections = new Map<JobId, { task: Promise<void>; firstIncomplete: Promise<void> }>();
   const outputWarnings = new Set<JobId>();
+  const recoveringNotices = new Set<JobId>();
+  let noticeRecoveryRead: Promise<() => void> | undefined;
   let reconciliation: Promise<void> | undefined;
   function waitForEvents<T>(promise: Promise<T>, signal?: AbortSignal, unavailable = 'Herdr events are unavailable', deferStop = false, timeoutMs = 2000, timeoutCode = 'core-unavailable'): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -180,18 +183,21 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   }
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
-    if (job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
+    if (recoveringNotices.has(job.id) || job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
     cleanup.enqueue(releaseKey(job), () => releaseSettledTerminal(job, save));
     scheduleMaintenance();
   }
   async function markSettled(job: JournalJob): Promise<void> { queueRelease(job); }
+  function observeNotice(job: JournalJob): void {
+    job.notice = 'observed'; job.noticeDelivered = true; job.noticeObservedGeneration = owner!.generation;
+  }
   async function deliver(job: JournalJob): Promise<void> {
     if (stopping || closed || job.noticeMode !== 'async' || job.notice !== 'pending' || job.phase.kind !== 'finished' || !job.output) return;
     const result = job.phase.result;
     const summary = Buffer.from(job.output.summary.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')).subarray(0, 2048).toString('utf8');
     const notice: JobNotice = { customType: 'spider.job_done', display: true,
       content: `Job ${job.id}${job.runId ? ` (run ${job.runId})` : ''} on ${job.machine} (${job.phase.address}): ${result.reason}; exit=${result.exitCode ?? 'unknown'}, signal=${result.signal ?? 'none'}.\n${summary}\nLogs: ${job.localDirectory}; remote receipt: ${job.remoteDirectory}/receipt.json`,
-      details: { jobId: job.id, ...(job.runId ? { runId: job.runId } : {}), machine: job.machine, address: job.phase.address, exitCode: result.exitCode, reason: result.reason, signal: result.signal, complete: job.output.complete, localDirectory: job.localDirectory, remoteDirectory: job.remoteDirectory } };
+      details: { jobId: job.id, nonce: job.nonce, generation: owner!.generation, ...(job.runId ? { runId: job.runId } : {}), machine: job.machine, address: job.phase.address, exitCode: result.exitCode, reason: result.reason, signal: result.signal, complete: job.output.complete, localDirectory: job.localDirectory, remoteDirectory: job.remoteDirectory } };
     // Persist eligibility/outcome before calling pi. Mark submission before the call so an uncertain call is not retried blindly.
     job.notice = 'submitted'; await persist();
     await options.notifier(notice);
@@ -293,12 +299,12 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     await reconcileJobRecovery(journal, { hc: options.hc, discovered, clock: options.clock, persist, reportError: report });
     const observed = new Set(await options.observedJobMessages(owner));
     for (const job of journal.jobs) {
-      if (observed.has(job.id)) { job.notice = 'observed'; job.noticeDelivered = true; }
+      if (observed.has(job.id)) observeNotice(job);
       await reconcileJob(job, signal);
     }
     await persist();
     for (const job of [...journal.jobs]) {
-      if (job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.callerOwned || job.detached || options.clock() - job.updatedAt <= 7 * 86400000) continue;
+      if (recoveringNotices.has(job.id) || job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.callerOwned || job.detached || options.clock() - job.updatedAt <= 7 * 86400000) continue;
       if (job.localDirectory !== join(store.directory, 'logs', job.id)) continue;
       cleanup.enqueue(`${releaseKey(job)}/prune`, async () => {
         if (stopping || closed) return;
@@ -321,6 +327,16 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         job.evidenceConflict = false; delete job.exitEvidence;
       }
     }
+    const noticeCandidates = noticeRecoveryCandidates(journal, nextOwner);
+    for (const job of noticeCandidates) recoveringNotices.add(job.id);
+    if (noticeCandidates.length) cleanup.enqueue(`${nextOwner.sessionId}/notices`, async () => {
+      const apply = await (noticeRecoveryRead ??= recoverJobNotices(noticeCandidates, nextOwner, lifetime.signal));
+      await serial(async () => {
+        if (stopping || closed) return;
+        apply(); recoveringNotices.clear(); await persist();
+        for (const job of noticeCandidates) { await deliver(job); queueRelease(job); }
+      });
+    });
     await prepareJobRecovery(journal, Boolean(options.adoptedRunId), options.callerCrashed);
     await persist();
     if (options.child) journal.child = { ...options.child, ended: false };
@@ -475,7 +491,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     },
     detach: async id => { await serial(async () => { const job = tracked(id); job.detached = true; job.noticeMode = 'async'; await persist(); await collect(job); }); await drainCollections(); },
     toolReturned: (id: JobId) => serial(async () => { const job = tracked(id); if (job.detached) await release(job); }),
-    consumeNotice: id => serial(async () => { const job = tracked(id); job.notice = 'observed'; job.noticeDelivered = true; await persist(); await markSettled(job); }),
+    consumeNotice: id => serial(async () => { const job = tracked(id); observeNotice(job); await persist(); await markSettled(job); }),
     shutdown,
     dispose: () => shutdown('quit'),
   };

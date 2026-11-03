@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import type { Disposable, JobId, Owner } from '../contracts.js';
 import { createJobMonitor, type JobMonitor, type JobMonitorOptions } from './monitor.js';
 import { HerdrError } from '../client/parse.js';
+import { jobNoticeIdentity } from './notices.js';
 export interface JobRegistrationPorts {
   currentOwner(ctx: ExtensionContext): Owner | null;
   monitorOptions(owner: Owner, ctx: ExtensionContext): Omit<JobMonitorOptions, 'notifier' | 'observedJobMessages'>;
@@ -11,18 +12,13 @@ export interface JobRegistrationPorts {
   activationFailed?(error: unknown): void;
   jobIdsForToolResult(result: unknown): readonly JobId[];
 }
-function noticeId(value: unknown): JobId | null {
-  if (!value || typeof value !== 'object' || !('customType' in value) || value.customType !== 'spider.job_done' || !('details' in value)) return null;
-  const details = value.details;
-  if (!details || typeof details !== 'object' || !('jobId' in details) || typeof details.jobId !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(details.jobId)) return null;
-  return details.jobId as JobId;
-}
 export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts): Disposable {
   let monitor: JobMonitor | null = null;
+  let ownerGeneration: Owner['generation'] | null = null;
   let activation = 0;
   let disposed = false;
   async function stop(reason: 'reload' | 'quit'): Promise<void> {
-    const previous = monitor; monitor = null; activation++; ports.bind(null);
+    const previous = monitor; monitor = null; ownerGeneration = null; activation++; ports.bind(null);
     await previous?.shutdown(reason);
   }
   const subscriptions = [
@@ -35,7 +31,7 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
       if (!owner) return;
       const options = ports.monitorOptions(owner, ctx);
       const next = createJobMonitor({ ...options,
-        observedJobMessages: async () => (ctx?.sessionManager?.getBranch?.() ?? []).flatMap(entry => { const id = noticeId(entry); return id ? [id] : []; }),
+        observedJobMessages: async () => (ctx?.sessionManager?.getBranch?.() ?? []).flatMap(entry => { const notice = jobNoticeIdentity(entry); return notice?.generation === owner.generation ? [notice.jobId] : []; }),
         notifier: notice => {
           if (disposed || generation !== activation) throw new HerdrError('activation-ended', 'Notice remains uncertain after its owning activation ended');
           // A busy agent reads follow-ups only after all its work ends, so it would keep waiting on a finished job.
@@ -46,7 +42,7 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
       try {
         await next.activate(owner);
         if (disposed || generation !== activation) { await next.shutdown('reload'); return; }
-        monitor = next; ports.bind(next);
+        monitor = next; ownerGeneration = owner.generation; ports.bind(next);
       }
       catch (error) {
         const current = !disposed && generation === activation;
@@ -61,8 +57,8 @@ export function registerHerdrJobs(pi: ExtensionAPI, ports: JobRegistrationPorts)
       for (const id of ports.jobIdsForToolResult(event?.result)) await current.toolReturned(id);
     }),
     pi.on('message_end', async event => {
-      const current = monitor, id = noticeId(event?.message); if (!current || !id) return;
-      try { await current.consumeNotice(id); }
+      const current = monitor, notice = jobNoticeIdentity(event?.message); if (!current || !notice || notice.generation !== ownerGeneration) return;
+      try { await current.consumeNotice(notice.jobId); }
       catch (error) { if (!(error instanceof HerdrError && error.code === 'job-not-owned')) throw error; }
     }),
   ];

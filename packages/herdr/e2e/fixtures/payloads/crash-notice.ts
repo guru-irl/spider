@@ -19,7 +19,25 @@ export async function proveCrashDelivery(story: RemoteStory, fault: boolean): Pr
     await p.release(); const notice = await oneNotice(story, value.remote!.jobId);
     const logs = await persistedLogs(story, value); assert.equal(logs.stdout.toString(), 'P3-start\nP3-finish\n'); assert.equal(logs.stderr.toString(), 'P3-error\n'); assert.equal(notice.details.exitCode, 29);
     await suite.evidence('P3-paired-control.json', { jobId: value.remote!.jobId, notices: await notices(story, value.remote!.jobId), effect: await p.effect() });
-    return story;
+    const journalPath = suite.ownPath(join(suite.directories.SPIDER_GLOBAL_ROOT, 'herdr/jobs/sessions', story.sessionId, 'jobs.json'));
+    const beforeCrash = await waitFor('P3 saved notice is observed before the crash', async () => {
+      const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+      return journal.jobs.find((j: { id: string }) => j.id === value.remote!.jobId);
+    }, job => job?.notice === 'observed', deadline(15000), { reconcileMs: 50 });
+    await signalPi(story.driver, 'SIGKILL');
+    const driver = await suite.launchPi({ mode: 'interactive', cwd: story.cwd, args: ['--approve', '--session', story.sessionFile] });
+    assert.equal(driver.mode, 'interactive');
+    const start = await driver.waitEvent('session_start', () => true, deadline(60000));
+    assert.equal(start.sessionId, story.sessionId);
+    const resumed = { ...story, driver, sessionFile: String(start.sessionFile) };
+    await call(resumed, 'saved-notice-reconcile', { action: 'exec', language: 'shell', code: "printf 'saved-notice-reconcile\\n'" });
+    await reload(resumed); await call(resumed, 'saved-notice-second-reconcile', { action: 'exec', language: 'shell', code: "printf 'saved-notice-second-reconcile\\n'" });
+    const entries = await notices(resumed, value.remote!.jobId);
+    assert.equal(entries.length, 1, 'a saved notice must not be redelivered after restart');
+    assert.equal(entries[0].details.nonce, beforeCrash.nonce, 'the saved notice binds the job nonce');
+    assert.equal(await p.effect(), 'crash-control\n', 'saved-notice recovery must not re-run the payload');
+    await suite.evidence('P3-saved-recovery.json', { jobId: value.remote!.jobId, nonce: beforeCrash.nonce, notices: entries, journal: JSON.parse(await readFile(journalPath, 'utf8')) });
+    return resumed;
   }
   // A mode fault is forbidden until the independent supervisor has registered its restoration.
   const path = suite.ownPath(story.sessionFile), original = await stat(path);
@@ -32,7 +50,7 @@ export async function proveCrashDelivery(story: RemoteStory, fault: boolean): Pr
     const submitted = waitFor('P3 durable submission before observed append', async () => {
       const journal = JSON.parse(await readFile(journalPath, 'utf8'));
       return journal.jobs.find((j: { id: string }) => j.id === value.remote!.jobId);
-    }, j => j?.notice === 'submitted', deadline(30000), { reconcileMs: 50 });
+    }, j => j?.notice === 'submitted' || j?.notice === 'observed', deadline(30000), { reconcileMs: 50 });
     await p.release(); const beforeCrash = await submitted;
     await suite.evidence('P3-submitted.json', beforeCrash);
     const behavior = await waitFor('pi append-refusal observation', async () => ({ alive: identityAlive(story.driver.identity), raw: (await story.driver.rawOutput()).toString(), events: await story.driver.events(), entries: await notices(story, value.remote!.jobId) }),
@@ -40,6 +58,12 @@ export async function proveCrashDelivery(story: RemoteStory, fault: boolean): Pr
     await suite.evidence('P3-append-refusal.json', behavior); await suite.evidence('P3-append-refusal.raw', behavior.raw);
     assert.equal(behavior.entries.length, 0, 'the denied append must actually prevent durable notice observation');
     assert.ok(behavior.alive, 'pi must remain running long enough to exercise the requested SIGKILL');
+    const observedBeforeCrash = await waitFor('P3 in-memory observation without a saved notice', async () => {
+      const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+      return journal.jobs.find((j: { id: string }) => j.id === value.remote!.jobId);
+    }, j => j?.notice === 'observed', deadline(15000), { reconcileMs: 50 });
+    assert.equal((await notices(story, value.remote!.jobId)).length, 0, 'an observed journal must coexist with no saved notice at the crash');
+    await suite.evidence('P3-observed-without-durable-notice.json', { job: observedBeforeCrash, savedNotices: [] });
     await signalPi(story.driver, 'SIGKILL');
     await restoration.restore();
     assert.equal((await stat(path)).mode & 0o777, original.mode & 0o777);
@@ -47,14 +71,19 @@ export async function proveCrashDelivery(story: RemoteStory, fault: boolean): Pr
     assert.equal(driver.mode, 'interactive'); const start = await driver.waitEvent('session_start', () => true, deadline(60000));
     assert.equal(start.sessionId, story.sessionId); resumed = { ...story, driver, sessionFile: String(start.sessionFile) };
     await call(resumed, 'crash-reconcile', { action: 'exec', language: 'shell', code: "printf 'crash-reconcile\\n'" });
+    await suite.evidence('P3-recovery-before-redelivery.json', { journal: JSON.parse(await readFile(journalPath, 'utf8')), savedNotices: await notices(resumed, value.remote!.jobId) });
+    await oneNotice(resumed, value.remote!.jobId);
     await reload(resumed); await call(resumed, 'crash-second-reconcile', { action: 'exec', language: 'shell', code: "printf 'crash-second-reconcile\\n'" });
     const entries = await notices(resumed, value.remote!.jobId); assert.ok(entries.length <= 1, 'P3 promises at most one after unobserved submission');
+    assert.equal(entries.length, 1, 'recovery must deliver the unsaved observed notice exactly once');
+    assert.equal(entries[0].details.nonce, observedBeforeCrash.nonce, 'recovery preserves the notice nonce');
+    assert.notEqual(entries[0].details.generation, observedBeforeCrash.noticeObservedGeneration, 'recovery uses a new owner generation');
     const journal = JSON.parse(await readFile(journalPath, 'utf8')), job = journal.jobs.find((j: { id: string }) => j.id === value.remote!.jobId);
     assert.equal(job.phase.kind, 'finished', 'the result remains retrievable after the crash');
     assert.equal(job.phase.result.exitCode, 29);
     assert.equal(job.output.complete, true);
-    // Pi may consume the in-memory notice before its denied durable append. No cross-file transaction exists.
-    await suite.evidence('P3-delivery-uncertainty.json', { observedNoticeCount: entries.length, deliveryUncertain: entries.length === 0, notice: job.notice, noticeDelivered: job.noticeDelivered, rawJob: job });
+    // Recovery must verify the saved session instead of trusting an in-memory observation.
+    await suite.evidence('P3-delivery-uncertainty.json', { observedNoticeCount: entries.length, deliveryUncertain: false, notice: job.notice, noticeDelivered: job.noticeDelivered, rawJob: job });
     const logs = await persistedLogs(resumed, value); assert.equal(logs.stdout.toString(), 'P3-start\nP3-finish\n'); assert.equal(logs.stderr.toString(), 'P3-error\n'); assert.equal(logs.receipt.exitCode, 29);
     assert.equal(await p.effect(), 'crash-notice\n', 'crash and resume must not re-run the payload');
     await snapshot(resumed, 'P3-crash'); return resumed;

@@ -6,7 +6,37 @@ import { join } from 'node:path';
 import { bus } from '@spider/db-core';
 import { mountedFixture } from './herdr-wiring-fixture.js';
 
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+const timing = vi.hoisted(() => ({
+  onPublish: undefined as (() => void) | undefined,
+  pausePlacement: undefined as (() => Promise<void>) | undefined,
+}));
+
+vi.mock('@spider/herdr/feed/publisher', async importOriginal => {
+  const actual = await importOriginal<typeof import('@spider/herdr/feed/publisher')>();
+  return { ...actual, publishSessionFeed: (...args: Parameters<typeof actual.publishSessionFeed>) => {
+    // The real publisher serializes the feed before its first filesystem await.
+    const pending = actual.publishSessionFeed(...args);
+    const onPublish = timing.onPublish;
+    timing.onPublish = undefined;
+    onPublish?.();
+    return pending;
+  } };
+});
+
+vi.mock('@spider/herdr/client/app', async importOriginal => {
+  const actual = await importOriginal<typeof import('@spider/herdr/client/app')>();
+  return { ...actual, createAppClient: (...args: Parameters<typeof actual.createAppClient>) => {
+    const client = actual.createAppClient(...args);
+    const ownerPlacement = client.ownerPlacement;
+    client.ownerPlacement = async address => {
+      await timing.pausePlacement?.();
+      return ownerPlacement(address);
+    };
+    return client;
+  } };
+});
+
+afterEach(() => { timing.onPublish = undefined; timing.pausePlacement = undefined; vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 it('publishes name changes promptly and retains heartbeat and later feed updates', async () => {
   const f = await mountedFixture('fake', 'rpc', false);
@@ -29,6 +59,48 @@ it('publishes name changes promptly and retains heartbeat and later feed updates
     expect((await readFeed()).owner.name).toBeNull();
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
+}, 30000);
+
+it('publishes the latest name when a rename arrives during a feed write', async () => {
+  const f = await mountedFixture('fake', 'rpc', false);
+  try {
+    let renamed: Promise<unknown> | undefined;
+    timing.onPublish = () => {
+      Reflect.set(f.pi, 'getSessionName', () => 'Final Name');
+      renamed = f.emit('session_info_changed');
+    };
+    Reflect.set(f.pi, 'getSessionName', () => 'First Name');
+    await f.emit('session_info_changed');
+    expect(renamed).toBeDefined();
+    await renamed;
+    expect(JSON.parse(await readFile(f.feedPath, 'utf8')).owner.name).toBe('Final Name');
+  } finally { timing.onPublish = undefined; await f.close(); }
+}, 30000);
+
+it('renews the heartbeat after rename while a snapshot is stalled', async () => {
+  const f = await mountedFixture('fake', 'rpc', false);
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const snapshotStarted = new Promise<void>(resolve => { entered = resolve; });
+  let rename: Promise<unknown> | undefined;
+  try {
+    const originalOwner = f.mount.owner();
+    const heartbeatPath = join(f.config.globalRoot, 'herdr/sessions', f.owner!.sessionId, 'heartbeat.json');
+    const heartbeat = JSON.parse(await readFile(heartbeatPath, 'utf8')).updatedAt;
+    // A stalled snapshot cannot renew the heartbeat through a feed publish.
+    timing.pausePlacement = async () => { entered(); await blocked; };
+    Reflect.set(f.pi, 'getSessionName', () => 'Sample Session');
+    rename = f.emit('session_info_changed');
+    await snapshotStarted;
+    expect(f.mount.owner()).toBe(originalOwner);
+    await vi.waitFor(async () => expect(JSON.parse(await readFile(heartbeatPath, 'utf8')).updatedAt).toBeGreaterThan(heartbeat), { timeout: 5000 });
+  } finally {
+    timing.pausePlacement = undefined;
+    release();
+    await rename;
+    await f.close();
+  }
 }, 30000);
 
 it('uses the renamed session for viewers opened by run events', async () => {

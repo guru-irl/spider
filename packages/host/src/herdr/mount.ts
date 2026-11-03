@@ -262,6 +262,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   const writeFeed = coalesceFeedWrites(async () => {
     const current = owner, currentSource = source;
     if (!current || !currentSource || stopped) return;
+    // Keep the published text and its content hash on the same owner name during a rename.
     const feed = await currentSource.snapshot({ ...current });
     if (owner === current && !stopped) await publishSessionFeed(join(need(config).globalRoot, 'herdr'), feed);
   });

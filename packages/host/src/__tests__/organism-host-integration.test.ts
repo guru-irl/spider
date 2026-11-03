@@ -23,6 +23,7 @@ import { HostOrganismRuntime } from "../organism-runtime";
 vi.mock("@spider/memory", async (original) => ({
   ...await original<typeof import("@spider/memory")>(),
   getReadyEmbedder: () => null,
+  resolveEmbedder: async () => null,
 }));
 const scratch = resolve(".spider/scratch/organism-host-integration");
 const roots: string[] = [];
@@ -378,7 +379,7 @@ describe("the installed pi contract through the full spider extension", () => {
     expect(text).not.toContain("waiting for compaction");
     expect(text).not.toContain("parent failure");
     expect(text).not.toContain("last drain in this worktree");
-    expect(doctor.details).toMatchObject({ ok: true });
+    expect(doctor.details, JSON.stringify(doctor.details, null, 2)).toMatchObject({ ok: true });
   });
 
   it("resolves a bare override only by exact catalog id, not the session provider", async () => {

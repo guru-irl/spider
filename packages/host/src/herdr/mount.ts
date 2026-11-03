@@ -553,7 +553,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       return { on: resolved.on, ...machine.runtime, nodePath: machine.nodePath ?? 'node', environment: {}, runtimePath: runtimePath(resolved.on), runtimeSha256: (await import('@spider/herdr/remote/runtime')).sha256(bytes) };
     }, environmentPolicy: env => environment(env), logSink: async (job, readerOptions) => need(output).logReader(job.id, readerOptions), clock: Date.now }), hc, () => need(config).machines) : undefined;
   }, jobIdsForToolResult,
-    monitorOptions: () => ({ hc, app: need(app), clock: Date.now, journalRoot: journalRoot(), outputCollector: need(output).outputCollector, reportError: report,
+    monitorOptions: () => ({ hc, app: need(app), clock: Date.now, journalRoot: journalRoot(), outputCollector: need(output).outputCollector, reportError: report, recordCleanupError: error => options.reportError?.(error),
       panes: { reserve: (...args) => need(panes).reserveRemote(...args), abandon: slot => need(panes).abandon(slot), observe: async job => { throw new HerdrError('explicit-observer-only', `Job ${job.id} must be opened through openJob`); } },
     }),
   };

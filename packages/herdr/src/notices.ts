@@ -2,7 +2,7 @@
 import { HerdrError } from './client/parse.js';
 
 interface Notice { text: string; action: string | null }
-type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'remoteUnavailable' | 'remoteUnavailableChild' | 'outputUnavailable' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished' | 'setupUnplaced';
+type NoticeCode = 'chainReloaded' | 'chainClosed' | 'killAmbiguous' | 'supervisorStartTimeout' | 'supervisorSignalled' | 'noConfig' | 'outside' | 'coreDown' | 'nested' | 'configProblem' | 'activationProblem' | 'childMissing' | 'childPresence' | 'childCoreLost' | 'coreBack' | 'retired' | 'callerMismatch' | 'repoConfig' | 'repoEnabled' | 'sessionHandoff' | 'sessionBusy' | 'eventsLost' | 'terminalRecords' | 'sshMissing' | 'sshList' | 'sshManaged' | 'sshUnclear' | 'sshHeredoc' | 'sshParse' | 'sshCheck' | 'sshStart' | 'sshBypass' | 'sshPath' | 'sshFile' | 'sshFileMissing' | 'sshBatch' | 'guardOutside' | 'guardConfig' | 'guardChild' | 'guardCore' | 'unsupported' | 'appDisconnected' | 'temporarilyUnavailable' | 'badReply' | 'paneFailed' | 'remoteFailed' | 'remoteStart' | 'remoteNotInstalled' | 'remoteDisabled' | 'remoteUnavailable' | 'remoteUnavailableChild' | 'outputUnavailable' | 'cleanupStalled' | 'generic' | 'sessionKillFailed' | 'feedRefresh' | 'viewerFailed' | 'viewNoSession' | 'viewAgents' | 'viewTodos' | 'viewUsage' | 'viewMemory' | 'viewTriggers' | 'templateWorker' | 'templateReviewer' | 'templateWatcher' | 'paneMoveFailed' | 'ownerUnplaced' | 'ownerMoved' | 'commandPaneFailed' | 'paneFull' | 'paneProtected' | 'viewerClosing' | 'runFinished' | 'setupUnplaced';
 
 export function changedSetupFilesNotice(files: readonly { path: string; refusal?: { message: string } }[]): string {
   return `Setup found changed files. Restore the recorded values below, or rerun setup with --replace-changed to back up and replace these files.\n${files.map(file => `  ${file.path}${file.refusal ? `\n    ${file.refusal.message}` : ''}`).join('\n')}`;
@@ -98,6 +98,7 @@ export const HERDR_NOTICES: Readonly<Record<NoticeCode, Notice>> = {
   remoteUnavailable: { text: 'Remote execution is unavailable in this session. The <stage> failed because <cause>. Local commands still work. Run /reload to reconnect. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.', action: '/reload' },
   remoteUnavailableChild: { text: 'Remote execution is unavailable in this subagent. The <stage> failed because <cause>. Local commands still work. Report back so the parent can restore Herdr and start a new run.', action: 'Report back' },
   outputUnavailable: { text: "Spider couldn't read output for job <job> on <machine>. The result shows as unknown for now. The command itself isn't affected.", action: null },
+  cleanupStalled: { text: "Finished terminals on <machine> could not be removed for over a day. Reconnect that machine in Herdr and check its terminal permissions. Cleanup will retry automatically.", action: 'Reconnect that machine in Herdr and check its terminal permissions' },
   generic: { text: "Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.", action: '/herdr-setup' },
   sessionKillFailed: { text: 'Subagents stopped, but the terminal could not close. Try Kill session again.', action: 'Kill session' },
   feedRefresh: { text: "Spider couldn't refresh the session list in Herdr. Your sessions may still be running. Run /reload to reconnect.", action: '/reload' },
@@ -152,7 +153,7 @@ const errors: Readonly<Record<string, NoticeCode>> = {
   'running-session-unplaced': 'setupUnplaced',
   'lease-token-invalid': 'sessionHandoff', 'session-may-be-live': 'sessionBusy',
   'core-unavailable': 'coreDown', 'terminal-core-mismatch': 'retired', 'core-mismatch': 'retired',
-  'events-disconnected': 'eventsLost', 'terminal-registry-bookkeeping': 'terminalRecords', 'output-unavailable': 'outputUnavailable',
+  'events-disconnected': 'eventsLost', 'terminal-registry-bookkeeping': 'terminalRecords', 'output-unavailable': 'outputUnavailable', 'cleanup-machine-stalled': 'cleanupStalled',
   'ssh-unavailable': 'sshMissing', 'invalid-config': 'configProblem', 'unsupported-version': 'unsupported',
   'app-disconnected': 'appDisconnected', unavailable: 'temporarilyUnavailable', 'child-identity-unavailable': 'childPresence',
   'caller-mismatch': 'callerMismatch', 'invalid-reply': 'badReply', 'reply-too-large': 'badReply', 'viewer-usage': 'viewerFailed', 'session-unavailable': 'viewNoSession',
@@ -175,6 +176,11 @@ export function herdrErrorNotice(error: unknown): string {
   if (known === 'setupUnplaced') {
     const sessions = (error.details as { sessions?: unknown } | undefined)?.sessions;
     if (Array.isArray(sessions) && sessions.length && sessions.every(name => typeof name === 'string')) return sessions.map(runningSessionUnplacedNotice).join('\n');
+  }
+  if (known === 'cleanupStalled') {
+    const machine = (error.details as { machine?: unknown } | undefined)?.machine;
+    const name = typeof machine === 'string' ? machine.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 100) || 'unknown' : 'unknown';
+    return HERDR_NOTICES.cleanupStalled.text.replace('<machine>', name);
   }
   if (known === 'outputUnavailable') {
     const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};

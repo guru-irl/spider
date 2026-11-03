@@ -44,10 +44,10 @@ it('a timed out get does not block later jobs and failed jobs back off without r
   const jobs = f.monitor({ clock: () => now });
   await expect(bounded(jobs.activate(f.owner))).resolves.toBeUndefined();
   await vi.waitFor(() => expect(f.terminals.has(f.handles[5].address)).toBe(false));
-  await vi.waitFor(() => expect(f.errors).toHaveLength(1), { timeout: 6500 });
+  await vi.waitFor(async () => expect((await f.store.read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-timeout', attempts: 1 }), { timeout: 6500 });
   for (let i = 0; i < 3; i++) await jobs.reconcile();
   expect(get.mock.calls.filter(([address]) => address === f.handles[0].address)).toHaveLength(1);
-  expect(f.errors).toHaveLength(1);
+  expect(f.errors).toEqual([]);
   now += 60000; await jobs.reconcile();
   await vi.waitFor(() => expect(get.mock.calls.filter(([address]) => address === f.handles[0].address)).toHaveLength(2));
 });
@@ -59,7 +59,7 @@ it('notice consumption preserves the command result while removal is stuck or fa
   vi.spyOn(f.hc, 'rm').mockImplementation(() => stuck.promise);
   await expect(bounded(jobs.consumeNotice(handle.id))).resolves.toBeUndefined();
   expect(await handle.finished).toMatchObject({ exitCode: 23, reason: 'exited' });
-  await vi.waitFor(() => expect(f.errors).toHaveLength(1), { timeout: 9500 });
+  await vi.waitFor(async () => expect((await createJobStore(f.f.root, f.owner.sessionId).read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-timeout', attempts: 1 }), { timeout: 9500 });
   expect((await createJobStore(f.f.root, f.owner.sessionId).read()).jobs[0].terminalReleased).not.toBe(true);
 });
 
@@ -163,6 +163,37 @@ it('a cancelled active cleanup cannot remove or report against its replacement',
     await vi.waitFor(() => expect(replacement).toBe(true));
     expect(reports).toEqual([]);
   } finally { blocked.resolve(); await sweep.dispose(); }
+});
+
+it('records transient cleanup failures without UI warnings and clears them after a successful retry', async () => {
+  const f = await backlog(2), original = f.hc.get;
+  const get = vi.spyOn(f.hc, 'get').mockRejectedValue(new HerdrError('machine-unavailable', 'Machine is offline'));
+  let now = 1000; const jobs = f.monitor({ clock: () => now }); await jobs.activate(f.owner);
+  await vi.waitFor(async () => expect((await f.store.read()).jobs.map(job => job.cleanupFailure)).toEqual([
+    { code: 'machine-unavailable', attempts: 1, firstAt: 1000, lastAt: 1000 },
+    { code: 'machine-unavailable', attempts: 1, firstAt: 1000, lastAt: 1000 },
+  ]));
+  expect(f.errors).toEqual([]);
+  get.mockImplementation(original); now += 60000; await jobs.reconcile();
+  await vi.waitFor(async () => expect((await f.store.read()).jobs.map(job => ({ released: job.terminalReleased, failure: job.cleanupFailure }))).toEqual([
+    { released: true, failure: undefined }, { released: true, failure: undefined },
+  ]));
+});
+
+it('warns once per machine only after a day of repeated cleanup failures, including across reload', async () => {
+  const f = await backlog(3); vi.spyOn(f.hc, 'get').mockRejectedValue(new HerdrError('machine-unavailable', 'Machine is offline'));
+  let now = 1000; const jobs = f.monitor({ clock: () => now }); await jobs.activate(f.owner);
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === attempt)).toBe(true));
+    if (attempt < 8) { expect(f.errors).toEqual([]); now += 4 * 3600000; await jobs.reconcile(); }
+  }
+  expect(f.errors).toMatchObject([{ code: 'cleanup-machine-stalled', details: { machine: on } }]);
+  now += 4 * 3600000; await jobs.reconcile();
+  await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === 9)).toBe(true));
+  await jobs.shutdown('reload'); f.errors.length = 0;
+  const resumed = f.monitor({ clock: () => now + 4 * 3600000 }); await resumed.activate(f.owner);
+  await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === 10)).toBe(true));
+  expect(f.errors).toEqual([]);
 });
 
 it('binds remote execution before any backlog cleanup starts', async () => {

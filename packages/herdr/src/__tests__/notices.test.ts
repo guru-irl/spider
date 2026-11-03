@@ -118,6 +118,15 @@ describe('Herdr notices', () => {
 });
 
 
+it('names the machine and a concrete repair for persistent cleanup failures without exposing raw errors', () => {
+  const error = new HerdrError('cleanup-machine-stalled', 'private detail', { machine: 'remote.invalid\nsecret' });
+  const notice = herdrErrorNotice(error);
+  expect(notice).toContain('remote.invalid?secret');
+  expect(notice).toContain('Reconnect that machine in Herdr and check its terminal permissions.');
+  expect(notice).not.toMatch(/private detail|doctor|session.*problem/);
+  expect(HERDR_NOTICES[herdrErrorNoticeKey(error)].action).not.toBeNull();
+});
+
 it('shows actionable setup refusals with every session name in the panel', () => {
   const notice = herdrErrorNotice(new HerdrError('running-session-unplaced', 'internal fallback', { sessions: ['First', 'Second'] }));
   expect(herdrErrorNoticeKey(new HerdrError('running-session-unplaced', ''))).not.toBe('generic');

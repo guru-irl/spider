@@ -148,6 +148,76 @@ it('a launcher-started session keeps its reservation through reload and releases
   await second.registration.dispose();
   expect(await inv.leases.get(file)).toBeNull();
 });
+it('a launcher-started session takes a fresh lease when an earlier build removed it at reload, and keeps it through later reloads', async () => {
+  const file = await session();
+  await launchSession(request(file), ports);
+  const env = opened[0].env;
+  const makeRegistration = () => {
+    const api = apiFixture();
+    const registration = registerHerdrSessions(api.pi, { ...inv, registry: createTerminalRegistry(root),
+      processIdentity: { pid: 102, startIdentity: 'start:102' }, env,
+      currentSession: () => ({ pid: 102, startIdentity: 'start:102', sessionFile: file, sessionName: 'planner', kind: 'top-level', hcAddress: terminal.address }),
+      owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
+    return { ...api, registration };
+  };
+  const first = makeRegistration();
+  await first.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
+  // Earlier builds released the lease when the extension shut down for a reload, as they do on quit.
+  await first.fire('session_shutdown', { reason: 'quit' }, context(file, 'tui'));
+  await first.registration.dispose();
+  expect(await inv.leases.get(file)).toBeNull();
+  for (const reload of [1, 2]) {
+    const next = makeRegistration();
+    await expect(next.fire('session_start', { reason: 'reload' }, context(file, 'tui')), `reload ${reload}`).resolves.toBeUndefined();
+    expect(await inv.leases.get(file)).toMatchObject({ pid: 102, startIdentity: 'start:102' });
+    expect(await assessSessionLiveness(file, inv)).toMatchObject({ kind: 'live' });
+    expect((await createTerminalRegistry(root).get(terminal))?.owner.sessionFile).toBe(file);
+    await next.fire('session_shutdown', { reason: reload === 1 ? 'reload' : 'quit' }, context(file, 'tui'));
+    await next.registration.dispose();
+    if (reload === 1) expect(await inv.leases.get(file), 'the lease survives the reload shutdown').toMatchObject({ pid: 102, startIdentity: 'start:102' });
+  }
+  expect(await inv.leases.get(file)).toBeNull();
+});
+it('a launcher-started session with Herdr inactive still records its lease after an earlier build removed it', async () => {
+  const file = await session();
+  await launchSession(request(file), ports);
+  const env = opened[0].env;
+  const register = (active: boolean) => {
+    const api = apiFixture();
+    const registration = registerHerdrSessions(api.pi, { ...inv, registry: createTerminalRegistry(root),
+      processIdentity: { pid: 102, startIdentity: 'start:102' }, env,
+      currentSession: () => ({ pid: 102, startIdentity: 'start:102', sessionFile: file, sessionName: 'planner', kind: 'top-level', hcAddress: active ? terminal.address : null }),
+      owner: () => active ? owner(file) : null, coreStartedAt: () => 1, launchEnvironment: request(file).environment });
+    return { ...api, registration };
+  };
+  const first = register(true);
+  await first.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
+  await first.fire('session_shutdown', { reason: 'quit' }, context(file, 'tui'));
+  await first.registration.dispose();
+  expect(await inv.leases.get(file)).toBeNull();
+  const inactive = register(false);
+  await expect(inactive.fire('session_start', { reason: 'reload' }, context(file, 'tui'))).resolves.toBeUndefined();
+  expect(await inv.leases.get(file)).toMatchObject({ pid: 102, startIdentity: 'start:102' });
+  await inactive.fire('session_shutdown', { reason: 'quit' }, context(file, 'tui'));
+  await inactive.registration.dispose();
+  expect(await inv.leases.get(file)).toBeNull();
+});
+it('a launcher-started session never takes the lease of another live process', async () => {
+  const file = await session();
+  await launchSession(request(file), ports);
+  const env = opened[0].env;
+  probes.set(500, { kind: 'live', startIdentity: 'start:500' });
+  await inv.leases.claim(file, { pid: 500, startIdentity: 'start:500' }, inv, { mode: 'bookkeeping' });
+  const api = apiFixture();
+  const registration = registerHerdrSessions(api.pi, { ...inv, registry: createTerminalRegistry(root),
+    processIdentity: { pid: 102, startIdentity: 'start:102' }, env,
+    currentSession: () => ({ pid: 102, startIdentity: 'start:102', sessionFile: file, sessionName: 'planner', kind: 'top-level', hcAddress: terminal.address }),
+    owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
+  await expect(api.fire('session_start', { reason: 'startup' }, context(file, 'tui'))).rejects.toMatchObject({ code: 'session-may-be-live' });
+  expect(await inv.leases.get(file)).toMatchObject({ pid: 500, startIdentity: 'start:500' });
+  await registration.dispose();
+  expect(await inv.leases.get(file)).toMatchObject({ pid: 500, startIdentity: 'start:500' });
+});
 
 it('the receiving process can adopt the launcher token before its spawn reply returns', async () => {
   const file = await session(); const lease = await inv.leases.claim(file, { pid: 101, startIdentity: 'start:101' }, inv);

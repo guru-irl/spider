@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { spawn } from 'node:child_process';
 import { expect, it, vi } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,7 +7,7 @@ import { createJobStore } from '../jobs/store.js';
 import type { JobId, RunId, TerminalAddress } from '../contracts.js';
 import { processStartIdentity } from '../jobs/handoff.js';
 import { HerdrError } from '../client/parse.js';
-import { monitorFixture, on, program } from './herdr-monitor-fixture.js';
+import { deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
 it('removes a finished background terminal only after observation and retains logs and receipt', async () => {
   const f = await monitorFixture(), removed = vi.spyOn(f.hc, 'rm');
@@ -121,5 +122,82 @@ it('reconciliation retries a failed removal after the notice was observed', asyn
   await vi.waitFor(async () => expect((await createJobStore(f.f.root, f.owner.sessionId).read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-failed', attempts: 1 }), { timeout: 3500 });
   now += 60000; await jobs.reconcile();
   await vi.waitFor(() => expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address], [handle.address]]));
+  expect(f.terminals.has(handle.address)).toBe(false);
+});
+
+it.each([true, false])('recovers an unread foreground result from a crashed child with marker %s', async marked => {
+  const proc = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  const exited = new Promise(resolve => proc.once('exit', resolve));
+  const h = await monitorFixture(), runId = 'probe-run' as RunId;
+  const child = h.monitor({ child: { id: runId, pid: proc.pid!, startIdentity: processStartIdentity(proc.pid!)! } });
+  const job = await child.start(program, h.owner, on, {});
+  h.complete(job.address); await child.reconcile(); await child.reconcile();
+  const store = createJobStore(h.f.root, h.owner.sessionId, runId);
+  await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ phase: { kind: 'finished' }, output: { complete: true } }));
+  await child.shutdown('reload');
+  const journal = await store.read();
+  // An expired terminal can have its marker before the tool consumes the result.
+  Object.assign(journal.jobs[0], { settledMarked: marked, terminalExpired: marked, notice: 'pending', noticeDelivered: false, noticeMode: 'tool' });
+  await store.write(journal);
+  proc.kill('SIGKILL'); await exited;
+  const parent = h.monitor({ closeAgentConsoles: async () => {} }); await parent.activate(h.owner);
+  for (let i = 0; i < 3; i++) await parent.reconcile();
+  await new Promise(resolve => setTimeout(resolve, 300));
+  expect(h.notices).toHaveLength(1);
+});
+
+
+it.each(['success', 'disconnected'])('finishes an adopted release attempt before settling with %s and retains retries', async mode => {
+  const f = await monitorFixture(), runId = 'release-child' as RunId;
+  const child = f.monitor({ child: { id: runId, pid: process.pid, startIdentity: processStartIdentity(process.pid)! } });
+  const handle = await child.start(program, f.owner, on, { background: true });
+  await child.detach(handle.id); f.complete(handle.address);
+  await vi.waitFor(() => expect(f.notices).toHaveLength(1)); await child.shutdown('quit');
+  const store = createJobStore(f.f.root, f.owner.sessionId, runId), journal = await store.read();
+  Object.assign(journal.jobs[0], { settledMarked: false, notice: 'observed', terminalReleased: false }); await store.write(journal);
+  const blocked = deferred<void>(), entered = deferred<void>(), originalRm = f.hc.rm;
+  let connected = mode === 'success', now = 1000;
+  const aborted: boolean[] = [];
+  vi.spyOn(f.hc, 'rm').mockImplementation(async (address, options) => {
+    entered.resolve(); await blocked.promise; aborted.push(options?.signal?.aborted ?? false);
+    if (!connected) throw new HerdrError('machine-unavailable', 'Machine is offline');
+    await originalRm(address);
+  });
+  const parent = f.monitor({ clock: () => now, closeAgentConsoles: async () => {} });
+  try {
+    await parent.activate(f.owner);
+    await vi.waitFor(async () => expect((await store.read()).jobs[0].settledMarked).toBe(true));
+    await entered.promise;
+    const scan = parent.reconcile();
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect((await store.read()).child?.settled).not.toBe(true);
+    blocked.resolve(); await scan;
+    await vi.waitFor(async () => expect((await store.read()).child?.settled).toBe(true));
+    if (!connected) {
+      expect((await store.read()).jobs[0].cleanupFailure?.code).toBe('machine-unavailable');
+      connected = true; now += 60000; await parent.reconcile();
+      await vi.waitFor(async () => expect((await store.read()).jobs[0].terminalReleased).toBe(true));
+    }
+    expect(f.terminals.has(handle.address)).toBe(false);
+    expect(aborted.every(value => !value)).toBe(true);
+  } finally { blocked.resolve(); }
+});
+
+
+it('keeps an adopted submitted result until its parent observes the notice', async () => {
+  const f = await monitorFixture(), runId = 'submitted-child' as RunId;
+  const child = f.monitor({ child: { id: runId, pid: process.pid, startIdentity: processStartIdentity(process.pid)! } });
+  const handle = await child.start(program, f.owner, on, { background: true });
+  await child.detach(handle.id); await child.shutdown('quit'); f.complete(handle.address);
+  const store = createJobStore(f.f.root, f.owner.sessionId, runId);
+  const observed: JobId[] = [];
+  const parent = f.monitor({ observedJobMessages: async () => observed, closeAgentConsoles: async () => {} });
+  await parent.activate(f.owner);
+  await vi.waitFor(async () => expect((await store.read()).jobs[0]).toMatchObject({ settledMarked: true, notice: 'submitted' }));
+  for (let i = 0; i < 3; i++) { await parent.reconcile(); await new Promise(resolve => setTimeout(resolve, 20)); }
+  expect((await store.read()).child?.settled).not.toBe(true);
+  expect(f.terminals.has(handle.address)).toBe(true);
+  observed.push(handle.id); await parent.reconcile();
+  await vi.waitFor(async () => expect((await store.read()).child?.settled).toBe(true));
   expect(f.terminals.has(handle.address)).toBe(false);
 });

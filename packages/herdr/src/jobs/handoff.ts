@@ -165,7 +165,7 @@ export async function foregroundJobsStopped(journal: JobJournal, hc: HcClient): 
   return true;
 }
 
-export interface AdoptedJobMonitor { reconcile(): Promise<void>; shutdown(reason: 'reload' | 'quit'): Promise<void> }
+export interface AdoptedJobMonitor { reconcile(): Promise<void>; finishCleanup?(): Promise<void>; shutdown(reason: 'reload' | 'quit'): Promise<void> }
 export type AgentConsoleOwner = Owner & { runId: RunId };
 export type CloseAgentConsoles = (owner: AgentConsoleOwner) => Promise<void>;
 export interface JobHandoff {
@@ -190,7 +190,7 @@ export function createJobHandoff(options: {
     else await closeRunConsoles(consoleOwner, options.hc);
     closedConsoles.add(id);
   };
-  const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked || job.phase.kind === 'launch-failed');
+  const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked && job.notice !== 'pending' || job.phase.kind === 'launch-failed');
   const markSettled = async (journal: JobJournal) => {
     journal.child = { ...journal.child!, ended: true, settled: true };
     journal.revision++;
@@ -211,7 +211,7 @@ export function createJobHandoff(options: {
       if (!child.ended && await (options.processIdentity ?? asyncProcessStartIdentity)(child.pid) === child.startIdentity) return;
       if (child.ended || settled(journal)) await closeConsoles(child.id);
       if (lifetime.signal.aborted) return;
-      if (settled(journal)) { await markSettled(journal); closedConsoles.delete(child.id); return; }
+      if (settled(journal)) { await options.releaseSettled?.(journal); await markSettled(journal); closedConsoles.delete(child.id); return; }
       monitor = await options.adopt(child.id, lifetime.signal, !child.ended);
       if (lifetime.signal.aborted) { await monitor.shutdown('reload'); return; }
       adopted.set(child.id, monitor);
@@ -222,9 +222,12 @@ export function createJobHandoff(options: {
       if (!await foregroundJobsStopped(latest, options.hc) || lifetime.signal.aborted) return;
       await closeConsoles(child.id);
     }
-    if (!settled(latest)) return;
+    if (!settled(latest) || latest.jobs.some(job => job.notice === 'submitted')) return;
+    await monitor.finishCleanup?.();
     await monitor.shutdown('reload');
-    await markSettled(latest);
+    const completed = await createJobStore(options.root, options.owner.sessionId, child.id).read();
+    await options.releaseSettled?.(completed);
+    await markSettled(completed);
     adopted.delete(child.id);
     closedConsoles.delete(child.id);
     reportedRuns.delete(child.id);

@@ -61,6 +61,7 @@ export interface JobMonitorOptions {
 export interface JobMonitor extends JobPort {
   activate(owner: Owner, signal?: AbortSignal): Promise<void>;
   reconcile(): Promise<void>;
+  finishCleanup(): Promise<void>;
   shutdown(reason: 'reload' | 'quit'): Promise<void>;
 }
 /** One writer and one event subscription per owning pi activation. No payload retry path exists. */
@@ -374,6 +375,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
             latest.revision++; await childStore.write(latest);
           }));
         }
+        await cleanup.flush(childJournal.jobs.map(releaseKey));
       },
       adopt: async (runId, signal, callerCrashed) => { const monitor = createJobMonitor({ ...options, adoptedRunId: runId, callerCrashed }, cleanup, warnedMachines); try { await monitor.activate(nextOwner, signal); return monitor; } catch (error) { await monitor.shutdown('reload'); throw error; } },
     });
@@ -459,6 +461,10 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   return {
     activate: async (nextOwner, signal) => { await serial(() => activate(nextOwner, signal)); await drainCollections(); activated = true; scheduleMaintenance(); },
     reconcile,
+    finishCleanup: async () => {
+      for (const job of journal.jobs) { const hold = holds.get(job.id); if (hold) clearTimeout(hold); holds.delete(job.id); queueRelease(job); }
+      await cleanup.flush(journal.jobs.map(releaseKey));
+    },
     start: async (program, nextOwner, on, startOptions) => {
       if (!owner) { await serial(() => activate(nextOwner, startOptions.signal)); activated = true; scheduleMaintenance(); }
       const job = await serial(async () => {

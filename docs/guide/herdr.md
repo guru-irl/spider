@@ -315,7 +315,7 @@ For an older runtime, spider signals only a uniquely identified group leader who
 
 A shell can turn a signal into an exit code such as 143. The receipt and notice label that as a SIGTERM convention, not proof that the shell received a signal.
 
-A detached job keeps running after the call returns. When it finishes, spider posts a `spider.job_done` message to the owning session, at most once. The message has the job ID, machine, terminal address, outcome, a short scrubbed output summary, and receipt paths. Spider writes the result to disk before it posts the message, and it never delivers the message through terminal input.
+A detached job keeps running after the call returns. When it finishes, spider posts a `spider.job_done` message to the owning session, at most once. If the agent is busy, the message reaches it when its current step ends, without waiting for all of its work to finish. The message has the job ID, machine, terminal address, outcome, a short scrubbed output summary, and receipt paths. Spider writes the result to disk before it posts the message, and it never delivers the message through terminal input.
 
 If you close pi, a detached job keeps running and keeps writing logs on the machine. The next time the session starts, spider collects the missing output and posts any notice it has not posted before. It never reruns a job to recover a result. If the evidence is missing or conflicts, the outcome is reported as unknown, not as exit 0.
 

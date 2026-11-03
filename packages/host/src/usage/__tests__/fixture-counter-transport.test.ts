@@ -75,12 +75,9 @@ describe('fixture counter external fetch boundary', () => {
       await bootUsageWorker(channel.port1, { type: 'start', owner: `${process.pid}:fixture-counter`, child: false, poll: true,
         roots: { registryDb: join(f.root, 'missing-registry.db'), sessionsDir: join(f.root, 'sessions'), ledgerFile: join(f.root, 'usage.db'), authPath: f.auth, leaseDir: join(f.root, 'leases') } },
         { fetch: (() => { throw new Error('account API fallback'); }) as typeof fetch });
-      // Saving a counter doesn't publish a snapshot, and the next scheduled publish can be 60 s away.
-      // So ask the worker to refresh until a published snapshot carries the counter.
-      await Promise.race([fallback, expect.poll(() => {
-        channel.port2.postMessage({ type: 'refresh' });
-        return snapshot;
-      }, { timeout: 10000 }).toMatchObject({ type: 'snapshot', counter: { availability: 'available', latest: { creditsUsed: 80, raw: {} } } })]);
+      // A committed counter publishes without a refresh or another ingestion cycle.
+      await Promise.race([fallback, expect.poll(() => snapshot, { timeout: 10000 })
+        .toMatchObject({ type: 'snapshot', counter: { availability: 'available', latest: { creditsUsed: 80, raw: {} } } })]);
     } finally {
       const stopped = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error('worker stop deadline')), 5000); channel.port2.on('message', (e: UsageWorkerEvent) => { if (e.type === 'stopped') { clearTimeout(timer); resolve(); } }); });
       channel.port2.postMessage({ type: 'stop' }); await stopped; channel.port1.close(); channel.port2.close();

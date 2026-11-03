@@ -91,6 +91,42 @@ it("reconciliation stops at the counter timestamp in its UTC month and exposes t
   await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
   expect(snapshots(p).at(-1)?.reconciliation).toMatchObject({ windowStart: Date.parse("2026-10-01T00:00:00Z"), windowEnd: at, computedAIC: 0.2, counterAIC: 4, gap: 3.8, ratio: 0.05, estimated: true });
 });
+it.each([false, true])("publishes a saved counter before the next ingest cycle, retried=%s", async retried => {
+  vi.useFakeTimers();
+  const c = command(false, true), p = port(); let clock = at, requested = false;
+  writeFileSync(c.roots.authPath, JSON.stringify({ "github-copilot": { type: "oauth", refresh: "fixture-token", access: "fixture-access", expires: 0 } }));
+  let respond!: (response: Response) => void;
+  const response = new Promise<Response>(resolve => { respond = resolve; });
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock,
+    discover: async () => ({ sources: [], runs: [], errors: [] }), fetch: () => { requested = true; return response; } });
+  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  await vi.waitFor(() => expect(requested).toBe(true));
+  expect(snapshots(p).at(-1)?.counter.latest).toBeNull();
+  const writer = openDb(c.roots.ledgerFile);
+  try {
+    if (retried) writer.exec("BEGIN IMMEDIATE");
+    clock += 1;
+    respond(new Response(JSON.stringify({ quota_reset_date: "2026-10-28", quota_snapshots: {
+      premium_interactions: { credits_used: 80, entitlement: 100, remaining: 20, token_based_billing: true },
+    } })));
+    await vi.advanceTimersByTimeAsync(0);
+    if (retried) {
+      expect(writer.prepare("SELECT COUNT(*) AS n FROM counter_snapshots").get()).toEqual({ n: 0 });
+      expect(snapshots(p).at(-1)?.counter.latest).toBeNull();
+      writer.exec("ROLLBACK");
+      clock += 40000; await vi.advanceTimersByTimeAsync(40000);
+    }
+    await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({
+      counter: { availability: "available", latest: { creditsUsed: 80, raw: {} } },
+      monthPeriod: { start: Date.parse("2026-09-28"), end: Date.parse("2026-10-28") },
+      reconciliation: { windowEnd: retried ? clock - 40000 : clock, counterAIC: 80, gap: 80 },
+    }));
+    expect(writer.prepare("SELECT COUNT(*) AS n FROM counter_snapshots").get()).toEqual({ n: 1 });
+  } finally {
+    if (writer.raw.inTransaction) writer.exec("ROLLBACK"); writer.close();
+    p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+  }
+});
 it("a lease lost during pending ingestion fences writes and switches to read-only refresh", async () => {
   vi.useFakeTimers(); const c = command(), p = port(); let clock = at, release!: () => void, finished = false;
   const source = { path: join(root, "fenced.jsonl"), project: null, repo: null, run: null };

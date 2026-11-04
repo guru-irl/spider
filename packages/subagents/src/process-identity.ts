@@ -10,7 +10,7 @@ export function resetProcessStartTimeForTests(): void { ownStartTime = undefined
 export function processStartTime(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   if (pid !== process.pid) return readProcessStartTime(pid);
-  if (ownStartTime === undefined) ownStartTime = readProcessStartTime(pid);
+  if (ownStartTime == null) ownStartTime = readProcessStartTime(pid);
   return ownStartTime;
 }
 function readProcessStartTime(pid: number): string | null {

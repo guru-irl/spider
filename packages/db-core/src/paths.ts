@@ -49,18 +49,25 @@ function discoverGit(cwd: string): GitResolution {
   const absolute = resolve(cwd), previous = gitResolutions.get(absolute), now = Date.now();
   if (previous && now >= previous.checkedAt && now - previous.checkedAt < 60_000
     && previous.fingerprint === gitFingerprint(absolute, previous.root)) return previous;
+  let cacheable = true;
   const query = (argument: string): string | undefined => {
     try {
       const out = execFileSync('git', ['rev-parse', argument], { env: commandEnv(),
-        cwd: absolute, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+        cwd: absolute, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
       }).trim();
       return out ? realpathSync(isAbsolute(out) ? out : resolve(absolute, out)) : undefined;
-    } catch { return undefined; }
+    } catch (error) {
+      const failure = error as { status?: number | null; signal?: string | null; stderr?: string | Buffer };
+      if (failure.status !== 128 || failure.signal || !/fatal: not a git repository/i.test(String(failure.stderr ?? ''))) cacheable = false;
+      return undefined;
+    }
   };
   let root = query('--show-toplevel');
   if (!root) { try { root = realpathSync(absolute); } catch { /* Preserve the caller's fallback for a missing cwd. */ } }
   const value = { root, common: query('--git-common-dir'), checkedAt: now, fingerprint: gitFingerprint(absolute, root) };
-  gitResolutions.set(absolute, value); return value;
+  if (cacheable) gitResolutions.set(absolute, value);
+  else gitResolutions.delete(absolute);
+  return value;
 }
 /** Test-only. Clear discovery after changing git's environment or fixture topology. */
 export function resetProjectResolutionCacheForTests(): void { gitResolutions.clear(); }

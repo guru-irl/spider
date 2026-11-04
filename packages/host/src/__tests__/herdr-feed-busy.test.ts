@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import * as writer from '../../../herdr/src/feed/writer.js';
 import * as publisher from '../../../herdr/src/feed/publisher.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
@@ -17,6 +18,66 @@ async function idleFixture() {
     await Promise.resolve(); await Promise.resolve();
   } };
 }
+it('retries busy final publications until the saved feed is closed', async () => {
+  const f = await idleFixture();
+  const publish = publisher.publishSessionFeed;
+  let failures = 2;
+  const feed = vi.spyOn(publisher, 'publishSessionFeed').mockImplementation((...args) => {
+    if (failures-- > 0) return Promise.reject(new HerdrError('lock-occupied', 'The operation lock is busy'));
+    return publish(...args);
+  });
+  try {
+    await f.emit('session_shutdown', { reason: 'quit' });
+    expect(JSON.parse(await readFile(f.feedPath, 'utf8')).lifecycle).toBe('closed');
+    expect(warnings(f.notices)).toEqual([]);
+    expect(f.errors).toEqual([]);
+  } finally { feed.mockRestore(); await f.close(); }
+});
+it('reports lasting final-feed contention once while continuing to retry', async () => {
+  const f = await idleFixture();
+  const publish = publisher.publishSessionFeed;
+  let failures = 5;
+  const feed = vi.spyOn(publisher, 'publishSessionFeed').mockImplementation((...args) => {
+    if (failures-- > 0) {
+      vi.setSystemTime(Date.now() + 10_000);
+      return Promise.reject(new HerdrError('lock-occupied', 'The operation lock is busy'));
+    }
+    return publish(...args);
+  });
+  try {
+    await f.emit('session_shutdown', { reason: 'quit' });
+    expect(JSON.parse(await readFile(f.feedPath, 'utf8')).lifecycle).toBe('closed');
+    expect(f.errors).toHaveLength(1);
+    expect(f.errors[0]).toMatchObject({ code: 'feed-write-stalled' });
+    expect(warnings(f.notices)).toEqual(["Spider couldn't update this session's sidebar status for 20 seconds. It keeps retrying, and everything else still works."]);
+  } finally { feed.mockRestore(); await f.close(); }
+});
+it('stops final-feed retries when the mount releases ownership', async () => {
+  const f = await idleFixture();
+  let attempts = 0;
+  const feed = vi.spyOn(publisher, 'publishSessionFeed').mockImplementation(async () => {
+    attempts++; throw new HerdrError('lock-occupied', 'The operation lock is busy');
+  });
+  let closing: Promise<unknown> | undefined;
+  try {
+    closing = f.emit('session_shutdown', { reason: 'quit' });
+    await vi.waitFor(() => expect(attempts).toBeGreaterThan(1), { timeout: 2000 });
+    await f.mount.dispose();
+    await closing;
+    expect(f.mount.owner()).toBeNull();
+    expect(f.errors).toEqual([]);
+  } finally { feed.mockRestore(); await closing; await f.close(); }
+});
+it('reports a final-feed ownership failure once rather than retrying it', async () => {
+  const f = await idleFixture();
+  const feed = vi.spyOn(publisher, 'publishSessionFeed').mockRejectedValue(new HerdrError('feed-writer-occupied', 'Feed ownership is uncertain'));
+  try {
+    await f.emit('session_shutdown', { reason: 'quit' });
+    expect(f.errors).toHaveLength(1);
+    expect(f.errors[0]).toMatchObject({ code: 'feed-writer-occupied' });
+    expect(warnings(f.notices)).toHaveLength(1);
+  } finally { feed.mockRestore(); await f.close(); }
+});
 it('does not warn when a heartbeat lock is briefly busy', async () => {
   const f = await idleFixture();
   try {

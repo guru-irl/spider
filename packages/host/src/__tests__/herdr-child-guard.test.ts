@@ -7,6 +7,7 @@ import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
+import { resetProcessStartTimeForTests } from '../../../subagents/src/process-identity.js';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { createMachineCache } from '../../../herdr/src/ssh/cache.js';
@@ -169,7 +170,7 @@ it.skipIf(process.platform === 'linux').each(['ENOENT', 'ETIMEDOUT'])('a failing
     if (file === 'ps') { psCalls++; throw Object.assign(new Error(`ps unavailable: ${code}`), { code }); }
     return Reflect.apply(run, childProcess, [file, ...args]);
   }) as typeof childProcess.execFileSync);
-  syncBuiltinESMExports();
+  syncBuiltinESMExports(); resetProcessStartTimeForTests();
   try {
     const mount = f.mount({ readConfig: async () => ({ ...f.config, enabled: false }) as never });
     expect(psCalls).toBe(0);
@@ -177,7 +178,7 @@ it.skipIf(process.platform === 'linux').each(['ENOENT', 'ETIMEDOUT'])('a failing
     expect(mount.enabled()).toBe(false);
     expect(f.errors).toHaveLength(1);
     expect(String(f.errors[0])).toContain('process start time');
-  } finally { ps.mockRestore(); syncBuiltinESMExports(); await f.close(); }
+  } finally { ps.mockRestore(); syncBuiltinESMExports(); resetProcessStartTimeForTests(); await f.close(); }
 }, 30000);
 
 it('an unreadable active child writer identity deactivates only Herdr and preserves the SSH guard', async () => {

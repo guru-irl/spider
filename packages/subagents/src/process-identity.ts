@@ -4,6 +4,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import { findPiPackageRootFromEntry } from "./pi-spawn";
 
 let ownStartTime: string | null | undefined;
+/** Test-only. Model a process whose start identity has not been captured yet. */
+export function resetProcessStartTimeForTests(): void { ownStartTime = undefined; }
 /** Identity captured immediately after spawn. Linux ticks avoid second-resolution reuse. */
 export function processStartTime(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;

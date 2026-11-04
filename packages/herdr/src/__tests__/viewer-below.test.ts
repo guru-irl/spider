@@ -333,7 +333,9 @@ test('serializes different owner tabs through the same app and core lock', async
     await held;
     const b = second.acquire('subagent', 'two' as RunId, other, { timeoutMs: 3000, ownerRelative: true });
     const countTickets = async () => (await Promise.all((await readdir(join(root, 'locks'))).map(async directory => (await readdir(join(root, 'locks', directory))).filter(name => name.endsWith('.json')).length))).reduce((a, b) => a + b, 0);
-    await expect.poll(countTickets).toBe(2);
+    // Same-process contenders wait in memory, so only the holder has a ticket while the second opener stays blocked.
+    expect(await Promise.race([b.then(() => 'settled', () => 'settled'), new Promise(resolve => setTimeout(() => resolve('blocked'), 300))])).toBe('blocked');
+    expect(await countTickets()).toBe(1);
     expect(await readdir(join(root, 'locks'))).toHaveLength(1);
     expect(f.operations.filter(call => call.name === 'pane.focus' && call.args.pane === 'foreign-pane')).toEqual([]);
     release();
@@ -653,7 +655,9 @@ test('holds the app focus lock until its canceled split has been parked', async 
     await repairing;
     following = second.acquire('subagent', 'two' as RunId, other, { timeoutMs: 3000, ownerRelative: true });
     const tickets = async () => (await Promise.all((await readdir(join(filesystem.root, 'locks'))).map(async directory => (await readdir(join(filesystem.root, 'locks', directory))).filter(name => name.endsWith('.json')).length))).reduce((a, b) => a + b, 0);
-    await expect.poll(tickets).toBe(2);
+    // Same-process contenders wait in memory, so only the holder has a ticket while the second opener stays blocked.
+    expect(await Promise.race([following.then(() => 'settled', () => 'settled'), new Promise(resolve => setTimeout(() => resolve('blocked'), 300))])).toBe('blocked');
+    expect(await tickets()).toBe(1);
     expect(f.operations.filter(call => call.name === 'pane.focus' && call.args.pane === 'foreign-pane')).toEqual([]);
     release(); await failed; await following;
     expect(f.placement('viewer-two').tab).toBe('foreign-tab');

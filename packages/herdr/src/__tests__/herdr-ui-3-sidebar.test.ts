@@ -102,6 +102,64 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     return { view, store };
   }
   const section = (root: unknown) => all(root).find(node => node.id === 'spider-machines');
+  async function spacesView(spaces: any[], remote: any[], layouts: any[], stored = new Map<string, string>()) {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
+    const Spaces = loadView(clones.spaces.files['main.js'], { machines: () => layouts, spaces: () => spaces, panes: () => [], theme: () => colors, props: () => props,
+      shared: () => null, setShared: () => {}, run: () => {}, localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) } });
+    const view = new Spaces(); view.machines = remote; view.reconnecting = {}; view.folded = new Set(JSON.parse(stored.get('machines.folded') ?? '[]'));
+    view.shown = new Set(spaces.map(space => space.id)); view.git = {}; view.born = {}; view.pressed = null;
+    return { view, colors, stored };
+  }
+
+  it('machine space count pills toggle rows and retain their status and add controls', async () => {
+    const sp = [{ id: 's1', name: 'space-00', tabs: [] }, { id: 's2', name: 'space-06', machine: 'alpha.invalid', tabs: [] }];
+    const { view, colors } = await spacesView(sp, [{ name: 'alpha.invalid', state: 'connected' }], [{ name: 'alpha.invalid', layout: 'ready' }]);
+    const render = () => view.grouped(colors, false).flatMap(all) as Node[];
+    const cx = { stop_propagation() {}, notify() {} };
+    let nodes = render();
+    const pill = nodes.find(node => node.id === 'machine-count-local');
+    expect(pill).toBeDefined();
+    expect(pill!.children).toContain('1');
+    expect(pill!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/layers.svg')).toBe(true);
+    expect(call(pill!, 'rounded')).toEqual([999]);
+    expect(nodes.find(node => node.id === 'machine-count-alpha.invalid')?.children).toContain('1');
+    expect(nodes.find(node => node.id === 'machine-add-local')).toBeDefined();
+    expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
+    nodes.find(node => node.id === 'machine-local')!.click!({}, cx); nodes = render();
+    expect(nodes.find(node => node.id === 'space-s1')).toBeUndefined();
+    nodes.find(node => node.id === 'machine-count-local')!.click!({}, cx); nodes = render();
+    expect(nodes.find(node => node.id === 'space-s1')).toBeDefined();
+    expect(view.folded.has(null)).toBe(false);
+  });
+
+  it('groups known empty machines by default and persists expansion', async () => {
+    const sp = [{ id: 'local', name: 'space-00', tabs: [] }, { id: 'remote', name: 'space-06', machine: 'gamma.invalid', tabs: [] }];
+    const remote = [{ name: 'alpha.invalid', state: 'disconnected' }, { name: 'beta.invalid', state: 'connected' }, { name: 'gamma.invalid', state: 'connected' }, { name: 'delta.invalid', state: 'connected' }];
+    const layouts = remote.map(machine => ({ name: machine.name, layout: machine.name === 'delta.invalid' ? 'loading' : 'ready' }));
+    const { view, colors, stored } = await spacesView(sp, remote, layouts);
+    const render = (instance: any) => instance.grouped(colors, false).flatMap(all) as Node[];
+    let nodes = render(view);
+    const group = nodes.find(node => node.id === 'machine-empty-group');
+    expect(group).toBeDefined();
+    expect(group!.children.flatMap(all).some(node => node.children.includes('2 machines'))).toBe(true);
+    expect(group!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/server.svg')).toBe(true);
+    expect(nodes.find(node => node.id === 'machine-empty-group-count')?.children).toContain('2');
+    expect(nodes.find(node => node.id === 'machine-alpha.invalid')).toBeUndefined();
+    expect(nodes.find(node => node.id === 'machine-beta.invalid')).toBeUndefined();
+    expect(nodes.find(node => node.id === 'machine-local')).toBeDefined();
+    expect(nodes.find(node => node.id === 'machine-gamma.invalid')).toBeDefined();
+    expect(nodes.find(node => node.id === 'machine-delta.invalid')).toBeDefined();
+    group!.click!({}, { stop_propagation() {}, notify() {} }); nodes = render(view);
+    expect(nodes.find(node => node.id === 'machine-alpha.invalid')).toBeDefined();
+    expect(nodes.find(node => node.id === 'machine-beta.invalid')).toBeDefined();
+    expect(nodes.find(node => node.id === 'machine-count-beta.invalid')?.children).toContain('0');
+    expect(nodes.find(node => node.id === 'machine-add-beta.invalid')).toBeDefined();
+    const restored = await spacesView(sp, remote, layouts, stored);
+    expect(render(restored.view).find(node => node.id === 'machine-beta.invalid')).toBeDefined();
+    render(restored.view).find(node => node.id === 'machine-empty-group-count')!.click!({}, { stop_propagation() {}, notify() {} });
+    expect(render(restored.view).find(node => node.id === 'machine-beta.invalid')).toBeUndefined();
+  });
 
   it.each([268, 76])('shows children despite a saved machine filter at width %s, without filter controls', async width => {
     const store = new Map<string, unknown>([['spider.agents.filters/spider-agents', { machine: 'alpha.invalid', agent: null }]]);

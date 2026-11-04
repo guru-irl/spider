@@ -93,7 +93,8 @@ function consoleOwner(request: AgentConsoleLaunch, env: Readonly<NodeJS.ProcessE
   return { ...request.owner, ...(runId ? { runId } : {}) };
 }
 async function retireOlderConsole(terminal: TerminalSummary, request: AgentConsoleLaunch, owner: AgentConsoleOwner, hc: HcClient): Promise<'reuse' | 'replace' | 'foreign'> {
-  if (terminal.labels[HERDR_LABELS.runtime] === request.target.runtimeSha256 || !request.isConsoleIdle) return 'reuse';
+  if (terminal.labels[HERDR_LABELS.ownerCore] !== owner.terminal.coreId || terminal.labels[HERDR_LABELS.ownerTerminal] !== owner.terminal.terminalId ||
+    terminal.labels[HERDR_LABELS.runtime] === request.target.runtimeSha256 || !request.isConsoleIdle) return 'reuse';
   try { if (!await request.isConsoleIdle()) return 'reuse'; }
   catch (error) { request.reportError?.(error); return 'reuse'; }
   try {
@@ -124,10 +125,15 @@ async function ensureInQueue(request: AgentConsoleLaunch, hc: HcClient, env: Rea
     if (!terminal) { consoles.delete(key); state = undefined; }
   }
   if (!state) terminal = (await snapshot(hc)).find(item => item.state === 'live' && ownsConsole(item, owner, request.on));
-  if (terminal && await retireOlderConsole(terminal, request, owner, hc) !== 'reuse') {
-    terminal = undefined; state = undefined; consoles.delete(key);
+  let replacement = false;
+  if (terminal) {
+    const retirement = await retireOlderConsole(terminal, request, owner, hc);
+    if (retirement !== 'reuse') {
+      replacement = retirement === 'replace';
+      terminal = undefined; state = undefined; consoles.delete(key);
+    }
   }
-  if (!state) {
+  if (!state) try {
     const digest = createHash('sha256').update(key).digest('hex');
     const directory = join(request.target.directory, '.consoles', digest.slice(0, 32));
     const count = await commandCount(hc, request.on, directory);
@@ -135,7 +141,7 @@ async function ensureInQueue(request: AgentConsoleLaunch, hc: HcClient, env: Rea
     const name = runId ? env.PI_SUBAGENT_RUN_NAME || runId : owner.name || owner.sessionId;
     const suffix = ` · ${request.on}`.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
     const title = name.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, Math.max(0, 512 - suffix.length)) + suffix;
-    await hc.fileWrite(request.on, join(directory, 'console.json'), encodeRuntimePublication({ version: 1, title }));
+    await hc.fileWrite(request.on, join(directory, 'console.json'), encodeRuntimePublication({ version: 1, title, ...(replacement ? { start: count } : {}) }));
     await hc.fileWrite(request.on, join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count }));
     const instance = randomUUID();
     const handle = terminal ? { address: terminal.address, coreId: (await hc.machines()).find(machine => machine.name === request.on)!.id } : await hc.run({
@@ -146,6 +152,9 @@ async function ensureInQueue(request: AgentConsoleLaunch, hc: HcClient, env: Rea
     });
     if (!terminal) await waitForHeartbeat(hc, request.on, directory, instance);
     state = { owner, handle: { ...handle, directory }, directory, count }; consoles.set(key, state);
+  } catch (error) {
+    if (replacement) request.reportError?.(error);
+    throw error;
   }
   if (!request.job) return state.handle;
   const kind = request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec');

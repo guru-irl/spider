@@ -261,6 +261,6 @@ export type SharedContractChecks = [
   Assert<Equal<Actual.HerdrNotification, Wire.PanelNotification>>,
   Assert<Equal<Actual.ProcessPresence, Wire.ProcessPresence>>,
   Assert<Equal<Actual.ViewerLauncher, (runId: RunId, owner: Owner, signal?: AbortSignal, intent?: 'automatic' | 'explicit') => Promise<TerminalAddress>>>,
-  Assert<Equal<Actual.HerdrLabelContract, { version: 1; labels: typeof Actual.HERDR_LABELS; kinds: typeof Actual.HERDR_KINDS }>>,
+  Assert<Equal<Actual.HerdrLabelContract, { version: 1; labels: Omit<typeof Actual.HERDR_LABELS, 'runtime'>; kinds: typeof Actual.HERDR_KINDS }>>,
   Assert<Equal<typeof Actual.panelIpcArgv, (nodePath: string, cliPath: string, descriptor: Actual.IpcDescriptor, request: Actual.SessionIpcRequest) => string[]>>,
 ];

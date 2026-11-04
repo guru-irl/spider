@@ -132,7 +132,11 @@ test('a second setup writes nothing and preserves unrelated settings', async () 
   expect(f.cutovers()).toBe(1);
   expect(await Promise.all(first.writes.map(async (p) => [p, hash(await readFile(p))]))).toEqual(baseline);
   expect((await doctorHerdr(f.request, f.doctorParts)).failures).toEqual([]);
-  expect(JSON.parse(await readFile(f.paths.props, 'utf8')).labelContract).toEqual({ version: 1, labels: HERDR_LABELS, kinds: HERDR_KINDS });
+  expect(JSON.parse(await readFile(f.paths.props, 'utf8')).labelContract).toEqual({ version: 1, labels: {
+    session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
+    kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
+    parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',
+  }, kinds: HERDR_KINDS });
   expect(JSON.parse(await readFile(f.paths.props, 'utf8')).mods.map((mod: { props: { appBinary: string } }) => mod.props.appBinary)).toEqual(Array(5).fill(f.request.config.app.binary));
   for (const path of [f.paths.spider, f.paths.agents, f.paths.machines])
     expect(await readFile(path)).toEqual(await readFile(f.paths.feed));

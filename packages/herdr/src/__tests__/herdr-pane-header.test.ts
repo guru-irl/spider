@@ -5,6 +5,7 @@ import { beforeAll, expect, test } from 'vitest';
 import patchSet from '../../assets/look/patches.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 import { middlePath } from '../../assets/shared/feed.js';
+import { identityPill } from '../../assets/shared/look.js';
 import { createUiModules } from './strict-mod-api.mjs';
 
 type Element = { items: (Element | string)[]; styles: Record<string, unknown[]>; asset?: string };
@@ -29,7 +30,7 @@ function all(el: Element): Element[] { return [el, ...el.items.filter((item): it
 function render(patch: Record<string, unknown>, kind?: string, options: { name?: string; parent?: string; theme?: Record<string, string> } = {}) {
   const ui = createUiModules();
   const pane = { pane: 'pane-1', terminal: 't1', title: 'Terminal', cwd: '/fixture/project', status: 'idle', program: { name: 'node', icon: 'program-node.svg' }, ...patch };
-  const ports = { ...ui['gpui-kit'], ...ui['gpui-base'], middlePath,
+  const ports = { ...ui['gpui-kit'], ...ui['gpui-base'], middlePath, identityPill,
     props: () => ({ pane: 'pane-1' }), panes: () => [pane], home: () => '/home/fixture',
     terminals: () => [{ address: 't1', labels: kind ? { 'spider.kind': kind, 'spider.display-name': options.name ?? 'Reviewer', 'spider.parent-name': options.parent ?? 'Planner' } : {} }],
     theme: () => ({ foreground: '#eeeef0', dim: '#99999b', muted: '#88888a', hover: '#ffffff14', background: '#161618', working: '#eeeef0', ...options.theme }),

@@ -113,7 +113,7 @@
       {
         "id": "children-imports",
         "anchor": "import { View, div, image, svg } from \"gpui-kit\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nfunction spiderProps() { return props() ?? {}; }"
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
       },
       {
         "id": "combined-tree",
@@ -248,7 +248,7 @@
       {
         "id": "mono-agent-name",
         "anchor": ".child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))",
-        "replacement": ".child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name))"
+        "replacement": ".child(full && more ? div().min_w(0).max_w(120).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name) : pill(name))"
       },
       {
         "id": "mono-machine",
@@ -314,6 +314,16 @@
         "id": "pi-agent-icon",
         "anchor": "function icon(p, size, color) {",
         "replacement": "function icon(p, size, color) {\n  if ((p?.key ?? p?.name)?.toLowerCase() === \"pi\") return svg(\"mods/spider-tabs/spider.svg\").size(size).flex_none().text_color(color);"
+      },
+      {
+        "id": "agent-name-pill",
+        "anchor": "    const row = (a, i, subs = []) => {",
+        "replacement": "    const pill = name => {\n      const color = identityPill(name, t);\n      return div().min_w(0).max_w(200).truncate().px(8).h(18).flex().items_center().rounded(999).bg(color?.background ?? \"#ffffff14\").font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(color?.text ?? t.foreground).tooltip(name).child(name);\n    };\n    const row = (a, i, subs = []) => {"
+      },
+      {
+        "id": "priority-name-pill",
+        "anchor": ".when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\\u00b7 ${more}`)))",
+        "replacement": ".when(full && Boolean(more), el => el.child(pill(more)))"
       }
     ],
     "spaces": [
@@ -382,7 +392,7 @@
       {
         "id": "style-4",
         "anchor": "import { panes, props, run, theme, home } from \"herdr\";",
-        "replacement": "import { panes, props, run, theme, home, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";"
+        "replacement": "import { panes, props, run, theme, home, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";"
       },
       {
         "id": "style-5",
@@ -412,7 +422,7 @@
       {
         "id": "pi-session-title",
         "anchor": "function folder(cwd) {",
-        "replacement": "function piSessionName(title) {\n  return /^\\u03c0 - (.+) - [^/]*$/.exec(title ?? \"\")?.[1] ?? null;\n}\n\n// Use the focused header over the lightest glass stop as a conservative backdrop.\nfunction identityPill(name, t) {\n  let hash = 2166136261;\n  for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 16777619) >>> 0;\n  const color = [t.ansi2, t.ansi4, t.ansi5, t.ansi6, t.ansi12, t.ansi13][hash % 6];\n  if (typeof color !== \"string\" || !/^#[0-9a-f]{6}$/i.test(color)) return null;\n  const rgb = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16));\n  const luminance = values => values.reduce((sum, value, i) => {\n    const c = value / 255;\n    return sum + [0.2126, 0.7152, 0.0722][i] * (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);\n  }, 0);\n  const background = rgb.map((value, i) => value * 0.2 + [43, 43, 45][i] * 0.8);\n  const fg = luminance(rgb), bg = luminance(background);\n  const contrast = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);\n  return { background: color + \"33\", text: contrast >= 4.5 ? color : t.foreground };\n}\n\nfunction folder(cwd) {"
+        "replacement": "function piSessionName(title) {\n  return /^\\u03c0 - (.+) - [^/]*$/.exec(title ?? \"\")?.[1] ?? null;\n}\n\nfunction folder(cwd) {"
       }
     ],
     "tabs": [

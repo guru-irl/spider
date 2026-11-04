@@ -9,7 +9,7 @@ import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/p
 import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren } from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
-import { identityPill } from '../../assets/shared/look.js';
+import { identityPill, assignSpaceIdentities } from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
 interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: any[]) => unknown; hoverChange?: (...args: any[]) => unknown; hoverStyle?: (value: any) => unknown }
@@ -42,7 +42,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, identityPill, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, identityPill, assignSpaceIdentities, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -97,15 +97,19 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     }
   });
 
-  it('space badges are neutral grey and the selected space is inverted', async () => {
+  it('space shapes keep their colours when the space is selected', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
-    const Spaces = loadView(clones.spaces.files['main.js'], { machines: () => [], spaces: () => [], panes: () => [], theme: () => palette, props: () => props,
-      shared: (key: string) => key === 'space.colors' ? { a: 'ansi6', b: 'ansi5' } : null, setShared: () => {}, run: () => {} });
+    const spaces = [{ id: 'a', name: 'space-00' }, { id: 'b', name: 'space-06' }];
+    const colors = { ...palette, ansi5: '#c792ea', ansi6: '#8be9fd' };
+    const Spaces = loadView(clones.spaces.files['main.js'], { machines: () => [], spaces: () => spaces, panes: () => [], theme: () => colors, props: () => props,
+      shared: () => null, setShared: () => {}, run: () => {} });
     const view = new Spaces();
-    const badge = (active: boolean, id: string) => all(view.row({ w: { id, name: 'docs', active }, i: 0, g: null, tree: null }, palette)).find(node => node.children.includes('D'))!;
-    const off = badge(false, 'a'), on = badge(true, 'b');
-    expect(call(off, 'bg')).toEqual(['#2c2c2f']); expect(call(off, 'text_color')).toEqual(['#d9d9db']);
-    expect(call(on, 'bg')).toEqual(['#e6e6e8']); expect(call(on, 'text_color')).toEqual(['#141416']);
+    const row = (active: boolean, i: number) => view.row({ w: { ...spaces[i], active }, i, g: null, tree: null }, colors);
+    const off = row(false, 0), on = row(true, 1);
+    expect(all(off).find(node => node.svg === 'mods/spider-agents/space-triangle.svg') && call(all(off).find(node => node.svg === 'mods/spider-agents/space-triangle.svg')!, 'text_color')).toEqual(['#c792ea']);
+    expect(all(on).find(node => node.svg === 'mods/spider-agents/space-diamond.svg') && call(all(on).find(node => node.svg === 'mods/spider-agents/space-diamond.svg')!, 'text_color')).toEqual(['#8be9fd']);
+    expect(call(data.get(off)!, 'bg')).toBeUndefined();
+    expect(call(data.get(on)!, 'bg')).toEqual([palette.selected]);
   });
 
   it('child rows show a kind icon, thread keylines and state glyphs without coloured dots', async () => {

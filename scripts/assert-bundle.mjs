@@ -130,7 +130,7 @@ try {
   const entries = ['cli.mjs', 'feed-reader.mjs', 'remote-runtime.mjs', 'subagent-supervisor.mjs', 'viewer-pi.mjs', 'viewer.mjs'];
   if (!lstatSync('dist/herdr').isDirectory() || readdirSync('dist/herdr').sort().join() !== entries.join()) throw new Error('Herdr entries missing or unexpected runtime chunk');
   const assets = [
-    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'agents/corner-up-left.svg', 'tabs/spider.svg', 'shared/feed.js', 'shared/look.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
+    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'agents/corner-up-left.svg', 'agents/space-circle.svg', 'agents/space-square.svg', 'agents/space-triangle.svg', 'agents/space-diamond.svg', 'agents/space-hexagon.svg', 'agents/space-star.svg', 'tabs/spider.svg', 'shared/feed.js', 'shared/look.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
     'mods/spider/data.js', 'mods/spider/main.js', 'mods/spider/mod.json',
     'themes/dracula-plus-glass.json', 'themes/spider-glass.json', 'keys.json',
     'fonts/GlassLabel-Bold.ttf', 'fonts/GoogleSansFlex.ttf', 'fonts/GoogleSansFlex-OFL.txt', 'fonts/GoogleSansFlex-TRADEMARKS.md',

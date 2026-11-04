@@ -499,7 +499,8 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
     const patched = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const Spaces = loadView(patched.spaces.files['main.js'], { View: class {}, div: ui, h_flex: ui, v_flex: ui, svg: ui, image: ui,
       machines: () => [], spaces: () => [], panes: () => [], focused: () => null, theme: () => ({}), shared: () => null, setShared: () => {},
-      run: () => {}, props: () => ({}), window: () => ({}), layout: () => ({ id: 'sidebar', size: { px: 268 } }), openOverlay: () => {}, closeOverlay: () => {} });
+      run: () => {}, props: () => ({}), window: () => ({}), layout: () => ({ id: 'sidebar', size: { px: 268 } }), openOverlay: () => {}, closeOverlay: () => {},
+      localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
     const view = new Spaces(); view.folded = new Set(); view.machines = []; view.reconnecting = {}; view.shown = new Set();
     const rendered = elements(view.render());
     expect(rendered.some(el => el.children.includes('Spaces'))).toBe(true);

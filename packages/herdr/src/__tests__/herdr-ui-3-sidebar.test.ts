@@ -301,6 +301,12 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       layout: () => ({ id: 'sidebar', size: { px: width } }) }, store);
     const rendered = all(view.render({}));
     expect(view.tree([child], 't1').map((row: any) => row.t.key)).toContain('t2');
+    if (width < 160) {
+      expect(rendered.map(node => node.id)).not.toContain('ag-t1');
+      expect(rendered.map(node => node.id)).not.toContain('sub-t2');
+      expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
+      return;
+    }
     expect(rendered.map(node => node.id)).toContain('ag-t1');
     if (width >= 160) expect(rendered.map(node => node.id)).toContain('sub-t2');
     expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);

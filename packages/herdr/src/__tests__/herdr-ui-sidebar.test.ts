@@ -62,6 +62,123 @@ describe('Herdr UI theme accents', () => {
 describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the current built-ins (requires SPIDER_HERDR_MOD_FIXTURE; no app window)', () => {
   const props = { modId: 'spider-agents', labelContract: HerdrLabelContract, labelFont: 'Glass Label' };
 
+  async function railFixture() {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const spaces = [
+      { id: 'a', name: 'space-00', tabs: [] },
+      { id: 'b', name: 'space-06', tabs: [], active: true },
+      { id: 'c', name: 'relay', machine: 'alpha.invalid', tabs: [] },
+    ];
+    const sidebar: any = { id: 'sidebar', size: { px: 44 }, children: [
+      { id: 'brand' }, { id: 'sidebar-lists', children: [{ id: 'spaces' }, { id: 'agents' }] }, { id: 'sidebar-footer' },
+    ] };
+    const sharedValues = new Map<string, unknown>([['sidebar.width', 310]]);
+    const commands: unknown[][] = [];
+    const run = (name: string, args: any) => {
+      commands.push([name, args]);
+      if (name === 'layout.resize') sidebar.size.px = args.px;
+      if (name === 'layout.hide' || name === 'layout.show') {
+        const node = [sidebar.children[0], ...sidebar.children[1].children, sidebar.children[2]].find((n: any) => n.id === args.id);
+        if (node) node.hidden = name === 'layout.hide';
+      }
+    };
+    const ports = { spaces: () => spaces, machines: () => [{ name: 'alpha.invalid', layout: 'ready' }], panes: () => [],
+      theme: () => palette, props: () => props, shared: (key: string) => sharedValues.get(key) ?? null,
+      setShared: (key: string, value: unknown) => sharedValues.set(key, value), layout: () => sidebar,
+      window: () => ({ platform: 'macos' }), run, localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+      agents: () => [{ address: 't1', pane: 'p1', space: 'a', space_name: 'space-00', status: 'working', seq: 1 }],
+      terminals: () => [], focused: () => null, setAgentOrder: () => {}, openOverlay: () => {}, closeOverlay: () => {} };
+    const Spaces = loadView(clones.spaces.files['main.js'], ports), Agents = loadView(clones.agents.files['main.js'], ports);
+    const spaceView = new Spaces();
+    Object.assign(spaceView, { shown: new Set(spaces.map(s => s.id)), git: {}, born: {}, machines: [{ name: 'alpha.invalid', state: 'connected' }], reconnecting: {}, folded: new Set([null, 'alpha.invalid']), pressed: null, over: null });
+    const agentView = new Agents();
+    Object.assign(agentView, { folded: new Set(), changed: {}, pendingPins: [], migratingPins: new Set(), spiderFeeds: [], listed: new Map() });
+    return { spaceView, agentView, sidebar, sharedValues, commands, spaces };
+  }
+
+  it('puts the expand control first and restores the expanded sidebar', async () => {
+    const { spaceView, agentView, sidebar, sharedValues, commands } = await railFixture();
+    const folded = spaceView.render();
+    const nodes = all(folded);
+    const expand = nodes.find(node => call(node, 'tooltip')?.[0] === 'Expand sidebar');
+    expect(expand).toBeDefined();
+    expect(texts(folded)).toEqual(['»']);
+    expect(nodes.indexOf(expand!)).toBeLessThan(nodes.findIndex(node => node.svg?.includes('space-')));
+    expect(sidebar.children[0].hidden).toBe(true);
+    expect(sidebar.children[1].children[1].hidden).toBe(true);
+    expect(sidebar.children[2].hidden).toBe(true);
+    expand!.click!();
+    expect(commands).toContainEqual(['layout.resize', { id: 'sidebar', px: 310 }]);
+    expect(sharedValues.get('sidebar.collapsed')).toBe(false);
+    const expanded = spaceView.render();
+    expect(texts(expanded)).toContain('Spaces');
+    expect(texts(agentView.render({}))).toContain('Agents');
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([false, false, false]);
+    expect(all(expanded).some(node => call(node, 'tooltip')?.[0] === 'Expand sidebar')).toBe(false);
+  });
+
+  it('shows every folded-machine space as an ordered selectable shape', async () => {
+    const { spaceView, commands } = await railFixture();
+    const root = spaceView.render(), nodes = all(root);
+    const buttons = nodes.filter(node => node.id?.startsWith('space-') && node.click);
+    expect(buttons.map(node => node.id)).toEqual(['space-a', 'space-b', 'space-c']);
+    expect(buttons.map(node => call(node, 'tooltip')?.[0])).toEqual(['space-00', 'space-06', 'relay · alpha.invalid']);
+    expect(buttons.map(node => node.children.flatMap(all).find(child => child.svg)?.svg)).toEqual([
+      'mods/spider-agents/space-triangle.svg', 'mods/spider-agents/space-diamond.svg', 'mods/spider-agents/space-circle.svg',
+    ]);
+    expect(buttons.map(node => call(node, 'bg')?.[0] ?? null)).toEqual([null, palette.selected, null]);
+    expect(buttons.every(node => node.children.flatMap(all).some(child => child.svg && call(child, 'text_color')?.[0] === palette.muted))).toBe(true);
+    const hover = element(); buttons[0].hoverStyle!(hover);
+    expect(call(data.get(hover)!, 'bg')).toEqual([palette.hover]);
+    for (const button of buttons) button.click!();
+    expect(commands.filter(([name]) => name === 'space.select')).toEqual([
+      ['space.select', { id: 'a' }], ['space.select', { id: 'b' }], ['space.select', { id: 'c' }],
+    ]);
+    expect(texts(root)).toEqual(['»']);
+    expect(nodes.some(node => node.id?.startsWith('machine-'))).toBe(false);
+    expect(nodes.some(node => node.svg && /plus|chevron|server|monitor/.test(node.svg))).toBe(false);
+  });
+
+  it('keeps the expanded machine ordering for differently cased names', async () => {
+    const { spaceView, spaces } = await railFixture();
+    spaces.push({ id: 'd', name: 'staging', machine: 'Beta.invalid', tabs: [] });
+    spaceView.shown.add('d');
+    spaceView.machines.push({ name: 'Beta.invalid', state: 'connected' });
+    expect(all(spaceView.render()).filter(node => node.id?.startsWith('space-') && node.click).map(node => node.id))
+      .toEqual(['space-a', 'space-b', 'space-d', 'space-c']);
+  });
+
+  it('tracks width changes without revealing panels that were already hidden', async () => {
+    const { spaceView, sidebar, commands } = await railFixture();
+    sidebar.size.px = 268;
+    sidebar.children[2].hidden = true;
+    spaceView.render();
+    expect(commands.filter(([name]) => name === 'layout.show' || name === 'layout.hide')).toEqual([]);
+    sidebar.size.px = 44;
+    spaceView.render();
+    expect(sidebar.children[1].children[1].hidden).toBe(true);
+    sidebar.size.px = 268;
+    spaceView.render();
+    expect(sidebar.children[0].hidden).toBe(false);
+    expect(sidebar.children[1].children[1].hidden).toBe(false);
+    expect(sidebar.children[2].hidden).toBe(true);
+  });
+
+  it('lists a new space even while its metadata is pending', async () => {
+    const { spaceView } = await railFixture();
+    spaceView.shown.delete('c');
+    expect(all(spaceView.render()).some(node => node.id === 'space-c')).toBe(true);
+  });
+
+  it('renders no agent rows or divider in the folded sidebar', async () => {
+    const { agentView } = await railFixture();
+    const root = agentView.render({}), nodes = all(root);
+    expect(nodes.some(node => node.id?.startsWith('ag-'))).toBe(false);
+    expect(nodes.some(node => call(node, 'border_t'))).toBe(false);
+    expect(texts(root)).toEqual([]);
+    expect(nodes.some(node => node.svg)).toBe(false);
+  });
+
   it('placed sessions focus normally without promising to restore a parked main terminal', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const calls: unknown[] = [];

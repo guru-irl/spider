@@ -193,7 +193,7 @@
       {
         "id": "standalone-empty-state",
         "anchor": "    const collapsed = narrow();",
-        "replacement": "    if (!spiderProps().labelContract) return v_flex().w_full().p(12).gap(4)\n      .child(div().text_size(13).text_color(t.foreground).child(\"Agents unavailable\"))\n      .child(div().text_size(11.5).text_color(t.muted).child(\"Open a configured workspace or run doctor.\"));\n    const collapsed = narrow();"
+        "replacement": "    const collapsed = narrow();\n    if (collapsed) return v_flex().h(0);\n    if (!spiderProps().labelContract) return v_flex().w_full().p(12).gap(4)\n      .child(div().text_size(13).text_color(t.foreground).child(\"Agents unavailable\"))\n      .child(div().text_size(11.5).text_color(t.muted).child(\"Open a configured workspace or run doctor.\"));"
       },
       {
         "id": "render-projection-begin",
@@ -202,8 +202,8 @@
       },
       {
         "id": "render-projection-end",
-        "anchor": "                .child(\"»\"),\n            ),\n        ),\n      );\n  }",
-        "replacement": "                .child(\"»\"),\n            ),\n        ),\n      );\n    } finally { this.spiderRenderRows = null; }\n  }"
+        "anchor": "      .when(collapsed, (el) =>\n        el.child(\n          h_flex()\n            .h(28)\n            .items_center()\n            .justify_center()\n            .child(\n              div()\n                .id(\"collapse\")\n                .text_size(13)\n                .text_color(t.dim)\n                .hover((s) => s.text_color(t.foreground))\n                .on_click(toggleSidebar)\n                .child(\"»\"),\n            ),\n        ),\n      );\n  }",
+        "replacement": ";\n    } finally { this.spiderRenderRows = null; }\n  }"
       },
       {
         "id": "copy-sort-popup",
@@ -367,6 +367,26 @@
       }
     ],
     "spaces": [
+      {
+        "id": "rail-include-pending",
+        "anchor": "  ordered() {",
+        "replacement": "  ordered(includePending = false) {"
+      },
+      {
+        "id": "rail-pending-filter",
+        "anchor": ".filter((r) => this.shown.has(r.w.id));",
+        "replacement": ".filter((r) => includePending || this.shown.has(r.w.id));"
+      },
+      {
+        "id": "rail-space-button",
+        "anchor": "  compact({ w, i }, t) {\n    return h_flex()\n      .id(`space-${w.id}`)\n      .h(26)\n      .flex_none()\n      .justify_center()\n      .gap(4)\n      .when(w.active, (el) => el.bg(t.raised))\n      .hover((s) => s.bg(t.hover))\n      .on_click(() => run(\"space.select\", { id: w.id }))\n      .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))\n      .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));\n  }",
+        "replacement": "  compact({ w }, t) {\n    const identity = assignSpaceIdentities(spaces()).get(w.id);\n    return h_flex().id(`space-${w.id}`).size(32).flex_none().items_center().justify_center().rounded(8)\n      .when(w.active, el => el.bg(t.selected))\n      .hover(s => s.bg(t.hover)).cursor_pointer()\n      .tooltip(w.machine ? `${w.name} · ${w.machine}` : w.name)\n      .on_click(() => run(\"space.select\", { id: w.id }))\n      .child(svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted));\n  }"
+      },
+      {
+        "id": "rail-render",
+        "anchor": "    const collapsed = narrow();\n    const palette = [\"ansi6\", \"ansi3\", \"ansi4\", \"ansi5\", \"ansi2\", \"ansi1\"];",
+        "replacement": "    const collapsed = narrow();\n    const sidebar = find(layout(), \"sidebar\");\n    const owned = shared(\"spider.sidebar.rail-hidden\") ?? [];\n    if (collapsed && sidebar) {\n      const hide = [\"brand\", \"agents\", \"sidebar-footer\"].filter(id => { const node = find(sidebar, id); return node && !node.hidden && !owned.includes(id); });\n      if (hide.length) { setShared(\"spider.sidebar.rail-hidden\", [...owned, ...hide]); for (const id of hide) run(\"layout.hide\", { id }); }\n    } else if (!collapsed && owned.length) {\n      setShared(\"spider.sidebar.rail-hidden\", []);\n      for (const id of owned) if (find(sidebar, id)) run(\"layout.show\", { id });\n    }\n    if (collapsed) {\n      const rows = this.ordered(true);\n      const machines = [null, ...[...new Set(rows.map(r => r.w.machine).filter(Boolean))].sort()];\n      const items = [];\n      for (const machine of machines) {\n        const mine = rows.filter(r => (r.w.machine ?? null) === machine);\n        if (!mine.length) continue;\n        if (items.length) items.push(div().h(6).flex_none());\n        items.push(...mine.map(r => this.compact(r, t)));\n      }\n      const expand = div().id(\"collapse\").size(32).flex_none().flex().items_center().justify_center().rounded(8).text_size(13).text_color(t.dim)\n        .hover(s => s.bg(t.hover).text_color(t.foreground)).cursor_pointer().tooltip(\"Expand sidebar\")\n        .on_click(() => { setShared(\"sidebar.collapsed\", false); run(\"layout.resize\", { id: \"sidebar\", px: shared(\"sidebar.width\") ?? 268 }); }).child(\"»\");\n      return v_flex().size_full().min_h(0).bg(t.chrome).items_center().pt(4)\n        .child(expand)\n        .child(v_flex().flex_1().min_h(0).items_center().overflow_y_scrollbar().mode(\"always\").children(items));\n    }\n    const palette = [\"ansi6\", \"ansi3\", \"ansi4\", \"ansi5\", \"ansi2\", \"ansi1\"];"
+      },
       {
         "id": "props-import",
         "anchor": "import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";",

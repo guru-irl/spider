@@ -189,6 +189,12 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
     const Agents = loadView(patched.agents.files['main.js'], ports), view = new Agents();
     view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = []; view.listed = new Map();
     const rows = elements(view.render({})), row = rows.find(el => el.id === 'ag-remote.invalid/t5')!, parked = rows.find(el => el.id === 'ag-t6')!;
+    if (width < 160) {
+      expect(row).toBeUndefined();
+      expect(parked).toBeUndefined();
+      expect(opened).toEqual([]);
+      return;
+    }
     expect(row.mouse_right).toBeTypeOf('function');
     let stopped = 0;
     (row.mouse_right as Function)({}, { stop_propagation: () => { stopped++; } });
@@ -424,6 +430,12 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
       localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
     const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed()];
     const rendered = elements(view.render({})), ids = rendered.map(el => el.id);
+    if (width < 160) {
+      expect(ids).not.toContain('ag-t1');
+      expect(ids).not.toContain('ag-t9');
+      expect(stored.get('spider.agents.filters/glass-agents')).toEqual(old);
+      return;
+    }
     expect(ids).toEqual(expect.arrayContaining(['ag-t1', 'ag-t9']));
     expect(ids.filter(id => id?.startsWith('sec-'))).toEqual([]);
     expect(ids.some(id => id?.startsWith('agents-filter-') || id === 'agents-clear-filters')).toBe(false);

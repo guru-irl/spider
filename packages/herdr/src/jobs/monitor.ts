@@ -82,7 +82,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   let shutdownPromise: Promise<void> | undefined;
   // Event readiness is quick; a collection can require many sequential SSH reads.
   const outputBudgetMs = 60000;
-  const collections = new Map<JobId, { task: Promise<void>; firstIncomplete: Promise<void> }>();
+  const collections = new Map<JobId, { task: Promise<void>; firstIncomplete: Promise<void>; readSettled(): boolean; done: Promise<void> }>();
   const outputWarnings = new Set<JobId>();
   const recoveringNotices = new Set<JobId>();
   let noticeRecoveryRead: Promise<() => void> | undefined;
@@ -238,7 +238,28 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         await delay(100, undefined, { signal: lifetime.signal });
       }
     })();
-    const task = waitForEvents(read, signal, 'Remote job output is unavailable', true, outputBudgetMs, 'output-unavailable')
+    let readDone = false;
+    void read.then(() => { readDone = true; }, () => { readDone = true; });
+    const observable = async () => {
+      if (liveOriginal(job) !== address) return false;
+      const terminal = await waitForEvents(stream!.lookup(address), signal);
+      return terminal?.state === 'live' && terminal.labels[HERDR_LABELS.job] === job.id && terminal.labels[HERDR_LABELS.session] === job.owner.sessionId;
+    };
+    const boundedRead = async () => {
+      let running = observable().catch(() => false);
+      for (;;) {
+        try { return await waitForEvents(read, signal, 'Remote job output is unavailable', true, outputBudgetMs, 'output-unavailable'); }
+        catch (error) {
+          if (readDone) return read;
+          if (!(error instanceof HerdrError) || error.code !== 'output-unavailable') throw error;
+          const wasRunning = await running;
+          running = observable().catch(() => false);
+          if (!wasRunning && !await running) throw error;
+          markIncomplete();
+        }
+      }
+    };
+    const task = Promise.race([read, boundedRead()])
       .then(output => serial(() => applyOutput(job, output)), error => serial(async () => {
         if (signal?.aborted || lifetime.signal.aborted) return;
         expired = true;
@@ -249,11 +270,11 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         await settleUnavailableOutput(job, address);
         if (job.phase.kind === 'finished' && job.output && !job.evidenceConflict) { await deliver(job); await markSettled(job); }
       }));
-    collections.set(job.id, { task, firstIncomplete });
     // A timed-out read still owns this job's collection slot. Do not queue a
     // second read behind it in the host collector; accept its eventual result.
-    void read.then(async output => { await task; if (expired && !stopping && !closed) await serial(() => applyOutput(job, output)); }, () => task)
+    const done = read.then(async output => { await task; if (expired && !stopping && !closed) await serial(() => applyOutput(job, output)); }, () => task)
       .catch(report).finally(() => { if (collections.get(job.id)?.task === task) collections.delete(job.id); });
+    collections.set(job.id, { task, firstIncomplete, readSettled: () => readDone, done });
   }
   async function settleUnavailableOutput(job: JournalJob, address: TerminalAddress): Promise<void> {
     if (job.phase.kind === 'finished') return;
@@ -518,7 +539,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         }
       });
     },
-    detach: async id => { await serial(async () => { const job = tracked(id); job.detached = true; job.noticeMode = 'async'; await persist(); await collect(job); }); await drainCollections(); },
+    detach: async id => { await serial(async () => { const job = tracked(id); job.detached = true; job.noticeMode = 'async'; await persist(); await collect(job); }); const collection = collections.get(id); if (collection?.readSettled()) { await collection.task; await collection.done; } },
     toolReturned: (id: JobId) => serial(async () => { const job = tracked(id); if (job.detached) await release(job); }),
     consumeNotice: id => serial(async () => { const job = tracked(id); observeNotice(job); await persist(); await markSettled(job); }),
     shutdown,

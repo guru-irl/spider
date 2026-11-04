@@ -109,16 +109,31 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
   try {
     while (true) {
       const collectStartedAt = ports.clock(), activeReader = reader;
+      let collectionExpired = false, collectionTimer: ReturnType<typeof setTimeout> | undefined, abortCollection: (() => void) | undefined;
       if (activeReader && !outputUnreadable) try { latest = await new Promise<CollectedLogs>((resolve, reject) => {
         releaseCollection = () => resolve(latest);
+        abortCollection = releaseCollection;
+        request.signal?.addEventListener('abort', abortCollection, { once: true });
+        if (request.signal?.aborted) { releaseCollection(); return; }
+        const remaining = timedOut ? 1000 : request.timeout === undefined ? undefined : Math.max(0, request.timeout - (ports.clock() - startedAt));
+        if (remaining !== undefined) collectionTimer = setTimeout(() => { collectionExpired = true; releaseCollection?.(); }, remaining);
         void activeReader.collect().then(resolve, reject);
         if (finish?.reason === 'unknown' || finish?.evidenceConflict) releaseCollection();
-      }).finally(() => { releaseCollection = undefined; }); }
+      }).finally(() => {
+        clearTimeout(collectionTimer);
+        if (abortCollection) request.signal?.removeEventListener('abort', abortCollection);
+        releaseCollection = undefined;
+      }); }
       catch { outputFailed(); }
       if (request.signal?.aborted && !aborted) {
         aborted = true; timedOut = false;
         try { await job.cancel('abort'); } catch { /* A lost transport cannot prove the process stopped. */ }
-        if (reader && !outputUnreadable) try { latest = await reader.collect(); } catch { /* Retain the last successfully collected bytes. */ }
+        if (reader && !outputUnreadable) {
+          let finalReadTimer: ReturnType<typeof setTimeout> | undefined;
+          try { latest = await Promise.race([reader.collect(), new Promise<CollectedLogs>(resolve => { finalReadTimer = setTimeout(() => resolve(latest), 1000); })]); }
+          catch { /* Retain the last successfully collected bytes. */ }
+          finally { clearTimeout(finalReadTimer); }
+        }
         const receipt = latest.receipt;
         const confirmed = receipt && !finish?.evidenceConflict;
         const state = confirmed && (receipt.outcome === 'signal' || receipt.outcome === 'cancelled') ? `was killed${receipt.signal ? ` by ${receipt.signal}` : ''}`
@@ -148,11 +163,11 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
         value.stderr ||= receipt.error ?? (receipt.outcome === 'release-timeout' ? 'Payload release deadline expired' : 'Payload could not start');
         return acknowledge(value);
       }
-      if (timeoutCancelFailed) {
+      if (timeoutCancelFailed || timedOut && collectionExpired) {
         try { await ports.jobs.detach(job.id); } catch { /* The paths and unknown state remain useful. */ }
         return uncertainResult();
       }
-      if (!timedOut && request.timeout !== undefined && ports.clock() - startedAt >= request.timeout) {
+      if (!timedOut && request.timeout !== undefined && (collectionExpired || ports.clock() - startedAt >= request.timeout)) {
         timedOut = true;
         if (request.background) {
           await ports.jobs.detach(job.id);

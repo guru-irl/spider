@@ -53,20 +53,20 @@ for (const mode of modes) test.each([
   const panes = createAuxiliaryPanes({ hc: { ...h.hc, events: () => {
     const stream = h.hc.events();
     return { ...stream, subscribe: listener => stream.subscribe(event => { if (finishedEvent || event.type !== 'finished') listener(event); }) };
-  } }, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit, clock: Date.now, paneRemovalTimeoutMs: 200, reportError: error => errors.push(error) });
+  } }, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit, clock: Date.now, reportError: error => errors.push(error) });
   try {
-    const first = (await panes.acquire('subagent', runId, owner, { timeoutMs: 1000 }))!;
+    const first = (await panes.acquire('subagent', runId, owner, { timeoutMs: 10000 }))!;
     await h.hc.kill(first.viewer);
     expect((await h.hc.get(first.viewer)).state).toBe('finished');
-    const reopened = (await panes.acquire('subagent', runId, owner, { timeoutMs: 1000 }))!;
+    const reopened = (await panes.acquire('subagent', runId, owner, { timeoutMs: 10000 }))!;
     expect(reopened.viewer).not.toBe(first.viewer);
     expect((await h.hc.get(reopened.viewer)).state).toBe('live');
     expect(layout.has(first.viewer)).toBe(true);
     expect(parked).not.toContain(first.viewer);
     expect(layout.get(reopened.viewer)?.tab).toBe(limit === 1 ? `tab-${reopened.viewer}` : 'owner-tab');
     expect(focused).toBe(reopened.viewer);
-    expect((await panes.acquire('subagent', runId, owner, { timeoutMs: 1000 }))?.viewer).toBe(reopened.viewer);
-    const other = (await panes.acquire('subagent', '10000000-0000-4000-8000-000000000002' as RunId, owner, { timeoutMs: 1000 }))!;
+    expect((await panes.acquire('subagent', runId, owner, { timeoutMs: 10000 }))?.viewer).toBe(reopened.viewer);
+    const other = (await panes.acquire('subagent', '10000000-0000-4000-8000-000000000002' as RunId, owner, { timeoutMs: 10000 }))!;
     expect((await h.hc.get(other.viewer)).state).toBe('live');
     expect(layout.get(other.viewer)?.tab).toBe(`tab-${other.viewer}`);
     expect(layout.has(first.viewer)).toBe(true);

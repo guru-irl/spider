@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readPlacementRepairs } from '../jobs/placement-repairs.js';
+import { activePlacementRepairs, placementRepairPath, readPlacementRepairs, type PlacementRepairInspection } from '../jobs/placement-repairs.js';
 import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest } from '../contracts.js';
 import { runtimeInstallPath, type ProbeTarget, type NodeObservation, type SetupRequest } from './installer.js';
 import { snapshot, rootNotesValue, readJournal, managedProjection, assertGlobalRoot } from './backup.js';
@@ -29,6 +29,7 @@ export interface DoctorReport {
 export type DoctorRequest = SetupRequest;
 export interface DoctorParts {
   globalRoot?: string;
+  placementRepairInspection?(): Promise<PlacementRepairInspection>;
   targets(request: DoctorRequest): Promise<readonly ProbeTarget[]>;
   inspect(item: DoctorItem, request: DoctorRequest): Promise<{
     failures: readonly DoctorFailure[];
@@ -100,9 +101,12 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   let passed = 0;
   const fail = (item: string, code: string, message: string, repair: string) => failures.push({ item, code, message, repair });
   try {
-    for (const repair of await readPlacementRepairs(join(request.config.globalRoot, 'herdr/panes'))) {
+    const root = join(request.config.globalRoot, 'herdr/panes');
+    const records = await readPlacementRepairs(root);
+    const inspection = records.length ? await parts.placementRepairInspection?.() : undefined;
+    for (const repair of inspection ? await activePlacementRepairs(root, inspection) : records) {
       fail('pane-repairs', 'pane-repair-pending', `Viewer ${repair.viewer} could not be parked in pane ${repair.placed?.pane ?? repair.anchor.pane} of tab ${repair.placed?.tab ?? repair.anchor.tab}. The intended anchor was ${repair.anchor.pane}.`,
-        `Park only viewer ${repair.viewer}, verify the affected tab, then remove its repair record and rerun doctor.`);
+        `Park only viewer ${repair.viewer} or close its pane, then rerun doctor to clear ${placementRepairPath(root, repair)} once that pane is gone.`);
     }
   } catch (error) { fail('pane-repairs', 'pane-repair-inspection-failed', String(error), 'Inspect the private pane repair records and rerun doctor.'); }
   for (const item of DOCTOR_ITEMS) {

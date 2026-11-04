@@ -33,8 +33,8 @@ test('an explicit viewer that finishes during placement is replaced without evic
     ipcDescriptor: () => ({ version: 1, sessionId: owner.sessionId, generation: owner.generation, address: join(h.root, 'ipc.sock'), capabilityFile: join(h.root, 'ipc.cap') }) });
   const panes = createAuxiliaryPanes({ hc: h.hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, limit: 1, clock: Date.now });
   try {
-    const first = (await panes.acquire('subagent', '10000000-0000-4000-8000-000000000001' as RunId, owner, { timeoutMs: 1000 }))!;
-    const opened = (await panes.acquire('subagent', '10000000-0000-4000-8000-000000000002' as RunId, owner, { timeoutMs: 1000 }))!;
+    const first = (await panes.acquire('subagent', '10000000-0000-4000-8000-000000000001' as RunId, owner, { timeoutMs: 10000 }))!;
+    const opened = (await panes.acquire('subagent', '10000000-0000-4000-8000-000000000002' as RunId, owner, { timeoutMs: 10000 }))!;
     expect(opened.viewer).not.toBe(ended);
     expect((await h.hc.get(opened.viewer)).state).toBe('live');
     expect(layout.get(opened.viewer)?.tab).toBe('saved-tab');

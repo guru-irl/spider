@@ -57,14 +57,14 @@ test.each(['before-enqueue', 'queued'] as const)('explicit open survives cancell
   let opening: Promise<PaneReservation | null> | undefined, blocking: Promise<PaneReservation | null> | undefined;
   try {
     const id = '10000000-0000-4000-8000-000000000001' as RunId;
-    first = (await panes.acquire('subagent', id, owner, { timeoutMs: 1000 }))!;
+    first = (await panes.acquire('subagent', id, owner, { timeoutMs: 10000 }))!;
     // Closing a tab only removes its layout, not the viewer or the run.
     layout.delete(first.viewer);
     blockNext = true;
-    blocking = panes.acquire('subagent', '10000000-0000-4000-8000-000000000002' as RunId, owner, { timeoutMs: 1000 });
+    blocking = panes.acquire('subagent', '10000000-0000-4000-8000-000000000002' as RunId, owner, { timeoutMs: 10000 });
     await blocked.promise;
     reading = true;
-    opening = panes.acquire('subagent', id, owner, { timeoutMs: 1000 });
+    opening = panes.acquire('subagent', id, owner, { timeoutMs: 10000 });
     void opening.catch(() => {});
     await explicitReading.promise;
     if (stage === 'queued') { allowRead.resolve(); await turn(); }

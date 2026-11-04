@@ -455,7 +455,15 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const files = await readGlobalHerdrTemplateFiles({ globalModelDefaultLayers: () => ({ global: defaults }), modelRegistry: registry, templateDirectory: join(dirname(request.config.core.config), 'templates'), roleTemplateOptions: { piExecutable: 'pi', instructionPaths }, reportWarning: message => process.stderr.write(message + '\n') }, { strict: true });
     return filesFor(files.map(file => ({ path: file.path, bytes: Buffer.from(file.content) })), context);
   };
-  const doctorParts = async (request: SetupRequest): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request), launchHistory: async () => {
+  const doctorParts = async (request: SetupRequest): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request),
+    placementRepairInspection: async () => {
+      const hc = client(request), identity = await hc.identity();
+      const app = createAppClient({ binary: request.config.app.binary, env: appEnv(request) });
+      return { app: request.config.app.home, coreId: identity.coreId, placement: async viewer => {
+        try { await hc.get(viewer); return await app.ownerPlacement(viewer); }
+        catch (error) { if (error instanceof HerdrError && (error.code === 'not_found' || error.code === 'owner-unplaced')) return null; throw error; }
+      } };
+    }, launchHistory: async () => {
     const hc = createHcClient({ binary: request.config.core.binary, env });
     const stream = hc.events();
     try {

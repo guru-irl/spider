@@ -140,7 +140,7 @@ export function createFakeAppBoundary(options: FakeAppOptions): FakeAppBoundary 
   };
   const world = async (): Promise<Record<string, unknown>> => {
     const rows = await inventory(); adopt(rows);
-    return { spaces: spaces.map(s => ({ ...s, active: s.id === activeSpace, tabs: s.tabs.map(t => ({ ...t, name: t.name || String(s.tabs.indexOf(t) + 1), active: t.id === activeTab, terminals: [...t.terminals].sort((a, b) => paneOrder(tree(t)).indexOf(a.pane) - paneOrder(tree(t)).indexOf(b.pane)).map(p => {
+    return { spaces: spaces.map(s => ({ ...s, active: s.id === activeSpace, tabs: s.tabs.map(t => ({ ...t, root: tree(t), name: t.name || String(s.tabs.indexOf(t) + 1), active: t.id === activeTab, terminals: [...t.terminals].sort((a, b) => paneOrder(tree(t)).indexOf(a.pane) - paneOrder(tree(t)).indexOf(b.pane)).map(p => {
       const r = rows.find(r => r.address === p.terminal);
       return { ...p, status: r?.status ?? null, name: r?.name ?? null, app: null, sub_agents: rows.filter(r => r.state === 'live' && r.parent === p.terminal).map(r => r.address).sort() };
     }) })) })), recent: [] };

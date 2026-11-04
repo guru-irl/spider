@@ -460,6 +460,11 @@
         "id": "spider-button",
         "anchor": "      .when(enabled.includes(\"changes\"), el => el.child(panelButton(\"changes\", \"Changes\", \"mods/changes/changes.svg\")))",
         "replacement": "      .when(enabled.includes(\"changes\"), el => el.child(panelButton(\"changes\", \"Changes\", \"mods/changes/changes.svg\")))\n      .child(panelButton(\"spider\", \"Spider\", \"mods/spider-tabs/spider.svg\"))"
+      },
+      {
+        "id": "pi-tab-icon",
+        "anchor": ".when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))",
+        "replacement": ".when(Boolean(program?.icon) || (program?.key ?? program?.name)?.toLowerCase() === \"pi\", el => el.child((program?.key ?? program?.name)?.toLowerCase() === \"pi\" ? svg(\"mods/spider-tabs/spider.svg\").size(14).text_color(t.muted) : program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))"
       }
     ],
     "workspace-chrome": [

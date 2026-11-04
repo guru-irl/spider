@@ -438,49 +438,26 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
   };
   const key = (newJob: Active) => {
     const jobs = [...active.values()].sort((a, b) => a.tag - b.tag);
-    const parts = jobs.map(job => ({ base: `#${job.tag} ${tool(job)}`, text: consoleContent(job.command.command.split('\n')[0]) }));
     const width = columns();
-    const full = '  ' + parts.map(part => part.base + (part.text ? ` ${part.text}` : '')).join(' · ');
-    const right = `${consoleTime(newJob.command.startedAt)} · ${newJob.command.jobId.slice(0, 8)}`;
-    if (width === undefined || consoleWidth(full) + 2 + consoleWidth(right) <= width) {
-      const gap = width === undefined ? 2 : width - consoleWidth(full) - consoleWidth(right);
-      write(`\n${full}${' '.repeat(gap)}${consoleDim(right)}\n`);
-      return;
-    }
-    if (consoleWidth(full) <= width) { write(`\n${full}\n`); return; }
-    const bases = parts.map(part => part.base).join(' · ');
-    if (consoleWidth(bases) > width) {
-      const tags = jobs.map(job => `#${job.tag}`);
-      const all = tags.join(' · ');
-      if (consoleWidth(all) <= width) { write(`\n${all}\n`); return; }
-      let visible = '';
-      for (const item of tags) {
-        const candidate = visible ? `${visible} · ${item}` : item;
-        if (consoleWidth(candidate) + 2 > width) break;
-        visible = candidate;
-      }
-      const clipped = visible ? consoleClip(visible + ' '.repeat(width), consoleWidth(visible) + 2) : '…';
-      write(`\n${clipped}\n`);
-      return;
-    }
-    const indent = consoleWidth(bases) + 2 <= width ? '  ' : '';
-    let remaining = width - consoleWidth(indent + bases);
-    const allocations = parts.map(() => 0);
-    const nonempty = parts.map((part, index) => ({ index, size: consoleWidth(part.text) })).filter(part => part.size > 0);
-    if (remaining >= nonempty.length * 2) {
-      remaining -= nonempty.length;
-      let pending = nonempty;
-      while (remaining > 0 && pending.length) {
-        const share = Math.max(1, Math.floor(remaining / pending.length));
-        for (const part of [...pending].reverse()) {
-          const amount = Math.min(share, part.size - allocations[part.index], remaining);
-          allocations[part.index] += amount; remaining -= amount;
-        }
-        pending = pending.filter(part => allocations[part.index] < part.size);
-      }
-    }
-    const left = indent + parts.map((part, index) => part.base + (allocations[index] ? ` ${consoleClip(part.text, allocations[index])}` : '')).join(' · ');
-    write(`\n${left}\n`);
+    const bases = jobs.map(job => `#${job.tag} ${tool(job)}`);
+    const indent = width === undefined || bases.every(base => consoleWidth(base) + 2 <= width) ? '  ' : '';
+    write('\n');
+    jobs.forEach((job, index) => {
+      const base = bases[index]; const tagText = `#${job.tag}`;
+      const text = consoleContent(job.command.command.split('\n')[0]);
+      const full = `${indent}${base}${text ? ` ${text}` : ''}`;
+      const right = job === newJob ? `${consoleTime(job.command.startedAt)} · ${job.command.jobId.slice(0, 8)}` : '';
+      let line: string;
+      if (width === undefined) line = right ? `${full}  ${consoleDim(right)}` : full;
+      else if (right && consoleWidth(full) + 2 + consoleWidth(right) <= width) line = `${full}${' '.repeat(width - consoleWidth(full) - consoleWidth(right))}${consoleDim(right)}`;
+      else if (consoleWidth(full) <= width) line = full;
+      // Shorten the command first, then the tool. A tag is kept whole or replaced by an ellipsis.
+      else if (consoleWidth(indent + base) + 3 <= width) line = consoleClip(full, width);
+      else if (consoleWidth(indent + base) <= width) line = indent + base;
+      else if (consoleWidth(tagText) + 1 <= width) line = consoleClip(base, width);
+      else line = consoleWidth(tagText) <= width ? tagText : consoleClip(tagText, width);
+      write(`${line}\n`);
+    });
   };
   const display = (job: Active, stream: PayloadStream, text: string) => {
     if (!text) return;

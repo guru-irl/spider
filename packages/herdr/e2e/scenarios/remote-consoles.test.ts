@@ -68,7 +68,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const text = await waitFor('later job console exit before older release', () => consoleText(suite, console.address), t => t.includes('#2 ✗ exit 7'), deadline(15000));
       assert.ok(text.includes('long-start')); assert.ok(!text.includes('long-finish'));
       assert.ok(text.includes('#2 │ split:雪🙂é')); assert.ok(text.includes('#2 │ short-error'));
-      assert.match(text, /#1 exec .* · #2 exec /); assert.ok(!text.includes('(continued)'));
+      assert.match(text, /#1 exec [^\n]*\n\s*#2 exec /); assert.ok(!text.includes('(continued)'));
       assert.ok(text.includes(long.remote!.jobId.slice(0, 8)));
       assert.equal((await persistedLogs(s, fast)).receipt.jobId, fast.remote!.jobId);
       expect(() => assert.ok(text.includes('split:local-garbage'))).toThrow();

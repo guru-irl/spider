@@ -123,7 +123,7 @@ SOFTWARE.`;
   });
 
   it("requires all distributed licence notices in the release tarball verifier", () => {
-    const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
+    const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const verifier = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\s*$/m)?.[1];
     expect(verifier, "Release package verifier must be executable").toBeTruthy();
     const skillFiles = ["packages/superpowers/skills", "packages/pstack/skills"].flatMap(dir =>

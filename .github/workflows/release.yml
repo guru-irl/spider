@@ -1,19 +1,7 @@
 name: Release
 
-# Tag-driven. Push a v-prefixed tag and this builds, verifies, and cuts a DRAFT
-# GitHub Release. It deliberately stops at draft: GitHub Actions' default
-# GITHUB_TOKEN cannot trigger other workflows from the events it raises (only
-# workflow_dispatch/repository_dispatch are excepted), so if this job published
-# the release directly, publish.yml's `on: release: types: [published]` would
-# never fire and the only working path would be manual workflow_dispatch. A
-# human (or a PAT-authenticated `gh`) publishing the draft is what actually
-# fires that event, since it does not come from GITHUB_TOKEN.
-#
-# So: after this workflow finishes, go to the repo's Releases page and click
-# "Publish release" on the new draft (or `gh release edit "$TAG" --draft=false`
-# locally, authenticated as yourself) once you are satisfied with the notes.
-# That publishes to npm — see docs/release-process.md for the full flow and the
-# one-time manual repo setup (the `npm-publish` environment) it depends on.
+# A version tag runs the complete CI gate before publishing an installable
+# GitHub release. The repository token is sufficient. npm stays manual.
 on:
   push:
     tags: ['v*']
@@ -23,96 +11,13 @@ permissions:
 
 jobs:
   verify:
-    name: Node ${{ matrix.node }} · build · verify
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ['26.x']
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # full history so release notes can diff against the last tag
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-
-      - name: Prepare isolated scratch
-        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/packaging"
-
-      - name: Check lockfile registry and Herdr workspace
-        run: |
-          node scripts/check-lockfile-registry.mjs
-          npm ls --package-lock-only @spider/herdr
-
-      - name: Install
-        run: npm ci
-
-      # A tag that disagrees with package.json produces a release whose artifact
-      # version does not match its name. Fail loudly instead.
-      - name: Verify tag matches package.json version
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG=$(node -p "require('./package.json').version")
-          echo "tag=$TAG package.json=$PKG"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::Tag v$TAG does not match package.json version $PKG"
-            exit 1
-          fi
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test (fake Herdr conformance and acceptance; opt-in modes skip visibly)
-        run: |
-          echo '::notice::Real hc tests require SPIDER_HERDR_E2E=1 and hc; app tests require the separately approved app opt-in. Both are disabled in CI.'
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E TMPDIR="$PWD/.spider/scratch/tmp" npm test -- --reporter=verbose
-
-      - name: Build
-        run: npm run build
-
-      - name: Herdr acceptance typecheck
-        run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
-
-      - name: Herdr confidence utilities (no hc, app or SSH)
-        timeout-minutes: 5
-        run: |
-          mkdir -p "$PWD/.spider/scratch/e2"
-          set -o pipefail
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers 2 packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/harness/__tests__/pi-observations.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls 2>&1 | tee .spider/scratch/e2/ci-utilities.log
-
-      - name: Herdr packed acceptance (no hc, app or SSH)
-        timeout-minutes: 10
-        run: |
-          echo '::notice::Herdr CI certifies only the no-hc subset. Active-core, remote and native-window stories are not exercised.'
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e:ci -- --built
-
-      - name: Herdr acceptance failure artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: herdr-e2e-failures-node-${{ matrix.node }}
-          path: .spider/scratch/e2/
-          if-no-files-found: ignore
-
-      - name: Verify bundle shape
-        run: node scripts/assert-bundle.mjs
-
-      - name: Verify package contents
-        run: |
-          export TMPDIR="$PWD/.spider/scratch/tmp"
-          export npm_config_foreground_scripts=false npm_config_pack_destination="$PWD/.spider/scratch/packaging"
-          npm pack --json --ignore-scripts | node -e "require('./scripts/check-package-files.cjs')"
-          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
-          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+    uses: ./.github/workflows/ci.yml
 
   release:
-    name: draft release
+    name: publish release
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -120,16 +25,38 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Draft, not live: see the header comment. `gh release create` without
-      # `--draft` would publish immediately, authored by GITHUB_TOKEN, which is
-      # exactly the event source that cannot trigger publish.yml.
-      - name: Create draft GitHub Release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$PKG" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG"
+            exit 1
+          fi
+
+      - name: Download release package
+        uses: actions/download-artifact@v4
+        with:
+          name: release-package
+          path: .spider/scratch/packaging
+
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TARBALL="guru-irl-spider-$VERSION.tgz"
+          (cd .spider/scratch/packaging && sha256sum "$TARBALL" > SHA256SUMS)
+          INSTALL="pi install npm:@guru-irl/spider@https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$TARBALL"
+          printf '## Install\n\n```sh\n%s\n```\n\nSHA-256 is in the attached `SHA256SUMS` file.\n' "$INSTALL" > .spider/scratch/packaging/notes.md
           gh release create "$GITHUB_REF_NAME" \
+            ".spider/scratch/packaging/$TARBALL" \
+            .spider/scratch/packaging/SHA256SUMS \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            --verify-tag \
-            --draft
-          echo "::notice::Draft release $GITHUB_REF_NAME created. Publish it by hand (repo Releases page, or 'gh release edit $GITHUB_REF_NAME --draft=false' as an authenticated human) to trigger publish.yml."
+            --notes-file .spider/scratch/packaging/notes.md \
+            --verify-tag

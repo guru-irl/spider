@@ -36,7 +36,7 @@ describe("npm skill packaging", () => {
 describe("release tarball check", () => {
   const base = ["dist/extension.js", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
   function check(files: string[]) {
-    const workflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
+    const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const code = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\n/)?.[1];
     if (!code) throw new Error("release tarball verifier not found");
     return spawnSync(process.execPath, ["-e", code], {

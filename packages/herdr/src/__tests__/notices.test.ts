@@ -20,6 +20,18 @@ describe('Herdr notices', () => {
     }
   });
 
+  it('gives each catalog code its own message', () => {
+    const texts = Object.values(HERDR_NOTICES).map(notice => notice.text);
+    expect(new Set(texts).size).toBe(texts.length);
+  });
+
+  it('explains a feed stall without suggesting repairs to a working session', () => {
+    const error = new HerdrError('feed-write-stalled', 'private detail');
+    expect(herdrErrorNoticeKey(error)).toBe('feedWriteStalled');
+    expect(herdrErrorNotice(error)).toBe("Spider couldn't update this session's sidebar status for 20 seconds. It keeps retrying, and everything else still works.");
+    expect(herdrErrorNotice(error)).not.toContain('private detail');
+  });
+
   it('names only supported slash commands and the Herdr panel doctor button', () => {
     const allowed = new Set(['/reload', '/herdr-setup', 'Run doctor']);
     const seen = new Set<string>();

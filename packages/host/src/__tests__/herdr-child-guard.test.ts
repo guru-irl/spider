@@ -286,11 +286,12 @@ it.skipIf(process.platform === 'linux')('a first presence ps failure leaves Herd
     if (file === 'ps' && !failed) { failed = true; throw Object.assign(new Error('first ps timeout'), { code: 'ETIMEDOUT' }); }
     return Reflect.apply(run, childProcess, [file, ...args]);
   }) as typeof childProcess.execFileSync);
-  syncBuiltinESMExports();
+  syncBuiltinESMExports(); resetProcessStartTimeForTests();
   try {
     const mount = f.mount(); await f.emit('session_start');
     expect(mount.enabled()).toBe(false); expect(mount.owner()).toBeNull();
     expect(f.errors).toHaveLength(1);
+    expect(String(f.errors[0])).toContain('Cannot read child process start time');
     expect(await mount.guard({ toolName: 'bash', input: { command: 'scp f managed.invalid:/x' } })).toMatchObject({ block: true, reason: expect.stringContaining("Spider couldn't connect this subagent to Herdr") });
-  } finally { ps.mockRestore(); syncBuiltinESMExports(); await f.close(); }
+  } finally { ps.mockRestore(); syncBuiltinESMExports(); resetProcessStartTimeForTests(); await f.close(); }
 }, 30000);

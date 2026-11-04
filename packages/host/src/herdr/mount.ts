@@ -2,6 +2,7 @@ import { existsSync, constants } from 'node:fs';
 import { readFile, access, writeFile, realpath, stat, open, readdir } from 'node:fs/promises';
 import { join, dirname, resolve, basename, isAbsolute } from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { resolvePiPackageRoot } from '../../../subagents/src/pi-spawn.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createBashTool, createLocalBashOperations, getAgentDir } from '@earendil-works/pi-coding-agent';
@@ -280,15 +281,31 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   });
   const publish = () => { publishing = feedResult(writeFeed()); return publishing; };
   const closeFeed = async (final = false, handoff: 'disposed' | 'wrong-generation' = 'disposed') => {
+    const current = owner, currentSource = source, currentConfig = config, generation = lifecycle;
+    const currentTranscript = transcript, currentEndpoint = endpoint;
     stopped = true; unsubscribe?.(); unsubscribe = undefined;
     clearInterval(heartbeatTimer); heartbeatTimer = undefined;
     await publishing.catch(report); await heartbeatPending.catch(report);
-    if (final && source && owner && config) {
-      try { await feedResult(publishSessionFeed(join(config.globalRoot, 'herdr'), await source.snapshot(owner, 'closed'))); }
-      catch (error) { report(error); }
+    if (final && currentSource && current && currentConfig) {
+      try {
+        const feed = await currentSource.snapshot(current, 'closed');
+        let backoff = 50;
+        while (lifecycle === generation && owner === current && source === currentSource) {
+          try {
+            await publishSessionFeed(join(currentConfig.globalRoot, 'herdr'), feed);
+            feedBusySince = undefined; feedBusyNotified = false;
+            break;
+          } catch (error) {
+            if (!(error instanceof HerdrError) || error.code !== 'lock-occupied') throw error;
+            await feedResult(Promise.reject(error));
+            await delay(backoff); backoff = Math.min(backoff * 2, 1000);
+          }
+        }
+      } catch (error) { report(error); }
     }
-    source?.dispose(); source = null; transcript?.dispose(); transcript = null;
-    await endpoint?.dispose(handoff); endpoint = null;
+    currentSource?.dispose(); if (source === currentSource) source = null;
+    currentTranscript?.dispose(); if (transcript === currentTranscript) transcript = null;
+    await currentEndpoint?.dispose(handoff); if (endpoint === currentEndpoint) endpoint = null;
   };
   const closeResources = async () => {
     const attempt = async (operation: () => unknown | Promise<unknown>) => {

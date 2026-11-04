@@ -113,28 +113,37 @@ const localLocks = new Map<string, Promise<void>>();
 /** Local contenders queue before entering the cross-process bakery lock. */
 export async function withProcessLock<T>(root: string, key: string, operation: () => Promise<T>, options: ProcessLockOptions = {}): Promise<T> {
   const queueKey = join(resolve(root), 'locks', hash(key));
-  const previous = localLocks.get(queueKey) ?? Promise.resolve();
+  const previous = localLocks.get(queueKey);
+  const deadline = Date.now() + (options.timeoutMs ?? 5000);
   let release!: () => void;
   const turn = new Promise<void>(resolveTurn => { release = resolveTurn; });
-  const tail = previous.then(() => turn); localLocks.set(queueKey, tail);
+  const tail = (previous ?? Promise.resolve()).then(() => turn); localLocks.set(queueKey, tail);
   const { signal } = options;
-  let onAbort: (() => void) | undefined;
+  let onAbort: (() => void) | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   try {
     if (signal?.aborted) throw new HerdrError('aborted', 'Lock acquisition aborted');
-    if (signal) await Promise.race([previous, new Promise<never>((_resolve, reject) => {
-      onAbort = () => reject(new HerdrError('aborted', 'Lock acquisition aborted'));
-      signal.addEventListener('abort', onAbort, { once: true });
-    })]);
-    else await previous;
+    if (previous) {
+      if (Date.now() >= deadline) throw new HerdrError('lock-occupied', 'The operation lock is busy');
+      await Promise.race([previous, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new HerdrError('lock-occupied', 'The operation lock is busy')), Math.max(0, deadline - Date.now()));
+        if (signal) {
+          onAbort = () => reject(new HerdrError('aborted', 'Lock acquisition aborted'));
+          signal.addEventListener('abort', onAbort, { once: true });
+        }
+      })]);
+      if (Date.now() >= deadline) throw new HerdrError('lock-occupied', 'The operation lock is busy');
+    }
     if (signal?.aborted) throw new HerdrError('aborted', 'Lock acquisition aborted');
-    return await acquireProcessLock(root, key, operation, options);
+    clearTimeout(timer);
+    return await acquireProcessLock(root, key, operation, options, deadline);
   } finally {
+    clearTimeout(timer);
     if (onAbort) signal?.removeEventListener('abort', onAbort);
     release(); void tail.then(() => { if (localLocks.get(queueKey) === tail) localLocks.delete(queueKey); });
   }
 }
 /** Each contender owns a unique ticket, so reclamation cannot unlink a new owner's ticket. */
-async function acquireProcessLock<T>(root: string, key: string, operation: () => Promise<T>, options: ProcessLockOptions): Promise<T> {
+async function acquireProcessLock<T>(root: string, key: string, operation: () => Promise<T>, options: ProcessLockOptions, deadline: number): Promise<T> {
   const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
   if (!identity.startIdentity) throw new HerdrError('process-identity-unavailable', 'Cannot acquire a lock without a process start identity');
   const verified = new Map<string, string>();
@@ -170,7 +179,6 @@ async function acquireProcessLock<T>(root: string, key: string, operation: () =>
     const number = Math.max(0, ...(await tickets()).map(r => r.ticket.number ?? 0)) + 1;
     if (!Number.isSafeInteger(number)) throw new HerdrError('invalid-lock-ticket', 'Lock ticket sequence is exhausted');
     await writePrivateJson(path, { version: 1, ...identity, number });
-    const deadline = Date.now() + (options.timeoutMs ?? 5000);
     for (;;) {
       if (options.signal?.aborted) throw new HerdrError('aborted', 'Lock acquisition aborted');
       const rows = await tickets();

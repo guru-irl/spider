@@ -10,6 +10,8 @@ it('package test machine names and SSH destinations use reserved domains', async
   const roots = ['packages'];
   const check = (file: string, source: ts.SourceFile, node: ts.Node, name: string) => {
     const host = normalizeSshHost(name);
+    // An empty name means the local machine, so it never reaches a remote destination.
+    if (name === '') return;
     if (host.endsWith('.invalid')) return;
     // Parser-only syntax coverage uses RFC 3849/5737 documentation networks.
     if (file.endsWith('ssh-policy.test.ts') && (/^2001:db8:/i.test(host) || /^(?:192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/.test(host))) return;

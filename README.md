@@ -1,92 +1,138 @@
-# spider
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/spider-mark-dark.svg">
+    <img src="docs/assets/spider-mark-light.svg" alt="" width="32" height="32" style="vertical-align: middle;">
+  </picture>
+  spider
+</h1>
 
 Spider is a [pi coding-agent](https://github.com/earendil-works/pi) extension for memory, search, todos, subagents, execution, web fetch, and skills.
-It adds one `spider` tool, which keeps its data in local SQLite databases.
+It adds one `spider` tool and stores its data in local SQLite databases.
 It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 
-## Features
+## What spider adds
 
-- Memory: reviewed notes, scoped either globally or to one repository. Each session gets a fixed snapshot of them in its prompt.
-- Search: full-text and vector search over memory, content, sessions, and todos.
-- Todos: per-session lists that persist, with a live overlay.
-- Subagents: child runs in the background, as single tasks, parallel tasks, chains, or pipelines.
-- Execution: run scripts and filter their output before it enters the model's context.
-- Reference material: fetch, index, and import content to search later.
-- Skills: bundled procedures, plus proposed skills that wait in a staging queue until someone approves them.
-- Background learning: proposes memory and skills from session activity.
-- [Compaction](docs/guide/compaction.md): opt-in thresholds per model, and spider-managed summaries of the parent session, with a limit on how many files they list.
-- [Loops and scheduled wakeups](docs/guide/loop-and-schedule.md): named interval, cron, self-paced, and one-shot triggers that keep wall-clock due times across reload and same-session resume.
-- [Herdr integration](docs/guide/herdr.md): remote execution with agent consoles, subagent viewers, and the spider panel when pi runs inside the Herdr terminal workspace.
+- Save reviewed notes globally or for one repository. Each session gets a fixed snapshot of those notes in its prompt.
+- Search memory, content, sessions, and todos with full-text and vector search.
+- Keep per-session todo lists that persist and open in a live overlay.
+- Run child tasks in the background, individually or as parallel tasks, chains, or pipelines.
+- Execute scripts and filter their output before it enters the model's context.
+- Fetch, index, and import reference material for later searches.
+- Use bundled skills and propose new ones. Proposed skills wait for approval in a staging queue.
+- Propose memory and skills from session activity through background learning.
+- Set opt-in [compaction thresholds](docs/guide/compaction.md) per model. Spider can summarize the parent session and limit the files listed in its summary.
+- Define [loops and scheduled wakeups](docs/guide/loop-and-schedule.md) with names and wall-clock due times. Interval, cron, self-paced, and one-shot triggers survive reload and same-session resume.
+- Use [Herdr integration](docs/guide/herdr.md) for remote execution, agent consoles, subagent viewers, and the spider panel inside a Herdr terminal workspace.
 
 Spider bundles the superpowers workflow skills and 31 skills adapted from [pstack](https://github.com/michael-denyer/pstack-claude). The pstack set includes `how`, `why`, `teach`, writing guidance and decision principles. `spider skill` lists and views both collections next to project skills, and shows each skill's source even when names overlap. Background curation never touches bundled skills.
 
 ## Requirements
 
-- Use Node 26 to install spider and to run pi, so that native modules use the same ABI. Development pins `26.4.0`, and all CI workflows use `26.x`. The package declares `>=22.19.0`, but those workflows do not test lower versions.
-- Pi `1.2.0` or later, including `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai` and `@earendil-works/pi-tui`. Development and tests use `1.2.0`. Older hosts are not supported.
-- Native dependencies are `better-sqlite3` (a Node addon) and `sqlite-vec` (a platform library). Build the addon for the Node ABI that pi uses.
-- If no native prebuild is available, building `better-sqlite3` needs Python and a C/C++ toolchain for `node-gyp`.
+- Use Node 26 to install spider and run pi, so native modules use the same ABI. Development pins `26.4.0`, and all CI workflows use `26.x`. The package declares `>=22.19.0`, but CI does not test lower versions.
+- Use pi `1.2.0` or later, including `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`. Development and tests use `1.2.0`. Older hosts are not supported.
+- Spider uses `better-sqlite3`, a Node addon, and `sqlite-vec`, a platform library. Build the addon for pi's Node ABI.
+- If no native prebuild is available, `better-sqlite3` needs Python and a C or C++ toolchain for `node-gyp`.
 - CI runs on Linux. The workflows do not cover other operating systems.
 - Memory review and background learning use `github-copilot/gpt-6-luna`. Skill review uses `github-copilot/gpt-6-luna` at xhigh thinking. Sign in to GitHub Copilot with pi's `/login`, or [configure another authenticated provider](docs/guide/configuration.md#reviewer-and-learner-models).
 
 ## Install, update, and remove
 
+### Install a release
+
+Install a versioned tarball from [GitHub releases](https://github.com/guru-irl/spider/releases). You do not need an npm account.
+The example requires a published `v0.1.0` release.
+
+Quit pi before installing or changing its native dependencies. Run this command in your terminal, then start pi again:
+
+```bash
+pi install npm:@guru-irl/spider@https://github.com/guru-irl/spider/releases/download/v0.1.0/guru-irl-spider-0.1.0.tgz
+```
+
+Keep `@guru-irl/spider@` before the URL. Pi needs the package name to find the installed extension.
+Run `pi list` to see the configured source, then `/doctor` in pi to check the installation.
+Each release includes `SHA256SUMS` for its tarball.
+
+The URL pins the version. To refresh the installation without choosing another release, quit pi and run:
+
+```bash
+pi update npm:@guru-irl/spider@https://github.com/guru-irl/spider/releases/download/v0.1.0/guru-irl-spider-0.1.0.tgz
+```
+
+This does not select a newer release. To change versions, run `pi install` with the new release's command. Pi replaces the entry for the same package name.
+Start pi again after either change.
+
+To remove the release package, quit pi and run:
+
+```bash
+pi remove npm:@guru-irl/spider@https://github.com/guru-irl/spider/releases/download/v0.1.0/guru-irl-spider-0.1.0.tgz
+```
+
+### Install a clone for development
+
+Use a clone if you want to change spider or build it yourself. Do not load a clone and a release package at the same time.
+
 ```bash
 git clone https://github.com/guru-irl/spider.git
 cd spider
 npm ci
-npm run build
 npm run link
 ```
 
-- `npm ci` installs the build dependencies, runs the native checks, and runs the `prepare` build. The explicit build then checks the bundle as well.
-- `npm run link` writes `~/.pi/agent/extensions/spider.ts`, a small loader file (a shim) that points at this clone's `dist/extension.js`. It removes the development shim if one exists.
-- In pi, run `/reload` or start a new process. Then run `/doctor` to check native modules, databases, config, and which bundle is loaded.
-- `pi install git:` is not supported yet. Pi installs packages without dev dependencies, and spider's build needs them.
-- Keep the clone at the path you linked. See [Linked shims](docs/architecture/runtime-lifecycle.md#linked-shims) for loading precautions and fallback behavior.
+`npm ci` installs development dependencies, checks native modules, and runs the `prepare` build, including the bundle checks.
+`npm run link` writes `~/.pi/agent/extensions/spider.ts`, a loader file that points at the clone's `dist/extension.js`. It also removes an existing development loader.
+Run `/reload` in pi or start a new process, then run `/doctor` to check the bundle, native modules, databases, and config.
 
-To update, run these commands in the clone:
+Keep the clone at its linked path. See [Linked shims](docs/architecture/runtime-lifecycle.md#linked-shims) for loading precautions and fallback behavior.
+Direct `pi install git:` installs are not supported. Pi omits development dependencies, which spider needs to build the unbundled source.
 
-```bash
-git pull
-# If package-lock.json changed, quit pi before running:
-npm ci
-npm run build
-```
+To update the clone, run `git pull` inside it. If `package-lock.json` changed, quit pi, run `npm ci`, then start pi again.
+Otherwise, run `npm run build` and `/reload`. If `/doctor` reports `RESTART NEEDED`, restart pi instead.
+Reload refreshes the bundle, not dependencies or native modules.
 
-- If the update ran `npm ci`, start pi again after the build. `/reload` refreshes only the bundle, not dependencies or native modules.
-- If the pull did not change the lockfile, run `/reload` after the build. If `/doctor` says `RESTART NEEDED`, restart pi instead.
-- To uninstall, run `npm run unlink` in the clone. If you used `npm run dev:link`, also run `npm run dev:unlink`. Then quit pi and delete the clone.
-- Remove the managed block described under [Data and privacy](#data-and-privacy) from `~/.pi/agent/AGENTS.md`, then restart pi if needed. Unlinking does not remove that block or the local databases.
-- To remove everything, also delete `~/.pi/agent/spider/`, `<git-common-dir>/spider/` and `<worktree>/.spider/` in each repo you used. The [tier table](#data-and-privacy) lists what each one holds.
+To remove a linked clone, run `npm run unlink` in the clone. If you used `npm run dev:link`, also run `npm run dev:unlink`.
+Then quit pi and delete the clone.
 
-## Quickstart
+### Remove stored data
 
-- Run `/doctor` and fix any failures it reports.
-- Ask the agent to index reference material, then search it:
+Neither install path removes local databases or the managed instructions in `~/.pi/agent/AGENTS.md`.
+Remove the managed block described under [Data and privacy](#data-and-privacy), then restart pi if needed.
+To remove all stored data, also delete `~/.pi/agent/spider/`, `<git-common-dir>/spider/`, and `<worktree>/.spider/` in each repository you used.
+The [data table](#data-and-privacy) lists what each location holds.
+
+## Start using spider
+
+Run `/doctor` and fix any failures it reports.
+The examples below are tool calls for the agent, not terminal commands.
+
+Ask the agent to index reference material and search it:
 
 ```text
 spider index path:"docs/"
 spider search query:"deployment steps"
 ```
 
-- Add work to the session list, then open `/todos`:
+Add work to the session list, then open `/todos`:
 
 ```text
 spider todo op:"add" text:"Add a regression test for retries"
 spider todo op:"list"
 ```
 
-- Save a lasting project fact with a reason and a source:
+Save a lasting project fact with a reason and a source:
 
 ```text
 spider remember scope:"repo" category:"convention" content:"Use the test gate in package.json" link:"package.json" justification:"The gate remains useful after this task; other agents need it; it is specific to this repository."
 ```
 
-- To replace an active note, add `supersedes:["<uuid-or-unique-prefix>"]` to a foreground `remember` call. Each target must be active and in the same scope. If a target is unknown, ambiguous, inactive or in another scope, the call is rejected and nothing is written. The size cap check subtracts the targets' current sizes, and spider archives the targets and inserts the new note in one atomic step. The reviewer still checks that the note is durable, useful and correctly scoped. Explicit replacement also works when review is unavailable. Staged and automatic writes do not support explicit `supersedes`, and approving a staged write never archives related entries. See [Memory and learning](docs/guide/memory-and-learning.md).
-- Use `/memory` to read notes and `/agents` to inspect child runs.
-- Before non-trivial work, load a skill that applies. To find one, run `spider skill op:"list"`.
-- These examples are tool calls for the agent, not terminal commands.
+To replace an active note, add `supersedes:["<uuid-or-unique-prefix>"]` to a foreground `remember` call.
+Each target must be active and in the same scope. An unknown, ambiguous, inactive, or out-of-scope target rejects the call without a write.
+Spider subtracts the targets' sizes when checking the cap, then archives the targets and inserts the new note atomically.
+The reviewer still checks durability, usefulness, and scope. Explicit replacement also works when review is unavailable.
+Staged and automatic writes do not support `supersedes`, and approving a staged write never archives related entries.
+See [Memory and learning](docs/guide/memory-and-learning.md).
+
+Use `/memory` to read notes and `/agents` to inspect child runs.
+Before non-trivial work, load a skill that applies. Run `spider skill op:"list"` to find one.
 
 ## Usage reference
 
@@ -108,51 +154,78 @@ spider remember scope:"repo" category:"convention" content:"Use the test gate in
 | `skill` | `list`, `view`, `distill`, `add`, `approve`, or `reject`. |
 | `import` | Import local pi session transcripts. |
 | `message` | Send text to a peer session, or steer an RPC child that this session owns. |
-| `loop` | Define a named interval, zoned `cron`, or self-paced trigger. Cron has no immediate first prompt. No definition fields lists all triggers. `stop:true` stops only the named loop and re-arm, not an independent one-shot. |
-| `schedule` | Define a named one-shot with `delaySeconds` or offset-bearing `at`. Relative delays clamp to 60 through 3600. Replace or cancel only that name. Re-arm a self-paced loop with its exact name and prompt. |
+| `loop` | Define a named interval, zoned `cron`, or self-paced trigger. Cron has no immediate first prompt. Omit definition fields to list triggers. `stop:true` stops only the named loop and its re-arm, not an independent one-shot. |
+| `schedule` | Define a named one-shot with `delaySeconds` or offset-bearing `at`. Relative delays clamp to 60 through 3600 seconds. Replace or cancel only that name. Re-arm a self-paced loop with its exact name and prompt. |
 | `control` | Run the administrative commands below. |
 
 ### `spider control` commands
 
-- `doctor`: runs health checks and compares the loaded bundle with the installed one.
-- `config`: reads, sets, or unsets configuration keys.
-- `memory`: `pending`, `approve`, `reject`, `status`, or `forget`.
-- `models`: lists the model catalog. `op:"set"` sets a global default for a role. `control models clear` (`op:"clear"`) removes only the local override for a role.
-- `stats`: shows token savings and row counts.
-- `insights`: inspects the learning graph.
-- `skill sub:"curate"`: runs skill curation, with optional `force` and `consolidate`.
-- `migrate`: previews migration of legacy data. `apply:true` backs up the data and then applies the migration.
-- `bind` / `unbind`: sets or removes a session's worktree binding.
-- `upstream-watch`: inspects changes in vendored upstream code, or marks a reviewed baseline.
+| Command | Use |
+| --- | --- |
+| `doctor` | Check health and compare the loaded bundle with the installed one. |
+| `config` | Read, set, or unset configuration keys. |
+| `memory` | Use `pending`, `approve`, `reject`, `status`, or `forget`. |
+| `models` | List the model catalog. `op:"set"` sets a global role default. `control models clear` with `op:"clear"` removes a local role override. |
+| `stats` | Show token savings and row counts. |
+| `insights` | Inspect the learning graph. |
+| `skill` | Use `sub:"curate"` to run curation, with optional `force` and `consolidate`. |
+| `migrate` | Preview legacy data migration. `apply:true` backs up the data and applies the migration. |
+| `bind`, `unbind` | Set or remove a session's worktree binding. |
+| `upstream-watch` | Inspect vendored upstream changes or mark a reviewed baseline. |
 
 ### Slash commands and overlays
 
-- `/spider`, `/stats`: statistics dashboard.
-- `/search <query>`: unified search. `/memory`: active memory.
-- `/doctor`: health check. `/insights`: learning graph.
-- `/usage`: opens the local usage dashboard in a parent pi session.
-- `/learn <note>`: queues a prompt to distill a skill. It does not approve a skill.
-- `/bind <path>`: binds this session to a worktree.
-- `/exec-enforce on|off`: the user's switch for bash enforcement. It writes worktree-local config and does not affect other repos. With no argument it reports the current state.
-- `/todos`: live todo overlay.
-- `/agents` or `alt+shift+up`: run selector. `Enter` opens details, and pressing `k` twice confirms killing a run.
-- `/loop [5m|1h] <prompt>`: checks external work right away and then at a fixed interval, or at the agent's own pace if you give no interval. `/loop` lists all triggers and usage. `/loop stop` stops default `loop` and `wakeup`; `/loop stop <name>` stops one name and `/loop stop all` stops all. `/loop stop <words>` is a stop request or usage error, not a prompt.
-- Loops and wakeups need a persistent top-level session. They survive `/reload` and same-session resume; new sessions and forks start empty. Nothing fires while closed or asleep. Missed one-shot and cron triggers fire once, late. Intervals resume from their anchor without catch-up. Do not use them to poll subagents, because completion notices arrive on their own.
-- `ui.footer=false` turns off the agents widget and the run selector from the next session on. It does not turn off the usage footer.
-- [Usage dashboard](docs/guide/usage.md): the credits footer, the local ledger, the account counter, collection health and doctor diagnostics. The footer shows, separated by middle dots: context percentage and window size, session credits, cache-hit rate (`CH`), `month` as a whole percentage, input and output tokens, and cache read and write tokens.
+| Command | Use |
+| --- | --- |
+| `/spider`, `/stats` | Open the statistics dashboard. |
+| `/search <query>` | Run a unified search. |
+| `/memory` | Read active memory. |
+| `/doctor` | Check health. |
+| `/insights` | Inspect the learning graph. |
+| `/usage` | Open the local usage dashboard in a parent pi session. |
+| `/learn <note>` | Queue a prompt to distill a skill, without approving it. |
+| `/bind <path>` | Bind the session to a worktree. |
+| `/exec-enforce on\|off` | Change bash enforcement in local config for this worktree only. With no argument, report its current state. |
+| `/todos` | Open the live todo overlay. |
+| `/agents`, `alt+shift+up` | Open the run selector. `Enter` opens details. Press `k` twice to confirm killing a run. |
+
+Use `/loop [5m|1h] <prompt>` to check external work immediately and at a fixed interval.
+Without an interval, the loop runs at the agent's own pace. `/loop` lists triggers and usage.
+`/loop stop` stops the default `loop` and `wakeup`. `/loop stop <name>` stops one name, and `/loop stop all` stops all names.
+Other words after `/loop stop` form a stop request or usage error, not a prompt.
+
+Loops and wakeups require a persistent top-level session. They survive `/reload` and same-session resume, but new sessions and forks start empty.
+Nothing fires while closed or asleep. Missed one-shot and cron triggers fire once, late.
+Intervals resume from their anchor without catch-up. Do not poll subagents with loops, because completion notices arrive on their own.
+
+Set `ui.footer=false` to turn off the agents widget and run selector starting with the next session. This does not turn off the usage footer.
+The [usage footer](docs/guide/usage.md) shows context percentage and window size, session credits, cache-hit rate as `CH`, and `month` as a whole percentage.
+It also shows input, output, cache-read, and cache-write tokens. Middle dots separate the fields.
+The usage guide covers the local ledger, account counter, collection health, and doctor diagnostics.
 
 ### Dashboard
 
-- The local dashboard has three pages: Overview, Session, and Calibration & data. It shows credits by default, and a switch changes the view to Tokens. To set an optional monthly budget (a positive number), run `/spider config set usage.monthlyBudget <credits> --global`. To remove it, run `/spider config unset usage.monthlyBudget --global`. The footer's `month` item uses the budget when one is set, and otherwise the account allowance. If neither is available, the footer leaves it out. See [Usage dashboard](docs/guide/usage.md) for controls, correction and recovery.
+The local dashboard has three pages, Overview, Session, and Calibration & data.
+It shows credits by default. A switch changes the view to Tokens.
+
+To set a positive monthly credit budget, run `/spider config set usage.monthlyBudget <credits> --global`.
+To remove it, run `/spider config unset usage.monthlyBudget --global`.
+The footer's `month` field uses the budget when set, or the account allowance otherwise. It omits the field if neither is available.
+See [Usage dashboard](docs/guide/usage.md) for controls, correction, and recovery.
 
 ## Configuration
 
-- Keys are flat JSON properties with dots in their names, for example `"organism.enabled": false`.
-- Precedence, from lowest to highest: built-in defaults, then `~/.pi/agent/spider/config.json`, then `<worktree>/.spider/config.json`. The exceptions are `subagents.extensions` and the usage keys, which spider reads from global config only.
-- `SPIDER_GLOBAL_ROOT` overrides the global root and must be an absolute path (drive-qualified or UNC on Windows). A relative value, including a Windows root-relative path, stops spider from loading with `paths: SPIDER_GLOBAL_ROOT must be absolute; received "<value>"`. Spider treats an empty value as unset.
-- For writes, `scope:"global"` selects global config. An omitted scope or `scope:"repo"` selects worktree-local config. Spider rejects any other write scope.
-- `get` reports the effective values and where each came from. Global writes report when a local value shadows them.
-- Set and unset accept only known keys, and values must follow the [validation rules](docs/guide/configuration.md#validation).
+Keys are flat JSON properties with dots in their names, such as `"organism.enabled": false`.
+Values come from built-in defaults, then `~/.pi/agent/spider/config.json`, then `<worktree>/.spider/config.json`. Later values take precedence.
+The global-only keys are `subagents.extensions`, `subagents.profiles.reviewer.excludeTools`, `herdr.config`, `herdr.enabled`, and the usage keys.
+
+`SPIDER_GLOBAL_ROOT` overrides the global root. Use an absolute path, drive-qualified or UNC on Windows.
+A relative value, including a Windows root-relative path, stops spider from loading with `paths: SPIDER_GLOBAL_ROOT must be absolute; received "<value>"`.
+Spider treats an empty value as unset.
+
+For writes, `scope:"global"` selects global config. An omitted scope or `scope:"repo"` selects worktree-local config.
+Spider rejects other write scopes. `get` reports effective values and their sources. Global writes report when a local value shadows them.
+Set and unset accept only known keys. Values must follow the [validation rules](docs/guide/configuration.md#validation).
 
 ```text
 spider control command:"config" op:"get"
@@ -164,13 +237,21 @@ spider control command:"config" op:"set" key:"skills.reviewer.model" value:"prov
 spider control command:"config" op:"set" key:"auxiliary.background_review.model" value:"provider/model" scope:"global"
 ```
 
-- Common keys: `organism.enabled` (default `true`), `subagents.childMode` (`"rpc"`), `ui.footer` (`true`).
-- Usage keys, global only: `usage.footer` and `usage.counter.poll` default to `true`. `usage.alerts.sessionCredits` and `usage.alerts.runCredits` default to `0`. `usage.calibration` defaults to `auto`. `auto` uses counter evidence when there is enough of it. With `off`, it shows published estimates and keeps no factor history. `usage.monthlyBudget` is an optional positive credit budget and is unset by default. Changes to the footer, polling, calibration and budget take effect immediately. Alerts are not implemented.
-- Reviewers: `memory.reviewer.enabled` and `skills.reviewer.enabled` default to `true`.
-- `models.defaults` maps roles to model references. Spider picks a model in this order: the explicit model, the local override, the global default, and the role default that ships with spider. For unknown roles, or when the catalog has no eligible model, it uses the parent's model.
-- By default, `memory.snapshotCharCap` puts no limit on how much active memory spider injects. It does not change the storage cap.
-- `exec.enforce` defaults to `true`. The config action that the model can call cannot change it.
-- See [Configuration](docs/guide/configuration.md) for defaults, value sources, validation, and when changes take effect.
+Common defaults include `organism.enabled:true`, `subagents.childMode:"rpc"`, and `ui.footer:true`.
+Both `memory.reviewer.enabled` and `skills.reviewer.enabled` default to `true`.
+
+Usage keys are global only. `usage.footer` and `usage.counter.poll` default to `true`.
+`usage.alerts.sessionCredits` and `usage.alerts.runCredits` default to `0`, but alerts are not implemented.
+`usage.calibration` defaults to `auto`, which uses counter evidence when enough is available. With `off`, it shows published estimates and keeps no factor history.
+`usage.monthlyBudget` is an optional positive credit budget, unset by default.
+Changes to the footer, polling, calibration, and budget take effect immediately.
+
+`models.defaults` maps roles to model references. Spider checks the explicit model, local override, global default, then the role default bundled with spider.
+For unknown roles, or when the catalog has no eligible model, it uses the parent's model.
+
+By default, `memory.snapshotCharCap` does not limit active memory injected into the prompt. It does not change the storage cap.
+`exec.enforce` defaults to `true`, and the model-callable config action cannot change it.
+See [Configuration](docs/guide/configuration.md) for defaults, sources, validation, and when changes take effect.
 
 ## Data and privacy
 
@@ -180,72 +261,104 @@ spider control command:"config" op:"set" key:"auxiliary.background_review.model"
 | Repository | `<git-common-dir>/spider/repo.db` | Memory, skills, embeddings, curator state, skill review queue. |
 | Worktree | `<worktree>/.spider/project.db` | Sessions, runs, todos, content, events, embeddings. |
 
-- Sibling worktrees share repository memory and skills. They do not share runs or todos.
-- Scratch files and logs live under `<worktree>/.spider/`. Global work uses `~/.pi/agent/spider/`.
-- When spider activates, it writes a managed block between `<!-- spider:start -->` and `<!-- spider:end -->` in `~/.pi/agent/AGENTS.md`. Keep personal notes outside those markers, because spider overwrites anything inside them.
-- Databases, local config, logs, and scratch files are state for one machine. Never commit them. This repository's ignore rules already cover the worktree files.
-- Local storage does not mean spider works offline. Model calls send prompts to the providers you configure, fetch downloads URLs, and setting up embeddings can download a model in the background. While the embedder starts up, recall and search use full-text results. Once it is ready, they can also use existing vectors. Parent sessions work through queued embeddings in the background in a separate fastembed child process. This keeps aborts during native ORT teardown out of the pi process. Shutdown cancels embeds in progress and waits for the child to exit. If the parent dies, downloads and loads stop too. Child sessions never process the queue. Set `embeddings.drain` to `false` to turn off this maintenance. `/doctor` shows the health of the provider and the queue.
-- The memory and skill reviewers and background learning can send candidate text, active memory, skill guidance, or conversation excerpts to a model provider.
-- Pi saves the frozen global and repo memory block in the session's `spider_memory` system-prompt section. It saves an unchanged section once and records changes as patches. Compaction can save another copy in its prompt checkpoint. Old values stay in the session file. Exported HTML and JSONL can include this memory, so review them before you share them.
-- Treat databases, transcripts, fetched content, and logs as possibly sensitive. Secret scanning does not guarantee that secrets are removed.
-- See [Data model](docs/architecture/data-model.md) for path resolution, binding, and legacy migration.
+Sibling worktrees share repository memory and skills, but not runs or todos.
+Temporary files and logs live under `<worktree>/.spider/`. Global work uses `~/.pi/agent/spider/`.
+Spider writes a managed block between `<!-- spider:start -->` and `<!-- spider:end -->` in `~/.pi/agent/AGENTS.md` when it activates.
+Keep personal notes outside the markers. Spider overwrites their contents.
+
+Databases, local config, logs, and temporary files belong to one machine. Never commit them.
+This repository's ignore rules cover the worktree files.
+
+Local storage does not make spider offline. Model calls send prompts to configured providers, fetch downloads URLs, and embeddings setup can download a model in the background.
+Recall and search use full-text results while the embedder starts. Once ready, they can also use existing vectors.
+Parent sessions process queued embeddings in a separate fastembed child process. This keeps aborts during native ORT teardown out of pi.
+Shutdown cancels in-progress embeddings and waits for the child to exit. If the parent dies, downloads and loads stop too.
+Child sessions never process the queue. Set `embeddings.drain:false` to disable this maintenance.
+Run `/doctor` to check provider and queue health.
+
+Memory review, skill review, and background learning can send candidate text, active memory, skill guidance, or conversation excerpts to a model provider.
+Pi saves the frozen global and repository memory block in the session's `spider_memory` system-prompt section.
+It saves an unchanged section once and records changes as patches. Compaction can save another copy in its prompt checkpoint.
+Old values remain in the session file. Exported HTML and JSONL can include this memory, so review them before sharing.
+
+Treat databases, transcripts, fetched content, and logs as potentially sensitive. Secret scanning does not guarantee removal.
+See [Data model](docs/architecture/data-model.md) for path resolution, binding, and legacy migration.
 
 ## Subagents
 
-- Runs report back asynchronously through `spider.subagent_done`. There is no blocking wait.
-- Set an explicit provider-qualified `model` and a suitable `thinking` level.
-- For `tasks`, `chain`, and `pipeline`, put `model` and `thinking` on each item, not at the top level.
-- Runs stay in the database of the session that dispatched them, even when a child has a different `cwd`.
-- `/reload` keeps eligible children running. It stops chains and does not resume later pipeline stages. Quitting pi or replacing the session stops the children that session owns.
-- See [Subagents](docs/guide/subagents.md) for dispatch, shutdown, escalation, and delivery guarantees.
+Runs report back asynchronously through `spider.subagent_done`. There is no blocking wait.
+Set an explicit provider-qualified `model` and a suitable `thinking` level.
+For `tasks`, `chain`, and `pipeline`, put these fields on each item, not at the top level.
+Runs stay in the database of the dispatching session, even when a child has a different `cwd`.
+
+`/reload` keeps eligible children running. It stops chains and does not resume later pipeline stages.
+Quitting pi or replacing the session stops that session's children.
+See [Subagents](docs/guide/subagents.md) for dispatch, shutdown, escalation, and delivery guarantees.
 
 ## Background learning
 
-- The organism (spider's background learner) runs only in parent sessions, at compaction and at shutdown. A drain step processes the session activity that has built up.
-- Background memory writes are staged. Approve or reject them through `control memory`.
-- The first `before_agent_start` freezes the memory block in the named `spider_memory` section for that session. That includes runs started by completion notifications. New writes and approvals are saved at once but reach the prompt in the next session. Use `recall` to read them sooner.
-- Spider takes a fresh snapshot when the session ID or file changes, when the extension reloads, or when the memory binding target changes. Each subagent session freezes its own block.
-- Spider reviews and stages skill proposals. It never activates them automatically.
-- To turn off automatic work, set `organism.enabled:false`. The foreground reviewers have their own settings.
-- See [Memory and learning](docs/guide/memory-and-learning.md) for model defaults, limits, and failure behavior.
+Spider's background learner runs only in parent sessions, at compaction and shutdown.
+A drain step processes accumulated session activity. Background memory writes are staged. Approve or reject them through `control memory`.
+Spider reviews and stages skill proposals, but never activates them automatically.
+
+The first `before_agent_start` freezes the memory block in the session's `spider_memory` section, including runs started by completion notifications.
+New writes and approvals persist at once, but enter the prompt in the next session. Use `recall` to read them sooner.
+Spider takes a fresh snapshot when the session ID or file changes, the extension reloads, or the memory binding target changes.
+Each subagent freezes its own snapshot.
+
+Set `organism.enabled:false` to turn off automatic learning. Foreground reviewers have separate settings.
+See [Memory and learning](docs/guide/memory-and-learning.md) for model defaults, limits, and failure behavior.
 
 ## Sandboxed execution
 
-- Use `spider exec`, `exec_file`, or `batch` and print only the output you need.
-- Bash enforcement redirects the agent to spider execution. It is not an OS security boundary.
-- See [Using spider](docs/guide/using-spider.md#execution) for examples, background receipts, exit status, and cleanup cautions.
+Use `spider exec`, `exec_file`, or `batch`, and print only the output you need.
+Bash enforcement redirects the agent to spider execution. It is not an operating-system security boundary.
+See [Using spider](docs/guide/using-spider.md#execution) for examples, background receipts, exit status, and cleanup cautions.
 
 ## Herdr
 
-- When pi runs in a [Herdr](docs/guide/herdr.md) terminal, spider shows its work in the Herdr window. It never types into the pi editor. Outside Herdr, or with the global setting `herdr.enabled` set to `false`, spider runs as usual.
-- `spider exec`, `exec_file`, and `batch` take an `on` machine name. The command runs on that machine, each agent gets one console per machine, and the full output returns to pi. Subagents can use `on` too.
-- Plain `ssh` and other SSH transports to managed machines are refused with a pointer to `on`. An audited admin command covers repairs that need SSH.
-- The left sidebar lists sessions, subagent runs, consoles, and live commands, and shows each configured machine's status. Each subagent run gets a viewer with a separate message box for steering.
-- The spider panel shows what needs you in the selected space, each session's todos, triggers, and credits this month, and the month's credit pace.
-- Setup runs once from a plain shell with a configuration file you keep outside the repository. It needs `hc` `0.1.16` and `herdr-app` `0.1.11`. Run `/herdr-setup` in pi to print the exact commands.
-- See [Herdr integration](docs/guide/herdr.md) for setup, configuration, the sidebar, shortcuts, resume, and the doctor.
+When pi runs in a [Herdr](docs/guide/herdr.md) terminal, spider shows its work in the Herdr window. It never types into the pi editor.
+Outside Herdr, or with the global setting `herdr.enabled:false`, spider runs as usual.
+
+`spider exec`, `exec_file`, and `batch` accept an `on` machine name. Each agent gets one console per machine, and pi receives the command's full output.
+Subagents can also use `on`. Spider refuses plain `ssh` and other SSH transports to managed machines, directing you to `on` instead.
+An audited admin command handles repairs that need SSH.
+
+The left sidebar lists sessions, subagent runs, consoles, and live commands, plus each configured machine's status.
+Each subagent run gets a viewer with a separate steering message box.
+The spider panel shows items that need your attention in the selected space, session todos, triggers, credits this month, and the month's credit pace.
+
+Run setup once from a plain shell with a config file outside the repository. The supported setup uses `hc` `0.1.16` and `herdr-app` `0.1.11`.
+Run `/herdr-setup` in pi to print the exact commands.
+See [Herdr integration](docs/guide/herdr.md) for setup, configuration, the sidebar, shortcuts, resume, and doctor checks.
 
 ## Troubleshooting
 
-- Native module or Node ABI mismatch: follow [Requirements](#requirements) and run `npm rebuild better-sqlite3` in your linked clone (the `spider/` directory created above). Then restart pi and run `/doctor`. If an update runs `npm ci` again, that replaces the manual rebuild, so keep the Node version the same.
-- `sqlite-vec` failure: check `/doctor` and the [native install diagnostics](docs/architecture/runtime-lifecycle.md#install-time-native-checks) to see how search is affected.
-- Stale bundle: do what `/doctor` suggests. A directly loaded bundle needs a restart. Current linked shims support `/reload` once a rebuild has finished.
-- Old shim or moved checkout: run `npm run link` or `npm run dev:link` again, then restart pi once.
-- Duplicate tool registration: follow the [linked-shim loading precautions](docs/architecture/runtime-lifecycle.md#linked-shims).
-- Invalid config: fix the JSON file that `/doctor` names. Reads skip malformed layers, and writes refuse to overwrite them.
-- Reviewer or learner model unavailable: follow [model configuration and failure behavior](docs/guide/configuration.md#reviewer-and-learner-models), and check `/doctor` and the local reviewer logs.
-- See [Runtime lifecycle](docs/architecture/runtime-lifecycle.md) for cache behavior and reload limits.
+If native modules fail or report a Node ABI mismatch, check [Requirements](#requirements).
+For a linked clone, run `npm rebuild better-sqlite3` inside the clone, restart pi, and run `/doctor`.
+A later `npm ci` replaces the manual rebuild, so keep the Node version consistent.
+For a release install, quit pi, remove the package with `pi remove`, and install it again using pi's Node version.
+
+If `sqlite-vec` fails, check `/doctor` and the [native install diagnostics](docs/architecture/runtime-lifecycle.md#install-time-native-checks) for the effect on search.
+
+If the bundle is stale, follow `/doctor`. A directly loaded bundle needs a restart. Current linked loaders support `/reload` after a rebuild.
+For an old loader or moved checkout, run `npm run link` or `npm run dev:link` again, then restart pi once.
+For duplicate tool registration, follow the [linked-shim precautions](docs/architecture/runtime-lifecycle.md#linked-shims).
+
+If config is invalid, fix the JSON file named by `/doctor`. Reads skip malformed layers, but writes refuse to overwrite them.
+If a reviewer or learner model is unavailable, check the [model settings and failure behavior](docs/guide/configuration.md#reviewer-and-learner-models), `/doctor`, and the local reviewer logs.
+See [Runtime lifecycle](docs/architecture/runtime-lifecycle.md) for cache behavior and reload limits.
 
 ## Contributing and documentation
 
-- [Contributing](CONTRIBUTING.md): setup, test isolation, package boundaries, lockfile checks, and PR requirements.
-- [Documentation index](docs/README.md): guides, architecture, package references, and UI development.
-- [Architecture](docs/architecture/README.md): how the packages interact and how calls flow between them.
-- [Feedback and learning loops](docs/architecture/feedback-and-learning-loops.md): diagrams of routing and learning.
-- [Release process](docs/release-process.md): tagged builds and publishing.
+- Read [Contributing](CONTRIBUTING.md) for setup, test isolation, package boundaries, lockfile checks, and PR requirements.
+- The [documentation index](docs/README.md) links guides, architecture, package references, and UI development.
+- Read [Architecture](docs/architecture/README.md) for package interactions and call flow.
+- [Feedback and learning loops](docs/architecture/feedback-and-learning-loops.md) has diagrams of routing and learning.
+- Follow the [release process](docs/release-process.md) to publish a tagged build.
 
 ## License
 
 Spider's own code is licensed under [MIT](LICENSE).
-`packages/context`, and the portions of `dist/extension.js` built from it, are licensed under the [Elastic License 2.0](packages/context/LICENSE).
+`packages/context` and the portions of `dist/extension.js` built from it use the [Elastic License 2.0](packages/context/LICENSE).
 See [NOTICE.md](NOTICE.md) for upstream attribution.

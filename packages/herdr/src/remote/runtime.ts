@@ -418,20 +418,12 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
     return Number.isInteger(value) && value > 0 ? value : undefined;
   };
   const tag = (job: Active) => job.tagged ? `#${job.tag} ` : '';
-  const header = (job: Active, continued = false) => {
+  const tool = (job: Active) => job.command.tool === 'batch' || job.command.tool === 'exec_file' ? job.command.tool : 'exec';
+  const header = (job: Active) => {
     const { command } = job;
-    const tool = command.tool === 'batch' || command.tool === 'exec_file' ? command.tool : 'exec';
     const width = columns();
-    let prefix = `◆ ${tool} ${tag(job)}`;
-    if (job.tagged && width !== undefined && consoleWidth(prefix.trimEnd()) > width) prefix = `◆ ${tag(job)}${tool} `;
+    const prefix = `◆ ${tool(job)} `;
     const text = consoleContent(command.command.split('\n')[0]);
-    if (continued) {
-      const suffix = ' (continued)';
-      const available = width === undefined ? undefined : width - consoleWidth(prefix) - consoleWidth(suffix);
-      const left = available === undefined ? prefix + text + suffix : available >= 0 ? prefix + consoleClip(text, available) + suffix : consoleClip(prefix.trimEnd(), width!);
-      write(`\n${consoleDim(left)}\n`);
-      return;
-    }
     const left = `${prefix}${text}`;
     const right = `${consoleTime(command.startedAt)} · ${command.jobId.slice(0, 8)}`;
     if (width === undefined) write(`\n${left}  ${consoleDim(right)}\n`);
@@ -443,6 +435,52 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
       const gap = Math.max(0, width - consoleWidth(clipped) - consoleWidth(meta));
       write(`\n${clipped}${' '.repeat(gap)}${meta ? consoleDim(meta) : ''}\n`);
     }
+  };
+  const key = (newJob: Active) => {
+    const jobs = [...active.values()].sort((a, b) => a.tag - b.tag);
+    const parts = jobs.map(job => ({ base: `#${job.tag} ${tool(job)}`, text: consoleContent(job.command.command.split('\n')[0]) }));
+    const width = columns();
+    const full = '  ' + parts.map(part => part.base + (part.text ? ` ${part.text}` : '')).join(' · ');
+    const right = `${consoleTime(newJob.command.startedAt)} · ${newJob.command.jobId.slice(0, 8)}`;
+    if (width === undefined || consoleWidth(full) + 2 + consoleWidth(right) <= width) {
+      const gap = width === undefined ? 2 : width - consoleWidth(full) - consoleWidth(right);
+      write(`\n${full}${' '.repeat(gap)}${consoleDim(right)}\n`);
+      return;
+    }
+    if (consoleWidth(full) <= width) { write(`\n${full}\n`); return; }
+    const bases = parts.map(part => part.base).join(' · ');
+    if (consoleWidth(bases) > width) {
+      const tags = jobs.map(job => `#${job.tag}`);
+      const all = tags.join(' · ');
+      if (consoleWidth(all) <= width) { write(`\n${all}\n`); return; }
+      let visible = '';
+      for (const item of tags) {
+        const candidate = visible ? `${visible} · ${item}` : item;
+        if (consoleWidth(candidate) + 2 > width) break;
+        visible = candidate;
+      }
+      const clipped = visible ? consoleClip(visible + ' '.repeat(width), consoleWidth(visible) + 2) : '…';
+      write(`\n${clipped}\n`);
+      return;
+    }
+    const indent = consoleWidth(bases) + 2 <= width ? '  ' : '';
+    let remaining = width - consoleWidth(indent + bases);
+    const allocations = parts.map(() => 0);
+    const nonempty = parts.map((part, index) => ({ index, size: consoleWidth(part.text) })).filter(part => part.size > 0);
+    if (remaining >= nonempty.length * 2) {
+      remaining -= nonempty.length;
+      let pending = nonempty;
+      while (remaining > 0 && pending.length) {
+        const share = Math.max(1, Math.floor(remaining / pending.length));
+        for (const part of [...pending].reverse()) {
+          const amount = Math.min(share, part.size - allocations[part.index], remaining);
+          allocations[part.index] += amount; remaining -= amount;
+        }
+        pending = pending.filter(part => allocations[part.index] < part.size);
+      }
+    }
+    const left = indent + parts.map((part, index) => part.base + (allocations[index] ? ` ${consoleClip(part.text, allocations[index])}` : '')).join(' · ');
+    write(`\n${left}\n`);
   };
   const display = (job: Active, stream: PayloadStream, text: string) => {
     if (!text) return;
@@ -479,7 +517,7 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
       const head = parseRuntimePublication(await readBoundedFile(join(directory, 'head.json'), 1024));
       if (head.version === 1 && Number.isSafeInteger(head.count) && (head.count as number) >= next) {
         // Bound admissions per tick without limiting the number of concurrent jobs.
-        let admissions = 0; const admitted = new Set<Active>();
+        let admissions = 0;
         while (next < (head.count as number) && admissions++ < 32) {
           let value: Record<string, unknown>;
           try { value = parseRuntimePublication(await readBoundedFile(join(directory, `command-${next}.json`), 8192)); }
@@ -490,13 +528,11 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
           const command = value as unknown as ConsoleCommand;
           if (active.size === 0) nextTag = 1;
           const job: Active = { command, tag: nextTag++, tagged: active.size > 0, nextChunk: 0, offsets: { stdout: 0, stderr: 0 }, decoders: { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') } };
-          for (const existing of active.values()) {
-            if (!existing.tagged) { existing.tagged = true; if (!admitted.has(existing)) header(existing, true); }
-          }
-          active.set(command.jobId, job); admitted.add(job);
+          for (const existing of active.values()) existing.tagged = true;
+          active.set(command.jobId, job);
+          if (job.tagged) key(job); else header(job);
           next++;
         }
-        for (const job of admitted) header(job);
       }
     } catch { /* Missing, oversized or partial heads do not stop existing jobs' output. */ }
     const batch: [string, Active][] = [];

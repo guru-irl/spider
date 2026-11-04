@@ -124,7 +124,13 @@ export function createJobStore(root: string, sessionId: SessionId, runId?: RunId
       }
       rootVerified = true;
     } else {
-      const st = await lstat(root);
+      let st;
+      try { st = await lstat(root); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        // The root was removed after it was checked. Treat it as never checked.
+        rootVerified = false; return prepareDirectory(write);
+      }
       if (!st.isDirectory() || st.isSymbolicLink()) throw new HerdrError('unsafe-journal-path', 'Journal directories cannot be symlinks');
     }
     let current = root;

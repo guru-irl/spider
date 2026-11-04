@@ -312,7 +312,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(all(root).find(node => node.id === 'finished-toggle-t1')!.children).toContain('1 finished');
   });
 
-  it('keeps finished ancestors of a running job in a collapsed console and counts the job', async () => {
+  it('keeps finished ancestors of a running job without counting the nested job twice', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
     const feed = { sessionId: 'session-one', generation: 'generation', updatedAt: now, lifecycle: 'live', owner: { sessionId: 'session-one', name: 'planner', terminal: { address: 't1' } }, ipc: null,
@@ -332,10 +332,9 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(ids).not.toContain('finished-toggle-t1');
     expect(order.at(-1)).toEqual(['t1', 't9']);
     all(root).find(node => node.id === 'fold-left-t1')!.click!({}, cx); root = view.render({});
-    const pill = all(root).find(node => node.id === 'fold-t1')!;
-    expect(pill.children).toContain('1');
-    expect(call(pill, 'text_color')).toEqual([palette.blocked]);
-    expect(call(pill, 'tooltip')).toEqual(['1 subagent']);
+    expect(all(root).find(node => node.id === 'fold-t1')).toBeUndefined();
+    expect(all(root).find(node => node.id === 'console-count-t1')).toBeUndefined();
+    expect(order.at(-1)).toEqual(['t1', 't9']);
   });
 
   it('places a centred fold chevron before the agent icon and keeps empty slots aligned', async () => {

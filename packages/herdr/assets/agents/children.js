@@ -117,6 +117,10 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
       if (console) row.parentKey = console.key;
     }
   }
+  // Remote terminals report no agent status, so a console is busy exactly when a command under it is running.
+  for (const row of kept) {
+    if (row.kind === 'console' && row.status === 'idle' && kept.some(job => job.kind === 'remote' && job.parentKey === row.key && job.status === 'working')) row.status = 'working';
+  }
   const ordered = [], emitted = new Set();
   const emit = (row, depth) => {
     if (emitted.has(row.key)) return;

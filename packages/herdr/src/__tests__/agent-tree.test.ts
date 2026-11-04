@@ -52,6 +52,22 @@ test('session and run consoles own only the same agent and machine jobs', () => 
   expect(selectAgentChildren(r, ['console:remote.invalid/child-console']).some(row => row.key === 'child-job')).toBe(true);
 });
 
+const idle = (t: AgentTerminal): AgentTerminal => ({ ...t, status: null });
+
+test('a machine console shows working while one of its commands runs, and idle otherwise', () => {
+  const busy = rows([idle(job('main-job')), idle(consoleTerminal('main-console')), idle(consoleTerminal('other-console', { 'spider.run': 'run' }))]);
+  expect(busy.find(row => row.key === 'console:remote.invalid/main-console')).toMatchObject({ status: 'working' });
+  expect(busy.find(row => row.key === 'console:remote.invalid/other-console')).toMatchObject({ status: 'idle' });
+  expect(rows([idle(consoleTerminal('main-console'))])[0]).toMatchObject({ key: 'console:remote.invalid/main-console', status: 'idle' });
+  const finished = { ...idle(job('main-job')), state: 'finished' as const, exitCode: 0, reason: 'exited' };
+  expect(rows([finished, idle(consoleTerminal('main-console'))]).find(row => row.kind === 'console')).toMatchObject({ status: 'idle' });
+});
+
+test('a disconnected session keeps its machine console disconnected even while a command runs', () => {
+  const stale = projectAgentChildren([idle(job('main-job')), idle(consoleTerminal('main-console'))], [feed()], 'agent', contract, { now: 2000 + 60 * 60 * 1000 });
+  expect(stale.find(row => row.kind === 'console')).toMatchObject({ status: 'disconnected' });
+});
+
 test('finished jobs disappear from the sidebar while their machine console keeps history', () => {
   const done = { ...job('done'), state: 'finished' as const, finishedAt: 1500, exitCode: 23, reason: 'exited' };
   expect(rows([done, consoleTerminal('console')]).map(row => row.key)).toEqual(['console:remote.invalid/console', 'run']);

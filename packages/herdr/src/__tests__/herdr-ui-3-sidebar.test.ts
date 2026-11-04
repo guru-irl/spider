@@ -176,6 +176,28 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
   });
 
+  it('space headings in the grouped view show a count pill instead of the caret', async () => {
+    const spaces = [{ id: 's1', name: 'bundler', tabs: [] }];
+    const agents = [1, 2, 3, 4].map(n => ({ address: `t${n}`, pane: `p${n}`, tab: 'tab', space: 's1', space_name: 'bundler', status: n === 1 ? 'working' : 'idle', seq: n, title: `agent ${n}` }));
+    const store = new Map<string, unknown>([['agents.sort', 'grouped']]);
+    const { view } = await agentsView({ agents: () => agents, spaces: () => spaces }, store);
+    const heading = () => all(view.render({})).find(node => node.id === 'sp-s1')!;
+    const check = (folded: boolean) => {
+      const nodes = [heading(), ...heading().children.flatMap(all)];
+      const pill = nodes.find(node => node.id === 'group-count-sp-s1');
+      expect(pill, folded ? 'folded' : 'open').toBeDefined();
+      expect(pill!.children).toContain('4');
+      expect(call(pill!, 'rounded')).toEqual([999]);
+      expect(call(pill!, 'bg')).toEqual([palette.hover]);
+      expect(call(pill!, 'tooltip')).toEqual(['4 agents']);
+      expect(nodes.some(node => node.svg?.includes('chevron'))).toBe(false);
+      expect(nodes.filter(node => node !== pill && node.children.includes('4'))).toEqual([]);
+    };
+    check(false);
+    view.folded.add('sp-s1');
+    check(true);
+  });
+
   it('shows the same space shape in spaces and both agent views', async () => {
     const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
     const spaces = [{ id: 's1', name: 'space-00', tabs: [{ id: 'tab', name: 'charlie', named: true }] }];

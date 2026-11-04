@@ -336,6 +336,11 @@
         "replacement": ".when(!byPriority && g.id !== \"pinned\" && spaceIdentities.has(g.members[0]?.space), el => el.child(spaceIcon(g.members[0].space, g.label)))\n        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))"
       },
       {
+        "id": "group-count-pill",
+        "anchor": "        .when(byPriority || !open, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))\n        .child(div().flex_1())\n        .when(!open, (el) => el\n          .when(!byPriority && top && top !== \"idle\", (el) => el.child(this.status(t, { status: top }, true)))\n          .child(svg(\"mods/workspace-chrome/chevron-right.svg\").size(11).flex_none().text_color(t.dim)));",
+        "replacement": "        .when(byPriority, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))\n        .child(div().flex_1())\n        .when(!open && !byPriority && top && top !== \"idle\", (el) => el.child(this.status(t, { status: top }, true)))\n        .when(!byPriority, (el) => el.child(h_flex().id(`group-count-${g.id}`).h(18).px(6).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim)\n          .tooltip(`${g.members.length} ${g.members.length === 1 ? \"agent\" : \"agents\"}`).child(String(g.members.length))));"
+      },
+      {
         "id": "fold-count-argument",
         "anchor": "    const fold = (a, subs) => {",
         "replacement": "    const fold = (a, subs, live) => {"

@@ -138,7 +138,7 @@
       {
         "id": "live-child-fold-color",
         "anchor": "const sts = subs.map((s) => kidStatus(s.t, this.listed));",
-        "replacement": "const live = this.projectChildren(all, a.address).filter(child => !child.retained);\n      const sts = live.map(child => kidStatus(child, this.listed));"
+        "replacement": "const sts = this.projectChildren(all, a.address).filter(child => !child.retained).map(child => kidStatus(child, this.listed));"
       },
       {
         "id": "child-id",
@@ -288,7 +288,7 @@
       {
         "id": "remove-row-pin",
         "anchor": "      const pin = div()\n        .id(`pin-${a.address}`)\n        .flex_none()\n        .p(2)\n        .rounded(4)\n        .text_color(t.dim)\n        .cursor_pointer()\n        .hover((s) => s.bg(t.hover).text_color(t.foreground))\n        .tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n        .on_click((_e, cx) => {\n          cx.stop_propagation();\n          run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned });\n          // The row moves away from under the pointer, and no hover-out comes.\n          this.hovered = null;\n          cx.notify();\n        })\n        .child(svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13));",
-        "replacement": "      const hasChildren = subs.length > 0 || (this.spiderHiddenFinished?.get(a.address) ?? 0) > 0;\n      const liveConsoles = this.folded.has(a.address) ? this.projectChildren(all, a.address).filter(child => child.kind === \"console\" && child.terminal?.state === \"live\") : [];"
+        "replacement": "      const hasChildren = subs.length > 0 || (this.spiderHiddenFinished?.get(a.address) ?? 0) > 0;\n      const projectedChildren = this.folded.has(a.address) ? this.projectChildren(all, a.address) : [];\n      const liveConsoles = projectedChildren.filter(child => child.kind === \"console\" && child.terminal?.state === \"live\");\n      const liveBotChildren = projectedChildren.filter(child => !child.retained && child.kind !== \"console\" && !(child.kind === \"remote\" && projectedChildren.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));"
       },
       {
         "id": "remove-row-hover",
@@ -303,7 +303,7 @@
       {
         "id": "folded-count-only",
         "anchor": "        .when(subs.length > 0, el => el.child(fold(a, subs)))",
-        "replacement": "        .when(hasChildren && this.folded.has(a.address) && this.projectChildren(all, a.address).some(child => !child.retained), el => el.child(fold(a, subs)))\n        .when(liveConsoles.length > 0, el => el.child(h_flex().id(`console-count-${a.address}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().tooltip(`${liveConsoles.length} console${liveConsoles.length === 1 ? \"\" : \"s\"}`).hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.folded.delete(a.address); cx.notify(); }).child(svg(\"mods/workspace-chrome/terminal.svg\").size(11).flex_none()).child(String(liveConsoles.length))))"
+        "replacement": "        .when(hasChildren && liveBotChildren.length > 0, el => el.child(fold(a, subs, liveBotChildren)))\n        .when(liveConsoles.length > 0, el => el.child(h_flex().id(`console-count-${a.address}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().tooltip(`${liveConsoles.length} console${liveConsoles.length === 1 ? \"\" : \"s\"}`).hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); this.folded.delete(a.address); cx.notify(); }).child(svg(\"mods/workspace-chrome/terminal.svg\").size(11).flex_none()).child(String(liveConsoles.length))))"
       },
       {
         "id": "keep-elapsed-time",
@@ -329,6 +329,11 @@
         "id": "space-heading-icon",
         "anchor": ".child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))",
         "replacement": ".when(!byPriority && g.id !== \"pinned\" && spaceIdentities.has(g.members[0]?.space), el => el.child(spaceIcon(g.members[0].space, g.label)))\n        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))"
+      },
+      {
+        "id": "fold-count-argument",
+        "anchor": "    const fold = (a, subs) => {",
+        "replacement": "    const fold = (a, subs, live) => {"
       }
     ],
     "spaces": [

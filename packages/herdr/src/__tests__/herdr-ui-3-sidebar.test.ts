@@ -216,6 +216,28 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     }
   });
 
+  it('counts a subagent and native child separately from a console and its commands', async () => {
+    const terminals: any[] = [
+      { address: 't2', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },
+      { address: 't3', parent: 't1', state: 'live', status: 'working', labels: {} },
+      { address: 'alpha.invalid/c1', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } },
+      ...['job-one', 'job-two'].map(id => ({ address: `alpha.invalid/${id}`, parent: 't1', state: 'live', status: id === 'job-one' ? 'blocked' : 'working', labels: { 'spider.kind': 'exec', 'spider.job': id, 'spider.machine': 'alpha.invalid' } })),
+    ];
+    const { view } = await agentsView({ agents: () => [{ address: 't1', pane: 'p1', title: 'alpha', status: 'working', seq: 1 }], terminals: () => terminals });
+    view.folded.add('t1');
+    const pill = (id: string) => all(view.render({})).find(node => node.id === id);
+    expect(pill('fold-t1')?.children).toContain('2');
+    expect(call(pill('fold-t1')!, 'tooltip')).toEqual(['2 subagents']);
+    expect(call(pill('fold-t1')!, 'text_color')).toEqual([palette.blocked]);
+    expect(pill('console-count-t1')?.children).toContain('1');
+    terminals.push({ address: 'beta.invalid/job-three', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'exec', 'spider.job': 'job-three', 'spider.machine': 'beta.invalid' } });
+    expect(pill('fold-t1')?.children).toContain('3');
+    expect(pill('console-count-t1')?.children).toContain('1');
+    terminals.splice(0, terminals.length, terminals[2]);
+    expect(pill('fold-t1')).toBeUndefined();
+    expect(pill('console-count-t1')?.children).toContain('1');
+  });
+
   it('counts only live consoles including nested consoles on a collapsed owner', async () => {
     const mains = [{ address: 't1', status: 'working', seq: 1, title: 'alpha' }, { address: 't9', status: 'working', seq: 2, title: 'beta' }];
     const terminals = [

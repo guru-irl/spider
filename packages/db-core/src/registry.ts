@@ -1,12 +1,10 @@
-import { commandEnv } from "./command-env";
 // packages/db-core/src/registry.ts
-import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
-import { join, isAbsolute, resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
 import { openDb, openDbReadOnly, assertTestDbPath, type Db } from "./db";
 import { migrate } from "./migrate";
-import { paths, type Scope, worktreeRoot, repoRoot } from "./paths";
+import { paths, type Scope, worktreeRoot, repoRoot, gitCommonDir } from "./paths";
 import { getBinding, bindSession } from "./bindings";
 
 export interface ProjectInfo {
@@ -40,19 +38,6 @@ export const openGlobalReadOnly = (): Db | undefined => openDbReadOnly(globalDbP
 export const openRepoReadOnly = (repoKey: string): Db | undefined =>
   openDbReadOnly(join(repoKey, "spider", "repo.db"));
 export const openDbReadOnlyAt = (dbPath: string): Db | undefined => openDbReadOnly(dbPath);
-
-function gitCommonDir(cwd: string): string | undefined {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], { env: commandEnv(),
-      cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (!out) return undefined;
-    const abs = isAbsolute(out) ? out : resolve(cwd, out);
-    return realpathSync(abs);
-  } catch {
-    return undefined; // not a git dir
-  }
-}
 
 export function resolveProject(cwd: string, opts?: { sessionId?: string; explicitCwd?: boolean }): ProjectInfo {
   // Resolution order: explicit cwd > session binding > cwd's worktree root

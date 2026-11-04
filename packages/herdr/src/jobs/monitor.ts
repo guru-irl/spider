@@ -149,9 +149,9 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   }
   const cleanup = sharedCleanup ?? createCleanupSweep(options.clock, error => { if (!lifetime.signal.aborted) options.recordCleanupError?.(error); });
   const cleanupKeys = new Set<string>();
-  function enqueueCleanup(key: string, operation: () => Promise<void>): void {
-    if (stopping || closed) return;
-    cleanupKeys.add(key); cleanup.enqueue(key, operation);
+  function enqueueCleanup(key: string, operation: () => Promise<void>): boolean {
+    if (stopping || closed) return false;
+    cleanupKeys.add(key); return cleanup.enqueue(key, operation);
   }
   const releaseSkipped = new Set<JobId>();
   const cleanupOptions = () => ({ signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(1000)]), timeoutMs: 1000 });
@@ -192,7 +192,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
     if (recoveringNotices.has(job.id) || job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
-    enqueueCleanup(releaseKey(job), async () => {
+    const enqueued = enqueueCleanup(releaseKey(job), async () => {
       try { await releaseSettledTerminal(job, save); }
       catch (error) {
         if (lifetime.signal.aborted) throw error;
@@ -203,7 +203,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         throw error;
       }
     });
-    scheduleMaintenance();
+    if (enqueued) scheduleMaintenance();
   }
   async function markSettled(job: JournalJob): Promise<void> { queueRelease(job); }
   function observeNotice(job: JournalJob): void {

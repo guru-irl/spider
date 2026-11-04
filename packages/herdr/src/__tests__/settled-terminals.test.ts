@@ -120,6 +120,8 @@ it('reconciliation retries a failed removal after the notice was observed', asyn
   removed.mockRejectedValueOnce(new Error('temporary removal failure'));
   await expect(jobs.consumeNotice(handle.id)).resolves.toBeUndefined();
   await vi.waitFor(async () => expect((await createJobStore(f.f.root, f.owner.sessionId).read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-failed', attempts: 1 }), { timeout: 3500 });
+  await jobs.finishCleanup();
+  expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address]]);
   now += 60000; await jobs.reconcile();
   await vi.waitFor(() => expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address], [handle.address]]));
   expect(f.terminals.has(handle.address)).toBe(false);

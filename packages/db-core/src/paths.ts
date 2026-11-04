@@ -1,7 +1,7 @@
 import { commandEnv } from "./command-env";
 // packages/db-core/src/paths.ts
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, isAbsolute, resolve } from "node:path";
 
@@ -31,26 +31,42 @@ const GLOBAL_ROOT = configuredGlobalRoot
   ? resolve(configuredGlobalRoot)
   : join(homedir(), ".pi", "agent", "spider");
 
-/** Resolve to the worktree root via git, falling back to realpath'd cwd when not in a repo.
- *  Never throws. */
-export function worktreeRoot(cwd: string): string {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--show-toplevel"], { env: commandEnv(),
-      cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (!out) return realpathSync(cwd);
-    const abs = isAbsolute(out) ? out : resolve(cwd, out);
-    return realpathSync(abs);
-  } catch {
-    // Not a git repo, git not available, or cwd doesn't exist
+interface GitResolution { root?: string; common?: string; checkedAt: number; fingerprint: string }
+const gitResolutions = new Map<string, GitResolution>();
+function gitFingerprint(cwd: string, root?: string): string {
+  const entry = (path: string) => {
     try {
-      return realpathSync(cwd);
-    } catch {
-      // cwd doesn't exist or can't be resolved
-      return cwd;
+      const s = lstatSync(join(path, '.git'));
+      return (s.isDirectory() ? [s.dev, s.ino, s.mode] : [s.dev, s.ino, s.mtimeMs, s.ctimeMs, s.size]).join(':');
     }
-  }
+    catch { return ''; }
+  };
+  let directory = '';
+  try { const s = statSync(cwd); directory = `${s.dev}:${s.ino}`; } catch { /* Missing cwd is also cached. */ }
+  return `${directory}|${entry(cwd)}|${root && root !== cwd ? entry(root) : ''}`;
 }
+function discoverGit(cwd: string): GitResolution {
+  const absolute = resolve(cwd), previous = gitResolutions.get(absolute), now = Date.now();
+  if (previous && now >= previous.checkedAt && now - previous.checkedAt < 60_000
+    && previous.fingerprint === gitFingerprint(absolute, previous.root)) return previous;
+  const query = (argument: string): string | undefined => {
+    try {
+      const out = execFileSync('git', ['rev-parse', argument], { env: commandEnv(),
+        cwd: absolute, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      return out ? realpathSync(isAbsolute(out) ? out : resolve(absolute, out)) : undefined;
+    } catch { return undefined; }
+  };
+  let root = query('--show-toplevel');
+  if (!root) { try { root = realpathSync(absolute); } catch { /* Preserve the caller's fallback for a missing cwd. */ } }
+  const value = { root, common: query('--git-common-dir'), checkedAt: now, fingerprint: gitFingerprint(absolute, root) };
+  gitResolutions.set(absolute, value); return value;
+}
+/** Test-only. Clear discovery after changing git's environment or fixture topology. */
+export function resetProjectResolutionCacheForTests(): void { gitResolutions.clear(); }
+/** Resolve via git, falling back to realpath'd cwd. Never throws. */
+export function worktreeRoot(cwd: string): string { return discoverGit(cwd).root ?? cwd; }
+export function gitCommonDir(cwd: string): string | undefined { return discoverGit(cwd).common; }
 
 export function projectRoot(cwd: string): string {
   return join(worktreeRoot(cwd), ".spider");
@@ -59,16 +75,7 @@ export function projectRoot(cwd: string): string {
 /** Resolve to the repo root (git common dir + "spider"), or undefined if not in a git repo.
  *  Falls back to worktree tier for non-git directories. */
 export function repoRoot(cwd: string): string | undefined {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], { env: commandEnv(),
-      cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (!out) return undefined;
-    const abs = isAbsolute(out) ? out : resolve(cwd, out);
-    return join(realpathSync(abs), "spider");
-  } catch {
-    return undefined; // Not a git repo
-  }
+  const common = gitCommonDir(cwd); return common ? join(common, 'spider') : undefined;
 }
 
 function rootFor(scope: Scope, cwd?: string): string {

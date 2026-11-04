@@ -361,6 +361,21 @@
         "id": "space-identity",
         "anchor": "    const colors = shared(\"space.colors\") ?? {};\n    const color = colors[w.id] ?? \"ansi6\";\n    const fill = color.startsWith(\"#\") ? color : (MARK[color] ?? t[color]);",
         "replacement": "    const shown = spaces();\n    const identity = assignSpaceIdentities(shown.some(space => space.id === w.id) ? shown : [...shown, w]).get(w.id);"
+      },
+      {
+        "id": "machine-space-count",
+        "anchor": ".child(svg(`mods/workspace-chrome/chevron-${folded ? \"right\" : \"down\"}.svg`).size(11).flex_none())",
+        "replacement": ".child(h_flex().id(`machine-count-${m ?? \"local\"}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().tooltip(`${spaces().filter(s => (s.machine ?? null) === m).length} spaces`).hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); folded ? this.folded.delete(m) : this.folded.add(m); localStorage.setItem(\"machines.folded\", JSON.stringify([...this.folded])); cx.notify(); }).child(svg(\"mods/workspace-chrome/layers.svg\").size(11).flex_none()).child(String(spaces().filter(s => (s.machine ?? null) === m).length)))"
+      },
+      {
+        "id": "empty-machine-group-begin",
+        "anchor": "    const machineNames = [null, ...remote];\n    return machineNames.flatMap((m) => {",
+        "replacement": "    const emptyMachines = remote.filter(m => !spaces().some(space => (space.machine ?? null) === m) && !loading(m));\n    const emptySet = new Set(emptyMachines);\n    const groupKey = \"\\u0000spider-empty-machines-open\";\n    const groupOpen = this.folded.has(groupKey);\n    const toggleGroup = cx => { groupOpen ? this.folded.delete(groupKey) : this.folded.add(groupKey); localStorage.setItem(\"machines.folded\", JSON.stringify([...this.folded])); cx.notify(); };\n    const drawMachine = (m) => {"
+      },
+      {
+        "id": "empty-machine-group-end",
+        "anchor": "      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];\n    });",
+        "replacement": "      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];\n    };\n    const others = [null, ...remote.filter(m => !emptySet.has(m))].flatMap(drawMachine);\n    if (!emptyMachines.length) return others;\n    const group = h_flex().id(\"machine-empty-group\").h(26).flex_none().px(collapsed ? 2 : 8).gap(7).items_center().text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.hover))\n      .on_click((_e, cx) => toggleGroup(cx))\n      .child(svg(\"mods/workspace-chrome/server.svg\").size(13).flex_none())\n      .when(!collapsed, el => el.child(div().flex_1().truncate().child(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`)))\n      .child(h_flex().id(\"machine-empty-group-count\").h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.selected).text_color(t.foreground)).tooltip(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`).on_click((_e, cx) => { cx.stop_propagation(); toggleGroup(cx); }).child(svg(\"mods/workspace-chrome/server.svg\").size(11).flex_none()).child(String(emptyMachines.length)));\n    return [...others, group, ...(groupOpen ? emptyMachines.flatMap(drawMachine) : [])];"
       }
     ],
     "pane": [

@@ -138,7 +138,7 @@
       {
         "id": "live-child-fold-color",
         "anchor": "const sts = subs.map((s) => kidStatus(s.t, this.listed));",
-        "replacement": "const sts = this.projectChildren(all, a.address).filter(child => !child.retained).map(child => kidStatus(child, this.listed));"
+        "replacement": "const sts = childCounts(a.address).states;"
       },
       {
         "id": "child-id",
@@ -218,12 +218,12 @@
       {
         "id": "thread-keylines",
         "anchor": ".children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()\n        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))\n        .when(l === \"└\" || l === \"├\", el => el.border_b(1.5).rounded_bl(6))))",
-        "replacement": ".children(s.lines.map(l => div().relative().w(16).h(26).flex_none()\n        .when(l === \"│\" || l === \"├\", el => el.child(div().absolute().left(7).top(-4).bottom(0).w(0).border_l(1.5).border_color(\"#3a3a3d\")))\n        .when(l === \"└\" || l === \"├\", el => el.child(div().absolute().left(7).top(-4).w(7).h(17).border_l(1.5).border_b(1.5).rounded_bl(6).border_color(\"#3a3a3d\")))))"
+        "replacement": ".children(this.keylines(s.lines))"
       },
       {
         "id": "thread-indent",
         "anchor": ".pl(39)",
-        "replacement": ".pl(17)"
+        "replacement": ".pl(s.grouped ? 2 : 17)"
       },
       {
         "id": "section-divider",
@@ -233,7 +233,7 @@
       {
         "id": "one-list",
         "anchor": ": groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);",
-        "replacement": ": byPriority ? list.flatMap(withKids) : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);"
+        "replacement": ": byPriority ? list.flatMap((a, i) => withKids(a, i)) : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap((a, i) => withKids(a, i, i === g.members.length - 1 ? \"└\" : \"├\")))]);"
       },
       {
         "id": "agent-row-name",
@@ -263,12 +263,12 @@
       {
         "id": "finished-toggle-method",
         "anchor": "  subRow(t, s, shown, compact) {\n",
-        "replacement": "  finishedToggle(t, addr) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().pl(38).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  subRow(t, s, shown, compact) {\n"
+        "replacement": "  finishedToggle(t, addr, groupLine = null) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().relative().pl(groupLine ? 53 : 38).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .when(Boolean(groupLine), el => el.child(div().absolute().left(2).top(0).children(this.keylines([groupLine === \"├\" ? \"│\" : \"\"], 24))))\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  keylines(lines, height = 26, start = -4, x = 7) {\n    return lines.map(l => div().relative().w(16).h(height).flex_none()\n      .when(l === \"│\" || l === \"├\", el => el.child(div().absolute().left(x).top(start).bottom(0).w(0).border_l(1.5).border_color(\"#3a3a3d\")))\n      .when(l === \"└\" || l === \"├\", el => el.child(div().absolute().left(x).top(start).w(7).h(height / 2 + 4).border_l(1.5).border_b(1.5).rounded_bl(6).border_color(\"#3a3a3d\"))));\n  }\n\n  subRow(t, s, shown, compact) {\n"
       },
       {
         "id": "finished-toggle-row",
         "anchor": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];",
-        "replacement": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address)];"
+        "replacement": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address, groupLine)];"
       },
       {
         "id": "fold-pill-style",
@@ -288,7 +288,7 @@
       {
         "id": "remove-row-pin",
         "anchor": "      const pin = div()\n        .id(`pin-${a.address}`)\n        .flex_none()\n        .p(2)\n        .rounded(4)\n        .text_color(t.dim)\n        .cursor_pointer()\n        .hover((s) => s.bg(t.hover).text_color(t.foreground))\n        .tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n        .on_click((_e, cx) => {\n          cx.stop_propagation();\n          run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned });\n          // The row moves away from under the pointer, and no hover-out comes.\n          this.hovered = null;\n          cx.notify();\n        })\n        .child(svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13));",
-        "replacement": "      const hasChildren = subs.length > 0 || (this.spiderHiddenFinished?.get(a.address) ?? 0) > 0;\n      const projectedChildren = this.folded.has(a.address) ? this.projectChildren(all, a.address) : [];\n      const liveConsoles = projectedChildren.filter(child => child.kind === \"console\" && child.terminal?.state === \"live\");\n      const liveBotChildren = projectedChildren.filter(child => !child.retained && child.kind !== \"console\" && !(child.kind === \"remote\" && projectedChildren.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));"
+        "replacement": "      const hasChildren = subs.length > 0 || (this.spiderHiddenFinished?.get(a.address) ?? 0) > 0;\n      const { consoles: liveConsoles, bots: liveBotChildren } = this.folded.has(a.address) ? childCounts(a.address) : { consoles: [], bots: [] };"
       },
       {
         "id": "remove-row-hover",
@@ -298,7 +298,7 @@
       {
         "id": "fold-and-pin-slots",
         "anchor": "        .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)\n          .when(subs.length > 0, el => el.on_click((_e, cx) => {\n            cx.stop_propagation();\n            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);\n            cx.notify();\n          })).child(pic)))",
-        "replacement": "        .child(h_flex().flex_none().gap(3).items_center()\n          .child(div().id(`fold-slot-${a.address}`).size(11).flex_none()\n            .when(hasChildren, el => el.child(div().id(`fold-left-${a.address}`).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).cursor_pointer()\n              .hover(s => s.text_color(t.foreground)).tooltip(this.folded.has(a.address) ? \"Show subagents\" : \"Hide subagents\")\n              .on_click((_e, cx) => { cx.stop_propagation(); this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address); cx.notify(); })\n              .child(svg(`mods/workspace-chrome/chevron-${this.folded.has(a.address) ? \"right\" : \"down\"}.svg`).size(11)))))\n          .child(div().id(`agent-pin-${a.address}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()\n            .text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n            .on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned }); this.iconHovered = null; cx.notify(); })\n            .child(this.iconHovered === a.address ? svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13) : pic)))"
+        "replacement": "        .child(h_flex().flex_none().items_center()\n          .when(Boolean(groupLine), el => el.children(this.keylines([groupLine], 30)))\n          .child(h_flex().flex_none().gap(3).items_center()\n          .child(div().id(`fold-slot-${a.address}`).size(11).flex_none()\n            .when(hasChildren, el => el.child(div().id(`fold-left-${a.address}`).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).cursor_pointer()\n              .hover(s => s.text_color(t.foreground)).tooltip(this.folded.has(a.address) ? \"Show subagents\" : \"Hide subagents\")\n              .on_click((_e, cx) => { cx.stop_propagation(); this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address); cx.notify(); })\n              .child(svg(`mods/workspace-chrome/chevron-${this.folded.has(a.address) ? \"right\" : \"down\"}.svg`).size(11)))))\n          .child(div().id(`agent-pin-${a.address}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()\n            .text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n            .on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned }); this.iconHovered = null; cx.notify(); })\n            .child(this.iconHovered === a.address ? svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13) : pic))))"
       },
       {
         "id": "folded-count-only",
@@ -323,7 +323,7 @@
       {
         "id": "agent-name-text",
         "anchor": "    const row = (a, i, subs = []) => {",
-        "replacement": "    const spaceIdentities = assignSpaceIdentities(spaces());\n    const spaceIcon = (id, name) => {\n      const identity = spaceIdentities.get(id);\n      return svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(name);\n    };\n    const nameText = (name, idle) => div().min_w(0).max_w(200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name);\n    const row = (a, i, subs = []) => {"
+        "replacement": "    const spaceIdentities = assignSpaceIdentities(spaces());\n    const spaceIcon = (id, name) => {\n      const identity = spaceIdentities.get(id);\n      return svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(name);\n    };\n    const nameText = (name, idle) => div().min_w(0).max_w(200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name);\n    const row = (a, i, subs = [], groupLine = null) => {"
       },
       {
         "id": "priority-name-text",
@@ -333,17 +333,37 @@
       {
         "id": "space-heading-icon",
         "anchor": ".child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))",
-        "replacement": ".when(!byPriority && g.id !== \"pinned\" && spaceIdentities.has(g.members[0]?.space), el => el.child(spaceIcon(g.members[0].space, g.label)))\n        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))"
+        "replacement": ".when(!byPriority, el => el.child(div().id(`group-fold-${g.id}`).relative().size(11).flex_none().flex().items_center().justify_center().text_color(t.dim)\n          .hover(s => s.text_color(t.foreground)).tooltip(open ? \"Hide agents\" : \"Show agents\")\n          .child(svg(`mods/workspace-chrome/chevron-${open ? \"down\" : \"right\"}.svg`).size(11).flex_none())\n          .when(open, el => el.child(div().absolute().left(0).top(11).children(this.keylines([\"│\"], 7, 0, 5))))))\n        .when(!byPriority && g.id !== \"pinned\" && spaceIdentities.has(g.members[0]?.space), el => el.child(spaceIcon(g.members[0].space, g.label)))\n        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))"
       },
       {
-        "id": "group-count-pill",
+        "id": "group-folded-pills",
         "anchor": "        .when(byPriority || !open, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))\n        .child(div().flex_1())\n        .when(!open, (el) => el\n          .when(!byPriority && top && top !== \"idle\", (el) => el.child(this.status(t, { status: top }, true)))\n          .child(svg(\"mods/workspace-chrome/chevron-right.svg\").size(11).flex_none().text_color(t.dim)));",
-        "replacement": "        .when(byPriority, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))\n        .child(div().flex_1())\n        .when(!open && !byPriority && top && top !== \"idle\", (el) => el.child(this.status(t, { status: top }, true)))\n        .when(!byPriority, (el) => el.child(h_flex().id(`group-count-${g.id}`).h(18).px(6).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim)\n          .tooltip(`${g.members.length} ${g.members.length === 1 ? \"agent\" : \"agents\"}`).child(String(g.members.length))));"
+        "replacement": "        .when(byPriority, el => el.child(div().text_color(t.dim).child(String(g.members.length))))\n        .child(div().flex_1())\n        .when(!open && !byPriority, el => el\n          .when(g.members.length > 0, el => el.child(pill(\"agents\", g.members.length, \"mods/spider-tabs/spider.svg\")))\n          .when(bots.length > 0, el => el.child(pill(\"subagents\", bots.length, `mods/${spiderProps().modId ?? \"spider-agents\"}/bot.svg`, t[childTop] ?? t.dim)))\n          .when(consoles.length > 0, el => el.child(pill(\"consoles\", consoles.length, \"mods/workspace-chrome/terminal.svg\")))\n          .when(Boolean(status) && status !== \"idle\", el => el.child(this.status(t, { status }, true))))\n        .when(!open && byPriority, el => el.child(svg(\"mods/workspace-chrome/chevron-right.svg\").size(11).flex_none().text_color(t.dim)));"
       },
       {
         "id": "fold-count-argument",
         "anchor": "    const fold = (a, subs) => {",
-        "replacement": "    const fold = (a, subs, live) => {"
+        "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained).map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {"
+      },
+      {
+        "id": "grouped-tree",
+        "anchor": "    const withKids = (a, i) => {\n      const subs = collapsed ? [] : this.tree(all, a.address);\n      const r = row(a, i, subs);",
+        "replacement": "    const withKids = (a, i, groupLine = null) => {\n      const subs = collapsed ? [] : this.tree(all, a.address, groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : []).map(s => ({ ...s, grouped: Boolean(groupLine) }));\n      const r = row(a, i, subs, groupLine);"
+      },
+      {
+        "id": "collapsed-tree",
+        "anchor": "? list.flatMap(withKids)",
+        "replacement": "? list.flatMap((a, i) => withKids(a, i))"
+      },
+      {
+        "id": "group-heading-padding",
+        "anchor": "        .id(g.id)\n        .px(8)\n        .pt(8)",
+        "replacement": "        .id(g.id)\n        .px(8)\n        .when(!byPriority, el => el.pl(3.5).pr(8))\n        .pt(8)"
+      },
+      {
+        "id": "group-heading-counts",
+        "anchor": "      const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);\n      return h_flex()",
+        "replacement": "      const counts = !byPriority && !open ? g.members.map(a => childCounts(a.address)) : [];\n      const states = [...g.members.map(a => a.status), ...counts.flatMap(count => count.states)];\n      const top = states.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);\n      const status = states.includes(\"working\") ? \"working\" : top;\n      const childTop = counts.flatMap(count => count.states).reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);\n      const bots = counts.flatMap(count => count.bots), consoles = counts.flatMap(count => count.consoles);\n      const toggle = cx => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); };\n      const pill = (kind, count, icon, color = t.dim) => h_flex().id(`group-count-${kind}-${g.id}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(color).cursor_pointer()\n        .tooltip(`${count} ${kind === \"agents\" ? (count === 1 ? \"agent\" : \"agents\") : kind === \"subagents\" ? (count === 1 ? \"subagent\" : \"subagents\") : (count === 1 ? \"console\" : \"consoles\")}`)\n        .hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); toggle(cx); })\n        .child(svg(icon).size(11).flex_none()).child(String(count));\n      return h_flex()"
       }
     ],
     "spaces": [

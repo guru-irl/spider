@@ -12,6 +12,7 @@ export type AgentConsoleOwner = Owner & { runId?: RunId };
 export interface AgentConsoleLaunch {
   owner: Owner; on: MachineName; target: RuntimeTarget; source: RemoteSource; job?: JobHandle;
   startedAt?: number; enabled?: boolean; kind?: Parameters<JobPort['start']>[3]['kind'];
+  isConsoleIdle?(): Promise<boolean>; reportError?(error: unknown): void;
 }
 export interface AgentConsoleLifecyclePorts {
   hc: HcClient; currentOwner(ctx: ExtensionContext): Owner | null; env?: Readonly<NodeJS.ProcessEnv>;
@@ -24,7 +25,7 @@ export interface AgentConsoleLifecyclePorts {
 }
 export interface AgentConsoleHandle extends TerminalHandle { directory: string }
 export interface AgentConsoleStart extends AgentConsoleLaunch {
-  program: PreparedProgram; jobs: JobPort; hc: HcClient; options: Parameters<JobPort['start']>[3];
+  program: PreparedProgram; jobs: JobPort & { consoleIdle?(owner: Owner, on: MachineName, runId?: RunId): Promise<boolean>; consoleError?(error: unknown): void }; hc: HcClient; options: Parameters<JobPort['start']>[3];
 }
 interface ConsoleState { owner: AgentConsoleOwner; handle: AgentConsoleHandle; directory: string; count: number }
 const queues = new Map<string, Promise<unknown>>();
@@ -85,61 +86,102 @@ async function waitForHeartbeat(hc: HcClient, on: MachineName, directory: string
   }
   throw new HerdrError('console-ready-timeout', 'Console did not publish its heartbeat');
 }
-/** Called only from the active Herdr remote executor. Each payload remains in its supervised job. */
-export async function ensureAgentConsole(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AgentConsoleHandle | null> {
+function consoleOwner(request: AgentConsoleLaunch, env: Readonly<NodeJS.ProcessEnv>): AgentConsoleOwner | null {
   if (request.enabled === false || !env.HC_TERMINAL_ID) return null;
   const runId = env.PI_SUBAGENT_CHILD === '1' ? env.PI_SUBAGENT_RUN_ID as RunId | undefined : undefined;
   if (env.PI_SUBAGENT_CHILD === '1' && !runId) return null;
-  const owner: AgentConsoleOwner = { ...request.owner, ...(runId ? { runId } : {}) };
+  return { ...request.owner, ...(runId ? { runId } : {}) };
+}
+async function retireOlderConsole(terminal: TerminalSummary, request: AgentConsoleLaunch, owner: AgentConsoleOwner, hc: HcClient): Promise<'reuse' | 'replace' | 'foreign'> {
+  if (terminal.labels[HERDR_LABELS.runtime] === request.target.runtimeSha256 || !request.isConsoleIdle) return 'reuse';
+  try { if (!await request.isConsoleIdle()) return 'reuse'; }
+  catch (error) { request.reportError?.(error); return 'reuse'; }
+  try {
+    const latest = await hc.get(terminal.address);
+    if (!ownsConsole(latest, owner, request.on)) return 'foreign';
+    if ([HERDR_LABELS.kind, HERDR_LABELS.session, HERDR_LABELS.ownerCore, HERDR_LABELS.ownerTerminal, HERDR_LABELS.machine, HERDR_LABELS.run, HERDR_LABELS.runtime]
+      .some(key => latest.labels[key] !== terminal.labels[key])) return 'reuse';
+    if (latest.state === 'live') await hc.kill(terminal.address);
+    await hc.rm(terminal.address);
+    return 'replace';
+  } catch (error) {
+    if (missing(error)) return 'replace';
+    request.reportError?.(error);
+    try {
+      const latest = await hc.get(terminal.address);
+      if (!ownsConsole(latest, owner, request.on)) return 'foreign';
+      return latest.state === 'live' ? 'reuse' : 'replace';
+    } catch (lookupError) { return missing(lookupError) ? 'replace' : 'reuse'; }
+  }
+}
+async function ensureInQueue(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv>, owner: AgentConsoleOwner, key: string): Promise<AgentConsoleHandle | null> {
+  if (endedAgents.has(agentKey(owner))) return null;
+  let state = consoles.get(key);
+  let terminal: TerminalSummary | undefined;
+  if (state) {
+    try { const latest = await hc.get(state.handle.address); if (latest.state === 'live' && ownsConsole(latest, owner, request.on)) terminal = latest; }
+    catch (error) { if (!missing(error)) throw error; }
+    if (!terminal) { consoles.delete(key); state = undefined; }
+  }
+  if (!state) terminal = (await snapshot(hc)).find(item => item.state === 'live' && ownsConsole(item, owner, request.on));
+  if (terminal && await retireOlderConsole(terminal, request, owner, hc) !== 'reuse') {
+    terminal = undefined; state = undefined; consoles.delete(key);
+  }
+  if (!state) {
+    const digest = createHash('sha256').update(key).digest('hex');
+    const directory = join(request.target.directory, '.consoles', digest.slice(0, 32));
+    const count = await commandCount(hc, request.on, directory);
+    const runId = owner.runId;
+    const name = runId ? env.PI_SUBAGENT_RUN_NAME || runId : owner.name || owner.sessionId;
+    const suffix = ` · ${request.on}`.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+    const title = name.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, Math.max(0, 512 - suffix.length)) + suffix;
+    await hc.fileWrite(request.on, join(directory, 'console.json'), encodeRuntimePublication({ version: 1, title }));
+    await hc.fileWrite(request.on, join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count }));
+    const instance = randomUUID();
+    const handle = terminal ? { address: terminal.address, coreId: (await hc.machines()).find(machine => machine.name === request.on)!.id } : await hc.run({
+      name: `console-${digest.slice(0, 20)}`, argv: [request.target.nodePath, request.target.runtimePath, '--console', directory, instance], cwd: null, on: request.on, parent: null,
+      labels: { [HERDR_LABELS.kind]: HERDR_KINDS.remoteConsole, [HERDR_LABELS.session]: owner.sessionId, [HERDR_LABELS.ownerCore]: owner.terminal.coreId,
+        [HERDR_LABELS.ownerTerminal]: owner.terminal.terminalId, [HERDR_LABELS.machine]: request.on, [HERDR_LABELS.runtime]: request.target.runtimeSha256, [HERDR_LABELS.displayName]: title.slice(0, -suffix.length) + ' @ ' + request.on, ...(runId ? { [HERDR_LABELS.run]: runId } : {}) },
+      background: true, outliveParent: true, noNotify: true,
+    });
+    if (!terminal) await waitForHeartbeat(hc, request.on, directory, instance);
+    state = { owner, handle: { ...handle, directory }, directory, count }; consoles.set(key, state);
+  }
+  if (!request.job) return state.handle;
+  const kind = request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec');
+  const tool = kind === 'exec-file' ? 'exec_file' : kind;
+  const command: ConsoleCommand = { version: 1, jobId: request.job.id, directory: request.job.remoteDirectory, command: request.source.code.split('\n')[0].slice(0, 1024), startedAt: request.startedAt ?? Date.now(), tool };
+  const bytes = encodeRuntimePublication({ ...command });
+  if (bytes.length > 8192) throw new HerdrError('console-command-invalid', 'Console descriptor exceeded its bound');
+  await hc.fileWrite(request.on, join(state.directory, `command-${state.count}.json`), bytes);
+  await hc.fileWrite(request.on, join(state.directory, 'head.json'), encodeRuntimePublication({ version: 1, count: state.count + 1 }));
+  state.count++;
+  return state.handle;
+}
+/** Called only from the active Herdr remote executor. Each payload remains in its supervised job. */
+export async function ensureAgentConsole(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AgentConsoleHandle | null> {
+  const owner = consoleOwner(request, env); if (!owner) return null;
   const key = consoleKey(owner, request.on);
-  return serialize(key, async () => {
-    if (endedAgents.has(agentKey(owner))) return null;
-    let state = consoles.get(key);
-    if (state) {
-      try { if ((await hc.get(state.handle.address)).state !== 'live') state = undefined; }
-      catch (error) { if (!missing(error)) throw error; state = undefined; }
-    }
-    if (!state) {
-      const digest = createHash('sha256').update(key).digest('hex');
-      const directory = join(request.target.directory, '.consoles', digest.slice(0, 32));
-      const count = await commandCount(hc, request.on, directory);
-      const name = runId ? env.PI_SUBAGENT_RUN_NAME || runId : owner.name || owner.sessionId;
-      const suffix = ` · ${request.on}`.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
-      const title = name.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, Math.max(0, 512 - suffix.length)) + suffix;
-      await hc.fileWrite(request.on, join(directory, 'console.json'), encodeRuntimePublication({ version: 1, title }));
-      await hc.fileWrite(request.on, join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count }));
-      const existing = (await snapshot(hc)).find(terminal => terminal.state === 'live' && ownsConsole(terminal, owner, request.on));
-      const instance = randomUUID();
-      const handle = existing ? { address: existing.address, coreId: (await hc.machines()).find(machine => machine.name === request.on)!.id } : await hc.run({
-        name: `console-${digest.slice(0, 20)}`, argv: [request.target.nodePath, request.target.runtimePath, '--console', directory, instance], cwd: null, on: request.on, parent: null,
-        labels: { [HERDR_LABELS.kind]: HERDR_KINDS.remoteConsole, [HERDR_LABELS.session]: owner.sessionId, [HERDR_LABELS.ownerCore]: owner.terminal.coreId,
-          [HERDR_LABELS.ownerTerminal]: owner.terminal.terminalId, [HERDR_LABELS.machine]: request.on, [HERDR_LABELS.displayName]: title.slice(0, -suffix.length) + ' @ ' + request.on, ...(runId ? { [HERDR_LABELS.run]: runId } : {}) },
-        background: true, outliveParent: true, noNotify: true,
-      });
-      if (!existing) await waitForHeartbeat(hc, request.on, directory, instance);
-      state = { owner, handle: { ...handle, directory }, directory, count }; consoles.set(key, state);
-    }
-    if (!request.job) return state.handle;
-    const kind = request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec');
-    const tool = kind === 'exec-file' ? 'exec_file' : kind;
-    const command: ConsoleCommand = { version: 1, jobId: request.job.id, directory: request.job.remoteDirectory, command: request.source.code.split('\n')[0].slice(0, 1024), startedAt: request.startedAt ?? Date.now(), tool };
-    const bytes = encodeRuntimePublication({ ...command });
-    if (bytes.length > 8192) throw new HerdrError('console-command-invalid', 'Console descriptor exceeded its bound');
-    await hc.fileWrite(request.on, join(state.directory, `command-${state.count}.json`), bytes);
-    await hc.fileWrite(request.on, join(state.directory, 'head.json'), encodeRuntimePublication({ version: 1, count: state.count + 1 }));
-    state.count++;
-    return state.handle;
-  });
+  return serialize(key, () => ensureInQueue(request, hc, env, owner, key));
 }
 /** Console failure is optional; the payload is still launched once through the supervised job port. */
 export async function startWithAgentConsole(request: AgentConsoleStart): Promise<JobHandle> {
-  const console = await ensureAgentConsole(request, request.hc).catch(() => null);
-  const program = { ...request.program };
-  if (console) program.consoleDirectory = console.directory;
-  else delete program.consoleDirectory;
-  const job = await request.jobs.start(program, request.owner, request.on, request.options);
-  if (console) await ensureAgentConsole({ ...request, job }, request.hc).catch(() => {});
-  return job;
+  const env = process.env, owner = consoleOwner(request, env);
+  const work = async () => {
+    const launch: AgentConsoleLaunch = { ...request,
+      isConsoleIdle: owner && request.jobs.consoleIdle ? () => request.jobs.consoleIdle!(request.owner, request.on, owner.runId) : undefined,
+      reportError: request.jobs.consoleError,
+    };
+    const key = owner ? consoleKey(owner, request.on) : '';
+    const console = owner ? await ensureInQueue(launch, request.hc, env, owner, key).catch(() => null) : null;
+    const program = { ...request.program };
+    if (console) program.consoleDirectory = console.directory;
+    else delete program.consoleDirectory;
+    const job = await request.jobs.start(program, request.owner, request.on, request.options);
+    if (console && owner) await ensureInQueue({ ...launch, job }, request.hc, env, owner, key).catch(() => {});
+    return job;
+  };
+  return owner ? serialize(consoleKey(owner, request.on), work) : work();
 }
 
 /** Parent handoff supplies runId to find a killed child's consoles, without depending on its memory. */

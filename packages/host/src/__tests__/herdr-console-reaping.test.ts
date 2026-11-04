@@ -21,7 +21,7 @@ import type { HcClient, MachineName, TerminalAddress, TerminalHandle } from '../
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.unstubAllEnvs(); });
 
-async function fixture(mode: 'fake' | 'hc' = 'fake') {
+async function fixture(mode: 'fake' | 'hc' = 'fake', reportErrors = true, hasUI = false) {
   const h: HerdrHarness = await createHerdrHarness(mode); cleanups.push(async () => { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }); await h.start();
   execFileSync('git', ['init', '-q', h.directories.local]);
   for (const [name, value] of Object.entries(h.localEnv)) if (value !== undefined && (name.startsWith('HC_') || name.startsWith('XDG_') || name.startsWith('HERDR_'))) vi.stubEnv(name, value);
@@ -50,10 +50,10 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const dbPath = scratchDbPath('fx4-console-runs'), globalPath = scratchDbPath('fx4-console-global');
   const db = openDbAt(dbPath, 'worktree'), globalDb = openDbAt(globalPath, 'global'), store = new RunStore(db);
   cleanups.push(async () => { db.close(); globalDb.close(); });
-  const hooks = new Map<string, Set<Function>>(), errors: unknown[] = [];
+  const hooks = new Map<string, Set<Function>>(), errors: unknown[] = [], notices: string[] = [];
   const pi = { getSessionName: () => undefined, on(name: string, handler: Function) { if (!hooks.has(name)) hooks.set(name, new Set()); hooks.get(name)!.add(handler); return () => hooks.get(name)!.delete(handler); }, registerTool() {}, registerShortcut() {}, sendMessage() {} };
-  const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI: false, ui: { notify() {}, setStatus() {} }, sessionManager: { getSessionId: () => h.owner!.sessionId, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] } };
-  const mount = mountHerdr(pi as never, { packageRoot, actionContext: () => ({ db, globalDb, sessionId: h.owner!.sessionId, pi }), reportError: error => errors.push(error),
+  const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI, ui: { notify(message: string) { notices.push(message); }, setStatus() {} }, sessionManager: { getSessionId: () => h.owner!.sessionId, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] } };
+  const mount = mountHerdr(pi as never, { packageRoot, actionContext: () => ({ db, globalDb, sessionId: h.owner!.sessionId, pi }), ...(reportErrors ? { reportError: (error: unknown) => errors.push(error) } : {}),
     views: { agents: { open: async () => {} }, todos: { handler: async () => {} }, usage: { handler: async () => {} }, memory: async () => {}, loop: { handler: async () => {} } },
     dataSource: { resolveRunDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), scheduler: { listTriggers: () => [], subscribe: () => () => {} } },
   });
@@ -62,8 +62,23 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const labels = (session: string, run?: string, terminal: string = h.owner!.terminal.terminalId, core: string = h.owner!.terminal.coreId) => ({ 'spider.kind': 'remote-console', 'spider.session': session, 'spider.machine': 'remote.invalid', 'spider.owner-core': core, 'spider.owner-terminal': terminal, ...(run ? { 'spider.run': run } : {}) });
   const launch = async (attrs: Record<string, string>) => h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as MachineName, labels: attrs, noNotify: true, background: true, outliveParent: true });
   const missing = async (address: TerminalAddress) => { try { await h.hc.get(address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } };
-  return { h, store, mount, emit, labels, launch, missing, errors, runtime, config, presence: createProcessPresence(join(h.directories.global, 'herdr')) };
+  return { h, store, mount, emit, labels, launch, missing, errors, notices, runtime, config, presence: createProcessPresence(join(h.directories.global, 'herdr')) };
 }
+
+it('reports a console replacement failure without adding a UI warning', async () => {
+  const f = await fixture('fake', false, true); await f.emit('session_start', { reason: 'startup' });
+  const old = await f.launch(f.labels(f.h.owner!.sessionId));
+  await f.h.scenario({ steps: [{ argvPrefix: ['kill'], once: true, stderr: { error: { kind: 'fixture-failure', message: 'Cannot stop console' } }, exitCode: 3 }] }, 'remote');
+  const noticesBefore = [...f.notices]; const messages: string[] = [];
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(((text: string | Uint8Array) => { messages.push(String(text)); return true; }) as typeof process.stderr.write);
+  try {
+    const result = await f.mount.execution().remote!.execute({ owner: f.mount.owner()!, on: 'remote.invalid' as MachineName, source: { kind: 'code', language: 'shell', code: 'printf result' } });
+    expect(result).toMatchObject({ stdout: 'result', exitCode: 0 });
+    expect((await f.h.hc.get(old.address)).state).toBe('live');
+    expect(messages.filter(message => message.includes('fixture-failure'))).toHaveLength(1);
+    expect(f.notices).toEqual(noticesBefore);
+  } finally { stderr.mockRestore(); }
+}, 30000);
 
 it('startup reaps crashed-owner run consoles while keeping live and unverified owners', async () => {
   const f = await fixture();

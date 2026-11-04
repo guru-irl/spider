@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { executeRemote, createRemoteExecutor } from '../remote/execute.js';
 import { runExec, runBatch, isExecError } from '../../../context/src/actions/exec.js';
 import { processToolContent } from '../../../host/src/routing/safety.js';
@@ -41,6 +42,21 @@ describe('remote result adapter', () => {
     const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }, ctx);
     expect(result.text.startsWith('[timed out after 1 s. Spider sent a stop, and the command ended by signal SIGHUP.]')).toBe(true);
     expect(result.isError).toBe(true);
+  }, 20000);
+  it.each(['timeout', 'abort'] as const)('retains a trapped exit when each post-%s read takes 1200 ms', async reason => {
+    const { f, ctx } = await fixture(), stop = new AbortController();
+    const sink = f.ports.logSink;
+    f.ports.logSink = async (job, options) => {
+      const reader = await sink(job, options);
+      return { collect: async () => { await delay(1200); return reader.collect(); }, dispose: () => reader.dispose() };
+    };
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "process.on('SIGHUP',()=>{console.log('trapped HUP');process.exit(0)}); console.log('ready'); setInterval(()=>{},1000)", ...(reason === 'timeout' ? { timeout: 1000 } : {}) },
+      { ...ctx, signal: stop.signal, onPartial: text => { if (reason === 'abort' && text.includes('ready')) stop.abort(); } });
+    expect(result.details).toMatchObject(reason === 'timeout' ? { outcome: 'exited', exitCode: 0, timedOut: true } : { outcome: 'aborted', aborted: true, timedOut: false });
+    expect(result.details.stdout).toContain('trapped HUP');
+    expect(result.isError).toBe(true);
+    expect(f.detached).toEqual([]);
+    if (reason === 'abort') expect(result.details.remoteAbortInfo).toContain('exited with code 0');
   }, 20000);
   it('reports a trapped timeout with the actual exit zero', async () => {
     const { ctx } = await fixture();

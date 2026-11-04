@@ -653,6 +653,21 @@ test('doctor names the exact pending repair file and explains how to clear it', 
 });
 
 
+test.each(['identity', 'placement'])('doctor names every repair file when %s inspection fails', async stage => {
+  const f = await fixture(), root = join(f.request.config.globalRoot, 'herdr/panes');
+  for (const viewer of ['viewer-one', 'viewer-two']) await writePlacementRepair(root, { viewer: viewer as never, app: 'fixture', coreId: 'core', anchor: { space: 'space', tab: 'tab', pane: 'owner-pane' } as never, error: 'park-refused' });
+  const names = await fs.readdir(join(root, 'repairs'));
+  const report = await doctorHerdr(f.request, { ...f.doctorParts, placementRepairInspection: async () => {
+    if (stage === 'identity') throw new Error('Core unavailable');
+    return { app: 'fixture', coreId: 'core', placement: async () => { throw new Error('App unavailable'); } };
+  } });
+  const failure = report.failures.find(value => value.code === 'pane-repair-inspection-failed');
+  expect(failure).toBeDefined();
+  for (const name of names) expect(failure?.repair).toContain(join(root, 'repairs', name));
+  expect(failure?.repair).toContain('rerun doctor');
+  expect(await readPlacementRepairs(root)).toHaveLength(2);
+});
+
 test('doctor does not inspect app or core placement when no repair record exists', async () => {
   const f = await fixture();
   const report = await doctorHerdr(f.request, { ...f.doctorParts, placementRepairInspection: async () => { throw new Error('No repair needs inspection'); } });

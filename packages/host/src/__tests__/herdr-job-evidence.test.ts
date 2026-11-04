@@ -24,7 +24,7 @@ import type { RuntimeTarget, RemoteResult } from '../../../herdr/src/contracts.j
 const binary = process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc');
 const real = process.env.SPIDER_HERDR_E2E === '1' && await access(binary).then(() => true, () => false);
 if (!real) console.info('SKIP real exit-evidence proof: requires hc and SPIDER_HERDR_E2E=1; isolated cores only, no app');
-async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' | 'slow-observable' = 'conflict') {
+async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' | 'slow-observable' = 'conflict', callLatencyMs = 0) {
   const delayedReceipt = kind === 'delayed-receipt', slowObservable = kind === 'slow-observable';
   let restoreDeadline = () => {};
   // A complete receipt must not settle a tool before the monitor compares it to native exit evidence.
@@ -34,8 +34,15 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
   let release!: () => void, seen!: () => void, collected!: () => void;
   const evidenceGate = new Promise<void>(r => { release = r; }), evidenceSeen = new Promise<void>(r => { seen = r; }), toolCollected = new Promise<void>(r => { collected = r; });
   let executing: ReturnType<typeof runExec> | undefined;
-  let receiptVisible = !delayedReceipt;
+  let receiptVisible = !delayedReceipt, intervalExpired = false, collectionIntervals = 0;
+  const receiptReads: { durationMs: number; nativeFinished: boolean }[] = [];
+  const exitFile = join(h.directories.remote, 'allow-exit');
   try {
+    if (callLatencyMs) {
+      const preload = join(h.root, 'latency.mjs');
+      await writeFile(preload, `if (process.argv[1]?.endsWith('/fake-hc.mjs')) { const until = Date.now() + ${callLatencyMs}; while (Date.now() < until) {} }`);
+      h.localEnv.NODE_OPTIONS = h.remoteEnv.NODE_OPTIONS = `--import=${preload}`;
+    }
     await h.start(); execFileSync('git', ['init', '-q', h.root]); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global); vi.stubEnv('HC_TERMINAL_ID', '');
     const file = join(h.directories.global, 'herdr/config.json'); await mkdir(join(file, '..'), { recursive: true });
     const config = parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
@@ -62,27 +69,45 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
         // The installed runtime records the payload's real 23; its terminal wrapper exits 0.
         return { ...launch, program: { ...launch.program, argv: [process.execPath, '-e', 'const child=require("node:child_process").spawn(process.execPath,process.argv.slice(1),{stdio:"inherit"}); child.on("exit",()=>{process.exitCode=0});', runtimePath, join(job.remoteDirectory, 'request.json')] } };
       },
-      collect: async job => { const logs = await output!.outputCollector.collect(job); if (logs.complete && kind === 'conflict') { seen(); await evidenceGate; } return logs; },
+      collect: async job => {
+        if (slowObservable) await evidenceGate;
+        const readStartedAt = Date.now(), nativeFinished = 'originalFinish' in job && job.originalFinish !== null;
+        const logs = await output!.outputCollector.collect(job);
+        if (slowObservable && logs.complete) receiptReads.push({ durationMs: Date.now() - readStartedAt, nativeFinished });
+        if (slowObservable) collected();
+        if (logs.complete && kind === 'conflict') { seen(); await evidenceGate; }
+        return logs;
+      },
     } });
     const target: RuntimeTarget = { on: 'remote.invalid' as never, ...config.machines[0].runtime, environment: {}, nodePath: process.execPath, runtimePath, runtimeSha256: sha256(runtime) };
     const remote = createRemoteExecutor({ hc: h.hc, jobs, prepare: prepareRemoteProgram, target: async () => target, environmentPolicy: env => env, clock: Date.now,
       logSink: async job => { const reader = output!.logReader(job.id); return { ...reader, collect: async () => { const logs = await reader.collect(); if (logs.complete && kind === 'conflict') { await evidenceSeen; collected(); } return logs; } }; } });
     if (slowObservable) {
       const timeout = globalThis.setTimeout;
-      const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => timeout(callback, ms === 60000 ? 500 : ms, ...args)) as typeof setTimeout);
+      const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+        if (ms !== 60000) return timeout(callback, ms, ...args);
+        collectionIntervals++;
+        return timeout(() => { intervalExpired = true; callback(...args); }, 500);
+      }) as typeof setTimeout);
       restoreDeadline = () => { spy.mockRestore(); };
     }
-    executing = runExec({ language: 'shell', code: (slowObservable ? 'sleep 2; ' : '') + 'sleep 0.2; printf "conflict-output\\n"; exit 23', on: target.on }, { cwd: h.root, remote, owner: h.owner! });
+    executing = runExec({ language: 'shell', code: (slowObservable ? `while [ ! -f '${exitFile}' ]; do sleep 0.1; done; ` : 'sleep 0.2; ') + 'printf "conflict-output\\n"; exit 23', on: target.on }, { cwd: h.root, remote, owner: h.owner! });
     const store = createJobStore(journalRoot, h.owner!.sessionId);
     if (slowObservable) {
       await expect.poll(async () => (await store.read()).jobs[0]?.phase.kind, { timeout: 5000 }).toBe('running');
-      expect(await Promise.race([executing, delay(600).then(() => null)])).toBeNull();
+      await expect.poll(() => collectionIntervals, { timeout: 5000 }).toBeGreaterThanOrEqual(2);
+      expect(intervalExpired).toBe(true);
+      let settled = false; void executing.then(() => { settled = true; });
+      expect(settled).toBe(false);
       const job = (await store.read()).jobs[0];
       if (job.phase.kind !== 'running') throw new Error('Healthy command stopped being observable');
       expect(await h.hc.get(job.phase.address)).toMatchObject({ state: 'live' });
+      restoreDeadline(); release(); await toolCollected;
+      await expect.poll(async () => (await store.read()).jobs[0]?.output?.complete, { timeout: 10000 }).toBe(false);
+      await writeFile(exitFile, 'exit');
       const action = await executing;
       expect(action.details).toMatchObject({ outcome: 'exited', exitCode: 23, stdout: 'conflict-output\n' });
-      await writeFile(resolve(`.spider/scratch/fx5-slow-${mode}-evidence.json`), JSON.stringify({ localSocket: h.localSocket, remoteSocket: h.remoteSocket, action, journal: await store.read() }, null, 2));
+      await writeFile(resolve(`.spider/scratch/fx5-slow-${mode}-${callLatencyMs}-evidence.json`), JSON.stringify({ localSocket: h.localSocket, remoteSocket: h.remoteSocket, callLatencyMs, collectionIntervals, receiptReads, action, journal: await store.read() }, null, 2));
       return;
     }
     if (delayedReceipt) {
@@ -122,7 +147,7 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
     expect(journal.jobs[0].exitEvidence).toMatchObject({ native: { exitCode: 0 }, receipt: { exitCode: 23 } });
     await writeFile(resolve(`.spider/scratch/fx5-exit-${mode}-evidence.json`), JSON.stringify({ localSocket: h.localSocket, remoteSocket: h.remoteSocket, result, journal, feed: decoded }, null, 2));
   } finally {
-    restoreDeadline(); receiptVisible = true; release(); await jobs?.reconcile(); await executing?.catch(() => {}); source?.dispose(); await jobs?.shutdown('reload'); output?.dispose(); vi.unstubAllEnvs(); await h.close();
+    restoreDeadline(); receiptVisible = true; release(); await writeFile(exitFile, 'exit'); await jobs?.reconcile(); await executing?.catch(() => {}); source?.dispose(); await jobs?.shutdown('reload'); output?.dispose(); vi.unstubAllEnvs(); await h.close();
     expect(await h.remainingOwnedResources()).toEqual([]);
   }
 }
@@ -131,6 +156,7 @@ it('a plain local command keeps its pre-fix result text byte-identical', async (
   expect(Buffer.from(result.text)).toEqual(Buffer.from('local exact\n\n[stderr]\ndiagnostic\n'));
 });
 it('fake: a healthy observable command outlives the collection bound and returns its actual exit', () => prove('fake', 'slow-observable'), 45000);
+it.each([60, 150])('fake: a healthy command returns exit 23 with %i ms extra per CLI call', latency => prove('fake', 'slow-observable', latency), 45000);
 it.skipIf(!real)('real hc: a healthy observable command outlives the collection bound and returns its actual exit', () => prove('hc', 'slow-observable'), 60000);
 it('fake: a native exit waits for delayed receipt collection before reporting exit 23', () => prove('fake', 'delayed-receipt'), 45000);
 it.skipIf(!real)('real hc: a native exit waits for delayed receipt collection before reporting exit 23', () => prove('hc', 'delayed-receipt'), 60000);

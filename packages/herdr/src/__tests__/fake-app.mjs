@@ -34,7 +34,12 @@ const scenarioPath = process.env.HERDR_FAKE_SCENARIO || `${root}/scenario.json`;
 const scenario = existsSync(scenarioPath) ? JSON.parse(readFileSync(scenarioPath, 'utf8')) : {};
 const step = (scenario.appSteps || []).find(rule => (rule.argvPrefix || []).every((v, i) => argv[i] === v) && (rule.argvIncludes || []).every(v => argv.includes(v)));
 if (step) {
-  for (const [path, text] of Object.entries(step.writes || {})) { if (!path.startsWith(root + '/')) throw new Error('Unfenced scenario write'); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); }
+  for (const [path, text] of Object.entries(step.writes || {})) {
+    if (!path.startsWith(root + '/')) throw new Error('Unfenced scenario write');
+    mkdirSync(dirname(path), { recursive: true });
+    const next = `${path}.${process.pid}.next`;
+    writeFileSync(next, text); renameSync(next, path);
+  }
   if (step.delayMs) await new Promise(resolve => setTimeout(resolve, step.delayMs));
   if (step.stderr) process.stderr.write(typeof step.stderr === 'string' ? step.stderr : JSON.stringify(step.stderr));
   if (step.exitCode) { if ('reply' in step) console.log(JSON.stringify(step.reply)); process.exit(step.exitCode); }

@@ -25,6 +25,7 @@ function waitForChange(ms: number, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) done();
   });
 }
+const cancellationGraceMs = 5000;
 const verifiedRuntimes = new WeakMap<HcClient, Map<string, Promise<void>>>();
 function isMissingFile(error: unknown): boolean {
   const e = error as { code?: string; message?: string };
@@ -70,6 +71,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
   await atomicRuntimeFile(backgroundJob.manifest, JSON.stringify({ version: 1, id: job.id, machine: request.on, address: job.address, remoteDirectory: job.remoteDirectory, receipt: backgroundJob.receipt, logs }));
   let latest: CollectedLogs = { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, complete: false, capped: false, receipt: null };
   let timedOut = false; let aborted = false; let timeoutCancelFailed = false;
+  let settlementDeadlineAt: number | undefined;
   let finish: JobFinish | undefined; let finishedAt: number | undefined;
   let finishLost = false;
   let releaseCollection: (() => void) | undefined;
@@ -115,7 +117,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
         abortCollection = releaseCollection;
         request.signal?.addEventListener('abort', abortCollection, { once: true });
         if (request.signal?.aborted) { releaseCollection(); return; }
-        const remaining = timedOut ? 1000 : request.timeout === undefined ? undefined : Math.max(0, request.timeout - (ports.clock() - startedAt));
+        const remaining = timedOut ? Math.max(0, settlementDeadlineAt! - ports.clock()) : request.timeout === undefined ? undefined : Math.max(0, request.timeout - (ports.clock() - startedAt));
         if (remaining !== undefined) collectionTimer = setTimeout(() => { collectionExpired = true; releaseCollection?.(); }, remaining);
         void activeReader.collect().then(resolve, reject);
         if (finish?.reason === 'unknown' || finish?.evidenceConflict) releaseCollection();
@@ -130,7 +132,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
         try { await job.cancel('abort'); } catch { /* A lost transport cannot prove the process stopped. */ }
         if (reader && !outputUnreadable) {
           let finalReadTimer: ReturnType<typeof setTimeout> | undefined;
-          try { latest = await Promise.race([reader.collect(), new Promise<CollectedLogs>(resolve => { finalReadTimer = setTimeout(() => resolve(latest), 1000); })]); }
+          try { latest = await Promise.race([reader.collect(), new Promise<CollectedLogs>(resolve => { finalReadTimer = setTimeout(() => resolve(latest), cancellationGraceMs); })]); }
           catch { /* Retain the last successfully collected bytes. */ }
           finally { clearTimeout(finalReadTimer); }
         }
@@ -163,7 +165,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
         value.stderr ||= receipt.error ?? (receipt.outcome === 'release-timeout' ? 'Payload release deadline expired' : 'Payload could not start');
         return acknowledge(value);
       }
-      if (timeoutCancelFailed || timedOut && collectionExpired) {
+      if (timeoutCancelFailed || timedOut && (collectionExpired || ports.clock() >= settlementDeadlineAt!)) {
         try { await ports.jobs.detach(job.id); } catch { /* The paths and unknown state remain useful. */ }
         return uncertainResult();
       }
@@ -174,6 +176,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
           return { ...result('timeout', null), backgrounded: true };
         }
         try { await job.cancel('timeout'); } catch { timeoutCancelFailed = true; }
+        settlementDeadlineAt = ports.clock() + cancellationGraceMs;
         continue; // Recollect the receipt and preserve the actual exit or signal, including a trapped HUP exit-zero.
       }
       if (finishLost || (finishedAt !== undefined && collectStartedAt - finishedAt >= 1000)) return acknowledge(result('unknown', null));

@@ -3,9 +3,15 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
 import { findPiPackageRootFromEntry } from "./pi-spawn";
 
+let ownStartTime: string | null | undefined;
 /** Identity captured immediately after spawn. Linux ticks avoid second-resolution reuse. */
 export function processStartTime(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (pid !== process.pid) return readProcessStartTime(pid);
+  if (ownStartTime === undefined) ownStartTime = readProcessStartTime(pid);
+  return ownStartTime;
+}
+function readProcessStartTime(pid: number): string | null {
   try {
     if (process.platform === "linux") {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");

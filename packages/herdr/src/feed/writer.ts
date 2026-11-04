@@ -24,7 +24,7 @@ const probe = async (pid: number) => {
 const path = (root: string, sessionId: string) => join(root, 'feed-writers', `${sessionId}.json`);
 export function withFeedWriterLock<T>(root: string, sessionId: string, operation: () => Promise<T>): Promise<T> {
   if (!/^[A-Za-z0-9_-]{1,160}$/.test(sessionId)) throw feedError('invalid-session-id');
-  return withProcessLock(root, `feed:${sessionId}`, operation, { identity: ownIdentity(), probe });
+  return withProcessLock(root, `feed:${sessionId}`, operation, { identity: ownIdentity() });
 }
 async function readWriter(root: string, sessionId: string): Promise<Writer | null> {
   try {

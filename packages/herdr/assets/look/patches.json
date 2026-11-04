@@ -113,7 +113,7 @@
       {
         "id": "children-imports",
         "anchor": "import { View, div, image, svg } from \"gpui-kit\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
       },
       {
         "id": "combined-tree",
@@ -263,7 +263,7 @@
       {
         "id": "finished-toggle-method",
         "anchor": "  subRow(t, s, shown, compact) {\n",
-        "replacement": "  finishedToggle(t, addr, groupLine = null) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().relative().pl(groupLine ? 53 : 38).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .when(Boolean(groupLine), el => el.child(div().absolute().left(2).top(0).children(this.keylines([groupLine === \"├\" ? \"│\" : \"\"], 24))))\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  keylines(lines, height = 26, start = -4, x = 7) {\n    return lines.map(l => div().relative().w(16).h(height).flex_none()\n      .when(l === \"│\" || l === \"├\", el => el.child(div().absolute().left(x).top(start).bottom(0).w(0).border_l(1.5).border_color(\"#3a3a3d\")))\n      .when(l === \"└\" || l === \"├\", el => el.child(div().absolute().left(x).top(start).w(7).h(height / 2 + 4).border_l(1.5).border_b(1.5).rounded_bl(6).border_color(\"#3a3a3d\"))));\n  }\n\n  subRow(t, s, shown, compact) {\n"
+        "replacement": "  finishedToggle(t, addr, groupLine = null) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().relative().pl(groupLine ? 53 : 38).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .when(Boolean(groupLine), el => el.child(div().absolute().left(2).top(0).children(this.keylines([groupLine === \"├\" ? \"│\" : \"\"], 24))))\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  keylines(lines, height = 26, start = -4, x = 7) {\n    return threadKeylines(div, lines, height, start, x);\n  }\n\n  subRow(t, s, shown, compact) {\n"
       },
       {
         "id": "finished-toggle-row",
@@ -370,7 +370,7 @@
       {
         "id": "props-import",
         "anchor": "import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";",
-        "replacement": "import { props, spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";\nimport { assignSpaceIdentities } from \"./shared/look.js\";"
+        "replacement": "import { props, spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from \"herdr\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";"
       },
       {
         "id": "workspace-empty-state",
@@ -398,9 +398,24 @@
         "replacement": "    const shown = spaces();\n    const identity = assignSpaceIdentities(shown.some(space => space.id === w.id) ? shown : [...shown, w]).get(w.id);"
       },
       {
+        "id": "machine-space-thread-row",
+        "anchor": "  row({ w, i, g, tree }, t) {",
+        "replacement": "  row({ w, i, g, tree, machineLine = null }, t) {"
+      },
+      {
+        "id": "machine-space-thread",
+        "anchor": "      .px(8)\n      .h(rowHeight({ tree }))",
+        "replacement": "      .px(8)\n      .when(Boolean(machineLine), el => el.pl(24).child(div().absolute().left(6).top(0).children(threadKeylines(div, [machineLine], rowHeight({ tree })))))\n      .h(rowHeight({ tree }))"
+      },
+      {
+        "id": "machine-fold-caret",
+        "anchor": ".child(svg(`mods/workspace-chrome/${m ? \"server\" : \"monitor\"}.svg`).size(13).flex_none())",
+        "replacement": ".child(div().id(`machine-fold-${m ?? \"local\"}`).relative().size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(folded ? \"Show spaces\" : \"Hide spaces\").child(svg(`mods/workspace-chrome/chevron-${folded ? \"right\" : \"down\"}.svg`).size(11)).when(!collapsed && !folded && mine.length > 0, el => el.child(div().absolute().left(0).top(11).children(threadKeylines(div, [\"│\"], 7, 0, 5)))))\n        .child(svg(`mods/workspace-chrome/${m ? \"server\" : \"monitor\"}.svg`).size(13).flex_none())"
+      },
+      {
         "id": "machine-space-count",
         "anchor": ".child(svg(`mods/workspace-chrome/chevron-${folded ? \"right\" : \"down\"}.svg`).size(11).flex_none())",
-        "replacement": ".child(h_flex().id(`machine-count-${m ?? \"local\"}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().tooltip(`${spaces().filter(s => (s.machine ?? null) === m).length} spaces`).hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); folded ? this.folded.delete(m) : this.folded.add(m); localStorage.setItem(\"machines.folded\", JSON.stringify([...this.folded])); cx.notify(); }).child(svg(\"mods/workspace-chrome/layers.svg\").size(11).flex_none()).child(String(spaces().filter(s => (s.machine ?? null) === m).length)))"
+        "replacement": ".when(folded, el => el.child(h_flex().id(`machine-count-${m ?? \"local\"}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().tooltip(`${spaces().filter(s => (s.machine ?? null) === m).length} spaces`).hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); folded ? this.folded.delete(m) : this.folded.add(m); localStorage.setItem(\"machines.folded\", JSON.stringify([...this.folded])); cx.notify(); }).child(svg(\"mods/workspace-chrome/layers.svg\").size(11).flex_none()).child(String(spaces().filter(s => (s.machine ?? null) === m).length))))"
       },
       {
         "id": "empty-machine-group-begin",
@@ -410,7 +425,7 @@
       {
         "id": "empty-machine-group-end",
         "anchor": "      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];\n    });",
-        "replacement": "      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];\n    };\n    const others = [null, ...remote.filter(m => !emptySet.has(m))].flatMap(drawMachine);\n    if (!emptyMachines.length) return others;\n    const group = h_flex().id(\"machine-empty-group\").h(26).flex_none().px(collapsed ? 2 : 8).gap(7).items_center().text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.hover))\n      .on_click((_e, cx) => toggleGroup(cx))\n      .child(svg(\"mods/workspace-chrome/server.svg\").size(13).flex_none())\n      .when(!collapsed, el => el.child(div().flex_1().truncate().child(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`)))\n      .child(h_flex().id(\"machine-empty-group-count\").h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.selected).text_color(t.foreground)).tooltip(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`).on_click((_e, cx) => { cx.stop_propagation(); toggleGroup(cx); }).child(svg(\"mods/workspace-chrome/server.svg\").size(11).flex_none()).child(String(emptyMachines.length)));\n    return [...others, group, ...(groupOpen ? emptyMachines.flatMap(drawMachine) : [])];"
+        "replacement": "      return [head, ...(folded ? [] : mine.length ? mine.map((r, i) => draw({ ...r, machineLine: i === mine.length - 1 ? \"└\" : \"├\" })) : [loading(m) ? loadingRow(m) : empty])];\n    };\n    const others = [null, ...remote.filter(m => !emptySet.has(m))].flatMap(drawMachine);\n    if (!emptyMachines.length) return others;\n    const group = h_flex().id(\"machine-empty-group\").h(26).flex_none().px(collapsed ? 2 : 8).gap(7).items_center().text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.hover))\n      .on_click((_e, cx) => toggleGroup(cx))\n      .child(div().size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(groupOpen ? \"Hide machines\" : \"Show machines\").child(svg(`mods/workspace-chrome/chevron-${groupOpen ? \"down\" : \"right\"}.svg`).size(11)))\n      .child(svg(\"mods/workspace-chrome/server.svg\").size(13).flex_none())\n      .when(!collapsed, el => el.child(div().flex_1().truncate().child(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`)))\n      .child(h_flex().id(\"machine-empty-group-count\").h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.selected).text_color(t.foreground)).tooltip(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`).on_click((_e, cx) => { cx.stop_propagation(); toggleGroup(cx); }).child(svg(\"mods/workspace-chrome/server.svg\").size(11).flex_none()).child(String(emptyMachines.length)));\n    return [...others, group, ...(groupOpen ? emptyMachines.flatMap(drawMachine) : [])];"
       }
     ],
     "pane": [

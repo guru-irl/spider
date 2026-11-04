@@ -105,15 +105,90 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     return { view, store };
   }
   const section = (root: unknown) => all(root).find(node => node.id === 'spider-machines');
-  async function spacesView(spaces: any[], remote: any[], layouts: any[], stored = new Map<string, string>()) {
+  async function spacesView(spaces: any[], remote: any[], layouts: any[], stored = new Map<string, string>(), run: (...args: any[]) => void = () => {}) {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
     const Spaces = loadView(clones.spaces.files['main.js'], { machines: () => layouts, spaces: () => spaces, panes: () => [], theme: () => colors, props: () => props,
-      shared: () => null, setShared: () => {}, run: () => {}, localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) } });
+      shared: () => null, setShared: () => {}, run, localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) } });
     const view = new Spaces(); view.machines = remote; view.reconnecting = {}; view.folded = new Set(JSON.parse(stored.get('machines.folded') ?? '[]'));
     view.shown = new Set(spaces.map(space => space.id)); view.git = {}; view.born = {}; view.pressed = null;
     return { view, colors, stored };
   }
+
+  it('machine headings put a stateful fold caret before the icon', async () => {
+    const sp = [{ id: 's1', name: 'one', tabs: [] }, { id: 's2', name: 'two', machine: 'alpha.invalid', tabs: [] }];
+    const remote = [{ name: 'alpha.invalid', state: 'connected' }];
+    const layouts = [{ name: 'alpha.invalid', layout: 'ready' }];
+    const commands: unknown[][] = [];
+    const { view, colors, stored } = await spacesView(sp, remote, layouts, new Map(), (...args) => commands.push(args));
+    const heading = (instance: any): Node => instance.grouped(colors, false).flatMap(all).find((node: Node) => node.id === 'machine-local')!;
+    let stopped = 0;
+    const cx = { stop_propagation() { stopped++; }, notify() {} };
+    for (const [icon, tooltip, folded] of [['down', 'Hide spaces', false], ['right', 'Show spaces', true]] as const) {
+      const nodes = heading(view).children.flatMap(all);
+      const caret = nodes.find(node => node.svg === `mods/workspace-chrome/chevron-${icon}.svg`)!;
+      expect(caret).toBeDefined();
+      expect(call(caret, 'size')).toEqual([11]);
+      expect(nodes.some(node => call(node, 'tooltip')?.[0] === tooltip)).toBe(true);
+      expect(nodes.indexOf(caret)).toBeLessThan(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/monitor.svg'));
+      const add = nodes.find(node => node.id === 'machine-add-local')!;
+      expect(add).toBeDefined();
+      add.click!({}, cx);
+      expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
+      expect(view.folded.has(null)).toBe(folded);
+      heading(view).click!({}, cx);
+    }
+    expect(commands).toEqual([['space.new', { machine: '' }], ['space.new', { machine: '' }]]);
+    expect(stopped).toBe(2);
+    expect(JSON.parse(stored.get('machines.folded')!)).toEqual([]);
+    heading(view).click!({}, cx);
+    const restored = await spacesView(sp, remote, layouts, stored);
+    expect(heading(restored.view).children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
+  });
+
+  it('local-only spaces keep their original ungrouped alignment', async () => {
+    const sp = [{ id: 's1', name: 'one', tabs: [] }, { id: 's2', name: 'two', tabs: [] }, { id: 's3', name: 'three', tabs: [] }];
+    const { view, colors } = await spacesView(sp, [], []);
+    const nodes = view.grouped(colors, false).flatMap(all) as Node[];
+    for (const id of ['s1', 's2', 's3']) {
+      const row = nodes.find(node => node.id === `space-${id}`)!;
+      expect(row).toBeDefined();
+      expect(call(row, 'pl')).toBeUndefined();
+      expect(row.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
+    }
+  });
+
+  it('narrow machine headings retain their fold carets', async () => {
+    const sp = [{ id: 's1', name: 'one', tabs: [] }];
+    const remote = [{ name: 'alpha.invalid', state: 'connected' }, { name: 'beta.invalid', state: 'connected' }];
+    const { view, colors } = await spacesView(sp, remote, remote.map(machine => ({ name: machine.name, layout: 'ready' })));
+    const nodes = () => view.grouped(colors, true).flatMap(all) as Node[];
+    const caret = (id: string, direction: string) => nodes().find(node => node.id === id)!.children.flatMap(all).some(node => node.svg === `mods/workspace-chrome/chevron-${direction}.svg`);
+    expect(caret('machine-local', 'down')).toBe(true);
+    expect(caret('machine-empty-group', 'right')).toBe(true);
+    nodes().find(node => node.id === 'machine-local')!.click!({}, { stop_propagation() {}, notify() {} });
+    expect(caret('machine-local', 'right')).toBe(true);
+  });
+
+  it('shows machine space counts only when folded and opens from the pill', async () => {
+    const sp = [{ id: 's1', name: 'one', tabs: [] }, { id: 's2', name: 'two', tabs: [] }, { id: 's3', name: 'three', machine: 'alpha.invalid', tabs: [] }];
+    const { view, colors, stored } = await spacesView(sp, [{ name: 'alpha.invalid', state: 'connected' }], [{ name: 'alpha.invalid', layout: 'ready' }]);
+    const nodes = () => view.grouped(colors, false).flatMap(all) as Node[];
+    const cx = { stop_propagation() {}, notify() {} };
+    expect(nodes().find(node => node.id === 'machine-count-local')).toBeUndefined();
+    expect(nodes().find(node => node.id === 'machine-count-alpha.invalid')).toBeUndefined();
+    nodes().find(node => node.id === 'machine-local')!.click!({}, cx);
+    nodes().find(node => node.id === 'machine-alpha.invalid')!.click!({}, cx);
+    const local = nodes().find(node => node.id === 'machine-count-local')!;
+    expect(local.children).toContain('2');
+    expect(local.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/layers.svg')).toBe(true);
+    expect(nodes().find(node => node.id === 'machine-count-alpha.invalid')?.children).toContain('1');
+    expect(nodes().find(node => node.id === 'space-s1')).toBeUndefined();
+    local.click!({}, cx);
+    expect(nodes().find(node => node.id === 'space-s1')).toBeDefined();
+    expect(nodes().find(node => node.id === 'machine-count-local')).toBeUndefined();
+    expect(JSON.parse(stored.get('machines.folded')!)).toEqual(['alpha.invalid']);
+  });
 
   it('machine space count pills toggle rows and retain their status and add controls', async () => {
     const sp = [{ id: 's1', name: 'space-00', tabs: [] }, { id: 's2', name: 'space-06', machine: 'alpha.invalid', tabs: [] }];
@@ -121,6 +196,8 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const render = () => view.grouped(colors, false).flatMap(all) as Node[];
     const cx = { stop_propagation() {}, notify() {} };
     let nodes = render();
+    nodes.find(node => node.id === 'machine-local')!.click!({}, cx);
+    nodes.find(node => node.id === 'machine-alpha.invalid')!.click!({}, cx); nodes = render();
     const pill = nodes.find(node => node.id === 'machine-count-local');
     expect(pill).toBeDefined();
     expect(pill!.children).toContain('1');
@@ -129,11 +206,63 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(nodes.find(node => node.id === 'machine-count-alpha.invalid')?.children).toContain('1');
     expect(nodes.find(node => node.id === 'machine-add-local')).toBeDefined();
     expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
-    nodes.find(node => node.id === 'machine-local')!.click!({}, cx); nodes = render();
     expect(nodes.find(node => node.id === 'space-s1')).toBeUndefined();
     nodes.find(node => node.id === 'machine-count-local')!.click!({}, cx); nodes = render();
     expect(nodes.find(node => node.id === 'space-s1')).toBeDefined();
     expect(view.folded.has(null)).toBe(false);
+  });
+
+  it('open machine threads connect the caret to each space and end at the last row', async () => {
+    const sp = [{ id: 's1', name: 'one', folder: '/project/main', tabs: [] }, { id: 's2', name: 'two', folder: '/project/linked', tabs: [] }, { id: 's3', name: 'three', machine: 'alpha.invalid', tabs: [] }];
+    const commands: unknown[][] = [];
+    const { view, colors } = await spacesView(sp, [{ name: 'alpha.invalid', state: 'connected' }], [{ name: 'alpha.invalid', layout: 'ready' }], new Map(), (...args) => commands.push(args));
+    view.git = {
+      [JSON.stringify([null, '/project/main'])]: { name: 'project', repo: 'repo', branch: 'main', linked: false },
+      [JSON.stringify([null, '/project/linked'])]: { name: 'project', repo: 'repo', branch: 'topic', linked: true },
+    };
+    const nodes = () => view.grouped(colors, false).flatMap(all) as Node[];
+    const subtree = (id: string) => nodes().find(node => node.id === id)!.children.flatMap(all);
+    const lines = (id: string) => subtree(id).filter(node => call(node, 'border_l'));
+    expect(lines('machine-fold-local').length).toBeGreaterThan(0);
+    expect(lines('space-s1').some(node => call(node, 'bottom')?.[0] === 0)).toBe(true);
+    expect(lines('space-s1').some(node => call(node, 'border_b'))).toBe(true);
+    expect(lines('space-s2').some(node => call(node, 'border_b'))).toBe(true);
+    expect(lines('space-s2').some(node => call(node, 'bottom')?.[0] === 0)).toBe(false);
+    expect(lines('space-s3').some(node => call(node, 'border_b'))).toBe(true);
+    expect(lines('space-s3').some(node => call(node, 'bottom')?.[0] === 0)).toBe(false);
+    const linked = nodes().find(node => node.id === 'space-s2')!;
+    expect(call(linked, 'h')).toEqual([28]);
+    expect(subtree('space-s2').some(node => node.svg === 'mods/workspace-chrome/branch.svg')).toBe(true);
+    expect(subtree('space-s2').some(node => node.svg?.startsWith('mods/spider-agents/space-'))).toBe(true);
+    const row = nodes().find(node => node.id === 'space-s1')!;
+    (call(row, 'on_mouse_down')![1] as Function)();
+    (call(row, 'on_mouse_up')![1] as Function)({}, { notify() {} });
+    expect(commands).toEqual([['space.select', { id: 's1' }]]);
+    nodes().find(node => node.id === 'machine-local')!.click!({}, { stop_propagation() {}, notify() {} });
+    expect(lines('machine-fold-local').length).toBe(0);
+    expect(nodes().find(node => node.id === 'space-s1')).toBeUndefined();
+  });
+
+  it('empty machine group has a left caret for its own persisted fold', async () => {
+    const sp = [{ id: 's1', name: 'one', tabs: [] }];
+    const remote = [{ name: 'alpha.invalid', state: 'connected' }, { name: 'beta.invalid', state: 'disconnected' }];
+    const layouts = remote.map(machine => ({ name: machine.name, layout: 'ready' }));
+    const { view, colors, stored } = await spacesView(sp, remote, layouts);
+    const group = (instance: any): Node => instance.grouped(colors, false).flatMap(all).find((node: Node) => node.id === 'machine-empty-group')!;
+    const cx = { stop_propagation() {}, notify() {} };
+    for (const [icon, tooltip] of [['right', 'Show machines'], ['down', 'Hide machines']] as const) {
+      const nodes = group(view).children.flatMap(all);
+      const caret = nodes.find(node => node.svg === `mods/workspace-chrome/chevron-${icon}.svg`)!;
+      expect(caret).toBeDefined();
+      expect(call(caret, 'size')).toEqual([11]);
+      expect(nodes.some(node => call(node, 'tooltip')?.[0] === tooltip)).toBe(true);
+      expect(nodes.indexOf(caret)).toBeLessThan(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/server.svg'));
+      if (icon === 'down') {
+        const restored = await spacesView(sp, remote, layouts, stored);
+        expect(group(restored.view).children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
+      }
+      group(view).click!({}, cx);
+    }
   });
 
   it('groups known empty machines by default and persists expansion', async () => {
@@ -156,6 +285,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     group!.click!({}, { stop_propagation() {}, notify() {} }); nodes = render(view);
     expect(nodes.find(node => node.id === 'machine-alpha.invalid')).toBeDefined();
     expect(nodes.find(node => node.id === 'machine-beta.invalid')).toBeDefined();
+    nodes.find(node => node.id === 'machine-beta.invalid')!.click!({}, { stop_propagation() {}, notify() {} }); nodes = render(view);
     expect(nodes.find(node => node.id === 'machine-count-beta.invalid')?.children).toContain('0');
     expect(nodes.find(node => node.id === 'machine-add-beta.invalid')).toBeDefined();
     const restored = await spacesView(sp, remote, layouts, stored);

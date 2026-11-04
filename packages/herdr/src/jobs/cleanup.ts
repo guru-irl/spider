@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 export interface CleanupSweep {
-  enqueue(key: string, operation: () => Promise<void>): void;
+  enqueue(key: string, operation: () => Promise<void>): boolean;
   cancel(key: string): void;
   start(): void;
   flush(keys: readonly string[]): Promise<void>;
@@ -37,7 +37,7 @@ export function createCleanupSweep(clock: () => number, report: (error: unknown)
     schedule();
   }
   return {
-    enqueue(key, operation) { if (closed) return; if (!pending.has(key)) pending.set(key, { operation, failures: 0, nextAt: 0, reported: false, running: false }); schedule(); },
+    enqueue(key, operation) { if (closed || pending.has(key)) return false; pending.set(key, { operation, failures: 0, nextAt: 0, reported: false, running: false }); schedule(); return true; },
     cancel(key) { pending.delete(key); schedule(); },
     start() { started = true; schedule(); },
     async flush(keys) {

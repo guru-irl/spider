@@ -2,7 +2,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HERDR_LABELS } from '../contracts.js';
 import type { HcClient, JobId, Owner, RunId, TerminalAddress } from '../contracts.js';
@@ -57,6 +57,18 @@ async function asyncProcessStartIdentity(pid: number): Promise<string | null> {
 // Settled writers never write again. Keep their completed rows without reopening
 // every job file on each handoff tick and feed snapshot. Bound process-local use.
 const settledJournals = new Map<string, JobJournal>();
+const emptyRuns = new Map<string, { identity: string; checkedAt: number }>();
+async function hasNoJournal(directory: string): Promise<boolean> {
+  const st = await lstat(directory);
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new HerdrError('unsafe-journal-path', 'Journal directories cannot be symlinks');
+  const identity = `${st.dev}/${st.ino}/${st.mtimeMs}/${st.ctimeMs}`;
+  const cached = emptyRuns.get(directory), now = Date.now();
+  if (cached && cached.identity === identity && now - cached.checkedAt < 30000) return true;
+  if ((await readdir(directory)).includes('jobs.json')) { emptyRuns.delete(directory); return false; }
+  if (emptyRuns.size >= 2048) emptyRuns.delete(emptyRuns.keys().next().value!);
+  emptyRuns.set(directory, { identity, checkedAt: now });
+  return true;
+}
 function cacheSettled(path: string, journal: JobJournal): void {
   if (!journal.child?.settled) return;
   if (settledJournals.size >= 256) settledJournals.delete(settledJournals.keys().next().value!);
@@ -72,10 +84,12 @@ export async function readChildJobJournals(root: string, owner: Owner, reportErr
     if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]{1,160}$/.test(entry.name)) continue;
     const runId = entry.name as RunId, store = createJobStore(root, owner.sessionId, runId);
     try {
-      const journal = settledJournals.get(store.path) ?? await store.read();
+      const cached = settledJournals.get(store.path);
+      if (!cached && await hasNoJournal(store.directory)) continue;
+      const journal = cached ?? await store.read();
       if (journal.child?.id !== entry.name) continue;
       cacheSettled(store.path, journal); journals.push(journal);
-    } catch (error) { reportError?.(error, runId); }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') reportError?.(error, runId); }
   }
   return journals;
 }

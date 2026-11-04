@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { access, readFile, symlink, unlink, writeFile, stat } from 'node:fs/promises';
+import { access, mkdir, readFile, symlink, unlink, writeFile, stat } from 'node:fs/promises';
 import { createJobStore } from '../jobs/store.js';
 import { registerHerdrJobs } from '../jobs/register.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -311,7 +311,7 @@ describe('in-process jobs', () => {
   });
 
   it('the journal rejects foreign versions, symlinks and oversized input', async () => {
-    const h = await fixture(); const store = createJobStore(h.f.root, h.owner.sessionId); await store.read();
+    const h = await fixture(); const store = createJobStore(h.f.root, h.owner.sessionId); await mkdir(store.directory, { recursive: true });
     await writeFile(store.path, JSON.stringify({ version: 2 })); await expect(store.read()).rejects.toThrow();
     await writeFile(store.path, ' '.repeat(1024 * 1024 + 1)); await expect(store.read()).rejects.toMatchObject({ code: 'invalid-journal' });
   });

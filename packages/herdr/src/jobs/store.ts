@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
-import { isAbsolute, join, parse, resolve } from 'node:path';
+import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { JobRecord, JobId, Owner, SessionId, RunId, TerminalFinish } from '../contracts.js';
 import type { ChildJobWriter } from './handoff.js';
@@ -114,11 +114,38 @@ export interface JobStore { path: string; directory: string; read(options?: { re
 export function createJobStore(root: string, sessionId: SessionId, runId?: RunId): JobStore {
   id(sessionId); if (runId !== undefined) id(runId);
   const directory = runId === undefined ? join(root, 'sessions', sessionId) : join(root, 'sessions', sessionId, 'runs', runId), path = join(directory, 'jobs.json');
+  let rootVerified = false;
+  async function prepareDirectory(write: boolean): Promise<void> {
+    if (!rootVerified) {
+      try { await ensurePrivateDirectory(root, true); }
+      catch (error) {
+        if (!write || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        await ensurePrivateDirectory(root);
+      }
+      rootVerified = true;
+    } else {
+      const st = await lstat(root);
+      if (!st.isDirectory() || st.isSymbolicLink()) throw new HerdrError('unsafe-journal-path', 'Journal directories cannot be symlinks');
+    }
+    let current = root;
+    for (const component of relative(root, directory).split('/').filter(Boolean)) {
+      current = join(current, component);
+      let st;
+      try { st = await lstat(current); }
+      catch (error) {
+        if (!write || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        try { await mkdir(current, { mode: 0o700 }); } catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') throw cause; }
+        st = await lstat(current);
+      }
+      if (!st.isDirectory() || st.isSymbolicLink()) throw new HerdrError('unsafe-journal-path', 'Journal directories cannot be symlinks');
+    }
+    if (write) await chmod(directory, 0o700);
+  }
   return {
     path, directory,
-    read: async (options): Promise<JobJournal> => {
+    read: async (): Promise<JobJournal> => {
       let file;
-      try { await ensurePrivateDirectory(directory, options?.readOnly); file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+      try { await prepareDirectory(false); file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, sessionId, revision: 0, updatedAt: 0, jobs: [] }; throw error; }
       try {
         const st = await file.stat(); if (!st.isFile() || st.size > MAX_BYTES) throw new HerdrError('invalid-journal', 'Job journal is not a bounded file');
@@ -129,7 +156,7 @@ export function createJobStore(root: string, sessionId: SessionId, runId?: RunId
     },
     write: async (journal: JobJournal): Promise<void> => {
       const bytes = Buffer.from(JSON.stringify(journal)); if (bytes.length > MAX_BYTES) throw new HerdrError('journal-too-large', 'Job journal exceeds 1 MiB');
-      await ensurePrivateDirectory(directory);
+      await prepareDirectory(true);
       try { if (!(await lstat(path)).isFile()) throw new HerdrError('unsafe-journal-path', 'Refusing a non-file journal'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       const temporary = join(directory, `.jobs-${randomUUID()}.json`);
       const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

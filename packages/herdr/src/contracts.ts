@@ -273,11 +273,12 @@ export interface HerdrConfig {
   retention: { foregroundDays: number }; admin: { wrappers: { path: string; sha256: string }[] };
 }
 
-export const HERDR_LABELS = {
+const MOD_LABELS = {
   session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
   kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
-  parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime', runtime: 'spider.runtime',
+  parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',
 } as const;
+export const HERDR_LABELS: typeof MOD_LABELS & { readonly runtime: 'spider.runtime' } = { ...MOD_LABELS, runtime: 'spider.runtime' };
 export const HERDR_KINDS = {
   exec: 'exec', execFile: 'exec-file', batch: 'batch', remoteObserver: 'remote-observer',
   subagentViewer: 'subagent-viewer', setupProbe: 'setup-probe', session: 'session', remoteConsole: 'remote-console',
@@ -295,8 +296,8 @@ export interface ProcessPresence {
   pid: number; startIdentity: string; sessionFile: string | null; sessionName: string | null;
   kind: 'top-level' | 'child'; hcAddress: TerminalAddress | null;
 }
-export interface HerdrLabelContract { version: 1; labels: typeof HERDR_LABELS; kinds: typeof HERDR_KINDS }
-export const HerdrLabelContract: HerdrLabelContract = { version: 1, labels: HERDR_LABELS, kinds: HERDR_KINDS };
+export interface HerdrLabelContract { version: 1; labels: typeof MOD_LABELS; kinds: typeof HERDR_KINDS }
+export const HerdrLabelContract: HerdrLabelContract = { version: 1, labels: MOD_LABELS, kinds: HERDR_KINDS };
 export type ViewerIntent = 'automatic' | 'explicit';
 export type ViewerLauncher = (runId: RunId, owner: Owner, signal?: AbortSignal, intent?: ViewerIntent) => Promise<TerminalAddress>;
 

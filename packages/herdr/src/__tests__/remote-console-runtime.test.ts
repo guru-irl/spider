@@ -61,6 +61,20 @@ it.each(['console.json', 'head.json', 'command-0.json'])('retries torn and check
   await f.until(name === 'console.json' ? 'correct title · remote.invalid' : 'correct command');
   await job.out('recovered\n'); await f.until('│ recovered');
 });
+it('starts at the published index without replaying retained commands', async () => {
+  const f = await fixture(); const old = await f.job('old', 0, 'old command');
+  await old.out('old output\n'); await old.receipt(11, 0, 0);
+  await writeFile(join(f.directory, 'console.json'), publication({ version: 1, title: 'replacement', start: 1 }));
+  f.start(); await f.until('replacement');
+  const current = await f.job('current', 1, 'new command');
+  await current.out('new output\n'); await current.receipt(11, 0, 0); await f.until('✓ exit 0');
+  expect(f.output()).toContain('new command');
+  expect(f.output()).toContain('new output');
+  expect(f.output()).not.toContain('old command');
+  expect(f.output()).not.toContain('old output');
+  expect(f.output()).not.toMatch(/#\d+/);
+});
+
 it('skips a pruned historical job directory when reopening the console journal', async () => {
   const f = await fixture(); const old = await f.job('old', 0, 'settled history'); const current = await f.job('current', 1, 'new command');
   await rm(old.dir, { recursive: true, force: true }); await current.out('new output\n'); await current.receipt(11, 0, 23); f.start();

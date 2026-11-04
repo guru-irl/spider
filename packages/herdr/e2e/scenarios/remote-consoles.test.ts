@@ -17,12 +17,16 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const s = await remoteStory(suite);
       exactResult(await call(s, 'before-upgrade', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'before\\n'" }), 'before\n', '', 0);
       const old = await consoleFor(s);
+      await waitFor('earlier command in original console', () => consoleText(suite, old.address), text => text.includes('│ before'), deadline(15000));
       await suite.hc(['label', old.address, 'spider.runtime=', '--json']);
       await reload(s);
       exactResult(await call(s, 'after-upgrade', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'after\\n'" }), 'after\n', '', 0);
       const current = await consoleFor(s);
       assert.notEqual(current.address, old.address);
       assert.ok(current.labels['spider.runtime']);
+      const text = await waitFor('new command in replacement console', () => consoleText(suite, current.address), value => value.includes('│ after') && value.includes('✓ exit 0'), deadline(15000));
+      assert.ok(text.includes('after'));
+      assert.ok(!text.includes('before'));
       const rows = await inventory(suite);
       assert.equal(consoles(rows, s.sessionId, s.machine).length, 1);
     },

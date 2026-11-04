@@ -412,7 +412,7 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
   const instance = options.instance ?? randomUUID(); let lastTitle: string | undefined;
   type Active = { command: ConsoleCommand; tag: number; tagged: boolean; nextChunk: number; offsets: Record<PayloadStream, number>; decoders: Record<PayloadStream, StringDecoder> };
   const active = new Map<string, Active>();
-  let next = 0; let lastHeartbeat = -Infinity; let nextTag = 1;
+  let next: number | undefined; let lastHeartbeat = -Infinity; let nextTag = 1;
   const columns = () => {
     const value = options.columns ?? process.stdout.columns;
     return Number.isInteger(value) && value > 0 ? value : undefined;
@@ -478,6 +478,7 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
     const now = Date.now();
     try {
       const meta = parseRuntimePublication(await readBoundedFile(join(directory, 'console.json'), 4096));
+      if (meta.version === 1 && (meta.start === undefined || Number.isSafeInteger(meta.start) && (meta.start as number) >= 0)) next ??= (meta.start as number | undefined) ?? 0;
       if (meta.version === 1 && typeof meta.title === 'string') {
         const title = meta.title.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 512);
         if (title !== lastTitle) {
@@ -486,13 +487,16 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
           lastTitle = title;
         }
       }
-    } catch { /* A torn or checksum-failing host title is retried without blocking output. */ }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') next ??= 0;
+      // A torn or checksum-failing publication is retried before admitting commands.
+    }
     if (now - lastHeartbeat >= 10000 || now < lastHeartbeat) {
       await atomicRuntimeFile(join(directory, 'heartbeat.json'), JSON.stringify({ version: 1, at: now, instance })); lastHeartbeat = now;
     }
     try {
       const head = parseRuntimePublication(await readBoundedFile(join(directory, 'head.json'), 1024));
-      if (head.version === 1 && Number.isSafeInteger(head.count) && (head.count as number) >= next) {
+      if (next !== undefined && head.version === 1 && Number.isSafeInteger(head.count) && (head.count as number) >= next) {
         // Bound admissions per tick without limiting the number of concurrent jobs.
         let admissions = 0;
         while (next < (head.count as number) && admissions++ < 32) {

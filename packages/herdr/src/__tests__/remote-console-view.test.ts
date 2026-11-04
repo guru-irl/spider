@@ -125,16 +125,41 @@ it('keeps stream tags after an overlapping job finishes', async () => {
   expect(f.text()).toMatch(/#2.*✓ exit 0/);
   expect(f.text()).toMatch(/#1.*✓ exit 0/);
 });
-it('identifies both headers when an already visible command overlaps', async () => {
-  const f = await fixture(72); const first = await f.job('firstjob', 'first command', 'batch');
+it('identifies overlapping commands on one key line', async () => {
+  const f = await fixture(100); const first = await f.job('firstjob', 'first command', 'batch');
   f.start(); await f.waitText('first command');
   const second = await f.job('secondjob', 'second command', 'exec_file'); await f.waitText('second command');
   await second.finish('exited', 0); await second.settled();
   await first.stream('stderr', 'late failure\n'); await first.finish('exited', 1); await first.settled();
-  expect(f.text()).toMatch(/◆ batch #1 first command.*\(continued\)/);
-  expect(f.text()).toMatch(/◆ exec_file #2 second command/);
+  expect(f.text()).toMatch(/◆ batch first command.*12:34:56 · firstjob/);
+  expect(f.text()).toMatch(/  #1 batch first command · #2 exec_file second command\s+12:34:56 · secondjo/);
+  expect(f.text()).not.toContain('(continued)');
   expect(f.text()).not.toContain('○ concurrent');
+  expect(f.text()).not.toMatch(/◆ exec_file/);
   expect(f.text()).toMatch(/#1.*│ late failure\n\s*#1.*✗ exit 1/);
+});
+it('updates the key in tag order as jobs join and leave', async () => {
+  const f = await fixture(100); const first = await f.job('firstjob', 'first', 'batch');
+  f.start(); await f.waitText('◆ batch first');
+  const second = await f.job('secondjob', 'second'); await f.waitText('second');
+  const third = await f.job('thirdjob', 'third', 'exec_file'); await f.waitText('third');
+  await first.finish('exited', 0); await first.settled();
+  const fourth = await f.job('fourthjob', 'fourth'); await f.waitText('fourth');
+  expect(f.text()).toMatch(/#1 batch first · #2 exec second · #3 exec_file third/);
+  expect(f.text()).toMatch(/#2 exec second · #3 exec_file third · #4 exec fourth/);
+  expect(f.text()).not.toMatch(/#1 batch first[^\n]*#4 exec fourth/);
+  await second.finish('exited', 0); await third.finish('exited', 0); await fourth.finish('exited', 0);
+  await second.settled(); await third.settled(); await fourth.settled();
+});
+it('escapes controls in both commands on a key line', async () => {
+  const f = await fixture(120); const first = await f.job('firstjob', 'first\x1b[2J', 'batch');
+  f.start(); await f.waitText('first\\x1b');
+  const second = await f.job('secondjob', 'second\u009b31m', 'exec_file'); await f.waitText('second\\x9b');
+  const key = f.text().split('\n').find(line => line.includes('#2')) ?? '';
+  expect(key).toContain('#1 batch first\\x1b[2J · #2 exec_file second\\x9b31m');
+  expect(f.raw()).not.toContain('\x1b[2J');
+  expect(f.raw()).not.toContain('\u009b');
+  await first.finish('exited', 0); await second.finish('exited', 0); await first.settled(); await second.settled();
 });
 it('shows no tags for a command that never overlaps', async () => {
   const f = await fixture(); const job = await f.job('singlejob', 'single command');
@@ -144,26 +169,54 @@ it('shows no tags for a command that never overlaps', async () => {
   expect(f.text()).toContain('✓ exit 0');
   expect(f.text()).not.toMatch(/#\d+/);
 });
-it('keeps overlapping header tags visible in a narrow terminal', async () => {
-  const f = await fixture(12); const first = await f.job('firstjob', 'first command', 'batch');
+it.each([8, 20])('keeps whole tags on a %i-column key line', async columns => {
+  const f = await fixture(columns); const first = await f.job('firstjob', 'first command', 'batch');
   f.start(); await f.waitText('◆ batch');
   const second = await f.job('secondjob', 'second command', 'exec_file'); await f.waitText('#2');
+  const key = f.text().split('\n').find(line => line.includes('#2'));
+  expect(key).toBe('#1 · #2');
   await second.finish('exited', 0); await second.settled();
   await first.finish('exited', 0); await first.settled();
-  const headers = f.text().split('\n').filter(line => line.startsWith('◆'));
-  expect(headers.some(line => line.includes('#1'))).toBe(true);
-  expect(headers.some(line => line.includes('#2'))).toBe(true);
-  expect(headers.every(line => line.length <= 12)).toBe(true);
 });
-it('prints one tagged header per command when two arrive together', async () => {
-  const f = await fixture(72);
+it('marks omitted tags without splitting one at eight columns', async () => {
+  const f = await fixture(8); const first = await f.job('firstjob', 'first', 'batch');
+  f.start(); await f.waitText('◆ batch');
+  const second = await f.job('secondjob', 'second', 'exec_file'); await f.waitText('#2');
+  const third = await f.job('thirdjob', 'third'); await third.finish('exited', 0); await third.settled();
+  expect(f.text().split('\n').filter(line => line.startsWith('#'))).toEqual(['#1 · #2', '#1 …']);
+  await first.finish('exited', 0); await second.finish('exited', 0);
+  await first.settled(); await second.settled();
+});
+it('drops metadata before sharing command space at 40 columns', async () => {
+  const f = await fixture(40); const first = await f.job('firstjob', 'first-long-command', 'batch');
+  f.start(); await f.waitText('◆ batch');
+  const second = await f.job('secondjob', 'second-long-command', 'exec_file'); await f.waitText('#2');
+  const key = f.text().split('\n').find(line => line.includes('#2')) ?? '';
+  expect(key).toMatch(/#1 batch first.*… · #2 exec_file second.*…/);
+  expect(key).not.toContain('12:34:56');
+  expect(key.length).toBeLessThanOrEqual(40);
+  await first.finish('exited', 0); await second.finish('exited', 0); await first.settled(); await second.settled();
+});
+it('clips wide commands without splitting an escaped control on the key', async () => {
+  const f = await fixture(40); const first = await f.job('firstjob', '漢\x1bLONG', 'batch');
+  f.start(); await f.waitText('◆ batch');
+  const second = await f.job('secondjob', '界 second-long-command', 'exec_file'); await f.waitText('#2');
+  const key = f.text().split('\n').find(line => line.includes('#2')) ?? '';
+  expect(key).toBe('  #1 batch 漢… · #2 exec_file 界 sec…');
+  expect(key).not.toContain('\\x1');
+  expect(f.raw()).not.toContain('\x1bLONG');
+  await first.finish('exited', 0); await second.finish('exited', 0); await first.settled(); await second.settled();
+});
+it('prints a normal header and one key when two arrive together', async () => {
+  const f = await fixture(100);
   const first = await f.job('firstjob', 'first command');
   const second = await f.job('secondjob', 'second command');
   await first.finish('exited', 0); await second.finish('exited', 0);
   f.start(); await first.settled(); await second.settled();
   expect(f.text().match(/◆[^\n]*first command/g)).toHaveLength(1);
-  expect(f.text()).toMatch(/◆ exec #1 first command/);
-  expect(f.text()).toMatch(/◆ exec #2 second command/);
+  expect(f.text()).toMatch(/◆ exec first command/);
+  expect(f.text()).toMatch(/#1 exec first command · #2 exec second command/);
+  expect(f.text()).not.toMatch(/◆ exec #2/);
   expect(f.text()).not.toContain('(continued)');
 });
 it('starts a new untagged block after all overlapping jobs settle', async () => {

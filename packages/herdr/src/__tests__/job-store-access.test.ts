@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { expect, it, vi } from 'vitest';
 import { join } from 'node:path';
-import { mkdir, rename, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createJobStore } from '../jobs/store.js';
 import { cleanup, monitorFixture } from './herdr-monitor-fixture.js';
 
@@ -65,4 +65,14 @@ it('does not walk above a verified root on repeated writes', async () => {
   const store = createJobStore(root, h.owner.sessionId), journal = await store.read();
   await store.write(journal); reset(); await store.write(journal);
   expect(calls.lstat).toBeLessThan(8);
+});
+
+it('recreates a verified journal root that was removed while the store was in use', async () => {
+  const h = await monitorFixture(), root = join(h.f.root, 'removed', 'root');
+  const store = createJobStore(root, h.owner.sessionId), journal = await store.read();
+  await store.write({ ...journal, revision: 1 });
+  await rm(join(h.f.root, 'removed'), { recursive: true, force: true });
+  expect((await store.read()).jobs).toEqual([]);
+  await store.write({ ...journal, revision: 2 });
+  expect((await store.read()).revision).toBe(2);
 });

@@ -176,6 +176,20 @@ describe('installed agents sidebar', () => {
     expect(doctorFailures).toEqual([]);
   });
 
+  test('setup installs the parent icon and records its digest', async () => {
+    const h = harness!;
+    const path = join(h.directories.app, 'mods/spider-agents/corner-up-left.svg');
+    const installed = await readFile(path).catch(() => null);
+    expect(installed).not.toBeNull();
+    if (!installed) return;
+    const packaged = await readFile(resolve('packages/herdr/assets/agents/corner-up-left.svg'));
+    expect(installed).toEqual(packaged);
+    const request = await ports!.request(join(h.root, 'config.json'));
+    const journal = await readJournal(request.journalRoot);
+    expect(journal.entries.find(entry => entry.path === path)?.after).toBe(digest(installed));
+    expect((await (await ports!.doctorParts(request)).inspect('clones', request)).failures).toEqual([]);
+  });
+
   test('setup upgrades the recorded previous look but refuses an edited installed icon', async () => {
     const h = harness!, appHome = h.directories.app;
     const find = (node: any, id: string): any => node.id === id ? node : (node.children ?? []).map((child: any) => find(child, id)).find(Boolean);

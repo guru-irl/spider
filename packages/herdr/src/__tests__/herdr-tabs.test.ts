@@ -21,23 +21,37 @@ const colors = { chrome: '#161618', selected: '#ffffff14', foreground: '#eeeeee'
 function nodes(root: any): any[] { return root && typeof root === 'object' ? [root, ...(root.items ?? []).flatMap(nodes)] : []; }
 function scene(source: string, enabled: string[] | null = null) {
   const panel = { id: 'panel', hidden: true }, body = { id: 'panel-body', active: 'files' };
-  const space = { id: 'one', active: true, tabs: [] };
+  const space = { id: 'one', active: true, tabs: [] as { id: string; name: string; active: boolean }[] };
+  const panes: { tab: string; program: Record<string, unknown> }[] = [];
   const calls: unknown[] = [], saved = new Map<string, string>();
   const ui = createUiModules();
-  const ports = { spaces: () => [space], panes: () => [], theme: () => colors, window: () => ({}), shared: () => enabled,
+  const ports = { spaces: () => [space], panes: () => panes, theme: () => colors, window: () => ({}), shared: () => enabled,
     layout: () => ({ children: [panel, body] }), settings: () => ({ zoom: 1 }), openOverlay() {},
     run: (name: string, args: any) => { calls.push([name, args]); if (name === 'layout.select') body.active = args.child; if (name === 'layout.show') panel.hidden = false; if (name === 'layout.hide') panel.hidden = true; },
   };
-  const imports = { View: ui['gpui-kit'].View, div: ui['gpui-kit'].div, svg: ui['gpui-kit'].svg, image: ui['gpui-kit'].image, h_flex: ui['gpui-base'].h_flex, ...createHostModule(ports), localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) } };
+  const imports = { View: ui['gpui-kit'].View, div: ui['gpui-kit'].div, svg: (asset: string) => Object.assign(ui['gpui-kit'].svg(), { asset }), image: (asset: string) => Object.assign(ui['gpui-kit'].image(), { asset }), h_flex: ui['gpui-base'].h_flex, ...createHostModule(ports), localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) } };
   const code = source.replace(/^import .*;\s*$/gm, '').replace('export default class ', 'class ');
   const Tabs = new Function('api', `const { ${Object.keys(imports).join(',')} } = api; ${code}; return Tabs;`)(imports);
   const view = new Tabs(); view.init();
   const render = () => nodes(view.render());
   const button = (id: string) => render().find(node => node.styles.id?.[0] === `panel-${id}`);
-  return { view, panel, body, space, calls, saved, render, button };
+  return { view, panel, body, space, panes, calls, saved, render, button };
 }
 
 describe.skipIf(!fixtureRoot)('Spider top-bar button against shipped Herdr 0.1.12', () => {
+  test('tab icons use the spider mark for pi and keep other programs', async () => {
+    const patched = await applyLookPatches(await clones(), patches as LookPatchSet);
+    const s = scene(patched.tabs.files['main.js']);
+    s.space.tabs.push({ id: 'pi-tab', name: 'Planner', active: false }, { id: 'node-tab', name: 'Node', active: false });
+    s.panes.push({ tab: 'pi-tab', program: { key: 'pi', name: 'Pi', icon: 'pi.svg', agent: true } }, { tab: 'node-tab', program: { key: 'node', name: 'Node', icon: 'node.svg', tint: true } });
+    const rendered = s.render();
+    const pi = rendered.find(node => node.styles.id?.[0] === 'tab-pi-tab');
+    const node = rendered.find(node => node.styles.id?.[0] === 'tab-node-tab');
+    expect(nodes(pi).find(item => item.asset === 'mods/spider-tabs/spider.svg')).toMatchObject({ styles: { size: [14], text_color: [colors.muted] } });
+    expect(nodes(pi).some(item => item.asset === 'pi.svg')).toBe(false);
+    expect(nodes(node).find(item => item.asset === 'node.svg')).toBeDefined();
+  });
+
   test('renders after Changes and toggles the same panel using the strict mod API', async () => {
     const patched = await applyLookPatches(await clones(), patches as LookPatchSet);
     const s = scene(patched.tabs.files['main.js']);

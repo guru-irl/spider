@@ -11,7 +11,7 @@ import { createJobStore, ensurePrivateDirectory, type JournalJob, type JobJourna
 import { HerdrError } from '../client/parse.js';
 import { createJobHandoff, prepareJobRecovery, reconcileJobRecovery, type ChildJobWriter, type JobHandoff, type CloseAgentConsoles } from './handoff.js';
 import { HERDR_LABELS, HERDR_KINDS } from '../contracts.js';
-import type { AppClient, HcClient, JobHandle, JobFinish, JobId, JobPort, JobRecord, Owner, PreparedProgram, RunId, TerminalAddress, TerminalFinish } from '../contracts.js';
+import type { AppClient, HcClient, JobHandle, JobFinish, JobId, JobPort, JobRecord, MachineName, Owner, PreparedProgram, RunId, TerminalAddress, TerminalFinish } from '../contracts.js';
 
 /** C verifies receipt digests before returning this port value. D checks the nonce binding and original event. */
 export interface JobOutput {
@@ -57,11 +57,14 @@ export interface JobMonitorOptions {
   clock(): number;
   reportError?(error: unknown): void;
   recordCleanupError?(error: unknown): void;
+  reportConsoleError?(error: unknown): void;
 }
 export interface JobMonitor extends JobPort {
   activate(owner: Owner, signal?: AbortSignal): Promise<void>;
   reconcile(): Promise<void>;
   finishCleanup(): Promise<void>;
+  consoleIdle(owner: Owner, on: MachineName, runId?: RunId): Promise<boolean>;
+  consoleError(error: unknown): void;
   shutdown(reason: 'reload' | 'quit'): Promise<void>;
 }
 /** One writer and one event subscription per owning pi activation. No payload retry path exists. */
@@ -483,6 +486,12 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   return {
     activate: async (nextOwner, signal) => { await serial(() => activate(nextOwner, signal)); await drainCollections(); activated = true; scheduleMaintenance(); },
     reconcile,
+    consoleIdle: (nextOwner, on, runId) => serial(async () => {
+      if (!activated || stopping || closed || !sameOwner(nextOwner) || (options.child?.id ?? options.adoptedRunId) !== runId) return false;
+      return !journal.jobs.some(job => job.machine === on && (job.uncertain || job.evidenceConflict ||
+        job.phase.kind !== 'finished' && job.phase.kind !== 'launch-failed' || job.phase.kind === 'finished' && job.phase.result.reason === 'unknown'));
+    }),
+    consoleError: options.reportConsoleError ?? report,
     finishCleanup: async () => {
       for (const job of journal.jobs) { const hold = holds.get(job.id); if (hold) clearTimeout(hold); holds.delete(job.id); queueRelease(job); }
       await cleanup.flush(journal.jobs.map(releaseKey));

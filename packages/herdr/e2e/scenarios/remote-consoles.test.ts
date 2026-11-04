@@ -12,6 +12,41 @@ import { remoteStory, anotherOwner, nameSession, begin, result, call, settled, e
 
 export const scenarios: readonly ScenarioDefinition[] = [
   {
+    id: storyId('H-console-upgrade'), title: 'An idle legacy console is replaced after reload', tiers: ['headless'],
+    async run(suite) {
+      const s = await remoteStory(suite);
+      exactResult(await call(s, 'before-upgrade', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'before\\n'" }), 'before\n', '', 0);
+      const old = await consoleFor(s);
+      await suite.hc(['label', old.address, 'spider.runtime=', '--json']);
+      await reload(s);
+      exactResult(await call(s, 'after-upgrade', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'after\\n'" }), 'after\n', '', 0);
+      const current = await consoleFor(s);
+      assert.notEqual(current.address, old.address);
+      assert.ok(current.labels['spider.runtime']);
+      const rows = await inventory(suite);
+      assert.equal(consoles(rows, s.sessionId, s.machine).length, 1);
+    },
+  },
+  {
+    id: storyId('H-console-running'), title: 'A running job defers a legacy console replacement', tiers: ['headless'],
+    async run(suite) {
+      const s = await remoteStory(suite);
+      const held = await stagePayload(suite, { id: 'upgrade-held', beforeStdout: 'held\n', stdout: 'released\n' });
+      const turn = await begin(s, 'upgrade-held', [{ id: 'upgrade-held', args: { action: 'exec', on: s.machine, language: 'shell', code: held.code, background: true, timeout: 4000 } }]);
+      await held.ready(deadline(30000)); const running = await result(s, 'upgrade-held'); detached(running); await settled(s.driver, turn);
+      const old = await consoleFor(s);
+      await suite.hc(['label', old.address, 'spider.runtime=', '--json']);
+      await reload(s);
+      exactResult(await call(s, 'during-upgrade', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'during\\n'" }), 'during\n', '', 0);
+      assert.equal((await consoleFor(s)).address, old.address);
+      await held.release(); await oneNotice(s, running.remote!.jobId);
+      exactResult(await call(s, 'after-release', { action: 'exec', on: s.machine, language: 'shell', code: "printf 'after\\n'" }), 'after\n', '', 0);
+      const current = await consoleFor(s);
+      assert.notEqual(current.address, old.address);
+      assert.ok(current.labels['spider.runtime']);
+    },
+  },
+  {
     id: storyId('S18'), title: 'Concurrent commands share exactly one console per real agent and machine', tiers: ['headless', 'remote', 'app'],
     async run(suite) {
       // Catches console keying by cwd/name instead of owner and missing serialization of console creation.

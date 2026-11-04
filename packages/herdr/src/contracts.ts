@@ -276,7 +276,7 @@ export interface HerdrConfig {
 export const HERDR_LABELS = {
   session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
   kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
-  parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',
+  parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime', runtime: 'spider.runtime',
 } as const;
 export const HERDR_KINDS = {
   exec: 'exec', execFile: 'exec-file', batch: 'batch', remoteObserver: 'remote-observer',

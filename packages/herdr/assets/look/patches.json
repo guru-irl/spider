@@ -113,7 +113,7 @@
       {
         "id": "children-imports",
         "anchor": "import { View, div, image, svg } from \"gpui-kit\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { identityPill, assignSpaceIdentities } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
       },
       {
         "id": "combined-tree",
@@ -248,7 +248,7 @@
       {
         "id": "mono-agent-name",
         "anchor": ".child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))",
-        "replacement": ".child(full && more ? (spaceIdentities.has(a.space) ? spaceIcon(a.space, a.space_name) : div().min_w(0).max_w(120).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name)) : pill(name))"
+        "replacement": ".child(full && more ? (spaceIdentities.has(a.space) ? spaceIcon(a.space, a.space_name) : div().min_w(0).max_w(120).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name)) : nameText(name, idle))"
       },
       {
         "id": "mono-machine",
@@ -313,17 +313,22 @@
       {
         "id": "pi-agent-icon",
         "anchor": "function icon(p, size, color) {",
-        "replacement": "function icon(p, size, color) {\n  if ((p?.key ?? p?.name)?.toLowerCase() === \"pi\") return svg(\"mods/spider-tabs/spider.svg\").size(size).flex_none().text_color(color);"
+        "replacement": "function icon(p, size, color) {\n  if ((p?.key ?? p?.name)?.toLowerCase() === \"pi\") return div().size(size).flex_none().flex().items_center().justify_center().child(svg(\"mods/spider-tabs/spider.svg\").size(Math.round(size * 0.8)).text_color(color));"
       },
       {
-        "id": "agent-name-pill",
+        "id": "pi-agent-mark-colour",
+        "anchor": "      const pic = icon(a.program, 16, t.foreground);",
+        "replacement": "      const pic = icon(a.program, 16, (a.program?.key ?? a.program?.name)?.toLowerCase() === \"pi\" ? t.muted : t.foreground);"
+      },
+      {
+        "id": "agent-name-text",
         "anchor": "    const row = (a, i, subs = []) => {",
-        "replacement": "    const spaceIdentities = assignSpaceIdentities(spaces());\n    const spaceIcon = (id, name) => {\n      const identity = spaceIdentities.get(id);\n      return svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t[identity.color] ?? t.foreground).tooltip(name);\n    };\n    const pill = name => {\n      const color = identityPill(name, t);\n      return div().min_w(0).max_w(200).truncate().px(8).h(18).flex().items_center().rounded(999).bg(color?.background ?? \"#ffffff14\").font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(color?.text ?? t.foreground).tooltip(name).child(name);\n    };\n    const row = (a, i, subs = []) => {"
+        "replacement": "    const spaceIdentities = assignSpaceIdentities(spaces());\n    const spaceIcon = (id, name) => {\n      const identity = spaceIdentities.get(id);\n      return svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(name);\n    };\n    const nameText = (name, idle) => div().min_w(0).max_w(200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name);\n    const row = (a, i, subs = []) => {"
       },
       {
-        "id": "priority-name-pill",
+        "id": "priority-name-text",
         "anchor": ".when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\\u00b7 ${more}`)))",
-        "replacement": ".when(full && Boolean(more), el => el.child(pill(more)))"
+        "replacement": ".when(full && Boolean(more), el => el.child(nameText(more, idle)))"
       },
       {
         "id": "space-heading-icon",
@@ -350,7 +355,7 @@
       {
         "id": "space-badge",
         "anchor": ".when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color(\"#ffffff\").child([...w.name][0]?.toUpperCase() ?? \"?\")))",
-        "replacement": ".child(svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t[identity.color] ?? t.foreground).tooltip(w.name))"
+        "replacement": ".child(svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(w.name))"
       },
       {
         "id": "mono-space-name",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
@@ -51,32 +51,35 @@ const configured = [{ name: 'alpha.invalid' }, { name: 'beta.invalid' }, { name:
 const inventory = [{ name: 'alpha.invalid', state: 'connected' }, { name: 'beta.invalid', state: 'disconnected' }, { name: 'gamma.invalid', state: 'stopped' }];
 
 describe('space identity assignment', () => {
-  it.each([1, 6, 7, 37])('assigns stable space identities for %s spaces', count => {
-    const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string; color: string }> }).assignSpaceIdentities;
+  it.each([1, 6, 7, 37])('assigns stable space shapes for %s spaces', count => {
+    const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string }> }).assignSpaceIdentities;
     expect(typeof assign).toBe('function');
     if (!assign) return;
     const spaces = Array.from({ length: count }, (_, n) => ({ id: `id-${n}`, name: `space-${String(n).padStart(2, '0')}` }));
     const assigned = assign(spaces);
     expect([...assigned.entries()].sort()).toEqual([...assign([...spaces].reverse()).entries()].sort());
     const values = spaces.map(space => assigned.get(space.id)!);
-    const pairs = new Set(values.map(value => `${value.shape}/${value.color}`));
-    expect(pairs.size).toBe(Math.min(count, 36));
-    if (count <= 6) {
-      expect(new Set(values.map(value => value.shape)).size).toBe(count);
-      expect(new Set(values.map(value => value.color)).size).toBe(count);
-      expect(values[0]).toEqual({ shape: 'triangle', color: 'ansi5' });
-    } else {
-      expect(values[0]).toEqual({ shape: 'triangle', color: 'ansi13' });
-    }
+    expect(values.every(value => Object.keys(value).join() === 'shape')).toBe(true);
+    expect(new Set(values.map(value => value.shape)).size).toBe(Math.min(count, 6));
+    expect(values[0]).toEqual({ shape: 'triangle' });
   });
 
   it('probes the next free slot in name order for collisions', () => {
-    const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string; color: string }> }).assignSpaceIdentities;
+    const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string }> }).assignSpaceIdentities;
     expect(typeof assign).toBe('function');
     if (!assign) return;
     const values = assign([{ id: 'later', name: 'space-06' }, { id: 'first', name: 'space-00' }]);
-    expect(values.get('first')).toEqual({ shape: 'triangle', color: 'ansi5' });
-    expect(values.get('later')).toEqual({ shape: 'diamond', color: 'ansi6' });
+    expect(values.get('first')).toEqual({ shape: 'triangle' });
+    expect(values.get('later')).toEqual({ shape: 'diamond' });
+  });
+
+  it('ships every space shape as a currentColor outline', async () => {
+    for (const shape of ['circle', 'square', 'triangle', 'diamond', 'hexagon', 'star']) {
+      const svg = await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`), 'utf8');
+      expect(svg).toMatch(/<svg[^>]* fill="none"/);
+      expect(svg).toMatch(/<svg[^>]* stroke="currentColor"/);
+      expect(svg).not.toMatch(/fill="currentColor"/);
+    }
   });
 });
 
@@ -184,7 +187,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const nodes = (root: unknown): Node[] => data.has(root as object) ? all(root) : [root as Node, ...(root as Node).children.flatMap(all)];
     const mark = (root: unknown) => nodes(root).find(node => node.svg === 'mods/spider-agents/space-triangle.svg');
     expect(mark(spaceRow)).toBeDefined();
-    expect(call(mark(spaceRow)!, 'text_color')).toEqual(['#c792ea']);
+    expect(call(mark(spaceRow)!, 'text_color')).toEqual([colors.muted]);
     const store = new Map<string, unknown>();
     const { view } = await agentsView({ agents: () => [main], spaces: () => spaces, theme: () => colors }, store);
     let root = view.render({});
@@ -195,11 +198,14 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     store.set('agents.sort', 'grouped'); root = view.render({});
     const heading = all(root).find(node => node.id === 'sp-s1')!;
     expect(mark(heading)).toBeDefined();
-    expect(call(mark(heading)!, 'text_color')).toEqual(['#c792ea']);
+    expect(call(mark(heading)!, 'text_color')).toEqual([colors.muted]);
+    store.set('agents.sort', 'priority'); root = view.render({});
+    row = all(root).find(node => node.id === 'ag-t1')!;
+    expect(call(mark(row)!, 'text_color')).toEqual([colors.muted]);
     expect(nodes(heading).flatMap(node => node.children)).toContain('space-00');
   });
 
-  it('renders the same coloured monospace session pill in both sort views', async () => {
+  it('renders session names as plain monospace text without a pill in both sort views', async () => {
     const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
     const main = { address: 't1', pane: 'p1', tab: 'tab', space: 's1', space_name: 'sample', status: 'working', seq: 1, title: 'charlie', program: { key: 'pi', name: 'pi', icon: 'pi.svg', agent: true } };
     const store = new Map<string, unknown>();
@@ -208,11 +214,10 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       store.set('agents.sort', sort);
       const row = all(view.render({})).find(node => node.id === 'ag-t1')!;
       const name = [row, ...row.children.flatMap(all)].find(node => node.children.includes('charlie') || node.children.includes('· charlie'))!;
-      expect(call(name, 'bg')).toEqual(['#82aaff33']);
-      expect(call(name, 'text_color')).toEqual(['#ececed']);
+      expect(call(name, 'bg')).toBeUndefined();
+      expect(call(name, 'rounded')).toBeUndefined();
+      expect(call(name, 'text_color')).toEqual([colors.foreground]);
       expect(call(name, 'font_family')).toEqual(['JetBrains Mono']);
-      expect(call(name, 'h')).toEqual([18]);
-      expect(call(name, 'rounded')).toEqual([999]);
     }
   });
 
@@ -268,9 +273,16 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     ];
     const { view } = await agentsView({ agents: () => mains });
     const nodes = all(view.render({}));
-    expect(nodes.some(node => node.svg === 'mods/spider-tabs/spider.svg' && call(node, 'size')?.[0] === 16)).toBe(true);
+    const mark = nodes.find(node => node.svg === 'mods/spider-tabs/spider.svg');
+    expect(mark).toBeDefined();
+    expect(call(mark!, 'size')).toEqual([13]);
+    const slot = nodes.find(node => node.children.some(child => data.get(child as object) === mark));
+    expect(call(slot!, 'size')).toEqual([16]);
+    expect(call(mark!, 'text_color')).toEqual([palette.muted]);
     expect(nodes.some(node => node.svg === 'pi.svg')).toBe(false);
-    expect(nodes.some(node => node.svg === 'node.svg' && call(node, 'size')?.[0] === 16)).toBe(true);
+    const other = nodes.find(node => node.svg === 'node.svg' && call(node, 'size')?.[0] === 16);
+    expect(other).toBeDefined();
+    expect(call(other!, 'text_color')).toEqual([palette.foreground]);
   });
 
   it('does not render a Machines section for configured machines', async () => {

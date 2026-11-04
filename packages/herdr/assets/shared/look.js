@@ -8,17 +8,15 @@ function hashName(name) {
   return hash;
 }
 
+// Up to six spaces get distinct shapes. Past six, later spaces in name order reuse their preferred shape.
 export function assignSpaceIdentities(spaces) {
-  const count = spaces.length <= 6 ? 6 : 36;
   const occupied = new Set(), result = new Map();
   const ordered = [...spaces].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   for (const space of ordered) {
-    const preferred = hashName(space.name) % count;
-    let slot = preferred;
-    while (occupied.has(slot) && occupied.size < count) slot = (slot + 1) % count;
+    let slot = hashName(space.name) % shapes.length;
+    while (occupied.has(slot) && occupied.size < shapes.length) slot = (slot + 1) % shapes.length;
     occupied.add(slot);
-    const shape = slot % 6, color = (shape + Math.floor(slot / 6)) % 6;
-    result.set(space.id, { shape: shapes[shape], color: colors[color] });
+    result.set(space.id, { shape: shapes[slot] });
   }
   return result;
 }

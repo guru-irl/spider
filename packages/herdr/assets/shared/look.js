@@ -21,6 +21,12 @@ export function assignSpaceIdentities(spaces) {
   return result;
 }
 
+export function threadKeylines(div, lines, height = 26, start = -4, x = 7) {
+  return lines.map(l => div().relative().w(16).h(height).flex_none()
+    .when(l === "│" || l === "├", el => el.child(div().absolute().left(x).top(start).bottom(0).w(0).border_l(1.5).border_color("#3a3a3d")))
+    .when(l === "└" || l === "├", el => el.child(div().absolute().left(x).top(start).w(7).h(height / 2 + 4).border_l(1.5).border_b(1.5).rounded_bl(6).border_color("#3a3a3d"))));
+}
+
 // Use the focused header over the lightest glass stop as a conservative backdrop.
 export function identityPill(name, t) {
   const color = t[colors[hashName(name) % 6]];

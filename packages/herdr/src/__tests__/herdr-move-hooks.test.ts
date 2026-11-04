@@ -7,6 +7,7 @@ import patches from '../../assets/look/patches.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { middlePath } from '../../assets/shared/feed.js';
+import { threadKeylines } from '../../assets/shared/look.js';
 
 type Element = { events: Record<string, Function>; children: unknown[] };
 function element(): any {
@@ -28,7 +29,7 @@ async function cloned() {
   return applyLookPatches(clones, patches as LookPatchSet);
 }
 function view(source: string, supplied: Record<string, unknown>): any {
-  const ports = { View: class {}, div: element, h_flex: element, v_flex: element, svg: element, image: element, middlePath, ...supplied };
+  const ports = { View: class {}, div: element, h_flex: element, v_flex: element, svg: element, image: element, middlePath, threadKeylines, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);

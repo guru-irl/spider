@@ -30,6 +30,7 @@ export function resolvePiPackageRoot(): string | undefined {
 export interface PiSpawnDeps {
 	execPath?: string;
 	argv1?: string;
+	execArgv?: readonly string[];
 	env?: NodeJS.ProcessEnv;
 	isSea?: () => boolean;
 }
@@ -63,6 +64,14 @@ function isNodeSea(): boolean {
 	}
 }
 
+const PLAIN_SCRIPT = /\.(?:c|m)?js$/;
+const MODULE_LOADING_FLAG = /^(?:--import|--require|-r|--loader|--experimental-loader)(?:=|$)/;
+
+// A child runs without the parent's flags, so reuse the parent only when its pi entry needs no loader.
+function loadsWithoutFlags(entry: string, execArgv: readonly string[]): boolean {
+	return PLAIN_SCRIPT.test(entry) && !execArgv.some(flag => MODULE_LOADING_FLAG.test(flag));
+}
+
 export function getPiSpawnCommand(args: string[], deps: PiSpawnDeps = {}): PiSpawnCommand {
 	const env = deps.env ?? process.env;
 	const piBinary = env[PI_SUBAGENT_PI_BINARY_ENV]?.trim();
@@ -70,7 +79,8 @@ export function getPiSpawnCommand(args: string[], deps: PiSpawnDeps = {}): PiSpa
 
 	if (process.release.name === "node" && !process.versions.bun && !process.versions.electron && !(deps.isSea ?? isNodeSea)()) {
 		const piEntry = resolvePiCliScript(deps);
-		if (piEntry) return { command: deps.execPath ?? process.execPath, args: [piEntry, ...args], piEntry };
+		const execPath = deps.execPath ?? process.execPath;
+		if (piEntry && loadsWithoutFlags(piEntry, deps.execArgv ?? process.execArgv) && fs.existsSync(execPath)) return { command: execPath, args: [piEntry, ...args], piEntry };
 	}
 	return { command: "pi", args };
 }

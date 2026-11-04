@@ -100,7 +100,11 @@ function fixture(cols = 320, rows = 80) {
               nextSize.rows = Math.floor((paneHeight - 30 - 2) / 17);
             }
           }
-          else nextSize.cols = Math.floor((size.cols - 1) / 2);
+          else {
+            const outerWidth = size.cols * 8 + 2;
+            const paneWidth = (outerWidth - 6) / 2;
+            nextSize.cols = Math.floor((paneWidth - 2) / 8);
+          }
           sizes.set(anchor.terminal!, nextSize); sizes.set(terminal, { ...nextSize });
         } else {
           const tab = `tab-${++next}`; tabs.push(tab); panes.set(id, { id, terminal, tab, space: anchor.space });
@@ -139,8 +143,39 @@ function fixture(cols = 320, rows = 80) {
     return address;
   }, discardSubagentViewer: async () => {} };
   const actor = createAuxiliaryPanes(actorOptions);
-  return { owner, panes, app, hc, neighbor, bounds, tree, remove, actorOptions, parkFails(count: number) { parkFailures = count; }, failMove() { failMove = true; }, insertBeforeOwner() { insertBeforeOwner = true; }, tabs, sizes, operations, actor, placement, get focused() { return focused; }, focusOther() { focused = 'foreign-pane'; }, mismatch(value: 'post-check' | 'after' | 'same-tab') { mismatch = value; }, open: (id: string) => actor.acquire('subagent', id as RunId, owner, { timeoutMs: 1000, ownerRelative: true }) };
+  const grid = () => {
+    sizes.set('other', { cols, rows });
+    for (const [pane, terminal] of [['lower-left', 'left-session'], ['lower-right', 'right-session']]) {
+      panes.set(pane, { id: pane, terminal, tab: 'owner-tab', space: 'space' });
+      sizes.set(terminal, { cols, rows });
+      labels.set(terminal, { 'spider.kind': 'session' });
+    }
+    let root = splitPane(tree('owner-tab'), 'owner-pane', 'lower-left', 'down');
+    root = splitPane(root, 'other-pane', 'lower-right', 'down');
+    trees.set('owner-tab', root);
+  };
+  return { owner, panes, app, hc, neighbor, bounds, tree, remove, grid, actorOptions, parkFails(count: number) { parkFailures = count; }, failMove() { failMove = true; }, insertBeforeOwner() { insertBeforeOwner = true; }, tabs, sizes, operations, actor, placement, get focused() { return focused; }, focusOther() { focused = 'foreign-pane'; }, mismatch(value: 'post-check' | 'after' | 'same-tab') { mismatch = value; }, open: (id: string) => actor.acquire('subagent', id as RunId, owner, { timeoutMs: 1000, ownerRelative: true }) };
 }
+
+test.each([[104, 25], [75, 23]])('opens below an owner in a four-pane tab at %i by %i', async (cols, rows) => {
+  const f = fixture(cols, rows); f.grid();
+  const others = ['other', 'left-session', 'right-session'];
+  const placements = others.map(terminal => f.placement(terminal));
+  const view = await f.open('one');
+  expect(f.placement(view!.viewer).tab).toBe('owner-tab');
+  expect(f.neighbor('owner-pane', 'down')).toBe(view!.pane);
+  for (const terminal of ['owner', view!.viewer, ...others]) {
+    expect(f.sizes.get(terminal)!.cols).toBeGreaterThanOrEqual(60);
+    expect(f.sizes.get(terminal)!.rows).toBeGreaterThanOrEqual(8);
+  }
+  expect(others.map(terminal => f.placement(terminal))).toEqual(placements);
+  const tooShort = fixture(75, 18); tooShort.grid();
+  const before = structuredClone(tooShort.tree('owner-tab'));
+  const fallback = await tooShort.open('one');
+  expect(tooShort.tabs).toEqual(['owner-tab', tooShort.placement(fallback!.viewer).tab, 'foreign-tab']);
+  expect(tooShort.placement(fallback!.viewer).tab).not.toBe('owner-tab');
+  expect(tooShort.tree('owner-tab')).toEqual(before);
+});
 
 test('opens the first viewer below the owning session without changing another session', async () => {
   const f = fixture();
@@ -162,7 +197,7 @@ test('opens the second viewer to the right of the first', async () => {
   expect(f.bounds(second!.pane)).toMatchObject({ x: 0.25, y: 0.5, width: 0.25, height: 0.5 });
 });
 
-test.each([[79, 80], [80, 39], [80, 40], [80, 41], [80, 42]])('falls back after the owner tab when a downward split is too small (%i by %i)', async (cols, rows) => {
+test.each([[59, 80], [60, 15], [60, 16], [60, 17], [60, 18]])('falls back after the owner tab when a downward split is too small (%i by %i)', async (cols, rows) => {
   const f = fixture(cols, rows); const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).toBe(f.tabs[1]);
   expect(f.tabs).toEqual(['owner-tab', f.placement(view!.viewer).tab, 'foreign-tab']);
@@ -170,28 +205,30 @@ test.each([[79, 80], [80, 39], [80, 40], [80, 41], [80, 42]])('falls back after 
   expect(f.operations.filter(call => call.name === 'terminal.keep')).toEqual([]);
 });
 
-test('accepts a downward split at 80 columns and 43 rows including pane chrome', async () => {
-  const f = fixture(80, 43); const view = await f.open('one');
+test('accepts a downward split at 60 columns and 19 rows including pane chrome', async () => {
+  const f = fixture(60, 19); const view = await f.open('one');
   expect(f.neighbor('owner-pane', 'down')).toBe(view?.pane);
-  expect(f.sizes.get('owner')).toEqual({ cols: 80, rows: 20 });
-  expect(f.sizes.get(view!.viewer)).toEqual({ cols: 80, rows: 20 });
+  expect(f.sizes.get('owner')).toEqual({ cols: 60, rows: 8 });
+  expect(f.sizes.get(view!.viewer)).toEqual({ cols: 60, rows: 8 });
 });
 
-test.each([[159, 20], [160, 19], [160, 20]])('falls back when a sideways split is too small (%i by %i)', async (cols, rows) => {
+test.each([[119, 8], [120, 7], [120, 8]])('falls back when a sideways split is too small (%i by %i)', async (cols, rows) => {
   const f = fixture(); const first = await f.open('one'); f.sizes.set(first!.viewer, { cols, rows }); const before = structuredClone(f.tree('owner-tab')); const second = await f.open('two');
   expect(f.placement(second!.viewer).tab).toBe(f.tabs[1]);
   expect(f.tree('owner-tab')).toEqual(before);
   expect(f.tabs).toEqual(['owner-tab', f.placement(second!.viewer).tab, 'foreign-tab']);
 });
 
-test('accepts a sideways split at 161 columns and 20 rows including the divider', async () => {
-  const f = fixture(); const first = await f.open('one'); f.sizes.set(first!.viewer, { cols: 161, rows: 20 }); const second = await f.open('two');
+test('accepts a sideways split at 121 columns and 8 rows including the divider', async () => {
+  const f = fixture(); const first = await f.open('one'); f.sizes.set(first!.viewer, { cols: 121, rows: 8 }); const second = await f.open('two');
   expect(f.neighbor(first!.pane, 'right')).toBe(second?.pane);
+  expect(f.sizes.get(first!.viewer)).toEqual({ cols: 60, rows: 8 });
+  expect(f.sizes.get(second!.viewer)).toEqual({ cols: 60, rows: 8 });
 });
 
 test('does not split a viewer when the owner is already below the minimum', async () => {
   const f = fixture(); const first = await f.open('one');
-  f.sizes.set('owner', { cols: 320, rows: 19 }); const before = structuredClone(f.tree('owner-tab'));
+  f.sizes.set('owner', { cols: 320, rows: 7 }); const before = structuredClone(f.tree('owner-tab'));
   const second = await f.open('two');
   expect(f.placement(second!.viewer).tab).not.toBe('owner-tab');
   expect(f.tree('owner-tab')).toEqual(before);
@@ -199,7 +236,7 @@ test('does not split a viewer when the owner is already below the minimum', asyn
 
 test('does not split when another viewer would remain below the minimum', async () => {
   const f = fixture(); const first = await f.open('one'); const second = await f.open('two');
-  f.sizes.set(first!.viewer, { cols: 79, rows: 40 }); const before = structuredClone(f.tree('owner-tab'));
+  f.sizes.set(first!.viewer, { cols: 59, rows: 40 }); const before = structuredClone(f.tree('owner-tab'));
   const third = await f.open('three');
   expect(f.placement(third!.viewer).tab).not.toBe('owner-tab');
   expect(f.tree('owner-tab')).toEqual(before);
@@ -249,7 +286,7 @@ test('retries parking a misplaced viewer before opening the fallback tab', async
 });
 
 test('closes a fallback placeholder only once when tab positioning fails', async () => {
-  const f = fixture(79, 80); f.failMove();
+  const f = fixture(59, 80); f.failMove();
   await expect(f.open('one')).rejects.toMatchObject({ code: 'app-error' });
   expect(f.operations.filter(call => call.name === 'pane.close')).toHaveLength(1);
 });
@@ -318,7 +355,7 @@ test('records an unrepaired split durably after three park failures', async () =
 
 test('uses the smaller size when the terminal shrinks between size observations', async () => {
   const f = fixture(320, 80), original = f.hc.get; let reads = 0;
-  f.hc.get = async (...args) => { const terminal = await original(...args); return args[0] === 'owner' && ++reads >= 4 ? { ...terminal, rows: 41 } : terminal; };
+  f.hc.get = async (...args) => { const terminal = await original(...args); return args[0] === 'owner' && ++reads >= 4 ? { ...terminal, rows: 18 } : terminal; };
   const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).not.toBe('owner-tab');
   expect(f.operations.filter(call => call.name === 'terminal.keep')).toEqual([]);
@@ -327,7 +364,7 @@ test('uses the smaller size when the terminal shrinks between size observations'
 
 test('repairs and falls back when the acknowledged split reports an undersized terminal', async () => {
   const f = fixture(), original = f.hc.get;
-  f.hc.get = async (...args) => { const terminal = await original(...args); return args[0] === 'viewer-one' && f.panes.has('pane-viewer-one') ? { ...terminal, cols: 79, rows: 19 } : terminal; };
+  f.hc.get = async (...args) => { const terminal = await original(...args); return args[0] === 'viewer-one' && f.panes.has('pane-viewer-one') ? { ...terminal, cols: 59, rows: 7 } : terminal; };
   const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).not.toBe('owner-tab');
   expect(f.neighbor('owner-pane', 'down')).toBeUndefined();
@@ -348,7 +385,7 @@ test('cancels while queued without waiting for the earlier open to finish', asyn
 });
 
 test('cancellation removes the fallback placeholder and its adopted viewer before returning', async () => {
-  const f = fixture(79, 80), abort = new AbortController(); let entered!: () => void;
+  const f = fixture(59, 80), abort = new AbortController(); let entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
   f.app.awaitPane = async () => { entered(); await new Promise<void>(() => {}); return 'never' as OwnerPlacement['pane']; };
   const opening = f.actor.acquire('subagent', 'one' as RunId, f.owner, { timeoutMs: 1000, signal: abort.signal, ownerRelative: true });
@@ -360,7 +397,7 @@ test('cancellation removes the fallback placeholder and its adopted viewer befor
 
 
 test('places the fallback after the owner even when the app inserts it before the owner', async () => {
-  const f = fixture(79, 80); f.insertBeforeOwner();
+  const f = fixture(59, 80); f.insertBeforeOwner();
   const view = await f.open('one');
   expect(f.tabs).toEqual(['owner-tab', f.placement(view!.viewer).tab, 'foreign-tab']);
 });
@@ -441,19 +478,19 @@ test('repairs its own canceled display when an earlier open ends during its iden
 });
 
 
-test.each([42, 43, 44])('does not split a lone owner with only %i rows', async rows => {
-  const f = fixture(81, rows); f.remove('other');
+test.each([18, 19, 20])('does not split a lone owner with only %i rows', async rows => {
+  const f = fixture(61, rows); f.remove('other');
   const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).not.toBe('owner-tab');
   expect(f.operations.filter(call => call.name === 'terminal.keep')).toEqual([]);
 });
 
-test('a lone owner and its new viewer retain 80 columns and 20 rows at the boundary', async () => {
-  const f = fixture(81, 45); f.remove('other');
+test('a lone owner and its new viewer retain 60 columns and 8 rows at the boundary', async () => {
+  const f = fixture(61, 21); f.remove('other');
   const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).toBe('owner-tab');
-  expect(f.sizes.get('owner')).toEqual({ cols: 80, rows: 20 });
-  expect(f.sizes.get(view!.viewer)).toEqual({ cols: 80, rows: 20 });
+  expect(f.sizes.get('owner')).toEqual({ cols: 60, rows: 8 });
+  expect(f.sizes.get(view!.viewer)).toEqual({ cols: 60, rows: 8 });
 });
 
 test.each([80, 100])('finds the displayed viewer after actor reload with a %i-row owner', async rows => {
@@ -560,15 +597,15 @@ test('cancellation during the final focus repairs only the viewer created by tha
 });
 
 
-test('does not split a lone 80-column owner that would lose a column to its new frame', async () => {
-  const f = fixture(80, 45); f.remove('other');
+test('does not split a lone 60-column owner that would lose a column to its new frame', async () => {
+  const f = fixture(60, 21); f.remove('other');
   const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).not.toBe('owner-tab');
   expect(f.operations.filter(call => call.name === 'terminal.keep')).toEqual([]);
 });
 
 test('an abort during tab creation never adopts or parks the untouched viewer', async () => {
-  const f = fixture(79, 80), abort = new AbortController(), command = f.app.command, adopted: TerminalAddress[] = [], labels = f.hc.setLabels;
+  const f = fixture(59, 80), abort = new AbortController(), command = f.app.command, adopted: TerminalAddress[] = [], labels = f.hc.setLabels;
   f.hc.setLabels = async (viewer, patch) => { adopted.push(viewer); await labels(viewer, patch); };
   f.app.command = async (name, args) => { const result = await command(name, args); if (name === 'tab.new') abort.abort(); return result; };
   await expect(f.actor.acquire('subagent', 'one' as RunId, f.owner, { timeoutMs: 1000, signal: abort.signal, ownerRelative: true })).rejects.toMatchObject({ code: 'aborted' });

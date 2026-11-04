@@ -46,7 +46,7 @@ async function shrinkOwner(suite: Suite, terminal: string): Promise<{ cols: numb
     const socket = assertSocketPath(suite.root, join(suite.root, 'size.s'));
     const log = suite.ownPath(join(suite.root, 'size-attacher.raw'));
     const broker = fileURLToPath(new URL('../harness/pty-broker.py', import.meta.url));
-    const result = await suite.hc(['run', '--json', '--bg', '--no-notify', '--outlive-parent', '--no-parent', '--', '/usr/bin/python3', broker, '--socket', socket, '--log', log, '--cols', '79', '--rows', '19', '--', suite.cores!.wrapper, 'attach', terminal]);
+    const result = await suite.hc(['run', '--json', '--bg', '--no-notify', '--outlive-parent', '--no-parent', '--', '/usr/bin/python3', broker, '--socket', socket, '--log', log, '--cols', '59', '--rows', '7', '--', suite.cores!.wrapper, 'attach', terminal]);
     expect(result.exitCode, result.stderr).toBe(0);
     const address = (result.json as { address: string }).address;
     expect(address).toBeTruthy(); suite.ledger.update(l => l.terminals.push({ side: 'local', address }));
@@ -64,7 +64,7 @@ async function shrinkOwner(suite: Suite, terminal: string): Promise<{ cols: numb
         const observed = await suite.hc(['get', terminal, '--json']);
         if (observed.exitCode !== 0) throw new Error('owner size unavailable');
         const row = observed.json as { cols: number; rows: number }; return { cols: row.cols, rows: row.rows };
-    }, value => value.cols === 79 && value.rows === 19, deadline(10000), { reconcileMs: 100 });
+    }, value => value.cols === 59 && value.rows === 7, deadline(10000), { reconcileMs: 100 });
 }
 async function assertUserOpenSlots(suite: Suite): Promise<void> {
     await nativeGate(suite);

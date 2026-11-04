@@ -11,7 +11,7 @@ import { HerdrError } from '../client/parse.js';
 import { herdrErrorNotice } from '../notices.js';
 import { HERDR_LABELS, HERDR_KINDS } from '../contracts.js';
 import { moveTerminal, type MoveDestination } from '../../assets/agents/move.js';
-const minimumPaneSize = { cols: 80, rows: 20 };
+const minimumPaneSize = { cols: 60, rows: 8 };
 export interface PaneAcquireOptions { signal?: AbortSignal; timeoutMs: number; automatic?: boolean; userInitiated?: boolean; ownerRelative?: boolean }
 export interface AuxiliaryPaneOptions {
   hc: HcClient;

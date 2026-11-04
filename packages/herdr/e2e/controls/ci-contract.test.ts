@@ -1,38 +1,109 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 type Step = { name?: string; uses?: string; run?: string; if?: string; env?: Record<string, string>; with?: Record<string, string> };
-type Job = { name?: string; needs?: string[]; if?: string; steps: Step[]; 'timeout-minutes'?: number; strategy?: { matrix: Record<string, (string | number)[]> } };
-type Workflow = { jobs: Record<string, Job>; concurrency?: unknown };
+type Job = { name?: string; uses?: string; needs?: string[] | string; permissions?: Record<string, string>; if?: string; steps: Step[]; 'timeout-minutes'?: number; strategy?: { matrix: Record<string, (string | number)[]> } };
+type Workflow = { on: Record<string, unknown>; permissions?: Record<string, string>; jobs: Record<string, Job>; concurrency?: unknown };
 const source = (name: string): string => readFileSync(join(process.cwd(), '.github/workflows', `${name}.yml`), 'utf8');
 const workflow = (name: string): Workflow => parse(source(name)) as Workflow;
 const step = (job: Job, name: string): Step => job.steps.find(item => item.name === name)!;
 
+describe('release installation contract', () => {
+  it('runs on version tags and calls the complete CI workflow', () => {
+    const ci = workflow('ci');
+    const release = workflow('release');
+    expect(ci.on).toHaveProperty('workflow_call');
+    expect(release.on).toEqual({ push: { tags: ['v*'] } });
+    expect(release.jobs.verify!.uses).toBe('./.github/workflows/ci.yml');
+    expect(release.permissions).toEqual({ contents: 'read' });
+    expect(release.jobs.release!.needs).toBe('verify');
+    expect(release.jobs.release!.permissions).toEqual({ contents: 'write' });
+  });
+
+  it('uploads the checked tarball from CI and downloads that same artifact for release', () => {
+    const checks = workflow('ci').jobs.checks!;
+    const upload = step(checks, 'Save release package');
+    expect(upload?.uses).toBe('actions/upload-artifact@v4');
+    expect(upload.if).toBe("startsWith(github.ref, 'refs/tags/v')");
+    expect(upload.with).toMatchObject({ name: 'release-package', path: '.spider/scratch/packaging/*.tgz', 'if-no-files-found': 'error', 'include-hidden-files': true });
+    const verify = step(checks, 'Verify package contents');
+    expect(verify.run).toContain("require('./scripts/check-package-files.cjs')");
+    expect(verify.run).toContain('scripts/assert-bundle.mjs --package');
+    expect(checks.steps.indexOf(upload)).toBeGreaterThan(checks.steps.indexOf(verify));
+    const download = step(workflow('release').jobs.release!, 'Download release package');
+    expect(download.uses).toBe('actions/download-artifact@v4');
+    expect(download.with).toEqual({ name: 'release-package', path: '.spider/scratch/packaging' });
+  });
+
+  it('rejects a tag that differs from the package version', () => {
+    const verify = step(workflow('release').jobs.release!, 'Verify tag matches package.json version');
+    expect(verify?.run).toBeTypeOf('string');
+    const version = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version;
+    const run = (tag: string) => spawnSync('bash', ['-e', '-c', verify.run!], { env: { ...process.env, GITHUB_REF_NAME: tag }, encoding: 'utf8' });
+    expect(run(`v${version}`).status).toBe(0);
+    expect(run('v0.0.0').status).not.toBe(0);
+    expect(run(version).status).not.toBe(0);
+  });
+
+  it('publishes the tarball and its SHA-256 with generated notes and a pinned pi install command', () => {
+    const job = workflow('release').jobs.release!;
+    const publish = step(job, 'Publish GitHub release');
+    expect(publish?.env).toEqual({ GH_TOKEN: '${{ github.token }}' });
+    const parent = join(process.cwd(), '.spider/scratch');
+    mkdirSync(parent, { recursive: true });
+    const directory = mkdtempSync(join(parent, 'release-contract-'));
+    try {
+      const version = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version;
+      const filename = `guru-irl-spider-${version}.tgz`;
+      const payload = 'synthetic release package';
+      mkdirSync(join(directory, 'bin'));
+      mkdirSync(join(directory, '.spider/scratch/packaging'), { recursive: true });
+      writeFileSync(join(directory, 'package.json'), JSON.stringify({ version }));
+      writeFileSync(join(directory, '.spider/scratch/packaging', filename), payload);
+      writeFileSync(join(directory, 'bin/gh'), `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nfs.writeFileSync('release.json', JSON.stringify({ args, notes: fs.readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8') }));\n`);
+      chmodSync(join(directory, 'bin/gh'), 0o755);
+      const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', publish.run!], { cwd: directory, env: { ...process.env, PATH: `${join(directory, 'bin')}:${process.env.PATH}`, GITHUB_REF_NAME: `v${version}`, GITHUB_REPOSITORY: 'example/spider' }, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      const record = JSON.parse(readFileSync(join(directory, 'release.json'), 'utf8'));
+      expect(record.args).toEqual(expect.arrayContaining(['release', 'create', `v${version}`, '--generate-notes', '--verify-tag', `.spider/scratch/packaging/${filename}`, '.spider/scratch/packaging/SHA256SUMS']));
+      expect(record.args).not.toContain('--draft');
+      expect(record.notes).toContain(`pi install npm:@guru-irl/spider@https://github.com/example/spider/releases/download/v${version}/${filename}`);
+      expect(readFileSync(join(directory, '.spider/scratch/packaging/SHA256SUMS'), 'utf8')).toBe(`${createHash('sha256').update(payload).digest('hex')}  ${filename}\n`);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('never starts npm publishing from a release event', () => {
+    expect(workflow('publish').on).toEqual({ workflow_dispatch: { inputs: { tag: { description: 'Tag to publish (e.g. v0.1.0)', required: true } } } });
+    expect(source('publish')).not.toContain('github.event.release');
+    expect(source('release')).not.toContain('NPM_TOKEN');
+    expect(source('release')).not.toContain('npm publish');
+    expect(source('release')).not.toContain('secrets.');
+  });
+});
+
 describe('CI acceptance contract', () => {
   it('builds before confidence utilities, runs the packed subset next and keeps failure artifacts in the same job', () => {
-    for (const [name, jobName] of [['ci', 'herdr-acceptance'], ['release', 'verify']]) {
-      const jobs = workflow(name).jobs;
-      const job = jobs[jobName!]!;
+    for (const name of ['ci', 'release']) {
+      const selected = workflow(name);
+      if (name === 'release') expect(selected.jobs.verify!.uses).toBe('./.github/workflows/ci.yml');
+      const jobs = name === 'release' ? workflow('ci').jobs : selected.jobs;
+      const job = jobs['herdr-acceptance']!;
       const install = job.steps.findIndex(item => item.name === 'Install');
       const utilities = job.steps.findIndex(item => item.name === 'Herdr confidence utilities (no hc, app or SSH)');
       const subset = job.steps.findIndex(item => item.name === 'Herdr packed acceptance (no hc, app or SSH)');
       const artifacts = job.steps.findIndex(item => item.name === 'Herdr acceptance failure artifacts');
       expect(install).toBeGreaterThan(-1); expect(utilities).toBeGreaterThan(install); expect(subset).toBeGreaterThan(utilities); expect(artifacts).toBeGreaterThan(subset);
       expect(step(job, 'Install').run).toBe('npm ci'); // prepare builds the checkout.
-      const checks = name === 'ci' ? jobs.checks! : job;
+      const checks = jobs.checks!;
       const typecheck = step(checks, 'Herdr acceptance typecheck');
       expect(typecheck.run).toContain('npm run typecheck:herdr:e2e');
-      if (name === 'release') {
-        const build = job.steps.findIndex(item => item.name === 'Build');
-        expect(build).toBeGreaterThan(-1);
-        expect(job.steps.indexOf(typecheck)).toBeGreaterThan(build);
-        expect(job.steps.indexOf(typecheck)).toBeLessThan(utilities);
-      } else {
-        expect(checks.steps.findIndex(item => item.name === 'Install')).toBeLessThan(checks.steps.indexOf(typecheck));
-      }
+      expect(checks.steps.findIndex(item => item.name === 'Install')).toBeLessThan(checks.steps.indexOf(typecheck));
       const command = job.steps[utilities]!.run!;
       expect(command).toContain('packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/harness/__tests__/pi-observations.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls');
       expect(command).toContain('-u SPIDER_HERDR_APP_TESTS');
@@ -48,7 +119,7 @@ describe('CI acceptance contract', () => {
     expect(ci.jobs.required!.name).toBe('typecheck · test · build');
     const names = Object.keys(ci.jobs).filter(name => name !== 'required').sort();
     expect(names).toEqual(['checks', 'chrome', 'herdr-acceptance', 'test']);
-    expect([...ci.jobs.required!.needs!].sort()).toEqual(names);
+    expect([...(ci.jobs.required!.needs! as string[])].sort()).toEqual(names);
     expect(ci.jobs.required!.if).toBe('always()');
     const gate = ci.jobs.required!.steps[0]!;
     expect(gate.env?.NEEDS_JSON).toBe('${{ toJSON(needs) }}');
@@ -64,7 +135,7 @@ describe('CI acceptance contract', () => {
   it('uses only Node 26 with npm caches and gives every CI job a ten-minute budget', () => {
     for (const name of ['ci', 'release', 'publish']) {
       for (const job of Object.values(workflow(name).jobs)) {
-        const setup = job.steps.filter(item => item.uses === 'actions/setup-node@v4');
+        const setup = (job.steps ?? []).filter(item => item.uses === 'actions/setup-node@v4');
         for (const node of setup) {
           const versions = node.with!['node-version'] === '${{ matrix.node }}' ? job.strategy!.matrix.node : [node.with!['node-version']];
           expect(versions).toEqual(['26.x']);

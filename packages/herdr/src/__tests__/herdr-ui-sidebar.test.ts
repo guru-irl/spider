@@ -420,10 +420,10 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const icon = () => all(root).find(node => node.id === 'agent-pin-t1')!;
     expect(icon()).toBeDefined();
     expect(call(icon(), 'size')).toEqual([16]); expect(texts(root)).toContain('1m');
-    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/pi.svg')).toBe(true);
+    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/spider-tabs/spider.svg')).toBe(true);
     expect(all(root).some(node => node.id === 'pin-t1')).toBe(false);
     all(root).find(node => node.id === 'ag-t1')!.hoverChange?.(true, cx); root = view.render({});
-    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/pi.svg')).toBe(true);
+    expect(icon().children.flatMap(all).some(node => node.svg === 'mods/spider-tabs/spider.svg')).toBe(true);
     expect(texts(root)).toContain('1m');
     icon().hoverChange!(true, cx); root = view.render({});
     expect(texts(root)).toContain('1m');

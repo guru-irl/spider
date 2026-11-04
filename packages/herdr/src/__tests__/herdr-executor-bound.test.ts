@@ -14,7 +14,7 @@ it.each([true, false])('a stalled collector respects liveness and cancellation w
   const bytes = Buffer.from('runtime'), reading = deferred(), stalled = deferred<CollectedLogs>();
   f.hc.fileRead = async () => bytes;
   const timeout = globalThis.setTimeout;
-  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => timeout(callback, ms === 60000 ? 200 : ms, ...args)) as typeof setTimeout);
+  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => timeout(callback, ms === 60000 ? 200 : ms === 5000 ? 1000 : ms, ...args)) as typeof setTimeout);
   cleanup(() => spy.mockRestore());
   const jobs = f.monitor({ outputCollector: { ...f.options.outputCollector, collect: () => new Promise(() => {}) } });
   let executing: ReturnType<typeof runExec> | undefined;
@@ -31,13 +31,13 @@ it.each([true, false])('a stalled collector respects liveness and cancellation w
       expect(await Promise.race([executing, delay(300).then(() => null)])).toBeNull();
       stop.abort();
       const aborted = await bounded(executing, 1500);
-      expect(aborted.details).toMatchObject({ outcome: 'aborted', exitCode: 137 });
+      expect(aborted.details).toMatchObject({ outcome: 'aborted', aborted: true, timedOut: false });
       expect(aborted.details.remoteAbortInfo).toContain('state unknown; it may still be running');
       expect(f.notices).toEqual([]);
       expect([...f.terminals.values()][0].state).toBe('live');
       return;
     }
-    const result = await bounded(executing, 1000);
+    const result = await bounded(executing, 500);
     expect(result.details).toMatchObject({ outcome: 'unknown', exitCode: null });
     expect(result.text).toContain('the supervisor process is gone and no exit receipt was ever written');
     await expect(access(result.details.backgroundJob.receipt)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -51,8 +51,32 @@ it.each([true, false])('a stalled collector respects liveness and cancellation w
 });
 
 
+it('a timeout bounds repeated incomplete reads with one settlement deadline', async () => {
+  const f = await monitorFixture(), bytes = Buffer.from('runtime');
+  f.hc.fileRead = async () => bytes;
+  let now = Date.now();
+  const jobs = f.monitor({ outputCollector: { ...f.options.outputCollector, collect: () => new Promise(() => {}) } });
+  const stop = new AbortController();
+  const remote = createRemoteExecutor({
+    hc: f.hc, jobs, prepare: async () => program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
+    environmentPolicy: env => env, clock: () => now,
+    logSink: async () => ({ collect: async () => { now += 1000; return { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, complete: false, capped: false, receipt: null }; }, dispose() {} }),
+  });
+  const executing = runExec({ on, language: 'shell', code: 'unused', timeout: 100 }, { cwd: f.f.root, owner: f.owner, remote, signal: stop.signal });
+  try {
+    const result = await bounded(executing, 700);
+    expect(result.details).toMatchObject({ outcome: 'unknown', exitCode: null, timedOut: true });
+    expect(f.kills).toHaveLength(1);
+    expect([...f.terminals.values()][0].state).toBe('live');
+    expect(f.notices).toEqual([]);
+  } finally { stop.abort(); await executing.catch(() => {}); await jobs.shutdown('reload'); }
+});
+
 it.each([{ background: false, nativeFinishes: false }, { background: false, nativeFinishes: true }, { background: true, nativeFinishes: false }])('a stalled log read does not hide a deadline with background $background and native finish $nativeFinishes', async ({ background, nativeFinishes }) => {
   const f = await monitorFixture(), bytes = Buffer.from('runtime');
+  const timeout = globalThis.setTimeout;
+  const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => timeout(callback, ms === 5000 ? 1000 : ms, ...args)) as typeof setTimeout);
+  cleanup(() => spy.mockRestore());
   const reading = deferred(), stalled = deferred<CollectedLogs>(), stop = new AbortController();
   f.hc.fileRead = async () => bytes;
   const jobs = f.monitor({ outputCollector: { ...f.options.outputCollector, collect: () => new Promise(() => {}) } });

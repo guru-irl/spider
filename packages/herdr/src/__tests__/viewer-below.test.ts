@@ -94,7 +94,11 @@ function fixture(cols = 320, rows = 80) {
               const paneHeight = (size.rows * 17 - 6) / 2;
               nextSize.rows = Math.floor((paneHeight - 30 - 2) / 17);
               nextSize.cols = Math.floor((size.cols * 8 - 2) / 8);
-            } else nextSize.rows = Math.floor((size.rows - 2) / 2);
+            } else {
+              const outerHeight = size.rows * 17 + 30 + 2;
+              const paneHeight = (outerHeight - 6) / 2;
+              nextSize.rows = Math.floor((paneHeight - 30 - 2) / 17);
+            }
           }
           else nextSize.cols = Math.floor((size.cols - 1) / 2);
           sizes.set(anchor.terminal!, nextSize); sizes.set(terminal, { ...nextSize });
@@ -158,16 +162,19 @@ test('opens the second viewer to the right of the first', async () => {
   expect(f.bounds(second!.pane)).toMatchObject({ x: 0.25, y: 0.5, width: 0.25, height: 0.5 });
 });
 
-test.each([[79, 80], [80, 39], [80, 40], [80, 41]])('falls back after the owner tab when a downward split is too small (%i by %i)', async (cols, rows) => {
+test.each([[79, 80], [80, 39], [80, 40], [80, 41], [80, 42]])('falls back after the owner tab when a downward split is too small (%i by %i)', async (cols, rows) => {
   const f = fixture(cols, rows); const view = await f.open('one');
   expect(f.placement(view!.viewer).tab).toBe(f.tabs[1]);
   expect(f.tabs).toEqual(['owner-tab', f.placement(view!.viewer).tab, 'foreign-tab']);
   expect(f.neighbor('owner-pane', 'down')).toBeUndefined();
+  expect(f.operations.filter(call => call.name === 'terminal.keep')).toEqual([]);
 });
 
-test('accepts a downward split at 80 columns and 42 rows including pane chrome', async () => {
-  const f = fixture(80, 42); const view = await f.open('one');
+test('accepts a downward split at 80 columns and 43 rows including pane chrome', async () => {
+  const f = fixture(80, 43); const view = await f.open('one');
   expect(f.neighbor('owner-pane', 'down')).toBe(view?.pane);
+  expect(f.sizes.get('owner')).toEqual({ cols: 80, rows: 20 });
+  expect(f.sizes.get(view!.viewer)).toEqual({ cols: 80, rows: 20 });
 });
 
 test.each([[159, 20], [160, 19], [160, 20]])('falls back when a sideways split is too small (%i by %i)', async (cols, rows) => {

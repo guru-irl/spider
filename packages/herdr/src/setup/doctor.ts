@@ -100,15 +100,18 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   const probes: NodeObservation[] = [];
   let passed = 0;
   const fail = (item: string, code: string, message: string, repair: string) => failures.push({ item, code, message, repair });
+  const repairRoot = join(request.config.globalRoot, 'herdr/panes');
+  let repairFiles: string[] = [];
   try {
-    const root = join(request.config.globalRoot, 'herdr/panes');
+    const root = repairRoot;
     const records = await readPlacementRepairs(root);
+    repairFiles = records.map(repair => placementRepairPath(root, repair));
     const inspection = records.length ? await parts.placementRepairInspection?.() : undefined;
     for (const repair of inspection ? await activePlacementRepairs(root, inspection) : records) {
       fail('pane-repairs', 'pane-repair-pending', `Viewer ${repair.viewer} could not be parked in pane ${repair.placed?.pane ?? repair.anchor.pane} of tab ${repair.placed?.tab ?? repair.anchor.tab}. The intended anchor was ${repair.anchor.pane}.`,
         `Park only viewer ${repair.viewer} or close its pane, then rerun doctor to clear ${placementRepairPath(root, repair)} once that pane is gone.`);
     }
-  } catch (error) { fail('pane-repairs', 'pane-repair-inspection-failed', String(error), 'Inspect the private pane repair records and rerun doctor.'); }
+  } catch (error) { fail('pane-repairs', 'pane-repair-inspection-failed', String(error), `Inspect the pane repair records at ${repairFiles.length ? repairFiles.join(', ') : repairRoot} and rerun doctor.`); }
   for (const item of DOCTOR_ITEMS) {
     try {
       const result = await parts.inspect(item, request);

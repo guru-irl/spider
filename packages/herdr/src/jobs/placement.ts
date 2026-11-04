@@ -11,6 +11,7 @@ import { HerdrError } from '../client/parse.js';
 import { herdrErrorNotice } from '../notices.js';
 import { HERDR_LABELS, HERDR_KINDS } from '../contracts.js';
 import { moveTerminal, type MoveDestination } from '../../assets/agents/move.js';
+const minimumPaneSize = { cols: 80, rows: 20 };
 export interface PaneAcquireOptions { signal?: AbortSignal; timeoutMs: number; automatic?: boolean; userInitiated?: boolean; ownerRelative?: boolean }
 export interface AuxiliaryPaneOptions {
   hc: HcClient;
@@ -258,7 +259,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     }
     for (const address of existing) {
       const terminal = await options.hc.get(address, { signal: displayOptions.signal }).catch(error => { if (code(error) === 'not_found') return null; throw error; });
-      if (!terminal || (terminal.cols ?? 0) < 80 || (terminal.rows ?? 0) < 20) return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
+      if (!terminal || (terminal.cols ?? 0) < minimumPaneSize.cols || (terminal.rows ?? 0) < minimumPaneSize.rows) return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
     }
     const size = await options.hc.get(anchorTerminal, { signal: displayOptions.signal }).catch(error => { if (code(error) === 'not_found') return null; throw error; });
     if (!size) return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
@@ -266,9 +267,9 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     const settled = await options.hc.get(anchorTerminal, { signal: displayOptions.signal }).catch(error => { if (code(error) === 'not_found') return null; throw error; });
     if (!settled) return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
     const cols = Math.min(size.cols ?? 0, settled.cols ?? 0), rows = Math.min(size.rows ?? 0, settled.rows ?? 0);
-    // A lone pane gains two frames plus a gap. Reserve five rows and one column.
+    // A lone pane gains two frames plus a gap. An existing frame needs three rows.
     const lone = panes.length === 1;
-    if (direction === 'down' ? cols < (lone ? 81 : 80) || Math.floor((rows - (lone ? 5 : 2)) / 2) < 20 : Math.floor((cols - 1) / 2) < 80 || rows < 20)
+    if (direction === 'down' ? cols < minimumPaneSize.cols + (lone ? 1 : 0) || Math.floor((rows - (lone ? 5 : 3)) / 2) < minimumPaneSize.rows : Math.floor((cols - 1) / 2) < minimumPaneSize.cols || rows < minimumPaneSize.rows)
       return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
     const selected = await app.command('pane.focus', { pane: anchor.pane });
     if (selected.error) throw new HerdrError(selected.error.code, selected.error.message);
@@ -288,7 +289,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     let fits = true;
     for (const address of new Set([...existing, viewer])) {
       const size = await options.hc.get(address, { signal: displayOptions.signal }).catch(error => { if (code(error) === 'not_found') return null; throw error; });
-      if (!size || (size.cols ?? 0) < 80 || (size.rows ?? 0) < 20) fits = false;
+      if (!size || (size.cols ?? 0) < minimumPaneSize.cols || (size.rows ?? 0) < minimumPaneSize.rows) fits = false;
     }
     const adjacent = placed.space === owner.space && placed.tab === owner.tab ? await neighbor(anchor, direction) : { safe: false, pane: null };
     if (!fits || !adjacent.safe || adjacent.pane !== placed.pane) {

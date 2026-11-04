@@ -13,7 +13,7 @@ import { HERDR_LABELS, HERDR_KINDS, HerdrLabelContract } from '../contracts.js';
 import type { AgentTerminal } from '../../assets/agents/children.js';
 import type { Owner, RunSummary, SessionFeed } from '../contracts.js';
 import { middlePath } from '../../assets/shared/feed.js';
-import { identityPill } from '../../assets/shared/look.js';
+import { identityPill, assignSpaceIdentities } from '../../assets/shared/look.js';
 
 const contract = HerdrLabelContract;
 const owner = { sessionId: 'session-one', generation: 'generation-one', terminal: { address: 't1', coreId: 'core-one', terminalId: 't1', socket: '/fixture/socket', sessionNamespace: 'fixture' }, cwd: '/fixture', sessionFile: null, name: 'Fixture' } as Owner;
@@ -161,7 +161,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, identityPill, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
+  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);

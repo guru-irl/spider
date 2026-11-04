@@ -1,10 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-// Use the focused header over the lightest glass stop as a conservative backdrop.
-export function identityPill(name, t) {
+const colors = ['ansi2', 'ansi4', 'ansi5', 'ansi6', 'ansi12', 'ansi13'];
+const shapes = ['circle', 'square', 'triangle', 'diamond', 'hexagon', 'star'];
+function hashName(name) {
   let hash = 2166136261;
   for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 16777619) >>> 0;
-  const color = [t.ansi2, t.ansi4, t.ansi5, t.ansi6, t.ansi12, t.ansi13][hash % 6];
+  return hash;
+}
+
+export function assignSpaceIdentities(spaces) {
+  const count = spaces.length <= 6 ? 6 : 36;
+  const occupied = new Set(), result = new Map();
+  const ordered = [...spaces].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  for (const space of ordered) {
+    const preferred = hashName(space.name) % count;
+    let slot = preferred;
+    while (occupied.has(slot) && occupied.size < count) slot = (slot + 1) % count;
+    occupied.add(slot);
+    const shape = slot % 6, color = (shape + Math.floor(slot / 6)) % 6;
+    result.set(space.id, { shape: shapes[shape], color: colors[color] });
+  }
+  return result;
+}
+
+// Use the focused header over the lightest glass stop as a conservative backdrop.
+export function identityPill(name, t) {
+  const color = t[colors[hashName(name) % 6]];
   if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) return null;
   const rgb = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16));
   const luminance = values => values.reduce((sum, value, i) => {
@@ -16,4 +37,3 @@ export function identityPill(name, t) {
   const contrast = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
   return { background: color + "33", text: contrast >= 4.5 ? color : t.foreground };
 }
-

@@ -8,7 +8,7 @@ import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/p
 import * as children from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
-import { identityPill } from '../../assets/shared/look.js';
+import * as look from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
 interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: unknown[]) => unknown }
@@ -41,7 +41,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, identityPill, ...children, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, ...look, ...children, View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -49,6 +49,36 @@ function loadView(source: string, supplied: Record<string, unknown>): any {
 const palette = { chrome: '#101012', foreground: '#ececed', muted: '#b4b4b5', dim: '#969697', hover: '#262628', selected: '#29292a', raised: '#303031', input: '#242426', ansi1: '#ff5555', blocked: '#ffcb6b', working: '#ececed', idle: '#969697', done: '#969697', border: '#2f2f32' };
 const configured = [{ name: 'alpha.invalid' }, { name: 'beta.invalid' }, { name: 'gamma.invalid' }, { name: 'delta.invalid' }];
 const inventory = [{ name: 'alpha.invalid', state: 'connected' }, { name: 'beta.invalid', state: 'disconnected' }, { name: 'gamma.invalid', state: 'stopped' }];
+
+describe('space identity assignment', () => {
+  it.each([1, 6, 7, 37])('assigns stable space identities for %s spaces', count => {
+    const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string; color: string }> }).assignSpaceIdentities;
+    expect(typeof assign).toBe('function');
+    if (!assign) return;
+    const spaces = Array.from({ length: count }, (_, n) => ({ id: `id-${n}`, name: `space-${String(n).padStart(2, '0')}` }));
+    const assigned = assign(spaces);
+    expect([...assigned.entries()].sort()).toEqual([...assign([...spaces].reverse()).entries()].sort());
+    const values = spaces.map(space => assigned.get(space.id)!);
+    const pairs = new Set(values.map(value => `${value.shape}/${value.color}`));
+    expect(pairs.size).toBe(Math.min(count, 36));
+    if (count <= 6) {
+      expect(new Set(values.map(value => value.shape)).size).toBe(count);
+      expect(new Set(values.map(value => value.color)).size).toBe(count);
+      expect(values[0]).toEqual({ shape: 'triangle', color: 'ansi5' });
+    } else {
+      expect(values[0]).toEqual({ shape: 'triangle', color: 'ansi13' });
+    }
+  });
+
+  it('probes the next free slot in name order for collisions', () => {
+    const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string; color: string }> }).assignSpaceIdentities;
+    expect(typeof assign).toBe('function');
+    if (!assign) return;
+    const values = assign([{ id: 'later', name: 'space-06' }, { id: 'first', name: 'space-00' }]);
+    expect(values.get('first')).toEqual({ shape: 'triangle', color: 'ansi5' });
+    expect(values.get('later')).toEqual({ shape: 'diamond', color: 'ansi6' });
+  });
+});
 
 describe('machine consoles in the agent tree', () => {
   it('keeps consoles under their owner without adding duplicate top-level agents', () => {
@@ -83,6 +113,32 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(rendered.map(node => node.id)).toContain('ag-t1');
     if (width >= 160) expect(rendered.map(node => node.id)).toContain('sub-t2');
     expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
+  });
+
+  it('shows the same space shape in spaces and both agent views', async () => {
+    const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
+    const spaces = [{ id: 's1', name: 'space-00', tabs: [{ id: 'tab', name: 'charlie', named: true }] }];
+    const main = { address: 't1', pane: 'p1', tab: 'tab', space: 's1', space_name: 'space-00', status: 'working', seq: 1, title: 'charlie', program: { key: 'pi', name: 'pi', icon: 'pi.svg', agent: true } };
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const Spaces = loadView(clones.spaces.files['main.js'], { spaces: () => spaces, panes: () => [], theme: () => colors, props: () => props, shared: () => null, setShared: () => {}, run: () => {} });
+    const spaceView = new Spaces();
+    const spaceRow = spaceView.row({ w: spaces[0], i: 0, g: null, tree: null }, colors);
+    const nodes = (root: unknown): Node[] => data.has(root as object) ? all(root) : [root as Node, ...(root as Node).children.flatMap(all)];
+    const mark = (root: unknown) => nodes(root).find(node => node.svg === 'mods/spider-agents/space-triangle.svg');
+    expect(mark(spaceRow)).toBeDefined();
+    expect(call(mark(spaceRow)!, 'text_color')).toEqual(['#c792ea']);
+    const store = new Map<string, unknown>();
+    const { view } = await agentsView({ agents: () => [main], spaces: () => spaces, theme: () => colors }, store);
+    let root = view.render({});
+    let row = all(root).find(node => node.id === 'ag-t1')!;
+    expect(mark(row)).toBeDefined();
+    expect(call(mark(row)!, 'tooltip')).toEqual(['space-00']);
+    expect(nodes(row).flatMap(node => node.children)).not.toContain('space-00');
+    store.set('agents.sort', 'grouped'); root = view.render({});
+    const heading = all(root).find(node => node.id === 'sp-s1')!;
+    expect(mark(heading)).toBeDefined();
+    expect(call(mark(heading)!, 'text_color')).toEqual(['#c792ea']);
+    expect(nodes(heading).flatMap(node => node.children)).toContain('space-00');
   });
 
   it('renders the same coloured monospace session pill in both sort views', async () => {

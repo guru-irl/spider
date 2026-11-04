@@ -56,9 +56,16 @@ test.each([
   }
 });
 
+test('pi sessions use the spider mark while other programs retain their icons', () => {
+  const pi = render({ program: { name: 'pi', key: 'pi', icon: 'program-pi.svg', agent: true } });
+  expect(pi.items[0]).toMatchObject({ asset: 'mods/spider-tabs/spider.svg', styles: { size: [14], text_color: ['#99999b'] } });
+  const node = render({ program: { name: 'node', key: 'node', icon: 'program-node.svg' } });
+  expect(node.items[0]).toMatchObject({ asset: 'program-node.svg' });
+});
+
 test('a pi title renders the program logo, session pill and path in order', () => {
   const tree = render({ title: 'π - Planner - project', program: { name: 'pi', key: 'pi', icon: 'program-pi.svg', agent: true } });
-  expect(tree.items[0]).toMatchObject({ asset: 'program-pi.svg' });
+  expect(tree.items[0]).toMatchObject({ asset: 'mods/spider-tabs/spider.svg' });
   expect(tree.items[1]).toMatchObject({ items: ['Planner'], styles: { px: [8], h: [18], rounded: [999], bg: ['#ffffff14'], font_family: ['JetBrains Mono'], text_size: [11], tooltip: ['Planner'] } });
   expect(texts(tree.items[2])).toEqual(['/fixture/project']);
 });

@@ -309,6 +309,11 @@
         "id": "keep-elapsed-time",
         "anchor": "        .when(this.hovered === a.address, el => el.child(pin))\n        .when(this.hovered !== a.address && Boolean(when), el => el.child(",
         "replacement": "        .when(Boolean(when), el => el.child("
+      },
+      {
+        "id": "pi-agent-icon",
+        "anchor": "function icon(p, size, color) {",
+        "replacement": "function icon(p, size, color) {\n  if ((p?.key ?? p?.name)?.toLowerCase() === \"pi\") return svg(\"mods/spider-tabs/spider.svg\").size(size).flex_none().text_color(color);"
       }
     ],
     "spaces": [
@@ -402,7 +407,7 @@
       {
         "id": "spider-pane-icon",
         "anchor": "function icon(p, size, color) {",
-        "replacement": "function icon(p, size, color, kind) {\n  const fixed = kind === \"subagent-viewer\" ? \"mods/spider-agents/bot.svg\" : [\"remote-console\", \"remote-observer\"].includes(kind) ? \"mods/workspace-chrome/terminal.svg\" : null;\n  if (fixed) return svg(fixed).size(size).flex_none().text_color(color);"
+        "replacement": "function icon(p, size, color, kind) {\n  const fixed = kind === \"subagent-viewer\" ? \"mods/spider-agents/bot.svg\" : [\"remote-console\", \"remote-observer\"].includes(kind) ? \"mods/workspace-chrome/terminal.svg\" : null;\n  if (fixed) return svg(fixed).size(size).flex_none().text_color(color);\n  if ((p?.key ?? p?.name)?.toLowerCase() === \"pi\") return svg(\"mods/spider-tabs/spider.svg\").size(size).flex_none().text_color(color);"
       },
       {
         "id": "pi-session-title",

@@ -84,6 +84,18 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
   });
 
+  it('uses the spider mark for pi agents and keeps other program icons', async () => {
+    const mains = [
+      { address: 't1', status: 'working', seq: 1, title: 'alpha', program: { key: 'pi', name: 'pi', icon: 'pi.svg', agent: true } },
+      { address: 't2', status: 'working', seq: 2, title: 'beta', program: { key: 'node', name: 'node', icon: 'node.svg', tint: true, agent: true } },
+    ];
+    const { view } = await agentsView({ agents: () => mains });
+    const nodes = all(view.render({}));
+    expect(nodes.some(node => node.svg === 'mods/spider-tabs/spider.svg' && call(node, 'size')?.[0] === 16)).toBe(true);
+    expect(nodes.some(node => node.svg === 'pi.svg')).toBe(false);
+    expect(nodes.some(node => node.svg === 'node.svg' && call(node, 'size')?.[0] === 16)).toBe(true);
+  });
+
   it('does not render a Machines section for configured machines', async () => {
     const { view } = await agentsView();
     const rendered = all(view.render({}));

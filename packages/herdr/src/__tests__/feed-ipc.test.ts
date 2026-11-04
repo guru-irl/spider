@@ -347,3 +347,21 @@ it('rejects a foreign generation without steering or partial JSON', async () => 
     await publishSessionFeed(root, fixtureFeed()); expect(parseFeed(await readFile(join(root, 'sessions', owner.sessionId, 'session.json'), 'utf8'))).toMatchObject({ version: 1, sessionId: owner.sessionId });
   } finally { await endpoint.dispose(); }
 });
+
+it.each([1, 2, 3, 4])('retains a refresh arriving at coalesced drain completion after %i microtasks', async turns => {
+  let value = 'first', trailing: Promise<void> | undefined, arrived!: () => void;
+  const snapshots: string[] = [], arrival = new Promise<void>(resolveArrival => { arrived = resolveArrival; });
+  const publish = coalesceFeedWrites(() => {
+    snapshots.push(value);
+    return Promise.resolve().then(() => {
+      if (snapshots.length !== 1) return;
+      const enqueue = (remaining: number) => {
+        if (remaining) queueMicrotask(() => enqueue(remaining - 1));
+        else { value = 'last'; trailing = publish(); arrived(); }
+      };
+      enqueue(turns);
+    });
+  });
+  await publish(); await arrival; await trailing;
+  expect(snapshots).toEqual(['first', 'last']);
+});

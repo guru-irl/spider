@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile, chmod, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import * as publisher from '../feed/publisher.js';
+import * as writer from '../feed/writer.js';
 import * as codec from '../../assets/shared/feed.js';
 import type { Owner, SessionFeed } from '../contracts.js';
 let root: string | undefined;
-afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); root = undefined; });
+afterEach(async () => { vi.restoreAllMocks(); if (root) await rm(root, { recursive: true, force: true }); root = undefined; });
 async function fixture(): Promise<SessionFeed> {
   const scratch = resolve('.spider/scratch'); await mkdir(scratch, { recursive: true }); root = await mkdtemp(join(scratch, 'feed-heartbeat-'));
   const owner: Owner = { sessionId: 'planner' as Owner['sessionId'], generation: 'g' as Owner['generation'], terminal: { coreId: 'fixture' as Owner['terminal']['coreId'], terminalId: 't1' as Owner['terminal']['terminalId'], address: 't1' as Owner['terminal']['address'], socket: join(root, 'core.sock'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: null };
@@ -103,4 +104,55 @@ it('uses a matching heartbeat while old, malformed and different-generation side
   await rm(file('heartbeat.json'));
   expect((await read()).updatedAt).toBe(1000);
   expect(codec.applyFeedHeartbeat({ ...feed, lifecycle: 'closed' }, JSON.stringify({ version: 1, sessionId: 'planner', generation: 'g', updatedAt: 9000 })).updatedAt).toBe(1000);
+});
+
+it('skips a heartbeat while the same session has a content write in progress', async () => {
+  const feed = await fixture(); await publisher.publishSessionFeed(root!, feed);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolveGate => { release = resolveGate; });
+  const ready = new Promise<void>(resolveReady => { entered = resolveReady; });
+  const original = writer.withFeedWriterLock;
+  const lock = vi.spyOn(writer, 'withFeedWriterLock').mockImplementationOnce((r, s, operation) => original(r, s, async () => { entered(); await gate; return operation(); }));
+  const content = publisher.publishSessionFeed(root!, { ...feed, revision: 2, updatedAt: 3000, status: { ...feed.status, effective: 'working' } });
+  await ready;
+  let settled = false;
+  const heartbeat = publisher.publishSessionHeartbeat(root!, feed.owner, 4000).then(() => { settled = true; });
+  try {
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 200 });
+    expect(lock).toHaveBeenCalledTimes(1);
+  } finally { release(); await Promise.all([content, heartbeat]); }
+  expect(codec.parseFeed(await readFile(file(), 'utf8'))).toMatchObject({ revision: 2, status: { effective: 'working' } });
+  expect(JSON.parse(await readFile(file('heartbeat.json'), 'utf8')).updatedAt).toBe(3000);
+});
+it('collapses queued session publications into the latest trailing state', async () => {
+  const feed = await fixture(); await publisher.publishSessionFeed(root!, feed);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolveGate => { release = resolveGate; });
+  const ready = new Promise<void>(resolveReady => { entered = resolveReady; });
+  const original = writer.withFeedWriterLock;
+  const lock = vi.spyOn(writer, 'withFeedWriterLock').mockImplementationOnce((r, s, operation) => original(r, s, async () => { entered(); await gate; return operation(); }));
+  const first = publisher.publishSessionFeed(root!, { ...feed, revision: 2, updatedAt: 2000, status: { ...feed.status, message: 'state-0' } }); await ready;
+  const queued = Array.from({ length: 19 }, (_, i) => publisher.publishSessionFeed(root!, { ...feed, revision: i + 3, updatedAt: 3000 + i * 1000, status: { ...feed.status, message: `state-${i + 1}` } }));
+  release(); await Promise.all([first, ...queued]);
+  expect(lock).toHaveBeenCalledTimes(2);
+  expect(codec.parseFeed(await readFile(file(), 'utf8'))).toMatchObject({ revision: 21, status: { message: 'state-19' } });
+  expect(JSON.parse(await readFile(file('heartbeat.json'), 'utf8')).updatedAt).toBe(21000);
+});
+
+it.each([1, 2, 3, 4])('retains a publication arriving at drain completion after %i microtasks', async turns => {
+  const feed = await fixture(); await publisher.publishSessionFeed(root!, feed);
+  const original = writer.withFeedWriterLock;
+  let trailing: Promise<void> | undefined, arrived!: () => void;
+  const arrival = new Promise<void>(resolveArrival => { arrived = resolveArrival; });
+  vi.spyOn(writer, 'withFeedWriterLock').mockImplementationOnce((r, s, operation) => original(r, s, operation).then(value => {
+    const enqueue = (remaining: number) => {
+      if (remaining) queueMicrotask(() => enqueue(remaining - 1));
+      else { trailing = publisher.publishSessionFeed(root!, { ...feed, revision: 3, updatedAt: 3000, status: { ...feed.status, message: 'last' } }); arrived(); }
+    };
+    enqueue(turns); return value;
+  }));
+  await publisher.publishSessionFeed(root!, { ...feed, revision: 2, updatedAt: 2000, status: { ...feed.status, message: 'first' } });
+  await arrival; await trailing;
+  expect(codec.parseFeed(await readFile(file(), 'utf8'))).toMatchObject({ revision: 3, status: { message: 'last' } });
+  expect(JSON.parse(await readFile(file('heartbeat.json'), 'utf8')).updatedAt).toBe(3000);
 });

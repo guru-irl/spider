@@ -17,8 +17,9 @@ export function coalesceFeedWrites(write: () => Promise<void>): () => Promise<vo
   return () => {
     dirty = true;
     if (!pending) pending = Promise.resolve().then(async () => {
-      do { dirty = false; await write(); } while (dirty);
-    }).finally(() => { pending = undefined; });
+      try { do { dirty = false; await write(); } while (dirty); }
+      finally { pending = undefined; }
+    });
     return pending;
   };
 }
@@ -75,6 +76,7 @@ interface Published {
 }
 const published = new Map<string, Published>();
 const heartbeats = new Map<string, Promise<void>>();
+const feedWrites = new Map<string, { latest?: SessionFeed; pending: Promise<void> }>();
 const cacheKey = (root: string, sessionId: string) => `${resolve(root)}\0${sessionId}`;
 const stamp = (info: Stats) => [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs, info.mode, info.uid, info.nlink].join(':');
 async function privateMetadata(file: string, maxBytes: number): Promise<Stats> {
@@ -108,9 +110,16 @@ async function writeHeartbeat(root: string, owner: Pick<Owner, 'sessionId' | 'ge
   await atomicPrivateWrite(file, text);
   value.heartbeat = { at: updatedAt, stamp: stamp(await privateMetadata(file, 1024)) };
 }
+export function sessionFeedWritePending(root: string, owner: Pick<Owner, 'sessionId' | 'generation'>): boolean {
+  return feedWrites.has(`${cacheKey(root, owner.sessionId)}\0${owner.generation}`);
+}
 /** Independent of snapshot reads; concurrent renewals share one private writer lock. */
 export function publishSessionHeartbeat(root: string, owner: Pick<Owner, 'sessionId' | 'generation'>, updatedAt: number): Promise<void> {
   if (!Number.isSafeInteger(updatedAt) || updatedAt < 0) return Promise.reject(feedError('invalid-heartbeat'));
+  if (sessionFeedWritePending(root, owner)) return Promise.resolve();
+  return publishHeartbeat(root, owner, updatedAt);
+}
+function publishHeartbeat(root: string, owner: Pick<Owner, 'sessionId' | 'generation'>, updatedAt: number): Promise<void> {
   const key = cacheKey(root, owner.sessionId), taskKey = `${key}\0${owner.generation}`;
   const pending = heartbeats.get(taskKey); if (pending) return pending;
   const work = (async () => {
@@ -143,7 +152,22 @@ function boundedNotifications(notices: SessionFeed['notifications']): SessionFee
   }
   return result;
 }
-export async function publishSessionFeed(root: string, feed: SessionFeed): Promise<void> {
+/** Publications of one generation share a drain and retain only the latest queued state. */
+export function publishSessionFeed(root: string, feed: SessionFeed): Promise<void> {
+  const key = `${cacheKey(root, feed.sessionId)}\0${feed.generation}`, previous = feedWrites.get(key);
+  if (previous) { previous.latest = feed; return previous.pending; }
+  const state: { latest?: SessionFeed; pending: Promise<void> } = { latest: feed, pending: Promise.resolve() };
+  state.pending = Promise.resolve().then(async () => {
+    try {
+      while (state.latest) {
+        const next = state.latest; state.latest = undefined;
+        await writeSessionFeed(root, next);
+      }
+    } finally { feedWrites.delete(key); }
+  });
+  feedWrites.set(key, state); return state.pending;
+}
+async function writeSessionFeed(root: string, feed: SessionFeed): Promise<void> {
   const truncated: SessionFeed['errors'] = [];
   if (feed.approvals.length > MAX_ROWS) truncated.push({ source: 'approvals', message: 'Memory review list truncated.' });
   if (feed.triggers.length > MAX_ROWS) truncated.push({ source: 'triggers', message: 'Trigger list truncated.' });
@@ -176,7 +200,7 @@ export async function publishSessionFeed(root: string, feed: SessionFeed): Promi
   const contentHash = createHash('sha256').update(JSON.stringify({ ...bounded, revision: 0, updatedAt: 0 })).digest('hex');
   const known = published.get(key);
   if (feed.lifecycle === 'live' && known?.generation === feed.generation && known.lifecycle === 'live' && known.contentHash === contentHash && await unchanged(file, known.stamp, MAX_FEED_BYTES)) {
-    await publishSessionHeartbeat(root, feed, feed.updatedAt); return;
+    await publishHeartbeat(root, feed, feed.updatedAt); return;
   }
   await withFeedWriterLock(root, feed.sessionId, async () => {
     await ensureFeedWriter(root, feed);

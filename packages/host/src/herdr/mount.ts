@@ -17,7 +17,8 @@ import { isCoreAvailable } from '@spider/herdr/client/liveness';
 import { createAppClient } from '@spider/herdr/client/app';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { registerHerdrStatusContribution } from '@spider/herdr/status/register';
-import { publishSessionFeed, publishSessionHeartbeat, coalesceFeedWrites } from '@spider/herdr/feed/publisher';
+import { publishSessionFeed, publishSessionHeartbeat, sessionFeedWritePending, coalesceFeedWrites } from '@spider/herdr/feed/publisher';
+import { FEED_DISCONNECT_MS } from '../../../herdr/assets/shared/feed.js';
 import { startSessionEndpoint, type SessionEndpoint } from '@spider/herdr/feed/ipc-server';
 import { createAuxiliaryPanes, type AuxiliaryPaneActor } from '@spider/herdr/jobs/placement';
 import { openRemoteObserver, type ObserverHandle } from '@spider/herdr/jobs/observer';
@@ -168,6 +169,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   let unsubscribe: (() => void) | undefined;
   let routing: Disposable | undefined, shortcuts: Disposable | undefined;
   let stopped = false, coreLost = false, disposed = false, lifecycle = 0, publishing: Promise<void> = Promise.resolve();
+  let feedBusySince: number | undefined, feedBusyNotified = false;
   let coreWatch: ReturnType<typeof setInterval> | undefined, coreProbe: Promise<void> | undefined;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined, heartbeatPending: Promise<void> = Promise.resolve();
   let activationEnv: Readonly<NodeJS.ProcessEnv> | null = null;
@@ -209,6 +211,16 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     }
     notifyError(ctx, error);
   };
+  const feedResult = (work: Promise<void>): Promise<void> => work.then(() => {
+    feedBusySince = undefined; feedBusyNotified = false;
+  }, error => {
+    if (!(error instanceof HerdrError) || error.code !== 'lock-occupied') throw error;
+    const now = Date.now(); feedBusySince ??= now;
+    if (!feedBusyNotified && now - feedBusySince >= FEED_DISCONNECT_MS) {
+      feedBusyNotified = true;
+      report(new HerdrError('feed-write-stalled', 'Session feed updates are blocked by a busy operation lock.'));
+    }
+  });
   // Optional embedding APIs and bookkeeping errors are handled at the pi boundary.
   const registrationPi = new Proxy(pi, { get(target, key) {
     if (key === 'on') return (name: string, handler: Function) => (pi.on as Function)(name, (event: unknown, ...args: unknown[]) => {
@@ -266,13 +278,13 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     const feed = await currentSource.snapshot({ ...current });
     if (owner === current && !stopped) await publishSessionFeed(join(need(config).globalRoot, 'herdr'), feed);
   });
-  const publish = () => { publishing = writeFeed(); return publishing; };
+  const publish = () => { publishing = feedResult(writeFeed()); return publishing; };
   const closeFeed = async (final = false, handoff: 'disposed' | 'wrong-generation' = 'disposed') => {
     stopped = true; unsubscribe?.(); unsubscribe = undefined;
     clearInterval(heartbeatTimer); heartbeatTimer = undefined;
     await publishing.catch(report); await heartbeatPending.catch(report);
     if (final && source && owner && config) {
-      try { await publishSessionFeed(join(config.globalRoot, 'herdr'), await source.snapshot(owner, 'closed')); }
+      try { await feedResult(publishSessionFeed(join(config.globalRoot, 'herdr'), await source.snapshot(owner, 'closed'))); }
       catch (error) { report(error); }
     }
     source?.dispose(); source = null; transcript?.dispose(); transcript = null;
@@ -625,8 +637,8 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     });
     const startingSource = source, feedRoot = join(need(config).globalRoot, 'herdr');
     heartbeatTimer = setInterval(() => {
-      if (stopped || owner !== current || source !== startingSource) return;
-      heartbeatPending = publishSessionHeartbeat(feedRoot, current, Date.now());
+      if (stopped || owner !== current || source !== startingSource || sessionFeedWritePending(feedRoot, current)) return;
+      heartbeatPending = feedResult(publishSessionHeartbeat(feedRoot, current, Date.now()));
       void heartbeatPending.catch(report);
     }, 2000);
     heartbeatTimer.unref?.();

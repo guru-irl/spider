@@ -1,4 +1,4 @@
-import { writePlacementRepair } from '../jobs/placement-repairs.js';
+import { readPlacementRepairs, writePlacementRepair } from '../jobs/placement-repairs.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from 'node:crypto';
@@ -627,4 +627,34 @@ test('doctor reports a durable failed pane repair after the actor exits', async 
   });
   const report = await doctorHerdr(f.request, f.doctorParts);
   expect(report.failures).toContainEqual(expect.objectContaining({ item: 'pane-repairs', code: 'pane-repair-pending', message: expect.stringContaining('foreign-pane') }));
+});
+
+
+test.each(['gone', 'moved', 'app changed', 'core changed'] as const)('doctor clears a pane repair when its viewer is %s', async state => {
+  const f = await fixture(), root = join(f.request.config.globalRoot, 'herdr/panes');
+  const placed = { space: 'space', tab: 'tab', pane: 'wrong-pane' } as never;
+  await writePlacementRepair(root, { viewer: 'viewer' as never, app: 'fixture', coreId: 'core', anchor: { space: 'space', tab: 'tab', pane: 'owner-pane' } as never, placed, error: 'park-refused' });
+  const report = await doctorHerdr(f.request, { ...f.doctorParts, placementRepairInspection: async () => ({
+    app: state === 'app changed' ? 'new-app' : 'fixture', coreId: state === 'core changed' ? 'new-core' : 'core',
+    placement: async () => state === 'gone' ? null : state === 'moved' ? { space: 'space', tab: 'tab', pane: 'safe-pane' } as never : placed,
+  }) });
+  expect(report.failures.filter(failure => failure.item === 'pane-repairs')).toEqual([]);
+  expect(await readPlacementRepairs(root)).toEqual([]);
+});
+
+test('doctor names the exact pending repair file and explains how to clear it', async () => {
+  const f = await fixture(), root = join(f.request.config.globalRoot, 'herdr/panes');
+  await writePlacementRepair(root, { viewer: 'viewer' as never, app: 'fixture', coreId: 'core', anchor: { space: 'space', tab: 'tab', pane: 'owner-pane' } as never, placed: { space: 'space', tab: 'tab', pane: 'wrong-pane' } as never, error: 'park-refused' });
+  const [name] = await fs.readdir(join(root, 'repairs'));
+  const report = await doctorHerdr(f.request, { ...f.doctorParts, placementRepairInspection: async () => ({ app: 'fixture', coreId: 'core', placement: async () => ({ space: 'space', tab: 'tab', pane: 'wrong-pane' } as never) }) });
+  expect(report.failures.find(failure => failure.code === 'pane-repair-pending')?.repair).toContain(join(root, 'repairs', name));
+  expect(report.failures.find(failure => failure.code === 'pane-repair-pending')?.repair).toContain('rerun doctor');
+  expect(await readPlacementRepairs(root)).toHaveLength(1);
+});
+
+
+test('doctor does not inspect app or core placement when no repair record exists', async () => {
+  const f = await fixture();
+  const report = await doctorHerdr(f.request, { ...f.doctorParts, placementRepairInspection: async () => { throw new Error('No repair needs inspection'); } });
+  expect(report.failures.filter(failure => failure.item === 'pane-repairs')).toEqual([]);
 });

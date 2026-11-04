@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { paneBounds, type PaneTree } from '../pane-geometry.js';
 import { createFakeAppBoundary, stageFakeAppDaemon } from '../fake-app.js';
 import { createConnection, createServer } from 'node:net';
 import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -304,4 +305,23 @@ it('rejects a tab move past the end without changing tab order', async () => {
   const first = await app.command('space.new', { argv: ['pi'] });
   await expect(app.command('tab.move', { id: first.tab, index: 2 })).rejects.toMatchObject({ code: 'invalid-args' });
   expect((await app.command('ls', {}) as any).spaces[0].tabs.map((tab: any) => tab.id)).toEqual([first.tab]);
+});
+
+
+it('reports a downward split and its sideways child as distinct layout geometry', async () => {
+  const core = coreBoundary(), app = createFakeAppBoundary({ hc: core.hc });
+  const owner = await app.command('space.new', { name: 'Geometry' });
+  const first = await core.hc(['run']) as { address: string };
+  await app.command('pane.focus', { terminal: owner.terminal });
+  await app.command('terminal.keep', { terminal: first.address, place: 'down' }); await app.drain();
+  const second = await core.hc(['run']) as { address: string };
+  await app.command('pane.focus', { terminal: first.address });
+  await app.command('terminal.keep', { terminal: second.address, place: 'right' }); await app.drain();
+  const world = await app.command('ls', {}) as { spaces: { tabs: { root: PaneTree; terminals: { pane: string; terminal: string }[] }[] }[] };
+  const tab = world.spaces[0].tabs[0];
+  expect(tab.root, 'reported tab split tree').toBeDefined();
+  const boxes = paneBounds(tab.root);
+  expect(boxes.find(row => row.id === tab.terminals.find(row => row.terminal === owner.terminal)!.pane)).toMatchObject({ x: 0, y: 0, width: 1, height: 0.5 });
+  expect(boxes.find(row => row.id === tab.terminals.find(row => row.terminal === first.address)!.pane)).toMatchObject({ x: 0, y: 0.5, width: 0.5, height: 0.5 });
+  expect(boxes.find(row => row.id === tab.terminals.find(row => row.terminal === second.address)!.pane)).toMatchObject({ x: 0.5, y: 0.5, width: 0.5, height: 0.5 });
 });

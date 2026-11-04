@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect } from 'vitest';
+import { paneBounds, type PaneTree } from '../harness/pane-geometry.js';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
@@ -78,7 +79,7 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         const automatic = placed(await f.app.ls());
         expect(automatic, 'automatic-viewers-stay-parked').toEqual(main);
         const dimensions = (await coreRows(suite)).find(row => row.address === parent.pi.terminal);
-        expect(dimensions.cols).toBeGreaterThanOrEqual(161); expect(dimensions.rows).toBeGreaterThanOrEqual(42);
+        expect(dimensions.cols).toBeGreaterThanOrEqual(161); expect(dimensions.rows).toBeGreaterThanOrEqual(45);
         sidebar = await mountPanel(f, 'spider-agents');
         const openedRuns = [] as typeof runs;
         let callsBefore = 0, actionsBefore = 0;
@@ -110,9 +111,21 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         const after = placed(await f.app.ls());
         expect(runs.filter(run => after.some(pane => pane.terminal === run.viewer))).toHaveLength(3);
         const ownerTab = (await f.app.ls() as any).spaces.flatMap((space: any) => space.tabs).find((tab: any) => tab.id === parent.placement.tab);
-        const reportedOrder = ownerTab.terminals.map((pane: any) => pane.terminal);
-        expect(reportedOrder.indexOf(runs[0].viewer), 'first-viewer-follows-owner').toBeGreaterThan(reportedOrder.indexOf(parent.pi.terminal));
-        expect(reportedOrder.indexOf(runs[1].viewer), 'second-viewer-follows-first').toBe(reportedOrder.indexOf(runs[0].viewer) + 1);
+        let root: PaneTree | undefined = ownerTab.root;
+        if (!root) {
+            const reply = await suite.cores!.hc(['connect'], 'local', { input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'doc.get', params: { name: 'herdr-app' } }) + '\n' });
+            expect(reply.exitCode, reply.stderr).toBe(0);
+            root = (reply.json as any).result.value.spaces.find((space: any) => space.id === parent.placement.space)?.tabs.find((tab: any) => tab.id === parent.placement.tab)?.root;
+        }
+        expect(root, 'reported-owner-tab-split-tree').toBeDefined();
+        const boxes = paneBounds(root!);
+        const box = (terminal: string) => boxes.find(box => box.id === after.find(pane => pane.terminal === terminal)!.pane)!;
+        const ownerBox = box(parent.pi.terminal), firstBox = box(runs[0].viewer), secondBox = box(runs[1].viewer);
+        expect(firstBox.y, 'first-viewer-is-below-owner').toBeCloseTo(ownerBox.y + ownerBox.height);
+        expect(firstBox.x).toBeCloseTo(ownerBox.x);
+        expect(secondBox.y, 'second-viewer-shares-the-lower-row').toBeCloseTo(firstBox.y);
+        expect(secondBox.x, 'second-viewer-is-to-the-right').toBeCloseTo(firstBox.x + firstBox.width);
+        await suite.evidence('viewer-split-tree.json', { root, ownerBox, firstBox, secondBox });
         const fallback = after.find(pane => pane.terminal === runs[2].viewer)!;
         await activateChildAction(sidebar, `sub-${runs[2].id}`, { op: 'openRun', runId: runs[2].id });
         expect(placed(await f.app.ls())).toEqual(after);
@@ -141,14 +154,14 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         expect(closed.some(pane => pane.terminal === runs[2].viewer)).toBe(false);
         expect(closed.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal))).toEqual(after.filter(pane => runs.slice(0, 2).some(run => run.viewer === pane.terminal)));
         expect(mainOnly(main, closed)).toEqual(main);
-        await suite.evidence('user-open-placement.json', { feed, retained, main, automatic, after, closed, evictionCalls, smallSize, reportedOrder, dimensions: { cols: dimensions.cols, rows: dimensions.rows } });
+        await suite.evidence('user-open-placement.json', { feed, retained, main, automatic, after, closed, evictionCalls, smallSize, splitTree: root, dimensions: { cols: dimensions.cols, rows: dimensions.rows } });
 
     } finally { for (const name of names) gates.release(`held-${name}`); await sidebar?.close(); }
 }
 
 async function assertEvictionIsCaught(suite: Suite): Promise<void> {
-    const from = 'if (explicit && s.kind === "subagent" && displayOptions.ownerRelative) return showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName]);';
-    const to = 'if (explicit && s.kind === "subagent" && displayOptions.ownerRelative) { const victim = [...slots.values()].find(value => value.owner.sessionId === s.owner.sessionId && value.reservation); if (victim?.reservation) await release(victim.reservation); return showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName]); }';
+    const from = 'if (explicit && s.kind === "subagent" && displayOptions.ownerRelative) return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);';
+    const to = 'if (explicit && s.kind === "subagent" && displayOptions.ownerRelative) { const victim = [...slots.values()].find(value => value.owner.sessionId === s.owner.sessionId && value.reservation); if (victim?.reservation) await release(victim.reservation); return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed); }';
     const control = packedControl({ packedRoot: suite.packed.root, destination: suite.ownPath(join(suite.root, 'evicting-packed')), kind: 'view-eviction', mutation: { operation: 'replace', file: 'dist/extension.js', from, to } });
     const caught = await requireCaughtControl(control, async packedRoot => {
         const childSuite = await createSuite({ tier: 'headless', story: storyId('H-s35-eviction') });

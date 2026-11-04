@@ -8,6 +8,7 @@ import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/p
 import * as children from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
+import { identityPill } from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
 interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: unknown[]) => unknown }
@@ -40,7 +41,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, ...children, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, identityPill, ...children, View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -82,6 +83,23 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(rendered.map(node => node.id)).toContain('ag-t1');
     if (width >= 160) expect(rendered.map(node => node.id)).toContain('sub-t2');
     expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
+  });
+
+  it('renders the same coloured monospace session pill in both sort views', async () => {
+    const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
+    const main = { address: 't1', pane: 'p1', tab: 'tab', space: 's1', space_name: 'sample', status: 'working', seq: 1, title: 'charlie', program: { key: 'pi', name: 'pi', icon: 'pi.svg', agent: true } };
+    const store = new Map<string, unknown>();
+    const { view } = await agentsView({ agents: () => [main], spaces: () => [{ id: 's1', name: 'sample', tabs: [{ id: 'tab', name: 'charlie', named: true }] }], theme: () => colors }, store);
+    for (const sort of ['priority', 'grouped']) {
+      store.set('agents.sort', sort);
+      const row = all(view.render({})).find(node => node.id === 'ag-t1')!;
+      const name = [row, ...row.children.flatMap(all)].find(node => node.children.includes('charlie') || node.children.includes('· charlie'))!;
+      expect(call(name, 'bg')).toEqual(['#82aaff33']);
+      expect(call(name, 'text_color')).toEqual(['#ececed']);
+      expect(call(name, 'font_family')).toEqual(['JetBrains Mono']);
+      expect(call(name, 'h')).toEqual([18]);
+      expect(call(name, 'rounded')).toEqual([999]);
+    }
   });
 
   it('uses the spider mark for pi agents and keeps other program icons', async () => {

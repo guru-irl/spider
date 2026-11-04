@@ -430,7 +430,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const current = JSON.parse(await readFile(join(request.config.app.home, 'layouts/main.json'), 'utf8'));
     files.push({ path: join(request.config.app.home, 'layouts/spider-glass.json'), bytes: Buffer.from(JSON.stringify(buildGlassLayout(current, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', bodyFont: fonts.families.body, props: { ...props, spider: props.panel } }), null, 2)) });
     for (const font of fonts.files) files.push({ path: join(request.config.app.home, 'fonts', font.fileName), bytes: font.bytes });
-    for (const copy of context.modProps) files.push({ path: join(copy.directory, 'shared/feed.js'), bytes: await readFile(join(assets, 'shared/feed.js')) });
+    for (const copy of context.modProps) for (const name of ['feed.js', 'look.js']) files.push({ path: join(copy.directory, 'shared', name), bytes: await readFile(join(assets, 'shared', name)) });
     return filesFor(files, context);
   };
   const templates = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
@@ -517,7 +517,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'mods') {
         const files: InstallFile[] = [];
         for (const file of await assetFiles(join(packageRoot, 'packages/herdr/assets/mods/spider'))) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes, expected: null });
-        for (const mod of context.modProps) files.push({ path: join(mod.directory, 'shared/feed.js'), bytes: await readFile(join(packageRoot, 'packages/herdr/assets/shared/feed.js')), expected: null });
+        for (const mod of context.modProps) for (const name of ['feed.js', 'look.js']) files.push({ path: join(mod.directory, 'shared', name), bytes: await readFile(join(packageRoot, 'packages/herdr/assets/shared', name)), expected: null });
         const result = await compareFiles(files); return result.failures.length ? result : loadingUnavailable(['spider-panel']);
       }
       if (item === 'clones') { const result = await compareFiles((await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome)\//.test(file.path))); return result.failures.length ? result : loadingUnavailable(['spider-agents', 'spider-spaces', 'spider-pane', 'spider-tabs', 'spider-chrome']); }

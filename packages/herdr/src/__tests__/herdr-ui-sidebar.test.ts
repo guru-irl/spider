@@ -9,6 +9,7 @@ import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/p
 import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren } from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
+import { identityPill } from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
 interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: any[]) => unknown; hoverChange?: (...args: any[]) => unknown; hoverStyle?: (value: any) => unknown }
@@ -41,7 +42,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, identityPill, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -191,13 +192,13 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
       const node = all(rendered).find(node => node.id === id)!;
       return [node, ...node.children.flatMap(all)].flatMap(n => n.children.filter((c): c is string => typeof c === 'string'));
     };
-    expect(rowWords('ag-t1')).toContain('· Planner');
-    expect(rowWords('ag-t2')).toContain('· Builder two');
-    expect(rowWords('ag-t3')).toContain('· Named tab');
-    expect(rowWords('ag-t4')).toContain('· 123');
+    expect(rowWords('ag-t1')).toContain('Planner');
+    expect(rowWords('ag-t2')).toContain('Builder two');
+    expect(rowWords('ag-t3')).toContain('Named tab');
+    expect(rowWords('ag-t4')).toContain('123');
     view.spiderFeeds.push({ owner: { name: '42', terminal: { address: 't3' } }, runs: { rows: [] } });
     rendered = view.render({});
-    expect(rowWords('ag-t3')).toContain('· 42');
+    expect(rowWords('ag-t3')).toContain('42');
     sorting = 'grouped'; rendered = view.render({});
     expect(rowWords('ag-t1')).toContain('Planner');
     expect(rowWords('ag-t2')).toContain('Builder two');

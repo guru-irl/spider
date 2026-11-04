@@ -58,6 +58,7 @@
     "packages/herdr/assets/mods/spider/main.js",
     "packages/herdr/assets/mods/spider/mod.json",
     "packages/herdr/assets/shared/feed.js",
+    "packages/herdr/assets/shared/look.js",
     "packages/herdr/assets/shell/resume.sh",
     "packages/herdr/assets/templates/role-instructions.md",
     "packages/herdr/assets/templates/role.md",

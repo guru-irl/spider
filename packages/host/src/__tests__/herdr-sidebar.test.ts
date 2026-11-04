@@ -29,6 +29,7 @@ let ports: ReturnType<typeof createProductionHerdrCliPorts> | undefined;
 let source: string;
 let children: Record<string, unknown>;
 let sharedFeed: Record<string, unknown>;
+let sharedLook: Record<string, unknown>;
 let doctorFailures: unknown;
 let upgradeEvidence: { previousLayout: any; previousAgents: string; previousIcon: string; oldJournalHash: string | null; oldIconHash: string; oldChevronAbsent: boolean; refusedEdit: boolean; editPreserved: boolean; writes: readonly string[]; probes: readonly unknown[] };
 
@@ -129,6 +130,7 @@ else console.log('{"spaces":[]}');\n`);
   source = await readFile(join(agentDir, 'main.js'), 'utf8');
   children = await import(pathToFileURL(join(agentDir, 'spider-children.js')).href);
   sharedFeed = await import(pathToFileURL(join(agentDir, 'shared/feed.js')).href);
+  sharedLook = await import(pathToFileURL(join(agentDir, 'shared/look.js')).href);
 }, 120_000);
 
 afterAll(async () => {
@@ -160,7 +162,7 @@ function elements(root: Element): Element[] {
   return [value, ...value.children.filter(x => typeof x === 'object' && x !== null).flatMap(x => elements(x as Element))];
 }
 function loadView(supplied: Record<string, unknown>): any {
-  const dependencies = { ...children, ...supplied };
+  const dependencies = { ...children, ...sharedLook, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('dependencies', `const { ${Object.keys(dependencies).join(', ')} } = dependencies; ${code}; return ${name};`)(dependencies);
@@ -174,6 +176,21 @@ function failedFeed(now: number) {
 describe('installed agents sidebar', () => {
   test('setup verifies patches applied to the real upstream mods', () => {
     expect(doctorFailures).toEqual([]);
+  });
+
+  test('setup installs the shared look module and records its digest', async () => {
+    const h = harness!;
+    const packaged = await readFile(resolve('packages/herdr/assets/shared/look.js')).catch(() => null);
+    expect(packaged).not.toBeNull();
+    if (!packaged) return;
+    const request = await ports!.request(join(h.root, 'config.json'));
+    const journal = await readJournal(request.journalRoot);
+    for (const mod of ['agents', 'spaces', 'pane']) {
+      const path = join(h.directories.app, `mods/spider-${mod}/shared/look.js`);
+      const installed = await readFile(path).catch(() => null);
+      expect(installed).toEqual(packaged);
+      expect(journal.entries.find(entry => entry.path === path)?.after).toBe(digest(packaged));
+    }
   });
 
   test('setup installs the parent icon and records its digest', async () => {

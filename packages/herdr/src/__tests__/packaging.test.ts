@@ -93,6 +93,7 @@ describe.sequential('published Herdr artifact', () => {
       'packages/herdr/LICENSE', 'NOTICE.md', 'LICENSE',
     ]));
     expect(packed.files).toContain('packages/herdr/assets/agents/corner-up-left.svg');
+    expect(packed.files).toContain('packages/herdr/assets/shared/look.js');
     expect(packed.files).not.toContain('dist/herdr/metrics-runtime.mjs');
     expect(packed.frozenBuiltinMods).toEqual([]);
     expect(packed.remoteNonBuiltinImports).toEqual([]);

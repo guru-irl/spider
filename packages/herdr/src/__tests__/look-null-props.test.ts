@@ -50,7 +50,8 @@ async function load(mod: 'agents' | 'spaces', supplied: null | undefined | Recor
   const childSource = (await readFile(new URL('../../assets/agents/children.js', import.meta.url), 'utf8')).replace("'./shared/feed.js'", JSON.stringify(sharedUrl));
   code = code.replace('"./move-menu.js"', JSON.stringify(url(menu)))
     .replace('"./spider-children.js"', JSON.stringify(url(childSource)))
-    .replace('"./shared/feed.js"', JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href));
+    .replace('"./shared/feed.js"', JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href))
+    .replace('"./shared/look.js"', JSON.stringify(new URL('../../assets/shared/look.js', import.meta.url).href));
   code = 'const localStorage = { removeItem: () => {}, getItem: () => null, setItem: () => {} };\n' + code;
   const cx: any = { notify() {}, timer: { every() {} }, spawn(fn: (cx: any) => unknown) { tasks.push(Promise.resolve().then(() => fn(cx))); } };
   try {

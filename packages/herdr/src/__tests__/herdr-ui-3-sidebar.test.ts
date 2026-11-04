@@ -158,6 +158,29 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     }
   });
 
+  it('counts only live consoles including nested consoles on a collapsed owner', async () => {
+    const mains = [{ address: 't1', status: 'working', seq: 1, title: 'alpha' }, { address: 't9', status: 'working', seq: 2, title: 'beta' }];
+    const terminals = [
+      { address: 't2', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },
+      { address: 'alpha.invalid/c1', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } },
+      { address: 'beta.invalid/c2', parent: 't2', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'beta.invalid', 'spider.run': 'run-one' } },
+      { address: 'alpha.invalid/c3', parent: 't1', state: 'finished', status: 'done', exitCode: 0, reason: 'exited', finishedAt: Date.now() - 1000, labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } },
+    ];
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals });
+    view.folded.add('t1'); view.folded.add('t9');
+    let rendered = all(view.render({}));
+    const pill = rendered.find(node => node.id === 'console-count-t1');
+    expect(pill).toBeDefined();
+    expect(pill!.children).toContain('2');
+    expect(pill!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/terminal.svg' && call(node, 'size')?.[0] === 11)).toBe(true);
+    expect(call(pill!, 'rounded')).toEqual([999]);
+    expect(rendered.find(node => node.id === 'console-count-t9')).toBeUndefined();
+    pill!.click!({}, { stop_propagation() {}, notify() {} });
+    expect(view.folded.has('t1')).toBe(false);
+    rendered = all(view.render({}));
+    expect(rendered.find(node => node.id === 'console-count-t1')).toBeUndefined();
+  });
+
   it('uses the spider mark for pi agents and keeps other program icons', async () => {
     const mains = [
       { address: 't1', status: 'working', seq: 1, title: 'alpha', program: { key: 'pi', name: 'pi', icon: 'pi.svg', agent: true } },

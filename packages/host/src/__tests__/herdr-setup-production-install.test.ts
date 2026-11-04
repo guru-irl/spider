@@ -301,6 +301,39 @@ test.each(['layout-theme', 'keys', 'patch-version'] as const)('production doctor
   expect((await (await f.ports.doctorParts(f.request)).inspect(item, f.request)).failures.length).toBeGreaterThan(0);
 });
 
+test('production doctor accepts folded sidebar blocks', async () => {
+  const f = await fixture();
+  await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
+  await setupHerdr(f.request, f.parts);
+  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const layout = JSON.parse(await readFile(path, 'utf8'));
+  const found: string[] = [];
+  const visit = (node: any) => {
+    if (['brand', 'agents', 'sidebar-footer'].includes(node.id)) { node.hidden = true; found.push(node.id); }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(layout);
+  expect(found.sort()).toEqual(['agents', 'brand', 'sidebar-footer']);
+  await writeFile(path, JSON.stringify(layout));
+  expect((await (await f.ports.doctorParts(f.request)).inspect('layout-theme', f.request)).failures).toEqual([]);
+});
+
+test('production doctor rejects a missing sidebar agent block', async () => {
+  const f = await fixture();
+  await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
+  await setupHerdr(f.request, f.parts);
+  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const layout = JSON.parse(await readFile(path, 'utf8'));
+  const visit = (node: any) => {
+    if (!node.children) return;
+    node.children = node.children.filter((child: any) => child.id !== 'agents');
+    for (const child of node.children) visit(child);
+  };
+  visit(layout); await writeFile(path, JSON.stringify(layout));
+  expect((await (await f.ports.doctorParts(f.request)).inspect('layout-theme', f.request)).failures)
+    .toContainEqual(expect.objectContaining({ code: 'layout-mod-mismatch' }));
+});
+
 test('production doctor does not confuse unrelated shared edits with seven broken features', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
   const parts = await f.ports.doctorParts(f.request);

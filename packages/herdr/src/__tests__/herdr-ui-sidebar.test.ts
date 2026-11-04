@@ -42,7 +42,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, View: class {}, ...ui, localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -73,6 +73,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
       { id: 'brand' }, { id: 'sidebar-lists', children: [{ id: 'spaces' }, { id: 'agents' }] }, { id: 'sidebar-footer' },
     ] };
     const sharedValues = new Map<string, unknown>([['sidebar.width', 310]]);
+    const stored = new Map<string, string>();
     const commands: unknown[][] = [];
     const run = (name: string, args: any) => {
       commands.push([name, args]);
@@ -85,15 +86,15 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const ports = { spaces: () => spaces, machines: () => [{ name: 'alpha.invalid', layout: 'ready' }], panes: () => [],
       theme: () => palette, props: () => props, shared: (key: string) => sharedValues.get(key) ?? null,
       setShared: (key: string, value: unknown) => sharedValues.set(key, value), layout: () => sidebar,
-      window: () => ({ platform: 'macos' }), run, localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+      window: () => ({ platform: 'macos' }), run, localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value), removeItem: (key: string) => stored.delete(key) },
       agents: () => [{ address: 't1', pane: 'p1', space: 'a', space_name: 'space-00', status: 'working', seq: 1 }],
       terminals: () => [], focused: () => null, setAgentOrder: () => {}, openOverlay: () => {}, closeOverlay: () => {} };
     const Spaces = loadView(clones.spaces.files['main.js'], ports), Agents = loadView(clones.agents.files['main.js'], ports);
-    const spaceView = new Spaces();
-    Object.assign(spaceView, { shown: new Set(spaces.map(s => s.id)), git: {}, born: {}, machines: [{ name: 'alpha.invalid', state: 'connected' }], reconnecting: {}, folded: new Set([null, 'alpha.invalid']), pressed: null, over: null });
+    const makeSpaceView = () => Object.assign(new Spaces(), { shown: new Set(spaces.map(s => s.id)), git: {}, born: {}, machines: [{ name: 'alpha.invalid', state: 'connected' }], reconnecting: {}, folded: new Set([null, 'alpha.invalid']), pressed: null, over: null });
+    const spaceView = makeSpaceView();
     const agentView = new Agents();
     Object.assign(agentView, { folded: new Set(), changed: {}, pendingPins: [], migratingPins: new Set(), spiderFeeds: [], listed: new Map() });
-    return { spaceView, agentView, sidebar, sharedValues, commands, spaces };
+    return { spaceView, agentView, sidebar, sharedValues, stored, commands, spaces, restart: () => { sharedValues.clear(); return makeSpaceView(); } };
   }
 
   it('puts the expand control first and restores the expanded sidebar', async () => {
@@ -151,8 +152,8 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
   it('tracks width changes without revealing panels that were already hidden', async () => {
     const { spaceView, sidebar, commands } = await railFixture();
     sidebar.size.px = 268;
-    sidebar.children[2].hidden = true;
     spaceView.render();
+    sidebar.children[2].hidden = true;
     expect(commands.filter(([name]) => name === 'layout.show' || name === 'layout.hide')).toEqual([]);
     sidebar.size.px = 44;
     spaceView.render();
@@ -162,6 +163,58 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(sidebar.children[0].hidden).toBe(false);
     expect(sidebar.children[1].children[1].hidden).toBe(false);
     expect(sidebar.children[2].hidden).toBe(true);
+  });
+
+  it('restores all folded blocks after a restart with saved state', async () => {
+    const { spaceView, sidebar, stored, restart } = await railFixture();
+    spaceView.render();
+    expect(stored.size).toBeGreaterThan(0);
+    const restarted = restart();
+    sidebar.size.px = 268;
+    restarted.render();
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([false, false, false]);
+  });
+
+  it('recovers folded blocks after both memory and saved state are lost', async () => {
+    const { spaceView, sidebar, stored, restart } = await railFixture();
+    spaceView.render();
+    stored.clear();
+    const restarted = restart();
+    restarted.render();
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([true, true, true]);
+    sidebar.size.px = 268;
+    restarted.render();
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([false, false, false]);
+  });
+
+  it('restores every block when saved state is missing at a wide restart', async () => {
+    const { spaceView, sidebar, stored, restart } = await railFixture();
+    sidebar.size.px = 268;
+    spaceView.render();
+    sidebar.children[2].hidden = true;
+    sidebar.size.px = 44;
+    spaceView.render();
+    stored.clear();
+    const restarted = restart();
+    sidebar.size.px = 268;
+    restarted.render();
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([false, false, false]);
+  });
+
+  it('keeps a block hidden by the user before folding across a restart', async () => {
+    const { spaceView, sidebar, restart } = await railFixture();
+    sidebar.size.px = 268;
+    spaceView.render();
+    sidebar.children[2].hidden = true;
+    sidebar.size.px = 44;
+    spaceView.render();
+    const restarted = restart();
+    restarted.render();
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([true, true, true]);
+    sidebar.size.px = 268;
+    restarted.render();
+    restarted.render();
+    expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([false, false, true]);
   });
 
   it('lists a new space even while its metadata is pending', async () => {

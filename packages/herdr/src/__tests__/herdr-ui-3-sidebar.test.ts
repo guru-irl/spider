@@ -176,26 +176,138 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(rendered.some(node => node.id?.startsWith('agents-filter-') || node.id === 'agents-clear-filters')).toBe(false);
   });
 
-  it('space headings in the grouped view show a count pill instead of the caret', async () => {
+  const groupedFixtures = () => {
     const spaces = [{ id: 's1', name: 'bundler', tabs: [] }];
-    const agents = [1, 2, 3, 4].map(n => ({ address: `t${n}`, pane: `p${n}`, tab: 'tab', space: 's1', space_name: 'bundler', status: n === 1 ? 'working' : 'idle', seq: n, title: `agent ${n}` }));
-    const store = new Map<string, unknown>([['agents.sort', 'grouped']]);
-    const { view } = await agentsView({ agents: () => agents, spaces: () => spaces }, store);
+    const mains = [1, 2].map(n => ({ address: `t${n}`, pane: `p${n}`, space: 's1', space_name: 'bundler', status: 'idle', seq: n, title: `agent ${n}` }));
+    const terminals = [
+      { address: 't3', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },
+      { address: 't4', parent: 't1', state: 'live', status: 'idle', labels: {} },
+      { address: 'alpha.invalid/c1', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } },
+      ...['job-one', 'job-two'].map(id => ({ address: `alpha.invalid/${id}`, parent: 't1', state: 'live', status: id === 'job-one' ? 'blocked' : 'idle', labels: { 'spider.kind': 'exec', 'spider.job': id, 'spider.machine': 'alpha.invalid' } })),
+    ];
+    return { spaces, mains, terminals };
+  };
+
+  it('group headings put the fold caret on the left and omit open counts', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
     const heading = () => all(view.render({})).find(node => node.id === 'sp-s1')!;
-    const check = (folded: boolean) => {
+    const cx = { stop_propagation() {}, notify() {} };
+    for (const [open, icon, tooltip] of [[true, 'down', 'Hide agents'], [false, 'right', 'Show agents']] as const) {
       const nodes = [heading(), ...heading().children.flatMap(all)];
-      const pill = nodes.find(node => node.id === 'group-count-sp-s1');
-      expect(pill, folded ? 'folded' : 'open').toBeDefined();
-      expect(pill!.children).toContain('4');
-      expect(call(pill!, 'rounded')).toEqual([999]);
-      expect(call(pill!, 'bg')).toEqual([palette.hover]);
-      expect(call(pill!, 'tooltip')).toEqual(['4 agents']);
-      expect(nodes.some(node => node.svg?.includes('chevron'))).toBe(false);
-      expect(nodes.filter(node => node !== pill && node.children.includes('4'))).toEqual([]);
-    };
-    check(false);
+      const carets = nodes.filter(node => node.svg?.includes('chevron-'));
+      expect(carets.map(node => node.svg)).toEqual([`mods/workspace-chrome/chevron-${icon}.svg`]);
+      expect(call(carets[0], 'size')).toEqual([11]);
+      expect(nodes.find(node => call(node, 'tooltip')?.[0] === tooltip)).toBeDefined();
+      expect(nodes.indexOf(carets[0])).toBeLessThan(nodes.findIndex(node => node.svg?.includes('/space-')));
+      if (open) expect(nodes.some(node => node.id?.startsWith('group-count-'))).toBe(false);
+      heading().click!({}, cx);
+    }
+    expect(view.folded.has('sp-s1')).toBe(false);
+  });
+
+  it('open heading connects its caret to the first agent thread', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const heading = all(view.render({})).find(node => node.id === 'sp-s1')!;
+    const caret = heading.children.flatMap(all).find(node => node.id === 'group-fold-sp-s1')!;
+    const connector = caret.children.flatMap(all).find(node => call(node, 'top')?.[0] === 11)!;
+    expect(connector).toBeDefined();
+    expect(connector.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(true);
     view.folded.add('sp-s1');
-    check(true);
+    const folded = all(view.render({})).find(node => node.id === 'group-fold-sp-s1')!;
+    expect(folded.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
+  });
+
+  it('open group threads end at the last agent and continue around nested children', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const nodes = all(view.render({}));
+    const lines = (id: string) => {
+      const row = nodes.find(node => node.id === id)!;
+      return [row, ...row.children.flatMap(all)].filter(node => call(node, 'border_l') && call(node, 'left')?.[0] === 7);
+    };
+    expect(lines('ag-t1').some(node => call(node, 'bottom')?.[0] === 0)).toBe(true);
+    expect(lines('ag-t1').some(node => call(node, 'border_b'))).toBe(true);
+    expect(lines('ag-t2').some(node => call(node, 'border_b'))).toBe(true);
+    expect(lines('ag-t2').some(node => call(node, 'bottom')?.[0] === 0)).toBe(false);
+    expect(lines('sub-run-one').some(node => call(node, 'bottom')?.[0] === 0)).toBe(true);
+    expect(lines('sub-run-one').some(node => call(node, 'border_b'))).toBe(true);
+  });
+
+  it('group thread continues through a finished-child toggle', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    terminals.push({ address: 't6', parent: 't1', state: 'finished', status: 'done', finishedAt: Date.now() - 1000, labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'finished' } } as any);
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const toggle = all(view.render({})).find(node => node.id === 'finished-toggle-t1')!;
+    expect(toggle).toBeDefined();
+    expect(toggle.children.flatMap(all).some(node => call(node, 'border_l') && call(node, 'bottom')?.[0] === 0)).toBe(true);
+  });
+
+  it('folded group counts match folded agent counts and pills open the group', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    view.folded.add('t1'); view.folded.add('sp-s1');
+    const nodes = () => all(view.render({}));
+    const pill = (kind: string) => nodes().find(node => node.id === `group-count-${kind}-sp-s1`);
+    const expected = [['agents', '2', '2 agents', 'mods/spider-tabs/spider.svg'], ['subagents', '2', '2 subagents', 'mods/spider-agents/bot.svg'], ['consoles', '1', '1 console', 'mods/workspace-chrome/terminal.svg']];
+    for (const [kind, count, tooltip, icon] of expected) {
+      const p = pill(kind)!;
+      expect(p).toBeDefined();
+      expect(p.children).toContain(count);
+      expect(call(p, 'tooltip')).toEqual([tooltip]);
+      expect(call(p, 'rounded')).toEqual([999]);
+      expect(call(p, 'bg')).toEqual([palette.hover]);
+      expect(p.children.flatMap(all).some(node => node.svg === icon && call(node, 'size')?.[0] === 11)).toBe(true);
+    }
+    expect(call(pill('subagents')!, 'text_color')).toEqual([palette.blocked]);
+    const heading = nodes().find(node => node.id === 'sp-s1')!;
+    const ids = heading.children.flatMap(all).map(node => node.id);
+    expect(ids.indexOf('group-count-agents-sp-s1')).toBeLessThan(ids.indexOf('group-count-subagents-sp-s1'));
+    expect(ids.indexOf('group-count-subagents-sp-s1')).toBeLessThan(ids.indexOf('group-count-consoles-sp-s1'));
+    const cx = { stop_propagation() {}, notify() {} };
+    pill('consoles')!.click!({}, cx);
+    expect(view.folded.has('sp-s1')).toBe(false);
+    expect(nodes().find(node => node.id === 'fold-t1')?.children).toContain('2');
+    expect(nodes().find(node => node.id === 'console-count-t1')?.children).toContain('1');
+    terminals.splice(0, terminals.length); view.folded.add('sp-s1');
+    expect(pill('subagents')).toBeUndefined();
+    expect(pill('consoles')).toBeUndefined();
+    expect(pill('agents')?.children).toContain('2');
+  });
+
+  it('folded headings spin for a working descendant even when the owner is idle', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    terminals.push({ address: 't5', parent: 't4', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-two' } });
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    view.folded.add('sp-s1');
+    const heading = all(view.render({})).find(node => node.id === 'sp-s1')!;
+    const nodes = heading.children.flatMap(all);
+    expect(nodes.some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(true);
+    expect(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBeGreaterThan(nodes.findIndex(node => node.id === 'group-count-consoles-sp-s1'));
+  });
+
+  it('pinned headings use the grouped caret and counts without a space shape', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    const pinned = [{ ...mains[0], pinned: true }];
+    const { view } = await agentsView({ agents: () => pinned, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const heading = () => all(view.render({})).find(node => node.id === 'pinned')!;
+    let nodes = heading().children.flatMap(all);
+    expect(nodes.some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
+    expect(nodes.some(node => node.svg?.includes('/space-'))).toBe(false);
+    expect(nodes.some(node => node.id?.startsWith('group-count-'))).toBe(false);
+    const pinnedRow = all(view.render({})).find(node => node.id === 'ag-t1')!;
+    expect(pinnedRow.children.flatMap(all).some(node => call(node, 'border_b'))).toBe(true);
+    heading().click!({}, { stop_propagation() {}, notify() {} }); nodes = heading().children.flatMap(all);
+    expect(nodes.some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
+    expect(nodes.find(node => node.id === 'group-count-agents-pinned')?.children).toContain('1');
+    expect(nodes.find(node => node.id === 'group-count-subagents-pinned')?.children).toContain('2');
+    expect(nodes.find(node => node.id === 'group-count-consoles-pinned')?.children).toContain('1');
+    expect(call(nodes.find(node => node.id === 'group-count-agents-pinned')!, 'tooltip')).toEqual(['1 agent']);
+    expect(call(nodes.find(node => node.id === 'group-count-consoles-pinned')!, 'tooltip')).toEqual(['1 console']);
+    terminals.splice(1, 1);
+    nodes = heading().children.flatMap(all);
+    expect(call(nodes.find(node => node.id === 'group-count-subagents-pinned')!, 'tooltip')).toEqual(['1 subagent']);
   });
 
   it('shows the same space shape in spaces and both agent views', async () => {

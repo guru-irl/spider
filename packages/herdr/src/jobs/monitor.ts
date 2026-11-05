@@ -7,7 +7,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { releaseRemoteJob } from './observer.js';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
-import { createJobStore, ensurePrivateDirectory, type JournalJob, type JobJournal } from './store.js';
+import { createJobStore, ensurePrivateDirectory, MAX_BYTES, type JournalJob, type JobJournal } from './store.js';
+import { jobPruneCandidates } from './prune.js';
 import { HerdrError } from '../client/parse.js';
 import { createJobHandoff, prepareJobRecovery, reconcileJobRecovery, type ChildJobWriter, type JobHandoff, type CloseAgentConsoles } from './handoff.js';
 import { HERDR_LABELS, HERDR_KINDS } from '../contracts.js';
@@ -128,9 +129,18 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   async function persist(): Promise<void> {
     if (options.child && journal.jobs.length === 0) return;
     const state = JSON.stringify({ ...journal, revision: 0, updatedAt: 0 });
-    if (state === persistedState) return;
-    journal.revision++; journal.updatedAt = options.clock(); await store.write(journal);
-    persistedState = state;
+    if (state === persistedState) { queueCompaction(); return; }
+    journal.revision++; journal.updatedAt = options.clock();
+    if (Buffer.byteLength(JSON.stringify(journal)) > MAX_BYTES) {
+      for (const job of pruneCandidates(true)) {
+        if (await removePrunedLogs(job)) forgetPrunedJob(job);
+        if (Buffer.byteLength(JSON.stringify(journal)) <= MAX_BYTES) break;
+      }
+    }
+    const savedState = JSON.stringify({ ...journal, revision: 0, updatedAt: 0 });
+    await store.write(journal);
+    persistedState = savedState;
+    queueCompaction();
   }
   function waiter(id: JobId) {
     let value = waiters.get(id);
@@ -207,6 +217,40 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       }
     });
     if (enqueued) scheduleMaintenance();
+  }
+  const prunedLogs = new Map<JobId, Promise<boolean>>();
+  const pruneCandidates = (pressure = false) => jobPruneCandidates(journal, { directory: store.directory, now: options.clock(), recoveringNotices, holds }, pressure);
+  function removePrunedLogs(job: JournalJob): Promise<boolean> {
+    const existing = prunedLogs.get(job.id); if (existing) return existing;
+    const task = (async () => {
+      if (stopping || closed) return false;
+      await cleanupCall(() => release(job)); await ensurePrivateDirectory(job.localDirectory);
+      if (stopping || closed) return false;
+      await rm(job.localDirectory, { recursive: true });
+      return true;
+    })().catch(error => { prunedLogs.delete(job.id); throw error; });
+    prunedLogs.set(job.id, task); return task;
+  }
+  function forgetPrunedJob(job: JournalJob): void {
+    journal.jobs = journal.jobs.filter(value => value.id !== job.id);
+    cleanup.cancel(releaseKey(job)); cleanup.cancel(`${releaseKey(job)}/prune`);
+    cleanupKeys.delete(releaseKey(job)); cleanupKeys.delete(`${releaseKey(job)}/prune`);
+    prunedLogs.delete(job.id);
+    waiters.delete(job.id); discovered.delete(job.id); outputWarnings.delete(job.id); releaseSkipped.delete(job.id);
+  }
+  function queueCompaction(): void {
+    if (stopping || closed) return;
+    for (const job of pruneCandidates()) {
+      enqueueCleanup(`${releaseKey(job)}/prune`, async () => {
+        if (!await serial(async () => !stopping && !closed && pruneCandidates().includes(job))) return;
+        if (!await removePrunedLogs(job)) return;
+        await serial(async () => {
+          if (stopping || closed || !journal.jobs.includes(job)) return;
+          forgetPrunedJob(job); await persist();
+        });
+      });
+    }
+    scheduleMaintenance();
   }
   async function markSettled(job: JournalJob): Promise<void> { queueRelease(job); }
   function observeNotice(job: JournalJob): void {
@@ -345,21 +389,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       await reconcileJob(job, signal);
     }
     await persist();
-    for (const job of [...journal.jobs]) {
-      if (recoveringNotices.has(job.id) || job.phase.kind !== 'finished' || job.notice !== 'observed' || !job.output?.complete || job.callerOwned || job.detached || options.clock() - job.updatedAt <= 7 * 86400000) continue;
-      if (job.localDirectory !== join(store.directory, 'logs', job.id)) continue;
-      enqueueCleanup(`${releaseKey(job)}/prune`, async () => {
-        if (stopping || closed) return;
-        await cleanupCall(() => release(job)); await ensurePrivateDirectory(job.localDirectory);
-        if (stopping || closed) return;
-        await rm(job.localDirectory, { recursive: true });
-        await serial(async () => {
-          if (stopping || closed) return;
-          journal.jobs = journal.jobs.filter(j => j.id !== job.id); await persist();
-          cleanup.cancel(releaseKey(job));
-        });
-      });
-    }
+    queueCompaction();
   }
   async function activate(nextOwner: Owner, signal?: AbortSignal): Promise<void> {
     if (closed) throw new HerdrError('disposed', 'Job monitor is closed');

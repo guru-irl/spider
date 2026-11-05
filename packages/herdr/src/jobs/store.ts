@@ -34,7 +34,7 @@ export interface JobJournalWriter {
   crashJobs?: JobId[];
 }
 export interface JobJournal { version: 1; sessionId: SessionId; revision: number; updatedAt: number; jobs: JournalJob[]; child?: ChildJobWriter & { ended: boolean; settled?: boolean }; writer?: JobJournalWriter }
-const MAX_BYTES = 1024 * 1024;
+export const MAX_BYTES: number = 1024 * 1024;
 function boolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new HerdrError('invalid-journal', 'Expected a journal boolean'); return value;
 }

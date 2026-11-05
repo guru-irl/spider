@@ -20,16 +20,16 @@ async function scene(autoHideTabs = true, buttons = false) {
   for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) clones[kind] = { name: `spider-${kind}`, clonedFrom: { name: kind, version: '0.1.12' }, files: { 'main.js': await readFile(new URL(`${kind}/main.js`, fixture), 'utf8'), 'mod.json': await readFile(new URL(`${kind}/mod.json`, fixture), 'utf8') } };
   const source = (await applyLookPatches(clones, patches as LookPatchSet)).tabs.files['main.js'];
   const ui = createUiModules(), kit = ui['gpui-kit'], base = ui['gpui-base'];
-  const space = { id: 'one', name: 'Example', active: true, tabs: [{ id: 'a', name: 'First', active: true }, { id: 'b', name: 'Second', active: false }] };
-  const calls: unknown[] = [], overlays: unknown[] = [], storage = new Map<string, string>();
+  const space = { id: 'one', name: 'Example', active: true, machine: undefined as string | undefined, tabs: [{ id: 'a', name: 'First', active: true }, { id: 'b', name: 'Second', active: false }] };
+  const calls: unknown[] = [], overlays: unknown[] = [], storage = new Map<string, string>(), sharedValues = new Map<string, unknown>();
   let agentSource = async (): Promise<any[]> => [];
   const props = { autoHideTabs }, tabBlock = { id: 'tabs', window_drag: true, size: { px: autoHideTabs ? 6 : 42 } };
   const ports: Record<string, any> = { ...kit, ...base, globalThis: { window: { viewport_size: () => ({ width: 1200, height: 800 }) } },
     Popup: { new: (id: string, trigger: any) => kit.div().id(id).child(trigger) }, Popover: { new: (id: string) => kit.div().id(id) },
     InputState: { new: ({ value }: { value: string }) => ({ text: value, handlers: {} as Record<string, Function>, value() { return this.text; }, on(name: string, handler: Function) { this.handlers[name] = handler; }, focus() {}, set_selected_range() {} }) }, Input: { new: (input: unknown) => Object.assign(kit.div(), { input }) },
     ...createHostModule({ props: () => props, spaces: () => [space], panes: () => [], focused: () => ({ pane: 'p1', terminal: 't1' }),
-      layout: () => ({ traffic_lights: [-60, -60], children: [tabBlock, { id: 'sidebar', size: { px: 44 } }] }), window: () => ({ platform: buttons ? 'windows' : 'macos', buttons, titlebar: 'none', fullscreen: false }), settings: () => ({ zoom: 1 }), shared: () => null,
-      theme: () => colors, keys: () => [], knownAgents: () => agentSource(), run: (name: string, args: unknown) => calls.push([name, args]), openOverlay: (spec: unknown) => overlays.push(spec), closeOverlay() {}, setShared() {},
+      layout: () => ({ traffic_lights: [-60, -60], children: [tabBlock, { id: 'sidebar', size: { px: 44 } }] }), window: () => ({ platform: buttons ? 'windows' : 'macos', buttons, titlebar: 'none', fullscreen: false }), settings: () => ({ zoom: 1 }), shared: (key: string) => sharedValues.get(key) ?? null,
+      theme: () => colors, keys: () => [], knownAgents: () => agentSource(), run: (name: string, args: unknown) => calls.push([name, args]), openOverlay: (spec: unknown) => overlays.push(spec), closeOverlay() {}, setShared(key: string, value: unknown) { sharedValues.set(key, value); },
     }), localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) } };
   delete ports.Tabs;
   try { Object.assign(ports, compile(await readFile(new URL('../../assets/tabs/autohide.js', import.meta.url), 'utf8'), ports, '({ initTabAutoHide, renderTabAutoHide, closeTabAutoHide })')); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
@@ -44,7 +44,7 @@ async function scene(autoHideTabs = true, buttons = false) {
   // The bar is fading away: still drawn, already transparent.
   const leaving = () => full() && byId('tabs-slide')?.styles.opacity?.[0] === 0;
   const typeIn = (id: string, text: string) => { const input = nodes(byId(id)).find(node => Object.hasOwn(node, 'input')).input; input.text = text; input.handlers.change({}, cx); };
-  return { view, cx, space, props, calls, overlays, tabBlock, render, byId, event, enter, leave, full, leaving, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
+  return { view, cx, space, props, calls, overlays, tabBlock, sharedValues, render, byId, event, enter, leave, full, leaving, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
 }
 const SLIDE = 140;
 afterEach(() => vi.useRealTimers());
@@ -145,6 +145,25 @@ test('the plus menu holds the row open until it closes', async () => {
   vi.advanceTimersByTime(2000); expect(s.byId('tabs-new-menu')).toBeDefined();
   s.event('tabs-new-menu', 'on_key_down', { key: 'escape', modifiers: {} });
   vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
+});
+test('a second plus menu shows cached agents while refreshing instead of checking again', async () => {
+  const s = await scene(), agent = { key: 'sample', name: 'Sample', installed: true, run: ['sh'], icon: 'shell.svg', tint: true };
+  s.setAgentSource(async () => [agent]); s.enter(); s.event('tab-new', 'on_click', {});
+  await Promise.resolve(); expect(s.byId('tabs-agent-sample')).toBeDefined();
+  s.event('tabs-new-menu', 'on_key_down', { key: 'escape', modifiers: {} });
+  let finish!: (agents: any[]) => void;
+  s.setAgentSource(() => new Promise(resolve => { finish = resolve; })); s.event('tab-new', 'on_click', {});
+  expect(s.byId('tabs-agent-sample')).toBeDefined();
+  expect(nodes(s.byId('tabs-new-menu')).flatMap(node => node.items).filter(item => typeof item === 'string').join(' ')).not.toContain('Checking installed agents...');
+  finish([{ ...agent, key: 'fresh', name: 'Fresh' }]); await Promise.resolve();
+  expect(s.byId('tabs-agent-fresh')).toBeDefined(); expect(s.byId('tabs-agent-sample')).toBeUndefined();
+});
+test('the plus menu reads the stock cache for the active machine only', async () => {
+  const s = await scene(), agent = { key: 'remote', name: 'Remote', installed: true, run: ['sh'], icon: 'shell.svg', tint: true };
+  s.sharedValues.set('new-menu.agents', { '': [{ ...agent, key: 'local' }], 'remote.invalid': [agent] });
+  s.space.machine = 'remote.invalid'; s.setAgentSource(() => new Promise(() => {}));
+  s.enter(); s.event('tab-new', 'on_click', {});
+  expect(s.byId('tabs-agent-remote')).toBeDefined(); expect(s.byId('tabs-agent-local')).toBeUndefined();
 });
 test('a reopened plus menu ignores results from an older request', async () => {
   const s = await scene(), resolve: ((agents: any[]) => void)[] = [];

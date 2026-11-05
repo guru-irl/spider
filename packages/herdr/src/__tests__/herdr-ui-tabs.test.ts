@@ -44,7 +44,7 @@ async function scene(autoHideTabs = true, buttons = false) {
   // The bar is fading away: still drawn, already transparent.
   const leaving = () => full() && byId('tabs-slide')?.styles.opacity?.[0] === 0;
   const typeIn = (id: string, text: string) => { const input = nodes(byId(id)).find(node => Object.hasOwn(node, 'input')).input; input.text = text; input.handlers.change({}, cx); };
-  return { view, cx, space, props, calls, overlays, tabBlock, sharedValues, render, byId, event, enter, leave, full, leaving, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
+  return { view, cx, space, props, calls, overlays, sharedValues, render, byId, event, enter, leave, full, leaving, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
 }
 const SLIDE = 140;
 afterEach(() => vi.useRealTimers());
@@ -53,7 +53,7 @@ test('the resting strip replaces the tab row without resizing any terminal', asy
   const s = await scene();
   expect(s.byId('tabs-strip')?.styles.h).toEqual([6]);
   expect(s.byId('tab-a')).toBeUndefined();
-  expect(s.tabBlock.window_drag).toBe(true);
+  expect(s.byId('tabs-popup')?.styles.content).toBeUndefined();
   expect(s.calls).toEqual([]);
 });
 test('enter reveals a 42 pixel anchored row without a layout command', async () => {
@@ -223,11 +223,22 @@ test.each(['context', 'newMenu', 'renameTab', 'hold'] as const)('%s during fade-
   vi.advanceTimersByTime(16); expect(s.byId('tabs-slide')?.styles.opacity).toEqual([1]);
   vi.advanceTimersByTime(2000); expect(s.byId('tabs-slide')?.styles.opacity).toEqual([1]);
 });
+test.each(['entrance', 'hide delay', 'fade-out'])('close cancels callbacks during %s', async phase => {
+  vi.useFakeTimers(); const s = await scene(); s.enter();
+  if (phase !== 'entrance') { vi.advanceTimersByTime(16); s.leave(); }
+  if (phase === 'fade-out') vi.advanceTimersByTime(300);
+  const notifications = s.cx.notify.mock.calls.length;
+  s.view.close(); vi.advanceTimersByTime(2000);
+  expect(s.cx.notify.mock.calls.length).toBe(notifications);
+  expect(vi.getTimerCount()).toBe(0);
+});
 test('the opt-out keeps the original row, stock menus and window buttons', async () => {
   const on = await scene(), off = await scene(false, true);
   expect(Boolean(on.byId('tab-a'))).not.toBe(Boolean(off.byId('tab-a')));
   expect(off.byId('tabs-strip')).toBeUndefined();
-  expect(off.tabBlock.size.px).toBe(42);
+  off.event('tab-a', 'on_mouse_down', 'right', {});
+  expect(off.overlays).toContainEqual({ mod: 'menu', kind: 'popup', width: 200, props: { tab: 'tab', target: { id: 'a', space: 'one' } } });
+  off.overlays.length = 0;
   off.event('tab-new', 'on_click', {});
   expect(off.overlays).toEqual([{ mod: 'new-menu', kind: 'popup', width: 250, height: 512 }]);
   for (const [id, command] of [['minimize', 'window.minimize'], ['maximize', 'window.maximize'], ['close-window', 'window.close']] as const) {

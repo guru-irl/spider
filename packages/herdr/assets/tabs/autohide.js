@@ -27,21 +27,40 @@ function shortcut(name) {
   }).join(" ");
 }
 
+const SLIDE = 160;
+const EDGE = "#38383a";
+
 export function initTabAutoHide(view, cx) {
-  const state = view.tabAuto = { visible: false, strip: false, row: false, width: 0, active: activeTab(), flashUntil: 0, menu: null, rename: null, plus: false, agents: [], handle: cx.focus_handle() };
+  const state = view.tabAuto = { visible: false, slid: false, leaving: false, slideTimer: null, strip: false, row: false, width: 0, active: activeTab(), flashUntil: 0, menu: null, rename: null, plus: false, agents: [], handle: cx.focus_handle() };
   const cancel = () => { state.timer?.cancel(); state.timer = null; };
   const held = () => state.strip || state.row || view.pressed !== null || state.menu || state.rename || state.plus;
+  // Leaving slides the bar up behind the strip first, and only then removes it.
   const hide = (delay = 300) => {
     cancel();
     if (held()) return;
     state.timer = cx.timer.after(Math.max(delay, state.flashUntil - Date.now()), cx => {
       state.timer = null;
       if (held()) return;
-      state.visible = false;
+      state.slid = false; state.leaving = true;
+      cx.notify();
+      state.timer = cx.timer.after(SLIDE, cx => {
+        state.timer = null; state.leaving = false;
+        if (!held()) state.visible = false;
+        cx.notify();
+      });
+    });
+  };
+  const show = cx => { cancel(); state.visible = true; state.leaving = false; state.slideIn(); cx.notify(); };
+  // A transition animates only later changes, so the bar is drawn once above the clip and moved down a frame later.
+  state.slideIn = () => {
+    if (state.slid || state.leaving || state.slideTimer) return;
+    state.slideTimer = cx.timer.after(16, cx => {
+      state.slideTimer = null;
+      if (!state.visible || state.leaving) return;
+      state.slid = true;
       cx.notify();
     });
   };
-  const show = cx => { cancel(); state.visible = true; cx.notify(); };
   const rememberFocus = () => { state.focus = focused(); };
   const dismiss = cx => {
     state.menu = null; state.rename = null; state.plus = false;
@@ -159,17 +178,21 @@ export function renderTabAutoHide(view, row, cx) {
   const strip = div().id("tabs-strip").w_full().h(6).bg(theme().chrome)
     .on_hover((hovered, cx) => state.hover("strip", hovered, cx))
     .on_size_change((size, cx) => { if (state.width !== size.width) { state.width = size.width; cx.notify(); } });
+  if (state.visible) state.slideIn();
   // Popup keeps eight pixels clear at the window edge.
   const width = Math.max(0, state.width - 8);
-  const bar = row.id("tabs-revealed").h(42).w(width).bg(theme().popover)
+  const bar = row.id("tabs-revealed").absolute().left(0).top(state.slid ? 0 : -42).h(42).w(width).bg(theme().popover)
+    .border_1().border_color(EDGE).rounded_b(10)
+    .transition("top", { duration: SLIDE, easing: "ease-out" })
     .on_hover((hovered, cx) => state.hover("row", hovered, cx));
-  let content = bar;
+  // The clip hides the bar while it sits above its resting place.
+  let content = div().id("tabs-slide").relative().w(width).h(42).overflow_hidden().child(bar);
   if (view.pressed !== null) {
     const viewport = globalThis.window.viewport_size();
     // The transparent capture covers the window from any tab's position.
     const capture = div().id("tabs-drag-capture").absolute().left(-viewport.width).top(-viewport.height).w(viewport.width * 3).h(viewport.height * 3)
       .on_mouse_up("left", (_event, cx) => { cx.stop_propagation(); view.pressed = null; state.release(); });
-    content = div().relative().w(width).h(42).child(capture).child(bar);
+    content = div().relative().w(width).h(42).child(capture).child(content);
   }
   return Popup.new("tabs-popup", strip).size_full().anchor("top_left")
     .when(state.visible, el => el.content(content));
@@ -177,4 +200,5 @@ export function renderTabAutoHide(view, row, cx) {
 
 export function closeTabAutoHide(view) {
   view.tabAuto?.timer?.cancel();
+  view.tabAuto?.slideTimer?.cancel();
 }

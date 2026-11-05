@@ -41,9 +41,12 @@ async function scene(autoHideTabs = true, buttons = false) {
   const enter = () => event('tabs-strip', 'on_hover', true);
   const leave = () => { event('tabs-strip', 'on_hover', false); if (byId('tabs-revealed')) event('tabs-revealed', 'on_hover', false); };
   const full = () => Boolean(byId('tabs-revealed'));
+  // The bar is sliding away: still drawn, already above the clip.
+  const leaving = () => byId('tabs-revealed')?.styles.top?.[0] === -42;
   const typeIn = (id: string, text: string) => { const input = nodes(byId(id)).find(node => Object.hasOwn(node, 'input')).input; input.text = text; input.handlers.change({}, cx); };
-  return { view, cx, space, props, calls, overlays, tabBlock, render, byId, event, enter, leave, full, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
+  return { view, cx, space, props, calls, overlays, tabBlock, render, byId, event, enter, leave, full, leaving, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
 }
+const SLIDE = 160;
 afterEach(() => vi.useRealTimers());
 
 test('the resting strip replaces the tab row without resizing any terminal', async () => {
@@ -68,11 +71,30 @@ test('the overlay leaves room at the right edge instead of shifting over the sid
   expect(s.calls).toEqual([]);
 });
 
+test('the bar slides down from behind the strip inside a clip with a visible edge', async () => {
+  vi.useFakeTimers(); const s = await scene(); s.enter();
+  const clip = s.byId('tabs-slide');
+  expect(clip?.styles.overflow_hidden).toBeDefined(); expect(clip?.styles.h).toEqual([42]);
+  expect(clip?.items.map((item: any) => item.styles.id?.[0])).toEqual(['tabs-revealed']);
+  const bar = () => s.byId('tabs-revealed');
+  expect(bar()?.styles.absolute).toBeDefined(); expect(bar()?.styles.top).toEqual([-42]);
+  expect(bar()?.styles.transition).toEqual(['top', { duration: SLIDE, easing: 'ease-out' }]);
+  vi.advanceTimersByTime(16); expect(bar()?.styles.top).toEqual([0]);
+  expect(bar()?.styles.border_1).toBeDefined(); expect(bar()?.styles.border_color).toEqual(['#38383a']); expect(bar()?.styles.rounded_b).toEqual([10]);
+});
+test('leaving slides the bar back up before removing it and re-entry brings it back down', async () => {
+  vi.useFakeTimers(); const s = await scene(); s.enter(); vi.advanceTimersByTime(16); s.leave();
+  vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true);
+  vi.advanceTimersByTime(SLIDE - 1); expect(s.full()).toBe(true);
+  s.enter(); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(true); expect(s.leaving()).toBe(false);
+  vi.advanceTimersByTime(16); expect(s.byId('tabs-revealed')?.styles.top).toEqual([0]);
+  s.leave(); vi.advanceTimersByTime(300 + SLIDE); expect(s.full()).toBe(false);
+});
 test('leaving waits 300 milliseconds and re-entry cancels the pending hide', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); s.leave();
   vi.advanceTimersByTime(299); expect(s.full()).toBe(true);
   s.enter(); vi.advanceTimersByTime(1); expect(s.full()).toBe(true);
-  s.leave(); vi.advanceTimersByTime(300); expect(s.full()).toBe(false);
+  s.leave(); vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
 test('a context menu keeps the bar open until dismissal', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter();
@@ -80,7 +102,7 @@ test('a context menu keeps the bar open until dismissal', async () => {
   vi.advanceTimersByTime(2000); expect(s.full()).toBe(true);
   expect(s.byId('tabs-context-menu')).toBeDefined();
   s.event('tabs-context-menu', 'on_key_down', { key: 'escape', modifiers: {}, stop_propagation() {} });
-  vi.advanceTimersByTime(300); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
 test('rename stays visible until save and sends the entered name', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter();
@@ -89,13 +111,13 @@ test('rename stays visible until save and sends the entered name', async () => {
   s.typeIn('tabs-rename', 'Updated name');
   s.event('tabs-rename-save', 'on_click', {});
   expect(s.calls).toContainEqual(['tab.rename', { id: 'a', name: 'Updated name' }]);
-  vi.advanceTimersByTime(300); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
 test('the plus menu holds the row open until it closes', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); s.event('tab-new', 'on_click', {}); s.leave();
   vi.advanceTimersByTime(2000); expect(s.byId('tabs-new-menu')).toBeDefined();
   s.event('tabs-new-menu', 'on_key_down', { key: 'escape', modifiers: {} });
-  vi.advanceTimersByTime(300); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
 test('a reopened plus menu ignores results from an older request', async () => {
   const s = await scene(), resolve: ((agents: any[]) => void)[] = [];
@@ -116,7 +138,7 @@ test('a drag holds the bar open until release', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); s.event('tab-a', 'on_mouse_down', 'left', { click_count: 1 }); s.leave();
   vi.advanceTimersByTime(2000); expect(s.full()).toBe(true);
   s.event('tab-b', 'on_mouse_up', 'left', {});
-  vi.advanceTimersByTime(300); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
   expect(s.calls).toContainEqual(['tab.move', { id: 'a', index: 2 }]);
 });
 test('releasing a drag over a terminal dismisses the bar without selecting a tab', async () => {
@@ -125,7 +147,7 @@ test('releasing a drag over a terminal dismisses the bar without selecting a tab
   vi.advanceTimersByTime(2000); expect(s.full()).toBe(true);
   expect(s.byId('tabs-drag-capture')).toBeDefined();
   s.event('tabs-drag-capture', 'on_mouse_up', 'left', {});
-  vi.advanceTimersByTime(300); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
   expect(s.calls).toEqual([]);
 });
 
@@ -135,7 +157,7 @@ test('a keyboard tab change flashes for 1.5 seconds and rapid changes restart it
   expect(s.full()).toBe(true); vi.advanceTimersByTime(1000);
   s.space.tabs[0]!.active = true; s.space.tabs[1]!.active = false; s.render();
   vi.advanceTimersByTime(1499); expect(s.full()).toBe(true);
-  vi.advanceTimersByTime(1); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(1); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
 test('the opt-out keeps the original row, stock menus and window buttons', async () => {
   const on = await scene(), off = await scene(false, true);

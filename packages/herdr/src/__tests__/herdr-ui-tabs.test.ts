@@ -132,6 +132,14 @@ test('rename stays visible until save and sends the entered name', async () => {
   expect(s.calls).toContainEqual(['tab.rename', { id: 'a', name: 'Updated name' }]);
   vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
+test.each(['   ', 'First', ' First '])('rename dismisses without sending the invalid or unchanged name %j', async name => {
+  vi.useFakeTimers(); const s = await scene(); s.enter();
+  s.event('tab-a', 'on_mouse_down', 'left', { click_count: 2 }); s.leave();
+  s.typeIn('tabs-rename', name); s.event('tabs-rename-save', 'on_click', {});
+  expect(s.calls.filter(([command]: any) => command === 'tab.rename')).toEqual([]);
+  expect(s.byId('tabs-rename')).toBeUndefined();
+  vi.advanceTimersByTime(300 + SLIDE); expect(s.full()).toBe(false);
+});
 test('the plus menu holds the row open until it closes', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); s.event('tab-new', 'on_click', {}); s.leave();
   vi.advanceTimersByTime(2000); expect(s.byId('tabs-new-menu')).toBeDefined();

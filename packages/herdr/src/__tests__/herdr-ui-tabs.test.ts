@@ -15,7 +15,7 @@ function compile(source: string, ports: Record<string, unknown>, result: string)
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replaceAll('export default class ', 'class ').replaceAll('export function ', 'function ');
   return new Function('api', `const { ${Object.keys(ports).join(',')} } = api; ${code}; return ${result};`)(ports);
 }
-async function scene(autoHideTabs = true) {
+async function scene(autoHideTabs = true, buttons = false) {
   const clones = {} as HerdrClones;
   for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'] as const) clones[kind] = { name: `spider-${kind}`, clonedFrom: { name: kind, version: '0.1.12' }, files: { 'main.js': await readFile(new URL(`${kind}/main.js`, fixture), 'utf8'), 'mod.json': await readFile(new URL(`${kind}/mod.json`, fixture), 'utf8') } };
   const source = (await applyLookPatches(clones, patches as LookPatchSet)).tabs.files['main.js'];
@@ -28,7 +28,7 @@ async function scene(autoHideTabs = true) {
     Popup: { new: (id: string, trigger: any) => kit.div().id(id).child(trigger) }, Popover: { new: (id: string) => kit.div().id(id) },
     InputState: { new: ({ value }: { value: string }) => ({ text: value, handlers: {} as Record<string, Function>, value() { return this.text; }, on(name: string, handler: Function) { this.handlers[name] = handler; }, focus() {}, set_selected_range() {} }) }, Input: { new: (input: unknown) => Object.assign(kit.div(), { input }) },
     ...createHostModule({ props: () => props, spaces: () => [space], panes: () => [], focused: () => ({ pane: 'p1', terminal: 't1' }),
-      layout: () => ({ traffic_lights: [-60, -60], children: [tabBlock, { id: 'sidebar', size: { px: 44 } }] }), window: () => ({ platform: 'macos', titlebar: 'none', fullscreen: false }), settings: () => ({ zoom: 1 }), shared: () => null,
+      layout: () => ({ traffic_lights: [-60, -60], children: [tabBlock, { id: 'sidebar', size: { px: 44 } }] }), window: () => ({ platform: buttons ? 'windows' : 'macos', buttons, titlebar: 'none', fullscreen: false }), settings: () => ({ zoom: 1 }), shared: () => null,
       theme: () => colors, keys: () => [], knownAgents: () => agentSource(), run: (name: string, args: unknown) => calls.push([name, args]), openOverlay: (spec: unknown) => overlays.push(spec), closeOverlay() {}, setShared() {},
     }), localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) } };
   delete ports.Tabs;
@@ -138,10 +138,15 @@ test('a keyboard tab change flashes for 1.5 seconds and rapid changes restart it
   vi.advanceTimersByTime(1); expect(s.full()).toBe(false);
 });
 test('the opt-out keeps the original row, stock menus and window buttons', async () => {
-  const on = await scene(), off = await scene(false);
+  const on = await scene(), off = await scene(false, true);
   expect(Boolean(on.byId('tab-a'))).not.toBe(Boolean(off.byId('tab-a')));
   expect(off.byId('tabs-strip')).toBeUndefined();
   expect(off.tabBlock.size.px).toBe(42);
   off.event('tab-new', 'on_click', {});
   expect(off.overlays).toEqual([{ mod: 'new-menu', kind: 'popup', width: 250, height: 512 }]);
+  for (const [id, command] of [['minimize', 'window.minimize'], ['maximize', 'window.maximize'], ['close-window', 'window.close']] as const) {
+    expect(off.byId(id)).toBeDefined();
+    off.event(id, 'on_click', {});
+    expect(off.calls).toContainEqual([command, undefined]);
+  }
 });

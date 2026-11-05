@@ -99,7 +99,8 @@ export function initTabAutoHide(view, cx) {
     const rename = state.rename;
     if (!rename) return;
     dismiss(cx);
-    run("tab.rename", { id: rename.tab.id, name: rename.text });
+    const name = rename.text.trim();
+    if (name && name !== rename.tab.name) run("tab.rename", { id: rename.tab.id, name: rename.text });
   };
   const renameMenu = () => {
     const t = theme();

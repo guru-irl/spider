@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 const colors = ['ansi2', 'ansi4', 'ansi5', 'ansi6', 'ansi12', 'ansi13'];
-const shapes = ['circle', 'square', 'triangle', 'diamond', 'hexagon', 'star'];
+const shapes = ['circle', 'moon', 'triangle', 'diamond', 'hexagon', 'star'];
 function hashName(name) {
   let hash = 2166136261;
   for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 16777619) >>> 0;
@@ -25,7 +25,8 @@ export function threadKeylines(div, lines, height = 26, { start = 0, x = 24, fir
   return lines.flatMap((line, depth) => {
     const left = x + depth * 26 - 0.5;
     const segments = [];
-    if (line === "│" || line === "├") segments.push(div().absolute().left(left).top(start).bottom(0).w(1).border_l(1).border_color("#3a3a3d"));
+    // A one-pixel box with only a left border can disappear in GPUI's quad shader.
+    if (line === "│" || line === "├") segments.push(div().absolute().left(left).top(start).bottom(0).w(1).bg("#3a3a3d").border_l(1).border_color("#3a3a3d"));
     if (line === "└" || line === "├") segments.push(div().absolute().left(left).top(start).w(26 - first + 0.5).h(height / 2 - start + 0.5).border_l(1).border_b(1).rounded_bl(6).border_color("#3a3a3d"));
     return segments;
   });

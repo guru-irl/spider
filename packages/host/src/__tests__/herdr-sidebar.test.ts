@@ -320,7 +320,7 @@ describe('installed agents sidebar', () => {
     const terminal = (address: string, parent: string) => ({ address, parent, state: 'live', status: 'working', labels: {} });
     const terminals = [terminal('t2', 't1'), terminal('t3', 't2'), terminal('t4', 't2'), terminal('t5', 't1'), terminal('t6', 't5')];
     const Agents = loadView({ View: class {}, props: () => ({ labelContract: HerdrLabelContract }), shared: () => null, setShared: () => {} });
-    const view = new Agents(); view.spiderFeeds = [];
+    const view = new Agents(); view.folded = new Set(); view.spiderFeeds = [];
     expect(view.tree(terminals, 't1').map((row: any) => [row.t.key, row.lines])).toEqual([
       ['t2', ['├']], ['t3', ['│', '├']], ['t4', ['│', '└']], ['t5', ['└']], ['t6', ['', '└']],
     ]);
@@ -379,7 +379,7 @@ describe('installed agents sidebar', () => {
     const stored = new Map<string, unknown>([['spider.agents.filters/spider-agents', saved]]);
     const Agents = loadView({ View: class {}, props: () => ({ modId: 'spider-agents', labelContract: HerdrLabelContract, feedRoot: '/fixture' }),
       shared: (key: string) => stored.get(key), setShared: (key: string, value: unknown) => stored.set(key, value) });
-    const view = new Agents(); view.spiderFeeds = [];
+    const view = new Agents(); view.folded = new Set(); view.spiderFeeds = [];
     expect(view.tree([], 't1')).toEqual([]);
     const running = failedFeed(Date.now());
     view.spiderFeeds = [{ ...running, runs: { ...running.runs, rows: [{ ...running.runs.rows[0], status: 'running', finishedAt: null }] } }];

@@ -632,7 +632,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(order.at(-1)).toEqual(['t1', 't9']);
   });
 
-  it('places a centred fold chevron before the agent icon and keeps empty slots aligned', async () => {
+  it('places a centred fold chevron before the agent icon without shifting childless icons', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
     const mains = [{ address: 't1', pane: 'p1', status: 'idle', seq: 1, program }, { address: 't9', pane: 'p9', status: 'idle', seq: 2, program }];
@@ -644,27 +644,29 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed]; view.listed = new Map();
     const cx = { notify() {}, stop_propagation() {} };
     let root = view.render({});
-    for (const id of ['t1', 't9']) {
+    for (const id of ['t1']) {
       const slot = all(root).find(node => node.id === `fold-slot-${id}`)!;
       expect(slot).toBeDefined();
       expect(call(slot, 'size')).toEqual([11]);
     }
     expect(all(root).find(node => node.id === 'fold-left-t9')).toBeUndefined();
+    expect(all(root).find(node => node.id === 'fold-slot-t9')).toBeUndefined();
+    expect(call(all(root).find(node => node.id === 'agent-pin-t1')!, 'left')).toEqual(call(all(root).find(node => node.id === 'agent-pin-t9')!, 'left'));
     const chevron = all(root).find(node => node.id === 'fold-left-t1')!;
     for (const method of ['flex', 'items_center', 'justify_center', 'flex_none']) expect(call(chevron, method)).toEqual([]);
     expect(all(root).find(node => node.id === 'finished-toggle-t9')).toBeUndefined();
     const row = all(root).find(node => node.id === 'ag-t1')!;
     const rowNodes = [row, ...row.children.flatMap(all)];
     expect(rowNodes.findIndex(node => node.id === 'fold-slot-t1')).toBeLessThan(rowNodes.findIndex(node => node.id === 'agent-pin-t1'));
-    expect(call(all(root).find(node => node.id === 'sub-t2')!, 'pl')).toEqual([17]);
-    expect(call(all(root).find(node => node.id === 'finished-toggle-t1')!, 'pl')).toEqual([38]);
+    expect(call(all(root).find(node => node.id === 'sub-t2')!, 'pl')).toEqual([66]);
+    expect(call(all(root).find(node => node.id === 'finished-toggle-t1')!, 'pl')).toEqual([45]);
     chevron.click!({}, cx); root = view.render({});
     expect(all(root).map(node => node.id)).not.toContain('sub-t2');
     all(root).find(node => node.id === 'fold-left-t1')!.click!({}, cx); root = view.render({});
     expect(all(root).map(node => node.id)).toContain('sub-t2');
   });
 
-  it('puts a fixed fold slot before each icon and a running-only pill on folded rows', async () => {
+  it('puts a fixed fold slot before parent icons and a running-only pill on folded rows', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const now = Date.now(), program = { name: 'pi', icon: 'mods/pi.svg', tint: true, agent: true };
     const mains = [{ address: 't1', pane: 'p1', status: 'idle', seq: 1, program }, { address: 't9', pane: 'p9', status: 'idle', seq: 2, program }];
@@ -676,20 +678,22 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.spiderFeeds = [feed]; view.listed = new Map();
     const cx = { notify() {}, stop_propagation() {} };
     let root = view.render({});
-    for (const id of ['t1', 't9']) {
+    for (const id of ['t1']) {
       const slot = all(root).find(node => node.id === `fold-slot-${id}`)!;
       expect(slot).toBeDefined();
       expect(call(slot, 'size')).toEqual([11]);
     }
     expect(all(root).find(node => node.id === 'fold-left-t9')).toBeUndefined();
+    expect(all(root).find(node => node.id === 'fold-slot-t9')).toBeUndefined();
+    expect(call(all(root).find(node => node.id === 'agent-pin-t1')!, 'left')).toEqual(call(all(root).find(node => node.id === 'agent-pin-t9')!, 'left'));
     const chevron = all(root).find(node => node.id === 'fold-left-t1')!;
     for (const method of ['flex', 'items_center', 'justify_center', 'flex_none']) expect(call(chevron, method)).toEqual([]);
     expect(all(root).find(node => node.id === 'finished-toggle-t9')).toBeUndefined();
     const row = all(root).find(node => node.id === 'ag-t1')!;
     const rowNodes = [row, ...row.children.flatMap(all)];
     expect(rowNodes.findIndex(node => node.id === 'fold-slot-t1')).toBeLessThan(rowNodes.findIndex(node => node.id === 'agent-pin-t1'));
-    expect(call(all(root).find(node => node.id === 'sub-t2')!, 'pl')).toEqual([17]);
-    expect(call(all(root).find(node => node.id === 'finished-toggle-t1')!, 'pl')).toEqual([38]);
+    expect(call(all(root).find(node => node.id === 'sub-t2')!, 'pl')).toEqual([66]);
+    expect(call(all(root).find(node => node.id === 'finished-toggle-t1')!, 'pl')).toEqual([45]);
     all(root).find(node => node.id === 'finished-toggle-t1')!.click!({}, cx); root = view.render({});
     expect(all(root).map(node => node.id)).toContain('sub-finished');
     all(root).find(node => node.id === 'fold-left-t1')!.click!({}, cx); root = view.render({});
@@ -718,7 +722,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     let root = view.render({});
     const icon = () => all(root).find(node => node.id === 'agent-pin-t1')!;
     expect(icon()).toBeDefined();
-    expect(call(icon(), 'size')).toEqual([16]); expect(texts(root)).toContain('1m');
+    expect(call(icon(), 'size')).toEqual([14]); expect(texts(root)).toContain('1m');
     expect(icon().children.flatMap(all).some(node => node.svg === 'mods/spider-tabs/spider.svg')).toBe(true);
     expect(all(root).some(node => node.id === 'pin-t1')).toBe(false);
     all(root).find(node => node.id === 'ag-t1')!.hoverChange?.(true, cx); root = view.render({});
@@ -742,16 +746,16 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(icon).toContain('d="m18 15-6-6-6 6"');
   });
 
-  it('centres the console chevron in a round 20-pixel target that toggles commands', async () => {
+  it('centres the console chevron in the shared fixed slot and toggles commands', async () => {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const Agents = loadView(clones.agents.files['main.js'], { props: () => props, terminals: () => [] });
     const view = new Agents(); view.listed = new Map(); view.expandedConsoles = new Set();
-    const row = () => view.subRow(palette, { t: { key: 'console', kind: 'console', status: 'idle', address: 'x', name: 'console', spider: true, outcome: null, action: null }, lines: ['└'] }, null, false);
+    const row = () => view.subRow(palette, { t: { key: 'console', kind: 'console', status: 'idle', address: 'x', name: 'console', spider: true, outcome: null, action: null }, lines: ['└'], hasChildren: true, open: view.expandedConsoles.has('console') }, null, false);
     const toggle = () => all(row()).find(node => node.id === 'console-fold-console')!;
     const cx = { notify() {}, stop_propagation() {} };
     let target = toggle();
-    expect(call(target, 'size')).toEqual([20]);
-    expect(call(target, 'rounded')).toEqual([999]);
+    expect(call(target, 'size')).toEqual([11]);
+    expect(call(target, 'left')).toEqual([30]);
     for (const method of ['flex', 'items_center', 'justify_center', 'flex_none']) expect(call(target, method)).toEqual([]);
     expect(call(target, 'tooltip')).toEqual(['Show commands']);
     expect(target.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg' && call(node, 'size')?.[0] === 11)).toBe(true);

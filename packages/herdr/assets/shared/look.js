@@ -21,10 +21,14 @@ export function assignSpaceIdentities(spaces) {
   return result;
 }
 
-export function threadKeylines(div, lines, height = 26, start = -4, x = 7) {
-  return lines.map(l => div().relative().w(16).h(height).flex_none()
-    .when(l === "│" || l === "├", el => el.child(div().absolute().left(x).top(start).bottom(0).w(0).border_l(1.5).border_color("#3a3a3d")))
-    .when(l === "└" || l === "├", el => el.child(div().absolute().left(x).top(start).w(7).h(height / 2 + 4).border_l(1.5).border_b(1.5).rounded_bl(6).border_color("#3a3a3d"))));
+export function threadKeylines(div, lines, height = 26, { start = 0, x = 24, first = 7 } = {}) {
+  return lines.flatMap((line, depth) => {
+    const left = x + depth * 26 - 0.5;
+    const segments = [];
+    if (line === "│" || line === "├") segments.push(div().absolute().left(left).top(start).bottom(0).w(1).border_l(1).border_color("#3a3a3d"));
+    if (line === "└" || line === "├") segments.push(div().absolute().left(left).top(start).w(26 - first + 0.5).h(height / 2 - start + 0.5).border_l(1).border_b(1).rounded_bl(6).border_color("#3a3a3d"));
+    return segments;
+  });
 }
 
 // Use the focused header over the lightest glass stop as a conservative backdrop.

@@ -118,7 +118,7 @@
       {
         "id": "combined-tree",
         "anchor": "  tree(all, addr, lead = []) {\n    const kids = all.filter((k) => k.parent === addr && k.state === \"live\");\n    return kids.flatMap((k, i) => {\n      const last = i === kids.length - 1;\n      return [\n        { t: k, lines: [...lead, last ? \"└\" : \"├\"] },\n        ...this.tree(all, k.address, [...lead, last ? \"\" : \"│\"]),\n      ];\n    });\n  }\n\n",
-        "replacement": "  tree(all, addr, lead = []) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return [];\n    const rows = this.projectChildren(all, addr);\n    const selected = selectAgentChildren(rows, [...(this.expandedConsoles ?? [])]);\n    const byKey = new Map(rows.map(row => [row.key, row])), live = new Set();\n    for (const row of rows) if (!row.retained) {\n      for (let current = row; current && !live.has(current.key); current = byKey.get(current.parentKey)) live.add(current.key);\n    }\n    (this.spiderHiddenFinished ??= new Map()).set(addr, selected.filter(row => !live.has(row.key)).length);\n    const visible = this.spiderShowFinished?.has(addr) ? selected : selected.filter(row => live.has(row.key));\n    const remaining = new Map(), stems = [];\n    for (const row of visible) remaining.set(row.parentKey, (remaining.get(row.parentKey) ?? 0) + 1);\n    return visible.map(row => {\n      const siblings = remaining.get(row.parentKey) - 1; remaining.set(row.parentKey, siblings);\n      const lines = [...lead, ...stems.slice(0, row.depth), siblings ? \"├\" : \"└\"];\n      stems[row.depth] = siblings ? \"│\" : \"\"; stems.length = row.depth + 1;\n      return { t: { ...row.terminal, ...row, spider: row.kind !== \"native\" }, lines };\n    });\n  }\n\n"
+        "replacement": "  tree(all, addr, lead = []) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return [];\n    const rows = this.projectChildren(all, addr);\n    const hidden = new Set();\n    const selected = selectAgentChildren(rows, [...(this.expandedConsoles ?? [])]).filter(row => {\n      if (hidden.has(row.parentKey) || this.folded.has(row.parentKey)) { hidden.add(row.key); return false; }\n      return true;\n    });\n    const byKey = new Map(rows.map(row => [row.key, row])), live = new Set();\n    for (const row of rows) if (!row.retained) {\n      for (let current = row; current && !live.has(current.key); current = byKey.get(current.parentKey)) live.add(current.key);\n    }\n    (this.spiderHiddenFinished ??= new Map()).set(addr, selected.filter(row => !live.has(row.key)).length);\n    const visible = this.spiderShowFinished?.has(addr) ? selected : selected.filter(row => live.has(row.key));\n    const remaining = new Map(), stems = [];\n    if (this.spiderHiddenFinished.get(addr) > 0) remaining.set(null, 1);\n    for (const row of visible) remaining.set(row.parentKey, (remaining.get(row.parentKey) ?? 0) + 1);\n    return visible.map(row => {\n      const siblings = remaining.get(row.parentKey) - 1; remaining.set(row.parentKey, siblings);\n      const lines = [...lead, ...stems.slice(0, row.depth), siblings ? \"├\" : \"└\"];\n      stems[row.depth] = siblings ? \"│\" : \"\"; stems.length = row.depth + 1;\n      const hasChildren = rows.some(child => child.parentKey === row.key);\n      const open = row.kind === \"console\" ? this.expandedConsoles?.has(row.key) : !this.folded.has(row.key);\n      return { t: { ...row.terminal, ...row, spider: row.kind !== \"native\" }, lines, hasChildren, open };\n    });\n  }\n\n"
       },
       {
         "id": "filter-replay",
@@ -188,7 +188,7 @@
       {
         "id": "console-fold",
         "anchor": "      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))",
-        "replacement": "      .when(k.kind === \"console\", el => el.child(div().id(`console-fold-${k.key}`).size(20).flex_none().rounded(999).flex().items_center().justify_center().cursor_pointer()\n        .hover(el => el.bg(\"#ffffff14\"))\n        .tooltip(this.expandedConsoles?.has(k.key) ? \"Hide commands\" : \"Show commands\")\n        .on_click((_e, cx) => { cx.stop_propagation(); this.expandedConsoles ??= new Set(); this.expandedConsoles.has(k.key) ? this.expandedConsoles.delete(k.key) : this.expandedConsoles.add(k.key); cx.notify(); })\n        .child(svg(`mods/workspace-chrome/chevron-${this.expandedConsoles?.has(k.key) ? \"down\" : \"right\"}.svg`).size(11).flex_none())))\n      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))"
+        "replacement": "      .when(s.hasChildren, el => el.child(div().id(`${k.kind === \"console\" ? \"console\" : \"child\"}-fold-${k.key}`).absolute().left(4 + s.lines.length * 26).size(11).flex_none().flex().items_center().justify_center().cursor_pointer().text_color(t.dim)\n        .hover(el => el.text_color(t.foreground))\n        .tooltip(s.open ? (k.kind === \"console\" ? \"Hide commands\" : \"Hide children\") : (k.kind === \"console\" ? \"Show commands\" : \"Show children\"))\n        .on_click((_e, cx) => {\n          cx.stop_propagation();\n          const folded = k.kind === \"console\" ? (this.expandedConsoles ??= new Set()) : this.folded;\n          folded.has(k.key) ? folded.delete(k.key) : folded.add(k.key); cx.notify();\n        })\n        .child(svg(`mods/workspace-chrome/chevron-${s.open ? \"down\" : \"right\"}.svg`).size(11).flex_none())))\n      .when(Boolean(pic), el => el.child(div().id(`thread-icon-${k.key}`).absolute().left(17 + s.lines.length * 26).size(14).flex_none().child(pic)))"
       },
       {
         "id": "standalone-empty-state",
@@ -218,12 +218,12 @@
       {
         "id": "thread-keylines",
         "anchor": ".children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()\n        .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))\n        .when(l === \"└\" || l === \"├\", el => el.border_b(1.5).rounded_bl(6))))",
-        "replacement": ".children(this.keylines(s.lines))"
+        "replacement": ".children(this.keylines(s.lines, 26, { first: s.hasChildren ? 20 : 7 }))\n      .when(s.hasChildren && s.open, el => el.children(this.keylines([\"│\"], 26, { x: 24 + s.lines.length * 26, start: 20 })))"
       },
       {
         "id": "thread-indent",
         "anchor": ".pl(39)",
-        "replacement": ".pl(s.grouped ? 2 : 17)"
+        "replacement": ".relative().pl(40 + s.lines.length * 26)"
       },
       {
         "id": "section-divider",
@@ -263,7 +263,7 @@
       {
         "id": "finished-toggle-method",
         "anchor": "  subRow(t, s, shown, compact) {\n",
-        "replacement": "  finishedToggle(t, addr, groupLine = null) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().relative().pl(groupLine ? 53 : 38).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .when(Boolean(groupLine), el => el.child(div().absolute().left(2).top(0).children(this.keylines([groupLine === \"├\" ? \"│\" : \"\"], 24))))\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  keylines(lines, height = 26, start = -4, x = 7) {\n    return threadKeylines(div, lines, height, start, x);\n  }\n\n  subRow(t, s, shown, compact) {\n"
+        "replacement": "  finishedToggle(t, addr, groupLine = null) {\n    const count = this.spiderHiddenFinished?.get(addr) ?? 0, open = this.spiderShowFinished?.has(addr) ?? false;\n    if (!count) return [];\n    const lines = [...(groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : []), \"└\"];\n    return [h_flex().id(`finished-toggle-${addr}`).h(24).flex_none().relative().pl(19 + lines.length * 26).pr(8).gap(6).items_center().rounded(8).cursor_pointer()\n      .text_size(11.5).text_color(t.dim).hover(el => el.bg(t.hover).text_color(t.foreground))\n      .tooltip(open ? \"Hide finished subagents\" : \"Show finished subagents\")\n      .on_click((_event, cx) => { const shown = (this.spiderShowFinished ??= new Set()); open ? shown.delete(addr) : shown.add(addr); cx.notify(); })\n      .children(this.keylines(lines, 24, { first: 5 }))\n      .child(svg(open ? `mods/${spiderProps().modId ?? \"spider-agents\"}/chevron-up.svg` : \"mods/workspace-chrome/chevron-right.svg\").size(10).flex_none())\n      .child(open ? \"Hide finished\" : `${count} finished`)];\n  }\n\n  keylines(lines, height = 26, options = {}) {\n    return threadKeylines(div, lines, height, options);\n  }\n\n  subRow(t, s, shown, compact) {\n"
       },
       {
         "id": "finished-toggle-row",
@@ -283,7 +283,7 @@
       {
         "id": "fold-row-padding",
         "anchor": "      return h_flex()\n        .id(`ag-${a.address}`)\n        .px(8)\n        .h(30)",
-        "replacement": "      return h_flex()\n        .id(`ag-${a.address}`)\n        .pl(2)\n        .pr(8)\n        .h(30)"
+        "replacement": "      return h_flex()\n        .id(`ag-${a.address}`)\n        .relative().pl(groupLine ? 66 : 40)\n        .pr(8)\n        .h(30)"
       },
       {
         "id": "remove-row-pin",
@@ -298,7 +298,7 @@
       {
         "id": "fold-and-pin-slots",
         "anchor": "        .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)\n          .when(subs.length > 0, el => el.on_click((_e, cx) => {\n            cx.stop_propagation();\n            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);\n            cx.notify();\n          })).child(pic)))",
-        "replacement": "        .child(h_flex().flex_none().items_center()\n          .when(Boolean(groupLine), el => el.children(this.keylines([groupLine], 30)))\n          .child(h_flex().flex_none().gap(3).items_center()\n          .child(div().id(`fold-slot-${a.address}`).size(11).flex_none()\n            .when(hasChildren, el => el.child(div().id(`fold-left-${a.address}`).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).cursor_pointer()\n              .hover(s => s.text_color(t.foreground)).tooltip(this.folded.has(a.address) ? \"Show subagents\" : \"Hide subagents\")\n              .on_click((_e, cx) => { cx.stop_propagation(); this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address); cx.notify(); })\n              .child(svg(`mods/workspace-chrome/chevron-${this.folded.has(a.address) ? \"right\" : \"down\"}.svg`).size(11)))))\n          .child(div().id(`agent-pin-${a.address}`).size(16).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()\n            .text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n            .on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned }); this.iconHovered = null; cx.notify(); })\n            .child(this.iconHovered === a.address ? svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13) : pic))))"
+        "replacement": "        .when(Boolean(groupLine), el => el.children(this.keylines([groupLine], 30, { first: hasChildren ? 20 : 7 })))\n        .when(hasChildren && !this.folded.has(a.address), el => el.children(this.keylines([\"│\"], 30, { x: groupLine ? 50 : 24, start: 22 })))\n        .when(hasChildren, el => el.child(div().id(`fold-slot-${a.address}`).absolute().left(groupLine ? 30 : 4).size(11).flex_none()\n          .child(div().id(`fold-left-${a.address}`).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).cursor_pointer()\n            .hover(s => s.text_color(t.foreground)).tooltip(this.folded.has(a.address) ? \"Show subagents\" : \"Hide subagents\")\n            .on_click((_e, cx) => { cx.stop_propagation(); this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address); cx.notify(); })\n            .child(svg(`mods/workspace-chrome/chevron-${this.folded.has(a.address) ? \"right\" : \"down\"}.svg`).size(11)))))\n        .child(div().id(`agent-pin-${a.address}`).absolute().left(groupLine ? 43 : 17).size(14).flex_none().flex().items_center().justify_center().rounded(4).cursor_pointer()\n            .text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(isPinned ? \"Unpin\" : \"Pin to the top\")\n            .on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"terminal.pin\", { terminal: a.address, pinned: !isPinned }); this.iconHovered = null; cx.notify(); })\n            .child(this.iconHovered === a.address ? svg(`mods/workspace-chrome/${isPinned ? \"pin-off\" : \"pin\"}.svg`).size(13) : pic))"
       },
       {
         "id": "folded-count-only",
@@ -318,7 +318,7 @@
       {
         "id": "pi-agent-mark-colour",
         "anchor": "      const pic = icon(a.program, 16, t.foreground);",
-        "replacement": "      const pic = icon(a.program, 16, (a.program?.key ?? a.program?.name)?.toLowerCase() === \"pi\" ? t.muted : t.foreground);"
+        "replacement": "      const pic = icon(a.program, 14, (a.program?.key ?? a.program?.name)?.toLowerCase() === \"pi\" ? t.muted : t.foreground);"
       },
       {
         "id": "agent-name-text",
@@ -333,7 +333,7 @@
       {
         "id": "space-heading-icon",
         "anchor": ".child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))",
-        "replacement": ".when(!byPriority, el => el.child(div().id(`group-fold-${g.id}`).relative().size(11).flex_none().flex().items_center().justify_center().text_color(t.dim)\n          .hover(s => s.text_color(t.foreground)).tooltip(open ? \"Hide agents\" : \"Show agents\")\n          .child(svg(`mods/workspace-chrome/chevron-${open ? \"down\" : \"right\"}.svg`).size(11).flex_none())\n          .when(open, el => el.child(div().absolute().left(0).top(11).children(this.keylines([\"│\"], 7, 0, 5))))))\n        .when(!byPriority && g.id !== \"pinned\" && spaceIdentities.has(g.members[0]?.space), el => el.child(spaceIcon(g.members[0].space, g.label)))\n        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))"
+        "replacement": ".when(!byPriority, el => el.child(div().id(`group-fold-${g.id}`).absolute().left(4).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim)\n          .hover(s => s.text_color(t.foreground)).tooltip(open ? \"Hide agents\" : \"Show agents\")\n          .child(svg(`mods/workspace-chrome/chevron-${open ? \"down\" : \"right\"}.svg`).size(11).flex_none())))\n        .when(!byPriority && open, el => el.children(this.keylines([\"│\"], 30, { start: 26 })))\n        .when(!byPriority && g.id !== \"pinned\" && spaceIdentities.has(g.members[0]?.space), el => el.child(spaceIcon(g.members[0].space, g.label).absolute().left(17)))\n        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))"
       },
       {
         "id": "group-folded-pills",
@@ -358,7 +358,7 @@
       {
         "id": "group-heading-padding",
         "anchor": "        .id(g.id)\n        .px(8)\n        .pt(8)",
-        "replacement": "        .id(g.id)\n        .px(8)\n        .when(!byPriority, el => el.pl(3.5).pr(8))\n        .pt(8)"
+        "replacement": "        .id(g.id)\n        .px(8)\n        .relative().when(!byPriority, el => el.pl(40).pr(8))\n        .pt(8)"
       },
       {
         "id": "group-heading-counts",
@@ -415,7 +415,7 @@
       {
         "id": "space-badge",
         "anchor": ".when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color(\"#ffffff\").child([...w.name][0]?.toUpperCase() ?? \"?\")))",
-        "replacement": ".child(svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(w.name))"
+        "replacement": ".child(svg(`mods/spider-agents/space-${identity.shape}.svg`).absolute().left(machineLine ? 43 : 17).size(14).flex_none().text_color(t.muted).tooltip(w.name))"
       },
       {
         "id": "mono-space-name",
@@ -425,7 +425,7 @@
       {
         "id": "mono-machine-name",
         "anchor": ".when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? \"This computer\"))",
-        "replacement": ".when(!collapsed, el => el.child(div().flex_1().truncate().when(Boolean(m), el => el.font_family(props()?.fonts?.paths ?? \"JetBrains Mono\")).child(m ?? \"This computer\"))"
+        "replacement": ".when(!collapsed, el => el.child(div().relative().top(-1).flex_1().truncate().when(Boolean(m), el => el.font_family(props()?.fonts?.paths ?? \"JetBrains Mono\")).child(m ?? \"This computer\"))"
       },
       {
         "id": "space-identity",
@@ -440,12 +440,12 @@
       {
         "id": "machine-space-thread",
         "anchor": "      .px(8)\n      .h(rowHeight({ tree }))",
-        "replacement": "      .px(8)\n      .when(Boolean(machineLine), el => el.pl(24).child(div().absolute().left(6).top(0).children(threadKeylines(div, [machineLine], rowHeight({ tree })))))\n      .h(rowHeight({ tree }))"
+        "replacement": "      .px(8).pl(machineLine ? 66 : 40)\n      .when(Boolean(machineLine), el => el.children(threadKeylines(div, [machineLine], rowHeight({ tree }))))\n      .h(rowHeight({ tree }))"
       },
       {
         "id": "machine-fold-caret",
         "anchor": ".child(svg(`mods/workspace-chrome/${m ? \"server\" : \"monitor\"}.svg`).size(13).flex_none())",
-        "replacement": ".child(div().id(`machine-fold-${m ?? \"local\"}`).relative().size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(folded ? \"Show spaces\" : \"Hide spaces\").child(svg(`mods/workspace-chrome/chevron-${folded ? \"right\" : \"down\"}.svg`).size(11)).when(!collapsed && !folded && mine.length > 0, el => el.child(div().absolute().left(0).top(11).children(threadKeylines(div, [\"│\"], 7, 0, 5)))))\n        .child(svg(`mods/workspace-chrome/${m ? \"server\" : \"monitor\"}.svg`).size(13).flex_none())"
+        "replacement": ".child(div().id(`machine-fold-${m ?? \"local\"}`).absolute().left(4 + level * 26).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(folded ? \"Show spaces\" : \"Hide spaces\").child(svg(`mods/workspace-chrome/chevron-${folded ? \"right\" : \"down\"}.svg`).size(11)))\n        .when(Boolean(groupLine), el => el.children(threadKeylines(div, [groupLine], 26, { first: 20 })))\n        .when(!collapsed && !folded && !rebuilt, el => el.children(threadKeylines(div, [\"│\"], 26, { x: 24 + level * 26, start: 20 })))\n        .child(svg(`mods/workspace-chrome/${m ? \"server\" : \"monitor\"}.svg`).relative().top(-0.5).size(14).flex_none())"
       },
       {
         "id": "machine-space-count",
@@ -455,12 +455,32 @@
       {
         "id": "empty-machine-group-begin",
         "anchor": "    const machineNames = [null, ...remote];\n    return machineNames.flatMap((m) => {",
-        "replacement": "    const emptyMachines = remote.filter(m => !spaces().some(space => (space.machine ?? null) === m) && !loading(m));\n    const emptySet = new Set(emptyMachines);\n    const groupKey = \"\\u0000spider-empty-machines-open\";\n    const groupOpen = this.folded.has(groupKey);\n    const toggleGroup = cx => { groupOpen ? this.folded.delete(groupKey) : this.folded.add(groupKey); localStorage.setItem(\"machines.folded\", JSON.stringify([...this.folded])); cx.notify(); };\n    const drawMachine = (m) => {"
+        "replacement": "    const emptyMachines = remote.filter(m => !spaces().some(space => (space.machine ?? null) === m) && !loading(m));\n    const emptySet = new Set(emptyMachines);\n    const groupKey = \"\\u0000spider-empty-machines-open\";\n    const groupOpen = this.folded.has(groupKey);\n    const toggleGroup = cx => { groupOpen ? this.folded.delete(groupKey) : this.folded.add(groupKey); localStorage.setItem(\"machines.folded\", JSON.stringify([...this.folded])); cx.notify(); };\n    const drawMachine = (m, groupLine = null) => {\n      const level = groupLine ? 1 : 0;"
       },
       {
         "id": "empty-machine-group-end",
         "anchor": "      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];\n    });",
-        "replacement": "      return [head, ...(folded ? [] : mine.length ? mine.map((r, i) => draw({ ...r, machineLine: i === mine.length - 1 ? \"└\" : \"├\" })) : [loading(m) ? loadingRow(m) : empty])];\n    };\n    const others = [null, ...remote.filter(m => !emptySet.has(m))].flatMap(drawMachine);\n    if (!emptyMachines.length) return others;\n    const group = h_flex().id(\"machine-empty-group\").h(26).flex_none().px(collapsed ? 2 : 8).gap(7).items_center().text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.hover))\n      .on_click((_e, cx) => toggleGroup(cx))\n      .child(div().size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(groupOpen ? \"Hide machines\" : \"Show machines\").child(svg(`mods/workspace-chrome/chevron-${groupOpen ? \"down\" : \"right\"}.svg`).size(11)))\n      .child(svg(\"mods/workspace-chrome/server.svg\").size(13).flex_none())\n      .when(!collapsed, el => el.child(div().flex_1().truncate().child(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`)))\n      .child(h_flex().id(\"machine-empty-group-count\").h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.selected).text_color(t.foreground)).tooltip(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`).on_click((_e, cx) => { cx.stop_propagation(); toggleGroup(cx); }).child(svg(\"mods/workspace-chrome/server.svg\").size(11).flex_none()).child(String(emptyMachines.length)));\n    return [...others, group, ...(groupOpen ? emptyMachines.flatMap(drawMachine) : [])];"
+        "replacement": "      return [head, ...(folded ? [] : mine.length ? mine.map((r, i) => draw({ ...r, machineLine: i === mine.length - 1 ? \"└\" : \"├\" })) : [loading(m) ? loadingRow(m, [...(groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : []), \"└\"]) : empty])];\n    };\n    const others = [null, ...remote.filter(m => !emptySet.has(m))].flatMap(m => drawMachine(m));\n    if (!emptyMachines.length) return others;\n    const group = h_flex().id(\"machine-empty-group\").relative().h(26).flex_none().pl(17).pr(8).gap(9).items_center().text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.hover))\n      .on_click((_e, cx) => toggleGroup(cx))\n      .when(groupOpen, el => el.children(threadKeylines(div, [\"│\"], 26, { start: 20 })))\n      .child(div().absolute().left(4).size(11).flex_none().flex().items_center().justify_center().text_color(t.dim).hover(s => s.text_color(t.foreground)).tooltip(groupOpen ? \"Hide machines\" : \"Show machines\").child(svg(`mods/workspace-chrome/chevron-${groupOpen ? \"down\" : \"right\"}.svg`).size(11)))\n      .child(svg(\"mods/workspace-chrome/server.svg\").relative().top(-0.5).size(14).flex_none())\n      .when(!collapsed, el => el.child(div().flex_1().truncate().child(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`)))\n      .child(h_flex().id(\"machine-empty-group-count\").h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(t.dim).cursor_pointer().hover(s => s.bg(t.selected).text_color(t.foreground)).tooltip(`${emptyMachines.length} machine${emptyMachines.length === 1 ? \"\" : \"s\"}`).on_click((_e, cx) => { cx.stop_propagation(); toggleGroup(cx); }).child(svg(\"mods/workspace-chrome/server.svg\").size(11).flex_none()).child(String(emptyMachines.length)));\n    return [...others, group, ...(groupOpen ? emptyMachines.flatMap((m, i) => drawMachine(m, i === emptyMachines.length - 1 ? \"└\" : \"├\")) : [])];"
+      },
+      {
+        "id": "thread-machine-heading",
+        "anchor": "const head = h_flex().id(`machine-${m ?? \"local\"}`).h(26).flex_none().px(collapsed ? 2 : 8).gap(7)",
+        "replacement": "const head = h_flex().id(`machine-${m ?? \"local\"}`).relative().h(26).flex_none().pl(17 + level * 26).pr(8).gap(9)"
+      },
+      {
+        "id": "thread-machine-no-add",
+        "anchor": "          .when(connected, el => el.child(div().id(`machine-add-${m ?? \"local\"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"space.new\", { machine: m ?? \"\" }); }).child(\"+\")))\n          .child(div().size(6)",
+        "replacement": "          .child(div().size(6)"
+      },
+      {
+        "id": "thread-new-space-row",
+        "anchor": "const empty = h_flex().id(`machine-new-${m ?? \"local\"}`).h(28).flex_none().px(8).gap(7)",
+        "replacement": "const empty = h_flex().id(`machine-new-${m ?? \"local\"}`).relative().h(28).flex_none().pl(18 + (level + 1) * 26).pr(8).gap(10)\n        .children(threadKeylines(div, [...(groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : []), \"└\"], 28, { first: 6 }))"
+      },
+      {
+        "id": "thread-loading-row",
+        "anchor": "const loadingRow = m => div().id(`machine-loading-${m ?? \"local\"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? \"…\" : \"Loading…\");",
+        "replacement": "const loadingRow = (m, lines = []) => div().id(`machine-loading-${m ?? \"local\"}`).relative().h(28).flex_none().flex().items_center().px(8).pl(lines.length ? 40 + lines.length * 26 : 8).text_size(12).text_color(t.dim)\n      .children(threadKeylines(div, lines, 28, { first: -16 })).child(collapsed ? \"…\" : \"Loading…\");"
       }
     ],
     "pane": [

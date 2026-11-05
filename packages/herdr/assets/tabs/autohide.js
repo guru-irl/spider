@@ -27,8 +27,10 @@ function shortcut(name) {
   }).join(" ");
 }
 
-const SLIDE = 160;
+const SLIDE = 140;
 const EDGE = "#38383a";
+// The bar rests a few pixels below the strip and starts slightly higher, so the motion is a short drop.
+const REST = 4, START = -2, INSET = 8;
 
 export function initTabAutoHide(view, cx) {
   const state = view.tabAuto = { visible: false, slid: false, leaving: false, slideTimer: null, strip: false, row: false, width: 0, active: activeTab(), flashUntil: 0, menu: null, rename: null, plus: false, agents: [], handle: cx.focus_handle() };
@@ -179,20 +181,21 @@ export function renderTabAutoHide(view, row, cx) {
     .on_hover((hovered, cx) => state.hover("strip", hovered, cx))
     .on_size_change((size, cx) => { if (state.width !== size.width) { state.width = size.width; cx.notify(); } });
   if (state.visible) state.slideIn();
-  // Popup keeps eight pixels clear at the window edge.
+  // Popup keeps eight pixels clear at the window edge; the bar takes the same margin on the left.
   const width = Math.max(0, state.width - 8);
-  const bar = row.id("tabs-revealed").absolute().left(0).top(state.slid ? 0 : -42).h(42).w(width).bg(theme().popover)
-    .border_1().border_color(EDGE).rounded_b(10)
-    .transition("top", { duration: SLIDE, easing: "ease-out" })
+  const motion = { duration: SLIDE, easing: "ease-out" };
+  const bar = row.id("tabs-revealed").absolute().left(INSET).top(state.slid ? REST : START).h(42).w(Math.max(0, width - INSET)).bg(theme().popover)
+    .border_1().border_color(EDGE).rounded(10)
+    .transition("top", motion)
     .on_hover((hovered, cx) => state.hover("row", hovered, cx));
-  // The clip hides the bar while it sits above its resting place.
-  let content = div().id("tabs-slide").relative().w(width).h(42).overflow_hidden().child(bar);
+  // A fade carries most of the motion, which stays smooth at any frame rate.
+  let content = div().id("tabs-slide").relative().w(width).h(42 + REST).opacity(state.slid ? 1 : 0).transition("opacity", motion).child(bar);
   if (view.pressed !== null) {
     const viewport = globalThis.window.viewport_size();
     // The transparent capture covers the window from any tab's position.
     const capture = div().id("tabs-drag-capture").absolute().left(-viewport.width).top(-viewport.height).w(viewport.width * 3).h(viewport.height * 3)
       .on_mouse_up("left", (_event, cx) => { cx.stop_propagation(); view.pressed = null; state.release(); });
-    content = div().relative().w(width).h(42).child(capture).child(content);
+    content = div().relative().w(width).h(42 + REST).child(capture).child(content);
   }
   return Popup.new("tabs-popup", strip).size_full().anchor("top_left")
     .when(state.visible, el => el.content(content));

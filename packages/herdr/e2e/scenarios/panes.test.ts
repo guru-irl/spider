@@ -307,6 +307,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 expect(openedView.find(row => row.terminal === run.viewer)?.tab).not.toBe(parent.placement.tab);
                 expect(await f.app.status()).toMatchObject({ agent: run.viewer });
                 await sidebar.refresh();
+                expect((await sidebar.host.uiSnapshot()).nodes.some(n => n.id === `ag-${run.viewer}`)).toBe(false);
                 await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
                 expect(sidebar.commands.some(c => c.argv.some(arg => arg.includes('openRun') && arg.includes(run.id)))).toBe(true);
                 const ownerPane = placed(await f.app.ls()).find(row => row.terminal === parent.pi.terminal);

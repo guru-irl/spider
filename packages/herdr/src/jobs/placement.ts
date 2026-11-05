@@ -110,6 +110,12 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
   const automaticOpens = new Map<string, Promise<PaneReservation | null>>();
   const explicitRemoteOpens = new Map<string, number>();
   const openKey = (id: JobId | RunId, owner: Owner) => JSON.stringify([id, owner.sessionId, owner.generation]);
+  const userOpens = new Map<string, { active: number; revision: number }>();
+  function userOpen<T>(id: RunId, owner: Owner, perform: () => Promise<T>): Promise<T> {
+    const key = openKey(id, owner), state = userOpens.get(key) ?? { active: 0, revision: 0 };
+    state.active++; state.revision++; userOpens.set(key, state);
+    return perform().finally(() => { state.active--; });
+  }
   const report = options.reportError ?? ((error: unknown) => { console.error(herdrErrorNotice(error)); });
   let disposed = false, sequence = 0;
   const limit = options.limit ?? 2;
@@ -435,13 +441,13 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     if (s.reservation) await release(s.reservation);
     else slots.delete(token.id);
   }
-  async function stopViewer(address: TerminalAddress, owner: Owner, runId: RunId, signal?: AbortSignal): Promise<void> {
+  async function stopViewer(address: TerminalAddress, owner: Owner, runId: RunId, signal?: AbortSignal, mayStop?: () => boolean): Promise<void> {
     const absent = (error: unknown) => { if (code(error) !== 'not_found') throw error; };
     const terminal = await options.hc.get(address).catch(error => { absent(error); return null; });
     if (terminal && await recoverViewer(terminal, owner, runId, options.hc, () => check(signal))) {
       const placed = await app.ownerPlacement(address).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
       check(signal);
-      if (placed) return;
+      if (placed || mayStop && !mayStop()) return;
       await options.hc.kill(address).catch(absent);
       await options.hc.rm(address).catch(absent);
     }
@@ -584,12 +590,18 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       for (const candidate of [...terminals.values()]) {
         const runId = candidate.labels[HERDR_LABELS.run] as RunId;
         if (!runId || !sameRun(candidate, owner, runId)) continue;
-        const terminal = await options.hc.get(candidate.address).catch(error => { if (code(error) === 'not_found') return null; throw error; });
-        if (!terminal || !await recoverViewer(terminal, owner, runId, options.hc, () => check(signal))) continue;
-        const placed = await app.ownerPlacement(terminal.address).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
-        check(signal);
-        if (placed) viewers.set(terminal.address, { owner, runId });
-        else await stopViewer(terminal.address, owner, runId, signal);
+        const key = openKey(runId, owner), revision = userOpens.get(key)?.revision ?? 0;
+        // A completed open also invalidates a layout reply already in flight.
+        const mayStop = () => !userOpens.get(key)?.active && (userOpens.get(key)?.revision ?? 0) === revision;
+        if (!mayStop()) continue;
+        try {
+          const terminal = await options.hc.get(candidate.address).catch(error => { if (code(error) === 'not_found') return null; throw error; });
+          if (!terminal || !await recoverViewer(terminal, owner, runId, options.hc, () => check(signal))) continue;
+          const placed = await app.ownerPlacement(terminal.address).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
+          check(signal);
+          if (placed) viewers.set(terminal.address, { owner, runId });
+          else await stopViewer(terminal.address, owner, runId, signal, mayStop);
+        } catch (error) { check(signal); report(error); }
       }
     },
     acquire: (kind, id, owner, request) => budget(request, requestOptions => {
@@ -625,7 +637,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         if (kind === 'subagent' && !explicit && !options.automaticSubagentPanes) {
           const placed = await app.ownerPlacement(viewer).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
           check(acquireOptions.signal);
-          if (!placed) { await stopViewer(viewer, owner, id as RunId); return null; }
+          if (!placed) return null;
           observed = placed;
         }
         const previous = [...slots.values()].find(s => s.id === id && s.owner.sessionId === owner.sessionId && !(s.kind === 'subagent' && s.removedTerminal));
@@ -641,7 +653,6 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         check(acquireOptions.signal);
         const reservation = await show(s.token, viewer, { ...acquireOptions, userInitiated: explicit }, () => { retainedDisplay = true; });
         check(acquireOptions.signal);
-        if (kind === 'subagent' && !explicit && reservation === null) await stopViewer(viewer, owner, id as RunId);
         // A concurrent automatic opener can park and abandon this slot.
         // Retry the user request with a fresh slot, reusing the same live viewer.
         return explicit && reservation === null ? acquire(acquireOptions) : reservation;
@@ -693,12 +704,13 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         throw error;
       }
       };
+      if (kind === 'subagent' && (requestOptions.userInitiated ?? !requestOptions.automatic)) return userOpen(id as RunId, owner, () => acquire(requestOptions));
       if (kind !== 'subagent' || !requestOptions.automatic) return acquire(requestOptions);
       const key = focusKey(owner), previous = automaticOpens.get(key) ?? Promise.resolve();
       const pending = turn(previous, requestOptions.signal).then(() => acquire(requestOptions)).finally(() => { if (automaticOpens.get(key) === pending) automaticOpens.delete(key); });
       automaticOpens.set(key, pending); return pending;
     }),
-    moveRun: (id, owner, destination, moveOptions) => budget(moveOptions, request => moveViewer('subagent', id, owner, destination, request)),
+    moveRun: (id, owner, destination, moveOptions) => userOpen(id, owner, () => budget(moveOptions, request => moveViewer('subagent', id, owner, destination, request))),
     moveJob: (id, owner, viewer, destination, moveOptions) => budget(moveOptions, request => moveViewer('remote', id, owner, destination, request, viewer)),
     reserveRemote: async (id, owner, reserveOptions) => (await reserve(id, owner, 'remote', reserveOptions.signal)).token,
     display: async (token, viewer, displayOptions) => {
@@ -714,7 +726,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       if (disposed) return;
       disposed = true; unsubscribe();
       try { for (const s of [...slots.values()]) if (s.kind !== 'subagent') await abandon(s.token); }
-      finally { slots.clear(); viewers.clear(); await stream.dispose(); }
+      finally { slots.clear(); viewers.clear(); userOpens.clear(); await stream.dispose(); }
     },
   };
 }

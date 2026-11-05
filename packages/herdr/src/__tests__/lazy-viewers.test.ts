@@ -5,11 +5,12 @@ import { expect, test } from 'vitest';
 import { createHerdrHarness } from './testutil.js';
 import { createViewerLauncher, registerHerdrViewers } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
+import { sameRun } from '../viewers/identity.js';
 import { startSessionEndpoint } from '../feed/ipc-server.js';
 import { createSessionIpcClient } from '../feed/ipc-client.js';
 import { projectAgentChildren } from '../../assets/agents/children.js';
 import { moveTarget, killTarget } from '../../assets/agents/move.js';
-import { HerdrLabelContract, type AppClient, type AppPaneInspection, type Owner, type OwnerPlacement, type RunId, type SessionFeed, type TerminalAddress } from '../contracts.js';
+import { HerdrLabelContract, type AppClient, type AppPaneInspection, type MachineName, type Owner, type OwnerPlacement, type RunId, type SessionFeed, type TerminalAddress } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 
 const ids = ['10000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000002'] as RunId[];
@@ -45,20 +46,28 @@ async function fixture(automaticSubagentPanes = false) {
   const nativeLauncher = createViewerLauncher({ hc: h.hc, owner: () => owner, viewerExecutable: executable, feedRoot: h.root,
     ipcDescriptor: () => ({ version: 1, sessionId: owner.sessionId, generation: owner.generation, address: join(h.root, 'ipc'), capabilityFile: join(h.root, 'cap') }) });
   const launcher = Object.assign((...args: Parameters<typeof nativeLauncher>) => { launchRequests.push(args[0]); return nativeLauncher(...args); }, { discard: nativeLauncher.discard });
-  const panes = createAuxiliaryPanes({ hc: h.hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, automaticSubagentPanes, clock: Date.now });
+  const errors: unknown[] = [];
+  const panes = createAuxiliaryPanes({ hc: h.hc, app, subagentViewer: launcher, discardSubagentViewer: launcher.discard, automaticSubagentPanes, clock: Date.now, reportError: error => { errors.push(error); } });
+  const reconcile = panes.reconcile; let swept = Promise.resolve();
+  panes.reconcile = (...args) => { swept = reconcile(...args); return swept; };
   const attempted: RunId[] = [], acquire = panes.acquire;
   panes.acquire = async (kind, id, owner, options) => { try { return await acquire(kind, id, owner, options); } finally { attempted.push(id as RunId); } };
   const hooks = new Map<string, () => Promise<void>>();
+  const listeners = new Set<(id: RunId) => void>();
+  const runEvents = { list: async (_owner: Owner): Promise<readonly RunId[]> => ids,
+    subscribe: (_owner: Owner, listener: (id: RunId) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
   const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => hooks.set(name, handler) } as never, {
     owner: () => owner, hc: h.hc, viewerLauncher: launcher, viewerExecutable: executable, feedRoot: h.root, ipcDescriptor: () => null,
-    ownedRunEvents: { list: async () => ids, subscribe: () => () => {} }, panes,
+    ownedRunEvents: runEvents, panes, reportError: error => { errors.push(error); },
   });
   const launches = async () => (await h.calls()).filter(c => c.argv[0] === 'run' && c.argv.includes('spider.kind=subagent-viewer'));
   const seed = async (patch: Record<string, string> = {}, parent = owner.terminal.address) => h.hc.run({ argv: [process.execPath, executable], cwd: h.root, parent,
     labels: { 'spider.kind': 'subagent-viewer', 'spider.session': owner.sessionId, 'spider.owner-core': owner.terminal.coreId, 'spider.owner-terminal': owner.terminal.terminalId, 'spider.run': ids[0], ...patch },
     background: true, noNotify: true, outliveParent: true });
-  return { h, owner, app, panes, registration, hooks, layout, commands, launches, seed, attempted, launchRequests,
-    async close() { await registration.dispose(); await panes.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
+  return { h, owner, app, panes, registration, hooks, layout, commands, launches, seed, attempted, launchRequests, errors, runEvents,
+    emitRun(id: RunId) { for (const listener of listeners) listener(id); },
+    swept: () => swept,
+    async close() { await registration.dispose(); await swept.catch(() => {}); await panes.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
 }
 
 test('default activation never launches a viewer without a pane', async () => {
@@ -154,6 +163,60 @@ test('activation only sweeps viewers present when it starts', async () => {
   } finally { release?.(); await f.close(); }
 });
 
+test.each(['placing', 'placed'])('a sweep preserves an existing viewer that a user is %s', async phase => {
+  const f = await fixture(); let releaseSweep!: () => void, releaseOpen!: () => void;
+  let sweep: Promise<void> | undefined, opening: ReturnType<typeof f.panes.acquire> | undefined;
+  try {
+    const parked = await f.seed();
+    const lookup = f.app.ownerPlacement; let lookups = 0, inspected!: () => void, keeping!: () => void;
+    const sweepGate = new Promise<void>(resolve => { releaseSweep = resolve; }), sweepReady = new Promise<void>(resolve => { inspected = resolve; });
+    const openGate = new Promise<void>(resolve => { releaseOpen = resolve; }), openReady = new Promise<void>(resolve => { keeping = resolve; });
+    f.app.ownerPlacement = async address => {
+      if (address === parked.address && ++lookups === 2) {
+        const observed = await lookup(address).then(value => () => value, error => () => { throw error; });
+        inspected(); await sweepGate; return observed();
+      }
+      return lookup(address);
+    };
+    const command = f.app.command;
+    f.app.command = async (name, args) => {
+      if (name === 'terminal.keep') { keeping(); if (phase === 'placing') await openGate; }
+      return command(name, args);
+    };
+    sweep = f.panes.reconcile(f.owner); void sweep.catch(() => {});
+    await sweepReady;
+    opening = f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 3000, ownerRelative: true }); void opening.catch(() => {});
+    await openReady;
+    if (phase === 'placed') expect((await opening)?.viewer).toBe(parked.address);
+    releaseSweep(); await sweep;
+    await expect(f.h.hc.get(parked.address)).resolves.toMatchObject({ state: 'live' });
+    releaseOpen();
+    expect((await opening)?.viewer).toBe(parked.address);
+    expect(f.layout.has(parked.address)).toBe(true);
+    await expect(f.h.hc.get(parked.address)).resolves.toMatchObject({ state: 'live' });
+    expect(await f.launches()).toHaveLength(1);
+  } finally { releaseSweep?.(); releaseOpen?.(); await sweep?.catch(() => {}); await opening?.catch(() => {}); await f.close(); }
+});
+
+test('a sweep skips a user open already in progress when inspection starts', async () => {
+  const f = await fixture(); let release!: () => void;
+  let opening: ReturnType<typeof f.panes.acquire> | undefined;
+  try {
+    const parked = await f.seed();
+    let entered!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    const command = f.app.command;
+    f.app.command = async (name, args) => { if (name === 'terminal.keep') { entered(); await waiting; } return command(name, args); };
+    opening = f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 3000, ownerRelative: true }); void opening.catch(() => {});
+    await ready;
+    await f.panes.reconcile(f.owner);
+    await expect(f.h.hc.get(parked.address)).resolves.toMatchObject({ state: 'live' });
+    release();
+    expect((await opening)?.viewer).toBe(parked.address);
+    expect(f.layout.has(parked.address)).toBe(true);
+  } finally { release?.(); await opening?.catch(() => {}); await f.close(); }
+});
+
 test('a cancelled activation cannot remove a viewer after its final lookup completes', async () => {
   const f = await fixture(); let release!: () => void;
   try {
@@ -181,14 +244,103 @@ test('activation removes only its own parked live viewers and keeps visible view
     const otherSession = await f.seed({ 'spider.session': 'another-session' });
     const payload = await f.seed({ 'spider.kind': 'exec' });
     const unlabelled = await f.seed({ 'spider.kind': '' });
-    const remote = await f.seed({ 'spider.owner-core': 'another-core' });
-    await f.hooks.get('session_start')!();
+    const otherCore = await f.seed({ 'spider.owner-core': 'another-core' });
+    await f.hooks.get('session_start')!(); await f.swept();
     await expect(f.h.hc.get(parked.address)).rejects.toMatchObject({ code: 'not_found' });
-    for (const handle of [visible, foreign, otherSession, payload, unlabelled, remote]) await expect(f.h.hc.get(handle.address)).resolves.toMatchObject({ state: 'live' });
+    for (const handle of [visible, foreign, otherSession, payload, unlabelled, otherCore]) await expect(f.h.hc.get(handle.address)).resolves.toMatchObject({ state: 'live' });
     const before = (await f.launches()).length;
-    await f.hooks.get('session_shutdown')!(); await f.hooks.get('session_start')!();
+    await f.hooks.get('session_shutdown')!(); await f.hooks.get('session_start')!(); await f.swept();
     expect((await f.h.hc.get(visible.address)).state).toBe('live');
     expect((await f.launches()).length).toBe(before);
+  } finally { await f.close(); }
+});
+
+test('activation excludes a remote viewer with otherwise matching ownership', async () => {
+  const f = await fixture();
+  try {
+    const local = await f.seed(), labels = (await f.h.hc.get(local.address)).labels;
+    const remote = await f.h.hc.run({ on: 'remote.invalid' as MachineName, argv: [process.execPath, '-e', 'setInterval(() => {}, 1000)'], cwd: f.h.root,
+      labels, background: true, noNotify: true, outliveParent: true });
+    const stream = f.h.hc.events();
+    try { await stream.ready; await expect.poll(() => stream.lookup(remote.address)).not.toBeNull(); }
+    finally { await stream.dispose(); }
+    expect(remote.address).toMatch(/^remote\.invalid\//);
+    expect((await f.h.hc.get(remote.address)).parent).toBe(f.owner.terminal.address);
+    await f.panes.reconcile(f.owner);
+    await expect(f.h.hc.get(local.address)).rejects.toMatchObject({ code: 'not_found' });
+    await expect(f.h.hc.get(remote.address)).resolves.toMatchObject({ state: 'live', labels });
+  } finally { await f.close(); }
+});
+
+test('run identity rejects a remote address even when every ownership label matches', async () => {
+  const f = await fixture();
+  try {
+    const viewer = await f.seed(), terminal = await f.h.hc.get(viewer.address);
+    expect(sameRun(terminal, f.owner, ids[0])).toBe(true);
+    expect(sameRun({ ...terminal, address: `remote.invalid/${viewer.address}` as TerminalAddress }, f.owner, ids[0])).toBe(false);
+  } finally { await f.close(); }
+});
+
+test('activation preserves a parked viewer whose previous owner is still live', async () => {
+  const f = await fixture();
+  try {
+    const previous = await f.h.hc.run({ argv: [process.execPath, '-e', 'setInterval(() => {}, 1000)'], cwd: f.h.root, parent: null,
+      labels: {}, background: true, noNotify: true, outliveParent: true });
+    const foreign = await f.seed({ 'spider.owner-terminal': previous.address }, previous.address), own = await f.seed();
+    await f.panes.reconcile(f.owner);
+    await expect(f.h.hc.get(own.address)).rejects.toMatchObject({ code: 'not_found' });
+    await expect(f.h.hc.get(previous.address)).resolves.toMatchObject({ state: 'live' });
+    await expect(f.h.hc.get(foreign.address)).resolves.toMatchObject({ state: 'live', parent: previous.address, labels: { 'spider.owner-terminal': previous.address } });
+  } finally { await f.close(); }
+});
+
+test('a failed viewer lookup is reported without stopping the remaining sweep', async () => {
+  const f = await fixture();
+  try {
+    const broken = await f.seed(), parked = await f.seed({ 'spider.run': ids[1] });
+    const lookup = f.app.ownerPlacement, failure = new HerdrError('app-disconnected', 'App is unavailable');
+    f.app.ownerPlacement = async address => { if (address === broken.address) throw failure; return lookup(address); };
+    await expect(f.panes.reconcile(f.owner)).resolves.toBeUndefined();
+    expect(f.errors).toEqual([failure]);
+    await expect(f.h.hc.get(broken.address)).resolves.toMatchObject({ state: 'live' });
+    await expect(f.h.hc.get(parked.address)).rejects.toMatchObject({ code: 'not_found' });
+  } finally { await f.close(); }
+});
+
+test('activation subscribes to run events before a blocked sweep lookup fails', async () => {
+  const f = await fixture(true); let release!: () => void;
+  let activation: Promise<void> | undefined;
+  try {
+    const broken = await f.seed(), parked = await f.seed({ 'spider.run': 'retired' });
+    let owned: readonly RunId[] = [], entered!: () => void, activated = false;
+    f.runEvents.list = async () => owned;
+    const waiting = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    const lookup = f.app.ownerPlacement, failure = new HerdrError('app-disconnected', 'App is unavailable');
+    f.app.ownerPlacement = async address => { if (address === broken.address) { entered(); await waiting; throw failure; } return lookup(address); };
+    activation = f.hooks.get('session_start')!().then(() => { activated = true; }); void activation.catch(() => {});
+    await ready; await Promise.resolve();
+    expect(activated).toBe(true);
+    owned = [ids[1]]; f.emitRun(ids[1]);
+    await expect.poll(() => f.attempted).toContain(ids[1]);
+    expect(f.layout.size).toBe(2);
+    release(); await activation;
+    await expect.poll(() => f.errors).toEqual([failure]);
+    await expect.poll(async () => f.h.hc.get(parked.address).then(() => 'live', error => error.code)).toBe('not_found');
+  } finally { release?.(); await activation?.catch(() => {}); await f.close(); }
+});
+
+test('activation still receives run events when reconciliation rejects', async () => {
+  const f = await fixture(true);
+  try {
+    let owned: readonly RunId[] = [];
+    f.runEvents.list = async () => owned;
+    const failure = new HerdrError('cli-exit', 'Snapshot failed');
+    f.panes.reconcile = async () => { throw failure; };
+    await expect(f.hooks.get('session_start')!()).resolves.toBeUndefined();
+    expect(f.errors).toEqual([failure]);
+    owned = [ids[1]]; f.emitRun(ids[1]);
+    await expect.poll(() => f.attempted).toContain(ids[1]);
+    expect(f.layout.size).toBe(2);
   } finally { await f.close(); }
 });
 
@@ -230,6 +382,35 @@ test('an automatic run with no remaining pane capacity launches nothing', async 
     expect(await f.panes.acquire('subagent', 'third' as RunId, f.owner, { timeoutMs: 3000, automatic: true })).toBeNull();
     expect((await f.launches()).length).toBe(before);
   } finally { await f.close(); }
+});
+
+test.each([false, true])('an automatic check preserves an in-flight user open with automatic panes %s', async automatic => {
+  const f = await fixture(automatic); let release!: () => void;
+  let opening: ReturnType<typeof f.panes.acquire> | undefined;
+  try {
+    const viewer = await f.seed();
+    if (automatic) {
+      for (const runId of [ids[1], 'third' as RunId]) {
+        const other = await f.seed({ 'spider.run': runId });
+        f.layout.set(other.address, { space: 'space', tab: 'tab', pane: `pane-${other.address}` } as OwnerPlacement);
+      }
+    }
+    const lookup = f.app.ownerPlacement; let held = false, entered!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    f.app.ownerPlacement = async address => {
+      if (address === f.owner.terminal.address && !held) { held = true; entered(); await waiting; }
+      return lookup(address);
+    };
+    opening = f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 3000, ownerRelative: true }); void opening.catch(() => {});
+    await ready;
+    expect(await f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 3000, automatic: true })).toBeNull();
+    await expect(f.h.hc.get(viewer.address)).resolves.toMatchObject({ state: 'live' });
+    release();
+    expect((await opening)?.viewer).toBe(viewer.address);
+    expect(f.layout.has(viewer.address)).toBe(true);
+    await expect(f.h.hc.get(viewer.address)).resolves.toMatchObject({ state: 'live' });
+    expect(await f.launches()).toHaveLength(automatic ? 3 : 1);
+  } finally { release?.(); await opening?.catch(() => {}); await f.close(); }
 });
 
 test('a failed explicit placement leaves no parked viewer process', async () => {

@@ -171,10 +171,10 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
     await stop(); const currentOwner = ports.owner(); if (!currentOwner || process.env.PI_SUBAGENT_CHILD === '1') return;
     const owner = { ...currentOwner, terminal: { ...currentOwner.terminal } }; activationAbort = new AbortController();
     active = owner; const version = epoch;
-    await ports.panes.reconcile(owner, activationAbort.signal);
+    const report = ports.reportError ?? (() => {});
+    void ports.panes.reconcile(owner, activationAbort.signal).catch(report);
     if (!current(owner, version)) return;
     const seen = new Set<RunId>(), queue: RunId[] = []; let opening = 0;
-    const report = ports.reportError ?? (() => {});
     const drain = () => {
       while (current(owner, version) && opening < 4 && queue.length) {
         const runId = queue.shift()!; opening++;

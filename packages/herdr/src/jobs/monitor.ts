@@ -89,6 +89,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const collections = new Map<JobId, { task: Promise<void>; firstIncomplete: Promise<void>; readSettled(): boolean; done: Promise<void> }>();
   const outputWarnings = new Set<JobId>();
   const recoveringNotices = new Set<JobId>();
+  const unreturned = new Set<JobId>();
   let noticeRecoveryRead: Promise<() => void> | undefined;
   let noticesApplied = false;
   let reconciliation: Promise<void> | undefined;
@@ -133,7 +134,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     journal.revision++; journal.updatedAt = options.clock();
     if (Buffer.byteLength(JSON.stringify(journal)) > MAX_BYTES) {
       for (const job of pruneCandidates(true)) {
-        if (await removePrunedLogs(job)) forgetPrunedJob(job);
+        try { if (await removePrunedLogs(job)) forgetPrunedJob(job); }
+        catch (error) { if (!pruneFailures.has(job.id)) { pruneFailures.add(job.id); report(error); } }
         if (Buffer.byteLength(JSON.stringify(journal)) <= MAX_BYTES) break;
       }
     }
@@ -200,7 +202,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       if (!(error && typeof error === 'object' && 'code' in error && error.code === 'not_found')) throw error;
       await confirmMissing(address);
     }
-    if (!lifetime.signal.aborted) { job.terminalReleased = true; delete job.cleanupFailure; await save(); }
+    if (!lifetime.signal.aborted) { job.terminalReleased = true; job.updatedAt = options.clock(); delete job.cleanupFailure; await save(); }
   }
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
@@ -219,7 +221,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     if (enqueued) scheduleMaintenance();
   }
   const prunedLogs = new Map<JobId, Promise<boolean>>();
-  const pruneCandidates = (pressure = false) => jobPruneCandidates(journal, { directory: store.directory, now: options.clock(), recoveringNotices, holds }, pressure);
+  const pruneFailures = new Set<JobId>();
+  const pruneCandidates = (pressure = false) => jobPruneCandidates(journal, { directory: store.directory, now: options.clock(), recoveringNotices, holds, unreturned }, pressure);
   function removePrunedLogs(job: JournalJob): Promise<boolean> {
     const existing = prunedLogs.get(job.id); if (existing) return existing;
     const task = (async () => {
@@ -235,8 +238,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     journal.jobs = journal.jobs.filter(value => value.id !== job.id);
     cleanup.cancel(releaseKey(job)); cleanup.cancel(`${releaseKey(job)}/prune`);
     cleanupKeys.delete(releaseKey(job)); cleanupKeys.delete(`${releaseKey(job)}/prune`);
-    prunedLogs.delete(job.id);
-    waiters.delete(job.id); discovered.delete(job.id); outputWarnings.delete(job.id); releaseSkipped.delete(job.id);
+    prunedLogs.delete(job.id); pruneFailures.delete(job.id);
+    waiters.delete(job.id); discovered.delete(job.id); outputWarnings.delete(job.id); releaseSkipped.delete(job.id); unreturned.delete(job.id);
   }
   function queueCompaction(): void {
     if (stopping || closed) return;
@@ -250,10 +253,10 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         });
       });
     }
-    scheduleMaintenance();
   }
   async function markSettled(job: JournalJob): Promise<void> { queueRelease(job); }
   function observeNotice(job: JournalJob): void {
+    if (job.notice !== 'observed' || job.noticeObservedGeneration !== owner!.generation) job.updatedAt = options.clock();
     job.notice = 'observed'; job.noticeDelivered = true; job.noticeObservedGeneration = owner!.generation;
   }
   async function deliver(job: JournalJob): Promise<void> {
@@ -426,7 +429,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
           queueRelease(job, () => serial(async () => {
             const latest = await childStore.read(), target = latest.jobs.find(value => value.id === job.id);
             if (!target) return;
-            target.notice = 'observed'; target.noticeDelivered = true; target.settledMarked = job.settledMarked; target.terminalReleased = job.terminalReleased; target.cleanupFailure = job.cleanupFailure;
+            target.notice = 'observed'; target.noticeDelivered = true; target.settledMarked = job.settledMarked; target.terminalReleased = job.terminalReleased; target.cleanupFailure = job.cleanupFailure; target.updatedAt = job.updatedAt;
             latest.revision++; await childStore.write(latest);
           }));
         }
@@ -536,7 +539,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         const id = randomUUID() as JobId;
         const localDirectory = join(store.directory, 'logs', id);
         const job: JournalJob = { version: 1, id, ...(options.child ? { runId: options.child.id } : {}), owner: nextOwner, machine: on, commandPreview: program.commandPreview, kind: startOptions.kind ?? 'exec', phase: { kind: 'preparing' }, viewer: null, remoteDirectory: program.directory, localDirectory, detached: false, noticeMode: 'tool', notice: 'pending', nonce: '', releaseDeadlineAt: 0, originalFinish: null, output: null, callerOwned: startOptions.background === true, uncertain: false, evidenceConflict: false, noticeDelivered: false, settledMarked: false, terminalExpired: false, updatedAt: options.clock() };
-        journal.jobs.push(job); await persist(); await ensurePrivateDirectory(localDirectory); return job;
+        unreturned.add(id); journal.jobs.push(job); await persist(); await ensurePrivateDirectory(localDirectory); return job;
       });
       const id = job.id, localDirectory = job.localDirectory;
       return serial(async () => {
@@ -579,8 +582,15 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       });
     },
     detach: async id => { await serial(async () => { const job = tracked(id); job.detached = true; job.noticeMode = 'async'; await persist(); await collect(job); }); const collection = collections.get(id); if (collection?.readSettled()) { await collection.task; await collection.done; } },
-    toolReturned: (id: JobId) => serial(async () => { const job = tracked(id); if (job.detached) await release(job); }),
-    consumeNotice: id => serial(async () => { const job = tracked(id); observeNotice(job); await persist(); await markSettled(job); }),
+    toolReturned: (id: JobId) => serial(async () => {
+      const job = journal.jobs.find(value => value.id === id); if (!job) return;
+      if (unreturned.delete(id)) { job.updatedAt = options.clock(); await persist(); }
+      if (job.detached) await release(job);
+    }),
+    consumeNotice: id => serial(async () => {
+      const job = journal.jobs.find(value => value.id === id); if (!job) return;
+      observeNotice(job); await persist(); await markSettled(job);
+    }),
     shutdown,
     dispose: () => shutdown('quit'),
   };

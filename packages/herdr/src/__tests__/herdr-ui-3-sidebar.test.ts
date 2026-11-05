@@ -11,10 +11,10 @@ import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
 import * as look from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
-interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: unknown[]) => unknown }
+interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; kind: 'div' | 'row' | 'column'; click?: (...args: unknown[]) => unknown }
 const data = new WeakMap<object, Node>();
-function element(svgPath?: string): any {
-  const node: Node = { calls: [], children: [], svg: svgPath };
+function element(svgPath?: string, kind: Node['kind'] = 'div'): any {
+  const node: Node = { calls: [], children: [], svg: svgPath, kind };
   const proxy: any = new Proxy(node, { get(_o, key: string) {
     if (key === 'when') return (on: boolean, fn: (el: unknown) => unknown) => { if (on) fn(proxy); return proxy; };
     if (key === 'child') return (value: unknown) => { node.children.push(value); return proxy; };
@@ -24,7 +24,7 @@ function element(svgPath?: string): any {
   } });
   data.set(proxy, node); return proxy;
 }
-const ui = { div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path), Scrollbar: { vertical: () => element() } };
+const ui = { div: () => element(), h_flex: () => element(undefined, 'row'), v_flex: () => element(undefined, 'column'), image: () => element(), svg: (path: string) => element(path), Scrollbar: { vertical: () => element() } };
 function all(root: unknown): Node[] {
   const node = data.get(root as object); if (!node) return [];
   return [node, ...node.children.flatMap(all)];
@@ -73,11 +73,19 @@ describe('space identity assignment', () => {
     expect(values.get('later')).toEqual({ shape: 'diamond' });
   });
 
+  it('uses the moon in the former square slot and preserves the other shape slots', () => {
+    const spaces = Array.from({ length: 6 }, (_, index) => ({ id: String(index), name: `space-0${index}` }));
+    const shapes = look.assignSpaceIdentities(spaces);
+    expect(spaces.map(space => shapes.get(space.id)?.shape)).toEqual(['triangle', 'moon', 'circle', 'star', 'hexagon', 'diamond']);
+  });
+
   it('ships every space shape as a currentColor outline', async () => {
-    for (const shape of ['circle', 'square', 'triangle', 'diamond', 'hexagon', 'star']) {
-      const svg = await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`), 'utf8');
+    for (const shape of ['circle', 'moon', 'triangle', 'diamond', 'hexagon', 'star']) {
+      const svg = await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`), 'utf8').catch(() => '');
       expect(svg).toMatch(/<svg[^>]* fill="none"/);
       expect(svg).toMatch(/<svg[^>]* stroke="currentColor"/);
+      expect(svg).toMatch(/<svg[^>]* stroke-width="2"/);
+      expect(svg).toMatch(/<svg[^>]* viewBox="0 0 24 24"/);
       expect(svg).not.toMatch(/fill="currentColor"/);
     }
   });
@@ -151,7 +159,8 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
     const colors = { ...palette, ansi2: '#50fa7b', ansi4: '#82aaff', ansi5: '#c792ea', ansi6: '#8be9fd', ansi12: '#d6acff', ansi13: '#ff92df' };
     const Spaces = loadView(clones.spaces.files['main.js'], { machines: () => layouts, spaces: () => spaces, panes: () => [], theme: () => colors, props: () => props,
-      shared: () => null, setShared: () => {}, run, localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) } });
+      shared: () => null, setShared: () => {}, run, layout: () => ({ id: 'sidebar', size: { px: 268 }, children: [] }), window: () => ({ platform: 'macos' }),
+      localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value) } });
     const view = new Spaces(); view.machines = remote; view.reconnecting = {}; view.folded = new Set(JSON.parse(stored.get('machines.folded') ?? '[]'));
     view.shown = new Set(spaces.map(space => space.id)); view.git = {}; view.born = {}; view.pressed = null;
     return { view, colors, stored };
@@ -202,8 +211,10 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     for (const id of ['s1', 's2', 's3']) {
       const row = nodes.find(node => node.id === `space-${id}`)!;
       expect(row).toBeDefined();
-      expect(call(row, 'pl')).toEqual([40]);
-      expect(row.children.flatMap(all).find(node => node.svg?.includes('/space-'))?.calls).toContainEqual(['left', [17]]);
+      expect(call(row, 'pl')).toEqual([17]);
+      const shape = row.children.flatMap(all).find(node => node.svg?.includes('/space-'))!;
+      expect(shape).toBeDefined();
+      expect(call(shape, 'absolute')).toBeUndefined();
       expect(row.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
     }
   });
@@ -408,6 +419,130 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     return { spaces, mains, terminals };
   };
 
+  it('aligns space shapes with the thread endpoints using parent-relative coordinates', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    Object.assign(spaces[0], { folder: '/project/main' });
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const agentHeading = all(view.render({})).find(node => node.id === 'sp-s1')!;
+    const { view: spaceView, colors } = await spacesView([
+      ...spaces, { id: 's2', name: 'linked', folder: '/project/link', tabs: [] },
+      { id: 's3', name: 'remote', tabs: [], machine: 'alpha.invalid' },
+    ], inventory.slice(0, 1), [{ name: 'alpha.invalid', layout: 'ready' }]);
+    spaceView.git = {
+      [JSON.stringify([null, '/project/main'])]: { name: 'project', repo: 'repo', branch: 'main', linked: false },
+      [JSON.stringify([null, '/project/link'])]: { name: 'project', repo: 'repo', branch: 'topic', linked: true },
+    };
+    const rows = spaceView.grouped(colors, false).flatMap(all) as Node[];
+    const position = (root: Node, wanted: (node: Node) => boolean): number => {
+      const val = (node: Node, name: string) => Number(call(node, name)?.[0] ?? 0);
+      const width = (node: Node) => val(node, 'size') || val(node, 'w');
+      const find = (node: Node, x: number): number | undefined => {
+        if (wanted(node)) return x;
+        let cursor = x + (call(node, 'pl') ? val(node, 'pl') : val(node, 'px') || val(node, 'p'));
+        let previous = false;
+        for (const child of node.children) {
+          const item = data.get(child as object); if (!item) continue;
+          const absolute = Boolean(call(item, 'absolute'));
+          if (!absolute && node.kind === 'row' && previous) cursor += val(node, 'gap');
+          const found = find(item, absolute ? x + val(item, 'left') : cursor);
+          if (found !== undefined) return found;
+          if (!absolute && node.kind === 'row') { cursor += width(item); previous = true; }
+        }
+      };
+      const result = find(root, 0);
+      if (result === undefined) throw new Error('Element not found');
+      return result;
+    };
+    const shape = (node: Node) => Boolean(node.svg?.startsWith('mods/spider-agents/space-'));
+    const endpoint = (row: Node) => {
+      const segment = row.children.flatMap(all).find(node => call(node, 'border_b'))!;
+      return position(row, node => node === segment) + Number(call(segment, 'w')![0]);
+    };
+    expect(position(agentHeading, shape)).toBe(17);
+    for (const id of ['s1', 's2', 's3']) {
+      const row = rows.find(node => node.id === `space-${id}`)!;
+      expect([id, position(row, shape)]).toEqual([id, endpoint(row)]);
+    }
+    const { view: localView, colors: localColors } = await spacesView(spaces, [], []);
+    const local = localView.grouped(localColors, false).flatMap(all).find((node: Node) => node.id === 'space-s1')!;
+    expect(position(local, shape)).toBe(17);
+  });
+
+  it('paints continuous ancestor lines across mixed-height rows through the final elbow', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    Object.assign(spaces[0], { folder: '/project/main' });
+    terminals.push({ address: 'nested', parent: 't3', state: 'live', status: 'idle', labels: {} });
+    terminals.push({ address: 'done', parent: 't1', state: 'finished', status: 'done', finishedAt: Date.now() - 1000, labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'done' } } as any);
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    view.expandedConsoles = new Set(['console:alpha.invalid/c1']);
+    const num = (node: Node, method: string) => Number(call(node, method)?.[0] ?? 0);
+    const coverage = (list: Node, left: number, startId: string, startOffset: number, endId: string, endOffset: number) => {
+      let y = num(list, 'pt') || num(list, 'py') || num(list, 'p');
+      const positions = new Map<string, number>(), bottoms = new Map<string, number>(), segments: [number, number][] = [];
+      for (const item of list.children) {
+        const row = data.get(item as object); if (!row || call(row, 'absolute')) continue;
+        y += num(row, 'mt');
+        if (row.id) positions.set(row.id, y);
+        const height = num(row, 'h') || num(row, 'size');
+        if (row.id) bottoms.set(row.id, y + height);
+        for (const child of row.children) {
+          const part = data.get(child as object);
+          if (!part || !call(part, 'absolute') || num(part, 'left') !== left) continue;
+          const width = num(part, 'w') || num(part, 'size');
+          // At 1x the centre pixel of a one-pixel box selects its zero-width right border.
+          const hasPaint = call(part, 'bg')?.[0] === '#3a3a3d' ||
+            (call(part, 'border_color')?.[0] === '#3a3a3d' && Boolean(call(part, 'border_l')) && width > 1);
+          if (!hasPaint) continue;
+          const top = num(part, 'top');
+          const h = call(part, 'h') ? num(part, 'h') : height - top - num(part, 'bottom');
+          segments.push([y + top, y + top + h - (call(part, 'border_b') ? 0.5 : 0)]);
+        }
+        y += height + num(row, 'mb') + num(list, 'gap');
+      }
+      const start = positions.get(startId)! + startOffset, end = positions.get(endId)! + endOffset;
+      expect(Number.isFinite(start) && Number.isFinite(end)).toBe(true);
+      let reach = start;
+      for (const [from, to] of segments.filter(([from, to]) => to > start && from < end).sort((a, b) => a[0] - b[0])) {
+        expect(from).toBeLessThanOrEqual(reach);
+        reach = Math.max(reach, to);
+      }
+      expect(reach).toBe(end);
+      expect(segments.some(([from, to]) => from < bottoms.get(endId)! && to > end)).toBe(false);
+    };
+    const list = all(view.render({})).find(node => node.id === 'ag-list')!;
+    expect(list).toBeDefined();
+    const nodes = all(view.render({}));
+    expect(['ag-t1', 'sub-run-one', 'finished-toggle-t1'].map(id => num(nodes.find(node => node.id === id)!, 'h'))).toEqual([30, 26, 24]);
+    coverage(list, 23.5, 'sp-s1', 26, 'ag-t2', 15);
+    coverage(list, 49.5, 'ag-t1', 22, 'finished-toggle-t1', 12);
+    coverage(list, 75.5, 'sub-run-one', 20, 'sub-nested', 13);
+    coverage(list, 75.5, 'sub-console:alpha.invalid/c1', 20, 'sub-job-two', 13);
+    view.folded.add('t1');
+    const foldedList = all(view.render({})).find(node => node.id === 'ag-list')!;
+    expect(all(view.render({})).some(node => node.id === 'sub-run-one')).toBe(false);
+    coverage(foldedList, 23.5, 'sp-s1', 26, 'ag-t2', 15);
+    view.folded.add('sp-s1');
+    const foldedHeading = all(view.render({})).find(node => node.id === 'sp-s1')!;
+    expect(foldedHeading.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
+    const { view: spaceView, colors } = await spacesView([
+      ...spaces, { id: 's2', name: 'two', folder: '/project/link', tabs: [] },
+      { id: 's3', name: 'remote', tabs: [], machine: 'alpha.invalid' },
+    ], inventory.slice(0, 1), [{ name: 'alpha.invalid', layout: 'ready' }]);
+    spaceView.git = {
+      [JSON.stringify([null, '/project/main'])]: { name: 'project', repo: 'repo', branch: 'main', linked: false },
+      [JSON.stringify([null, '/project/link'])]: { name: 'project', repo: 'repo', branch: 'topic', linked: true },
+    };
+    const spaceList = all(spaceView.render()).find(node => node.id === 'spaces-list')!;
+    expect(spaceList).toBeDefined();
+    expect(num(all(spaceView.render()).find(node => node.id === 'space-s2')!, 'h')).toBe(28);
+    coverage(spaceList, 23.5, 'machine-local', 20, 'space-s2', 14);
+    spaceView.folded.add(null);
+    const foldedSpaces = all(spaceView.render());
+    expect(foldedSpaces.some(node => node.id === 'space-s1')).toBe(false);
+    const foldedMachine = foldedSpaces.find(node => node.id === 'machine-local')!;
+    expect(foldedMachine.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
+  });
+
   it('uses equal icon steps and identical caret slots across both sections and all child kinds', async () => {
     const { spaces, mains, terminals } = groupedFixtures();
     terminals.push({ address: 'nested', parent: 't3', state: 'live', status: 'idle', labels: {} });
@@ -441,8 +576,10 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const machine = spaceNodes.find(node => node.id === 'machine-local')!;
     const space = spaceNodes.find(node => node.id === 'space-s1')!;
     expect(call(machine, 'pl')).toEqual([17]);
-    expect(call(space, 'pl')).toEqual([66]);
-    expect(space.children.flatMap(all).find(node => node.svg?.includes('/space-'))?.calls).toContainEqual(['left', [43]]);
+    expect(call(space, 'pl')).toEqual([43]);
+    const shape = space.children.flatMap(all).find(node => node.svg?.includes('/space-'))!;
+    expect(shape).toBeDefined();
+    expect(call(shape, 'absolute')).toBeUndefined();
     expect(spaceNodes.find(node => node.id === 'machine-fold-local')?.calls).toContainEqual(['left', [4]]);
   });
 

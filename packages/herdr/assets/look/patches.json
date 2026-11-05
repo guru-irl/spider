@@ -414,8 +414,8 @@
       },
       {
         "id": "space-badge",
-        "anchor": ".when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color(\"#ffffff\").child([...w.name][0]?.toUpperCase() ?? \"?\")))",
-        "replacement": ".child(svg(`mods/spider-agents/space-${identity.shape}.svg`).absolute().left(machineLine ? 43 : 17).size(14).flex_none().text_color(t.muted).tooltip(w.name))"
+        "anchor": ".when(Boolean(tree), el => el.pl(22).child(svg(\"mods/workspace-chrome/branch.svg\").size(13).text_color(t.dim)))\n          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color(\"#ffffff\").child([...w.name][0]?.toUpperCase() ?? \"?\")))",
+        "replacement": ".child(svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(w.name))\n          .when(Boolean(tree), el => el.child(svg(\"mods/workspace-chrome/branch.svg\").size(13).text_color(t.dim)))"
       },
       {
         "id": "mono-space-name",
@@ -440,7 +440,7 @@
       {
         "id": "machine-space-thread",
         "anchor": "      .px(8)\n      .h(rowHeight({ tree }))",
-        "replacement": "      .px(8).pl(machineLine ? 66 : 40)\n      .when(Boolean(machineLine), el => el.children(threadKeylines(div, [machineLine], rowHeight({ tree }))))\n      .h(rowHeight({ tree }))"
+        "replacement": "      .px(8).pl(machineLine ? 43 : 17)\n      .when(Boolean(machineLine), el => el.children(threadKeylines(div, [machineLine], rowHeight({ tree }))))\n      .h(rowHeight({ tree }))"
       },
       {
         "id": "machine-fold-caret",

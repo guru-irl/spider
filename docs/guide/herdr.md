@@ -210,7 +210,7 @@ The file is JSON. Every path must be absolute. Keep the configuration outside an
 | `automaticSubagentPanes` | `false` | Let new subagent viewers open in free auxiliary slots automatically. Otherwise they stay parked until you open them. |
 | `limits.completedRows` | `50` | Finished rows kept per session in the sidebar. |
 | `limits.completedHours` | `24` | Hours a finished row stays in the sidebar. |
-| `retention.foregroundDays` | `7` | Days to keep logs and journals of finished foreground jobs. |
+| `retention.foregroundDays` | `7` | Parsed but not used. Changing this value does not change log retention. |
 | `admin.wrappers` | `[]` | Reviewed wrapper programs for the admin command. Each entry is `{ "path": "<absolute file>", "sha256": "<digest>" }`. See [The admin command](#the-admin-command). |
 
 ### Spaces
@@ -278,7 +278,9 @@ These rules apply to `on`:
 - With `exec_file`, `path` names a file on the remote machine. Your code runs there with `FILE_CONTENT` and `FILE_CONTENT_PATH` bound, as it does locally. A relative path needs a configured `runtime.cwd`, or the call fails with `remote-cwd-required`.
 - A language with no entry in the machine's `runtime.commands` fails before launch with `remote-language-unsupported`. Spider never uses a local interpreter instead.
 
-Output works as it does locally. Stdout and stderr stay separate, stdin is empty, and the model sees at most 10,000 bytes with secrets scrubbed. The complete output goes to private log files, which you can analyze with later calls. The result keeps the real exit code, and its details add the job ID, machine, terminal address, and receipt paths. A foreground command that writes more than 100 MiB is cancelled with `output-cap-exceeded`. The bytes it wrote stay in the logs.
+Output works as it does locally. Stdout and stderr stay separate, stdin is empty, and the model sees at most 10,000 bytes with secrets scrubbed. The complete output goes to private log files for later calls, within the retention limits below. The result keeps the real exit code, and its details add the job ID, machine, terminal address, and receipt paths. A foreground command that writes more than 100 MiB is cancelled with `output-cap-exceeded`. The bytes it wrote stay in the logs.
+
+Each session or subagent run keeps local logs for its newest 64 settled jobs, plus any job settled in the last 10 minutes. A finished job settles after its call returns, its result or completion notice is read, and its terminal is released. This applies to foreground and background jobs. Spider cleans older local logs and journal records during the run. Under heavy use, it can remove settled logs sooner, oldest first, to make room for the next job. On startup, a separate cleanup removes foreground results older than seven days.
 
 ### Copy a file
 

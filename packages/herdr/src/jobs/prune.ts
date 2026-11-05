@@ -9,6 +9,7 @@ export interface JobPruneContext {
   now: number;
   recoveringNotices: ReadonlySet<JobId>;
   holds: ReadonlyMap<JobId, unknown>;
+  unreturned: ReadonlySet<JobId>;
 }
 /** Age-based cleanup keeps its original rule. Early eviction requires fully settled ownership. */
 export function jobPruneCandidates(journal: JobJournal, context: JobPruneContext, pressure = false): JournalJob[] {
@@ -18,12 +19,13 @@ export function jobPruneCandidates(journal: JobJournal, context: JobPruneContext
     if (job.localDirectory !== join(context.directory, 'logs', job.id)) continue;
     if (!job.callerOwned && !job.detached && context.now - job.updatedAt > 7 * 86400000) {
       expired.push(job);
-    } else if (job.terminalReleased && job.settledMarked && !job.uncertain && !job.evidenceConflict && !job.handoffCancelled && !context.holds.has(job.id) && !journal.writer?.crashJobs?.includes(job.id)) {
+    } else if (job.terminalReleased && job.settledMarked && !job.uncertain && !job.evidenceConflict && !job.handoffCancelled && !context.holds.has(job.id) && !context.unreturned.has(job.id) && !journal.writer?.crashJobs?.includes(job.id)) {
       recent.push(job);
     }
   }
   // Stable ordering retains the latest inserted result when completion times tie.
   recent.sort((a, b) => a.updatedAt - b.updatedAt);
-  return [...expired, ...recent.slice(0, pressure ? recent.length : Math.max(0, recent.length - RECENT_JOB_BUDGET))]
+  return [...expired, ...recent.slice(0, pressure ? recent.length : Math.max(0, recent.length - RECENT_JOB_BUDGET))
+    .filter(job => pressure || context.now - job.updatedAt >= 10 * 60000)]
     .sort((a, b) => a.updatedAt - b.updatedAt);
 }

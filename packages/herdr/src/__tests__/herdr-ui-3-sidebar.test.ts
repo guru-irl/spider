@@ -24,7 +24,7 @@ function element(svgPath?: string): any {
   } });
   data.set(proxy, node); return proxy;
 }
-const ui = { div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path) };
+const ui = { div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path), Scrollbar: { vertical: () => element() } };
 function all(root: unknown): Node[] {
   const node = data.get(root as object); if (!node) return [];
   return [node, ...node.children.flatMap(all)];

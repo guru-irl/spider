@@ -75,10 +75,10 @@
           "id": "sidebar-footer",
           "type": "block",
           "size": {
-            "px": 69
+            "px": 41
           },
           "content": {
-            "mod": "workspace-chrome",
+            "mod": "spider-chrome",
             "props": {
               "footer": true
             }

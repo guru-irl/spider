@@ -13,6 +13,7 @@
       "border": "#00000000", "popover": "#161618f0", "surface": "#161618f0"
     }
   },
+  "footer": { "size": { "px": 41 } },
   "pane": {
     "gap": 8, "radius": 12, "background": "#161618f0",
     "border": { "width": 1, "color": "#38383a" },

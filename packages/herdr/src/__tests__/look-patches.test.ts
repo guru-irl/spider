@@ -65,6 +65,11 @@ describe('glass layout', () => {
     expect(findNode(result, 'brand')).toMatchObject({ content: { mod: 'spider-chrome' } });
     expect(findNode(result, 'footer')).toMatchObject({ content: { mod: 'workspace-chrome', props: { footer: true } } });
   });
+  it('installs the compact chrome footer in the real layout', async () => {
+    const source = JSON.parse(await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json'), 'utf8'));
+    const result = buildGlassLayout(source, names);
+    expect(findNode(result, 'sidebar-footer')).toMatchObject({ size: { px: 41 }, content: { mod: 'spider-chrome', props: { footer: true } } });
+  });
   it('frames all panes with a neutral border and focused panes with the theme accent', () => {
     const result = buildGlassLayout(layoutFixture(), names);
     expect(findNode(result, 'main')).toMatchObject({ content: { pane: { border: { width: 1, color: '#38383a' }, focus: { width: 1, color: 'accent' } } } });
@@ -161,7 +166,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
+  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, Scrollbar: { vertical: () => ui() }, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);

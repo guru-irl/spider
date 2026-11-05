@@ -3,7 +3,7 @@
 // Modified for spider. See ../look/NOTICE.
 import { div, svg, image } from "gpui-kit";
 import { Popup, InputState, Input, h_flex, v_flex } from "gpui-base";
-import { spaces, panes, focused, run, openOverlay, theme, keys, knownAgents, window } from "herdr";
+import { spaces, panes, focused, run, openOverlay, theme, keys, knownAgents, window, shared, setShared } from "herdr";
 
 function activeTab() {
   const space = spaces().find(space => space.active);
@@ -27,6 +27,7 @@ function shortcut(name) {
   }).join(" ");
 }
 
+const KNOWN = "new-menu.agents";
 const SLIDE = 140;
 const EDGE = "#38383a";
 // The bar rests a few pixels below the strip and starts slightly higher, so the motion is a short drop.
@@ -156,11 +157,18 @@ export function initTabAutoHide(view, cx) {
   state.context = (tab, space, cx) => { show(cx); rememberFocus(); state.rename = null; state.plus = false; state.menu = { tab, space }; state.selected = 0; state.handle.focus(); cx.notify(); };
   state.newMenu = cx => {
     if (state.plus) { dismiss(cx); return; }
-    show(cx); rememberFocus(); state.menu = null; state.rename = null; state.plus = true; state.failed = false; state.agents = [];
-    const space = spaces().find(space => space.active), request = state.request = {};
+    show(cx); rememberFocus(); state.menu = null; state.rename = null; state.plus = true; state.failed = false;
+    const space = spaces().find(space => space.active), where = space?.machine ?? "", request = state.request = {};
+    state.agents = shared(KNOWN)?.[where] ?? [];
     state.handle.focus(); cx.notify();
     cx.spawn(async cx => {
-      try { const agents = await knownAgents({ on: space?.machine }); if (state.plus && state.request === request) state.agents = agents; }
+      try {
+        const agents = await knownAgents({ on: space?.machine });
+        if (state.request === request) {
+          setShared(KNOWN, { ...shared(KNOWN), [where]: agents });
+          if (state.plus) state.agents = agents;
+        }
+      }
       catch { if (state.plus && state.request === request) state.failed = true; }
       if (state.plus && state.request === request) cx.notify();
     });

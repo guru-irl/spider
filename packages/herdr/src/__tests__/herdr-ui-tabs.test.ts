@@ -162,6 +162,24 @@ test('a keyboard tab change flashes for 1.5 seconds and rapid changes restart it
   vi.advanceTimersByTime(1499); expect(s.full()).toBe(true);
   vi.advanceTimersByTime(1); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
+test('a tab change during fade-out reveals the flash and hides after it ends', async () => {
+  vi.useFakeTimers(); const s = await scene(); s.enter(); vi.advanceTimersByTime(16); s.leave();
+  vi.advanceTimersByTime(350); expect(s.leaving()).toBe(true);
+  s.space.tabs[0]!.active = false; s.space.tabs[1]!.active = true; s.render();
+  vi.advanceTimersByTime(16); expect(s.byId('tabs-slide')?.styles.opacity).toEqual([1]);
+  vi.advanceTimersByTime(1483); expect(s.byId('tabs-slide')?.styles.opacity).toEqual([1]);
+  vi.advanceTimersByTime(1); expect(s.leaving()).toBe(true);
+  vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
+});
+test.each(['context', 'newMenu', 'renameTab', 'hold'] as const)('%s during fade-out reveals and holds the bar', async action => {
+  vi.useFakeTimers(); const s = await scene(); s.enter(); vi.advanceTimersByTime(16); s.leave();
+  vi.advanceTimersByTime(350);
+  if (action === 'context') s.view.tabAuto.context(s.space.tabs[0], s.space, s.cx);
+  else if (action === 'renameTab') s.view.tabAuto.renameTab(s.space.tabs[0], s.cx);
+  else { if (action === 'hold') s.view.pressed = 0; s.view.tabAuto[action](s.cx); }
+  vi.advanceTimersByTime(16); expect(s.byId('tabs-slide')?.styles.opacity).toEqual([1]);
+  vi.advanceTimersByTime(2000); expect(s.byId('tabs-slide')?.styles.opacity).toEqual([1]);
+});
 test('the opt-out keeps the original row, stock menus and window buttons', async () => {
   const on = await scene(), off = await scene(false, true);
   expect(Boolean(on.byId('tab-a'))).not.toBe(Boolean(off.byId('tab-a')));

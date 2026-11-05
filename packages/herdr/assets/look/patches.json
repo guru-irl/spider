@@ -565,6 +565,66 @@
         "id": "pi-tab-icon",
         "anchor": ".when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))",
         "replacement": ".when(Boolean(program?.icon) || (program?.key ?? program?.name)?.toLowerCase() === \"pi\", el => el.child((program?.key ?? program?.name)?.toLowerCase() === \"pi\" ? svg(\"mods/spider-tabs/spider.svg\").size(14).text_color(t.muted) : program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))"
+      },
+      {
+        "id": "tab-autohide-imports",
+        "anchor": "import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from \"herdr\";",
+        "replacement": "import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, props } from \"herdr\";\nimport { initTabAutoHide, renderTabAutoHide, closeTabAutoHide } from \"./autohide.js\";"
+      },
+      {
+        "id": "tab-autohide-init",
+        "anchor": "  init() {\n    this.pressed = null;",
+        "replacement": "  init(_props, cx) {\n    this.pressed = null;\n    if (cx && props()?.autoHideTabs === true) initTabAutoHide(this, cx);"
+      },
+      {
+        "id": "tab-autohide-render",
+        "anchor": "  render() {",
+        "replacement": "  close() { closeTabAutoHide(this); }\n\n  render(cx) {"
+      },
+      {
+        "id": "tab-autohide-pill",
+        "anchor": "      return h_flex().id(`tab-${c.id}`)",
+        "replacement": "      const pill = h_flex().id(`tab-${c.id}`)"
+      },
+      {
+        "id": "tab-autohide-rename",
+        "anchor": "this.pressed = i; if (e.click_count === 2) run(\"tab.rename\", { id: c.id });",
+        "replacement": "this.pressed = i; this.tabAuto?.hold(); if (e.click_count === 2) { if (this.tabAuto) this.tabAuto.renameTab(c, cx); else run(\"tab.rename\", { id: c.id }); }"
+      },
+      {
+        "id": "tab-autohide-release",
+        "anchor": "          else run(\"tab.select\", { id: c.id });",
+        "replacement": "          else { if (this.tabAuto) this.tabAuto.pointerTab = `${space.id}/${c.id}`; run(\"tab.select\", { id: c.id }); }\n          this.tabAuto?.release();"
+      },
+      {
+        "id": "tab-autohide-context",
+        "anchor": "cx.stop_propagation(); openOverlay({ mod: \"menu\", kind: \"popup\", width: 200, props: { tab: \"tab\", target: { id: c.id, space: space.id } } });",
+        "replacement": "cx.stop_propagation(); if (this.tabAuto) this.tabAuto.context(c, space, cx); else openOverlay({ mod: \"menu\", kind: \"popup\", width: 200, props: { tab: \"tab\", target: { id: c.id, space: space.id } } });"
+      },
+      {
+        "id": "tab-autohide-pill-popup",
+        "anchor": "child(svg(\"mods/pane/close.svg\").size(12))));\n    };",
+        "replacement": "child(svg(\"mods/pane/close.svg\").size(12))));\n      return this.tabAuto ? this.tabAuto.wrapTab(c, pill) : pill;\n    };"
+      },
+      {
+        "id": "tab-autohide-row",
+        "anchor": "    return h_flex().size_full().min_w(0).px(10)",
+        "replacement": "    const row = h_flex().size_full().min_w(0).px(10)"
+      },
+      {
+        "id": "tab-autohide-bar-release",
+        "anchor": ".on_mouse_up(\"left\", () => { this.pressed = null; })",
+        "replacement": ".on_mouse_up(\"left\", () => { this.pressed = null; this.tabAuto?.release(); })"
+      },
+      {
+        "id": "tab-autohide-new-menu",
+        "anchor": ".child(button(\"tab-new\", \"+\", () => openOverlay({ mod: \"new-menu\", kind: \"popup\", width: 250, height: 512 })))",
+        "replacement": ".child((() => {\n        const add = button(\"tab-new\", \"+\", (_e, cx) => this.tabAuto ? this.tabAuto.newMenu(cx) : openOverlay({ mod: \"new-menu\", kind: \"popup\", width: 250, height: 512 }));\n        return this.tabAuto ? this.tabAuto.wrapNew(add) : add;\n      })())"
+      },
+      {
+        "id": "tab-autohide-popup",
+        "anchor": "() => run(\"window.close\"))));\n  }",
+        "replacement": "() => run(\"window.close\"))));\n    return this.tabAuto ? renderTabAutoHide(this, row, cx) : row;\n  }"
       }
     ],
     "workspace-chrome": [

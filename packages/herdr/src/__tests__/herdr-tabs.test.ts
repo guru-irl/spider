@@ -30,7 +30,7 @@ function scene(source: string, enabled: string[] | null = null) {
     run: (name: string, args: any) => { calls.push([name, args]); if (name === 'layout.select') body.active = args.child; if (name === 'layout.show') panel.hidden = false; if (name === 'layout.hide') panel.hidden = true; },
   };
   const imports = { View: ui['gpui-kit'].View, div: ui['gpui-kit'].div, svg: (asset: string) => Object.assign(ui['gpui-kit'].svg(), { asset }), image: (asset: string) => Object.assign(ui['gpui-kit'].image(), { asset }), h_flex: ui['gpui-base'].h_flex, ...createHostModule(ports), localStorage: { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value) } };
-  const code = source.replace(/^import .*;\s*$/gm, '').replace('export default class ', 'class ');
+  const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ');
   const Tabs = new Function('api', `const { ${Object.keys(imports).join(',')} } = api; ${code}; return Tabs;`)(imports);
   const view = new Tabs(); view.init();
   const render = () => nodes(view.render());

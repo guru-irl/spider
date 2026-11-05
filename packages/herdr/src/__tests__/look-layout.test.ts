@@ -14,6 +14,18 @@ function nodes(node: any): any[] {
 }
 
 describe('generated glass layout', () => {
+  it('reserves six pixels for tabs and keeps native window dragging', async () => {
+    const result = buildGlassLayout(await source(), names);
+    expect(nodes(result).find(node => node.id === 'tabs')).toMatchObject({ size: { px: 6 }, window_drag: true, content: { mod: 'spider-tabs', props: { autoHideTabs: true } } });
+    expect(nodes(result).filter(node => node.window_drag).map(node => node.id)).toContain('tabs');
+  });
+
+  it('the opt-out restores the full tab block', async () => {
+    const on = buildGlassLayout(await source(), names);
+    const off = buildGlassLayout(await source(), { ...names, autoHideTabs: false });
+    expect(nodes(on).find(node => node.id === 'tabs').size).not.toEqual(nodes(off).find(node => node.id === 'tabs').size);
+    expect(nodes(off).find(node => node.id === 'tabs')).toMatchObject({ size: { px: 42 }, window_drag: true, content: { props: { autoHideTabs: false } } });
+  });
   it('does not install the workspace status mod', async () => {
     const result = buildGlassLayout(await source(), names);
     expect(nodes(result).map(node => node.content?.mod).filter(Boolean)).not.toContain('workspace-status');

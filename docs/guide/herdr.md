@@ -205,6 +205,7 @@ The file is JSON. Every path must be absolute. Keep the configuration outside an
 | `layout` | `"panes"` | Default session layout for new space tabs. `"panes"` or `"tabs"`. A space can override it. |
 | `spaces` | Required | Ordered spaces. See [Spaces](#spaces). |
 | `machines` | Required | Remote machines. See [Machines](#machines). |
+| `look.autoHideTabs` | `true` | Hide the tab bar until you hover over its top strip. Set to `false` to keep the full bar visible. |
 | `fonts.body`, `fonts.label`, `fonts.paths` | Bundled body and label fonts, and Herdr's path font | Optional replacement fonts. Each has a `path` and a `license` file. |
 | `limits.auxiliaryPanes` | `2` | Auxiliary pane slots shared by all sessions in a tab, from 1 to 6. |
 | `automaticSubagentPanes` | `false` | Let new subagent viewers open in free auxiliary slots automatically. Otherwise they stay parked until you open them. |
@@ -330,6 +331,12 @@ Subagents, and their own children, can pass `on` too. Each child runs the comman
 When a child run ends, the top-level session takes over the child's unfinished jobs. It stops foreground commands that the child left behind and lets background commands finish. Their notices name the run and are posted at most once, across reloads.
 
 A child finds the configuration file the same way as its session. See [Where the configuration file lives](#where-the-configuration-file-lives). If the child cannot start the integration, it keeps the SSH rule it inherited from its parent. Only `herdr.enabled` set to `false` for the child turns that rule off.
+
+## The tab bar
+
+The tab bar hides behind a 6 px strip above the terminals. Hover over the strip to show the tabs. The bar closes 300 ms after you leave, unless a tab menu, rename field, or drag is active. A keyboard tab change shows the bar for 1.5 seconds. Revealing the bar does not resize your terminals. Drag the strip to move the window.
+
+To keep the full bar visible, add `"look": { "autoHideTabs": false }` to your Herdr configuration file and rerun setup. The default is `true`. Turning it off restores the 42 px bar and its stock menus.
 
 ## The left sidebar
 

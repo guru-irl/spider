@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import edits from '../../assets/look/layout-edits.json' with { type: 'json' };
 import { HerdrError, object } from '../client/parse.js';
-export interface CloneNames { agents: string; spaces: string; pane: string; tabs: string; spider: string; chrome: string; bodyFont?: string; props?: Partial<Record<'agents' | 'spaces' | 'pane' | 'tabs' | 'spider' | 'chrome', Readonly<Record<string, unknown>>>> }
+export interface CloneNames { agents: string; spaces: string; pane: string; tabs: string; spider: string; chrome: string; bodyFont?: string; autoHideTabs?: boolean; props?: Partial<Record<'agents' | 'spaces' | 'pane' | 'tabs' | 'spider' | 'chrome', Readonly<Record<string, unknown>>>> }
 export interface GlassLayout { [key: string]: unknown }
 
 const removedNodeIds: readonly string[] = edits.remove;
@@ -43,6 +43,11 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
     }
     for (const key of ['agents', 'spaces', 'tabs'] as const) if (content?.mod === key) {
       content.mod = names[key]; content.props = { ...object(content.props ?? {}), ...names.props?.[key] };
+      if (key === 'tabs') {
+        const autoHideTabs = names.autoHideTabs !== false;
+        node.size = { px: autoHideTabs ? edits.tabs.stripPx : edits.tabs.fullPx };
+        content.props = { ...object(content.props), autoHideTabs };
+      }
     }
   }
   Object.assign(root, edits.root, { colors: { ...object(root.colors ?? {}), ...edits.root.colors } });

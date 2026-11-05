@@ -529,17 +529,26 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
         "info",
       );
     }
+    // The callbacks run after this turn has ended. A reload or session switch in between retires ctx, and pi
+    // then throws on any access to it, so a notice must never be allowed to escape as an uncaught exception.
+    const notifyLater = (message: string, level: "info" | "error") => {
+      try {
+        if (ctx.hasUI) ctx.ui.notify(message, level);
+      } catch {
+        // The session that asked for this compaction is gone; there is nobody left to tell.
+      }
+    };
     ctx.compact({
       onComplete: (result) => {
         compacting = false;
         const details = result.details as { summaryModel?: unknown } | undefined;
         const summarizer = typeof details?.summaryModel === "string" ? details.summaryModel : undefined;
         const label = summarizer ? `summary by ${summarizer.slice(summarizer.indexOf("/") + 1)}` : model.id;
-        if (ctx.hasUI) ctx.ui.notify(`Compaction complete (${label})`, "info");
+        notifyLater(`Compaction complete (${label})`, "info");
       },
       onError: (error) => {
         compacting = false;
-        if (ctx.hasUI) ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
+        notifyLater(`Compaction failed: ${error.message}`, "error");
       },
     });
   });

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 const colors = ['ansi2', 'ansi4', 'ansi5', 'ansi6', 'ansi12', 'ansi13'];
-const shapes = ['circle', 'moon', 'triangle', 'diamond', 'hexagon', 'star'];
+const shapes = ['triangle', 'diamond', 'pentagon', 'hexagon', 'heptagon', 'octagon', 'star'];
 function hashName(name) {
   let hash = 2166136261;
   for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ name.charCodeAt(i), 16777619) >>> 0;
   return hash;
 }
 
-// Up to six spaces get distinct shapes. Past six, later spaces in name order reuse their preferred shape.
+// Up to seven spaces get distinct shapes. Past seven, later spaces in name order reuse their preferred shape.
 export function assignSpaceIdentities(spaces) {
   const occupied = new Set(), result = new Map();
   const ordered = [...spaces].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

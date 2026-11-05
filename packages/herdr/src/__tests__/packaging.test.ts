@@ -94,7 +94,7 @@ describe.sequential('published Herdr artifact', () => {
     ]));
     expect(packed.files).toContain('packages/herdr/assets/agents/corner-up-left.svg');
     expect(packed.files).toContain('packages/herdr/assets/shared/look.js');
-    for (const shape of ['circle', 'moon', 'triangle', 'diamond', 'hexagon', 'star']) expect(packed.files).toContain(`packages/herdr/assets/agents/space-${shape}.svg`);
+    for (const shape of ['triangle', 'diamond', 'pentagon', 'hexagon', 'heptagon', 'octagon', 'star']) expect(packed.files).toContain(`packages/herdr/assets/agents/space-${shape}.svg`);
     expect(packed.files).not.toContain('packages/herdr/assets/agents/space-square.svg');
     expect(packed.files).not.toContain('dist/herdr/metrics-runtime.mjs');
     expect(packed.frozenBuiltinMods).toEqual([]);

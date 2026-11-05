@@ -84,6 +84,22 @@ test('parent threshold callback names successful summarizer and preserves fallba
   await end({}, f.ctx); calls[2].onError(new Error('failed'));
   assert.equal(f.notices.at(-1).text, 'Compaction failed: failed');
 });
+// Break: a reload during compaction retires the ctx; a callback touching it throws and pi exits.
+test('threshold callbacks stay quiet when the session reloaded during compaction', async () => {
+  const f = setup(); const calls: any[] = []; f.ctx.compact = (options: any) => calls.push(options);
+  const end = f.handlers.get('agent_end');
+  const stale = () => { throw new Error('This extension ctx is stale after session replacement or reload.'); };
+  await end({}, f.ctx); const before = f.notices.length;
+  Object.defineProperty(f.ctx, 'hasUI', { get: stale, configurable: true });
+  Object.defineProperty(f.ctx, 'ui', { get: stale, configurable: true });
+  assert.doesNotThrow(() => calls[0].onError(new Error('aborted')));
+  assert.equal(f.notices.length, before);
+  Object.defineProperty(f.ctx, 'hasUI', { value: true, configurable: true, writable: true });
+  Object.defineProperty(f.ctx, 'ui', { value: { notify: (text: string, kind: string) => f.notices.push({ text, kind }) }, configurable: true, writable: true });
+  await end({}, f.ctx); assert.equal(calls.length, 2, 'a failed compaction must release the gate');
+  Object.defineProperty(f.ctx, 'hasUI', { get: stale, configurable: true });
+  assert.doesNotThrow(() => calls[1].onComplete({ details: {}, summary: 'done' }));
+});
 // Break: no-UI fallback becomes silent or attempts UI calls instead of warning.
 test('headless parent fallback reports reason to stderr without UI', async () => {
   const f = setup(); f.ctx.hasUI = false; f.registry.getAvailable = () => [];

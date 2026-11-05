@@ -178,6 +178,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   let stopStatus = () => {};
   let observerAbort = new AbortController();
   const observerViews = new Map<JobId, Promise<{ handle: ObserverHandle; hc: HcClient }>>();
+  const pendingRunOpens = new Set<Promise<TerminalAddress | null>>();
   const notifyError = (ctx: ExtensionContext, error: unknown) => {
     const manager = ctx.sessionManager ?? ctx, session = ctx.sessionManager?.getSessionId?.() ?? '(session)';
     const notice = inactiveNotices.get(manager) ?? { sessions: new Set<string>(), displayed: false };
@@ -308,6 +309,8 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     await currentEndpoint?.dispose(handoff); if (endpoint === currentEndpoint) endpoint = null;
   };
   const closeResources = async () => {
+    // Canceled opens still need the live client to remove a late launch.
+    await Promise.allSettled([...pendingRunOpens]);
     const attempt = async (operation: () => unknown | Promise<unknown>) => {
       try { await operation(); }
       catch (error) { if (!(error instanceof HerdrError && ['core-unavailable', 'disposed'].includes(error.code))) report(error); }
@@ -616,7 +619,12 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         const result = await makeMessageHandler()({ to: id, message: text }, options.actionContext(need(context)));
         return result.details as SteerReply;
       }, openView: view => views[view](need(context)),
-      openRun: async (id, signal) => (await need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, signal, ownerRelative: true }))?.viewer ?? null,
+      openRun: async (id, signal) => {
+        const opening = need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, signal, ownerRelative: true }).then(reservation => reservation?.viewer ?? null);
+        pendingRunOpens.add(opening);
+        try { return await opening; }
+        finally { pendingRunOpens.delete(opening); }
+      },
       moveRun: async (id, destination) => (await need(panes).moveRun(id, current, destination, { timeoutMs: 20_000 }))?.viewer ?? null,
       moveSession: destination => moveOwnedSession({ sessionId: current.sessionId, terminal: current.terminal.address, coreId: current.terminal.coreId }, destination, {
         app: need(app), appIdentity: need(config).app.home, hc: need(client), journalRoot: join(need(config).globalRoot, 'herdr/spaces'), placementRoot: join(need(config).globalRoot, 'herdr/panes'),
@@ -713,7 +721,12 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       catch (error) { if (error instanceof HerdrError && error.code === 'not_found') return false; throw error; }
     },
   });
-  offs.push(registrationPi.on('session_shutdown', async event => { ++lifecycle; await coreProbe?.catch(report); await closeFeed(event.reason === 'quit'); await closeResources(); context = null; }));
+  offs.push(registrationPi.on('session_shutdown', async event => {
+    ++lifecycle; await coreProbe?.catch(report);
+    // Reload hands a completed visible open to the next activation.
+    if (event.reason === 'reload') await Promise.allSettled([...pendingRunOpens]);
+    await closeFeed(event.reason === 'quit'); await closeResources(); context = null;
+  }));
   const guard: HerdrMount['guard'] = async event => {
     if (owner && !stopped) await probeCore(owner);
     if (coreLost && event.input.on !== undefined) return { block: true, reason: remoteUnavailableReason ?? HERDR_NOTICES.guardCore.text };

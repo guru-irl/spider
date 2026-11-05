@@ -64,10 +64,10 @@ test('enter reveals a 42 pixel anchored row without a layout command', async () 
   expect(s.calls).toEqual([]);
 });
 test('the overlay leaves room at the right edge instead of shifting over the sidebar', async () => {
-  const s = await scene(); s.event('tabs-strip', 'on_size_change', { width: 792, height: 6 }); s.enter();
-  expect(s.byId('tabs-slide')?.styles.w).toEqual([784]);
+  vi.useFakeTimers(); const s = await scene(); s.event('tabs-strip', 'on_size_change', { width: 792, height: 6 }); s.enter(); vi.advanceTimersByTime(16);
+  expect(s.byId('tabs-slide')?.styles.w).toEqual([776]);
   s.event('tabs-strip', 'on_size_change', { width: 592, height: 6 });
-  expect(s.byId('tabs-slide')?.styles.w).toEqual([584]); expect(s.byId('tabs-revealed')?.styles.w).toEqual([576]);
+  expect(s.byId('tabs-slide')?.styles.w).toEqual([576]); expect(s.byId('tabs-revealed')?.styles.w).toEqual([576]);
   expect(s.calls).toEqual([]);
 });
 
@@ -76,21 +76,37 @@ test('the bar fades in with a short drop and floats as a rounded bordered panel'
   const holder = () => s.byId('tabs-slide'), bar = () => s.byId('tabs-revealed');
   expect(holder()?.items.map((item: any) => item.styles.id?.[0])).toEqual(['tabs-revealed']);
   expect(holder()?.styles.opacity).toEqual([0]); expect(holder()?.styles.transition).toEqual(['opacity', { duration: SLIDE, easing: 'ease-out' }]);
-  expect(bar()?.styles.absolute).toBeDefined(); expect(bar()?.styles.top).toEqual([-2]);
-  expect(bar()?.styles.transition).toEqual(['top', { duration: SLIDE, easing: 'ease-out' }]);
+  expect(s.byId('tabs-popup')?.styles.absolute).toBeDefined(); expect(s.byId('tabs-popup')?.styles.top).toEqual([4]);
+  expect(s.byId('tabs-popup')?.styles.transition).toEqual(['top', { duration: SLIDE, easing: 'ease-out' }]);
+  expect(holder()?.styles.w).toEqual([0]); expect(holder()?.styles.h).toEqual([0]); expect(bar()?.styles.invisible).toBeDefined();
   vi.advanceTimersByTime(16);
-  expect(holder()?.styles.opacity).toEqual([1]); expect(bar()?.styles.top).toEqual([4]);
+  expect(holder()?.styles.opacity).toEqual([1]); expect(s.byId('tabs-popup')?.styles.top).toEqual([10]);
   expect(bar()?.styles.rounded).toEqual([10]); expect(bar()?.styles.border_1).toBeDefined(); expect(bar()?.styles.border_color).toEqual(['#38383a']);
   // Eight pixels clear on both sides, so every corner shows.
-  expect(bar()?.styles.left).toEqual([8]); expect(bar()?.styles.w).toEqual([776]); expect(holder()?.styles.w).toEqual([784]);
-  expect(bar()?.styles.h).toEqual([42]); expect(holder()?.styles.h).toEqual([46]);
+  expect(s.byId('tabs-popup')?.styles.left).toEqual([8]); expect(bar()?.styles.w).toEqual([776]); expect(holder()?.styles.w).toEqual([776]);
+  expect(bar()?.styles.h).toEqual([42]); expect(holder()?.styles.h).toEqual([42]);
+});
+test('the popup hit area follows only the visible bar through fade-out', async () => {
+  vi.useFakeTimers(); const s = await scene(); s.event('tabs-strip', 'on_size_change', { width: 792, height: 6 });
+  expect(s.byId('tabs-popup')?.styles.content).toBeUndefined();
+  s.enter(); vi.advanceTimersByTime(16);
+  expect(s.byId('tabs-slide')?.styles.w).toEqual([776]);
+  expect(s.byId('tabs-slide')?.styles.h).toEqual([42]);
+  expect(s.byId('tabs-revealed')?.styles.left ?? [0]).toEqual([0]);
+  expect(s.byId('tabs-revealed')?.styles.top ?? [0]).toEqual([0]);
+  s.leave(); vi.advanceTimersByTime(300);
+  expect(s.byId('tabs-slide')?.styles.w).toEqual([776]);
+  expect(s.byId('tabs-slide')?.styles.h).toEqual([42]);
+  vi.advanceTimersByTime(SLIDE);
+  expect(s.byId('tabs-popup')?.styles.content).toBeUndefined();
+  expect(s.byId('tab-a')).toBeUndefined();
 });
 test('leaving fades the bar out before removing it and re-entry brings it back', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); vi.advanceTimersByTime(16); s.leave();
   vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true);
   vi.advanceTimersByTime(SLIDE - 1); expect(s.full()).toBe(true);
   s.enter(); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(true); expect(s.leaving()).toBe(false);
-  vi.advanceTimersByTime(16); expect(s.byId('tabs-revealed')?.styles.top).toEqual([4]);
+  vi.advanceTimersByTime(16); expect(s.byId('tabs-popup')?.styles.top).toEqual([10]);
   s.leave(); vi.advanceTimersByTime(300 + SLIDE); expect(s.full()).toBe(false);
 });
 test('leaving waits 300 milliseconds and re-entry cancels the pending hide', async () => {

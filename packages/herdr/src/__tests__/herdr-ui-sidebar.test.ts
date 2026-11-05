@@ -250,7 +250,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(buttons.map(node => node.id)).toEqual(['space-a', 'space-b', 'space-c']);
     expect(buttons.map(node => call(node, 'tooltip')?.[0])).toEqual(['space-00', 'space-06', 'relay · alpha.invalid']);
     expect(buttons.map(node => node.children.flatMap(all).find(child => child.svg)?.svg)).toEqual([
-      'mods/spider-agents/space-triangle.svg', 'mods/spider-agents/space-diamond.svg', 'mods/spider-agents/space-circle.svg',
+      'mods/spider-agents/space-diamond.svg', 'mods/spider-agents/space-pentagon.svg', 'mods/spider-agents/space-triangle.svg',
     ]);
     expect(buttons.map(node => call(node, 'bg')?.[0] ?? null)).toEqual([null, palette.selected, null]);
     expect(buttons.every(node => node.children.flatMap(all).some(child => child.svg && call(child, 'text_color')?.[0] === palette.muted))).toBe(true);
@@ -402,7 +402,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const row = (active: boolean, i: number) => view.row({ w: { ...spaces[i], active }, i, g: null, tree: null }, colors);
     const off = row(false, 0), on = row(true, 1);
     expect(all(off).find(node => node.svg === 'mods/spider-agents/space-triangle.svg') && call(all(off).find(node => node.svg === 'mods/spider-agents/space-triangle.svg')!, 'text_color')).toEqual([colors.muted]);
-    expect(all(on).find(node => node.svg === 'mods/spider-agents/space-diamond.svg') && call(all(on).find(node => node.svg === 'mods/spider-agents/space-diamond.svg')!, 'text_color')).toEqual([colors.muted]);
+    expect(all(on).find(node => node.svg === 'mods/spider-agents/space-pentagon.svg') && call(all(on).find(node => node.svg === 'mods/spider-agents/space-pentagon.svg')!, 'text_color')).toEqual([colors.muted]);
     expect(call(data.get(off)!, 'bg')).toBeUndefined();
     expect(call(data.get(on)!, 'bg')).toEqual([palette.selected]);
   });

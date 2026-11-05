@@ -196,7 +196,7 @@ describe('installed agents sidebar', () => {
   test('setup installs each space shape and records its digest', async () => {
     const h = harness!, request = await ports!.request(join(h.root, 'config.json'));
     const journal = await readJournal(request.journalRoot);
-    for (const shape of ['circle', 'moon', 'triangle', 'diamond', 'hexagon', 'star']) {
+    for (const shape of ['triangle', 'diamond', 'pentagon', 'hexagon', 'heptagon', 'octagon', 'star']) {
       const path = join(h.directories.app, `mods/spider-agents/space-${shape}.svg`);
       const installed = await readFile(path).catch(() => null);
       expect(installed).not.toBeNull();
@@ -204,7 +204,9 @@ describe('installed agents sidebar', () => {
       expect(installed).toEqual(await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`)));
       expect(journal.entries.find(entry => entry.path === path)?.after).toBe(digest(installed));
     }
-    await expect(readFile(join(h.directories.app, 'mods/spider-agents/space-square.svg'))).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const retired of ['square', 'circle', 'moon']) {
+      await expect(readFile(join(h.directories.app, `mods/spider-agents/space-${retired}.svg`))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
   });
 
   test('setup installs the parent icon and records its digest', async () => {

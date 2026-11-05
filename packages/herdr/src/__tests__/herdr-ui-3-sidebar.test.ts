@@ -51,7 +51,7 @@ const configured = [{ name: 'alpha.invalid' }, { name: 'beta.invalid' }, { name:
 const inventory = [{ name: 'alpha.invalid', state: 'connected' }, { name: 'beta.invalid', state: 'disconnected' }, { name: 'gamma.invalid', state: 'stopped' }];
 
 describe('space identity assignment', () => {
-  it.each([1, 6, 7, 37])('assigns stable space shapes for %s spaces', count => {
+  it.each([1, 7, 8, 37])('assigns stable space shapes for %s spaces', count => {
     const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string }> }).assignSpaceIdentities;
     expect(typeof assign).toBe('function');
     if (!assign) return;
@@ -60,7 +60,7 @@ describe('space identity assignment', () => {
     expect([...assigned.entries()].sort()).toEqual([...assign([...spaces].reverse()).entries()].sort());
     const values = spaces.map(space => assigned.get(space.id)!);
     expect(values.every(value => Object.keys(value).join() === 'shape')).toBe(true);
-    expect(new Set(values.map(value => value.shape)).size).toBe(Math.min(count, 6));
+    expect(new Set(values.map(value => value.shape)).size).toBe(Math.min(count, 7));
     expect(values[0]).toEqual({ shape: 'triangle' });
   });
 
@@ -68,19 +68,39 @@ describe('space identity assignment', () => {
     const assign = (look as unknown as { assignSpaceIdentities?: (spaces: { id: string; name: string }[]) => Map<string, { shape: string }> }).assignSpaceIdentities;
     expect(typeof assign).toBe('function');
     if (!assign) return;
-    const values = assign([{ id: 'later', name: 'space-06' }, { id: 'first', name: 'space-00' }]);
+    // space-07 and space-00 both hash to the triangle slot, so the later name probes to the next slot.
+    const values = assign([{ id: 'later', name: 'space-07' }, { id: 'first', name: 'space-00' }]);
     expect(values.get('first')).toEqual({ shape: 'triangle' });
     expect(values.get('later')).toEqual({ shape: 'diamond' });
   });
 
-  it('uses the moon in the former square slot and preserves the other shape slots', () => {
-    const spaces = Array.from({ length: 6 }, (_, index) => ({ id: String(index), name: `space-0${index}` }));
+  const SHAPES = ['triangle', 'diamond', 'pentagon', 'hexagon', 'heptagon', 'octagon', 'star'];
+
+  it('gives seven spaces seven distinct regular shapes', () => {
+    const spaces = Array.from({ length: 7 }, (_, index) => ({ id: String(index), name: `space-0${index}` }));
     const shapes = look.assignSpaceIdentities(spaces);
-    expect(spaces.map(space => shapes.get(space.id)?.shape)).toEqual(['triangle', 'moon', 'circle', 'star', 'hexagon', 'diamond']);
+    expect(new Set(spaces.map(space => shapes.get(space.id)?.shape))).toEqual(new Set(SHAPES));
+  });
+
+  it('draws every polygon shape as a regular polygon centred in its box', async () => {
+    const sides: Record<string, number> = { triangle: 3, diamond: 4, pentagon: 5, hexagon: 6, heptagon: 7, octagon: 8 };
+    for (const [shape, count] of Object.entries(sides)) {
+      const svg = await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`), 'utf8').catch(() => '');
+      const points = (svg.match(/<polygon[^>]* points="([^"]+)"/)?.[1] ?? '').trim().split(/\s+/).filter(Boolean).map(pair => pair.split(',').map(Number) as [number, number]);
+      expect(points, shape).toHaveLength(count);
+      const cx = points.reduce((sum, p) => sum + p[0], 0) / count, cy = points.reduce((sum, p) => sum + p[1], 0) / count;
+      const radii = points.map(([x, y]) => Math.hypot(x - cx, y - cy));
+      const edges = points.map(([x, y], i) => Math.hypot(points[(i + 1) % count][0] - x, points[(i + 1) % count][1] - y));
+      for (const r of radii) expect(Math.abs(r - radii[0]), `${shape} radius`).toBeLessThan(0.05);
+      for (const e of edges) expect(Math.abs(e - edges[0]), `${shape} edge`).toBeLessThan(0.05);
+      const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+      expect(Math.abs((Math.min(...xs) + Math.max(...xs)) / 2 - 12), `${shape} x centre`).toBeLessThanOrEqual(0.5);
+      expect(Math.abs((Math.min(...ys) + Math.max(...ys)) / 2 - 12), `${shape} y centre`).toBeLessThanOrEqual(0.5);
+    }
   });
 
   it('ships every space shape as a currentColor outline', async () => {
-    for (const shape of ['circle', 'moon', 'triangle', 'diamond', 'hexagon', 'star']) {
+    for (const shape of SHAPES) {
       const svg = await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`), 'utf8').catch(() => '');
       expect(svg).toMatch(/<svg[^>]* fill="none"/);
       expect(svg).toMatch(/<svg[^>]* stroke="currentColor"/);

@@ -197,7 +197,7 @@ test('releasing a drag over a terminal dismisses the bar without selecting a tab
   expect(s.calls).toEqual([]);
 });
 
-test('a keyboard tab change flashes for 1.5 seconds and rapid changes restart it', async () => {
+test('an external tab change flashes for 1.5 seconds and rapid changes restart it', async () => {
   vi.useFakeTimers(); const s = await scene(); s.render();
   s.space.tabs[0]!.active = false; s.space.tabs[1]!.active = true; s.render();
   expect(s.full()).toBe(true); vi.advanceTimersByTime(1000);

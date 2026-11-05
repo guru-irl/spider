@@ -8,7 +8,7 @@ import theme from '../../assets/themes/spider-glass.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren } from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
-import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
+import { FEED_REFRESH_MS, middlePath, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
 import { identityPill, assignSpaceIdentities, threadKeylines } from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
@@ -373,6 +373,28 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(calls).toEqual([{ name: 'pane.focus', args: { pane: 'p1' } }]);
     placed = [];
     expect(all(view.render({})).find(node => node.id === 'ag-t1')).toBeUndefined();
+  });
+
+  it('a running subagent without a viewer has a clickable row, spinner and owner request', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const requests: unknown[] = [];
+    const run = { id: 'run-one', ownerSessionId: 'owner-session', name: 'Worker', status: 'running', viewer: null, finishedAt: null };
+    const feed = { sessionId: 'owner-session', generation: 'activation', owner: { terminal: { address: 'owner' } }, lifecycle: 'live', updatedAt: Date.now(),
+      ipc: { address: '/fixture/ipc.sock', capabilityFile: '/fixture/capability' }, runs: { rows: [run] } };
+    const Agents = loadView(clones.agents.files['main.js'], {
+      props: () => ({ ...props, nodePath: 'node', cliPath: '/fixture/cli.mjs' }), terminals: () => [], theme: () => palette, panelIpcArgv, parseSessionIpcReply,
+      exec: async (binary: string, args: string[]) => { requests.push([binary, ...args]); return { code: 0, stdout: JSON.stringify({ ok: true, op: 'openRun', viewer: 'new-viewer' }) }; },
+    });
+    const view = new Agents(); view.listed = new Map(); view.folded = new Set(); view.spiderFeeds = [feed];
+    const [child] = view.tree([], 'owner');
+    const nodes = all(view.subRow(palette, child, null, false));
+    expect(child.t.address).toBeNull();
+    expect(nodes.some(node => node.svg?.endsWith('/spinner.svg') && call(node, 'spin'))).toBe(true);
+    const row = nodes.find(node => node.click); expect(row).toBeDefined();
+    await row!.click!({}, { spawn: (fn: (cx: unknown) => unknown) => fn({ notify() {} }) });
+    expect(requests).toEqual([['node', '/fixture/cli.mjs', 'ipc', '--descriptor', JSON.stringify({ version: 1, sessionId: 'owner-session', generation: 'activation', address: '/fixture/ipc.sock', capabilityFile: '/fixture/capability' }),
+      '--request', JSON.stringify({ op: 'openRun', runId: 'run-one', generation: 'activation' })]]);
+    expect(view.spiderFeedError).toBeNull();
   });
 
   it('section titles are Herdr\'s own, not the bold condensed label face', async () => {

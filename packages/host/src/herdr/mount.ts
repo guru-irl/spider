@@ -232,7 +232,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   } });
   const need = <T>(value: T | null): T => { if (!value) throw new HerdrError('herdr-unavailable', 'No active validated Herdr owner'); return value; };
   const hc: HcClient = new Proxy({} as HcClient, { get(_target, key) { const c = need(client); const value = Reflect.get(c, key); return typeof value === 'function' ? value.bind(c) : value; } });
-  const panePort: AuxiliaryPanes = { acquire: (...args) => need(panes).acquire(...args), release: r => need(panes).release(r), park: id => need(panes).park(id), dispose: () => panes?.dispose() };
+  const panePort: AuxiliaryPanes & Pick<AuxiliaryPaneActor, 'reconcile'> = { reconcile: (...args) => need(panes).reconcile(...args), acquire: (...args) => need(panes).acquire(...args), release: r => need(panes).release(r), park: id => need(panes).park(id), dispose: () => panes?.dispose() };
   const views = createHerdrViews(options.views);
   const viewerExecutable = join(options.packageRoot, 'dist/herdr/viewer.mjs');
   const launcher = createViewerLauncher({ hc, owner: () => owner, ipcDescriptor: () => endpoint?.descriptor ?? null, viewerExecutable, piPackageRoot: resolvePiPackageRoot(),

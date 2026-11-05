@@ -10,11 +10,12 @@ import { HerdrError } from '../client/parse.js';
 import { HERDR_LABELS as labels, HERDR_KINDS as kinds } from '../contracts.js';
 import type { Owner, RunId, IpcDescriptor, HcClient, Disposable, TerminalHandle, TerminalAddress, TerminalSummary, PaneReservation, ViewerLauncher, RunSummary, ViewerIntent } from '../contracts.js';
 import type { AuxiliaryPaneActor } from '../jobs/placement.js';
+import { recoverViewer as recoverOwnedViewer, sameRun } from './identity.js';
 export interface ViewerRegistrationPorts {
   owner(): Owner | null;
   ownedRunEvents: { list(owner: Owner): Promise<readonly RunId[]>; subscribe(owner: Owner, listener: (id: RunId) => void): () => void };
   ipcDescriptor(): IpcDescriptor | null;
-  panes: Pick<AuxiliaryPaneActor, 'acquire' | 'release' | 'park' | 'dispose'>; hc: HcClient; viewerExecutable: string; feedRoot: string;
+  panes: Pick<AuxiliaryPaneActor, 'acquire' | 'release' | 'park' | 'dispose' | 'reconcile'>; hc: HcClient; viewerExecutable: string; feedRoot: string;
   viewerLauncher?: ViewerLauncher; reportError?(error: unknown): void;
 }
 export interface ViewerRegistration extends Disposable { peek(runId: RunId): Promise<TerminalHandle | null>; launcher: ViewerLauncher }
@@ -22,7 +23,7 @@ export interface ViewerRunInfo { name?: string; cwd?: string; parentName?: strin
 export interface ManagedViewerLauncher extends ViewerLauncher {
   discard(runId: RunId, owner: Owner, address: TerminalAddress): Promise<void>;
 }
-/** Shared with the pane actor: even a parked run has exactly one local viewer. */
+/** Shared with the pane actor so concurrent opens reuse one local viewer. */
 export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' | 'ipcDescriptor' | 'viewerExecutable' | 'owner' | 'feedRoot'> & { piPackageRoot?: string; runInfo?(id: RunId, owner: Owner): ViewerRunInfo | Promise<ViewerRunInfo> }): ManagedViewerLauncher {
   const launches = new Map<string, { promise: Promise<TerminalAddress>; claim: { retained: boolean }; discard?: Promise<void> }>();
   const keyFor = (runId: RunId, owner: Owner) => JSON.stringify([owner.sessionId, owner.terminal.coreId, owner.terminal.terminalId, runId]);
@@ -32,25 +33,10 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
       && active.terminal.coreId === owner.terminal.coreId && active.terminal.terminalId === owner.terminal.terminalId
       && descriptor?.sessionId === owner.sessionId && descriptor.generation === owner.generation;
   };
-  const isViewer = (terminal: TerminalSummary, owner: Owner, runId: RunId) => terminal.state === 'live' && !terminal.address.includes('/')
-    && terminal.parent === owner.terminal.address && terminal.labels[labels.session] === owner.sessionId
-    && terminal.labels[labels.ownerCore] === owner.terminal.coreId && terminal.labels[labels.ownerTerminal] === owner.terminal.terminalId
-    && terminal.labels[labels.run] === runId && terminal.labels[labels.kind] === kinds.subagentViewer;
-  const sameRun = (terminal: TerminalSummary, owner: Owner, runId: RunId) => terminal.state === 'live' && !terminal.address.includes('/')
-    && terminal.labels[labels.session] === owner.sessionId && terminal.labels[labels.ownerCore] === owner.terminal.coreId
-    && terminal.labels[labels.run] === runId && terminal.labels[labels.kind] === kinds.subagentViewer;
   async function recoverViewer(terminal: TerminalSummary, owner: Owner, runId: RunId, signal?: AbortSignal): Promise<boolean> {
-    if (isViewer(terminal, owner, runId)) return true;
-    if (!sameRun(terminal, owner, runId) || !terminal.parent
-      || terminal.labels[labels.ownerTerminal] !== terminal.parent && terminal.labels[labels.ownerTerminal] !== owner.terminal.terminalId) return false;
-    const previous = await ports.hc.get(terminal.parent).catch(error => {
-      if (error instanceof HerdrError && error.code === 'not_found') return null;
-      throw error;
+    return recoverOwnedViewer(terminal, owner, runId, ports.hc, () => {
+      if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
     });
-    if (previous?.state === 'live') return false;
-    if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
-    await ports.hc.setLabels(terminal.address, { [labels.ownerTerminal]: owner.terminal.terminalId });
-    return true;
   }
   const isFinal = (status: ViewerRunInfo['status']) => status === 'done' || status === 'failed' || status === 'cancelled';
   async function closingForSavedOpen(terminal: TerminalSummary, runId: RunId, owner: Owner, signal: AbortSignal | undefined, intent: ViewerIntent): Promise<boolean> {
@@ -160,7 +146,7 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
       reservation = await ports.panes.acquire('subagent', runId, owner, { signal, timeoutMs: 10000, automatic }) ?? undefined;
       if (!current(owner, version)) { if (reservation) await ports.panes.release(reservation); return null; }
       if (reservation) reservations.set(runId, reservation);
-      else reservations.delete(runId);
+      else { reservations.delete(runId); return null; }
       const address = await launcher(runId, owner, signal, automatic ? 'automatic' : 'explicit');
       if (!current(owner, version)) { await releaseHeld(); return null; }
       if (reservation && reservation.viewer !== address) { await releaseHeld(); throw new Error('Viewer reservation acknowledged a different terminal'); }
@@ -185,6 +171,8 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
     await stop(); const currentOwner = ports.owner(); if (!currentOwner || process.env.PI_SUBAGENT_CHILD === '1') return;
     const owner = { ...currentOwner, terminal: { ...currentOwner.terminal } }; activationAbort = new AbortController();
     active = owner; const version = epoch;
+    await ports.panes.reconcile(owner, activationAbort.signal);
+    if (!current(owner, version)) return;
     const seen = new Set<RunId>(), queue: RunId[] = []; let opening = 0;
     const report = ports.reportError ?? (() => {});
     const drain = () => {

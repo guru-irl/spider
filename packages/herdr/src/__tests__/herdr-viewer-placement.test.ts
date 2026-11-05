@@ -53,16 +53,16 @@ const first = '10000000-0000-4000-8000-000000000001' as RunId;
 const second = '10000000-0000-4000-8000-000000000002' as RunId;
 const address = (id: RunId) => `viewer-${id}` as TerminalAddress;
 
-test.each([true, false])('a viewer survives parked when placement fails after launch (automatic: %s)', async automatic => {
+test.each([true, false])('an unplaced viewer is removed when placement fails after launch (automatic: %s)', async automatic => {
   const f = fixture(); f.fail('pane');
   try {
     await expect(f.panes.acquire('subagent', first, f.owner, { automatic, timeoutMs: 100 })).rejects.toBe(f.failed);
-    expect(f.terminals.get(address(first))).toMatchObject({ state: 'live', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': first, 'spider.session': f.owner.sessionId } });
+    expect(f.terminals.has(address(first))).toBe(false);
     expect(f.layout.has(address(first))).toBe(false);
     expect(f.commands).toContainEqual({ name: 'terminal.park', args: { terminal: address(first) } });
     f.fail(null);
     expect(await f.panes.acquire('subagent', first, f.owner, { automatic: false, timeoutMs: 100 })).toMatchObject({ viewer: address(first) });
-    expect(f.launches()).toBe(1);
+    expect(f.launches()).toBe(2);
     expect(f.commands).toContainEqual({ name: 'pane.focus', args: { terminal: address(first) } });
   } finally { await f.panes.dispose(); }
 });
@@ -76,20 +76,20 @@ test('automatic pane cleanup failures do not produce user warnings', async () =>
   } finally { await f.panes.dispose(); }
 });
 
-test('an explicit full-slot tab failure preserves both viewers and can be retried without relaunching', async () => {
+test('an explicit full-slot tab failure preserves the visible viewer and retries with a fresh launch', async () => {
   const f = fixture();
   try {
     await f.panes.acquire('subagent', first, f.owner, { automatic: true, timeoutMs: 100 });
     f.fail('tab');
     await expect(f.panes.acquire('subagent', second, f.owner, { automatic: false, timeoutMs: 100 })).rejects.toBeInstanceOf(HerdrError);
     expect(f.terminals.get(address(first))?.state).toBe('live'); expect(f.layout.has(address(first))).toBe(true);
-    expect(f.terminals.get(address(second))?.state).toBe('live'); expect(f.layout.has(address(second))).toBe(false);
+    expect(f.terminals.has(address(second))).toBe(false); expect(f.layout.has(address(second))).toBe(false);
     expect(f.commands).toContainEqual({ name: 'terminal.keep', args: { terminal: address(second), place: 'tab' } });
     f.fail(null);
     expect(await f.panes.acquire('subagent', second, f.owner, { automatic: false, timeoutMs: 100 })).toMatchObject({ viewer: address(second) });
     expect(f.layout.get(address(second))?.tab).not.toBe(f.layout.get(address(first))?.tab);
     expect(f.commands).toContainEqual({ name: 'pane.focus', args: { terminal: address(second) } });
-    expect(f.launches()).toBe(2);
+    expect(f.launches()).toBe(3);
     const kept = f.commands.filter(call => call.name === 'terminal.keep').length;
     await f.panes.acquire('subagent', first, f.owner, { automatic: false, timeoutMs: 100 });
     expect(f.commands.at(-1)).toEqual({ name: 'pane.focus', args: { terminal: address(first) } });

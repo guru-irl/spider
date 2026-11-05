@@ -42,10 +42,12 @@ test('an explicit open racing an unplaced lookup keeps the same viewer in its ne
   const firstId = '10000000-0000-4000-8000-000000000001' as RunId, nextId = '10000000-0000-4000-8000-000000000002' as RunId;
   try {
     const first = (await panes.acquire('subagent', firstId, owner, { timeoutMs: 1000 }))!;
-    firstAddress = first.viewer; blockLookup = true;
-    const automatic = panes.acquire('subagent', nextId, owner, { timeoutMs: 1000, automatic: true });
+    layout.delete(first.viewer);
+    const occupied = (await panes.acquire('subagent', nextId, owner, { timeoutMs: 1000 }))!;
+    firstAddress = occupied.viewer; blockLookup = true;
+    const automatic = panes.acquire('subagent', firstId, owner, { timeoutMs: 1000, automatic: true });
     await lookupStarted.promise;
-    const opened = await panes.acquire('subagent', nextId, owner, { timeoutMs: 1000 });
+    const opened = await panes.acquire('subagent', firstId, owner, { timeoutMs: 1000 });
     finishLookup.resolve();
     expect(await automatic).toBeNull();
     expect(opened).not.toBeNull();
@@ -53,7 +55,7 @@ test('an explicit open racing an unplaced lookup keeps the same viewer in its ne
     expect(parked).toEqual([]);
     expect(layout.get(opened!.viewer)?.tab).toBe('saved-tab');
     expect((await h.hc.get(opened!.viewer)).state).toBe('live');
-    expect(layout.get(first.viewer)?.tab).toBe('owner-tab');
-    expect((await h.hc.get(first.viewer)).state).toBe('live');
+    expect(layout.get(occupied.viewer)?.tab).toBe('owner-tab');
+    expect((await h.hc.get(occupied.viewer)).state).toBe('live');
   } finally { finishLookup.resolve(); await panes.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
 }, 15000);

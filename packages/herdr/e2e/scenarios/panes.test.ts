@@ -75,9 +75,10 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
     let smallSize: { cols: number; rows: number } | undefined;
     try {
         for (const name of names) { const ready = await gates.ready(`held-${name}`, deadline(30000)); identities.set(name, identityOf(ready.pid)); }
-        const feed = await waitFeed(parent, 'three running public children', value => value.runs.rows.length === 3), runs = await waitNativeViewerRuns(suite, feed);
+        const feed = await waitFeed(parent, 'three running public children', value => value.runs.rows.length === 3), runs = feed.runs.rows.map(run => ({ ...run }));
+        expect((await coreRows(suite)).filter(row => row.state === 'live' && row.labels['spider.kind'] === 'subagent-viewer')).toEqual([]);
         const automatic = placed(await f.app.ls());
-        expect(automatic, 'automatic-viewers-stay-parked').toEqual(main);
+        expect(automatic, 'automatic-viewers-stay-absent').toEqual(main);
         const dimensions = (await coreRows(suite)).find(row => row.address === parent.pi.terminal);
         expect(dimensions.cols).toBeGreaterThanOrEqual(161); expect(dimensions.rows).toBeGreaterThanOrEqual(45);
         sidebar = await mountPanel(f, 'spider-agents');
@@ -94,6 +95,7 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
             }
             await sidebar.host.waitForUi('actual parked child action', ui => ui.nodes.some(node => node.id === `sub-${run.id}`), 20000);
             await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
+            [run.viewer] = (await waitNativeViewerRuns(suite, { ...feed, runs: { ...feed.runs, rows: [run] } })).map(row => row.viewer);
             const after = await waitFor('viewer is placed', async () => placed(await f.app.ls()), panes => panes.some(pane => pane.terminal === run.viewer), deadline(20000), { reconcileMs: 250 });
             expect(after.filter(pane => openedRuns.some(previous => previous.viewer === pane.terminal)), 'user-open-preserves-existing-aux-panes').toEqual(before.filter(pane => openedRuns.some(previous => previous.viewer === pane.terminal)));
             expect(mainOnly(main, after)).toEqual(main);
@@ -120,7 +122,7 @@ async function assertUserOpenSlots(suite: Suite): Promise<void> {
         expect(root, 'reported-owner-tab-split-tree').toBeDefined();
         const boxes = paneBounds(root!);
         const box = (terminal: string) => boxes.find(box => box.id === after.find(pane => pane.terminal === terminal)!.pane)!;
-        const ownerBox = box(parent.pi.terminal), firstBox = box(runs[0].viewer), secondBox = box(runs[1].viewer);
+        const ownerBox = box(parent.pi.terminal), firstBox = box(runs[0].viewer!), secondBox = box(runs[1].viewer!);
         expect(firstBox.y, 'first-viewer-is-below-owner').toBeCloseTo(ownerBox.y + ownerBox.height);
         expect(firstBox.x).toBeCloseTo(ownerBox.x);
         expect(secondBox.y, 'second-viewer-shares-the-lower-row').toBeCloseTo(firstBox.y);
@@ -185,11 +187,11 @@ export const scenarios: readonly ScenarioDefinition[] = [
             for (const name of ['main-a', 'main-b', 'main-c'])
                 await gates.ready(`held-${name}`, deadline(30000));
             const feed = await waitFeed(parent, 'three actual runs reached the public feed', feed => feed.runs.rows.length === 3);
-            await waitNativeViewerRuns(suite, feed);
+            expect((await coreRows(suite)).filter(row => row.state === 'live' && row.labels['spider.kind'] === 'subagent-viewer')).toEqual([]);
             const automatic = placed(await f.app.ls());
             expect(main.length).toBeGreaterThanOrEqual(2);
             expect(mainOnly(main, automatic), 'main-pane-layout-preserved').toEqual(main);
-            expect(automatic, 'automatic-viewers-stay-parked').toEqual(main);
+            expect(automatic, 'automatic-viewers-stay-absent').toEqual(main);
             expect(await f.app.status(), 'main-pane-focus-preserved').toMatchObject({ agent: (originalStatus as any).agent });
             const job = await holdJob(f, parent, 'main-job'), sidebar = await mountPanel(f, 'spider-agents');
             try {
@@ -212,7 +214,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 await sidebar.close();
             }
         } },
-    { id: storyId('S35'), title: 'automatic viewers park; user opens arrange them below the owner without eviction', tiers: ['headless', 'app'], async run(suite) { await assertUserOpenSlots(suite); await assertEvictionIsCaught(suite); } },
+    { id: storyId('S35'), title: 'automatic viewers stay absent; user opens arrange them below the owner without eviction', tiers: ['headless', 'app'], async run(suite) { await assertUserOpenSlots(suite); await assertEvictionIsCaught(suite); } },
     { id: storyId('S36'), title: 'a read-only command observer can close and reopen complete output without cancelling its job', tiers: ['headless', 'remote', 'app'], async run(suite) {
             await nativeGate(suite);
             const f = await installPanelFixture(suite), parent = await startPanelParent(f), job = await holdJob(f, parent, 'observer-job'), sidebar = await mountPanel(f, 'spider-agents');
@@ -263,7 +265,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 await sidebar.refresh();
                 const ui = await sidebar.host.waitForUi('actual console row after discovery', ui => ui.nodes.some(n => n.id === `sub-console:${job.console}`), 20000);
                 const feed = await waitFeed(parent, 'exact owned run summary', feed => feed.runs.rows.some((r: any) => r.id === created.run.id));
-                const run = (await waitNativeViewerRuns(suite, feed)).find(r => r.id === created.run.id)!;
+                const run = { ...feed.runs.rows.find(r => r.id === created.run.id)! };
+                expect((await coreRows(suite)).filter(row => row.state === 'live' && row.labels['spider.kind'] === 'subagent-viewer' && row.labels['spider.run'] === run.id)).toEqual([]);
                 expect(run.ownerSessionId).toBe(parent.sessionId);
                 expect(ui.nodes.filter(n => n.id === `sub-${run.id}`)).toHaveLength(1);
                 expect(ui.nodes.some(n => n.id === `ag-${job.address}` || n.id === `ag-${job.console}` || n.id === `ag-${run.viewer}`)).toBe(false);
@@ -273,7 +276,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 await sidebar.host.activate(`fold-${parent.pi.terminal}`);
                 await sidebar.host.waitForUi('running count pill unfolds the children', value => value.nodes.some(n => n.id === `sub-${run.id}`), 20000);
                 const ownedRows = await coreRows(suite);
-                for (const [address, kind, key] of [[run.viewer, 'subagent-viewer', run.id], [job.address, 'exec', job.id], [job.console, 'remote-console', null]]) {
+                for (const [address, kind, key] of [[job.address, 'exec', job.id], [job.console, 'remote-console', null]]) {
                     const row = ownedRows.find(row => row.address === address);
                     expect(row).toBeDefined();
                     expect(row.labels).toMatchObject({ 'spider.kind': kind, 'spider.session': parent.sessionId, 'spider.owner-core': feed.owner.terminal.coreId, 'spider.owner-terminal': parent.pi.terminal });
@@ -297,6 +300,9 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 expect(parkedMenu.nodes.some(node => node.text.includes('Open in new tab'))).toBe(true);
                 await suite.evidence('parked-viewer-menu.json', { parkedMenu, feed, viewer: run.viewer });
                 await sidebar.host.activate('move-new');
+                run.viewer = (await waitNativeViewerRuns(suite, { ...feed, runs: { ...feed.runs, rows: [run] } }))[0].viewer;
+                const launched = (await coreRows(suite)).find(row => row.address === run.viewer);
+                expect(launched.labels).toMatchObject({ 'spider.kind': 'subagent-viewer', 'spider.run': run.id, 'spider.session': parent.sessionId, 'spider.owner-core': feed.owner.terminal.coreId, 'spider.owner-terminal': parent.pi.terminal });
                 const openedView = await waitFor('parked viewer opened in its tab', async () => placed(await f.app.ls()), rows => rows.some(row => row.terminal === run.viewer), deadline(20000));
                 expect(openedView.find(row => row.terminal === run.viewer)?.tab).not.toBe(parent.placement.tab);
                 expect(await f.app.status()).toMatchObject({ agent: run.viewer });
@@ -347,7 +353,8 @@ export const scenarios: readonly ScenarioDefinition[] = [
             const [created] = await tools(f, parent, 'filter-runs', [{ action: 'run', tasks: [{ ...request('filter-a'), name: 'Duplicate' }, { ...request('filter-b'), name: 'Duplicate' }] }], { 'filter-a': held('filter-a'), 'filter-b': held('filter-b') } as any);
             for (const name of ['filter-a', 'filter-b']) await gates.ready(`held-${name}`, deadline(30000));
             const feed = await waitFeed(parent, 'two actual duplicate-named runs', feed => feed.runs.rows.length === 2);
-            const [a, b] = await waitNativeViewerRuns(suite, feed);
+            const [a, b] = feed.runs.rows;
+            expect((await coreRows(suite)).filter(row => row.state === 'live' && row.labels['spider.kind'] === 'subagent-viewer')).toEqual([]);
             expect(a.name).toBe('Duplicate'); expect(b.name).toBe('Duplicate'); expect(a.id).not.toBe(b.id);
             const job = await holdJob(f, parent, 'filter-job');
             const propsA = await sidebarCopy(f, 'spider-agents-a'), propsB = await sidebarCopy(f, 'spider-agents-b');

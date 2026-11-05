@@ -21,6 +21,7 @@ it.each(['quit', 'reload', 'new', 'resume', 'fork', 'dispose'] as const)('regist
     viewerLauncher: async () => viewer,
     ownedRunEvents: { list: async () => [run], subscribe: () => { subscribed = true; return () => { subscribed = false; }; } },
     panes: {
+      reconcile: async () => {},
       acquire: async () => { displayed.set(run, reservation); return reservation; },
       release: async held => { released.push(held); displayed.delete(held.id as RunId); },
       park: async id => { displayed.delete(id as RunId); },

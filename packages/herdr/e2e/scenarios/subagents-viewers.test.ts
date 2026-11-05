@@ -52,6 +52,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       await prompt(owner, mark('owner'));
       const ready = await gates.ready('view-start', deadline(60_000));
       const run = await runRow(owner, 'same-name', r => r.status === 'running');
+      assert.equal((await terminals(suite)).filter(t => t.state === 'live' && t.labels['spider.kind'] === 'subagent-viewer' && t.labels['spider.run'] === run.id).length, 0, 'No viewer may launch before a pane is requested');
       const address = await viewerAddress(suite, owner, run); const input = await attachViewer(suite, address);
       await viewerContains(suite, input, 'running');
       const startsBefore = (await readObserved(suite.pi.observerDir)).filter(e => e.type === 'session_start').length;
@@ -63,6 +64,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
       const produced = await childEvent(suite, ready.pid, 'tool_execution_end', e => e.toolCallId === 'view-tool');
       assert.ok((produced.result as { details: { stdout: string } }).details.stdout.includes('VIEW_TRANSCRIPT_TAIL_α界'), 'actual tool result contains the committed saved tail');
       await viewerContains(suite, input, 'VIEW_TOOL_λ');
+      await input.send('\u000f');
       const output = await viewerContains(suite, input, 'VIEW_TRANSCRIPT_TAIL_α界');
       assert.ok(output.includes('VIEW_TEXT_α界')); assert.ok(!output.includes('FOREIGN_TRANSCRIPT_DECOY'));
       assert.ok(output.includes(run.id) || output.includes('same-name'), 'Viewer must identify the actual run');

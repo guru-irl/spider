@@ -37,7 +37,7 @@ export async function monitorFixture(): Promise<MonitorFixture> {
   const owner = { sessionId: 'monitor-session', generation: 'g1', terminal: { coreId: 'core', terminalId: 't-owner', address: 't-owner', socket: f.localSocket, sessionNamespace: 'fl' }, cwd: f.root, sessionFile: null, name: null } as Owner;
   const terminals = new Map<TerminalAddress, TerminalSummary>(), listeners = new Set<(event: HcEvent) => void>();
   const notices: JobNotice[] = [], errors: unknown[] = [], kills: TerminalAddress[] = [];
-  let early = false, views = 0;
+  let early = false, views = 0, terminalSequence = 0;
   const emit = (event: HcEvent) => { for (const listener of listeners) listener(event); };
   const complete = (address: TerminalAddress) => {
     Object.assign(terminals.get(address)!, { state: 'finished', ...finish });
@@ -51,7 +51,7 @@ export async function monitorFixture(): Promise<MonitorFixture> {
       dispose: () => { views--; for (const listener of subscriptions) listeners.delete(listener); subscriptions.clear(); },
     }; },
     run: async request => {
-      const address = `remote.invalid/t${terminals.size + 1}` as TerminalAddress;
+      const address = `remote.invalid/t${++terminalSequence}` as TerminalAddress;
       const terminal: TerminalSummary = { address, parent: owner.terminal.address, labels: request.labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null };
       terminals.set(address, terminal); emit({ type: 'created', terminal: address, data: terminal, seq: 1 });
       if (early) complete(address);

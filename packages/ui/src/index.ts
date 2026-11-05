@@ -4,6 +4,7 @@
 import type { Component } from "./component";
 import { fitResultLines } from "./renderers/types";
 export type { Component } from "./component";
+export { cachedLines } from "./component";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 
 // Phase 0 kept a static ANSI token table; that is gone. Colour is NEVER hardcoded here —

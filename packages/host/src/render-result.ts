@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
 import type { Component } from "@spider/ui";
-import { formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { cachedLines, formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -628,14 +628,7 @@ function renderSpiderResultBody(
       const d = toExecDetails(action, context?.args, details, partialText);
       if (expanded && !isPartial) d.expandedOutput = expandedExecTail(action, details);
       const th = adaptTheme(t);
-      let cachedWidth: number | undefined;
-      let cachedRows: string[] | undefined;
-      return { render: (w: number) => {
-        if (cachedWidth === w && cachedRows) return cachedRows;
-        cachedRows = renderExecResult(d, { theme: th, width: w, expanded });
-        cachedWidth = w;
-        return cachedRows;
-      }, invalidate() { cachedRows = undefined; cachedWidth = undefined; } };
+      return { render: (w: number) => renderExecResult(d, { theme: th, width: w, expanded }), invalidate() {} };
     }
     case "index": {
       const d = toIndexDetails(context?.args, details);
@@ -723,13 +716,25 @@ function renderSpiderResultBody(
 
 /** The tool and command messages share the same render-time width boundary. */
 export function renderSpiderResult(result: any, options: any, theme: any, context: any): Component {
-  const body = renderSpiderResultBody(result, options, theme, context);
-  return {
-    render: (width: number) => ["exec", "exec_file", "batch"].includes(String(context?.args?.action ?? ""))
+  const runs: RunLike[] = context?.args?.action === "run"
+    ? Array.isArray(result?.details?.runs) ? result.details.runs : result?.details?.run ? [result.details.run] : []
+    : [];
+  const liveCosts = runs.flatMap(r => ["done", "failed", "cancelled"].includes(r.status ?? "running")
+    && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0) && r.costText == null && r.usageCosts ? [r.usageCosts] : []);
+  // Completed run costs use the footer's live calibration, not just stored result details.
+  const contentKey = liveCosts.length && typeof context?.formatRunCost === "function"
+    ? () => JSON.stringify(liveCosts.map(costs => context.formatRunCost(costs))) : undefined;
+  let body: Component | undefined;
+  return cachedLines(width => {
+    body ??= renderSpiderResultBody(result, options, theme, context);
+    return ["exec", "exec_file", "batch"].includes(String(context?.args?.action ?? ""))
       ? body.render(width)
-      : fitResultLines(body.render(width), width, options?.expanded === true),
-    invalidate: () => body.invalidate?.(),
-  };
+      : fitResultLines(body.render(width), width, options?.expanded === true);
+  }, () => {
+    body?.invalidate?.();
+    // Some bodies prepare styled strings when created. Rebuild them for the active theme.
+    body = undefined;
+  }, contentKey);
 }
 
 /** In-progress CALL title. renderCall REPLACES the title (pi does NOT prepend the tool
@@ -737,55 +742,54 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
  *  own tool titles (glyph + all text). UI STANDARD: the action VERB (run/parallel/remember/
  *  recall/search/exec/…) is always italicised; separators, counts, and sub-commands are not. */
 export function renderSpiderCall(args: any, theme: any, _context: any): Component {
-  const t = mkTheme(theme);
-  const action = String(args?.action ?? "");
-  const verb = (v: string) => t.italic(t.fg("toolTitle", v)); // universal: verbs are italicised
-  let suffix = verb(action || "run");
-  if (action === "run") {
-    const mode = Array.isArray(args?.pipeline) ? "pipeline"
-      : Array.isArray(args?.chain) ? "chain"
-      : Array.isArray(args?.tasks) ? "parallel" : "single";
-    const n = Array.isArray(args?.tasks) ? args.tasks.length
-      : Array.isArray(args?.chain) ? args.chain.length
-      : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
-    suffix = mode === "single"
-      ? verb("run")
-      : `${verb(mode)} ${t.fg("toolTitle", `· ${n} started`)}`;
-  } else if ((action === "exec" || action === "exec_file" || action === "batch") && typeof args?.on === "string") {
-    // The command goes below the title; remote calls also name their destination.
-    suffix = `${verb(action)} ${t.fg("toolTitle", `on ${args.on}`)}`;
-  } else if (args?.sub || args?.command) {
-    suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
-  }
-  const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
+  return cachedLines((w: number) => {
+    const t = mkTheme(theme);
+    const action = String(args?.action ?? "");
+    const verb = (v: string) => t.italic(t.fg("toolTitle", v)); // universal: verbs are italicised
+    let suffix = verb(action || "run");
+    if (action === "run") {
+      const mode = Array.isArray(args?.pipeline) ? "pipeline"
+        : Array.isArray(args?.chain) ? "chain"
+        : Array.isArray(args?.tasks) ? "parallel" : "single";
+      const n = Array.isArray(args?.tasks) ? args.tasks.length
+        : Array.isArray(args?.chain) ? args.chain.length
+        : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
+      suffix = mode === "single"
+        ? verb("run")
+        : `${verb(mode)} ${t.fg("toolTitle", `· ${n} started`)}`;
+    } else if ((action === "exec" || action === "exec_file" || action === "batch") && typeof args?.on === "string") {
+      // The command goes below the title; remote calls also name their destination.
+      suffix = `${verb(action)} ${t.fg("toolTitle", `on ${args.on}`)}`;
+    } else if (args?.sub || args?.command) {
+      suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
+    }
+    const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
 
-  // The call is rendered as soon as the tool is invoked; the result only lands when the
-  // command EXITS. So anything not on the call is invisible for the whole run — which is
-  // why a slow `npm run build` used to show as a bare "spider · exec" with no clue what
-  // was executing. Put the command here, and let the result carry only the output.
-  const cmdLines: string[] = [];
-  if (action === "exec" || action === "exec_file" || action === "batch") {
-    const raw =
-      action === "exec_file"
-        ? [String(args?.path ?? "file")]
-        : action === "batch"
-          ? (Array.isArray(args?.commands) ? args.commands : []).map((c: any) =>
-              String(c?.label ?? c?.code ?? c?.language ?? "cmd"),
-            )
-          : String(args?.code ?? "").split("\n");
-    const all = raw.flatMap((s: unknown) => String(s).split("\n")).filter((s: string) => s.trim() !== "");
-    // Cap hard: the header must stay a header. The full script is available on the
-    // result (ctrl+o), so nothing is lost by clipping here.
-    const HEAD = 2;
-    for (const c of all.slice(0, HEAD)) cmdLines.push(`${t.fg("dim", "│ ")}${t.fg("toolOutput", c)}`);
-    const rest = all.length - Math.min(all.length, HEAD);
-    if (rest > 0) cmdLines.push(`${t.fg("dim", `│ … +${rest} more line${rest === 1 ? "" : "s"}`)}`);
-  }
+    // The call is rendered as soon as the tool is invoked; the result only lands when the
+    // command EXITS. Anything not on the call is invisible for the whole run. A slow
+    // `npm run build` used to show as a bare "spider · exec" with no clue what
+    // was executing. Put the command here, and let the result carry only the output.
+    const cmdLines: string[] = [];
+    if (action === "exec" || action === "exec_file" || action === "batch") {
+      const raw =
+        action === "exec_file"
+          ? [String(args?.path ?? "file")]
+          : action === "batch"
+            ? (Array.isArray(args?.commands) ? args.commands : []).map((c: any) =>
+                String(c?.label ?? c?.code ?? c?.language ?? "cmd"),
+              )
+            : String(args?.code ?? "").split("\n");
+      const all = raw.flatMap((s: unknown) => String(s).split("\n")).filter((s: string) => s.trim() !== "");
+      // Cap hard: the header must stay a header. The full script is available on the
+      // result (ctrl+o), so nothing is lost by clipping here.
+      const HEAD = 2;
+      for (const c of all.slice(0, HEAD)) cmdLines.push(`${t.fg("dim", "│ ")}${t.fg("toolOutput", c)}`);
+      const rest = all.length - Math.min(all.length, HEAD);
+      if (rest > 0) cmdLines.push(`${t.fg("dim", `│ … +${rest} more line${rest === 1 ? "" : "s"}`)}`);
+    }
 
-  return {
-    render: (w: number) => [clip(line, w), ...cmdLines.map((c) => clip(c, w))],
-    invalidate() {},
-  };
+    return [clip(line, w), ...cmdLines.map((c) => clip(c, w))];
+  });
 }
 
 export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {
@@ -809,7 +813,7 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
-  return container as unknown as Component;
+  return cachedLines(width => container.render(width), () => container.invalidate());
 }
 
 /** Transcript renderer for the `spider.command` message a slash command emits. Renders the
@@ -832,7 +836,7 @@ export function renderCommandOutput(message: any, options: { expanded?: boolean 
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
-  return container as unknown as Component;
+  return cachedLines(width => container.render(width), () => container.invalidate());
 }
 
 /** TUI-only receipt: proposed knowledge stays pending and never masquerades as completed user work. */
@@ -864,7 +868,7 @@ export function renderOrganismEntry(entry: unknown, options: { expanded?: boolea
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box);
-  return container as unknown as Component;
+  return cachedLines(width => container.render(width), () => container.invalidate());
 }
 
 /** Transcript renderer for `spider.escalation` custom messages. Escalations always use
@@ -891,5 +895,5 @@ export function renderEscalationMessage(message: any, options: { expanded?: bool
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
-  return container as unknown as Component;
+  return cachedLines(width => container.render(width), () => container.invalidate());
 }

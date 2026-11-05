@@ -37,8 +37,9 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
   for (const node of nodes) {
     delete node.divider; delete node.shadow;
     const content = node.content as Record<string, unknown> | undefined;
-    if (node.id === 'brand' && content?.mod === 'workspace-chrome') {
+    if ((node.id === 'brand' || node.id === 'sidebar-footer') && content?.mod === 'workspace-chrome') {
       content.mod = names.chrome; content.props = { ...object(content.props ?? {}), ...names.props?.chrome };
+      if (node.id === 'sidebar-footer') Object.assign(node, structuredClone(edits.footer));
     }
     for (const key of ['agents', 'spaces', 'tabs'] as const) if (content?.mod === key) {
       content.mod = names[key]; content.props = { ...object(content.props ?? {}), ...names.props?.[key] };

@@ -12,7 +12,7 @@ import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
 import { identityPill, assignSpaceIdentities, threadKeylines } from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
-interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; click?: (...args: any[]) => unknown; hoverChange?: (...args: any[]) => unknown; hoverStyle?: (value: any) => unknown }
+interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; image?: string; scrollbar?: string; id?: string; click?: (...args: any[]) => unknown; hoverChange?: (...args: any[]) => unknown; hoverStyle?: (value: any) => unknown }
 const data = new WeakMap<object, Node>();
 function element(svgPath?: string): any {
   const node: Node = { calls: [], children: [], svg: svgPath };
@@ -25,7 +25,7 @@ function element(svgPath?: string): any {
   } });
   data.set(proxy, node); return proxy;
 }
-const ui = { div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path) };
+const ui = { div: () => element(), h_flex: () => element(), v_flex: () => element(), image: (path: string) => { const result = element(); data.get(result)!.image = path; return result; }, svg: (path: string) => element(path), Scrollbar: { vertical: (id: string) => { const result = element(); data.get(result)!.scrollbar = id; return result; } } };
 function all(root: unknown): Node[] {
   const node = data.get(root as object); if (!node) return [];
   return [node, ...node.children.flatMap(all)];
@@ -103,7 +103,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const nodes = all(folded);
     const expand = nodes.find(node => call(node, 'tooltip')?.[0] === 'Expand sidebar');
     expect(expand).toBeDefined();
-    expect(texts(folded)).toEqual(['»']);
+    expect(texts(folded)).toEqual([]);
     expect(nodes.indexOf(expand!)).toBeLessThan(nodes.findIndex(node => node.svg?.includes('space-')));
     expect(sidebar.children[0].hidden).toBe(true);
     expect(sidebar.children[1].children[1].hidden).toBe(true);
@@ -116,6 +116,78 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(texts(agentView.render({}))).toContain('Agents');
     expect([sidebar.children[0].hidden, sidebar.children[1].children[1].hidden, sidebar.children[2].hidden]).toEqual([false, false, false]);
     expect(all(expanded).some(node => call(node, 'tooltip')?.[0] === 'Expand sidebar')).toBe(false);
+  });
+
+  it('shows Settings without an Add machine row in the footer', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const commands: string[] = [];
+    const Chrome = loadView(clones['workspace-chrome'].files['main.js'], {
+      theme: () => palette, props: () => ({ footer: true }), layout: () => ({ id: 'sidebar', size: { px: 268 } }),
+      updates: () => ({ app: { ready: false } }), run: (name: string) => commands.push(name),
+    });
+    const footer = new Chrome().render();
+    expect(texts(footer)).toEqual(['Settings']);
+    expect(all(footer).some(node => node.id === 'machine')).toBe(false);
+    all(footer).find(node => node.id === 'settings')!.click!();
+    expect(commands).toEqual(['app.settings']);
+  });
+
+  it('draws a neutral full-width border above the footer', async () => {
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const Chrome = loadView(clones['workspace-chrome'].files['main.js'], {
+      theme: () => ({ ...palette, border: '#00000000' }), props: () => ({ footer: true }), layout: () => ({ id: 'sidebar', size: { px: 268 } }),
+      updates: () => ({ app: { ready: false } }),
+    });
+    const footer = data.get(new Chrome().render())!;
+    expect(call(footer, 'size_full')).toEqual([]);
+    expect(call(footer, 'border_t')).toEqual([1]);
+    expect(call(footer, 'border_color')).toEqual(['#38383a']);
+  });
+
+  it('centres the folded buttons in the visible column without reserving scroll width', async () => {
+    const { spaceView, spaces, sidebar } = await railFixture();
+    for (let i = 0; i < 30; i++) spaces.push({ id: `extra-${i}`, name: `extra-${i}`, tabs: [] });
+    const root = spaceView.render(), nodes = all(root), outer = data.get(root)!;
+    const list = nodes.find(node => node.id === 'rail-spaces')!;
+    const bar = nodes.find(node => node.scrollbar === 'rail-spaces')!;
+    const inset = Number(call(outer, 'pl')?.[0]);
+    const expandedPadding = 8;
+    for (const width of [sidebar.size.px, 76]) expect((inset + width) / 2).toBe((width + expandedPadding) / 2);
+    const wrapper = nodes.find(node => node.children.some(child => data.get(child as object) === list))!;
+    expect(call(outer, 'items_center')).toEqual([]);
+    expect(call(wrapper, 'w_full')).toEqual([]);
+    expect(call(list, 'w_full')).toEqual([]);
+    expect(call(list, 'items_center')).toEqual([]);
+    expect(call(list, 'overflow_y_scroll')).toEqual([]);
+    expect(call(list, 'overflow_y_scrollbar')).toBeUndefined();
+    expect(call(bar, 'absolute')).toEqual([]);
+    expect(call(bar, 'mode')).toEqual(['scrolling']);
+    expect(nodes.filter(node => node.id?.startsWith('space-') && node.click)).toHaveLength(33);
+  });
+
+  it.each([['spaces', 'spaces-list'], ['agents', 'ag-list']])('shows an overlay scrollbar only while %s scrolls', async (kind, id) => {
+    const { spaceView, agentView, sidebar } = await railFixture();
+    sidebar.size.px = 268;
+    const nodes = all((kind === 'spaces' ? spaceView : agentView).render({}));
+    const list = nodes.find(node => node.id === id)!;
+    const bar = nodes.find(node => node.scrollbar === id)!;
+    expect(list).toBeDefined();
+    expect(call(list, 'overflow_y_scroll')).toEqual([]);
+    expect(call(list, 'overflow_y_scrollbar')).toBeUndefined();
+    expect(bar).toBeDefined();
+    expect(call(bar, 'absolute')).toEqual([]);
+    expect(call(bar, 'mode')).toEqual(['scrolling']);
+    expect(nodes.some(node => call(node, 'mode')?.[0] === 'always')).toBe(false);
+  });
+
+  it('uses the Herdr logo for the folded expand control', async () => {
+    const { spaceView } = await railFixture();
+    const expand = all(spaceView.render()).find(node => call(node, 'tooltip')?.[0] === 'Expand sidebar')!;
+    const logo = expand.children.flatMap(all).find(node => node.image === 'frame/welcome/herdr.png');
+    expect(call(expand, 'size')).toEqual([32]);
+    expect(logo).toBeDefined();
+    expect(call(logo!, 'size')).toEqual([20]);
+    expect(call(logo!, 'rounded')).toEqual([5]);
   });
 
   it('shows every folded-machine space as an ordered selectable shape', async () => {
@@ -135,7 +207,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(commands.filter(([name]) => name === 'space.select')).toEqual([
       ['space.select', { id: 'a' }], ['space.select', { id: 'b' }], ['space.select', { id: 'c' }],
     ]);
-    expect(texts(root)).toEqual(['»']);
+    expect(texts(root)).toEqual([]);
     expect(nodes.some(node => node.id?.startsWith('machine-'))).toBe(false);
     expect(nodes.some(node => node.svg && /plus|chevron|server|monitor/.test(node.svg))).toBe(false);
   });

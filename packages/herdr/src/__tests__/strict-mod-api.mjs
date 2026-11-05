@@ -32,6 +32,7 @@ export function createUiModules() {
   const adapters = {
     View: class {}, div: () => element(), svg: () => element(), image: () => element(),
     v_flex: () => element(), h_flex: () => element(), Button: { new: id => element().id(id) },
+    Scrollbar: { vertical: () => element(), horizontal: () => element(), new: () => element() },
   };
   for (const [module, names] of Object.entries(modApi.modules)) {
     if (!module.startsWith('gpui')) continue;

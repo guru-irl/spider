@@ -6,7 +6,7 @@ import * as move from '../../assets/agents/move.js';
 import { panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS } from '../../assets/shared/feed.js';
 import { HerdrLabelContract } from '../contracts.js';
 
-type Node = { id?: string; height?: number; marginY?: number; paddingTop?: number; paddingBottom?: number; flexNone?: boolean; mode?: string; textSize?: number; disabled?: boolean; events: Record<string, Function>; items: unknown[] };
+type Node = { id?: string; scrollbar?: string; scrolling?: boolean; absolute?: boolean; height?: number; marginY?: number; paddingTop?: number; paddingBottom?: number; flexNone?: boolean; mode?: string; textSize?: number; disabled?: boolean; events: Record<string, Function>; items: unknown[] };
 const data = new WeakMap<object, Node>();
 function element(): any {
   const node: Node = { events: {}, items: [] };
@@ -21,6 +21,8 @@ function element(): any {
     if (key === 'pb') return (paddingBottom: number) => { node.paddingBottom = paddingBottom; return proxy; };
     if (key === 'flex_none') return () => { node.flexNone = true; return proxy; };
     if (key === 'mode') return (mode: string) => { node.mode = mode; return proxy; };
+    if (key === 'overflow_y_scroll') return () => { node.scrolling = true; return proxy; };
+    if (key === 'absolute') return () => { node.absolute = true; return proxy; };
     if (key === 'text_size') return (textSize: number) => { node.textSize = textSize; return proxy; };
     if (key === 'disabled') return (value: boolean) => { node.disabled = value; return proxy; };
     if (key.startsWith('on_')) return (...args: unknown[]) => { node.events[key] = args.at(-1) as Function; return proxy; };
@@ -41,7 +43,7 @@ async function popup(propsValue: any, extra: Record<string, unknown> = {}, feeds
   const calls: any[] = [], closed: string[] = [], overlays: any[] = [], notifications: any[] = [], tasks: Promise<unknown>[] = [];
   const props = () => propsValue;
   const palette = { popover: '#161618', foreground: '#eeeeee', muted: '#aaaaaa', dim: '#999999', hover: '#262628', selected: '#29292a', border: '#38383a' };
-  const api: Record<string, any> = { div: element, v_flex: element, h_flex: element, svg: element, ...move, panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS,
+  const api: Record<string, any> = { div: element, v_flex: element, h_flex: element, svg: element, Scrollbar: { vertical: (id: string) => { const result = element(); data.get(result)!.scrollbar = id; return result; } }, ...move, panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS,
     props, theme: () => palette, spaces: () => [{ id: 's1', name: 'Work', machine: null, tabs: [{ id: 't1', name: 'Current' }, { id: 't2', name: 'Review' }] }, { id: 's2', name: 'Other', machine: null, tabs: [{ id: 't3', name: 'Notes' }] }],
     panes: () => [], terminals: () => [], focused: () => ({ space: 's1', tab: 't1' }),
     run: (name: string, args: unknown) => calls.push({ name, args }), closeOverlay: (id: string) => closed.push(id), openOverlay: (value: unknown) => overlays.push(value), notify: (value: unknown) => notifications.push(value),
@@ -95,9 +97,20 @@ it('caps the height of a long tab list', async () => {
   expect(list.height).toBe(380);
   expect(list.height).toBe(Math.min(380, totalHeight(list)));
   expect(totalHeight(list)).toBeGreaterThan(380);
-  expect(list.mode).toBe('always');
+  expect(flatten(ui.renderMoveMenu(ui.instance, ui.cx)).find(node => node.scrollbar === 'move-menu-items')?.mode).toBe('scrolling');
   expect(list.flexNone).toBe(true);
   expect(listChildren(list).every(child => child.flexNone)).toBe(true);
+});
+
+it('overlays the move menu scrollbar without reserving width', async () => {
+  const ui = await heightPopup({ spaces: () => [{ id: 's1', name: 'Work', machine: null,
+    tabs: Array.from({ length: 20 }, (_, i) => ({ id: `t${i}`, name: `Tab ${i}` })) }] });
+  byId(ui.renderMoveMenu(ui.instance, ui.cx), 'move-tabs').events.on_click({}, ui.cx);
+  const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  const list = byId(root, 'move-menu-items'), bar = flatten(root).find(node => node.scrollbar === 'move-menu-items');
+  expect(list.scrolling).toBe(true);
+  expect(bar).toMatchObject({ absolute: true, mode: 'scrolling' });
+  expect(flatten(root).some(node => node.mode === 'always')).toBe(false);
 });
 
 it('uses the menu text size when the pane is unavailable', async () => {

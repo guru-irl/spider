@@ -162,7 +162,7 @@ function elements(root: Element): Element[] {
   return [value, ...value.children.filter(x => typeof x === 'object' && x !== null).flatMap(x => elements(x as Element))];
 }
 function loadView(supplied: Record<string, unknown>): any {
-  const dependencies = { ...children, ...sharedLook, ...supplied };
+  const dependencies = { ...children, ...sharedLook, Scrollbar: { vertical: () => ui() }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('dependencies', `const { ${Object.keys(dependencies).join(', ')} } = dependencies; ${code}; return ${name};`)(dependencies);

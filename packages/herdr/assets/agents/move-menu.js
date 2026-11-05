@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { div } from 'gpui-kit';
-import { v_flex, h_flex } from 'gpui-base';
+import { v_flex, h_flex, Scrollbar } from 'gpui-base';
 import { props, theme, spaces, panes, terminals, focused, run, exec, hc, readTextFile, openOverlay, closeOverlay, notify } from 'herdr';
 import { panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS } from './shared/feed.js';
 import { classifyPane, menuItems, moveTarget, killTarget, stopSessionTarget, moveTerminal, journalOwnsTerminal } from './move.js';
@@ -204,16 +204,19 @@ export function renderMoveMenu(view, cx) {
       cx.notify();
     });
   const height = listHeight(items), list = v_flex().id('move-menu-items').flex_none().h(Math.min(380, height));
-  const scroll = height > 380 ? list.overflow_y_scrollbar().mode('always') : list.overflow_y_scrollbar();
-  return root.child(scroll.children(items.map(item => {
-    if (item.kind === 'separator') return div().mx(7).my(SEPARATOR_MARGIN).h(SEPARATOR_HEIGHT - 2 * SEPARATOR_MARGIN).flex_none().bg(t.border);
-    if (item.kind === 'heading') return div().h(HEADING_HEIGHT).flex_none().px(8).pb(3).flex().items_end().text_size(11).font_medium().text_color(t.muted).child(item.label);
-    const index = selectable.indexOf(item);
-    return h_flex().id(`move-${item.id}`).h(ROW_HEIGHT).flex_none().px(8).rounded(7).items_center().text_color(item.disabled ? t.dim : t.foreground)
-      .when(Boolean(item.disabled), el => el.disabled(true))
-      .when(index >= 0 && index === view.moveAt, el => el.bg(t.selected))
-      .when(!item.disabled, el => el.hover(s => s.bg(t.hover)).cursor_pointer().on_click((_event, cx) => choose(view, target, item, cx)))
-      .child(div().flex_1().truncate().child(item.label));
-  }))).when(target.kind !== 'terminal' && !target.descriptor && !target.unmanaged,
+  const scroll = list.w_full().overflow_y_scroll();
+  return root.child(v_flex().relative().flex_none().h(Math.min(380, height))
+    .child(scroll.children(items.map(item => {
+      if (item.kind === 'separator') return div().mx(7).my(SEPARATOR_MARGIN).h(SEPARATOR_HEIGHT - 2 * SEPARATOR_MARGIN).flex_none().bg(t.border);
+      if (item.kind === 'heading') return div().h(HEADING_HEIGHT).flex_none().px(8).pb(3).flex().items_end().text_size(11).font_medium().text_color(t.muted).child(item.label);
+      const index = selectable.indexOf(item);
+      return h_flex().id(`move-${item.id}`).h(ROW_HEIGHT).flex_none().px(8).rounded(7).items_center().text_color(item.disabled ? t.dim : t.foreground)
+        .when(Boolean(item.disabled), el => el.disabled(true))
+        .when(index >= 0 && index === view.moveAt, el => el.bg(t.selected))
+        .when(!item.disabled, el => el.hover(s => s.bg(t.hover)).cursor_pointer().on_click((_event, cx) => choose(view, target, item, cx)))
+        .child(div().flex_1().truncate().child(item.label));
+    })))
+    .child(Scrollbar.vertical('move-menu-items').absolute().inset_0().mode('scrolling')))
+    .when(target.kind !== 'terminal' && !target.descriptor && !target.unmanaged,
     el => el.child(div().px(8).pt(6).pb(4).text_size(11).text_color(t.muted).child('Owner unavailable')));
 }

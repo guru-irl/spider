@@ -68,7 +68,7 @@
       {
         "id": "move-menu-import",
         "anchor": "import { v_flex, h_flex } from \"gpui-base\";",
-        "replacement": "import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex } from \"gpui-base\";"
+        "replacement": "import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";"
       },
       {
         "id": "move-menu-init",
@@ -182,8 +182,8 @@
       },
       {
         "id": "feed-diagnostic",
-        "anchor": ".child(v_flex().id(\"ag-list\")",
-        "replacement": ".when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .child(v_flex().id(\"ag-list\")"
+        "anchor": ".child(v_flex().id(\"ag-list\").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode(\"always\").children(rows))",
+        "replacement": ".when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .child(v_flex().relative().flex_1().min_h(0).w_full()\n        .child(v_flex().id(\"ag-list\").size_full().px(collapsed ? 0 : 8).overflow_y_scroll().children(rows))\n        .child(Scrollbar.vertical(\"ag-list\").absolute().inset_0().mode(\"scrolling\")))"
       },
       {
         "id": "console-fold",
@@ -368,6 +368,16 @@
     ],
     "spaces": [
       {
+        "id": "rail-scrollbar-import",
+        "anchor": "import { v_flex, h_flex } from \"gpui-base\";",
+        "replacement": "import { v_flex, h_flex, Scrollbar } from \"gpui-base\";"
+      },
+      {
+        "id": "rail-logo-import",
+        "anchor": "import { View, div, svg } from \"gpui-kit\";",
+        "replacement": "import { View, div, image, svg } from \"gpui-kit\";"
+      },
+      {
         "id": "rail-include-pending",
         "anchor": "  ordered() {",
         "replacement": "  ordered(includePending = false) {"
@@ -385,7 +395,7 @@
       {
         "id": "rail-render",
         "anchor": "    const collapsed = narrow();\n    const palette = [\"ansi6\", \"ansi3\", \"ansi4\", \"ansi5\", \"ansi2\", \"ansi1\"];",
-        "replacement": "    const collapsed = narrow();\n    {\n      const sidebar = find(layout(), \"sidebar\");\n      const ids = [\"brand\", \"agents\", \"sidebar-footer\"];\n      const key = \"spider.sidebar.rail\";\n      let state = null;\n      try { state = JSON.parse(localStorage.getItem(key) ?? \"null\"); } catch {}\n      if (!state || typeof state.folded !== \"boolean\" || !Array.isArray(state.userHidden)) state = null;\n      if (sidebar && collapsed) {\n        if (!state || !state.folded) {\n          // Missing state may be a reset after a crash. Treat hidden blocks as leftovers.\n          const userHidden = state ? ids.filter(id => find(sidebar, id)?.hidden) : [];\n          state = { folded: true, userHidden };\n          localStorage.setItem(key, JSON.stringify(state));\n        }\n        for (const id of ids) { const node = find(sidebar, id); if (node && !node.hidden) run(\"layout.hide\", { id }); }\n      } else if (sidebar) {\n        // When wide, restore hidden blocks except those recorded as user-hidden before folding.\n        // Without a record, restore all three because the stock layout shows them.\n        for (const id of ids) { const node = find(sidebar, id); if (node?.hidden && !state?.userHidden.includes(id)) run(\"layout.show\", { id }); }\n        if (!state || state.folded) localStorage.setItem(key, JSON.stringify({ folded: false, userHidden: state?.userHidden ?? [] }));\n      }\n    }\n    if (collapsed) {\n      const rows = this.ordered(true);\n      const machines = [null, ...[...new Set(rows.map(r => r.w.machine).filter(Boolean))].sort()];\n      const items = [];\n      for (const machine of machines) {\n        const mine = rows.filter(r => (r.w.machine ?? null) === machine);\n        if (!mine.length) continue;\n        if (items.length) items.push(div().h(6).flex_none());\n        items.push(...mine.map(r => this.compact(r, t)));\n      }\n      const expand = div().id(\"collapse\").size(32).flex_none().flex().items_center().justify_center().rounded(8).text_size(13).text_color(t.dim)\n        .hover(s => s.bg(t.hover).text_color(t.foreground)).cursor_pointer().tooltip(\"Expand sidebar\")\n        .on_click(() => { setShared(\"sidebar.collapsed\", false); run(\"layout.resize\", { id: \"sidebar\", px: shared(\"sidebar.width\") ?? 268 }); }).child(\"»\");\n      return v_flex().size_full().min_h(0).bg(t.chrome).items_center().pt(4)\n        .child(expand)\n        .child(v_flex().flex_1().min_h(0).items_center().overflow_y_scrollbar().mode(\"always\").children(items));\n    }\n    const palette = [\"ansi6\", \"ansi3\", \"ansi4\", \"ansi5\", \"ansi2\", \"ansi1\"];"
+        "replacement": "    const collapsed = narrow();\n    {\n      const sidebar = find(layout(), \"sidebar\");\n      const ids = [\"brand\", \"agents\", \"sidebar-footer\"];\n      const key = \"spider.sidebar.rail\";\n      let state = null;\n      try { state = JSON.parse(localStorage.getItem(key) ?? \"null\"); } catch {}\n      if (!state || typeof state.folded !== \"boolean\" || !Array.isArray(state.userHidden)) state = null;\n      if (sidebar && collapsed) {\n        if (!state || !state.folded) {\n          // Missing state may be a reset after a crash. Treat hidden blocks as leftovers.\n          const userHidden = state ? ids.filter(id => find(sidebar, id)?.hidden) : [];\n          state = { folded: true, userHidden };\n          localStorage.setItem(key, JSON.stringify(state));\n        }\n        for (const id of ids) { const node = find(sidebar, id); if (node && !node.hidden) run(\"layout.hide\", { id }); }\n      } else if (sidebar) {\n        // When wide, restore hidden blocks except those recorded as user-hidden before folding.\n        // Without a record, restore all three because the stock layout shows them.\n        for (const id of ids) { const node = find(sidebar, id); if (node?.hidden && !state?.userHidden.includes(id)) run(\"layout.show\", { id }); }\n        if (!state || state.folded) localStorage.setItem(key, JSON.stringify({ folded: false, userHidden: state?.userHidden ?? [] }));\n      }\n    }\n    if (collapsed) {\n      const rows = this.ordered(true);\n      const machines = [null, ...[...new Set(rows.map(r => r.w.machine).filter(Boolean))].sort()];\n      const items = [];\n      for (const machine of machines) {\n        const mine = rows.filter(r => (r.w.machine ?? null) === machine);\n        if (!mine.length) continue;\n        if (items.length) items.push(div().h(6).flex_none());\n        items.push(...mine.map(r => this.compact(r, t)));\n      }\n      const expand = div().id(\"collapse\").size(32).flex_none().flex().items_center().justify_center().rounded(8).text_size(13).text_color(t.dim)\n        .hover(s => s.bg(t.hover).text_color(t.foreground)).cursor_pointer().tooltip(\"Expand sidebar\")\n        .on_click(() => { setShared(\"sidebar.collapsed\", false); run(\"layout.resize\", { id: \"sidebar\", px: shared(\"sidebar.width\") ?? 268 }); }).child(image(\"frame/welcome/herdr.png\").size(20).rounded(5));\n      return v_flex().size_full().min_h(0).bg(t.chrome).items_center().pl(8).pt(4)\n        .child(expand)\n        .child(v_flex().relative().w_full().flex_1().min_h(0)\n          .child(v_flex().id(\"rail-spaces\").w_full().h_full().items_center().overflow_y_scroll().children(items))\n          .child(Scrollbar.vertical(\"rail-spaces\").absolute().inset_0().mode(\"scrolling\")));\n    }\n    const palette = [\"ansi6\", \"ansi3\", \"ansi4\", \"ansi5\", \"ansi2\", \"ansi1\"];"
       },
       {
         "id": "props-import",
@@ -395,7 +405,12 @@
       {
         "id": "workspace-empty-state",
         "anchor": "      .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode(\"always\")",
-        "replacement": "      .when(sp.length === 0 && !collapsed, el => el.child(div().px(16).py(12).text_size(11.5).text_color(t.muted).child(\"No spaces yet\")))\n      .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode(\"always\")"
+        "replacement": "      .when(sp.length === 0 && !collapsed, el => el.child(div().px(16).py(12).text_size(11.5).text_color(t.muted).child(\"No spaces yet\")))\n      .child(v_flex().relative().flex_1().min_h(0).w_full()\n        .child(v_flex().id(\"spaces-list\").size_full().px(8).pb(14).overflow_y_scroll()"
+      },
+      {
+        "id": "spaces-scrollbar",
+        "anchor": ".children(this.grouped(t, collapsed)));",
+        "replacement": ".children(this.grouped(t, collapsed)))\n        .child(Scrollbar.vertical(\"spaces-list\").absolute().inset_0().mode(\"scrolling\")));"
       },
       {
         "id": "space-badge",
@@ -538,6 +553,16 @@
       }
     ],
     "workspace-chrome": [
+      {
+        "id": "footer-separator",
+        "anchor": ".border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)",
+        "replacement": ".border_t(1).border_color(\"#38383a\").px(8).pt(4).pb(8).text_size(13)"
+      },
+      {
+        "id": "footer-settings-only",
+        "anchor": ".when(Boolean(updates().app.ready), el => el.child(div().size(6).rounded_full().bg(t.accent))))\n        .child(row(\"machine\", \"plus\", \"Add machine\", true, () => run(\"mod.open\", { name: \"machine-add\" })));",
+        "replacement": ".when(Boolean(updates().app.ready), el => el.child(div().size(6).rounded_full().bg(t.accent))));"
+      },
       {
         "id": "brand-rail-width",
         "anchor": "window()?.platform === \"macos\" ? 76 : 44",

@@ -36,7 +36,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
     const fonts = ['GoogleSansFlex.ttf', 'GlassLabel-Bold.ttf'];
     for (const font of fonts) expect((await readFile(suite.ownPath(join(installed.appHome, 'fonts', font)))).length, `installed font ${font}`).toBeGreaterThan(1024);
     const checks: object[] = [];
-    expect(Object.keys(installed.mods).filter(name => name.startsWith('spider-')).sort()).toEqual(['spider-agents', 'spider-pane', 'spider-panel', 'spider-spaces', 'spider-tabs']);
+    expect(Object.keys(installed.mods).filter(name => name.startsWith('spider-')).sort()).toEqual(['spider-agents', 'spider-chrome', 'spider-pane', 'spider-panel', 'spider-spaces', 'spider-tabs']);
     const retired = await lstat(suite.ownPath(join(installed.appHome, 'mods/spider-machines'))).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     expect(retired, 'retired machines mod must remain absent').toBeNull();
     for (const [name, directory] of Object.entries(installed.mods)) if (name.startsWith('spider-')) {

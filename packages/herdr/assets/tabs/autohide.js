@@ -185,24 +185,27 @@ export function renderTabAutoHide(view, row, cx) {
     .on_hover((hovered, cx) => state.hover("strip", hovered, cx))
     .on_size_change((size, cx) => { if (state.width !== size.width) { state.width = size.width; cx.notify(); } });
   if (state.visible) state.slideIn();
-  // Popup keeps eight pixels clear at the window edge; the bar takes the same margin on the left.
-  const width = Math.max(0, state.width - 8);
+  // Move the anchor so the popup host has no transparent inset to occlude.
+  const width = Math.max(0, state.width - INSET * 2);
   const motion = { duration: SLIDE, easing: "ease-out" };
-  const bar = row.id("tabs-revealed").absolute().left(INSET).top(state.slid ? REST : START).h(42).w(Math.max(0, width - INSET)).bg(theme().popover)
+  const painted = state.slid || state.leaving;
+  const bar = row.id("tabs-revealed").relative().h(42).w(width).bg(theme().popover)
     .border_1().border_color(EDGE).rounded(10)
-    .transition("top", motion)
+    .when(!painted, el => el.invisible())
     .on_hover((hovered, cx) => state.hover("row", hovered, cx));
   // A fade carries most of the motion, which stays smooth at any frame rate.
-  let content = div().id("tabs-slide").relative().w(width).h(42 + REST).opacity(state.slid ? 1 : 0).transition("opacity", motion).child(bar);
+  let content = div().id("tabs-slide").relative().w(painted ? width : 0).h(painted ? 42 : 0).opacity(state.slid ? 1 : 0).transition("opacity", motion).child(bar);
   if (view.pressed !== null) {
     const viewport = globalThis.window.viewport_size();
     // The transparent capture covers the window from any tab's position.
     const capture = div().id("tabs-drag-capture").absolute().left(-viewport.width).top(-viewport.height).w(viewport.width * 3).h(viewport.height * 3)
       .on_mouse_up("left", (_event, cx) => { cx.stop_propagation(); view.pressed = null; state.release(); });
-    content = div().relative().w(width).h(42 + REST).child(capture).child(content);
+    content = div().relative().w(painted ? width : 0).h(painted ? 42 : 0).child(capture).child(content);
   }
-  return Popup.new("tabs-popup", strip).size_full().anchor("top_left")
+  const popup = Popup.new("tabs-popup", div().w(0).h(0)).absolute().left(INSET).top(6 + (state.slid ? REST : START)).w(0).h(0)
+    .transition("top", motion).anchor("top_left")
     .when(state.visible, el => el.content(content));
+  return div().relative().size_full().child(strip).child(popup);
 }
 
 export function closeTabAutoHide(view) {

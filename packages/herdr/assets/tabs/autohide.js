@@ -52,7 +52,11 @@ export function initTabAutoHide(view, cx) {
       });
     });
   };
-  const show = cx => { cancel(); state.visible = true; state.leaving = false; state.slideIn(); cx.notify(); };
+  const show = cx => {
+    cancel(); state.slideTimer?.cancel(); state.slideTimer = null;
+    state.visible = true; state.leaving = false; state.slideIn(); cx.notify();
+  };
+  state.show = show;
   // A transition animates only later changes, so the bar is drawn once above the clip and moved down a frame later.
   state.slideIn = () => {
     if (state.slid || state.leaving || state.slideTimer) return;
@@ -82,7 +86,7 @@ export function initTabAutoHide(view, cx) {
   };
   const activate = (action, cx) => { dismiss(cx); action(); };
   state.renameTab = (tab, cx) => {
-    cancel(); rememberFocus(); state.menu = null; state.plus = false;
+    show(cx); rememberFocus(); state.menu = null; state.plus = false;
     view.pressed = null;
     const input = InputState.new({ value: tab.name });
     state.rename = { tab, input, text: tab.name };
@@ -148,10 +152,10 @@ export function initTabAutoHide(view, cx) {
       .child(row("tabs-new-worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree...", cx => activate(() => openOverlay({ mod: "worktree", kind: "dialog", width: 460, height: 280, props: { space: space?.id, folder: panes().find(pane => pane.focused)?.cwd, action: "new" } }), cx), "", Boolean(space)))
       .child(row("tabs-open-worktree", svg("mods/workspace-chrome/branch.svg").size(14), "Open worktree...", cx => activate(() => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(pane => pane.focused)?.cwd, action: "open" } }), cx), "", Boolean(space)));
   };
-  state.context = (tab, space, cx) => { cancel(); rememberFocus(); state.rename = null; state.plus = false; state.menu = { tab, space }; state.selected = 0; state.handle.focus(); cx.notify(); };
+  state.context = (tab, space, cx) => { show(cx); rememberFocus(); state.rename = null; state.plus = false; state.menu = { tab, space }; state.selected = 0; state.handle.focus(); cx.notify(); };
   state.newMenu = cx => {
     if (state.plus) { dismiss(cx); return; }
-    cancel(); rememberFocus(); state.menu = null; state.rename = null; state.plus = true; state.failed = false; state.agents = [];
+    show(cx); rememberFocus(); state.menu = null; state.rename = null; state.plus = true; state.failed = false; state.agents = [];
     const space = spaces().find(space => space.active), request = state.request = {};
     state.handle.focus(); cx.notify();
     cx.spawn(async cx => {
@@ -165,7 +169,7 @@ export function initTabAutoHide(view, cx) {
     .when(state.rename?.tab.id === tab.id, el => el.content(renameMenu()));
   state.wrapNew = button => Popup.new("tabs-new-popup", button).anchor("top_right").when(state.plus, el => el.content(newMenu()));
   state.hover = (area, hovered, cx) => { state[area] = hovered; if (hovered) show(cx); else hide(); };
-  state.hold = () => { cancel(); cx.notify(); };
+  state.hold = () => show(cx);
   state.release = () => { hide(); cx.notify(); };
   state.hide = hide;
 }
@@ -174,7 +178,7 @@ export function renderTabAutoHide(view, row, cx) {
   const state = view.tabAuto, active = activeTab();
   if (state.active !== active) {
     state.active = active;
-    if (state.pointerTab !== active) { state.visible = true; state.flashUntil = Date.now() + 1500; state.hide(0); }
+    if (state.pointerTab !== active) { state.show(cx); state.flashUntil = Date.now() + 1500; state.hide(0); }
     state.pointerTab = null;
   }
   const strip = div().id("tabs-strip").w_full().h(6).bg(theme().chrome)

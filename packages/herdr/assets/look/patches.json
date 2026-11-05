@@ -468,11 +468,6 @@
         "replacement": "const head = h_flex().id(`machine-${m ?? \"local\"}`).relative().h(26).flex_none().pl(17 + level * 26).pr(8).gap(9)"
       },
       {
-        "id": "thread-machine-no-add",
-        "anchor": "          .when(connected, el => el.child(div().id(`machine-add-${m ?? \"local\"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))\n            .on_click((_e, cx) => { cx.stop_propagation(); run(\"space.new\", { machine: m ?? \"\" }); }).child(\"+\")))\n          .child(div().size(6)",
-        "replacement": "          .child(div().size(6)"
-      },
-      {
         "id": "thread-new-space-row",
         "anchor": "const empty = h_flex().id(`machine-new-${m ?? \"local\"}`).h(28).flex_none().px(8).gap(7)",
         "replacement": "const empty = h_flex().id(`machine-new-${m ?? \"local\"}`).relative().h(28).flex_none().pl(18 + (level + 1) * 26).pr(8).gap(10)\n        .children(threadKeylines(div, [...(groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : []), \"└\"], 28, { first: 6 }))"

@@ -157,11 +157,10 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     return { view, colors, stored };
   }
 
-  it('keeps machine headings free of add buttons', async () => {
+  it('keeps a + on machine headings that adds a space on that machine', async () => {
     const { view, colors } = await spacesView([{ id: 's1', name: 'bundler', tabs: [] }], inventory.slice(0, 1), [{ name: 'alpha.invalid', layout: 'ready' }]);
     const nodes = view.grouped(colors, false).flatMap(all) as Node[];
-    expect(nodes.some(node => node.id?.startsWith('machine-add-'))).toBe(false);
-    expect(nodes.flatMap(node => node.children).filter(child => child === '+')).toEqual([]);
+    expect(nodes.find(node => node.id === 'machine-add-local')?.children).toContain('+');
     expect(nodes.find(node => node.id === 'machine-local')).toBeDefined();
   });
 
@@ -182,13 +181,14 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       expect(nodes.some(node => call(node, 'tooltip')?.[0] === tooltip)).toBe(true);
       expect(nodes.indexOf(caret)).toBeLessThan(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/monitor.svg'));
       const add = nodes.find(node => node.id === 'machine-add-local')!;
-      expect(add).toBeUndefined();
+      expect(add).toBeDefined();
+      add.click!({}, cx);
       expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
       expect(view.folded.has(null)).toBe(folded);
       heading(view).click!({}, cx);
     }
-    expect(commands).toEqual([]);
-    expect(stopped).toBe(0);
+    expect(commands).toEqual([['space.new', { machine: '' }], ['space.new', { machine: '' }]]);
+    expect(stopped).toBe(2);
     expect(JSON.parse(stored.get('machines.folded')!)).toEqual([]);
     heading(view).click!({}, cx);
     const restored = await spacesView(sp, remote, layouts, stored);
@@ -240,7 +240,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(JSON.parse(stored.get('machines.folded')!)).toEqual(['alpha.invalid']);
   });
 
-  it('machine space count pills toggle rows and retain their status without add controls', async () => {
+  it('machine space count pills toggle rows and keep their status and add controls', async () => {
     const sp = [{ id: 's1', name: 'space-00', tabs: [] }, { id: 's2', name: 'space-06', machine: 'alpha.invalid', tabs: [] }];
     const { view, colors } = await spacesView(sp, [{ name: 'alpha.invalid', state: 'connected' }], [{ name: 'alpha.invalid', layout: 'ready' }]);
     const render = () => view.grouped(colors, false).flatMap(all) as Node[];
@@ -254,7 +254,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(pill!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/layers.svg')).toBe(true);
     expect(call(pill!, 'rounded')).toEqual([999]);
     expect(nodes.find(node => node.id === 'machine-count-alpha.invalid')?.children).toContain('1');
-    expect(nodes.find(node => node.id === 'machine-add-local')).toBeUndefined();
+    expect(nodes.find(node => node.id === 'machine-add-local')).toBeDefined();
     expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
     expect(nodes.find(node => node.id === 'space-s1')).toBeUndefined();
     nodes.find(node => node.id === 'machine-count-local')!.click!({}, cx); nodes = render();
@@ -371,7 +371,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(nodes.find(node => node.id === 'machine-beta.invalid')).toBeDefined();
     nodes.find(node => node.id === 'machine-beta.invalid')!.click!({}, { stop_propagation() {}, notify() {} }); nodes = render(view);
     expect(nodes.find(node => node.id === 'machine-count-beta.invalid')?.children).toContain('0');
-    expect(nodes.find(node => node.id === 'machine-add-beta.invalid')).toBeUndefined();
+    expect(nodes.find(node => node.id === 'machine-add-beta.invalid')).toBeDefined();
     const restored = await spacesView(sp, remote, layouts, stored);
     expect(render(restored.view).find(node => node.id === 'machine-beta.invalid')).toBeDefined();
     render(restored.view).find(node => node.id === 'machine-empty-group-count')!.click!({}, { stop_propagation() {}, notify() {} });

@@ -103,7 +103,7 @@ it('renews the heartbeat after rename while a snapshot is stalled', async () => 
   }
 }, 30000);
 
-it('uses the renamed session for viewers opened by run events', async () => {
+it('uses the renamed session for viewers opened from the sidebar', async () => {
   const f = await mountedFixture('fake', 'rpc', false, false, true, true);
   try {
     Reflect.set(f.pi, 'getSessionName', () => 'Sample Session');
@@ -111,6 +111,7 @@ it('uses the renamed session for viewers opened by run events', async () => {
     const run = f.store.create({ sessionId: f.owner!.sessionId, agent: 'worker', name: 'Sample Run' });
     f.store.start(run.id);
     bus.emit({ sessionId: f.owner!.sessionId, runId: run.id, ts: Date.now(), type: 'status' });
+    expect(await f.ipc!.openRun(run.id as never)).toMatchObject({ ok: true, op: 'openRun' });
     let viewer: { labels: Record<string, string> } | undefined;
     await vi.waitFor(async () => {
       const listed = await f.h.cli(['ls', '--all', '--json']) as { terminals: { address: string }[] };

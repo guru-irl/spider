@@ -83,6 +83,48 @@ describe('space identity assignment', () => {
   });
 });
 
+describe('thread geometry', () => {
+  const draw = (lines: string[], height = 26, options = {}) => look.threadKeylines(ui.div, lines, height, options).flatMap(all);
+  const number = (node: Node, name: string) => call(node, name)?.[0] as number;
+  const elbow = (nodes: Node[]) => nodes.find(node => call(node, 'border_b'))!;
+
+  it('extends a rounded elbow to the icon when there is no caret', () => {
+    const nodes = draw(['└']), join = elbow(nodes);
+    expect(number(join, 'left') + number(join, 'w')).toBe(43);
+    expect(number(join, 'top') + number(join, 'h') - 0.5).toBe(13);
+    expect(number(join, 'rounded_bl')).toBe(6);
+    expect(number(join, 'border_l')).toBe(1);
+    expect(number(join, 'border_b')).toBe(1);
+    expect(nodes.some(node => call(node, 'bottom'))).toBe(false);
+  });
+
+  it('ends a caret connector at the same fixed slot at every depth', () => {
+    for (const [lines, end] of [[['└'], 30], [['│', '└'], 56], [['│', '', '└'], 82]] as const) {
+      const join = elbow(draw([...lines], 30, { first: 20 }));
+      expect(number(join, 'left') + number(join, 'w')).toBe(end);
+      expect(number(join, 'top') + number(join, 'h') - 0.5).toBe(15);
+    }
+  });
+
+  it('continues earlier siblings past a nested subtree without extending the final stem', () => {
+    const nodes = draw(['│', '└']);
+    const stems = nodes.filter(node => call(node, 'bottom'));
+    expect(stems.map(node => number(node, 'left') + 0.5)).toEqual([24]);
+    expect(number(elbow(nodes), 'left') + 0.5).toBe(50);
+    expect(number(elbow(nodes), 'left') + number(elbow(nodes), 'w')).toBe(69);
+    expect(number(elbow(nodes), 'h')).toBe(13.5);
+  });
+
+  it('joins a folded row at its toggle edge and starts below a parent icon', () => {
+    const join = elbow(draw(['└'], 24, { first: 5 }));
+    expect(number(join, 'left') + number(join, 'w')).toBe(45);
+    expect(number(join, 'h') - 0.5).toBe(12);
+    const stem = draw(['│'], 30, { start: 22 }).find(node => call(node, 'border_l'))!;
+    expect(number(stem, 'top')).toBe(22);
+    expect(number(stem, 'bottom')).toBe(0);
+  });
+});
+
 describe('machine consoles in the agent tree', () => {
   it('keeps consoles under their owner without adding duplicate top-level agents', () => {
     const console = { address: 'alpha.invalid/t2', parent: 't1', state: 'live' as const, status: 'working', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } };
@@ -115,6 +157,14 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     return { view, colors, stored };
   }
 
+  it('keeps machine headings free of add buttons', async () => {
+    const { view, colors } = await spacesView([{ id: 's1', name: 'bundler', tabs: [] }], inventory.slice(0, 1), [{ name: 'alpha.invalid', layout: 'ready' }]);
+    const nodes = view.grouped(colors, false).flatMap(all) as Node[];
+    expect(nodes.some(node => node.id?.startsWith('machine-add-'))).toBe(false);
+    expect(nodes.flatMap(node => node.children).filter(child => child === '+')).toEqual([]);
+    expect(nodes.find(node => node.id === 'machine-local')).toBeDefined();
+  });
+
   it('machine headings put a stateful fold caret before the icon', async () => {
     const sp = [{ id: 's1', name: 'one', tabs: [] }, { id: 's2', name: 'two', machine: 'alpha.invalid', tabs: [] }];
     const remote = [{ name: 'alpha.invalid', state: 'connected' }];
@@ -132,28 +182,28 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       expect(nodes.some(node => call(node, 'tooltip')?.[0] === tooltip)).toBe(true);
       expect(nodes.indexOf(caret)).toBeLessThan(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/monitor.svg'));
       const add = nodes.find(node => node.id === 'machine-add-local')!;
-      expect(add).toBeDefined();
-      add.click!({}, cx);
+      expect(add).toBeUndefined();
       expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
       expect(view.folded.has(null)).toBe(folded);
       heading(view).click!({}, cx);
     }
-    expect(commands).toEqual([['space.new', { machine: '' }], ['space.new', { machine: '' }]]);
-    expect(stopped).toBe(2);
+    expect(commands).toEqual([]);
+    expect(stopped).toBe(0);
     expect(JSON.parse(stored.get('machines.folded')!)).toEqual([]);
     heading(view).click!({}, cx);
     const restored = await spacesView(sp, remote, layouts, stored);
     expect(heading(restored.view).children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
   });
 
-  it('local-only spaces keep their original ungrouped alignment', async () => {
+  it('local-only spaces use the root icon column without a parent connector', async () => {
     const sp = [{ id: 's1', name: 'one', tabs: [] }, { id: 's2', name: 'two', tabs: [] }, { id: 's3', name: 'three', tabs: [] }];
     const { view, colors } = await spacesView(sp, [], []);
     const nodes = view.grouped(colors, false).flatMap(all) as Node[];
     for (const id of ['s1', 's2', 's3']) {
       const row = nodes.find(node => node.id === `space-${id}`)!;
       expect(row).toBeDefined();
-      expect(call(row, 'pl')).toBeUndefined();
+      expect(call(row, 'pl')).toEqual([40]);
+      expect(row.children.flatMap(all).find(node => node.svg?.includes('/space-'))?.calls).toContainEqual(['left', [17]]);
       expect(row.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
     }
   });
@@ -190,7 +240,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(JSON.parse(stored.get('machines.folded')!)).toEqual(['alpha.invalid']);
   });
 
-  it('machine space count pills toggle rows and retain their status and add controls', async () => {
+  it('machine space count pills toggle rows and retain their status without add controls', async () => {
     const sp = [{ id: 's1', name: 'space-00', tabs: [] }, { id: 's2', name: 'space-06', machine: 'alpha.invalid', tabs: [] }];
     const { view, colors } = await spacesView(sp, [{ name: 'alpha.invalid', state: 'connected' }], [{ name: 'alpha.invalid', layout: 'ready' }]);
     const render = () => view.grouped(colors, false).flatMap(all) as Node[];
@@ -204,7 +254,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(pill!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/layers.svg')).toBe(true);
     expect(call(pill!, 'rounded')).toEqual([999]);
     expect(nodes.find(node => node.id === 'machine-count-alpha.invalid')?.children).toContain('1');
-    expect(nodes.find(node => node.id === 'machine-add-local')).toBeDefined();
+    expect(nodes.find(node => node.id === 'machine-add-local')).toBeUndefined();
     expect(nodes.some(node => call(node, 'size')?.[0] === 6 && call(node, 'bg')?.[0] === colors.ansi2)).toBe(true);
     expect(nodes.find(node => node.id === 'space-s1')).toBeUndefined();
     nodes.find(node => node.id === 'machine-count-local')!.click!({}, cx); nodes = render();
@@ -212,7 +262,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(view.folded.has(null)).toBe(false);
   });
 
-  it('open machine threads connect the caret to each space and end at the last row', async () => {
+  it('open machine threads connect the icon column to each space and end at the last row', async () => {
     const sp = [{ id: 's1', name: 'one', folder: '/project/main', tabs: [] }, { id: 's2', name: 'two', folder: '/project/linked', tabs: [] }, { id: 's3', name: 'three', machine: 'alpha.invalid', tabs: [] }];
     const commands: unknown[][] = [];
     const { view, colors } = await spacesView(sp, [{ name: 'alpha.invalid', state: 'connected' }], [{ name: 'alpha.invalid', layout: 'ready' }], new Map(), (...args) => commands.push(args));
@@ -223,7 +273,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const nodes = () => view.grouped(colors, false).flatMap(all) as Node[];
     const subtree = (id: string) => nodes().find(node => node.id === id)!.children.flatMap(all);
     const lines = (id: string) => subtree(id).filter(node => call(node, 'border_l'));
-    expect(lines('machine-fold-local').length).toBeGreaterThan(0);
+    expect(lines('machine-local').length).toBeGreaterThan(0);
     expect(lines('space-s1').some(node => call(node, 'bottom')?.[0] === 0)).toBe(true);
     expect(lines('space-s1').some(node => call(node, 'border_b'))).toBe(true);
     expect(lines('space-s2').some(node => call(node, 'border_b'))).toBe(true);
@@ -239,8 +289,42 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     (call(row, 'on_mouse_up')![1] as Function)({}, { notify() {} });
     expect(commands).toEqual([['space.select', { id: 's1' }]]);
     nodes().find(node => node.id === 'machine-local')!.click!({}, { stop_propagation() {}, notify() {} });
-    expect(lines('machine-fold-local').length).toBe(0);
+    expect(lines('machine-local').length).toBe(0);
     expect(nodes().find(node => node.id === 'space-s1')).toBeUndefined();
+  });
+
+  it('threads expanded empty machine groups with the same icon and caret steps', async () => {
+    const remote = inventory.slice(0, 2);
+    const { view, colors } = await spacesView([{ id: 's1', name: 'bundler', tabs: [] }], remote, remote.map(machine => ({ name: machine.name, layout: 'ready' })));
+    view.folded.add('\u0000spider-empty-machines-open');
+    const nodes = view.grouped(colors, false).flatMap(all) as Node[];
+    const row = (id: string) => nodes.find(node => node.id === id)!;
+    const parts = (id: string) => row(id).children.flatMap(all);
+    expect(call(row('machine-empty-group'), 'pl')).toEqual([17]);
+    expect(call(row('machine-alpha.invalid'), 'pl')).toEqual([43]);
+    expect(call(row('machine-beta.invalid'), 'pl')).toEqual([43]);
+    expect(call(row('machine-fold-alpha.invalid'), 'left')).toEqual([30]);
+    expect(call(row('machine-new-alpha.invalid'), 'pl')).toEqual([70]);
+    expect(call(row('machine-new-alpha.invalid'), 'h')).toEqual([28]);
+    const join = parts('machine-alpha.invalid').find(node => call(node, 'border_b'))!;
+    expect((call(join, 'left')![0] as number) + (call(join, 'w')![0] as number)).toBe(30);
+    const emptyJoin = parts('machine-new-alpha.invalid').find(node => call(node, 'border_b'))!;
+    expect((call(emptyJoin, 'left')![0] as number) + (call(emptyJoin, 'w')![0] as number)).toBe(70);
+    expect(parts('machine-new-alpha.invalid').some(node => call(node, 'left')?.[0] === 23.5 && call(node, 'bottom')?.[0] === 0)).toBe(true);
+    expect(parts('machine-new-beta.invalid').some(node => call(node, 'left')?.[0] === 23.5 && call(node, 'bottom')?.[0] === 0)).toBe(false);
+  });
+
+  it('connects a loading child to its text without changing its row height', async () => {
+    const { view, colors } = await spacesView([{ id: 's1', name: 'bundler', tabs: [] }], inventory.slice(0, 1), [{ name: 'alpha.invalid', layout: 'loading' }]);
+    const nodes = view.grouped(colors, false).flatMap(all) as Node[];
+    const loading = nodes.find(node => node.id === 'machine-loading-alpha.invalid')!;
+    expect(call(loading, 'pl')).toEqual([66]);
+    expect(call(loading, 'h')).toEqual([28]);
+    expect(call(loading, 'items_center')).toEqual([]);
+    expect(loading.children).toContain('Loading…');
+    const join = loading.children.flatMap(all).find(node => call(node, 'border_b'))!;
+    expect((call(join, 'left')![0] as number) + (call(join, 'w')![0] as number)).toBe(66);
+    expect(loading.children.flatMap(all).some(node => call(node, 'bottom'))).toBe(false);
   });
 
   it('empty machine group has a left caret for its own persisted fold', async () => {
@@ -287,7 +371,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(nodes.find(node => node.id === 'machine-beta.invalid')).toBeDefined();
     nodes.find(node => node.id === 'machine-beta.invalid')!.click!({}, { stop_propagation() {}, notify() {} }); nodes = render(view);
     expect(nodes.find(node => node.id === 'machine-count-beta.invalid')?.children).toContain('0');
-    expect(nodes.find(node => node.id === 'machine-add-beta.invalid')).toBeDefined();
+    expect(nodes.find(node => node.id === 'machine-add-beta.invalid')).toBeUndefined();
     const restored = await spacesView(sp, remote, layouts, stored);
     expect(render(restored.view).find(node => node.id === 'machine-beta.invalid')).toBeDefined();
     render(restored.view).find(node => node.id === 'machine-empty-group-count')!.click!({}, { stop_propagation() {}, notify() {} });
@@ -324,6 +408,73 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     return { spaces, mains, terminals };
   };
 
+  it('uses equal icon steps and identical caret slots across both sections and all child kinds', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    terminals.push({ address: 'nested', parent: 't3', state: 'live', status: 'idle', labels: {} });
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    view.expandedConsoles = new Set(['console:alpha.invalid/c1']);
+    const nodes = all(view.render({}));
+    const at = (id: string) => nodes.find(node => node.id === id)!;
+    const left = (id: string) => call(at(id), 'left')?.[0];
+    expect(left('agent-pin-t1')).toBe(43);
+    expect(left('thread-icon-run-one')).toBe(69);
+    expect(left('thread-icon-nested')).toBe(95);
+    expect(left('thread-icon-console:alpha.invalid/c1')).toBe(69);
+    expect(left('thread-icon-job-one')).toBe(95);
+    expect(left('fold-slot-t1')).toBe(30);
+    expect(left('child-fold-run-one')).toBe(56);
+    expect(left('console-fold-console:alpha.invalid/c1')).toBe(56);
+    expect(call(at('ag-t1'), 'h')).toEqual([30]);
+    expect(call(at('sub-job-one'), 'h')).toEqual([26]);
+    for (const [rowId, firstId] of [
+      ['ag-t1', 'fold-slot-t1'], ['ag-t2', 'agent-pin-t2'],
+      ['sub-run-one', 'child-fold-run-one'], ['sub-t4', 'thread-icon-t4'],
+      ['sub-console:alpha.invalid/c1', 'console-fold-console:alpha.invalid/c1'], ['sub-job-one', 'thread-icon-job-one'],
+    ]) {
+      const join = at(rowId).children.flatMap(all).find(node => call(node, 'border_b'))!;
+      expect((call(join, 'left')![0] as number) + (call(join, 'w')![0] as number)).toBe(left(firstId));
+    }
+    const rootIcon = nodes.find(node => node.svg?.includes('/space-') && call(node, 'left'))!;
+    expect(call(rootIcon, 'left')).toEqual([17]);
+    const { view: spaceView, colors } = await spacesView([...spaces, { id: 's2', name: 'remote', tabs: [], machine: 'alpha.invalid' }], inventory.slice(0, 1), [{ name: 'alpha.invalid', layout: 'ready' }]);
+    const spaceNodes = spaceView.grouped(colors, false).flatMap(all) as Node[];
+    const machine = spaceNodes.find(node => node.id === 'machine-local')!;
+    const space = spaceNodes.find(node => node.id === 'space-s1')!;
+    expect(call(machine, 'pl')).toEqual([17]);
+    expect(call(space, 'pl')).toEqual([66]);
+    expect(space.children.flatMap(all).find(node => node.svg?.includes('/space-'))?.calls).toContainEqual(['left', [43]]);
+    expect(spaceNodes.find(node => node.id === 'machine-fold-local')?.calls).toContainEqual(['left', [4]]);
+  });
+
+  it('folds a subagent subtree without moving its icon or its next sibling', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    terminals.push({ address: 'nested', parent: 't3', state: 'live', status: 'idle', labels: {} });
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const nodes = () => all(view.render({}));
+    const caret = nodes().find(node => node.id === 'child-fold-run-one');
+    expect(caret).toBeDefined();
+    expect(nodes().some(node => node.id === 'sub-nested')).toBe(true);
+    caret!.click!({}, { stop_propagation() {}, notify() {} });
+    expect(nodes().some(node => node.id === 'sub-nested')).toBe(false);
+    expect(nodes().find(node => node.id === 'thread-icon-run-one')?.calls).toContainEqual(['left', [69]]);
+    expect(nodes().find(node => node.id === 'thread-icon-t4')?.calls).toContainEqual(['left', [69]]);
+    nodes().find(node => node.id === 'child-fold-run-one')!.click!({}, { stop_propagation() {}, notify() {} });
+    expect(nodes().some(node => node.id === 'sub-nested')).toBe(true);
+  });
+
+  it('connects the final live child through a finished toggle before ending the parent line', async () => {
+    const { spaces, mains, terminals } = groupedFixtures();
+    terminals.push({ address: 'done', parent: 't1', state: 'finished', status: 'done', finishedAt: Date.now() - 1000, labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'done' } } as any);
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    const nodes = all(view.render({}));
+    const subtree = (id: string) => nodes.find(node => node.id === id)!.children.flatMap(all);
+    expect(subtree('sub-console:alpha.invalid/c1').some(node => call(node, 'left')?.[0] === 49.5 && call(node, 'bottom')?.[0] === 0)).toBe(true);
+    const joins = subtree('finished-toggle-t1').filter(node => call(node, 'border_b'));
+    expect(joins).toHaveLength(1);
+    expect((call(joins[0], 'left')![0] as number) + (call(joins[0], 'w')![0] as number)).toBe(71);
+    expect(subtree('finished-toggle-t1').some(node => call(node, 'left')?.[0] === 49.5 && call(node, 'bottom'))).toBe(false);
+  });
+
   it('group headings put the fold caret on the left and omit open counts', async () => {
     const { spaces, mains, terminals } = groupedFixtures();
     const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
@@ -342,16 +493,16 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(view.folded.has('sp-s1')).toBe(false);
   });
 
-  it('open heading connects its caret to the first agent thread', async () => {
+  it('open heading connects its icon column to the first agent thread', async () => {
     const { spaces, mains, terminals } = groupedFixtures();
     const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
     const heading = all(view.render({})).find(node => node.id === 'sp-s1')!;
-    const caret = heading.children.flatMap(all).find(node => node.id === 'group-fold-sp-s1')!;
-    const connector = caret.children.flatMap(all).find(node => call(node, 'top')?.[0] === 11)!;
+    const connector = heading.children.flatMap(all).find(node => call(node, 'top')?.[0] === 26)!;
     expect(connector).toBeDefined();
-    expect(connector.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(true);
+    expect(call(connector, 'border_l')).toEqual([1]);
+    expect(call(connector, 'left')).toEqual([23.5]);
     view.folded.add('sp-s1');
-    const folded = all(view.render({})).find(node => node.id === 'group-fold-sp-s1')!;
+    const folded = all(view.render({})).find(node => node.id === 'sp-s1')!;
     expect(folded.children.flatMap(all).some(node => call(node, 'border_l'))).toBe(false);
   });
 
@@ -361,14 +512,15 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const nodes = all(view.render({}));
     const lines = (id: string) => {
       const row = nodes.find(node => node.id === id)!;
-      return [row, ...row.children.flatMap(all)].filter(node => call(node, 'border_l') && call(node, 'left')?.[0] === 7);
+      return [row, ...row.children.flatMap(all)].filter(node => call(node, 'border_l') && call(node, 'left')?.[0] === 23.5);
     };
     expect(lines('ag-t1').some(node => call(node, 'bottom')?.[0] === 0)).toBe(true);
     expect(lines('ag-t1').some(node => call(node, 'border_b'))).toBe(true);
     expect(lines('ag-t2').some(node => call(node, 'border_b'))).toBe(true);
     expect(lines('ag-t2').some(node => call(node, 'bottom')?.[0] === 0)).toBe(false);
     expect(lines('sub-run-one').some(node => call(node, 'bottom')?.[0] === 0)).toBe(true);
-    expect(lines('sub-run-one').some(node => call(node, 'border_b'))).toBe(true);
+    expect(lines('sub-run-one').some(node => call(node, 'border_b'))).toBe(false);
+    expect(nodes.find(node => node.id === 'sub-run-one')!.children.flatMap(all).some(node => call(node, 'border_b') && call(node, 'left')?.[0] === 49.5)).toBe(true);
   });
 
   it('group thread continues through a finished-child toggle', async () => {
@@ -545,12 +697,12 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const nodes = all(view.render({}));
     const mark = nodes.find(node => node.svg === 'mods/spider-tabs/spider.svg');
     expect(mark).toBeDefined();
-    expect(call(mark!, 'size')).toEqual([13]);
+    expect(call(mark!, 'size')).toEqual([11]);
     const slot = nodes.find(node => node.children.some(child => data.get(child as object) === mark));
-    expect(call(slot!, 'size')).toEqual([16]);
+    expect(call(slot!, 'size')).toEqual([14]);
     expect(call(mark!, 'text_color')).toEqual([palette.muted]);
     expect(nodes.some(node => node.svg === 'pi.svg')).toBe(false);
-    const other = nodes.find(node => node.svg === 'node.svg' && call(node, 'size')?.[0] === 16);
+    const other = nodes.find(node => node.svg === 'node.svg' && call(node, 'size')?.[0] === 14);
     expect(other).toBeDefined();
     expect(call(other!, 'text_color')).toEqual([palette.foreground]);
   });

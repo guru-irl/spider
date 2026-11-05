@@ -246,7 +246,7 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
     const Agents = loadView(patched.agents.files['main.js'], { View: class {}, div: ui, h_flex: ui, v_flex: ui, svg: ui, image: ui,
       props: () => ({ labelContract: contract }), terminals: () => all, run: (name: string, args: unknown) => calls.push([name, args]),
       exec: () => { throw new Error('Native children must not invoke IPC'); } });
-    const view = new Agents(); view.listed = new Map();
+    const view = new Agents(); view.folded = new Set(); view.listed = new Map();
     const child = elements(view.subRow({}, view.tree(all, 't1')[0], null, false)).find(el => el.id === 'sub-t5')!;
     const cx = { notify: () => {}, spawn: (fn: (cx: unknown) => Promise<unknown>) => { tasks.push(fn(cx)); } };
     (child.click as Function)(null, cx); await Promise.all(tasks);
@@ -483,7 +483,7 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
     const opened: string[] = [];
     const Agents = loadView(patched.agents.files['main.js'], { View: class {}, div: ui, h_flex: ui, v_flex: ui, svg: ui, image: ui,
       props: () => p, shared: () => null, setShared: () => {}, terminals: () => [job, console], run: (name: string) => opened.push(name) });
-    const view = new Agents(); view.spiderFeeds = [feed([])]; view.listed = new Map(); view.expandedConsoles = new Set();
+    const view = new Agents(); view.folded = new Set(); view.spiderFeeds = [feed([])]; view.listed = new Map(); view.expandedConsoles = new Set();
     const rows = view.tree([job, console], 't1');
     expect(rows.map((r: any) => r.t.key)).toEqual(['console:remote.invalid/t3']);
     const rendered = elements(view.subRow({}, rows[0], null, false));

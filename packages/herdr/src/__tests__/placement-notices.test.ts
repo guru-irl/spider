@@ -11,9 +11,9 @@ test('a pane cleanup failure has a plain stderr notice', async () => {
     events: () => ({ subscribe: (handler: (event: unknown) => void) => { receive = handler; return () => {}; }, dispose: async () => {} }),
     get: async () => ({ labels: {} }),
   };
-  const app = { ownerPlacement: async () => { if (failing) throw new Error('private descriptor failure'); return placement; } };
+  const app = { tabTerminals: async () => [], ownerPlacement: async () => { if (failing) throw new Error('private descriptor failure'); return placement; } };
   const owner = { sessionId: 'session', generation: 'first', terminal: { coreId: 'core', address: 'owner' } };
-  const panes = createAuxiliaryPanes({ hc: hc as never, app: app as never, subagentViewer: async () => 'viewer' as never,
+  const panes = createAuxiliaryPanes({ automaticSubagentPanes: true, hc: hc as never, app: app as never, subagentViewer: async () => 'viewer' as never,
     discardSubagentViewer: async () => {}, clock: Date.now });
   try {
     expect(await panes.acquire('subagent', 'run' as never, owner as never, { automatic: true, timeoutMs: 1000 })).not.toBeNull();

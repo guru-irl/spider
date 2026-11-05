@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, it } from 'vitest';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
-import type { AppClient, HcClient, JobId, Owner, OwnerPlacement, RunId, TerminalAddress } from '../contracts.js';
+import type { AppClient, HcClient, HcEvent, JobId, Owner, OwnerPlacement, RunId, TerminalAddress } from '../contracts.js';
 
 it('counts moved and hidden viewers in their actual tabs without moving them back', async () => {
   const owner = { sessionId: 'owner', generation: 'gen', terminal: { coreId: 'core', terminalId: 'parent', address: 'parent', socket: '/fixture/core.sock', sessionNamespace: 'fixture' }, cwd: '/fixture', sessionFile: null, name: null } as Owner;
@@ -28,12 +28,14 @@ it('counts moved and hidden viewers in their actual tabs without moving them bac
     },
   };
   app.tabSpace = async tab => [...places.values()].find(p => p.tab === tab)?.space ?? null;
+  let emit: ((event: HcEvent) => void) | undefined;
   const hc = {
-    get: async (address: TerminalAddress) => ({ address, labels: address === 'observer-job' ? { 'spider.kind': 'remote-observer', 'spider.job': 'job', 'spider.session': 'owner', 'spider.owner-core': 'core', 'spider.owner-terminal': 'parent' } : {}, state: 'live', parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }),
+    get: async (address: TerminalAddress) => ({ address, labels: address === 'observer-job' ? { 'spider.kind': 'remote-observer', 'spider.job': 'job', 'spider.session': 'owner', 'spider.owner-core': 'core', 'spider.owner-terminal': 'parent' } : address.startsWith('viewer-') ? { 'spider.kind': 'subagent-viewer', 'spider.run': address.slice('viewer-'.length), 'spider.session': 'owner', 'spider.owner-core': 'core', 'spider.owner-terminal': 'parent' } : {}, state: 'live', parent: address.startsWith('viewer-') ? owner.terminal.address : null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }),
+    kill: async () => {}, rm: async () => {},
     setLabels: async (address: string, labels: Record<string, string>) => {
       places.set(address, { space: labels['herdr.space'], tab: labels['herdr.tab'], pane: `pane-${address}` } as OwnerPlacement);
     },
-    events: () => ({ ready: Promise.resolve(), subscribe: () => () => {}, lookup: async () => null, dispose: async () => {} }),
+    events: () => ({ ready: Promise.resolve(), subscribe: (listener: (event: HcEvent) => void) => { emit = listener; return () => {}; }, lookup: async () => null, dispose: async () => {} }),
   } as unknown as HcClient;
   const panes = createAuxiliaryPanes({ hc, app, limit: 1, automaticSubagentPanes: true, clock: Date.now, subagentViewer: async id => `viewer-${id}` as TerminalAddress, remoteObserver: async id => `observer-${id}` as TerminalAddress, discardSubagentViewer: async () => {} });
   try {
@@ -64,6 +66,7 @@ it('counts moved and hidden viewers in their actual tabs without moving them bac
     expect(places.get('observer-job')?.tab).toBe('target');
     await expect((panes as any).moveJob('job' as JobId, owner, 'foreign' as TerminalAddress, { kind: 'tab', tab: 'source' }, { timeoutMs: 2000 })).rejects.toMatchObject({ code: 'pane-not-owned' });
     places.set('viewer-c', { space: 's1', tab: 'source', pane: 'pane-viewer-c' } as OwnerPlacement);
+    emit?.({ type: 'created', seq: 1, terminal: 'viewer-c' as TerminalAddress, data: await hc.get('viewer-c' as TerminalAddress) });
     await panes.moveRun('c' as RunId, owner, { kind: 'hide' }, { timeoutMs: 2000 });
     expect(places.has('viewer-c')).toBe(false);
   } finally { await panes.dispose(); }

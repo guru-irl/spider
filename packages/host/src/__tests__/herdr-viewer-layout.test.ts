@@ -203,13 +203,19 @@ it.each([false, true])('mounted automatic viewers follow automaticSubagentPanes=
   const f = await fixture('fake', true, automaticSubagentPanes);
   try {
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 10000 });
-    if (!viewer) throw new Error('Automatic run did not launch its viewer');
+    const owner = await f.app.ownerPlacement(f.h.owner!.terminal.address);
+    if (automaticSubagentPanes) {
+      if (!viewer) throw new Error('Automatic run did not launch its viewer');
+      expect(await f.app.ownerPlacement(viewer)).toMatchObject({ space: owner.space, tab: owner.tab });
+    } else {
+      expect(viewer).toBeUndefined();
+      expect((await f.h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=subagent-viewer'))).toEqual([]);
+    }
+    const reply = await f.ipc.openRun(f.activeRun!);
+    expect(reply).toMatchObject({ ok: true, op: 'openRun', viewer });
+    if (!reply.ok || reply.op !== 'openRun' || !viewer) throw new Error('Viewer not opened');
     const terminal = await f.h.hc.get(viewer);
     expect(terminal).toMatchObject({ state: 'live', parent: f.h.owner!.terminal.address, labels: { 'spider.kind': 'subagent-viewer', 'spider.run': f.activeRun } });
-    const owner = await f.app.ownerPlacement(f.h.owner!.terminal.address);
-    if (automaticSubagentPanes) expect(await f.app.ownerPlacement(viewer)).toMatchObject({ space: owner.space, tab: owner.tab });
-    else { await expect(f.app.ownerPlacement(viewer)).rejects.toMatchObject({ code: 'owner-unplaced' }); expect(terminal.labels['herdr.tab']).toBeUndefined(); }
-    expect(await f.ipc.openRun(f.activeRun!)).toMatchObject({ ok: true, op: 'openRun', viewer });
     const opened = await f.app.ownerPlacement(viewer);
     expect(opened.space).toBe(owner.space);
     if (automaticSubagentPanes) expect(opened.tab).toBe(owner.tab);

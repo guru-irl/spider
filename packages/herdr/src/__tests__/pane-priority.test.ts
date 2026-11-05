@@ -47,14 +47,15 @@ async function priorityScenario(mode: 'fake' | 'hc') {
     expect(placements.size).toBe(3);
     // A job reservation neither consumes capacity nor evicts a viewer.
     const slot = await panes.reserveRemote('job' as JobId, owner, { timeoutMs: 1 });
-    expect(placements.size).toBe(3); expect(parked).toHaveLength(1);
+    expect(placements.size).toBe(3); expect(parked).toHaveLength(0);
     const observer = await launch(HERDR_KINDS.remoteObserver, 'job');
     await panes.display(slot, observer, { timeoutMs: 10000 });
-    expect(parked[1]).toBe(first!.viewer);
+    expect(parked[0]).toBe(first!.viewer);
+    await expect(hc.get(first!.viewer)).rejects.toMatchObject({ code: 'not_found' });
     const consoleSlot = await panes.reserveRemote('console:remote.invalid/console' as JobId, owner, { timeoutMs: 1 });
     const consoleViewer = await launch(HERDR_KINDS.remoteConsole, 'console:remote.invalid/console');
     await panes.display(consoleSlot, consoleViewer, { timeoutMs: 10000 });
-    expect(parked[2]).toBe(observer);
+    expect(parked[1]).toBe(observer);
     const fourth = await panes.acquire('subagent', 'fourth' as RunId, owner, { timeoutMs: 10000 });
     expect(parked).not.toContain(consoleViewer);
     expect(commands.filter(command => command.name === 'terminal.keep')).toEqual([{ name: 'terminal.keep', args: { terminal: fourth!.viewer, place: 'tab' } }]);

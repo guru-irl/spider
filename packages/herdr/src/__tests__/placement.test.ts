@@ -168,12 +168,13 @@ describe('auxiliary panes and observers', () => {
     expect(h.placements.get(h.owner.terminal.address)).toEqual(h.ownerPlacement);
   });
 
-  it('concurrent automatic viewers fill both free slots and park only the excess viewer', async () => {
+  it('concurrent automatic viewers fill both free slots without launching an excess viewer', async () => {
     const h = await fixture(); h.adopt();
     const opened = await Promise.all(['first', 'second', 'third'].map(id => h.panes.acquire('subagent', id as RunId, h.owner, { timeoutMs: 1000, automatic: true })));
     expect(opened.map(r => r?.viewer ?? null)).toEqual(['sub-first', 'sub-second', null]);
     expect([...h.placements.keys()]).toEqual(['owner', 'sub-first', 'sub-second']);
-    expect(h.parked).toEqual(['sub-third']);
+    expect(h.parked).toEqual([]);
+    expect(h.launcherCalls).toEqual(['first', 'second']);
   });
 
   it('an invalid auxiliary launcher never parks, kills or relabels the agent terminal', async () => {
@@ -246,7 +247,7 @@ describe('auxiliary panes and observers', () => {
     ]);
   });
 
-  it('automatic run events park excess viewers, while user peek opens them', async () => {
+  it('automatic run events skip excess viewers, while user peek opens them', async () => {
     const h = await fixture(1); h.adopt();
     const handlers = new Map<string, () => Promise<void>>();
     const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI;
@@ -261,16 +262,16 @@ describe('auxiliary panes and observers', () => {
     await vi.waitFor(() => expect([...h.placements.keys()]).toEqual(['owner', 'sub-first']));
     expect((await registration.peek('second' as RunId))?.address).toBe('sub-second');
     expect([...h.placements.keys()]).toEqual(['owner', 'sub-first', 'sub-second']);
-    expect(h.parked).toEqual(['sub-second']);
+    expect(h.parked).toEqual([]);
     expect(h.appCalls.filter(call => call.name === 'terminal.keep')).toEqual([{ name: 'terminal.keep', args: { terminal: 'sub-second', place: 'tab' } }]);
     expect(h.appCalls.at(-1)).toEqual({ name: 'pane.focus', args: { terminal: 'sub-second' } });
   });
 
-  it('a full strip parks subagent viewers without delaying their runs', async () => {
+  it('a full strip skips viewer launches without delaying subagent runs', async () => {
     const h = await fixture(1); h.adopt(); await h.panes.acquire('subagent', 'first-run' as RunId, h.owner, { timeoutMs: 1000 });
     const id = 'parked-run' as RunId; expect(await h.panes.acquire('subagent', id, h.owner, { timeoutMs: 1000, automatic: true })).toBeNull();
-    expect(h.launcherCalls).toEqual(['first-run', id]);
-    expect(await h.panes.acquire('subagent', id, h.owner, { timeoutMs: 1000, automatic: true })).toBeNull(); expect(h.launcherCalls).toEqual(['first-run', id, id]);
+    expect(h.launcherCalls).toEqual(['first-run']);
+    expect(await h.panes.acquire('subagent', id, h.owner, { timeoutMs: 1000, automatic: true })).toBeNull(); expect(h.launcherCalls).toEqual(['first-run']);
     expect(h.placements.has('sub-first-run' as TerminalAddress)).toBe(true);
   });
 });

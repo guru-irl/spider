@@ -133,9 +133,11 @@ export async function terminals(suite: Suite, side: 'local' | 'dest' = 'local'):
   return details;
 }
 export async function viewerAddress(suite: Suite, owner: ChildParent, run: RunRow): Promise<string> {
+  const opened = await ipc(suite, owner, { op: 'openRun', runId: run.id });
+  assert.equal(opened.ok, true); assert.equal(typeof opened.viewer, 'string');
   const rows = await waitFor(`one real viewer for ${run.name}`, () => terminals(suite), ts => ts.some(t => t.state === 'live' && t.labels['spider.kind'] === 'subagent-viewer' && t.labels['spider.run'] === run.id), deadline(30_000));
   const found = rows.filter(t => t.state === 'live' && t.labels['spider.kind'] === 'subagent-viewer' && t.labels['spider.run'] === run.id);
-  assert.equal(found.length, 1); assert.equal(found[0].labels['spider.session'], owner.sessionId);
+  assert.equal(found.length, 1); assert.equal(found[0].address, opened.viewer); assert.equal(found[0].labels['spider.session'], owner.sessionId);
   assert.equal(found[0].parent, owner.pi.terminal);
   return found[0].address;
 }
@@ -689,7 +691,7 @@ export async function activeChildOwnership(suite: Suite): Promise<void> {
   assert.ok(!bytes.stdout.includes('\u001b]7501;')); assert.ok(!bytes.stderr.includes('\u001b]7501;'));
   const local = await terminals(suite);
   assert.equal(local.filter(t => t.labels['spider.session'] === String(started.sessionId)).length, 0);
-  assert.equal(local.filter(t => t.labels['spider.run'] === run.id && t.labels['spider.kind'] === 'subagent-viewer' && t.state === 'live').length, 1);
+  assert.equal(local.filter(t => t.labels['spider.run'] === run.id && t.labels['spider.kind'] === 'subagent-viewer' && t.state === 'live').length, 0);
   await suite.evidence('ownership-boundary.json', { before, after, presence, mappingsBefore, sshBefore, shimsBefore, shimsAfter, hcRecords, events, local, bytes });
   gates.release('ownership-ready'); await owner.pi.waitEvent('message_end', e => e.customType === 'spider.subagent_done', deadline(60_000));
   const failures: unknown[] = [];

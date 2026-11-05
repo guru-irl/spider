@@ -66,7 +66,7 @@ describe('external run viewer', () => {
     expect(page.text).toBe('firstsecond'); expect(JSON.stringify(page.events)).not.toContain('\\u001b');
     expect(page.events[0].summary).toBe('ESCALATION[blocked]: Stop'); expect(page.events[1].tool).toBe('tool');
   });
-  it('creates one parented parked viewer for a queued run and reuses it on peek', async () => {
+  it('creates one parented placed viewer for a queued run and reuses it on peek', async () => {
     const h = await createHerdrHarness('fake'); await h.start();
     const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     try {
@@ -78,7 +78,7 @@ describe('external run viewer', () => {
         owner: () => h.owner, hc: h.hc, viewerExecutable: executable,
         feedRoot: join(h.directories.global, 'herdr'), ipcDescriptor: () => ({ ...descriptor, sessionId: h.owner!.sessionId, generation: h.owner!.generation }),
         ownedRunEvents: { list: async () => [runId], subscribe: (_owner, listener) => { emit = listener; return () => { emit = undefined; }; } },
-        panes: { acquire: async (_kind, id, owner) => { await registration.launcher(id as RunId, owner); return null; }, release: async () => {}, park: async id => { parks.push(id); }, dispose: () => {} },
+        panes: { reconcile: async () => {}, acquire: async (_kind, id, owner) => ({ id, owner, kind: 'subagent', viewer: await registration.launcher(id as RunId, owner), pane: 'fixture-pane' as PaneId }), release: async () => {}, park: async id => { parks.push(id); }, dispose: () => {} },
       });
       await handlers.get('session_start')!();
       emit!(runId); emit!(runId);
@@ -128,7 +128,7 @@ describe('external run viewer', () => {
       const registration = registerHerdrViewers(pi, { owner: () => h.owner, hc: h.hc, feedRoot: join(h.directories.global, 'herdr'), viewerExecutable: executable,
         ipcDescriptor: () => ({ ...descriptor, sessionId: h.owner!.sessionId, generation: h.owner!.generation }),
         ownedRunEvents: { list: async () => [runId], subscribe: (_owner, listener) => { listeners.push(listener); return () => {}; } },
-        panes: { acquire: async (_kind, id, owner, options) => { acquireCount++; return { id, owner, kind: 'subagent', viewer: await registration.launcher(id as RunId, owner, options.signal), pane: 'fixture-pane' as PaneId }; }, release: async reservation => { releases.push(reservation); }, park: async () => {}, dispose: () => {} } });
+        panes: { reconcile: async () => {}, acquire: async (_kind, id, owner, options) => { acquireCount++; return { id, owner, kind: 'subagent', viewer: await registration.launcher(id as RunId, owner, options.signal), pane: 'fixture-pane' as PaneId }; }, release: async reservation => { releases.push(reservation); }, park: async () => {}, dispose: () => {} } });
       return registration;
     };
     try {
@@ -149,18 +149,18 @@ describe('external run viewer', () => {
     const handlers = new Map<string, () => Promise<void>>(); const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI; const releases: PaneReservation[] = [];
     const registration = registerHerdrViewers(pi, { owner: () => h.owner, hc: h.hc, feedRoot: join(h.directories.global, 'herdr'), viewerExecutable: executable,
       ipcDescriptor: () => ({ ...descriptor, sessionId: h.owner!.sessionId, generation: h.owner!.generation }), ownedRunEvents: { list: async () => [runId], subscribe: () => () => {} },
-      panes: { acquire: async (_kind, id, owner) => ({ id, owner, kind: 'subagent', viewer: h.owner!.terminal.address, pane: 'fixture-pane' as PaneId }), release: async r => { releases.push(r); }, park: async () => {}, dispose: () => {} } });
+      panes: { reconcile: async () => {}, acquire: async (_kind, id, owner) => ({ id, owner, kind: 'subagent', viewer: h.owner!.terminal.address, pane: 'fixture-pane' as PaneId }), release: async r => { releases.push(r); }, park: async () => {}, dispose: () => {} } });
     try { await handlers.get('session_start')!(); await expect(registration.peek(runId)).rejects.toThrow('Viewer reservation acknowledged a different terminal'); expect(releases).toHaveLength(1); }
     finally { await registration.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
-  it('waits for an in-flight parked viewer launch to roll back on shutdown', async () => {
+  it('waits for an in-flight pane viewer launch to roll back on shutdown', async () => {
     const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     const handlers = new Map<string, () => Promise<void>>(); const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI;
     const nativeRun = h.hc.run; let created: TerminalAddress | null = null; let release!: () => void; let entered!: () => void; const gate = new Promise<void>(r => { release = r; }); const began = new Promise<void>(r => { entered = r; });
     h.hc.run = async request => { entered(); await gate; const handle = await nativeRun(request); created = handle.address; return handle; };
     const registration = registerHerdrViewers(pi, { owner: () => h.owner, hc: h.hc, feedRoot: join(h.directories.global, 'herdr'), viewerExecutable: executable,
       ipcDescriptor: () => ({ ...descriptor, sessionId: h.owner!.sessionId, generation: h.owner!.generation }), ownedRunEvents: { list: async () => [runId], subscribe: () => () => {} },
-      panes: { acquire: async () => null, release: async () => {}, park: async () => {}, dispose: () => {} } });
+      panes: { reconcile: async () => {}, acquire: async (_kind, id, owner, options) => ({ id, owner, kind: 'subagent', viewer: await registration.launcher(id as RunId, owner, options.signal), pane: 'fixture-pane' as PaneId }), release: async () => {}, park: async () => {}, dispose: () => {} } });
     try {
       const start = handlers.get('session_start')!(); await began;
       let stopped = false;

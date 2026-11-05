@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test } from 'vitest';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { Owner, RunId, TerminalAddress } from '../contracts.js';
+import type { Owner, RunId, TerminalAddress, PaneId } from '../contracts.js';
 import { registerHerdrViewers } from '../viewers/register.js';
 
 const owner = { sessionId: 'owner', generation: 'generation', cwd: '/fixture', terminal: { coreId: 'core', terminalId: 'agent', address: 'agent' } } as Owner;
@@ -17,11 +17,12 @@ test('startup opens at most four viewers concurrently and an individual failure 
     ownedRunEvents: { list: async () => ids, subscribe: () => () => {} }, reportError: error => errors.push(error),
     viewerLauncher: async id => { opened.push(id); return `viewer-${id}` as TerminalAddress; },
     panes: {
+      reconcile: async () => {},
       acquire: async (_kind, id) => {
         maximum = Math.max(maximum, ++active);
         await new Promise<void>(resolve => gates.push(resolve)); active--;
         if (id === ids[0]) throw new Error('first placement failed');
-        return null;
+        return { id, owner, kind: 'subagent', viewer: `viewer-${id}` as TerminalAddress, pane: `pane-${id}` as PaneId };
       },
       release: async () => {}, park: async () => {}, dispose: async () => {},
     },
@@ -40,15 +41,15 @@ test('later run events do not repeat the open sequence or reopen a user-dismisse
     owner: () => owner, hc: {} as never, viewerExecutable: '/fixture/viewer', feedRoot: '/fixture', ipcDescriptor: () => null,
     ownedRunEvents: { list: async () => [ids[0]], subscribe: (_owner, listener) => { emit = listener; return () => {}; } },
     viewerLauncher: async () => `viewer-${++launches}` as TerminalAddress,
-    panes: { acquire: async () => { acquisitions++; return null; }, release: async () => {}, park: async () => {}, dispose: async () => {} },
+    panes: { reconcile: async () => {}, acquire: async (_kind, id, owner, options) => { acquisitions++; return options.automatic ? null : { id, owner, kind: 'subagent', viewer: 'viewer-1' as TerminalAddress, pane: 'pane-1' as PaneId }; }, release: async () => {}, park: async () => {}, dispose: async () => {} },
   });
   try {
     await hooks.get('session_start')!(); await flush();
     for (let i = 0; i < 20; i++) emit(ids[0]); await flush();
-    expect(acquisitions).toBe(1); expect(launches).toBe(1);
+    expect(acquisitions).toBe(1); expect(launches).toBe(0);
     // Only an explicit user open may launch a replacement after dismissal.
-    expect(await registration.peek(ids[0])).toMatchObject({ address: 'viewer-2' });
+    expect(await registration.peek(ids[0])).toMatchObject({ address: 'viewer-1' });
     for (let i = 0; i < 20; i++) emit(ids[0]); await flush();
-    expect(acquisitions).toBe(2); expect(launches).toBe(2);
+    expect(acquisitions).toBe(2); expect(launches).toBe(1);
   } finally { await registration.dispose(); }
 });

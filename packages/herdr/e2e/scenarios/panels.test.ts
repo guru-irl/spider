@@ -170,12 +170,15 @@ export const scenarios: readonly ScenarioDefinition[] = [
                 const [created] = await tools(f, parent, 'view-run', [{ action: 'run', ...child('view-child') }], { 'view-child': [{ steps: [{ text: 'view child work' }, { gate: 'view-child-held' }] }, { steps: [{ text: 'view child result' }] }] });
                 await gates.ready('view-child-held', deadline(30000));
                 const feed = await waitFeed(parent, 'real view action run', feed => feed.runs.rows.some(row => row.id === created.run.id));
-                const run = (await waitNativeViewerRuns(suite, feed)).find(row => row.id === created.run.id)!;
+                const run = { ...feed.runs.rows.find(row => row.id === created.run.id)! };
                 expect(run.ownerSessionId).toBe(parent.sessionId);
                 await sidebar.refresh();
                 await sidebar.host.waitForUi('real owned run rendered in Agents', ui => ui.nodes.some(node => node.id === `sub-${run.id}`), 20000);
                 const viewers = (world: any) => world.spaces.flatMap((space: any) => space.tabs.flatMap((tab: any) => tab.terminals.filter((pane: any) => pane.terminal === run.viewer)));
-                const beforeRun = await waitFor('actual automatic viewer placement before reuse', () => f.app.ls(), world => viewers(world).length === 1, deadline(20000), { reconcileMs: 250 });
+                expect((await coreRows(suite)).filter(row => row.state === 'live' && row.labels['spider.kind'] === 'subagent-viewer' && row.labels['spider.run'] === run.id)).toEqual([]);
+                await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
+                run.viewer = (await waitNativeViewerRuns(suite, { ...feed, runs: { ...feed.runs, rows: [run] } }))[0].viewer;
+                const beforeRun = await waitFor('explicit viewer placement before reuse', () => f.app.ls(), world => viewers(world).length === 1, deadline(20000), { reconcileMs: 250 });
                 await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
                 await activateChildAction(sidebar, `sub-${run.id}`, { op: 'openRun', runId: run.id });
                 const afterRun = await f.app.ls() as any;

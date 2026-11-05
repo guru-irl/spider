@@ -13,7 +13,7 @@ test('automatic viewer placement failures do not notify for each run', async () 
   const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => handlers.set(name, handler) } as never, {
     owner: () => owner, hc: {} as never, viewerExecutable: 'viewer', feedRoot: 'feed', ipcDescriptor: () => null,
     ownedRunEvents: { list: async () => runs, subscribe: () => () => {} },
-    panes: { acquire: async (_kind, id) => { attempted.push(id as RunId); throw new HerdrError('pane-removal-timeout', `Slow app for ${id}`); },
+    panes: { reconcile: async () => {}, acquire: async (_kind, id) => { attempted.push(id as RunId); throw new HerdrError('pane-removal-timeout', `Slow app for ${id}`); },
       release: async () => {}, park: async () => {}, dispose: () => {} },
     reportError: error => notices.push(error),
   });

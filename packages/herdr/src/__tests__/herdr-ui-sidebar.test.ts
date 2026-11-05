@@ -165,6 +165,59 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(nodes.filter(node => node.id?.startsWith('space-') && node.click)).toHaveLength(33);
   });
 
+  it('keeps the Herdr logo in the same place folded and expanded', async () => {
+    const { spaceView } = await railFixture();
+    const rail = data.get(spaceView.render())!;
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const Chrome = loadView(clones['workspace-chrome'].files['main.js'], {
+      theme: () => palette, props: () => ({}), layout: () => ({ id: 'sidebar', size: { px: 268 } }),
+      updates: () => ({ app: { ready: false } }), run: () => {}, shared: () => null, setShared: () => {},
+    });
+    const brand = new Chrome().render();
+    expect(all(brand).some(node => node.image === 'frame/welcome/herdr.png' && call(node, 'size')?.[0] === 20)).toBe(true);
+    const brandHeight = 46, railWidth = 44, logo = 20, target = 32;
+    // Expanded, the logo is the brand row's first item, vertically centred in the 46 px brand block.
+    const expanded = { x: Number(call(data.get(brand)!, 'pl')?.[0]) + logo / 2, y: brandHeight / 2 };
+    // Folded, the logo is centred in a 32 px target, centred in the rail after its left inset.
+    const inset = Number(call(rail, 'pl')?.[0]);
+    const folded = { x: inset + (railWidth - inset) / 2, y: Number(call(rail, 'pt')?.[0]) + target / 2 };
+    expect(folded).toEqual(expanded);
+  });
+
+  it('puts Settings at the bottom of the folded rail where the footer shows it', async () => {
+    const { spaceView, commands } = await railFixture();
+    const rail = spaceView.render();
+    const settings = all(rail).find(node => call(node, 'tooltip')?.[0] === 'Settings')!;
+    expect(settings).toBeDefined();
+    expect(data.get(data.get(rail)!.children.at(-1) as object)).toBe(settings);
+    expect(settings.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/settings.svg')).toBe(true);
+    settings.click!();
+    expect(commands).toContainEqual(['app.settings', undefined]);
+    const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const Chrome = loadView(clones['workspace-chrome'].files['main.js'], {
+      theme: () => palette, props: () => ({ footer: true }), layout: () => ({ id: 'sidebar', size: { px: 268 } }),
+      updates: () => ({ app: { ready: false } }), run: () => {},
+    });
+    const footerRoot = new Chrome().render(), footer = data.get(footerRoot)!;
+    const row = all(footerRoot).find(node => node.id === 'settings')!;
+    const icon = 14, target = 32, railWidth = 44;
+    const footerIcon = {
+      x: Number(call(footer, 'px')?.[0]) + Number(call(row, 'pl')?.[0] ?? call(row, 'px')?.[0]) + icon / 2,
+      fromBottom: Number(call(footer, 'pb')?.[0]) + Number(call(row, 'h')?.[0]) / 2,
+    };
+    const inset = Number(call(data.get(rail)!, 'pl')?.[0]);
+    const railIcon = { x: inset + (railWidth - inset) / 2, fromBottom: Number(call(settings, 'mb')?.[0]) + target / 2 };
+    expect(railIcon).toEqual(footerIcon);
+  });
+
+  it('separates the folded logo and space buttons so neighbouring highlights never touch', async () => {
+    const { spaceView } = await railFixture();
+    const root = spaceView.render(), nodes = all(root), outer = data.get(root)!;
+    const list = nodes.find(node => node.id === 'rail-spaces')!;
+    expect(Number(call(outer, 'gap')?.[0])).toBe(8);
+    expect(Number(call(list, 'gap')?.[0])).toBe(4);
+  });
+
   it.each([['spaces', 'spaces-list'], ['agents', 'ag-list']])('shows an overlay scrollbar only while %s scrolls', async (kind, id) => {
     const { spaceView, agentView, sidebar } = await railFixture();
     sidebar.size.px = 268;

@@ -41,12 +41,12 @@ async function scene(autoHideTabs = true, buttons = false) {
   const enter = () => event('tabs-strip', 'on_hover', true);
   const leave = () => { event('tabs-strip', 'on_hover', false); if (byId('tabs-revealed')) event('tabs-revealed', 'on_hover', false); };
   const full = () => Boolean(byId('tabs-revealed'));
-  // The bar is sliding away: still drawn, already above the clip.
-  const leaving = () => byId('tabs-revealed')?.styles.top?.[0] === -42;
+  // The bar is fading away: still drawn, already transparent.
+  const leaving = () => full() && byId('tabs-slide')?.styles.opacity?.[0] === 0;
   const typeIn = (id: string, text: string) => { const input = nodes(byId(id)).find(node => Object.hasOwn(node, 'input')).input; input.text = text; input.handlers.change({}, cx); };
   return { view, cx, space, props, calls, overlays, tabBlock, render, byId, event, enter, leave, full, leaving, typeIn, setAgentSource(source: () => Promise<any[]>) { agentSource = source; } };
 }
-const SLIDE = 160;
+const SLIDE = 140;
 afterEach(() => vi.useRealTimers());
 
 test('the resting strip replaces the tab row without resizing any terminal', async () => {
@@ -65,29 +65,32 @@ test('enter reveals a 42 pixel anchored row without a layout command', async () 
 });
 test('the overlay leaves room at the right edge instead of shifting over the sidebar', async () => {
   const s = await scene(); s.event('tabs-strip', 'on_size_change', { width: 792, height: 6 }); s.enter();
-  expect(s.byId('tabs-revealed')?.styles.w).toEqual([784]);
+  expect(s.byId('tabs-slide')?.styles.w).toEqual([784]);
   s.event('tabs-strip', 'on_size_change', { width: 592, height: 6 });
-  expect(s.byId('tabs-revealed')?.styles.w).toEqual([584]);
+  expect(s.byId('tabs-slide')?.styles.w).toEqual([584]); expect(s.byId('tabs-revealed')?.styles.w).toEqual([576]);
   expect(s.calls).toEqual([]);
 });
 
-test('the bar slides down from behind the strip inside a clip with a visible edge', async () => {
-  vi.useFakeTimers(); const s = await scene(); s.enter();
-  const clip = s.byId('tabs-slide');
-  expect(clip?.styles.overflow_hidden).toBeDefined(); expect(clip?.styles.h).toEqual([42]);
-  expect(clip?.items.map((item: any) => item.styles.id?.[0])).toEqual(['tabs-revealed']);
-  const bar = () => s.byId('tabs-revealed');
-  expect(bar()?.styles.absolute).toBeDefined(); expect(bar()?.styles.top).toEqual([-42]);
+test('the bar fades in with a short drop and floats as a rounded bordered panel', async () => {
+  vi.useFakeTimers(); const s = await scene(); s.event('tabs-strip', 'on_size_change', { width: 792, height: 6 }); s.enter();
+  const holder = () => s.byId('tabs-slide'), bar = () => s.byId('tabs-revealed');
+  expect(holder()?.items.map((item: any) => item.styles.id?.[0])).toEqual(['tabs-revealed']);
+  expect(holder()?.styles.opacity).toEqual([0]); expect(holder()?.styles.transition).toEqual(['opacity', { duration: SLIDE, easing: 'ease-out' }]);
+  expect(bar()?.styles.absolute).toBeDefined(); expect(bar()?.styles.top).toEqual([-2]);
   expect(bar()?.styles.transition).toEqual(['top', { duration: SLIDE, easing: 'ease-out' }]);
-  vi.advanceTimersByTime(16); expect(bar()?.styles.top).toEqual([0]);
-  expect(bar()?.styles.border_1).toBeDefined(); expect(bar()?.styles.border_color).toEqual(['#38383a']); expect(bar()?.styles.rounded_b).toEqual([10]);
+  vi.advanceTimersByTime(16);
+  expect(holder()?.styles.opacity).toEqual([1]); expect(bar()?.styles.top).toEqual([4]);
+  expect(bar()?.styles.rounded).toEqual([10]); expect(bar()?.styles.border_1).toBeDefined(); expect(bar()?.styles.border_color).toEqual(['#38383a']);
+  // Eight pixels clear on both sides, so every corner shows.
+  expect(bar()?.styles.left).toEqual([8]); expect(bar()?.styles.w).toEqual([776]); expect(holder()?.styles.w).toEqual([784]);
+  expect(bar()?.styles.h).toEqual([42]); expect(holder()?.styles.h).toEqual([46]);
 });
-test('leaving slides the bar back up before removing it and re-entry brings it back down', async () => {
+test('leaving fades the bar out before removing it and re-entry brings it back', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); vi.advanceTimersByTime(16); s.leave();
   vi.advanceTimersByTime(300); expect(s.leaving()).toBe(true);
   vi.advanceTimersByTime(SLIDE - 1); expect(s.full()).toBe(true);
   s.enter(); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(true); expect(s.leaving()).toBe(false);
-  vi.advanceTimersByTime(16); expect(s.byId('tabs-revealed')?.styles.top).toEqual([0]);
+  vi.advanceTimersByTime(16); expect(s.byId('tabs-revealed')?.styles.top).toEqual([4]);
   s.leave(); vi.advanceTimersByTime(300 + SLIDE); expect(s.full()).toBe(false);
 });
 test('leaving waits 300 milliseconds and re-entry cancels the pending hide', async () => {

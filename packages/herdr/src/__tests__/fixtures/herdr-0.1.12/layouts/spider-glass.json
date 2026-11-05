@@ -95,12 +95,14 @@
           "id": "tabs",
           "type": "block",
           "size": {
-            "px": 42
+            "px": 6
           },
           "window_drag": true,
           "content": {
             "mod": "spider-tabs",
-            "props": {}
+            "props": {
+              "autoHideTabs": true
+            }
           }
         },
         {

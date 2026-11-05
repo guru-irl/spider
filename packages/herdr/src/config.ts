@@ -28,7 +28,8 @@ function wrapperIdentity(value: unknown): HerdrConfig['admin']['wrappers'][numbe
 }
 export function parseHerdrConfig(value: unknown): HerdrConfig {
   const c = object(value); const app = object(c.app), core = object(c.core);
-  const limits = object(c.limits ?? {}), retention = object(c.retention ?? {}), admin = object(c.admin ?? {});
+  const limits = object(c.limits ?? {}), retention = object(c.retention ?? {}), admin = object(c.admin ?? {}), look = object(c.look ?? {});
+  if (look.autoHideTabs !== undefined && typeof look.autoHideTabs !== 'boolean') throw new HerdrError('invalid-config', 'look.autoHideTabs must be boolean');
   if (c.enabled !== undefined && c.enabled !== 'auto' && typeof c.enabled !== 'boolean') throw new HerdrError('invalid-config', 'enabled must be auto or boolean');
   if (c.automaticSubagentPanes !== undefined && typeof c.automaticSubagentPanes !== 'boolean') throw new HerdrError('invalid-config', 'automaticSubagentPanes must be boolean');
   const spaces = list(c.spaces).map(value => {
@@ -52,7 +53,7 @@ export function parseHerdrConfig(value: unknown): HerdrConfig {
       const font = object(f[kind]); fonts[kind] = { path: absolutePath(font.path), license: absolutePath(font.license) };
     }
   }
-  return { automaticSubagentPanes: c.automaticSubagentPanes === true, layout: c.layout === undefined ? 'panes' : layout(c.layout), enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
+  return { look: { autoHideTabs: look.autoHideTabs !== false }, automaticSubagentPanes: c.automaticSubagentPanes === true, layout: c.layout === undefined ? 'panes' : layout(c.layout), enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
     app: { binary: absolutePath(app.binary), home: absolutePath(app.home) }, core: { binary: absolutePath(core.binary), config: absolutePath(core.config) },
     agentDirectory: absolutePath(c.agentDirectory), globalRoot: absolutePath(c.globalRoot), shellRc: absolutePath(c.shellRc), spaces, machines,
     ...(fonts ? { fonts } : {}), limits: { auxiliaryPanes: limit(limits.auxiliaryPanes, 2, 1, 6), completedRows: limit(limits.completedRows, 50, 1, 10000), completedHours: limit(limits.completedHours, 24, 1, 8760) },

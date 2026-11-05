@@ -82,7 +82,7 @@ describe.sequential('published Herdr artifact', () => {
       'packages/herdr/assets/themes/dracula-plus-glass.json',
       'packages/herdr/assets/themes/spider-glass.json',
       'packages/herdr/assets/shared/feed.js',
-      'packages/herdr/assets/tabs/spider.svg',
+      'packages/herdr/assets/tabs/spider.svg', 'packages/herdr/assets/tabs/autohide.js',
       'packages/herdr/assets/mods/spider/main.js',
       'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/move.js', 'packages/herdr/assets/agents/move-menu.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg', 'packages/herdr/assets/agents/chevron-up.svg',
       'packages/herdr/assets/look/patches.json', 'packages/herdr/assets/look/layout-edits.json',

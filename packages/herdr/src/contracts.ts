@@ -266,6 +266,7 @@ export interface HerdrConfig {
   agentDirectory: string; globalRoot: string; shellRc: string;
   layout?: 'panes' | 'tabs';
   automaticSubagentPanes?: boolean;
+  look?: { autoHideTabs: boolean };
   spaces: { name: string; layout?: 'panes' | 'tabs'; sessions: ({ file: string } | { name: string; sessionId?: string })[] }[];
   machines: { name: MachineName; aliases: string[]; runtime: MachineRuntime; nodePath?: string }[];
   fonts?: { body?: { path: string; license: string }; label?: { path: string; license: string }; paths?: { path: string; license: string } };

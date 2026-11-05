@@ -1,6 +1,7 @@
 {
   "version": 1,
   "remove": ["status"],
+  "tabs": { "stripPx": 6, "fullPx": 42 },
   "root": {
     "theme": "spider-glass",
     "ui_font": "Google Sans Flex",

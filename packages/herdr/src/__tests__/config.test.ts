@@ -12,6 +12,13 @@ const machine = {
   runtime: { cwd: null, directory: '/runtime', commands: { javascript: ['node'] } },
 };
 
+test('the tab look setting defaults on and accepts a boolean opt-out', () => {
+  const base = { ...config, machines: [] };
+  expect(parseHerdrConfig(base)).toMatchObject({ look: { autoHideTabs: true } });
+  expect(parseHerdrConfig({ ...base, look: { autoHideTabs: false } })).toMatchObject({ look: { autoHideTabs: false } });
+  for (const autoHideTabs of ['false', 0, null, {}]) expect(() => parseHerdrConfig({ ...base, look: { autoHideTabs } })).toThrow(/autoHideTabs/);
+});
+
 test('preserves each configured per-machine nodePath', () => {
   const parsed = parseHerdrConfig({ ...config, machines: [
     { ...machine, nodePath: '/bin/node-a' },

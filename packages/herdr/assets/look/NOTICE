@@ -5,4 +5,7 @@ Portions of packages/herdr/assets/look/patches.json are derived from the
 built-in mods of Herdr 0.1.12 by the Herdr authors, licensed under the Apache
 License, Version 2.0, and were modified for spider.
 
+packages/herdr/assets/tabs/autohide.js also adapts menu choices and shortcut
+labels from Herdr 0.1.12 under the same licence, modified for spider.
+
 The complete licence is shipped at licenses/herdr-apache-2.0.txt at the root of the spider package.

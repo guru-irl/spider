@@ -16,6 +16,10 @@ function element(type = 'gpui-kit.NativeElement') {
           throw new Error(`${method} requires a hex color`);
         } else if (['hover', 'active', 'focus'].includes(method)) args[0](element(type));
         if (method.startsWith('on_')) this.events[method] = args[0];
+        if (method === 'on_mouse_down' || method === 'on_mouse_up') {
+          this.mouseEvents ??= {};
+          this.mouseEvents[`${method}:${args[0]}`] = args[1];
+        }
         this.styles[method] = args;
         return this;
       };

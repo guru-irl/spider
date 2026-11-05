@@ -301,6 +301,32 @@ test.each(['layout-theme', 'keys', 'patch-version'] as const)('production doctor
   expect((await (await f.ports.doctorParts(f.request)).inspect(item, f.request)).failures.length).toBeGreaterThan(0);
 });
 
+test('setup stages the tab strip and doctor accepts its resting size', async () => {
+  const f = await fixture();
+  await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
+  await setupHerdr(f.request, f.parts);
+  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const layout = JSON.parse(await readFile(path, 'utf8'));
+  const nodes = (node: any): any[] => [node, ...(node.children ?? []).flatMap(nodes)];
+  expect(nodes(layout).find(node => node.id === 'tabs')).toMatchObject({ size: { px: 6 }, window_drag: true, content: { props: { autoHideTabs: true } } });
+  expect((await (await f.ports.doctorParts(f.request)).inspect('layout-theme', f.request)).failures).toEqual([]);
+});
+
+test('setup forwards the tab opt-out and doctor rejects the opposite setting', async () => {
+  const f = await fixture();
+  f.request.config.look = { autoHideTabs: false };
+  await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
+  await setupHerdr(f.request, f.parts);
+  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const layout = JSON.parse(await readFile(path, 'utf8'));
+  const nodes = (node: any): any[] => [node, ...(node.children ?? []).flatMap(nodes)];
+  expect(nodes(layout).find(node => node.id === 'tabs')).toMatchObject({ size: { px: 42 }, content: { props: { autoHideTabs: false } } });
+  expect((await (await f.ports.doctorParts(f.request)).inspect('layout-theme', f.request)).failures).toEqual([]);
+  nodes(layout).find(node => node.id === 'tabs').content.props.autoHideTabs = true;
+  await writeFile(path, JSON.stringify(layout));
+  expect((await (await f.ports.doctorParts(f.request)).inspect('layout-theme', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'layout-props-mismatch' }));
+});
+
 test('production doctor accepts folded sidebar blocks', async () => {
   const f = await fixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));

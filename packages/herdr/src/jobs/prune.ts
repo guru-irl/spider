@@ -18,7 +18,7 @@ export function jobPruneCandidates(journal: JobJournal, context: JobPruneContext
     if (context.recoveringNotices.has(job.id) || job.localDirectory !== join(context.directory, 'logs', job.id)) continue;
     const settled = job.terminalReleased && job.settledMarked && !job.uncertain && !job.evidenceConflict && !job.handoffCancelled && !context.holds.has(job.id) && !context.unreturned.has(job.id) && !journal.writer?.crashJobs?.includes(job.id);
     if (job.phase.kind === 'launch-failed') {
-      if (!settled || job.callerOwned || job.detached || job.output !== null) continue;
+      if (!settled || job.detached || job.output !== null) continue;
       if (job.supersededBy) superseded.push(job);
       else if (context.now - job.updatedAt > 7 * 86400000) expired.push(job);
       else recent.push(job);

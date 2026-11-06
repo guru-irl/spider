@@ -145,7 +145,7 @@ export interface PayloadReleasePorts {
 export class PayloadReleaseError extends HerdrError {
   constructor(code: string, machine: string, public readonly releaseFailure: ReleaseFailure, public readonly releaseWriteStarted: boolean, cause: unknown) {
     const { step, elapsedMs, beforeReleaseMs, queueWaitMs, timerDriftMs } = releaseFailure;
-    const reason = (cause instanceof Error ? cause.message : String(cause)).replace(/[\r\n]+/g, ' ').slice(0, 200);
+    const reason = (cause instanceof Error ? cause.message : String(cause)).replace(/[\r\n]+/g, ' ').slice(0, 200).trimEnd();
     const confirmation = releaseFailure.confirmation;
     const last = confirmation?.last;
     const seen = !last ? '' : last.kind === 'not_found' ? `not_found on ${confirmation!.notFound} of ${confirmation!.checks} reads`
@@ -155,7 +155,7 @@ export class PayloadReleaseError extends HerdrError {
     const causeCode = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' ? cause.code : undefined;
     const before = beforeReleaseMs ? `${beforeReleaseMs} ms before release${queueWaitMs ? `, including ${queueWaitMs} ms queued` : ''}` : queueWaitMs ? `${queueWaitMs} ms queued` : '';
     const timing = [before, timerDriftMs ? `deadline timer ${timerDriftMs} ms late` : ''].filter(Boolean).map(value => `; ${value}`).join('');
-    super(code, `Release on ${machine} failed at ${step} after ${elapsedMs} ms${timing}.${seen ? ` Last hc get saw ${seen.slice(0, 160)}.` : ''} ${reason}`, { releaseNotStarted: !releaseWriteStarted, ...(causeCode && causeCode !== code ? { causeCode } : {}) });
+    super(code, `Release on ${machine} failed at ${step} after ${elapsedMs} ms${timing}.${seen ? ` Last hc get saw ${seen.slice(0, 160)}.` : ''} ${reason}${reason && !/[.!?]$/.test(reason) ? '.' : ''}`, { releaseNotStarted: !releaseWriteStarted, ...(causeCode && causeCode !== code ? { causeCode } : {}) });
   }
 }
 /** Confirm the sidebar identity before release. No app, pane or observer is involved. */

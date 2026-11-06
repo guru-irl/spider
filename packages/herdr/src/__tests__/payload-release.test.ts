@@ -158,6 +158,15 @@ test('release diagnostics describe the pre-release time and queue as one interva
   expect(String(error)).not.toContain('0 ms late');
 });
 
+test('release diagnostics end each transport cause cleanly', async () => {
+  for (const [reason, ending] of [['Transport refused', 'Transport refused.'], ['Transport refused.', 'Transport refused.'], ['Transport refused!', 'Transport refused!'], ['Transport refused?', 'Transport refused?']]) {
+    const error = await releaseRemoteJob(job, { hc: { get: async () => { throw new Error(reason); }, fileRead: async () => Buffer.from(requestSha256) },
+      nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000, clock: Date.now, releaseFileWriter: async () => {} }).catch(error => error);
+    expect(error.message.endsWith(ending)).toBe(true);
+    expect(error.message).not.toContain('..');
+  }
+});
+
 test('release errors keep long transport failures short', async () => {
   let failure: unknown;
   await releaseRemoteJob(job, { hc: { get: async () => { throw new Error('Failure '.repeat(2000)); }, fileRead: async () => Buffer.from(requestSha256) }, nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000, clock: Date.now,

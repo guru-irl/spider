@@ -154,20 +154,48 @@ it('persists bounded failed-launch evidence and still reads legacy observations'
   const reread = await f.store.read(); expect(reread.jobs[0].phase).toMatchObject({ kind: 'launch-failed', releaseFailure: { confirmation: { last: { kind: 'labels', omitted: 4 } } } });
 });
 
-it('never selects failed records that recovery or a caller still needs, even under pressure', async () => {
+it('prunes a settled failed background launch after its retention period', async () => {
+  const f = await monitorFixture();
+  let now = 1000;
+  f.options.outputCollector.prepare = async () => { throw Object.assign(new Error('Upload failed'), { code: 'hc-error' }); };
+  const jobs = f.monitor({ clock: () => now }), store = createJobStore(f.f.root, f.owner.sessionId);
+  await expect(jobs.start(program, f.owner, on, { background: true })).rejects.toMatchObject({ code: 'hc-error' });
+  const [failed] = (await store.read()).jobs;
+  expect(failed).toMatchObject({ phase: { kind: 'launch-failed' }, callerOwned: true, terminalReleased: true, settledMarked: true });
+  now += 8 * 86400000;
+  await expect.poll(async () => { await jobs.reconcile(); return (await store.read()).jobs.length; }, { timeout: 1000, interval: 20 }).toBe(0);
+  await expect(access(failed.localDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('selects settled caller-owned failures but protects live and recovering records under pressure', async () => {
   const f = await seeded(0), original = (await seeded(1)).journal.jobs[0], safe: JournalJob[] = [];
   const make = (name: string): JournalJob => ({ ...structuredClone(original), id: name as JournalJob['id'], phase: { kind: 'launch-failed', error: 'Payload did not start' }, output: null, notice: 'pending', callerOwned: false, detached: false, uncertain: false, evidenceConflict: false, terminalReleased: true, settledMarked: true, localDirectory: join(f.store.directory, 'logs', name), updatedAt: 1000 });
   for (let i = 0; i < 70; i++) safe.push(make(`safe-${i}`));
   const protectedJobs = ['caller', 'uncertain', 'conflict', 'terminal', 'marker', 'recovering', 'held', 'unreturned', 'crash', 'foreign-path', 'live'].map(make);
-  protectedJobs[0].callerOwned = true; protectedJobs[1].uncertain = true; protectedJobs[2].evidenceConflict = true;
+  for (const job of protectedJobs) job.callerOwned = true;
+  protectedJobs[1].uncertain = true; protectedJobs[2].evidenceConflict = true;
   protectedJobs[3].terminalReleased = false; protectedJobs[4].settledMarked = false;
   protectedJobs[9].localDirectory = join(f.f.root, 'outside');
   protectedJobs[10].phase = { kind: 'running', address: 'remote.invalid/live' as TerminalAddress, releasedAt: 1000 };
-  f.journal.jobs = [...safe, ...protectedJobs];
+  const finished = { ...structuredClone(original), id: 'finished-uncertain' as JournalJob['id'], callerOwned: true, detached: false, uncertain: true,
+    terminalReleased: false, settledMarked: false, localDirectory: join(f.store.directory, 'logs', 'finished-uncertain'), updatedAt: 1000 };
+  f.journal.jobs = [...safe, ...protectedJobs, finished];
   f.journal.writer = { pid: process.pid, startIdentity: processStartIdentity(process.pid)!, shutdown: null, crashJobs: [protectedJobs[8].id] };
   const candidates = jobPruneCandidates(f.journal, { directory: f.store.directory, now: 602000,
     recoveringNotices: new Set([protectedJobs[5].id]), holds: new Map([[protectedJobs[6].id, true]]), unreturned: new Set([protectedJobs[7].id]) }, true);
-  expect(candidates.map(job => job.id)).toEqual(safe.map(job => job.id));
+  expect(candidates.map(job => job.id)).toEqual([...safe.map(job => job.id), protectedJobs[0].id]);
+});
+
+it.each(['pending', 'submitted', 'recovering'] as const)('keeps an uncertain %s notice before settlement even under pressure', async state => {
+  const f = await seeded(2), [unsettled, settled] = f.journal.jobs;
+  unsettled.uncertain = true;
+  unsettled.notice = state === 'recovering' ? 'observed' : state;
+  const recoveringNotices = new Set<JournalJob['id']>();
+  if (state === 'recovering') recoveringNotices.add(unsettled.id);
+  const context = { directory: f.store.directory, now: 8 * 86400000, recoveringNotices, holds: new Map(), unreturned: new Set<JournalJob['id']>() };
+  for (const pressure of [false, true]) {
+    expect(jobPruneCandidates(f.journal, context, pressure).map(job => job.id)).toEqual([settled.id]);
+  }
 });
 
 it.each(['session', 'child'] as const)('compacts a seeded %s window as new jobs settle', async scope => {

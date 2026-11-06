@@ -1,4 +1,12 @@
 // SPDX-License-Identifier: MIT
+import type { JournalJob } from './store.js';
+
+export const MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS = 3;
+export function needsFailedCleanup(job: JournalJob): boolean {
+  return job.phase.kind === 'launch-failed' && !job.settledMarked && !job.uncertain && !job.evidenceConflict && !job.handoffCancelled
+    && (Boolean(job.terminalReleased) || Boolean(job.failedTerminalCleanup && !job.failedTerminalCleanup.exhausted));
+}
+
 export interface CleanupSweep {
   enqueue(key: string, operation: () => Promise<void>): boolean;
   cancel(key: string): void;

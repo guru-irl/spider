@@ -15,6 +15,7 @@ import { HerdrError, parseTerminal, object, nullableInteger } from '../client/pa
 import { invokeCli } from '../client/hc.js';
 import { requireCoreAvailable } from '../client/liveness.js';
 import { createChildTerminator } from '../client/child-termination.js';
+import { observeJobIdentity } from './identity.js';
 export interface ObserverPorts {
   hc: HcClient;
   app: AppClient;
@@ -151,7 +152,10 @@ export class PayloadReleaseError extends HerdrError {
       : last.kind === 'matched' ? 'matching labels'
       : last.kind === 'address' ? `address ${JSON.stringify(last.actual)} instead of ${JSON.stringify(last.expected)}`
       : last.differences.map(d => `${d.label}=${JSON.stringify(d.actual)} instead of ${JSON.stringify(d.expected)}`).join(', ');
-    super(code, `${machine} release failed at ${step} after ${elapsedMs} ms; waited ${beforeReleaseMs} ms before release, ${queueWaitMs} ms queued; deadline timer ${timerDriftMs} ms late.${seen ? ` Last hc get saw ${seen.slice(0, 160)}.` : ''} ${reason}`);
+    const causeCode = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' ? cause.code : undefined;
+    const before = beforeReleaseMs ? `${beforeReleaseMs} ms before release${queueWaitMs ? `, including ${queueWaitMs} ms queued` : ''}` : queueWaitMs ? `${queueWaitMs} ms queued` : '';
+    const timing = [before, timerDriftMs ? `deadline timer ${timerDriftMs} ms late` : ''].filter(Boolean).map(value => `; ${value}`).join('');
+    super(code, `Release on ${machine} failed at ${step} after ${elapsedMs} ms${timing}.${seen ? ` Last hc get saw ${seen.slice(0, 160)}.` : ''} ${reason}`, { releaseNotStarted: !releaseWriteStarted, ...(causeCode && causeCode !== code ? { causeCode } : {}) });
   }
 }
 /** Confirm the sidebar identity before release. No app, pane or observer is involved. */
@@ -160,11 +164,6 @@ export async function releaseRemoteJob(job: JobRecord & { runId?: RunId }, ports
   const address = job.phase.address, startedAt = ports.clock();
   const deadline = Math.min(ports.releaseDeadlineAt, startedAt + 10000);
   const beforeReleaseMs = Math.max(0, startedAt - (ports.requestedAt ?? startedAt));
-  const expectedLabels: Record<string, string> = {
-    [HERDR_LABELS.job]: job.id, [HERDR_LABELS.session]: job.owner.sessionId, [HERDR_LABELS.kind]: job.kind, [HERDR_LABELS.machine]: job.machine,
-    [HERDR_LABELS.ownerCore]: job.owner.terminal.coreId, [HERDR_LABELS.ownerTerminal]: job.owner.terminal.terminalId,
-    ...(job.runId ? { [HERDR_LABELS.run]: job.runId } : {}),
-  };
   let checks = 0, notFound = 0, first: ReleaseObservation | undefined, last: ReleaseObservation | undefined;
   const observe = (value: ReleaseObservation) => { first ??= value; last = value; };
   let step: ReleaseFailure['step'] = 'overall check', stepStartedAt = startedAt, timerDriftMs = 0, releaseWriteStarted = false;
@@ -177,18 +176,18 @@ export async function releaseRemoteJob(job: JobRecord & { runId?: RunId }, ports
   };
   async function withinDeadline<T>(name: ReleaseFailure['step'], operation: () => Promise<T>): Promise<T> {
     step = name; stepStartedAt = ports.clock();
-    let timer: ReturnType<typeof setTimeout> | undefined, turn: ReturnType<typeof setImmediate> | undefined;
-    let aborted: (() => void) | undefined, settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined, grace: ReturnType<typeof setTimeout> | undefined;
+    let aborted: (() => void) | undefined;
     try {
-      const request = Promise.resolve(operation()).then(value => { settled = true; return value; }, error => { settled = true; throw error; });
+      const request = Promise.resolve(operation());
       return await Promise.race([
         request,
         new Promise<never>((_resolve, reject) => {
-          const expire = () => { if (!settled) reject(new HerdrError('release-timeout', 'Payload release did not complete before the deadline')); };
+          const expire = () => reject(new HerdrError('release-timeout', 'Payload release did not complete before the deadline'));
           timer = setTimeout(() => {
             timerDriftMs = Math.max(0, ports.clock() - deadline);
-            // A delayed timer must let already queued I/O settle first.
-            if (timerDriftMs > 0) turn = setImmediate(expire);
+            // Child close and reply parsing can take several event-loop turns.
+            if (timerDriftMs > 0) grace = setTimeout(expire, 150);
             else expire();
           }, Math.max(1, deadline - ports.clock()));
           aborted = () => reject(new HerdrError('aborted', 'Payload release aborted'));
@@ -197,7 +196,7 @@ export async function releaseRemoteJob(job: JobRecord & { runId?: RunId }, ports
         }),
       ]);
     } finally {
-      clearTimeout(timer); clearImmediate(turn);
+      clearTimeout(timer); clearTimeout(grace);
       if (aborted) ports.signal?.removeEventListener('abort', aborted);
     }
   }
@@ -207,13 +206,10 @@ export async function releaseRemoteJob(job: JobRecord & { runId?: RunId }, ports
       try {
         checks++;
         const terminal = await withinDeadline('hc get', () => ports.hc.get(address));
-        const differences = Object.entries(expectedLabels).flatMap(([label, expected]) => terminal.labels[label] === expected ? []
-          : [{ label, expected: expected.slice(0, 256), actual: terminal.labels[label]?.slice(0, 256) ?? null }]);
-        const matched = terminal.address === address && differences.length === 0;
-        observe(terminal.address !== address ? { kind: 'address', expected: address.slice(0, 256), actual: terminal.address.slice(0, 256) }
-          : differences.length ? { kind: 'labels', differences } : { kind: 'matched' });
+        const observation = observeJobIdentity(job, address, terminal);
+        observe(observation);
         check();
-        if (matched) break;
+        if (observation.kind === 'matched') break;
       } catch (error) {
         if (error && typeof error === 'object' && 'code' in error && error.code === 'not_found') { notFound++; observe({ kind: 'not_found' }); }
         else {
@@ -230,10 +226,12 @@ export async function releaseRemoteJob(job: JobRecord & { runId?: RunId }, ports
     check();
     const requestSha256 = (await withinDeadline('fileRead', () => ports.hc.fileRead(job.machine, join(job.remoteDirectory, 'request.json.sha256')))).toString().trim();
     check();
+    step = 'release write'; stepStartedAt = ports.clock();
     releaseWriteStarted = true;
-    await withinDeadline('release write', () => ports.releaseFileWriter(job, Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: ports.nonce, requestSha256, releasedAt: ports.clock() }))));
+    await ports.releaseFileWriter(job, Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: ports.nonce, requestSha256, releasedAt: ports.clock() })));
   } catch (error) {
-    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'release-failed';
+    const causeCode = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'release-failed';
+    const code = ports.signal?.aborted ? 'aborted' : causeCode === 'caller-mismatch' ? 'release-failed' : causeCode;
     throw new PayloadReleaseError(code, job.machine, { step, elapsedMs: Math.max(0, ports.clock() - stepStartedAt), beforeReleaseMs, queueWaitMs: ports.queueWaitMs ?? 0, timerDriftMs, ...(first && last ? { confirmation: { checks, notFound, first, last } } : {}) }, releaseWriteStarted, error);
   }
 }

@@ -593,7 +593,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       const bytes = await readFile(join(options.packageRoot, 'dist/herdr/remote-runtime.mjs'));
       runtimePaths.set(resolved.on, runtimeInstallPath(machine.runtime.directory, bytes));
       return { on: resolved.on, ...machine.runtime, nodePath: machine.nodePath ?? 'node', environment: {}, runtimePath: runtimePath(resolved.on), runtimeSha256: (await import('@spider/herdr/remote/runtime')).sha256(bytes) };
-    }, environmentPolicy: env => environment(env), logSink: async (job, readerOptions) => need(output).logReader(job.id, readerOptions), clock: Date.now }), hc, () => need(config).machines) : undefined;
+    }, environmentPolicy: env => environment(env), logSink: async (job, readerOptions) => need(output).logReader(job.id, readerOptions), clock: Date.now }), hc, () => need(config).machines, () => join(need(config).globalRoot, 'herdr/copy-cleanup')) : undefined;
   }, jobIdsForToolResult,
     monitorOptions: () => ({ hc, app: need(app), clock: Date.now, journalRoot: journalRoot(), outputCollector: need(output).outputCollector, reportError: report, recordCleanupError: error => options.reportError?.(error),
       reportConsoleError: error => { if (options.reportError) options.reportError(error); else process.stderr.write(herdrErrorNotice(error) + '\n'); },

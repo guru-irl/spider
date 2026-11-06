@@ -36,7 +36,7 @@ declare namespace Fixed {
     run(request: HcRunRequest): Promise<TerminalHandle>;
     get(address: TerminalAddress, options?: HcCallOptions): Promise<TerminalSummary>;
     read(address: TerminalAddress, options: { lines: number }): Promise<string>;
-    kill(address: TerminalAddress): Promise<void>;
+    kill(address: TerminalAddress, options?: HcCallOptions): Promise<void>;
     rm(address: TerminalAddress, options?: HcCallOptions): Promise<void>;
     setLabels(address: TerminalAddress, labels: Readonly<Record<string, string | null>>): Promise<void>;
     fileRead(on: MachineName, path: string): Promise<Buffer>;
@@ -88,7 +88,7 @@ declare namespace Fixed {
     on: MachineName; owner: Owner; direction: 'to' | 'from'; local: string; remote: string; signal?: AbortSignal;
   }
   export interface RemoteCopyResult {
-    direction: 'to' | 'from'; machine: MachineName; source: string; destination: string; bytes: number; mode: number; sha256: string;
+    direction: 'to' | 'from'; machine: MachineName; source: string; destination: string; bytes: number; mode: number; sha256: string; note?: string;
   }
   export interface RemoteExecutionPort {
     execute(request: RemoteExecuteRequest): Promise<RemoteResult>;
@@ -120,7 +120,7 @@ declare namespace Fixed {
   export type ExecutionEnvironmentPolicy =
     (env: Readonly<NodeJS.ProcessEnv>) => Readonly<NodeJS.ProcessEnv>;
   export interface JobPort extends Disposable {
-    start(program: PreparedProgram, owner: Owner, on: MachineName,
+    start(prepare: () => Promise<PreparedProgram>, owner: Owner, on: MachineName,
       options: { background?: boolean; signal?: AbortSignal; kind?: 'exec' | 'exec-file' | 'batch' }): Promise<JobHandle>;
     detach(jobId: JobId): Promise<void>;
     toolReturned(jobId: JobId): Promise<void>;

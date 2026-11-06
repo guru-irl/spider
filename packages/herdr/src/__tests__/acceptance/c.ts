@@ -37,7 +37,8 @@ export async function createRemoteTestFixture(h: HerdrHarness): Promise<RemoteTe
   const unsubscribers: (() => void)[] = [];
   const terminalFinish = (summary: TerminalSummary): TerminalFinish => ({ exitCode: summary.exitCode, reason: summary.reason ?? 'unknown', signal: summary.signal, finishedAt: summary.finishedAt ?? 0 });
   const jobs: JobPort = {
-    start: async (program, owner, machine) => {
+    start: async (prepare, owner, machine) => {
+      const program = await prepare();
       const id = randomUUID() as JobId, nonce = randomBytes(16).toString('hex');
       const remoteDirectory = program.directory; const localDirectory = join(h.directories.local, id);
       await mkdir(localDirectory, { recursive: true });

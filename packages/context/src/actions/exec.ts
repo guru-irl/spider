@@ -275,7 +275,7 @@ export async function runExec(args: any, ctx: ExecCtx): Promise<{ text: string; 
     if (!copy || typeof copy !== 'object' || !['to', 'from'].includes(copy.direction) || typeof copy.local !== 'string' || typeof copy.remote !== 'string' || !isAbsolute(copy.local) || !posix.isAbsolute(copy.remote) || copy.local.includes('\0') || copy.remote.includes('\0')) throw new Error('File copy requires direction to or from and absolute local and remote paths');
     if (args.code !== undefined || args.language !== undefined || args.background !== undefined || args.timeout !== undefined) throw new Error('File copy cannot be combined with code, language, background, or timeout');
     const result = await ctx.remote.copy({ ...copy, on: args.on, owner: ctx.owner, signal: ctx.signal });
-    return { text: `Copied to ${result.destination}`, details: result, isError: false };
+    return { text: `Copied to ${result.destination}${result.note ? `\n${result.note}` : ''}`, details: result, isError: false };
   }
   const onData = makeStreamer(ctx);
   let res: ExecResult;

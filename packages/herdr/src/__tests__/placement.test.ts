@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile, readFile, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { AppClient, HcClient, HcEvent, HcRunRequest, JobId, JobRecord, Owner, OwnerPlacement, PaneId, RunId, TerminalAddress } from '../contracts.js';
 import { createJobMonitor } from '../jobs/monitor.js';
@@ -125,14 +126,14 @@ describe('auxiliary panes and observers', () => {
 
   it('three jobs launch without observers or waiting for detached tool returns', async () => {
     const h = await fixture(); h.adopt();
-    const program = { directory: h.root, argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} };
+    const program = async () => ({ directory: join(h.root, randomBytes(16).toString('hex')), argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} });
     let finished: JobId | null = null, reserved = 0, arrived!: () => void;
     const thirdReserved = new Promise<void>(r => { arrived = r; });
     const jobs = createJobMonitor({ hc: h.hc, app: h.app, journalRoot: h.root, panes: {
       reserve: (id, owner, options) => { if (++reserved === 3) arrived(); return h.panes.reserveRemote(id, owner, options); },
       observe: async (job, slot) => { const reservation = await h.panes.display(slot, `view-${job.id}` as TerminalAddress, { timeoutMs: 1000 }); return { viewer: reservation.viewer, release: () => h.panes.release(reservation) }; }, abandon: slot => h.panes.abandon(slot),
     }, outputCollector: {
-      prepare: async (_program, job) => ({ program: { ...program, directory: join(h.root, job.id) }, nonce: 'nonce-one', releaseDeadlineAt: Date.now() + 10000 }),
+      prepare: async program => ({ program, nonce: 'nonce-one', releaseDeadlineAt: Date.now() + 10000 }),
       collect: async job => ({ complete: job.id === finished, summary: '', receipt: job.id === finished ? { jobId: job.id, nonce: 'nonce-one', finish: { exitCode: 23, reason: 'exited', signal: null, finishedAt: 1000 } } : null }),
     }, observedJobMessages: async () => [], notifier: async () => {}, clock: Date.now });
     cleanups.push(async () => { await jobs.dispose(); });

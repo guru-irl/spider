@@ -3,15 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { CoreId, MachineName, HcClient, HcEvent, JobId, Owner, PreparedProgram, RunId, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createJobMonitor, type JobMonitorOptions, type JobNotice } from '../jobs/monitor.js';
 import { createJobStore } from '../jobs/store.js';
-import { processStartIdentity, createJobHandoff } from '../jobs/handoff.js';
+import { processStartIdentity, createJobHandoff, reconcileJobRecovery } from '../jobs/handoff.js';
 import { createClientFixture } from './testutil.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-const program: PreparedProgram = { directory: '/fixture/runtime', argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} };
+const program = async (): Promise<PreparedProgram> => ({ directory: join('/fixture/runtime', randomBytes(16).toString('hex')), argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} });
 const finish: TerminalFinish = { exitCode: 23, reason: 'exited', signal: null, finishedAt: 1000 };
 async function fixture() {
   const f = await createClientFixture(); cleanup.push(f.close);
@@ -26,7 +27,7 @@ async function fixture() {
   const options: JobMonitorOptions = { hc, journalRoot: f.root, clock: () => 1000, observedJobMessages: async () => [], notifier: notice => { notices.push(notice); },
     app: { command: async () => { throw new Error('no app'); }, tabTerminals: async () => [], ownerPlacement: async () => { throw new Error('no pane'); }, awaitPane: async () => { throw new Error('no pane'); } },
     panes: { reserve: async () => ({ id: 'unused' }), observe: async () => ({ viewer: 'unused' as TerminalAddress, release: async () => {} }), abandon: async () => {} },
-    outputCollector: { prepare: async (p, job) => ({ program: { ...p, directory: join(f.root, 'remote.invalid', job.id) }, nonce: 'nonce', releaseDeadlineAt: 10000 }), collect: async job => ({ complete: job.phase.kind === 'finished' || Boolean(terminals.get('address' in job.phase ? job.phase.address : '' as TerminalAddress)?.state === 'finished'), summary: 'child output', receipt: terminals.get('address' in job.phase ? job.phase.address : '' as TerminalAddress)?.state === 'finished' ? { jobId: job.id, nonce: 'nonce', finish } : null }) },
+    outputCollector: { prepare: async p => ({ program: p, nonce: 'nonce', releaseDeadlineAt: 10000 }), collect: async job => ({ complete: job.phase.kind === 'finished' || Boolean(terminals.get('address' in job.phase ? job.phase.address : '' as TerminalAddress)?.state === 'finished'), summary: 'child output', receipt: terminals.get('address' in job.phase ? job.phase.address : '' as TerminalAddress)?.state === 'finished' ? { jobId: job.id, nonce: 'nonce', finish } : null }) },
   };
   const monitor = (extra: Partial<JobMonitorOptions> = {}) => { const m = createJobMonitor({ ...options, ...extra }); cleanup.push(() => m.shutdown('reload')); return m; };
   const complete = (address: TerminalAddress) => { Object.assign(terminals.get(address)!, { state: 'finished', ...finish }); for (const listener of listeners) listener({ type: 'finished', terminal: address, data: finish, seq: 2 }); };
@@ -35,6 +36,31 @@ async function fixture() {
 function childRun(id: string, pid = process.pid) { return { id: id as RunId, pid, startIdentity: processStartIdentity(pid)! }; }
 
 describe('remote child handoff', () => {
+  it('crash recovery does not signal a terminal with a different machine identity', async () => {
+    const h = await fixture(), child = h.monitor({ child: childRun('run-one') });
+    const job = await child.start(program, h.owner, 'remote.invalid' as never, {}); await child.shutdown('reload');
+    const store = createJobStore(h.f.root, h.owner.sessionId, 'run-one' as RunId), journal = await store.read();
+    journal.writer = { pid: process.pid, startIdentity: processStartIdentity(process.pid)!, shutdown: null, crashJobs: [job.id] };
+    const get = h.options.hc.get;
+    h.options.hc.get = async address => { const terminal = await get(address); return { ...terminal, labels: { ...terminal.labels, 'spider.machine': 'foreign.invalid' } }; };
+    const errors: unknown[] = [];
+    await reconcileJobRecovery(journal, { hc: h.options.hc, discovered: new Map(), clock: () => 1000, persist: async () => {}, reportError: error => errors.push(error) });
+    expect(h.kills).toEqual([]);
+    expect(journal.writer.crashJobs).toEqual([job.id]);
+    expect(errors).toHaveLength(1);
+  });
+  it('crash recovery rechecks identity after persisting cancellation intent', async () => {
+    const h = await fixture(), child = h.monitor({ child: childRun('run-one') });
+    const job = await child.start(program, h.owner, 'remote.invalid' as never, {}); await child.shutdown('reload');
+    const journal = await createJobStore(h.f.root, h.owner.sessionId, 'run-one' as RunId).read();
+    journal.writer = { pid: process.pid, startIdentity: processStartIdentity(process.pid)!, shutdown: null, crashJobs: [job.id] };
+    const get = h.options.hc.get;
+    let replaced = false;
+    h.options.hc.get = async address => { const terminal = await get(address); return replaced ? { ...terminal, labels: { ...terminal.labels, 'spider.job': 'foreign' } } : terminal; };
+    const errors: unknown[] = [];
+    await reconcileJobRecovery(journal, { hc: h.options.hc, discovered: new Map(), clock: () => 1000, persist: async () => { replaced = true; }, reportError: error => errors.push(error) });
+    expect(h.kills).toEqual([]); expect(journal.writer.crashJobs).toEqual([job.id]); expect(errors).toHaveLength(1);
+  });
   it('closes an ended run console and does not close an active sibling console', async () => {
     const h = await fixture(), ended = h.monitor({ child: childRun('ended-run') }), active = h.monitor({ child: childRun('active-run') });
     await ended.start(program, h.owner, 'remote.invalid' as never, { background: true }); await ended.shutdown('quit');

@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { HERDR_LABELS } from '../contracts.js';
+import { observeJobIdentity } from './identity.js';
 import type { HcClient, JobId, Owner, RunId, TerminalAddress } from '../contracts.js';
 import { closeAgentConsoles as closeRunConsoles } from '../remote/console.js';
 import { HerdrError } from '../client/parse.js';
@@ -145,15 +145,18 @@ export async function reconcileJobRecovery(journal: JobJournal, options: {
       let expired = false;
       try {
         const terminal = await options.hc.get(address);
-        const labels = terminal.labels;
-        if (labels[HERDR_LABELS.job] !== job.id || labels[HERDR_LABELS.session] !== job.owner.sessionId || labels[HERDR_LABELS.ownerCore] !== job.owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== job.owner.terminal.terminalId || labels[HERDR_LABELS.kind] !== job.kind)
-          throw new HerdrError('job-owner-mismatch', 'Crash recovery refuses a terminal with a different job owner');
+        if (observeJobIdentity(job, address, terminal).kind !== 'matched')
+          throw new HerdrError('job-owner-mismatch', 'Crash recovery refuses a terminal with a different job identity');
         if (terminal.state === 'finished') {
           if (!job.handoffCancelled) { forget(); await options.persist(); continue; }
           job.originalFinish = { exitCode: terminal.exitCode, signal: terminal.signal, reason: terminal.reason ?? 'unknown', finishedAt: terminal.finishedAt ?? options.clock() };
         } else {
           job.handoffCancelled = true; await options.persist();
-          await options.hc.kill(address);
+          const current = await options.hc.get(address);
+          if (observeJobIdentity(job, address, current).kind !== 'matched')
+            throw new HerdrError('job-owner-mismatch', 'Crash recovery refuses a terminal with a different job identity');
+          if (current.state === 'finished') job.originalFinish = { exitCode: current.exitCode, signal: current.signal, reason: current.reason ?? 'unknown', finishedAt: current.finishedAt ?? options.clock() };
+          else await options.hc.kill(address);
         }
       } catch (error) {
         if (!(error && typeof error === 'object' && 'code' in error && error.code === 'not_found')) throw error;

@@ -8,6 +8,27 @@ import { sha256 } from '../remote/runtime.js';
 import { bounded, cleanup, deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 import type { CollectedLogs } from '../remote/transfer.js';
 
+it('returns an uncertain release with job paths and preserves a later completion notice', async () => {
+  const f = await monitorFixture(), bytes = Buffer.from('runtime');
+  f.hc.fileRead = async () => bytes;
+  f.hc.fileWrite = async (_on, path) => { if (path.endsWith('/release.json')) throw Object.assign(new Error('Acknowledgement lost'), { code: 'cli-timeout' }); };
+  const jobs = f.monitor();
+  const remote = createRemoteExecutor({ hc: f.hc, jobs, prepare: program,
+    target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
+    environmentPolicy: env => env, clock: Date.now,
+    logSink: async () => ({ collect: async () => ({ stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, complete: false, capped: false, receipt: null }), dispose() {} }),
+  });
+  const actual = await bounded(remote.execute({ source: { kind: 'code', language: 'shell', code: 'printf ok' }, on, owner: f.owner }).then(result => ({ result }), error => ({ error })), 1000);
+  expect(f.kills).toEqual([]);
+  expect(actual).toHaveProperty('result');
+  if (!('result' in actual)) return;
+  expect(actual.result).toMatchObject({ outcome: 'unknown', exitCode: null, backgroundJob: { id: actual.result.remote.jobId } });
+  expect(actual.result.stderr).toMatch(/release.*may.*running/i);
+  f.complete(actual.result.remote.address!); await jobs.reconcile();
+  await expect.poll(() => f.notices.length, { timeout: 500 }).toBe(1);
+  expect(f.notices[0].details.jobId).toBe(actual.result.remote.jobId);
+});
+
 it.each([true, false])('a stalled collector respects liveness and cancellation with native finish %s', async nativeFinishes => {
   // Awaiting reader.collect unconditionally makes the monitor's 60-second bound ineffective.
   const f = await monitorFixture();
@@ -21,7 +42,7 @@ it.each([true, false])('a stalled collector respects liveness and cancellation w
   const stop = new AbortController();
   try {
     const remote = createRemoteExecutor({
-      hc: f.hc, jobs, prepare: async () => program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
+      hc: f.hc, jobs, prepare: program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
       environmentPolicy: env => env, clock: Date.now,
       logSink: async () => ({ collect: () => { reading.resolve(); return stalled.promise; }, dispose() {} }),
     });
@@ -58,7 +79,7 @@ it('a timeout bounds repeated incomplete reads with one settlement deadline', as
   const jobs = f.monitor({ outputCollector: { ...f.options.outputCollector, collect: () => new Promise(() => {}) } });
   const stop = new AbortController();
   const remote = createRemoteExecutor({
-    hc: f.hc, jobs, prepare: async () => program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
+    hc: f.hc, jobs, prepare: program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
     environmentPolicy: env => env, clock: () => now,
     logSink: async () => ({ collect: async () => { now += 1000; return { stdout: '', stderr: '', stdoutBytes: 0, stderrBytes: 0, complete: false, capped: false, receipt: null }; }, dispose() {} }),
   });
@@ -81,7 +102,7 @@ it.each([{ background: false, nativeFinishes: false }, { background: false, nati
   f.hc.fileRead = async () => bytes;
   const jobs = f.monitor({ outputCollector: { ...f.options.outputCollector, collect: () => new Promise(() => {}) } });
   const remote = createRemoteExecutor({
-    hc: f.hc, jobs, prepare: async () => program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
+    hc: f.hc, jobs, prepare: program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
     environmentPolicy: env => env, clock: Date.now,
     logSink: async () => ({ collect: () => { reading.resolve(); return stalled.promise; }, dispose() {} }),
   });

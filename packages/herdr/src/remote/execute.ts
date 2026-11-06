@@ -40,7 +40,9 @@ function agrees(receipt: RuntimeReceipt, finish: TerminalFinish): boolean {
 export async function executeRemote(request: RemoteExecuteRequest, ports: RemoteExecutionPorts): Promise<RemoteResult> {
   if (request.signal?.aborted) throw Object.assign(new Error('Remote execution was aborted before launch'), { code: 'aborted-before-launch' });
   const startedAt = ports.clock();
-  const target = await ports.target(request.on, request.owner);
+  request = { ...request, source: { ...request.source } };
+  const resolved = await ports.target(request.on, request.owner);
+  const target = { ...resolved, commands: Object.fromEntries(Object.entries(resolved.commands).map(([language, command]) => [language, [...command]])), environment: { ...resolved.environment } };
   request = { ...request, on: target.on };
   let checks = verifiedRuntimes.get(ports.hc);
   if (!checks) { checks = new Map(); verifiedRuntimes.set(ports.hc, checks); }
@@ -64,7 +66,12 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
   const prepared = await ports.prepare(request.source, target);
   const env = { ...ports.environmentPolicy(Object.freeze({ ...prepared.env })) };
   delete env.PATH; delete env.Path; // The runtime inherits its destination PATH, never the local ssh shim.
-  const job = await startWithAgentConsole({ ...request, target, program: { ...prepared, env }, jobs: ports.jobs, hc: ports.hc, options: { background: request.background, signal: request.signal, kind: request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec') }, startedAt });
+  let first: PreparedProgram | undefined = { ...prepared, env };
+  const prepare = async () => {
+    if (first) { const result = first; first = undefined; return result; }
+    return { ...await ports.prepare(request.source, target), env };
+  };
+  const job = await startWithAgentConsole({ ...request, target, program: prepare, jobs: ports.jobs, hc: ports.hc, options: { background: request.background, signal: request.signal, kind: request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec') }, startedAt });
   const remote = { jobId: job.id, machine: request.on, address: job.address };
   const logs = { stdout: join(job.localDirectory, 'stdout.log'), stderr: join(job.localDirectory, 'stderr.log') };
   const backgroundJob = { id: job.id, dir: job.localDirectory, manifest: join(job.localDirectory, 'job.json'), receipt: join(job.localDirectory, 'receipt.json'), logs };
@@ -75,7 +82,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
   let finish: JobFinish | undefined; let finishedAt: number | undefined;
   let finishLost = false;
   let releaseCollection: (() => void) | undefined;
-  void job.finished.then(value => { finish = value; finishedAt = ports.clock(); if (value.reason === 'unknown' || value.evidenceConflict) releaseCollection?.(); }, () => { finishLost = true; });
+  void job.finished.then(value => { finish = value; finishedAt = ports.clock(); if (value.reason === 'unknown' || value.reason === 'release-uncertain' || value.evidenceConflict) releaseCollection?.(); }, () => { finishLost = true; });
   const result = (outcome: RemoteResult['outcome'], exitCode: number | null, signal?: string): RemoteResult => ({
     stdout: latest.stdout, stderr: latest.stderr, exitCode, outcome, timedOut, remote,
     ...(signal ? { signal } : {}), ...(aborted ? { aborted: true } : {}),
@@ -120,7 +127,7 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
         const remaining = timedOut ? Math.max(0, settlementDeadlineAt! - ports.clock()) : request.timeout === undefined ? undefined : Math.max(0, request.timeout - (ports.clock() - startedAt));
         if (remaining !== undefined) collectionTimer = setTimeout(() => { collectionExpired = true; releaseCollection?.(); }, remaining);
         void activeReader.collect().then(resolve, reject);
-        if (finish?.reason === 'unknown' || finish?.evidenceConflict) releaseCollection();
+        if (finish?.reason === 'unknown' || finish?.reason === 'release-uncertain' || finish?.evidenceConflict) releaseCollection();
       }).finally(() => {
         clearTimeout(collectionTimer);
         if (abortCollection) request.signal?.removeEventListener('abort', abortCollection);
@@ -152,6 +159,11 @@ export async function executeRemote(request: RemoteExecuteRequest, ports: Remote
       if (latest.capped && !request.background) {
         await job.cancel('abort'); await ports.jobs.consumeNotice(job.id);
         throw Object.assign(new Error('Foreground remote output exceeded its capture budget; exact bytes remain in the logs'), { code: 'output-cap-exceeded', remote, logs });
+      }
+      if (finish?.reason === 'release-uncertain') {
+        const value = uncertainResult();
+        value.stderr += `${value.stderr ? '\n' : ''}Release acknowledgement was lost; the command may be running.`;
+        return value;
       }
       if (outputUnreadable && finish) return acknowledge(unreadableResult(finish));
       if (finish?.reason === 'unknown' || finish?.evidenceConflict) return acknowledge(uncertainResult());

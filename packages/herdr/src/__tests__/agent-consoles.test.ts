@@ -128,9 +128,9 @@ it('keeps the console journal attached to agent identity when the owning core ch
 }, 20000);
 it('drops a stale preparation hold link when no console was ensured', async () => {
   const { h, launch, remote } = await fixture(); const request = await launch();
-  const prepared = await (await import('../../../context/src/remote-plan.js')).prepareRemoteProgram(request.source, request.target);
-  const jobs: import('../contracts.js').JobPort = { ...remote.ports.jobs, start: async (program, ...rest) => { expect(program).not.toHaveProperty('consoleDirectory'); return remote.ports.jobs.start(program, ...rest); } };
-  await consoleModule.startWithAgentConsole({ ...request, enabled: false, hc: h.hc, jobs, program: { ...prepared, consoleDirectory: join(request.target.directory, '.consoles', 'stale') }, options: {} });
+  const { prepareRemoteProgram } = await import('../../../context/src/remote-plan.js');
+  const jobs: import('../contracts.js').JobPort = { ...remote.ports.jobs, start: async (prepare, ...rest) => remote.ports.jobs.start(async () => { const program = await prepare(); expect(program).not.toHaveProperty('consoleDirectory'); return program; }, ...rest) };
+  await consoleModule.startWithAgentConsole({ ...request, enabled: false, hc: h.hc, jobs, program: async () => ({ ...await prepareRemoteProgram(request.source, request.target), consoleDirectory: join(request.target.directory, '.consoles', 'stale') }), options: {} });
 }, 20000);
 function events() {
   const callbacks = new Map<string, (event: SessionShutdownEvent, ctx: ExtensionContext) => unknown>();

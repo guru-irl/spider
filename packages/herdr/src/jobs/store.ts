@@ -8,6 +8,7 @@ import type { JobRecord, JobId, Owner, SessionId, RunId, ReleaseConfirmation, Re
 import { HERDR_LABELS } from '../contracts.js';
 import type { ChildJobWriter } from './handoff.js';
 import { HerdrError, object, text, integer, nullableInteger, nullableText, absolutePath } from '../client/parse.js';
+import { compactFailedPhase } from './diagnostics.js';
 
 export interface JournalJob extends JobRecord {
   nonce: string;
@@ -23,6 +24,7 @@ export interface JournalJob extends JobRecord {
   settledMarked: boolean;
   terminalExpired: boolean;
   terminalReleased?: boolean;
+  supersededBy?: JobId;
   cleanupFailure?: { code: string; attempts: number; firstAt: number; lastAt: number };
   updatedAt: number;
   handoffCancelled?: boolean;
@@ -57,12 +59,13 @@ function parseReleaseObservation(value: unknown): ReleaseObservation {
   if (v.kind === 'not_found' || v.kind === 'matched') return { kind: v.kind };
   if (v.kind === 'address') return { kind: 'address', expected: releaseText(v.expected), actual: releaseText(v.actual) };
   if (v.kind !== 'labels' || !Array.isArray(v.differences) || !v.differences.length || v.differences.length > 7) throw new HerdrError('invalid-journal', 'Invalid release observation');
-  const labels: readonly string[] = Object.values(HERDR_LABELS);
+  const labels: readonly string[] = Object.values(HERDR_LABELS), omitted = v.omitted === undefined ? undefined : integer(v.omitted);
+  if (omitted !== undefined && (omitted < 0 || omitted + v.differences.length > 7)) throw new HerdrError('invalid-journal', 'Invalid omitted release labels');
   return { kind: 'labels', differences: v.differences.map(value => {
     const d = object(value), label = text(d.label);
     if (!labels.includes(label)) throw new HerdrError('invalid-journal', 'Invalid release label');
     return { label, expected: releaseText(d.expected), actual: d.actual === null ? null : releaseText(d.actual) };
-  }) };
+  }), ...(omitted === undefined ? {} : { omitted }) };
 }
 function parseReleaseConfirmation(value: unknown): ReleaseConfirmation {
   const v = object(value), checks = integer(v.checks), notFound = integer(v.notFound);
@@ -107,7 +110,7 @@ export function parseJobJournal(value: unknown, sessionId: SessionId): JobJourna
     if (v.commandPreview !== undefined && (typeof v.commandPreview !== 'string' || v.commandPreview.length > 180 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(v.commandPreview))) throw new HerdrError('invalid-journal', 'Invalid command preview');
     const cleanup = v.cleanupFailure === undefined ? undefined : object(v.cleanupFailure);
     const cleanupFailure = cleanup ? { code: text(cleanup.code), attempts: integer(cleanup.attempts), firstAt: integer(cleanup.firstAt), lastAt: integer(cleanup.lastAt) } : undefined;
-    return { version: 1, ...(cleanupFailure ? { cleanupFailure } : {}), ...(v.noticeSavedNonce === undefined ? {} : { noticeSavedNonce: text(v.noticeSavedNonce) }), ...(v.noticeObservedGeneration === undefined ? {} : { noticeObservedGeneration: id(v.noticeObservedGeneration) as Owner['generation'] }), ...(v.terminalReleased === undefined ? {} : { terminalReleased: boolean(v.terminalReleased) }), ...(exitEvidence ? { exitEvidence } : {}), ...(v.commandPreview === undefined ? {} : { commandPreview: v.commandPreview as string }), id: id(v.id) as JobId, ...(v.runId === undefined ? {} : { runId: id(v.runId) as RunId }), ...(v.handoffCancelled === undefined ? {} : { handoffCancelled: boolean(v.handoffCancelled) }), owner, machine: text(v.machine) as JobRecord['machine'], kind: v.kind as JobRecord['kind'], phase, viewer: nullableText(v.viewer) as JobRecord['viewer'], remoteDirectory: typeof v.remoteDirectory === 'string' && v.remoteDirectory === '' ? '' : absolutePath(v.remoteDirectory), localDirectory: absolutePath(v.localDirectory), detached: boolean(v.detached), noticeMode: v.noticeMode as JobRecord['noticeMode'], notice: v.notice as JobRecord['notice'], nonce: typeof v.nonce === 'string' ? v.nonce : text(v.nonce), releaseDeadlineAt: integer(v.releaseDeadlineAt), originalFinish: v.originalFinish === null ? null : parseFinish(v.originalFinish), output: output ? { complete: boolean(output.complete), summary: output.summary as string } : null, callerOwned: boolean(v.callerOwned), uncertain: boolean(v.uncertain), evidenceConflict: boolean(v.evidenceConflict), noticeDelivered: boolean(v.noticeDelivered), settledMarked: boolean(v.settledMarked), terminalExpired: boolean(v.terminalExpired), updatedAt: integer(v.updatedAt) };
+    return { version: 1, ...(cleanupFailure ? { cleanupFailure } : {}), ...(v.noticeSavedNonce === undefined ? {} : { noticeSavedNonce: text(v.noticeSavedNonce) }), ...(v.noticeObservedGeneration === undefined ? {} : { noticeObservedGeneration: id(v.noticeObservedGeneration) as Owner['generation'] }), ...(v.terminalReleased === undefined ? {} : { terminalReleased: boolean(v.terminalReleased) }), ...(v.supersededBy === undefined ? {} : { supersededBy: id(v.supersededBy) as JobId }), ...(exitEvidence ? { exitEvidence } : {}), ...(v.commandPreview === undefined ? {} : { commandPreview: v.commandPreview as string }), id: id(v.id) as JobId, ...(v.runId === undefined ? {} : { runId: id(v.runId) as RunId }), ...(v.handoffCancelled === undefined ? {} : { handoffCancelled: boolean(v.handoffCancelled) }), owner, machine: text(v.machine) as JobRecord['machine'], kind: v.kind as JobRecord['kind'], phase, viewer: nullableText(v.viewer) as JobRecord['viewer'], remoteDirectory: typeof v.remoteDirectory === 'string' && v.remoteDirectory === '' ? '' : absolutePath(v.remoteDirectory), localDirectory: absolutePath(v.localDirectory), detached: boolean(v.detached), noticeMode: v.noticeMode as JobRecord['noticeMode'], notice: v.notice as JobRecord['notice'], nonce: typeof v.nonce === 'string' ? v.nonce : text(v.nonce), releaseDeadlineAt: integer(v.releaseDeadlineAt), originalFinish: v.originalFinish === null ? null : parseFinish(v.originalFinish), output: output ? { complete: boolean(output.complete), summary: output.summary as string } : null, callerOwned: boolean(v.callerOwned), uncertain: boolean(v.uncertain), evidenceConflict: boolean(v.evidenceConflict), noticeDelivered: boolean(v.noticeDelivered), settledMarked: boolean(v.settledMarked), terminalExpired: boolean(v.terminalExpired), updatedAt: integer(v.updatedAt) };
   });
   if (new Set(jobs.map(j => j.id)).size !== jobs.length) throw new HerdrError('invalid-journal', 'Duplicate journal job');
   let child: JobJournal['child'];
@@ -190,7 +193,8 @@ export function createJobStore(root: string, sessionId: SessionId, runId?: RunId
       } finally { await file.close(); }
     },
     write: async (journal: JobJournal): Promise<void> => {
-      const bytes = Buffer.from(JSON.stringify(journal)); if (bytes.length > MAX_BYTES) throw new HerdrError('journal-too-large', 'Job journal exceeds 1 MiB');
+      const compact = { ...journal, jobs: journal.jobs.map(job => job.phase.kind === 'launch-failed' ? { ...job, phase: compactFailedPhase(job.phase) } : job) };
+      const bytes = Buffer.from(JSON.stringify(compact)); if (bytes.length > MAX_BYTES) throw new HerdrError('journal-too-large', 'Job journal exceeds 1 MiB');
       await prepareDirectory(true);
       try { if (!(await lstat(path)).isFile()) throw new HerdrError('unsafe-journal-path', 'Refusing a non-file journal'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       const temporary = join(directory, `.jobs-${randomUUID()}.json`);

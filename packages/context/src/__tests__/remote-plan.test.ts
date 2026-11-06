@@ -32,6 +32,13 @@ async function fixture() {
   return { root, local, destination, requests, uploads, target, ctx: { cwd: local, remote, owner } };
 }
 describe('remote preparation', () => {
+  it('shows a quiet cleanup note after a successful copy', async () => {
+    const h = await fixture();
+    h.ctx.remote.copy = async request => ({ direction: request.direction, machine: request.on, source: request.local, destination: request.remote, bytes: 1, mode: 0o600, sha256: 'a'.repeat(64), note: 'Staging cleanup deferred.' });
+    const result = await runExec({ on: 'remote.invalid', copy: { direction: 'to', local: join(h.local, 'source'), remote: join(h.destination, 'dest') } }, h.ctx);
+    expect(result.isError).toBe(false);
+    expect(result.text).toBe(`Copied to ${join(h.destination, 'dest')}\nStaging cleanup deferred.`);
+  });
   it('reads exec_file only on its destination and never falls back locally', async () => {
     const h = await fixture();
     await writeFile(join(h.destination, 'input.txt'), 'destination-only value');

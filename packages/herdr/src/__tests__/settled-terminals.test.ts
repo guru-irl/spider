@@ -53,8 +53,8 @@ it.each(['t-old', 'remote.invalid/t-old'])('activation removes owned settled ter
   expect((await store.read()).jobs).toHaveLength(1);
 });
 
-it.each(['spider.session', 'spider.owner-core', 'spider.owner-terminal', 'spider.kind', 'spider.job'])('never removes a terminal with foreign %s', async label => {
-  const f = await monitorFixture(), removed = vi.spyOn(f.hc, 'rm'), jobs = f.monitor();
+it.each(['spider.session', 'spider.owner-core', 'spider.owner-terminal', 'spider.kind', 'spider.job', 'spider.machine'])('never removes a terminal with foreign %s', async label => {
+  const f = await monitorFixture(), removed = vi.spyOn(f.hc, 'rm'), queries = vi.spyOn(f.hc, 'get'), jobs = f.monitor();
   const handle = await jobs.start(program, f.owner, on, {});
   f.complete(handle.address); await jobs.reconcile();
   await jobs.consumeNotice(handle.id);
@@ -63,9 +63,33 @@ it.each(['spider.session', 'spider.owner-core', 'spider.owner-terminal', 'spider
   const foreign = await jobs.start(program, f.owner, on, {});
   f.complete(foreign.address); await jobs.reconcile();
   f.terminals.get(foreign.address)!.labels = { ...f.terminals.get(foreign.address)!.labels, [label]: 'foreign' };
+  queries.mockClear();
   await jobs.consumeNotice(foreign.id); await jobs.reconcile();
+  await vi.waitFor(() => expect(queries.mock.calls.some(([address]) => address === foreign.address)).toBe(true), { timeout: 3500 });
+  await jobs.finishCleanup();
   expect(removed).not.toHaveBeenCalled();
   expect(f.terminals.has(foreign.address)).toBe(true);
+});
+
+it('does not remove a finished terminal replaced after its initial identity check', async () => {
+  const f = await monitorFixture(), removed = vi.spyOn(f.hc, 'rm'), jobs = f.monitor();
+  const handle = await jobs.start(program, f.owner, on, {});
+  f.complete(handle.address); await jobs.reconcile();
+  const get = f.hc.get;
+  let replaced = false;
+  f.hc.get = async address => {
+    const terminal = await get(address);
+    if (!replaced && address === handle.address && terminal.state === 'finished') {
+      const snapshot = { ...terminal, labels: { ...terminal.labels } };
+      queueMicrotask(() => { replaced = true; f.terminals.set(address, { ...snapshot, labels: { ...snapshot.labels, 'spider.job': 'foreign' } }); });
+      return snapshot;
+    }
+    return terminal;
+  };
+  await jobs.consumeNotice(handle.id);
+  await vi.waitFor(() => expect(replaced).toBe(true), { timeout: 3500 }); await jobs.finishCleanup();
+  expect(removed).not.toHaveBeenCalled();
+  expect(f.terminals.get(handle.address)?.labels['spider.job']).toBe('foreign');
 });
 
 it('an ended child releases complete output without a notice on the parent branch', async () => {

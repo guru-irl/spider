@@ -27,8 +27,8 @@ const jobs = createJobMonitor({ hc, journalRoot: input.journalRoot, outputCollec
 const target: RuntimeTarget = { on: config.machines[0].name, ...config.machines[0].runtime, nodePath: process.execPath,
   runtimePath, runtimeSha256: sha256(runtime), environment: {},
 };
-const background = await jobs.start(await prepareRemoteProgram({ kind: 'code', language: 'shell', code: input.background }, target), input.owner, target.on, { background: true });
-const foreground = await jobs.start(await prepareRemoteProgram({ kind: 'code', language: 'shell', code: input.foreground }, target), input.owner, target.on, {});
+const background = await jobs.start(() => prepareRemoteProgram({ kind: 'code', language: 'shell', code: input.background }, target), input.owner, target.on, { background: true });
+const foreground = await jobs.start(() => prepareRemoteProgram({ kind: 'code', language: 'shell', code: input.foreground }, target), input.owner, target.on, {});
 await writeFile(input.readyFile, JSON.stringify({ pid: process.pid, foreground: { id: foreground.id, address: foreground.address }, background: { id: background.id, address: background.address } }));
 await foreground.finished;
 throw new Error('Foreground waiter unexpectedly returned before the owner crash');

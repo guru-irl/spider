@@ -46,7 +46,7 @@ test.skipIf(!enabled)('a core stopped mid-session fails fresh waits and remote a
     await expect(bounded(fresh.ready)).rejects.toMatchObject({ code: 'core-unavailable' });
     await expect(bounded(fresh.lookup(h.owner!.terminal.address))).rejects.toMatchObject({ code: 'core-unavailable' });
     await expect(bounded(monitors[0]!.reconcile())).rejects.toMatchObject({ code: 'core-unavailable' });
-    await expect(bounded(monitors[0]!.start({ directory: join(h.root, 'unused'), argv: ['false'], cwd: null, files: [], env: {} }, h.owner!, 'remote.invalid' as MachineName, {}))).rejects.toMatchObject({ code: 'core-unavailable' });
+    await expect(bounded(monitors[0]!.start(async () => ({ directory: join(h.root, 'unused'), argv: ['false'], cwd: null, files: [], env: {} }), h.owner!, 'remote.invalid' as MachineName, {}))).rejects.toMatchObject({ code: 'core-unavailable' });
     await bounded(monitors[0]!.shutdown('quit')); await bounded(monitors[1]!.shutdown('reload'));
     await fresh.dispose();
     await bounded(Promise.resolve(client.dispose()));

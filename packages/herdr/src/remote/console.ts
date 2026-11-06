@@ -25,7 +25,7 @@ export interface AgentConsoleLifecyclePorts {
 }
 export interface AgentConsoleHandle extends TerminalHandle { directory: string }
 export interface AgentConsoleStart extends AgentConsoleLaunch {
-  program: PreparedProgram; jobs: JobPort & { consoleIdle?(owner: Owner, on: MachineName, runId?: RunId): Promise<boolean>; consoleError?(error: unknown): void }; hc: HcClient; options: Parameters<JobPort['start']>[3];
+  program: () => Promise<PreparedProgram>; jobs: JobPort & { consoleIdle?(owner: Owner, on: MachineName, runId?: RunId): Promise<boolean>; consoleError?(error: unknown): void }; hc: HcClient; options: Parameters<JobPort['start']>[3];
 }
 interface ConsoleState { owner: AgentConsoleOwner; handle: AgentConsoleHandle; directory: string; count: number }
 const queues = new Map<string, Promise<unknown>>();
@@ -183,10 +183,13 @@ export async function startWithAgentConsole(request: AgentConsoleStart): Promise
     };
     const key = owner ? consoleKey(owner, request.on) : '';
     const console = owner ? await ensureInQueue(launch, request.hc, env, owner, key).catch(() => null) : null;
-    const program = { ...request.program };
-    if (console) program.consoleDirectory = console.directory;
-    else delete program.consoleDirectory;
-    const job = await request.jobs.start(program, request.owner, request.on, request.options);
+    const prepare = async () => {
+      const program = { ...await request.program() };
+      if (console) program.consoleDirectory = console.directory;
+      else delete program.consoleDirectory;
+      return program;
+    };
+    const job = await request.jobs.start(prepare, request.owner, request.on, request.options);
     if (console && owner) await ensureInQueue({ ...launch, job }, request.hc, env, owner, key).catch(() => {});
     return job;
   };

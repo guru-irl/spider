@@ -197,6 +197,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     const terminal = await verifiedTerminal(job, address, timeoutMs);
     if (terminal.state === 'finished') return;
     if (beforeSignal) await beforeSignal();
+    // hc cannot bind this identity check atomically to the signal; the terminal may change between them.
     const current = await verifiedTerminal(job, address, timeoutMs);
     if (current.state === 'finished') return;
     if (job.uncertain || lostOriginals.has(address)) throw new HerdrError('job-outcome-unknown', 'Original incarnation is no longer known; not signaling a recovery shell');
@@ -234,6 +235,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       if (lifetime.signal.aborted) return;
       await cleanupCall(() => release(job));
       if (lifetime.signal.aborted) return;
+      // hc cannot bind this identity check atomically to removal; the terminal may change between them.
       const current = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
       if (!matches(current)) { await skip(); return; }
       await cleanupCall(() => options.hc.rm(address, cleanupOptions()));

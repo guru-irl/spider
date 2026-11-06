@@ -5,6 +5,9 @@ import { div, svg, image } from "gpui-kit";
 import { Popup, InputState, Input, h_flex, v_flex } from "gpui-base";
 import { spaces, panes, focused, run, openOverlay, theme, keys, knownAgents, window, shared, setShared } from "herdr";
 
+function activeSpaceId() {
+  return spaces().find(space => space.active)?.id ?? "";
+}
 function activeTab() {
   const space = spaces().find(space => space.active);
   return `${space?.id ?? ""}/${space?.tabs?.find(tab => tab.active)?.id ?? ""}`;
@@ -34,7 +37,7 @@ const EDGE = "#38383a";
 const REST = 4, START = -2, INSET = 8;
 
 export function initTabAutoHide(view, cx) {
-  const state = view.tabAuto = { visible: false, slid: false, leaving: false, slideTimer: null, strip: false, row: false, width: 0, active: activeTab(), flashUntil: 0, menu: null, rename: null, plus: false, agents: [], handle: cx.focus_handle() };
+  const state = view.tabAuto = { visible: false, slid: false, leaving: false, slideTimer: null, strip: false, row: false, width: 0, active: activeTab(), activeSpace: activeSpaceId(), flashUntil: 0, menu: null, rename: null, plus: false, agents: [], handle: cx.focus_handle() };
   const cancel = () => { state.timer?.cancel(); state.timer = null; };
   const held = () => state.strip || state.row || view.pressed !== null || state.menu || state.rename || state.plus;
   // Leaving slides the bar up behind the strip first, and only then removes it.
@@ -184,10 +187,12 @@ export function initTabAutoHide(view, cx) {
 }
 
 export function renderTabAutoHide(view, row, cx) {
-  const state = view.tabAuto, active = activeTab();
+  const state = view.tabAuto, active = activeTab(), space = activeSpaceId();
   if (state.active !== active) {
-    state.active = active;
-    if (state.pointerTab !== active) { state.show(cx); state.flashUntil = Date.now() + 1500; state.hide(0); }
+    // Switching spaces changes the active tab too; only a tab change within one space flashes the bar.
+    const sameSpace = state.activeSpace === space;
+    state.active = active; state.activeSpace = space;
+    if (sameSpace && state.pointerTab !== active) { state.show(cx); state.flashUntil = Date.now() + 1500; state.hide(0); }
     state.pointerTab = null;
   }
   const strip = div().id("tabs-strip").w_full().h(6).bg(theme().chrome)

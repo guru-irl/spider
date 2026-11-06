@@ -334,7 +334,7 @@ A child finds the configuration file the same way as its session. See [Where the
 
 ## The tab bar
 
-The tab bar hides behind a 6 px strip above the terminals. Hover over the strip to show the tabs. The bar closes 300 ms after you leave, unless a tab menu, rename field, or drag is active. An active-tab change shows the bar for 1.5 seconds unless you selected that tab directly in the bar. Revealing the bar does not resize your terminals. Drag the strip to move the window.
+The tab bar hides behind a 6 px strip above the terminals. Hover over the strip to show the tabs. The bar closes 300 ms after you leave, unless a tab menu, rename field, or drag is active. An active-tab change within the same space shows the bar for 1.5 seconds unless you selected that tab directly in the bar. Switching spaces does not show it. Revealing the bar does not resize your terminals. Drag the strip to move the window.
 
 To keep the full bar visible, add `"look": { "autoHideTabs": false }` to your Herdr configuration file and rerun setup. The default is `true`. Turning it off restores the 42 px bar and its stock menus.
 

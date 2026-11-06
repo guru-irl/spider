@@ -205,6 +205,15 @@ test('an external tab change flashes for 1.5 seconds and rapid changes restart i
   vi.advanceTimersByTime(1499); expect(s.full()).toBe(true);
   vi.advanceTimersByTime(1); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
 });
+test('switching spaces does not flash the bar, and a tab change in the new space still does', async () => {
+  vi.useFakeTimers(); const s = await scene(); s.render();
+  s.space.id = 'two'; s.space.tabs = [{ id: 'c', name: 'Third', active: true }, { id: 'd', name: 'Fourth', active: false }]; s.render();
+  vi.advanceTimersByTime(16); expect(s.full()).toBe(false);
+  vi.advanceTimersByTime(2000); expect(s.full()).toBe(false);
+  s.space.tabs[0]!.active = false; s.space.tabs[1]!.active = true; s.render();
+  expect(s.full()).toBe(true);
+  vi.advanceTimersByTime(1500); expect(s.leaving()).toBe(true); vi.advanceTimersByTime(SLIDE); expect(s.full()).toBe(false);
+});
 test('a tab change during fade-out reveals the flash and hides after it ends', async () => {
   vi.useFakeTimers(); const s = await scene(); s.enter(); vi.advanceTimersByTime(16); s.leave();
   vi.advanceTimersByTime(350); expect(s.leaving()).toBe(true);

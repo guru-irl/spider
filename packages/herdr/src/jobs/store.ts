@@ -4,7 +4,8 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { JobRecord, JobId, Owner, SessionId, RunId, TerminalFinish } from '../contracts.js';
+import type { JobRecord, JobId, Owner, SessionId, RunId, ReleaseConfirmation, ReleaseFailure, ReleaseObservation, TerminalFinish } from '../contracts.js';
+import { HERDR_LABELS } from '../contracts.js';
 import type { ChildJobWriter } from './handoff.js';
 import { HerdrError, object, text, integer, nullableInteger, nullableText, absolutePath } from '../client/parse.js';
 
@@ -47,6 +48,34 @@ export function parseFinish(value: unknown): TerminalFinish {
   if (result.finishedAt < 0 || (result.exitCode !== null && result.signal !== null)) throw new HerdrError('invalid-journal', 'Conflicting result fields');
   return result;
 }
+function releaseText(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 256) throw new HerdrError('invalid-journal', 'Invalid release observation value');
+  return value;
+}
+function parseReleaseObservation(value: unknown): ReleaseObservation {
+  const v = object(value);
+  if (v.kind === 'not_found' || v.kind === 'matched') return { kind: v.kind };
+  if (v.kind === 'address') return { kind: 'address', expected: releaseText(v.expected), actual: releaseText(v.actual) };
+  if (v.kind !== 'labels' || !Array.isArray(v.differences) || !v.differences.length || v.differences.length > 7) throw new HerdrError('invalid-journal', 'Invalid release observation');
+  const labels: readonly string[] = Object.values(HERDR_LABELS);
+  return { kind: 'labels', differences: v.differences.map(value => {
+    const d = object(value), label = text(d.label);
+    if (!labels.includes(label)) throw new HerdrError('invalid-journal', 'Invalid release label');
+    return { label, expected: releaseText(d.expected), actual: d.actual === null ? null : releaseText(d.actual) };
+  }) };
+}
+function parseReleaseConfirmation(value: unknown): ReleaseConfirmation {
+  const v = object(value), checks = integer(v.checks), notFound = integer(v.notFound);
+  if (checks < 1 || notFound < 0 || notFound > checks) throw new HerdrError('invalid-journal', 'Invalid release confirmation counts');
+  return { checks, notFound, first: parseReleaseObservation(v.first), last: parseReleaseObservation(v.last) };
+}
+function parseReleaseFailure(value: unknown): ReleaseFailure {
+  const v = object(value);
+  if (!['hc get', 'fileRead', 'release write', 'overall check'].includes(String(v.step))) throw new HerdrError('invalid-journal', 'Invalid release step');
+  const elapsedMs = integer(v.elapsedMs), beforeReleaseMs = integer(v.beforeReleaseMs), timerDriftMs = integer(v.timerDriftMs), queueWaitMs = v.queueWaitMs === undefined ? 0 : integer(v.queueWaitMs);
+  if (Math.min(elapsedMs, beforeReleaseMs, queueWaitMs, timerDriftMs) < 0) throw new HerdrError('invalid-journal', 'Invalid release timing');
+  return { step: v.step as ReleaseFailure['step'], elapsedMs, beforeReleaseMs, queueWaitMs, timerDriftMs, ...(v.confirmation === undefined ? {} : { confirmation: parseReleaseConfirmation(v.confirmation) }) };
+}
 function parseOwner(value: unknown): Owner {
   const o = object(value), t = object(o.terminal);
   return { sessionId: id(o.sessionId) as Owner['sessionId'], generation: id(o.generation) as Owner['generation'], cwd: absolutePath(o.cwd), sessionFile: o.sessionFile === null ? null : absolutePath(o.sessionFile), name: nullableText(o.name), terminal: {
@@ -67,7 +96,7 @@ export function parseJobJournal(value: unknown, sessionId: SessionId): JobJourna
       case 'running': phase = { kind: 'running', address: address(), releasedAt: integer(p.releasedAt) }; break;
       case 'disconnected': phase = { kind: 'disconnected', address: address(), lastSeq: integer(p.lastSeq) }; break;
       case 'finished': phase = { kind: 'finished', address: address(), result: parseFinish(p.result) }; break;
-      case 'launch-failed': phase = { kind: 'launch-failed', error: text(p.error) }; break;
+      case 'launch-failed': phase = { kind: 'launch-failed', error: text(p.error), ...(p.releaseFailure === undefined ? {} : { releaseFailure: parseReleaseFailure(p.releaseFailure) }) }; break;
       default: throw new HerdrError('invalid-journal', 'Invalid job phase');
     }
     const evidence = v.exitEvidence === undefined ? undefined : object(v.exitEvidence);

@@ -183,9 +183,26 @@ export type ExecutionEnvironmentPolicy =
 export interface TerminalFinish { exitCode: number | null; reason: string; signal: number | null; finishedAt: number }
 export interface JobExitEvidence { native: TerminalFinish; receipt: TerminalFinish }
 export interface JobFinish extends TerminalFinish { evidenceConflict?: boolean; exitEvidence?: JobExitEvidence }
+export type ReleaseObservation = { kind: 'not_found' } | { kind: 'matched' }
+  | { kind: 'address'; expected: string; actual: string }
+  | { kind: 'labels'; differences: { label: string; expected: string; actual: string | null }[] };
+export interface ReleaseConfirmation {
+  checks: number;
+  notFound: number;
+  first: ReleaseObservation;
+  last: ReleaseObservation;
+}
+export interface ReleaseFailure {
+  step: 'hc get' | 'fileRead' | 'release write' | 'overall check';
+  elapsedMs: number;
+  beforeReleaseMs: number;
+  queueWaitMs: number;
+  timerDriftMs: number;
+  confirmation?: ReleaseConfirmation;
+}
 export type JobPhase = { kind: 'preparing' } | { kind: 'waiting-for-pane'; address: TerminalAddress }
   | { kind: 'running'; address: TerminalAddress; releasedAt: number } | { kind: 'disconnected'; address: TerminalAddress; lastSeq: number }
-  | { kind: 'finished'; address: TerminalAddress; result: TerminalFinish } | { kind: 'launch-failed'; error: string };
+  | { kind: 'finished'; address: TerminalAddress; result: TerminalFinish } | { kind: 'launch-failed'; error: string; releaseFailure?: ReleaseFailure };
 export interface JobRecord {
   exitEvidence?: JobExitEvidence;
   version: 1; id: JobId; owner: Owner; machine: MachineName; kind: 'exec' | 'exec-file' | 'batch'; phase: JobPhase;

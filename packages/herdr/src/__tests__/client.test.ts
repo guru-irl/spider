@@ -158,7 +158,7 @@ test('rejects unsupported hc versions', async () => {
 test('rejects a foreign terminal reply', async () => {
   const h = await fixture(); const client = createHcClient({ binary: h.hcBinary, env: h.localEnv });
   await h.configure({ reply: JSON.stringify(terminal('foreign/t1')) });
-  await expect(client.get(h.address('t1'))).rejects.toMatchObject({ code: 'caller-mismatch' });
+  await expect(client.get(h.address('t1'))).rejects.toMatchObject({ code: 'caller-mismatch', details: { expectedAddress: h.address('t1'), actualAddress: 'foreign/t1' } });
 });
 
 test('accepts the native machine-list envelope', async () => {

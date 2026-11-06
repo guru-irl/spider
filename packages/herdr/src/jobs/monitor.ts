@@ -4,7 +4,7 @@ import { createCleanupSweep, type CleanupSweep } from './cleanup.js';
 import { noticeRecoveryCandidates, recoverJobNotices } from './notices.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { releaseRemoteJob } from './observer.js';
+import { PayloadReleaseError, releaseRemoteJob } from './observer.js';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { createJobStore, ensurePrivateDirectory, MAX_BYTES, type JournalJob, type JobJournal } from './store.js';
@@ -68,7 +68,10 @@ export interface JobMonitor extends JobPort {
   consoleError(error: unknown): void;
   shutdown(reason: 'reload' | 'quit'): Promise<void>;
 }
-/** One writer and one event subscription per owning pi activation. No payload retry path exists. */
+function terminalMissing(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'not_found');
+}
+/** One writer and one event subscription per owning pi activation. Only unreleased attempts may retry. */
 export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: CleanupSweep): JobMonitor {
   let owner: Owner | null = null;
   let store: ReturnType<typeof createJobStore>;
@@ -530,56 +533,84 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       await cleanup.flush(journal.jobs.map(releaseKey));
     },
     start: async (program, nextOwner, on, startOptions) => {
-      if (!owner) { await serial(() => activate(nextOwner, startOptions.signal)); activated = true; scheduleMaintenance(); }
-      const job = await serial(async () => {
-        if (closed || stopping) throw new HerdrError('disposed', 'Job monitor is stopping');
-        if (!sameOwner(nextOwner)) throw new HerdrError('job-owner-mismatch', 'Cannot launch for a foreign owner');
-        if (startOptions.signal?.aborted) throw new HerdrError('aborted', 'Job launch aborted');
-        await waitForEvents(stream!.ready, startOptions.signal);
-        const id = randomUUID() as JobId;
-        const localDirectory = join(store.directory, 'logs', id);
-        const job: JournalJob = { version: 1, id, ...(options.child ? { runId: options.child.id } : {}), owner: nextOwner, machine: on, commandPreview: program.commandPreview, kind: startOptions.kind ?? 'exec', phase: { kind: 'preparing' }, viewer: null, remoteDirectory: program.directory, localDirectory, detached: false, noticeMode: 'tool', notice: 'pending', nonce: '', releaseDeadlineAt: 0, originalFinish: null, output: null, callerOwned: startOptions.background === true, uncertain: false, evidenceConflict: false, noticeDelivered: false, settledMarked: false, terminalExpired: false, updatedAt: options.clock() };
-        unreturned.add(id); journal.jobs.push(job); await persist(); await ensurePrivateDirectory(localDirectory); return job;
-      });
-      const id = job.id, localDirectory = job.localDirectory;
-      return serial(async () => {
+      const requestedAt = options.clock();
+      let queueWaitMs = 0;
+      const queued = <T>(operation: () => Promise<T>): Promise<T> => {
+        const queuedAt = options.clock();
+        return serial(() => { queueWaitMs += Math.max(0, options.clock() - queuedAt); return operation(); });
+      };
+      for (let attempt = 0; ; attempt++) {
+        let retrySafe = false;
         try {
-          if (closed || stopping) throw new HerdrError('disposed', 'Job monitor is stopping');
-          if (startOptions.signal?.aborted) throw new HerdrError('aborted', 'Job launch aborted');
-          const launch = await options.outputCollector.prepare(program, job);
-          job.remoteDirectory = launch.program.directory; job.nonce = launch.nonce; job.releaseDeadlineAt = launch.releaseDeadlineAt; await persist();
-          let address: TerminalAddress;
-          try {
-            const terminal = await options.hc.run({ argv: launch.program.argv, cwd: launch.program.cwd, on, parent: null, labels: { [HERDR_LABELS.session]: nextOwner.sessionId, [HERDR_LABELS.ownerCore]: nextOwner.terminal.coreId, [HERDR_LABELS.ownerTerminal]: nextOwner.terminal.terminalId, [HERDR_LABELS.kind]: job.kind, [HERDR_LABELS.job]: id, [HERDR_LABELS.machine]: on, ...(options.child ? { [HERDR_LABELS.run]: options.child.id } : {}) }, outliveParent: true, background: true, noNotify: true });
-            address = terminal.address;
-          } catch (error) {
-            // Reconcile the preassigned identity, never rerun the payload after an uncertain reply.
+          if (!owner) { await queued(() => activate(nextOwner, startOptions.signal)); activated = true; scheduleMaintenance(); }
+          const job = await queued(async () => {
+            if (closed || stopping) throw new HerdrError('disposed', 'Job monitor is stopping');
+            if (!sameOwner(nextOwner)) throw new HerdrError('job-owner-mismatch', 'Cannot launch for a foreign owner');
+            if (startOptions.signal?.aborted) throw new HerdrError('aborted', 'Job launch aborted');
             await waitForEvents(stream!.ready, startOptions.signal);
-            // A created event can precede its reply; it is handled after this serialized operation.
-            // Query the original core snapshot for the labelled identity.
-            const matching = discovered.get(id);
-            if (matching) address = matching;
-            else throw new HerdrError('launch-uncertain', 'Launch reply was lost; reconciliation will recover the preassigned job ID', { jobId: id, cause: String(error) });
-          }
-          job.phase = { kind: 'waiting-for-pane', address }; await persist();
-          await releaseRemoteJob(job, { hc: options.hc, signal: startOptions.signal, nonce: job.nonce, releaseDeadlineAt: job.releaseDeadlineAt, clock: options.clock,
-            releaseFileWriter: (record, bytes) => options.hc.fileWrite(record.machine, join(record.remoteDirectory, 'release.json'), bytes) });
-          job.phase = { kind: 'running', address, releasedAt: options.clock() }; await persist();
-          await reconcileJob(job, startOptions.signal);
-          const cancel: JobHandle['cancel'] = () => serial(async () => { if (job.uncertain || lostOriginals.has(address)) throw new HerdrError('job-outcome-unknown', 'Original incarnation is no longer known; not signaling a recovery shell'); const original = liveOriginal(job); if (original) await options.hc.kill(original); await reconcileJob(job); });
-          return { id, address, localDirectory, remoteDirectory: job.remoteDirectory, finished: waiter(id).promise, cancel };
+            const id = randomUUID() as JobId;
+            const localDirectory = join(store.directory, 'logs', id);
+            const job: JournalJob = { version: 1, id, ...(options.child ? { runId: options.child.id } : {}), owner: nextOwner, machine: on, commandPreview: program.commandPreview, kind: startOptions.kind ?? 'exec', phase: { kind: 'preparing' }, viewer: null, remoteDirectory: program.directory, localDirectory, detached: false, noticeMode: 'tool', notice: 'pending', nonce: '', releaseDeadlineAt: 0, originalFinish: null, output: null, callerOwned: startOptions.background === true, uncertain: false, evidenceConflict: false, noticeDelivered: false, settledMarked: false, terminalExpired: false, updatedAt: options.clock() };
+            unreturned.add(id); journal.jobs.push(job); await persist(); await ensurePrivateDirectory(localDirectory); return job;
+          });
+          const id = job.id, localDirectory = job.localDirectory;
+          return await queued(async () => {
+            try {
+              if (closed || stopping) throw new HerdrError('disposed', 'Job monitor is stopping');
+              if (startOptions.signal?.aborted) throw new HerdrError('aborted', 'Job launch aborted');
+              const launch = await options.outputCollector.prepare(program, job);
+              job.remoteDirectory = launch.program.directory; job.nonce = launch.nonce; job.releaseDeadlineAt = launch.releaseDeadlineAt; await persist();
+              let address: TerminalAddress;
+              try {
+                const terminal = await options.hc.run({ argv: launch.program.argv, cwd: launch.program.cwd, on, parent: null, labels: { [HERDR_LABELS.session]: nextOwner.sessionId, [HERDR_LABELS.ownerCore]: nextOwner.terminal.coreId, [HERDR_LABELS.ownerTerminal]: nextOwner.terminal.terminalId, [HERDR_LABELS.kind]: job.kind, [HERDR_LABELS.job]: id, [HERDR_LABELS.machine]: on, ...(options.child ? { [HERDR_LABELS.run]: options.child.id } : {}) }, outliveParent: true, background: true, noNotify: true });
+                address = terminal.address;
+              } catch (error) {
+                // Reconcile the preassigned identity, never rerun the payload after an uncertain reply.
+                await waitForEvents(stream!.ready, startOptions.signal);
+                // A created event can precede its reply; it is handled after this serialized operation.
+                // Query the original core snapshot for the labelled identity.
+                const matching = discovered.get(id);
+                if (matching) address = matching;
+                else throw new HerdrError('launch-uncertain', 'Launch reply was lost; reconciliation will recover the preassigned job ID', { jobId: id, cause: String(error) });
+              }
+              job.phase = { kind: 'waiting-for-pane', address }; await persist();
+              await releaseRemoteJob(job, { hc: options.hc, signal: startOptions.signal, nonce: job.nonce, releaseDeadlineAt: job.releaseDeadlineAt, requestedAt, queueWaitMs, clock: options.clock,
+                releaseFileWriter: (record, bytes) => options.hc.fileWrite(record.machine, join(record.remoteDirectory, 'release.json'), bytes) });
+              job.phase = { kind: 'running', address, releasedAt: options.clock() }; await persist();
+              await reconcileJob(job, startOptions.signal);
+              const cancel: JobHandle['cancel'] = () => serial(async () => { if (job.uncertain || lostOriginals.has(address)) throw new HerdrError('job-outcome-unknown', 'Original incarnation is no longer known; not signaling a recovery shell'); const original = liveOriginal(job); if (original) await options.hc.kill(original).catch(error => { if (!terminalMissing(error)) throw error; }); await reconcileJob(job); });
+              return { id, address, localDirectory, remoteDirectory: job.remoteDirectory, finished: waiter(id).promise, cancel };
+            } catch (error) {
+              const address = addressOf(job);
+              if (address && lostOriginals.has(address)) { job.uncertain = true; job.phase = { kind: 'disconnected', address, lastSeq: 0 }; }
+              const original = liveOriginal(job);
+              const failure = error instanceof PayloadReleaseError ? error : null;
+              const retryCandidate = failure !== null && failure.code !== 'aborted' && !failure.releaseWriteStarted;
+              if (original && !(error instanceof HerdrError && error.code === 'launch-uncertain')) {
+                try {
+                  await options.hc.kill(original).catch(error => { if (!terminalMissing(error)) throw error; });
+                  if (retryCandidate || error instanceof HerdrError && error.code === 'release-timeout') {
+                    await options.hc.rm(original).catch(error => { if (!terminalMissing(error)) throw error; });
+                    if (retryCandidate) {
+                      try { await options.hc.get(original); }
+                      catch (removed) { retrySafe = terminalMissing(removed); }
+                    }
+                  }
+                } catch (cleanupError) {
+                  if (!failure) throw cleanupError;
+                }
+              }
+              if (retryCandidate && !retrySafe) failure.message += ' Not retried because terminal removal was not confirmed.';
+              if (failure?.releaseWriteStarted) failure.message += ' Not retried because the release write may have reached the payload.';
+              if (!job.uncertain && !(error instanceof HerdrError && error.code === 'launch-uncertain')) job.phase = { kind: 'launch-failed', error: String(error), ...(failure ? { releaseFailure: failure.releaseFailure } : {}) };
+              await persist(); throw error;
+            }
+          });
         } catch (error) {
-          const address = addressOf(job);
-          if (address && lostOriginals.has(address)) { job.uncertain = true; job.phase = { kind: 'disconnected', address, lastSeq: 0 }; }
-          const original = liveOriginal(job);
-          if (original && !(error instanceof HerdrError && error.code === 'launch-uncertain')) {
-            await options.hc.kill(original);
-            if (error instanceof HerdrError && error.code === 'release-timeout') await options.hc.rm(original);
-          }
-          if (!job.uncertain && !(error instanceof HerdrError && error.code === 'launch-uncertain')) job.phase = { kind: 'launch-failed', error: String(error) };
-          await persist(); throw error;
+          if (retrySafe && attempt === 0 && !startOptions.signal?.aborted) continue;
+          throw error;
         }
-      });
+      }
     },
     detach: async id => { await serial(async () => { const job = tracked(id); job.detached = true; job.noticeMode = 'async'; await persist(); await collect(job); }); const collection = collections.get(id); if (collection?.readSettled()) { await collection.task; await collection.done; } },
     toolReturned: (id: JobId) => serial(async () => {

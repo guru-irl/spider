@@ -86,7 +86,10 @@ export function withRemoteCopy(remote: RemoteExecutionPort, hc: HcClient, config
     } finally {
       if (staged && cleanupSafe) {
         try { await run(`require('node:fs').rmSync(${literal(stage)}, { recursive: true, force: true });`); }
-        catch (error) { throw new HerdrError('copy-cleanup-failed', `${succeeded ? 'Copy completed' : 'File copy failed'} but staging cleanup failed at ${stage}: ${error instanceof Error ? error.message : String(error)}`); }
+        catch (error) {
+          // Cleanup is another remote launch, not part of the verified transfer.
+          if (!succeeded) throw new HerdrError('copy-cleanup-failed', `File copy failed and staging cleanup failed at ${stage}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   } };

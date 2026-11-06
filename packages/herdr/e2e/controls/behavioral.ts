@@ -23,7 +23,10 @@ async function helperImports(suite: Suite, packed: string): Promise<void> {
   const module = join(packed, 'packages/herdr/assets/mods/spider/data.js');
   const code = `const m=await import(${JSON.stringify(module)}); if(typeof m.projectSpiderPanel!=='function')throw new Error('missing export'); console.log('helper-loaded');`;
   const result = await suite.invoke(process.execPath, ['--input-type=module', '-e', code]);
-  if (result.exitCode !== 0 || result.stdout !== 'helper-loaded\n') throw new Error(`helper-import: actual packed helper did not load: ${result.stderr.replace(/[\r\n]/g, ' ')}`);
+  if (result.exitCode !== 0 || result.stdout !== 'helper-loaded\n') {
+    const bounded = (text: string) => text.length > 2000 ? `${text.slice(0, 1000)}...(${text.length - 2000} characters omitted)...${text.slice(-1000)}` : text;
+    throw new Error(`helper-import: actual packed helper did not load: exit=${result.signal ? 'null' : result.exitCode} signal=${result.signal ?? 'none'} stdout=${JSON.stringify(bounded(result.stdout))} stderr=${JSON.stringify(bounded(result.stderr))}`);
+  }
 }
 async function runtimeOutcome(suite: Suite, packed: string): Promise<void> {
   const root = suite.ownPath(join(suite.root, `runtime-${++invocations}`)), program = suite.ownPath(join(root, 'job'));
@@ -50,7 +53,7 @@ async function runtimeOutcome(suite: Suite, packed: string): Promise<void> {
 }
 const artifactControls: readonly { kind: ControlKind; mutation: PackedMutation; assert(suite: Suite, packed: string): Promise<void>; failure: RegExp }[] = [
   { kind: 'missing-runtime', mutation: { operation: 'remove', file: 'dist/herdr/remote-runtime.mjs' }, assert: runtimeProbe, failure: /^runtime-probe:.*Cannot find module/ },
-  { kind: 'helper-import', mutation: { operation: 'remove', file: 'packages/herdr/assets/mods/spider/data.js' }, assert: helperImports, failure: /^helper-import:.*Cannot find module.*data\.js/ },
+  { kind: 'helper-import', mutation: { operation: 'remove', file: 'packages/herdr/assets/mods/spider/data.js' }, assert: helperImports, failure: /^helper-import: actual packed helper did not load: exit=1 signal=none stdout="" stderr="(?:\\.|[^"\\])*Error \[ERR_MODULE_NOT_FOUND\]: Cannot find module (?:\\.|[^"\\])*data\.js/ },
   { kind: 'incorrect-outcome', mutation: { operation: 'replace', file: 'dist/herdr/remote-runtime.mjs', from: '\t\t\toutcome,\n\t\t\texitCode,\n', to: '\t\t\toutcome: "exited",\n\t\t\texitCode: 0,\n' }, assert: runtimeOutcome, failure: /^runtime-outcome:/ },
 ];
 /** CI artifacts: no hc, app, SSH, fabricated receipts or replacement loaders. */

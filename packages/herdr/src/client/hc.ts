@@ -65,7 +65,7 @@ export function createHcClient(options: HcClientOptions): HcClient & Disposable 
   };
   const get: HcClient['get'] = async (address, callOptions) => {
     const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
-    if (terminal.address !== address) throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address');
+    if (terminal.address !== address) throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address', { expectedAddress: address, actualAddress: terminal.address });
     return terminal;
   };
   let eventStream: HcEventStream | undefined;

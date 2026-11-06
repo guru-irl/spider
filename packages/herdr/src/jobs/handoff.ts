@@ -152,6 +152,7 @@ export async function reconcileJobRecovery(journal: JobJournal, options: {
           job.originalFinish = { exitCode: terminal.exitCode, signal: terminal.signal, reason: terminal.reason ?? 'unknown', finishedAt: terminal.finishedAt ?? options.clock() };
         } else {
           job.handoffCancelled = true; await options.persist();
+          // hc cannot bind this identity check atomically to the signal; the terminal may change between them.
           const current = await options.hc.get(address);
           if (observeJobIdentity(job, address, current).kind !== 'matched')
             throw new HerdrError('job-owner-mismatch', 'Crash recovery refuses a terminal with a different job identity');

@@ -9,6 +9,7 @@ import type { HcClient, JobId, Owner, RunId, TerminalAddress } from '../contract
 import { closeAgentConsoles as closeRunConsoles } from '../remote/console.js';
 import { HerdrError } from '../client/parse.js';
 import { createJobStore, type JobJournal } from './store.js';
+import { needsFailedCleanup } from './cleanup.js';
 
 export interface ChildJobWriter { id: RunId; pid: number; startIdentity: string }
 /** Missing/zombie processes return null; an unreadable live identity fails closed. */
@@ -210,7 +211,7 @@ export function createJobHandoff(options: {
     closedConsoles.add(id);
   };
   // Launch failures are returned by the tool call, so no result remains unread.
-  const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked && job.notice !== 'pending' || job.phase.kind === 'launch-failed');
+  const settled = (journal: JobJournal) => journal.jobs.every(job => job.settledMarked && job.notice !== 'pending' || job.phase.kind === 'launch-failed' && !needsFailedCleanup(job));
   const markSettled = async (journal: JobJournal) => {
     journal.child = { ...journal.child!, ended: true, settled: true };
     journal.revision++;

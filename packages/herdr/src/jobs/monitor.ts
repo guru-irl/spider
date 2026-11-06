@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { createCleanupSweep, type CleanupSweep } from './cleanup.js';
+import { createCleanupSweep, MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS, needsFailedCleanup, type CleanupSweep } from './cleanup.js';
 import { noticeRecoveryCandidates, recoverJobNotices } from './notices.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -178,41 +178,47 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     if (lifetime.signal.aborted) return Promise.reject(new HerdrError('disposed', 'Job monitor is stopping'));
     return waitForEvents(operation(), undefined, 'Job terminal cleanup timed out', false, 5000, 'cleanup-timeout');
   };
-  async function boundedHc<T>(operation: (options: HcCallOptions) => Promise<T>, timeoutMs = 1000): Promise<T> {
-    const signal = AbortSignal.timeout(timeoutMs);
-    let timedOut!: () => void;
-    const timeout = new Promise<never>((_resolve, reject) => { timedOut = () => reject(new HerdrError('cleanup-timeout', 'Job terminal cleanup timed out')); signal.addEventListener('abort', timedOut, { once: true }); });
-    try { return await Promise.race([Promise.resolve().then(() => operation({ signal, timeoutMs })), timeout]); }
-    finally { signal.removeEventListener('abort', timedOut); }
+  async function boundedHc<T>(operation: (options: HcCallOptions) => Promise<T>, timeoutMs = 1000, abortSignal?: AbortSignal): Promise<T> {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const signal = abortSignal ? AbortSignal.any([deadline, abortSignal]) : deadline;
+    const failure = () => abortSignal?.aborted ? new HerdrError('disposed', 'Job monitor is stopping') : new HerdrError('cleanup-timeout', 'Job terminal cleanup timed out');
+    let interrupted!: () => void;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      interrupted = () => reject(failure());
+      signal.addEventListener('abort', interrupted, { once: true });
+      if (signal.aborted) interrupted();
+    });
+    try { return await Promise.race([Promise.resolve().then(() => { if (signal.aborted) throw failure(); return operation({ signal, timeoutMs }); }), timeout]); }
+    finally { signal.removeEventListener('abort', interrupted); }
   }
-  async function verifiedTerminal(job: JournalJob, address: TerminalAddress, timeoutMs = 1000) {
+  async function verifiedTerminal(job: JournalJob, address: TerminalAddress, timeoutMs = 1000, signal?: AbortSignal) {
     let terminal;
-    try { terminal = await boundedHc(callOptions => options.hc.get(address, callOptions), timeoutMs); }
+    try { terminal = await boundedHc(callOptions => options.hc.get(address, callOptions), timeoutMs, signal); }
     catch (error) { if (error && typeof error === 'object' && 'code' in error && error.code === 'caller-mismatch') throw new HerdrError('job-outcome-unknown', 'Terminal identity does not match this job'); throw error; }
     if (observeJobIdentity(job, address, terminal).kind !== 'matched' || lostOriginals.has(address)) throw new HerdrError('job-outcome-unknown', 'Terminal identity does not match this job');
     return terminal;
   }
-  async function signalOriginal(job: JournalJob, address: TerminalAddress, beforeSignal?: () => Promise<void>, timeoutMs = 15000): Promise<void> {
+  async function signalOriginal(job: JournalJob, address: TerminalAddress, beforeSignal?: () => Promise<void>, timeoutMs = 15000, signal?: AbortSignal): Promise<void> {
     if (job.uncertain || lostOriginals.has(address)) throw new HerdrError('job-outcome-unknown', 'Original incarnation is no longer known; not signaling a recovery shell');
-    const terminal = await verifiedTerminal(job, address, timeoutMs);
+    const terminal = await verifiedTerminal(job, address, timeoutMs, signal);
     if (terminal.state === 'finished') return;
     if (beforeSignal) await beforeSignal();
     // hc cannot bind this identity check atomically to the signal; the terminal may change between them.
-    const current = await verifiedTerminal(job, address, timeoutMs);
+    const current = await verifiedTerminal(job, address, timeoutMs, signal);
     if (current.state === 'finished') return;
     if (job.uncertain || lostOriginals.has(address)) throw new HerdrError('job-outcome-unknown', 'Original incarnation is no longer known; not signaling a recovery shell');
-    await boundedHc(callOptions => options.hc.kill(address, callOptions), timeoutMs);
+    await boundedHc(callOptions => options.hc.kill(address, callOptions), timeoutMs, signal);
   }
-  async function confirmMissing(address: TerminalAddress, bounded = false, expectedMachine?: MachineName): Promise<void> {
+  async function confirmMissing(address: TerminalAddress, bounded = false, expectedMachine?: MachineName, timeoutMs = 1000, signal?: AbortSignal): Promise<void> {
     if (!address.includes('/')) throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires a qualified remote address');
     const name = address.slice(0, address.lastIndexOf('/'));
-    const machines = bounded ? await boundedHc(callOptions => options.hc.machines(callOptions)) : await cleanupCall(() => options.hc.machines(cleanupOptions()));
+    const machines = bounded ? await boundedHc(callOptions => options.hc.machines(callOptions), timeoutMs, signal) : await cleanupCall(() => options.hc.machines(cleanupOptions()));
     if (!machines.some(machine => {
       const matches = (value: string) => machine.name === value || machine.aliases.some(alias => alias === value);
       return machine.state === 'connected' && matches(name) && (!expectedMachine || matches(expectedMachine));
     })) throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires the connected destination');
     try {
-      if (bounded) await boundedHc(callOptions => options.hc.get(address, callOptions));
+      if (bounded) await boundedHc(callOptions => options.hc.get(address, callOptions), timeoutMs, signal);
       else await cleanupCall(() => options.hc.get(address, cleanupOptions()));
     } catch (error) { if (terminalMissing(error)) return; throw error; }
     throw new HerdrError('job-outcome-unknown', 'Job terminal is still present');
@@ -247,14 +253,69 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   }
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   const failedCleanupKey = (job: JournalJob) => `${releaseKey(job)}/failed`;
-  async function markFailedProgram(job: JournalJob): Promise<void> {
+  const failedTerminalKey = (job: JournalJob) => `${releaseKey(job)}/failed-terminal`;
+  const failedCleanupDelay = (attempts: number) => 30000 * 2 ** attempts;
+  async function markFailedProgram(job: JournalJob, background = false): Promise<void> {
     const marker = Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: options.clock() }));
-    await cleanupCall(() => options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), marker, cleanupOptions()));
+    const write = (callOptions: HcCallOptions) => options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), marker, callOptions);
+    if (background) await boundedHc(write, 15000, lifetime.signal);
+    else await cleanupCall(() => write(cleanupOptions()));
+  }
+  async function removeFailedTerminal(job: JournalJob, address: TerminalAddress): Promise<'removed' | 'mismatch'> {
+    try {
+      await signalOriginal(job, address, undefined, 15000, lifetime.signal);
+      await verifiedTerminal(job, address, 15000, lifetime.signal);
+      if (job.uncertain || lostOriginals.has(address)) return 'mismatch';
+      await boundedHc(callOptions => options.hc.rm(address, callOptions), 15000, lifetime.signal);
+    } catch (error) {
+      if (error instanceof HerdrError && error.code === 'job-outcome-unknown') return 'mismatch';
+      if (!terminalMissing(error)) throw error;
+    }
+    await confirmMissing(address, true, job.machine, 15000, lifetime.signal);
+    return 'removed';
   }
   function queueFailedCleanup(job: JournalJob): void {
-    if (job.phase.kind !== 'launch-failed' || !job.terminalReleased || job.settledMarked) return;
+    if (!needsFailedCleanup(job)) return;
+    if (!job.terminalReleased) {
+      const pending = job.failedTerminalCleanup;
+      if (!pending || pending.nextAt > options.clock()) return;
+      if (enqueueCleanup(failedTerminalKey(job), async () => {
+        const started = await serial(async () => {
+          if (stopping || closed || !journal.jobs.includes(job) || !needsFailedCleanup(job) || job.failedTerminalCleanup !== pending || pending.nextAt > options.clock()) return null;
+          // Count an attempt before contacting the core.
+          // An interrupted final attempt only checks for absence after restart.
+          const verifyOnly = pending.attempts >= MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS;
+          if (!verifyOnly) pending.attempts++;
+          pending.nextAt = options.clock() + failedCleanupDelay(pending.attempts - 1);
+          await persist(); return { verifyOnly };
+        });
+        if (!started) return;
+        let result: 'removed' | 'mismatch';
+        try {
+          if (started.verifyOnly) { await confirmMissing(pending.address, true, job.machine, 15000, lifetime.signal); result = 'removed'; }
+          else result = await removeFailedTerminal(job, pending.address);
+        } catch (error) {
+          if (lifetime.signal.aborted) return;
+          await serial(async () => {
+            if (stopping || closed || !journal.jobs.includes(job) || job.failedTerminalCleanup !== pending) return;
+            if (pending.attempts >= MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS) pending.exhausted = true;
+            pending.nextAt = options.clock() + failedCleanupDelay(pending.attempts - 1);
+            await persist();
+          });
+          options.recordCleanupError?.(error); return;
+        }
+        if (lifetime.signal.aborted) return;
+        await serial(async () => {
+          if (stopping || closed || !journal.jobs.includes(job) || job.failedTerminalCleanup !== pending || job.phase.kind !== 'launch-failed') return;
+          if (result === 'mismatch') job.uncertain = true;
+          else if (!job.uncertain) { job.terminalReleased = true; delete job.failedTerminalCleanup; job.updatedAt = options.clock(); }
+          await persist(); queueFailedCleanup(job);
+        });
+      })) scheduleMaintenance();
+      return;
+    }
     if (enqueueCleanup(failedCleanupKey(job), async () => {
-      await markFailedProgram(job);
+      await markFailedProgram(job, true);
       await serial(async () => {
         if (!journal.jobs.includes(job) || job.phase.kind !== 'launch-failed') return;
         job.settledMarked = true; job.updatedAt = options.clock(); await persist();
@@ -292,8 +353,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   }
   function forgetPrunedJob(job: JournalJob): void {
     journal.jobs = journal.jobs.filter(value => value.id !== job.id);
-    cleanup.cancel(releaseKey(job)); cleanup.cancel(`${releaseKey(job)}/prune`); cleanup.cancel(failedCleanupKey(job));
-    cleanupKeys.delete(releaseKey(job)); cleanupKeys.delete(`${releaseKey(job)}/prune`); cleanupKeys.delete(failedCleanupKey(job));
+    cleanup.cancel(releaseKey(job)); cleanup.cancel(`${releaseKey(job)}/prune`); cleanup.cancel(failedCleanupKey(job)); cleanup.cancel(failedTerminalKey(job));
+    cleanupKeys.delete(releaseKey(job)); cleanupKeys.delete(`${releaseKey(job)}/prune`); cleanupKeys.delete(failedCleanupKey(job)); cleanupKeys.delete(failedTerminalKey(job));
     prunedLogs.delete(job.id); pruneFailures.delete(job.id);
     waiters.delete(job.id); discovered.delete(job.id); outputWarnings.delete(job.id); releaseSkipped.delete(job.id); unreturned.delete(job.id);
   }
@@ -580,7 +641,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     consoleError: options.reportConsoleError ?? report,
     finishCleanup: async () => {
       for (const job of journal.jobs) { const hold = holds.get(job.id); if (hold) clearTimeout(hold); holds.delete(job.id); queueRelease(job); }
-      await cleanup.flush(journal.jobs.flatMap(job => [releaseKey(job), failedCleanupKey(job)]));
+      await cleanup.flush(journal.jobs.flatMap(job => [releaseKey(job), failedCleanupKey(job), failedTerminalKey(job)]));
     },
     start: async (prepareProgram, nextOwner, on, startOptions) => {
       let requestedAt = options.clock();
@@ -699,7 +760,11 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
                 else if (!retrySafe) failure.message += ' The payload did not start. Not retried automatically because terminal removal was not confirmed.';
                 else if (attempt > 0) failure.message += ' The payload did not start; the automatic retry also failed.';
               }
-              if (!job.uncertain && !(error instanceof HerdrError && error.code === 'launch-uncertain')) job.phase = compactFailedPhase({ kind: 'launch-failed', error: String(error), ...(failure ? { releaseFailure: failure.releaseFailure } : {}) });
+              if (job.uncertain) { observeNotice(job); unreturned.delete(id); }
+              if (!job.uncertain && !(error instanceof HerdrError && error.code === 'launch-uncertain')) {
+                job.phase = compactFailedPhase({ kind: 'launch-failed', error: String(error), ...(failure ? { releaseFailure: failure.releaseFailure } : {}) });
+                if (address && !job.terminalReleased) job.failedTerminalCleanup = { address, attempts: 0, nextAt: options.clock() };
+              }
               if (retrySafe && attempt === 0) previousAttempt = job;
               await persist(); queueFailedCleanup(job); throw error;
             }

@@ -4,11 +4,12 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { JobRecord, JobId, Owner, SessionId, RunId, ReleaseConfirmation, ReleaseFailure, ReleaseObservation, TerminalFinish } from '../contracts.js';
+import type { JobRecord, JobId, Owner, SessionId, RunId, ReleaseConfirmation, ReleaseFailure, ReleaseObservation, TerminalAddress, TerminalFinish } from '../contracts.js';
 import { HERDR_LABELS } from '../contracts.js';
 import type { ChildJobWriter } from './handoff.js';
 import { HerdrError, object, text, integer, nullableInteger, nullableText, absolutePath } from '../client/parse.js';
 import { compactFailedPhase } from './diagnostics.js';
+import { MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS } from './cleanup.js';
 
 export interface JournalJob extends JobRecord {
   nonce: string;
@@ -26,6 +27,7 @@ export interface JournalJob extends JobRecord {
   terminalReleased?: boolean;
   supersededBy?: JobId;
   cleanupFailure?: { code: string; attempts: number; firstAt: number; lastAt: number };
+  failedTerminalCleanup?: { address: TerminalAddress; attempts: number; nextAt: number; exhausted?: boolean };
   updatedAt: number;
   handoffCancelled?: boolean;
 }
@@ -110,7 +112,10 @@ export function parseJobJournal(value: unknown, sessionId: SessionId): JobJourna
     if (v.commandPreview !== undefined && (typeof v.commandPreview !== 'string' || v.commandPreview.length > 180 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(v.commandPreview))) throw new HerdrError('invalid-journal', 'Invalid command preview');
     const cleanup = v.cleanupFailure === undefined ? undefined : object(v.cleanupFailure);
     const cleanupFailure = cleanup ? { code: text(cleanup.code), attempts: integer(cleanup.attempts), firstAt: integer(cleanup.firstAt), lastAt: integer(cleanup.lastAt) } : undefined;
-    return { version: 1, ...(cleanupFailure ? { cleanupFailure } : {}), ...(v.noticeSavedNonce === undefined ? {} : { noticeSavedNonce: text(v.noticeSavedNonce) }), ...(v.noticeObservedGeneration === undefined ? {} : { noticeObservedGeneration: id(v.noticeObservedGeneration) as Owner['generation'] }), ...(v.terminalReleased === undefined ? {} : { terminalReleased: boolean(v.terminalReleased) }), ...(v.supersededBy === undefined ? {} : { supersededBy: id(v.supersededBy) as JobId }), ...(exitEvidence ? { exitEvidence } : {}), ...(v.commandPreview === undefined ? {} : { commandPreview: v.commandPreview as string }), id: id(v.id) as JobId, ...(v.runId === undefined ? {} : { runId: id(v.runId) as RunId }), ...(v.handoffCancelled === undefined ? {} : { handoffCancelled: boolean(v.handoffCancelled) }), owner, machine: text(v.machine) as JobRecord['machine'], kind: v.kind as JobRecord['kind'], phase, viewer: nullableText(v.viewer) as JobRecord['viewer'], remoteDirectory: typeof v.remoteDirectory === 'string' && v.remoteDirectory === '' ? '' : absolutePath(v.remoteDirectory), localDirectory: absolutePath(v.localDirectory), detached: boolean(v.detached), noticeMode: v.noticeMode as JobRecord['noticeMode'], notice: v.notice as JobRecord['notice'], nonce: typeof v.nonce === 'string' ? v.nonce : text(v.nonce), releaseDeadlineAt: integer(v.releaseDeadlineAt), originalFinish: v.originalFinish === null ? null : parseFinish(v.originalFinish), output: output ? { complete: boolean(output.complete), summary: output.summary as string } : null, callerOwned: boolean(v.callerOwned), uncertain: boolean(v.uncertain), evidenceConflict: boolean(v.evidenceConflict), noticeDelivered: boolean(v.noticeDelivered), settledMarked: boolean(v.settledMarked), terminalExpired: boolean(v.terminalExpired), updatedAt: integer(v.updatedAt) };
+    const failedCleanup = v.failedTerminalCleanup === undefined ? undefined : object(v.failedTerminalCleanup);
+    const failedTerminalCleanup = failedCleanup ? { address: text(failedCleanup.address) as TerminalAddress, attempts: integer(failedCleanup.attempts), nextAt: integer(failedCleanup.nextAt), ...(failedCleanup.exhausted === undefined ? {} : { exhausted: boolean(failedCleanup.exhausted) }) } : undefined;
+    if (failedTerminalCleanup && (failedTerminalCleanup.attempts < 0 || failedTerminalCleanup.attempts > MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS || failedTerminalCleanup.nextAt < 0 || failedTerminalCleanup.exhausted && failedTerminalCleanup.attempts !== MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS)) throw new HerdrError('invalid-journal', 'Invalid failed terminal cleanup');
+    return { version: 1, ...(failedTerminalCleanup ? { failedTerminalCleanup } : {}), ...(cleanupFailure ? { cleanupFailure } : {}), ...(v.noticeSavedNonce === undefined ? {} : { noticeSavedNonce: text(v.noticeSavedNonce) }), ...(v.noticeObservedGeneration === undefined ? {} : { noticeObservedGeneration: id(v.noticeObservedGeneration) as Owner['generation'] }), ...(v.terminalReleased === undefined ? {} : { terminalReleased: boolean(v.terminalReleased) }), ...(v.supersededBy === undefined ? {} : { supersededBy: id(v.supersededBy) as JobId }), ...(exitEvidence ? { exitEvidence } : {}), ...(v.commandPreview === undefined ? {} : { commandPreview: v.commandPreview as string }), id: id(v.id) as JobId, ...(v.runId === undefined ? {} : { runId: id(v.runId) as RunId }), ...(v.handoffCancelled === undefined ? {} : { handoffCancelled: boolean(v.handoffCancelled) }), owner, machine: text(v.machine) as JobRecord['machine'], kind: v.kind as JobRecord['kind'], phase, viewer: nullableText(v.viewer) as JobRecord['viewer'], remoteDirectory: typeof v.remoteDirectory === 'string' && v.remoteDirectory === '' ? '' : absolutePath(v.remoteDirectory), localDirectory: absolutePath(v.localDirectory), detached: boolean(v.detached), noticeMode: v.noticeMode as JobRecord['noticeMode'], notice: v.notice as JobRecord['notice'], nonce: typeof v.nonce === 'string' ? v.nonce : text(v.nonce), releaseDeadlineAt: integer(v.releaseDeadlineAt), originalFinish: v.originalFinish === null ? null : parseFinish(v.originalFinish), output: output ? { complete: boolean(output.complete), summary: output.summary as string } : null, callerOwned: boolean(v.callerOwned), uncertain: boolean(v.uncertain), evidenceConflict: boolean(v.evidenceConflict), noticeDelivered: boolean(v.noticeDelivered), settledMarked: boolean(v.settledMarked), terminalExpired: boolean(v.terminalExpired), updatedAt: integer(v.updatedAt) };
   });
   if (new Set(jobs.map(j => j.id)).size !== jobs.length) throw new HerdrError('invalid-journal', 'Duplicate journal job');
   let child: JobJournal['child'];

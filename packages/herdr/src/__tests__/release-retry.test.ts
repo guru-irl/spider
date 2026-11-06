@@ -3,6 +3,7 @@ import { expect, test, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createJobStore, parseJobJournal } from '../jobs/store.js';
+import { jobPruneCandidates } from '../jobs/prune.js';
 import type { TerminalAddress, TerminalSummary } from '../contracts.js';
 import { cleanup, deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
@@ -118,6 +119,58 @@ test.each(['address', 'labels'] as const)('does not kill or retry when the obser
   expect(String(error)).toMatch(/payload did not start.*not retried automatically.*identity/i);
 });
 
+test('an identity-mismatch error does not send a release-timeout notice after restart', async () => {
+  const h = await retryFixture(), get = h.hc.get;
+  let now = 1000;
+  h.options.clock = () => now;
+  h.hc.get = async address => {
+    const terminal = await get(address); now += 10000;
+    return { ...terminal, labels: { ...terminal.labels, 'spider.job': 'foreign-job' } };
+  };
+  const first = h.monitor(), store = createJobStore(h.f.root, h.owner.sessionId);
+  await expect(first.start(program, h.owner, on, {})).rejects.toMatchObject({ code: 'release-timeout' });
+  expect(h.kills).toEqual([]);
+  const [failed] = (await store.read()).jobs;
+  if (failed.phase.kind !== 'disconnected') throw new Error('Expected an uncertain launch');
+  await first.shutdown('reload');
+  h.hc.get = get;
+  h.complete(failed.phase.address);
+  const collect = h.options.outputCollector.collect;
+  h.options.outputCollector.collect = async job => {
+    const output = await collect(job);
+    return output.receipt ? { ...output, receipt: { ...output.receipt, finish: { exitCode: 124, reason: 'release-timeout', signal: null, finishedAt: 1000 } } } : output;
+  };
+  const resumed = h.monitor();
+  await resumed.activate({ ...h.owner, generation: 'g2' as typeof h.owner.generation });
+  await resumed.reconcile();
+  await expect.poll(async () => (await store.read()).jobs[0].phase.kind, { timeout: 1000, interval: 20 }).toBe('finished');
+  expect(h.notices).toEqual([]);
+  const saved = await store.read();
+  expect(saved.jobs[0].notice).toBe('observed');
+  const candidates = jobPruneCandidates(saved, { directory: store.directory, now: now + 30 * 86400000, recoveringNotices: new Set(), holds: new Map(), unreturned: new Set() }, true);
+  expect(candidates.map(job => job.id)).toContain(failed.id);
+});
+
+test('a lost terminal during release confirmation does not send a notice after the call errors', async () => {
+  const h = await retryFixture(), get = h.hc.get;
+  h.hc.get = async address => {
+    h.emit({ type: 'lost', terminal: address, seq: 2, data: { exitCode: null, signal: null, reason: 'lost', finishedAt: null } });
+    throw Object.assign(new Error('Confirmation failed'), { code: 'hc-error' });
+  };
+  const first = h.monitor(), store = createJobStore(h.f.root, h.owner.sessionId);
+  await expect(first.start(program, h.owner, on, {})).rejects.toMatchObject({ code: 'hc-error' });
+  const [failed] = (await store.read()).jobs;
+  if (failed.phase.kind !== 'disconnected') throw new Error('Expected an uncertain launch');
+  await first.shutdown('reload');
+  h.hc.get = get; h.complete(failed.phase.address);
+  const resumed = h.monitor();
+  await resumed.activate({ ...h.owner, generation: 'g2' as typeof h.owner.generation });
+  await resumed.reconcile();
+  await expect.poll(async () => (await store.read()).jobs[0].phase.kind, { timeout: 1000, interval: 20 }).toBe('finished');
+  expect(h.notices).toEqual([]);
+  expect(h.kills).toEqual([]);
+});
+
 test('does not signal a terminal that changes identity after the release label check', async () => {
   const h = await retryFixture(), get = h.hc.get;
   let reads = 0, now = 1000;
@@ -155,6 +208,13 @@ test('cancelling while preparing the retry never launches the second attempt', a
   await entered.promise; controller.abort(); unblock.resolve();
   await expect(pending).rejects.toMatchObject({ code: 'aborted' });
   expect(preparations).toBe(2); expect(h.launches).toHaveLength(1); expect(h.published).toEqual([]); expect(h.terminals.size).toBe(0);
+});
+
+test('separates the release failure cause from the no-retry sentence', async () => {
+  const h = await retryFixture();
+  h.hc.get = async () => { throw Object.assign(new Error('Confirmation failed'), { code: 'hc-error' }); };
+  const error = await h.monitor().start(program, h.owner, on, {}).catch(error => error);
+  expect(String(error)).toContain('Confirmation failed. The payload did not start.');
 });
 
 test('does not retry when terminal absence is reported by a disconnected machine', async () => {

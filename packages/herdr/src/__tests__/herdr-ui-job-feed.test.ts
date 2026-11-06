@@ -22,7 +22,7 @@ test('preparation carries a bounded single-line command preview from the origina
 
 test('the monitor persists the prepared command preview with its job record', async () => {
   const h = await monitorFixture();
-  const program = await prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'npm test\n' }, target);
+  const program = () => prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'npm test\n' }, target);
   const jobs = h.monitor();
   await jobs.start(program, h.owner, on, {});
   const journal = JSON.parse(await readFile(join(h.f.root, 'sessions', h.owner.sessionId, 'jobs.json'), 'utf8'));
@@ -32,7 +32,7 @@ test('the monitor persists the prepared command preview with its job record', as
 test('the journal reader retains command metadata after the writer reloads', async () => {
   const h = await monitorFixture();
   const jobs = h.monitor();
-  await jobs.start(await prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'npm test' }, target), h.owner, on, {});
+  await jobs.start(() => prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'npm test' }, target), h.owner, on, {});
   const journal = await createJobStore(h.f.root, h.owner.sessionId).read();
   expect(journal.jobs[0]).toMatchObject({ commandPreview: 'npm test' });
 });
@@ -47,7 +47,7 @@ test('a finished child command retains its journal without a feed notice, card o
   const run = runs.create({ sessionId: h.owner.sessionId, agent: 'worker', name: 'reviewer' });
   runs.start(run.id); db.close();
   const jobs = h.monitor({ child: { id: run.id as never, pid: process.pid, startIdentity: 'fixture' } });
-  const handle = await jobs.start(await prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'npm test' }, target), h.owner, on, {});
+  const handle = await jobs.start(() => prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'npm test' }, target), h.owner, on, {});
   h.complete(handle.address); await jobs.reconcile(); await handle.finished;
   const source = createHerdrDataSource({
     resolveRunDb: () => ({ db: openDb(dbPath), dbPath }), openApprovalDbs: () => ({ global: openDb(approvalPath), repo: null }),

@@ -170,7 +170,7 @@ const errors: Readonly<Record<string, NoticeCode>> = {
   'owner-unplaced': 'ownerUnplaced', 'owner-tab-changed': 'ownerMoved', 'observer-unplaced': 'commandPaneFailed', 'observer-timeout': 'commandPaneFailed',
   'remote-observer-unavailable': 'generic', 'auxiliary-disabled': 'paneFull', 'agent-pane-protected': 'paneProtected', 'viewer-closing': 'viewerClosing', 'run-finished': 'runFinished',
   ...errorGroup(['invalid-journal', 'invalid-journal-root', 'unsafe-journal-path', 'journal-too-large', 'invalid-session-lease', 'invalid-process-presence', 'invalid-terminal-mapping', 'invalid-state-file', 'unsafe-state-path', 'state-too-large', 'invalid-lock-ticket'], 'terminalRecords'),
-  ...errorGroup(['job-owner-mismatch', 'job-not-owned', 'job-not-launched', 'job-outcome-unknown', 'launch-uncertain', 'console-snapshot-timeout', 'console-head-invalid', 'console-ready-timeout', 'console-command-invalid', 'release-timeout', 'observer-job-not-launched', 'invalid-observer-output', 'invalid-observer-gate', 'observer-address-invalid'], 'remoteFailed'),
+  ...errorGroup(['job-owner-mismatch', 'job-not-owned', 'job-not-launched', 'job-outcome-unknown', 'launch-uncertain', 'console-snapshot-timeout', 'console-head-invalid', 'console-ready-timeout', 'console-command-invalid', 'release-timeout', 'release-failed', 'observer-job-not-launched', 'invalid-observer-output', 'invalid-observer-gate', 'observer-address-invalid'], 'remoteFailed'),
   ...errorGroup(['caller-probe-unavailable', 'isolation-unproved', 'terminal-identity-mismatch', 'process-identity-unavailable', 'invalid-cli-deadline', 'cli-timeout', 'cli-exit', 'ssh-cache-invalid', 'ssh-cache-core-changed', 'ssh-environment-invalid', 'ssh-self-resolution', 'ssh-parse-failed', 'machine-not-found', 'machine-unconfigured', 'runtime-target-unavailable', 'herdr-unavailable', 'session-file-invalid', 'lock-occupied', 'lock-owner-uncertain', 'role-unresolved', 'catalog-unavailable', 'invalid-template-options', 'invalid-labels', 'remote-parent', 'terminal-may-exist', 'launch-environment-invalid', 'session-explicit-extensions', 'session-id-mismatch', 'not_found', 'aborted', 'disposed', 'cli-aborted', 'explicit-observer-only'], 'generic'),
 };
 export function herdrErrorNoticeKey(error: unknown): NoticeCode {
@@ -178,6 +178,8 @@ export function herdrErrorNoticeKey(error: unknown): NoticeCode {
 }
 export function herdrErrorNotice(error: unknown): string {
   if (!(error instanceof HerdrError)) return HERDR_NOTICES.generic.text;
+  if (error.details && typeof error.details === 'object' && 'releaseNotStarted' in error.details && error.details.releaseNotStarted === true)
+    return error.code === 'aborted' ? 'The remote command did not start because launch was cancelled.' : 'The remote command did not start. Check the destination connection and terminal identity before trying again.';
   const known = Object.hasOwn(errors, error.code) ? errors[error.code] : undefined;
   if (known === 'setupUnplaced') {
     const sessions = (error.details as { sessions?: unknown } | undefined)?.sessions;

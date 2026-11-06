@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, symlink, chmod, stat, access, appendFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, symlink, chmod, stat, access, appendFile, utimes } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -232,6 +232,28 @@ describe('destination runtime', () => {
     await symlink(join(outside, '.spider-settled'), join(root, 'unmarked/.spider-settled'));
     expect(await pruneSettledPrograms(root, join(root, 'active'))).toEqual([join(root, 'done')]);
     expect((await readdir(root)).sort()).toEqual(['active', 'link', 'nested', 'unmarked']); expect(await readFile(join(outside, '.spider-settled'), 'utf8')).toBe('settled');
+  });
+  it('reclaims only old settled copy stages in bounded batches without following links', async () => {
+    const job = await runtime("console.log('unused')"), root = join(job.root, 'copy-stages');
+    await mkdir(root, { mode: 0o700 });
+    const old = new Date(Date.now() - 120000), stages: string[] = [];
+    for (let i = 0; i < 35; i++) {
+      const stage = join(root, `.copy-${i.toString(16).padStart(32, '0')}`); stages.push(stage);
+      await mkdir(stage); await writeFile(`${stage}.spider-settled`, 'settled');
+      await utimes(`${stage}.spider-settled`, old, old); await utimes(stage, old, old);
+    }
+    const fresh = join(root, `.copy-${'f'.repeat(32)}`), active = join(root, `.copy-${'a'.repeat(32)}`), unmarked = join(root, `.copy-${'e'.repeat(32)}`), invalid = join(root, '.copy-not-spider');
+    for (const stage of [fresh, active, unmarked, invalid]) await mkdir(stage);
+    for (const stage of [fresh, active, invalid]) await writeFile(`${stage}.spider-settled`, 'settled');
+    for (const stage of [active, invalid]) { await utimes(`${stage}.spider-settled`, old, old); await utimes(stage, old, old); }
+    const outside = join(job.root, 'outside-copy'); await mkdir(outside); await writeFile(join(outside, '.spider-settled'), 'outside');
+    await symlink(outside, join(root, `.copy-${'b'.repeat(32)}`));
+    const fakeMarker = join(root, `.copy-${'c'.repeat(32)}`); await mkdir(fakeMarker); await symlink(join(outside, '.spider-settled'), `${fakeMarker}.spider-settled`);
+    const first = await pruneSettledPrograms(root, active); expect(first).toHaveLength(32); expect(first.every(path => stages.includes(path))).toBe(true);
+    const second = await pruneSettledPrograms(root, active); expect(second).toHaveLength(3);
+    expect([...first, ...second].sort()).toEqual(stages.sort());
+    for (const retained of [fresh, active, unmarked, invalid, fakeMarker]) await expect(stat(retained)).resolves.toBeDefined();
+    expect(await readFile(join(outside, '.spider-settled'), 'utf8')).toBe('outside');
   });
   it('the built-in-only runtime artifact executes directly with its request argv', async () => {
     const job = await runtime("console.log('direct artifact');process.exitCode=23", { direct: true });

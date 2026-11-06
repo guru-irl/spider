@@ -48,8 +48,8 @@ export async function acceptanceD(h: HerdrHarness): Promise<void> {
     abandon: async () => {},
   }, journalRoot: join(h.directories.global, 'herdr'),
     outputCollector: {
-      prepare: async (_program, record) => {
-        const nonce = randomBytes(16).toString('hex'), remoteDirectory = join(h.directories.remote, randomBytes(16).toString('hex'));
+      prepare: async (program, record) => {
+        const nonce = randomBytes(16).toString('hex'), remoteDirectory = program.directory;
         await mkdir(remoteDirectory, { mode: 0o700 });
         const requestBytes = Buffer.from(JSON.stringify({ version: 1, jobId: record.id, nonce }));
         await client.fileWrite(record.machine, join(remoteDirectory, 'request.json'), requestBytes);
@@ -77,7 +77,7 @@ export async function acceptanceD(h: HerdrHarness): Promise<void> {
   });
   let jobs = createJobMonitor(options());
   try {
-    const program: PreparedProgram = { directory: h.directories.remote, argv: [], cwd: null, files: [], env: {} };
+    const program = async (): Promise<PreparedProgram> => ({ directory: join(h.directories.remote, randomBytes(16).toString('hex')), argv: [], cwd: null, files: [], env: {} });
     const handle = await jobs.start(program, owner, 'remote.invalid' as JobRecord['machine'], { background: true });
     const original = await client.get(handle.address); assert.equal(original.parent, null);
     assert.equal(original.labels[HERDR_LABELS.machine], 'remote.invalid');

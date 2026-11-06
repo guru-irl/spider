@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 import { afterEach } from 'vitest';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { CoreId, MachineName, HcClient, HcEvent, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createJobMonitor, type JobMonitor, type JobMonitorOptions, type JobNotice } from '../jobs/monitor.js';
 import { createClientFixture, type ClientFixture } from './testutil.js';
 
-export const program: PreparedProgram = { directory: '/fixture/runtime', argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} };
+export const program = async (): Promise<PreparedProgram> => ({ directory: join('/fixture/runtime', randomBytes(16).toString('hex')), argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} });
 export const finish: TerminalFinish = { exitCode: 23, reason: 'exited', signal: null, finishedAt: 1000 };
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 export function cleanup(close: () => Promise<unknown> | unknown): void { cleanups.push(close); }
@@ -64,7 +65,7 @@ export async function monitorFixture(): Promise<MonitorFixture> {
   const options: JobMonitorOptions = {
     hc, journalRoot: f.root, clock: () => 1000, observedJobMessages: async () => [], notifier: notice => { notices.push(notice); }, reportError: error => { errors.push(error); },
     outputCollector: {
-      prepare: async (p, job) => ({ program: { ...p, directory: join(f.root, 'remote.invalid', job.id) }, nonce: 'nonce', releaseDeadlineAt: 10000 }),
+      prepare: async p => ({ program: p, nonce: 'nonce' }),
       collect: async job => {
         const done = 'address' in job.phase && terminals.get(job.phase.address)?.state === 'finished';
         return { complete: Boolean(done), summary: done ? 'job output' : '', receipt: done ? { jobId: job.id, nonce: 'nonce', finish } : null };

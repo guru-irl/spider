@@ -62,10 +62,10 @@ async function scenario(mode: 'fake' | 'hc') {
 it('ensures the console before job preparation and passes its hold directory only to that launch', async () => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start(); vi.stubEnv('HC_TERMINAL_ID', h.owner!.terminal.terminalId);
   const fixture = await createRemoteTestFixture(h); const start = fixture.ports.jobs.start;
-  fixture.ports.jobs.start = async (program, ...rest) => {
+  fixture.ports.jobs.start = async (prepare, ...rest) => {
     const calls = (await h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=remote-console'));
-    expect(calls).toHaveLength(1); expect(program).toHaveProperty('consoleDirectory', calls[0].argv[calls[0].argv.indexOf('--console') + 1]);
-    return start(program, ...rest);
+    expect(calls).toHaveLength(1);
+    return start(async () => { const program = await prepare(); expect(program).toHaveProperty('consoleDirectory', calls[0].argv[calls[0].argv.indexOf('--console') + 1]); return program; }, ...rest);
   };
   const result = await executeRemote({ owner: h.owner!, on: 'remote.invalid' as MachineName, source: { kind: 'code', language: 'javascript', code: 'process.exitCode=23' } }, fixture.ports);
   expect(result.exitCode).toBe(23);

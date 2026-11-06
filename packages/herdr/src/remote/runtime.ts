@@ -141,15 +141,37 @@ async function releaseConsoleHold(jobDirectory: string, consoleDirectory: string
 }
 export async function pruneSettledPrograms(directory: string, activeDirectory?: string): Promise<string[]> {
   await probeRuntimeDirectory(directory);
-  const pruned: string[] = [];
+  const pruned: string[] = [], cutoff = Date.now() - 60000;
+  let copiesPruned = 0;
   for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const child = join(directory, entry.name); if (child === activeDirectory) continue;
+    const child = join(directory, entry.name);
+    const copy = /^\.copy-[a-f0-9]{32}$/.test(entry.name);
+    const copyMarker = /^\.copy-[a-f0-9]{32}\.spider-settled$/.test(entry.name);
     try {
+      if (copyMarker && entry.isFile() && copiesPruned < 32) {
+        const stage = child.slice(0, -'.spider-settled'.length);
+        const exists = await lstat(stage).then(() => true, error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; });
+        const marker = await lstat(child);
+        if (!exists && marker.isFile() && marker.mtimeMs <= cutoff) { await rm(child, { force: true }); copiesPruned++; }
+        continue;
+      }
+      if (!entry.isDirectory() || child === activeDirectory) continue;
+      if (entry.name.startsWith('.copy-')) {
+        if (!copy || copiesPruned >= 32) continue;
+        const stage = await lstat(child), marker = await lstat(`${child}.spider-settled`);
+        if (!stage.isDirectory() || !marker.isFile() || stage.mtimeMs > cutoff || marker.mtimeMs > cutoff) continue;
+        await rm(child, { recursive: true, force: true });
+        await rm(`${child}.spider-settled`, { force: true });
+        copiesPruned++; pruned.push(child);
+        continue;
+      }
       if (!(await lstat(child)).isDirectory() || !(await lstat(join(child, '.spider-settled'))).isFile()) continue;
       if (await liveConsoleHold(child, directory)) continue;
       await rm(child, { recursive: true, force: true }); pruned.push(child);
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    } catch (error) {
+      // A stale copy must not prevent an unrelated program from starting.
+      if (!copy && !copyMarker && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
   return pruned.sort();
 }

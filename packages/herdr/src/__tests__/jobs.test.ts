@@ -7,12 +7,13 @@ import { registerHerdrJobs } from '../jobs/register.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { JobMonitor } from '../jobs/monitor.js';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import type { CoreId, MachineName, HcEvent, HcEventStream, HcClient, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createClientFixture } from './testutil.js';
 import { createJobMonitor, type JobMonitorOptions, type JobNotice, type JobOutput } from '../jobs/monitor.js';
 
 const finish: TerminalFinish = { exitCode: 23, reason: 'exited', signal: null, finishedAt: 1000 };
-const program: PreparedProgram = { directory: '/fixture/runtime', argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} };
+const program = async (): Promise<PreparedProgram> => ({ directory: join('/fixture/runtime', randomBytes(16).toString('hex')), argv: ['node', 'runtime.mjs'], files: [], cwd: null, env: {} });
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 
@@ -45,7 +46,7 @@ async function fixture() {
   const options: JobMonitorOptions & { panes: NonNullable<JobMonitorOptions['panes']> } = {
     hc, app: { tabTerminals: async () => [], ownerPlacement: async () => ({ space: 's1', tab: 'tb1', pane: 'p1' } as never), awaitPane: async () => 'p2' as never, command: async () => ({}) },
     panes: { reserve: async () => ({ id: 'slot' }), observe: async () => ({ viewer: 'observer' as TerminalAddress, release: async () => { releases.push('observer'); } }), abandon: async () => {} },
-    outputCollector: { prepare: async (_p, job) => { currentJob = job.id; return { program: { ...program, directory: join(f.root, 'remote.invalid', job.id) }, nonce: 'private-nonce', releaseDeadlineAt: now + 10000 }; }, collect: async () => { if (collectFailure) throw new Error('chunk unavailable'); return outcome; } },
+    outputCollector: { prepare: async (p, job) => { currentJob = job.id; return { program: p, nonce: 'private-nonce', releaseDeadlineAt: now + 10000 }; }, collect: async () => { if (collectFailure) throw new Error('chunk unavailable'); return outcome; } },
     journalRoot: f.root, observedJobMessages: async () => [...observed], notifier: async notice => { notices.push(notice); if (submitFailure) throw new Error('submission uncertain'); }, clock: () => now,
   };
   const monitor = () => { const m = createJobMonitor(options); cleanups.push(async () => { await m.dispose(); }); return m; };
@@ -150,7 +151,7 @@ describe('in-process jobs', () => {
     expect(writes).toEqual([join(handle.remoteDirectory, 'release.json')]);
   });
 
-  it('unconfirmed labels expire after ten seconds without release and remove the original job', async () => {
+  it('unconfirmed labels expire without release, signaling, removal, or retry', async () => {
     const h = await fixture(); h.setEarly(false);
     let entered!: () => void;
     const began = new Promise<void>(r => { entered = r; });
@@ -160,8 +161,11 @@ describe('in-process jobs', () => {
     void launching.catch(() => {});
     // Cross the runtime's ten-second deadline only after the confirmation loop begins.
     await began; h.setNow(11000);
-    await expect(launching).rejects.toMatchObject({ code: 'release-timeout' });
-    expect(writes).toEqual([]); expect(h.kills).toEqual(['remote.invalid/t2']); expect(h.removed).toEqual(['remote.invalid/t2']);
+    const error = await launching.catch(error => error);
+    expect(error).toMatchObject({ code: 'release-timeout' });
+    expect(String(error)).toMatch(/payload did not start.*not retried automatically.*terminal identity did not match/i);
+    expect(writes).toEqual([]); expect(h.kills).toEqual([]); expect(h.removed).toEqual([]);
+    expect(h.launches).toHaveLength(1); expect(h.terminals.has('remote.invalid/t2' as TerminalAddress)).toBe(true);
   });
   it('a finish before the launch reply produces one identified detached notice', async () => {
     const h = await fixture(); const jobs = h.monitor();

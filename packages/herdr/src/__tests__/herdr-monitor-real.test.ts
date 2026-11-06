@@ -58,7 +58,7 @@ it.skipIf(!enabled)('real hc collects 2.5-second via-machine reads and releases 
     const errors: unknown[] = [], notices: JobNotice[] = [];
     const jobs = createJobMonitor({ hc: client, journalRoot: join(h.root, 'jobs'), outputCollector: output.outputCollector, clock: Date.now, notifier: notice => { notices.push(notice); }, observedJobMessages: async () => [], reportError: error => { errors.push(error); } }); monitors.push(jobs);
     const target: RuntimeTarget = { on: 'remote.invalid' as never, ...config.machines[0].runtime, environment: {}, nodePath: process.execPath, runtimePath, runtimeSha256: sha256(runtime) };
-    const program = await prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'sleep 1; printf "slow output\\n"; printf "slow diagnostic\\n" >&2; exit 23' }, target);
+    const program = () => prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'sleep 1; printf "slow output\\n"; printf "slow diagnostic\\n" >&2; exit 23' }, target);
     const handle = await jobs.start(program, h.owner!, target.on, {});
     await writeFile(marker, '');
     const result = await bounded(handle.finished, 45000);
@@ -74,7 +74,7 @@ it.skipIf(!enabled)('real hc collects 2.5-second via-machine reads and releases 
     evidence.output = { finish: result, delayedReads: delayed, notices: notices.length, errors: errors.length, stdout: 'slow output', stderr: 'slow diagnostic', runtimePath, receipt };
     console.info('REAL OUTPUT', evidence.output);
     // Stop only the owned local core while a second original is still running.
-    const running = await prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'sleep 60' }, target);
+    const running = () => prepareRemoteProgram({ kind: 'code', language: 'shell', code: 'sleep 60' }, target);
     // The read delay also applies during preparation; its two reads fit the release window.
     const live = await jobs.start(running, h.owner!, target.on, {});
     await h.cli(['server', 'stop', '--json']); await expect.poll(() => existsSync(h.localSocket), { timeout: 5000, interval: 10 }).toBe(false);

@@ -49,7 +49,7 @@ async function prove(mode: 'fake' | 'hc') {
     jobs = createJobMonitor({ hc: h.hc, journalRoot: join(h.root, 'jobs'), outputCollector: output.outputCollector, clock: Date.now, notifier() {}, observedJobMessages: async () => [] });
     const target: RuntimeTarget = { on: 'remote.invalid' as never, ...config.machines[0].runtime, environment: {}, nodePath: process.execPath, runtimePath, runtimeSha256: sha256(runtime) };
     const source = { kind: 'code', language: 'shell', code: 'sleep 120' } as const;
-    const job = await jobs.start(await prepareRemoteProgram(source, target), h.owner!, target.on, { background: true });
+    const job = await jobs.start(() => prepareRemoteProgram(source, target), h.owner!, target.on, { background: true });
     const console = await ensureAgentConsole({ owner: h.owner!, on: target.on, target, source, job }, h.hc, h.localEnv);
     expect(console).not.toBeNull();
     const before = await Promise.all([job.address, console!.address].map(address => h.hc.get(address)));

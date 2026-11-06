@@ -56,7 +56,7 @@ test('preparation leaves ordinary assignments and arguments untouched', async ()
 test('password assignment and password flag values are absent from saved job previews', async () => {
   const h = await monitorFixture(), jobs = h.monitor();
   const inputs = ['PGPASSWORD=hunter2hunter2 psql --dbname appdb', 'az login --password "S3cr3tP@ssw0rd!"', 'az login --password=S3cr3tP@ssw0rd!'];
-  for (const code of inputs) await jobs.start(await prepareRemoteProgram({ kind: 'code', language: 'shell', code }, target), h.owner, on, {});
+  for (const code of inputs) await jobs.start(() => prepareRemoteProgram({ kind: 'code', language: 'shell', code }, target), h.owner, on, {});
   const journal = await createJobStore(h.f.root, h.owner.sessionId).read();
   expect(journal.jobs).toHaveLength(3);
   for (const job of journal.jobs) {

@@ -201,14 +201,14 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
       async prepare(program, job) {
         await mkdir(job.localDirectory, { recursive: true });
         for (const file of program.files) await options.hc.fileWrite(job.machine, file.path, file.bytes);
-        const releaseDeadlineAt = Date.now() + 10_000, nonce = randomBytes(16).toString('hex');
+        const nonce = randomBytes(16).toString('hex');
         const request: RuntimeRequest = { version: 1, jobId: job.id, nonce, programNonce: program.files.find(f => f.path.endsWith('/.spider-program'))?.bytes.toString() ?? '', argv: program.argv, cwd: program.cwd, env: program.env, files: program.files.map(f => ({ path: f.path, sha256: f.sha256 })), releaseWindowMs: 10_000, ...(program.consoleDirectory ? { consoleDirectory: program.consoleDirectory } : {}) };
         const bytes = Buffer.from(JSON.stringify(request)), requestPath = join(job.remoteDirectory, 'request.json');
         await options.hc.fileWrite(job.machine, requestPath, bytes);
         await options.hc.fileWrite(job.machine, requestPath + '.sha256', Buffer.from(sha256(bytes)));
         await get(job);
         const { machine } = await resolveMachine(options.hc, options.config.machines, job.machine);
-        return { nonce, releaseDeadlineAt, program: { ...program, argv: [machine.nodePath ?? 'node', options.runtimePath(job.machine), requestPath] } };
+        return { nonce, program: { ...program, argv: [machine.nodePath ?? 'node', options.runtimePath(job.machine), requestPath] } };
       },
       async collect(job) {
         await get(job); const result = await collect(job.id);

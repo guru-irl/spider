@@ -5,6 +5,7 @@ import { startTerminalChild, type TerminalChild } from './child-remote-process.j
 import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
@@ -218,7 +219,7 @@ it.each(['activation', 'periodic'] as const)('an unreachable ended child discove
   const observed: JobId[] = [];
   const options = { hc, journalRoot: f.root, clock: Date.now, observedJobMessages: async () => observed, notifier: (notice: JobNotice) => { observed.push(notice.details.jobId); },
     closeAgentConsoles: async (child: Owner & { runId: RunId }) => { if (trigger === 'periodic' && blocked && child.runId === 'a-stuck') { entered(); await barrier; } },
-    outputCollector: { prepare: async (program: import('../contracts.js').PreparedProgram, job: import('../contracts.js').JobRecord) => ({ program: { ...program, directory: join(f.root, 'programs', job.id) }, nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000 }),
+    outputCollector: { prepare: async (program: import('../contracts.js').PreparedProgram) => ({ program, nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000 }),
       collect: async (job: import('../contracts.js').JobRecord) => { if (trigger === 'activation' && blocked && job.machine === 'stuck.invalid') { entered(); await barrier; } const done = 'address' in job.phase && terminals.get(job.phase.address)?.state === 'finished'; return { complete: done, summary: done ? 'done' : '', receipt: done ? { jobId: job.id, nonce: 'nonce', finish } : null }; },
     },
   };
@@ -230,7 +231,7 @@ it.each(['activation', 'periodic'] as const)('an unreachable ended child discove
     finally { clearTimeout(timer); }
   };
   try {
-    const program = { directory: join(f.root, 'program'), argv: ['node'], files: [], cwd: null, env: {} };
+    const program = async () => ({ directory: join(f.root, 'programs', randomBytes(16).toString('hex')), argv: ['node'], files: [], cwd: null, env: {} });
     if (trigger === 'periodic') await parent.activate(owner);
     const stuck = await children[0].start(program, owner, 'stuck.invalid' as never, { background: true }); await children[0].detach(stuck.id);
     const healthy = await children[1].start(program, owner, 'healthy.invalid' as never, { background: true }); await children[1].detach(healthy.id);

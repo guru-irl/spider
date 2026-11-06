@@ -76,7 +76,7 @@ export interface HcClient {
 	run(request: HcRunRequest): Promise<TerminalHandle>;
 	get(address: TerminalAddress, options?: HcCallOptions): Promise<TerminalSummary>;
 	read(address: TerminalAddress, options: { lines: number }): Promise<string>;
-	kill(address: TerminalAddress): Promise<void>;
+	kill(address: TerminalAddress, options?: HcCallOptions): Promise<void>;
 	rm(address: TerminalAddress, options?: HcCallOptions): Promise<void>;
 	setLabels(address: TerminalAddress, labels: Readonly<Record<string, string | null>>): Promise<void>;
 	fileRead(on: MachineName, path: string): Promise<Buffer>;
@@ -152,6 +152,7 @@ export interface RemoteCopyResult {
 	bytes: number;
 	mode: number;
 	sha256: string;
+	note?: string;
 }
 export interface RemoteExecutionPort {
 	execute(request: RemoteExecuteRequest): Promise<RemoteResult>;
@@ -185,7 +186,7 @@ export interface JobExitEvidence { native: TerminalFinish; receipt: TerminalFini
 export interface JobFinish extends TerminalFinish { evidenceConflict?: boolean; exitEvidence?: JobExitEvidence }
 export type ReleaseObservation = { kind: 'not_found' } | { kind: 'matched' }
   | { kind: 'address'; expected: string; actual: string }
-  | { kind: 'labels'; differences: { label: string; expected: string; actual: string | null }[] };
+  | { kind: 'labels'; differences: { label: string; expected: string; actual: string | null }[]; omitted?: number };
 export interface ReleaseConfirmation {
   checks: number;
   notFound: number;
@@ -212,7 +213,7 @@ export interface JobRecord {
   noticeMode: 'tool' | 'async'; notice: 'pending' | 'submitted' | 'observed';
 }
 export interface JobPort extends Disposable {
-	start(program: PreparedProgram, owner: Owner, on: MachineName,
+	start(prepare: () => Promise<PreparedProgram>, owner: Owner, on: MachineName,
 		options: { background?: boolean; signal?: AbortSignal; kind?: JobRecord['kind'] }): Promise<JobHandle>;
 	detach(jobId: JobId): Promise<void>;
 	toolReturned(jobId: JobId): Promise<void>;

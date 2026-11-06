@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { createJobMonitor, type JobMonitor } from '../jobs/monitor.js';
 import { registerHerdrJobs } from '../jobs/register.js';
 import { jobPruneCandidates } from '../jobs/prune.js';
-import { createJobStore, type JournalJob } from '../jobs/store.js';
+import { createJobStore, parseJobJournal, type JournalJob } from '../jobs/store.js';
 import * as jobStores from '../jobs/store.js';
 import { createCleanupSweep } from '../jobs/cleanup.js';
 import * as cleanupSweeps from '../jobs/cleanup.js';
 import { processStartIdentity } from '../jobs/handoff.js';
+import { HERDR_LABELS } from '../contracts.js';
 import type { RunId, TerminalAddress } from '../contracts.js';
 import { cleanup, deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
@@ -65,6 +66,109 @@ async function seeded(count = 70, scope: 'session' | 'child' = 'session') {
   const pruneKeys = journal.jobs.map(job => `${f.owner.sessionId}/${child?.id ?? ''}/${job.id}/prune`);
   return { ...f, store, journal, sweep, jobs, pruneKeys, setNow: (value: number) => { now = value; } };
 }
+
+it('keeps 300 failed launch attempts below the journal cap and can launch afterward', async () => {
+  const f = await monitorFixture(), factory = jobStores.createJobStore, run = f.hc.run;
+  let now = 1000, failing = true, launches = 0;
+  const stores = vi.spyOn(jobStores, 'createJobStore').mockImplementation((...args) => {
+    const store = factory(...args);
+    // Keep this stress test fast while still writing and reading the actual bounded JSON artifact.
+    return { ...store, write: async journal => {
+      const bytes = Buffer.from(JSON.stringify(journal));
+      if (bytes.length > jobStores.MAX_BYTES) throw Object.assign(new Error('Journal too large'), { code: 'journal-too-large' });
+      await mkdir(store.directory, { recursive: true, mode: 0o700 }); await writeFile(store.path, bytes);
+    } };
+  });
+  f.hc.run = async request => { launches++; return run(request); };
+  f.hc.fileRead = async () => { if (failing) throw Object.assign(new Error('Checksum unavailable'), { code: 'hc-error' }); return Buffer.from('a'.repeat(64)); };
+  const jobs = f.monitor({ clock: () => now }), failures: unknown[] = [];
+  try {
+    for (let i = 0; i < 150; i++) {
+      now += 10000;
+      try { await jobs.start(program, f.owner, on, {}); failures.push('unexpected success'); }
+      catch (error) { failures.push((error as { code?: string }).code); }
+    }
+    expect(launches).toBe(300); expect(failures).toEqual(Array(150).fill('hc-error'));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const store = factory(f.f.root, f.owner.sessionId);
+    await expect.poll(async () => (await store.read()).jobs.length, { timeout: 3000 }).toBeLessThanOrEqual(64);
+    expect((await readFile(store.path)).length).toBeLessThan(jobStores.MAX_BYTES);
+    failing = false;
+    const next = await jobs.start(program, f.owner, on, {});
+    expect(launches).toBe(301); expect(next.id).toBeTruthy();
+  } finally { await jobs.shutdown('reload'); stores.mockRestore(); }
+}, 15000);
+
+it('keeps the newest 64 settled failed launches and removes older local logs', async () => {
+  const f = await seeded(70), ids = f.journal.jobs.map(job => job.id);
+  for (const job of f.journal.jobs) {
+    job.phase = { kind: 'launch-failed', error: 'Payload did not start' }; job.output = null; job.notice = 'pending';
+    job.callerOwned = false; job.detached = false; job.uncertain = false; job.evidenceConflict = false; job.terminalReleased = true; job.settledMarked = true;
+  }
+  await f.store.write(f.journal); await f.jobs.activate(f.owner); await f.sweep.flush(f.pruneKeys);
+  expect((await f.store.read()).jobs.map(job => job.id)).toEqual(ids.slice(-64));
+  for (const job of f.journal.jobs.slice(0, 6)) await expect(access(job.localDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(join(f.journal.jobs[6].localDirectory, 'stdout.log'), 'utf8')).toBe(ids[6]);
+});
+
+it('retains failed diagnostics for ten minutes and eventually expires even the newest ones', async () => {
+  const f = await seeded(70), ids = f.journal.jobs.map(job => job.id);
+  for (const job of f.journal.jobs) {
+    job.phase = { kind: 'launch-failed', error: 'Payload did not start' }; job.output = null; job.notice = 'pending';
+    job.callerOwned = false; job.detached = false; job.uncertain = false; job.evidenceConflict = false; job.terminalReleased = true; job.settledMarked = true; job.updatedAt = 602000;
+  }
+  await f.store.write(f.journal); await f.jobs.activate(f.owner); await f.sweep.flush(f.pruneKeys);
+  expect((await f.store.read()).jobs).toHaveLength(70);
+  f.setNow(1201999); await f.jobs.reconcile(); await f.sweep.flush(f.pruneKeys);
+  expect((await f.store.read()).jobs).toHaveLength(70);
+  f.setNow(1202000); await f.jobs.reconcile(); await f.sweep.flush(f.pruneKeys);
+  expect((await f.store.read()).jobs.map(job => job.id)).toEqual(ids.slice(-64));
+  f.setNow(602000 + 7 * 86400000 + 1); await f.jobs.reconcile(); await f.sweep.flush(f.pruneKeys);
+  expect((await f.store.read()).jobs).toHaveLength(0);
+});
+
+it('shares the newest-64 retention window between settled failures and finished jobs', async () => {
+  const f = await seeded(70), ids = f.journal.jobs.map(job => job.id);
+  for (const job of f.journal.jobs.slice(0, 35)) {
+    job.phase = { kind: 'launch-failed', error: 'Payload did not start' }; job.output = null; job.notice = 'pending';
+    job.callerOwned = false; job.detached = false; job.uncertain = false; job.evidenceConflict = false; job.terminalReleased = true; job.settledMarked = true;
+  }
+  await f.store.write(f.journal); await f.jobs.activate(f.owner); await f.sweep.flush(f.pruneKeys);
+  expect((await f.store.read()).jobs.map(job => job.id)).toEqual(ids.slice(-64));
+});
+
+it('persists bounded failed-launch evidence and still reads legacy observations', async () => {
+  const f = await seeded(1), job = f.journal.jobs[0], noisy = `"\\\u0001😃`.repeat(100).slice(0, 256);
+  const labels = [HERDR_LABELS.job, HERDR_LABELS.session, HERDR_LABELS.kind, HERDR_LABELS.machine, HERDR_LABELS.ownerCore, HERDR_LABELS.ownerTerminal, HERDR_LABELS.run];
+  const observation = { kind: 'labels' as const, differences: labels.map(label => ({ label, expected: noisy, actual: noisy })) };
+  job.phase = { kind: 'launch-failed', error: noisy.repeat(60), releaseFailure: { step: 'hc get', elapsedMs: 10000, beforeReleaseMs: 300, queueWaitMs: 200, timerDriftMs: 5,
+    confirmation: { checks: 20, notFound: 2, first: observation, last: observation } } };
+  const legacy = parseJobJournal(f.journal, f.owner.sessionId).jobs[0].phase;
+  expect(legacy.kind === 'launch-failed' && legacy.releaseFailure?.confirmation?.last.kind === 'labels' && legacy.releaseFailure.confirmation.last.differences).toHaveLength(7);
+  await f.store.write(f.journal);
+  const phase = JSON.parse(await readFile(f.store.path, 'utf8')).jobs[0].phase;
+  expect(Buffer.byteLength(JSON.stringify({ error: phase.error, releaseFailure: phase.releaseFailure }))).toBeLessThan(2000);
+  expect(phase.releaseFailure.confirmation.last.differences).toHaveLength(3);
+  expect(phase.releaseFailure.confirmation.last.omitted).toBe(4);
+  expect(Buffer.byteLength(phase.error)).toBeLessThanOrEqual(512);
+  const reread = await f.store.read(); expect(reread.jobs[0].phase).toMatchObject({ kind: 'launch-failed', releaseFailure: { confirmation: { last: { kind: 'labels', omitted: 4 } } } });
+});
+
+it('never selects failed records that recovery or a caller still needs, even under pressure', async () => {
+  const f = await seeded(0), original = (await seeded(1)).journal.jobs[0], safe: JournalJob[] = [];
+  const make = (name: string): JournalJob => ({ ...structuredClone(original), id: name as JournalJob['id'], phase: { kind: 'launch-failed', error: 'Payload did not start' }, output: null, notice: 'pending', callerOwned: false, detached: false, uncertain: false, evidenceConflict: false, terminalReleased: true, settledMarked: true, localDirectory: join(f.store.directory, 'logs', name), updatedAt: 1000 });
+  for (let i = 0; i < 70; i++) safe.push(make(`safe-${i}`));
+  const protectedJobs = ['caller', 'uncertain', 'conflict', 'terminal', 'marker', 'recovering', 'held', 'unreturned', 'crash', 'foreign-path', 'live'].map(make);
+  protectedJobs[0].callerOwned = true; protectedJobs[1].uncertain = true; protectedJobs[2].evidenceConflict = true;
+  protectedJobs[3].terminalReleased = false; protectedJobs[4].settledMarked = false;
+  protectedJobs[9].localDirectory = join(f.f.root, 'outside');
+  protectedJobs[10].phase = { kind: 'running', address: 'remote.invalid/live' as TerminalAddress, releasedAt: 1000 };
+  f.journal.jobs = [...safe, ...protectedJobs];
+  f.journal.writer = { pid: process.pid, startIdentity: processStartIdentity(process.pid)!, shutdown: null, crashJobs: [protectedJobs[8].id] };
+  const candidates = jobPruneCandidates(f.journal, { directory: f.store.directory, now: 602000,
+    recoveringNotices: new Set([protectedJobs[5].id]), holds: new Map([[protectedJobs[6].id, true]]), unreturned: new Set([protectedJobs[7].id]) }, true);
+  expect(candidates.map(job => job.id)).toEqual(safe.map(job => job.id));
+});
 
 it.each(['session', 'child'] as const)('compacts a seeded %s window as new jobs settle', async scope => {
   const f = await seeded(64, scope), ids = f.journal.jobs.map(job => job.id);

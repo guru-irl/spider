@@ -127,7 +127,7 @@ it('holds concurrent admission until the first job is registered', async () => {
     if (number === 1) { entered(); await gate; }
     return { id: `job-${number}` as JobHandle['id'], address: `remote.invalid/job-${number}` as JobHandle['address'], remoteDirectory: '/fixture/remote', localDirectory: '/fixture/local', finished: new Promise(() => {}), cancel: async () => {} };
   }, detach: async () => {}, toolReturned: async () => {}, consumeNotice: async () => {}, dispose() {} };
-  const request = { ...f.request, jobs, hc: f.h.hc, program: { directory: '/fixture/remote', argv: [], cwd: null, files: [], env: {} }, options: {} };
+  const request = { ...f.request, jobs, hc: f.h.hc, program: async () => ({ directory: '/fixture/remote', argv: [], cwd: null, files: [], env: {} }), options: {} };
   const first = startWithAgentConsole(request); await firstEntered;
   const second = startWithAgentConsole(request);
   try { await delay(500); expect(starts).toBe(1); }
@@ -181,11 +181,11 @@ it('reports a failed replacement launch and still starts the job', async () => {
   const handle: JobHandle = { id: 'job-one' as JobHandle['id'], address: 'remote.invalid/job-one' as JobHandle['address'], remoteDirectory: '/fixture/remote', localDirectory: '/fixture/local', finished: new Promise(() => {}), cancel: async () => {} };
   let started = 0;
   const jobs: JobPort & { consoleIdle: () => Promise<boolean>; consoleError: (error: unknown) => void } = {
-    start: async program => { started++; expect(program.consoleDirectory).toBeUndefined(); return handle; },
+    start: async prepare => { started++; expect((await prepare()).consoleDirectory).toBeUndefined(); return handle; },
     consoleIdle: async () => true, consoleError: error => { f.errors.push(error); },
     detach: async () => {}, toolReturned: async () => {}, consumeNotice: async () => {}, dispose() {},
   };
-  const result = await startWithAgentConsole({ ...f.request, jobs, hc, program: { directory: '/fixture/remote', argv: [], cwd: null, files: [], env: {} }, options: {} });
+  const result = await startWithAgentConsole({ ...f.request, jobs, hc, program: async () => ({ directory: '/fixture/remote', argv: [], cwd: null, files: [], env: {} }), options: {} });
   expect(result).toBe(handle);
   expect(started).toBe(1);
   expect(f.errors).toEqual([failure]);

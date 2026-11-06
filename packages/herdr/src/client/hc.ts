@@ -128,7 +128,7 @@ export function createHcClient(options: HcClientOptions): HcClient & Disposable 
       argv.push('--', ...request.argv);
       return { address: text(object(await call(argv)).address) as import('../contracts.js').TerminalAddress, coreId };
     },
-    kill: async address => { await call(['kill', address, '--json']); },
+    kill: async (address, callOptions) => { await call(['kill', address, '--json'], undefined, callOptions); },
     rm: async (address, callOptions) => { await call(['rm', address, '--json'], undefined, callOptions); },
     setLabels: async (address, labels) => {
       const entries = Object.entries(labels);

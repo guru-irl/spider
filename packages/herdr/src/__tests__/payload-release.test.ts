@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createHcClient } from '../client/hc.js';
+import { monitorFixture } from './herdr-monitor-fixture.js';
+import { terminal as fixtureTerminal } from './testutil.js';
 import { releaseRemoteJob } from '../jobs/observer.js';
+import { herdrErrorNotice } from '../notices.js';
 import type { JobId, JobRecord, Owner, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 const owner = { sessionId: 'session', generation: 'generation', terminal: { address: 'agent', coreId: 'core', terminalId: 'agent', socket: '/fixture/socket', sessionNamespace: 'fixture' }, cwd: '/fixture', name: null, sessionFile: null } as Owner;
 const job: JobRecord = { version: 1, id: 'job' as JobId, kind: 'exec', owner, machine: 'remote.invalid' as JobRecord['machine'],
@@ -84,12 +91,14 @@ test.each(['hc get', 'fileRead', 'release write'] as const)('reports a hung %s w
   const started = Date.now();
   const never = () => new Promise<never>(() => {});
   const hc = { get: step === 'hc get' ? never : async () => terminal(), fileRead: step === 'fileRead' ? never : async () => Buffer.from(requestSha256) };
+  const timedWrite = () => new Promise<never>((_resolve, reject) => setTimeout(() => reject(Object.assign(new Error('CLI request timed out'), { code: 'cli-timeout' })), 15000));
   let failure: unknown;
   const pending = releaseRemoteJob(job, { hc, nonce: 'nonce', releaseDeadlineAt: started + 10000, requestedAt: started - 4200, clock: Date.now,
-    releaseFileWriter: step === 'release write' ? never : async () => {} }).catch(error => { failure = error; });
+    releaseFileWriter: step === 'release write' ? timedWrite : async () => {} }).catch(error => { failure = error; });
   try {
     await vi.advanceTimersByTimeAsync(10000);
-    expect(failure).toMatchObject({ code: 'release-timeout', releaseFailure: { step, elapsedMs: 10000, beforeReleaseMs: 4200, timerDriftMs: 0 } });
+    if (step === 'release write') { expect(failure).toBeUndefined(); await vi.advanceTimersByTimeAsync(5000); }
+    expect(failure).toMatchObject({ code: step === 'release write' ? 'cli-timeout' : 'release-timeout', releaseFailure: { step, elapsedMs: step === 'release write' ? 15000 : 10000, beforeReleaseMs: 4200, timerDriftMs: 0 } });
     expect(String(failure)).toContain('remote.invalid');
   } finally { vi.useRealTimers(); }
   void pending;
@@ -118,6 +127,37 @@ test('a late timer lets an already arriving remote failure win', async () => {
 });
 
 
+test.each(['hc get', 'fileRead'] as const)('a late timer keeps a completed real client %s failure', async step => {
+  const h = await monitorFixture(), started = join(h.f.root, 'started'), completed = join(h.f.root, 'completed');
+  const script = join(h.f.root, 'reply.mjs');
+  const reply = { ...fixtureTerminal('remote.invalid/job'), labels };
+  const machines = { machines: [{ id: 'remote-core', name: 'remote.invalid', host: 'remote.invalid', target: 'remote.invalid', state: 'connected', session: 'fixture' }] };
+  await writeFile(script, `import {writeFileSync,writeSync} from 'node:fs';const args=process.argv.slice(2);const target=${JSON.stringify(step)};const isTarget=target==='hc get'?args[0]==='get':args[0]==='file';if(isTarget){writeFileSync(${JSON.stringify(started)},String(Date.now()));setTimeout(()=>{writeFileSync(${JSON.stringify(completed)},String(Date.now()));writeSync(2,JSON.stringify({error:{kind:'transport-refused',message:'Remote request refused'}}));process.exit(7)},20)}else{console.log(JSON.stringify(args[0]==='get'?${JSON.stringify(reply)}:${JSON.stringify(machines)}))}`);
+  await writeFile(h.f.hcBinary, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`);
+  const hc = createHcClient({ binary: h.f.hcBinary, env: h.f.localEnv }), writer = vi.fn();
+  const deadline = Date.now() + 1200;
+  const result = releaseRemoteJob(job, { hc, nonce: 'nonce', releaseDeadlineAt: deadline, clock: Date.now, releaseFileWriter: writer }).catch(error => error);
+  try {
+    await expect.poll(() => existsSync(started), { timeout: 900, interval: 5 }).toBe(true);
+    expect(Date.now()).toBeLessThan(deadline);
+    while (Date.now() < deadline + 100) { /* Block until both the reply and timer are pending. */ }
+    const completedAt = Number(await readFile(completed, 'utf8'));
+    expect(completedAt).toBeLessThan(deadline);
+    expect(await result).toMatchObject({ code: 'transport-refused', releaseFailure: { step, timerDriftMs: expect.any(Number) } });
+    expect(writer).not.toHaveBeenCalled();
+  } finally { await hc.dispose(); }
+}, 5000);
+
+test('release diagnostics describe the pre-release time and queue as one interval', async () => {
+  let now = 5000;
+  const pending = releaseRemoteJob(job, { hc: { get: async () => { now += 250; throw new Error('Transport refused'); }, fileRead: async () => Buffer.from(requestSha256) },
+    nonce: 'nonce', releaseDeadlineAt: 15000, requestedAt: 1000, queueWaitMs: 1000, clock: () => now, releaseFileWriter: async () => {} });
+  const error = await pending.catch(error => error);
+  expect(String(error)).toContain('Release on remote.invalid failed at hc get after 250 ms');
+  expect(String(error)).toContain('4000 ms before release, including 1000 ms queued');
+  expect(String(error)).not.toContain('0 ms late');
+});
+
 test('release errors keep long transport failures short', async () => {
   let failure: unknown;
   await releaseRemoteJob(job, { hc: { get: async () => { throw new Error('Failure '.repeat(2000)); }, fileRead: async () => Buffer.from(requestSha256) }, nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000, clock: Date.now,
@@ -127,17 +167,14 @@ test('release errors keep long transport failures short', async () => {
 });
 
 
-test('a release write already completing when a late timer fires returns success', async () => {
-  let now = 1000, fire!: () => void, finish!: () => void, entered!: () => void;
+test('a started release write that completes after the deadline returns success', async () => {
+  let now = 1000, finish!: () => void, entered!: () => void;
   const writing = new Promise<void>(resolve => { entered = resolve; });
-  const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void) => { fire = callback; return 123; }) as typeof setTimeout);
   const pending = releaseRemoteJob(job, { hc: { get: async () => terminal(), fileRead: async () => Buffer.from(requestSha256) }, nonce: 'nonce', releaseDeadlineAt: 11000, clock: () => now,
     releaseFileWriter: () => new Promise<void>(resolve => { finish = resolve; entered(); }) });
-  try {
-    await writing; now = 13500;
-    setImmediate(finish); fire();
-    await expect(pending).resolves.toBeUndefined();
-  } finally { timer.mockRestore(); }
+  await writing; now = 13500;
+  setImmediate(finish);
+  await expect(pending).resolves.toBeUndefined();
 });
 
 
@@ -174,6 +211,9 @@ test('a deadline made entirely of missing replies says not_found', async () => {
 test('an address rejected by the client remains visible in release diagnostics', async () => {
   const pending = releaseRemoteJob(job, { hc: { get: async () => { throw Object.assign(new Error('Wrong address'), { code: 'caller-mismatch', details: { expectedAddress: 'remote.invalid/job', actualAddress: 'other.invalid/job' } }); }, fileRead: async () => Buffer.from(requestSha256) },
     nonce: 'nonce', releaseDeadlineAt: Date.now() + 10000, clock: Date.now, releaseFileWriter: async () => {} });
-  await expect(pending).rejects.toMatchObject({ code: 'caller-mismatch', releaseFailure: { confirmation: { checks: 1, last: { kind: 'address', expected: 'remote.invalid/job', actual: 'other.invalid/job' } } } });
+  await expect(pending).rejects.toMatchObject({ code: 'release-failed', details: { causeCode: 'caller-mismatch' }, releaseFailure: { confirmation: { checks: 1, last: { kind: 'address', expected: 'remote.invalid/job', actual: 'other.invalid/job' } } } });
   await expect(pending).rejects.toThrow(/other.invalid\/job/);
+  const error = await pending.catch(error => error);
+  expect(herdrErrorNotice(error)).toMatch(/did not start.*connection.*identity/i);
+  expect(herdrErrorNotice(error)).not.toMatch(/close this session/i);
 });

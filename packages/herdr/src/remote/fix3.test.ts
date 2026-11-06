@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdtemp, mkdir, readFile, writeFile, rm, chmod } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, writeFile, rm, chmod } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { createProductionHerdrCliPorts, createHostHerdrPorts } from '../../../host/src/herdr/ports.js';
@@ -12,7 +12,7 @@ import { sha256, installRuntimeDirectory } from './runtime.js';
 import { createJobMonitor, type JobNotice, type JobMonitorOptions } from '../jobs/monitor.js';
 import { createJobStore, type JournalJob } from '../jobs/store.js';
 import { doctorHerdr, type DoctorParts } from '../setup/doctor.js';
-import type { CoreId, HcClient, JobRecord, JobHandle, JobId, Owner, MachineName, TerminalAddress } from '../contracts.js';
+import type { CoreId, HcClient, HcEvent, JobRecord, JobHandle, JobId, Owner, MachineName, TerminalAddress, TerminalSummary } from '../contracts.js';
 
 const roots: string[] = [];
 const children = new Set<ReturnType<typeof spawn>>();
@@ -71,7 +71,8 @@ async function fixture(nodeVersion?: string) {
     return { child, finished };
   };
   const ports: RemoteExecutionPorts = { hc, target: async () => target, prepare: prepareRemoteProgram, environmentPolicy: env => env, clock: Date.now,
-    jobs: { start: async (program, owner, machine) => {
+    jobs: { start: async (prepare, owner, machine) => {
+      const program = await prepare();
       const id = `job-${++count}` as JobId;
       const record = { version: 1, id, kind: 'exec', owner, machine, phase: { kind: 'preparing' }, viewer: null, localDirectory: join(root, 'local', id), remoteDirectory: program.directory, detached: false, noticeMode: 'tool', notice: 'pending' } as JobRecord;
       await output.outputCollector.prepare(program, record);
@@ -82,6 +83,136 @@ async function fixture(nodeVersion?: string) {
   const execute = (code: string, options = {}) => executeRemote({ source: { kind: 'code', language: 'javascript', code }, on, owner, ...options }, ports);
   return { root, owner, hc, request, parts, runtime, target, output, ports, jobs, execute, skew: (ms: number) => { destinationSkew = ms; } };
 }
+
+test.each(['source', 'command'] as const)('a retry uses a fresh directory and the original %s after the first runtime creates logs', async changed => {
+  const f = await fixture(), listeners = new Set<(event: HcEvent) => void>();
+  const marker = join(f.root, 'payload-runs');
+  const source = { kind: 'code' as const, language: 'javascript' as const, code: `require('node:fs').appendFileSync(${JSON.stringify(marker)},'run\\n');console.log('retry output');process.exitCode=17` };
+  const active = new Map<TerminalAddress, { terminal: TerminalSummary; child: ReturnType<typeof spawn>; closed: Promise<void> }>();
+  const directories: string[] = [];
+  let firstLogExists = false, rejectFirst = true;
+  const emit = (event: HcEvent) => { for (const listener of listeners) listener(event); };
+  f.hc.identity = async () => f.owner.terminal;
+  f.hc.machines = async () => [{ id: 'destination-core' as CoreId, name: f.target.on, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }];
+  f.hc.events = () => ({ ready: Promise.resolve(), lookup: async address => active.get(address)?.terminal ?? null,
+    subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose: () => {} });
+  f.hc.run = async request => {
+    const directory = dirname(request.argv[request.argv.length - 1]); directories.push(directory);
+    const address = `${f.target.on}/t${directories.length}` as TerminalAddress;
+    const terminal: TerminalSummary = { address, parent: null, labels: request.labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null };
+    const child = spawn(request.argv[0], [...request.argv.slice(1)], { cwd: request.cwd ?? undefined, stdio: ['ignore', 'pipe', 'pipe'] }); children.add(child);
+    child.stderr.resume();
+    const closed = new Promise<void>(resolve => child.once('close', (exitCode, signal) => {
+      const finish = { exitCode, signal: signal ? 15 : null, reason: 'exited', finishedAt: Date.now() };
+      Object.assign(terminal, { state: 'finished', ...finish }); emit({ type: 'finished', terminal: address, data: finish, seq: 2 }); resolve();
+    }));
+    active.set(address, { terminal, child, closed }); emit({ type: 'created', terminal: address, data: terminal, seq: 1 });
+    await new Promise<void>((resolve, reject) => {
+      let output = '';
+      const timer = setTimeout(() => reject(new Error('Runtime did not start')), 2000);
+      child.stdout.on('data', bytes => { output += bytes.toString(); if (output.includes('SPIDER_HERDR_READY')) { clearTimeout(timer); resolve(); } });
+      void closed.then(() => { clearTimeout(timer); resolve(); });
+    });
+    if (directories.length === 1) firstLogExists = await access(join(directory, 'stdout.log')).then(() => true, () => false);
+    return { address, coreId: 'destination-core' as CoreId };
+  };
+  f.hc.get = async address => {
+    if (rejectFirst) {
+      rejectFirst = false;
+      if (changed === 'source') source.code = "console.log('wrong output');process.exitCode=9";
+      else f.target.commands = { ...f.target.commands, javascript: ['/missing-fixture-executable'] };
+      throw Object.assign(new Error('Confirmation failed'), { code: 'hc-error' });
+    }
+    const entry = active.get(address); if (!entry) throw Object.assign(new Error('Not found'), { code: 'not_found' });
+    return entry.terminal;
+  };
+  f.hc.kill = async address => { const entry = active.get(address)!; entry.child.kill('SIGTERM'); await entry.closed; };
+  f.hc.rm = async address => { active.delete(address); };
+  const jobs = createJobMonitor({ hc: f.hc, outputCollector: f.output.outputCollector, journalRoot: join(f.root, 'retry-journal'),
+    observedJobMessages: async () => [], notifier: () => {}, clock: Date.now });
+  f.ports.jobs = jobs;
+  try {
+    const result = await executeRemote({ source, on: f.target.on, owner: f.owner }, f.ports);
+    expect(firstLogExists).toBe(true);
+    expect(result).toMatchObject({ outcome: 'exited', exitCode: 17, stdout: 'retry output\n' });
+    expect(await readFile(marker, 'utf8')).toBe('run\n');
+    expect(directories).toHaveLength(2);
+    expect(directories[0]).not.toBe(directories[1]);
+    await expect(access(directories[0])).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally { await jobs.shutdown('reload'); }
+}, 5000);
+
+test('a lost release acknowledgement leaves the real payload running and recovers its receipt', async () => {
+  const f = await fixture(), listeners = new Set<(event: HcEvent) => void>(), active = new Map<TerminalAddress, TerminalSummary>();
+  const marker = join(f.root, 'released-runs'), notices: JobNotice[] = [];
+  let launches = 0, kills = 0;
+  const emit = (event: HcEvent) => { for (const listener of listeners) listener(event); };
+  f.hc.identity = async () => f.owner.terminal;
+  f.hc.machines = async () => [{ id: 'destination-core' as CoreId, name: f.target.on, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }];
+  f.hc.events = () => ({ ready: Promise.resolve(), lookup: async address => active.get(address) ?? null, subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose: () => {} });
+  f.hc.run = async request => {
+    const address = `${f.target.on}/t${++launches}` as TerminalAddress;
+    const terminal: TerminalSummary = { address, parent: null, labels: request.labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null };
+    const child = spawn(request.argv[0], [...request.argv.slice(1)], { cwd: request.cwd ?? undefined, stdio: ['ignore', 'pipe', 'pipe'] }); children.add(child);
+    child.stdout.resume(); child.stderr.resume(); active.set(address, terminal);
+    child.once('close', (exitCode, signal) => {
+      const finish = { exitCode, signal: signal ? 15 : null, reason: 'exited', finishedAt: Date.now() };
+      Object.assign(terminal, { state: 'finished', ...finish }); emit({ type: 'finished', terminal: address, data: finish, seq: 2 });
+    });
+    return { address, coreId: 'destination-core' as CoreId };
+  };
+  f.hc.get = async address => { const terminal = active.get(address); if (!terminal) throw Object.assign(new Error('Not found'), { code: 'not_found' }); return terminal; };
+  f.hc.kill = async () => { kills++; };
+  f.hc.rm = async address => { active.delete(address); };
+  const write = f.hc.fileWrite;
+  f.hc.fileWrite = async (on, path, bytes, options) => { await write(on, path, bytes, options); if (path.endsWith('/release.json')) throw Object.assign(new Error('Acknowledgement lost'), { code: 'cli-timeout' }); };
+  const root = join(f.root, 'uncertain-journal');
+  const jobs = createJobMonitor({ hc: f.hc, outputCollector: f.output.outputCollector, journalRoot: root, observedJobMessages: async () => [], notifier: notice => { notices.push(notice); }, clock: Date.now });
+  f.ports.jobs = jobs;
+  try {
+    const result = await executeRemote({ source: { kind: 'code', language: 'javascript', code: `require('node:fs').appendFileSync(${JSON.stringify(marker)},'run\\n');console.log('completed');process.exitCode=17` }, on: f.target.on, owner: f.owner }, f.ports);
+    expect(result).toMatchObject({ outcome: 'unknown', exitCode: null, backgroundJob: { id: result.remote.jobId } });
+    expect(result.stderr).toMatch(/release.*may.*running/i);
+    await vi.waitFor(async () => expect(await readFile(marker, 'utf8')).toBe('run\n'), { timeout: 3000, interval: 20 });
+    const store = createJobStore(root, f.owner.sessionId);
+    await vi.waitFor(async () => expect((await store.read()).jobs[0].phase).toMatchObject({ kind: 'finished', result: { exitCode: 17 } }), { timeout: 3000, interval: 20 });
+    await vi.waitFor(() => expect(notices.map(notice => notice.details.jobId)).toEqual([result.remote.jobId]), { timeout: 1000, interval: 20 });
+    expect(await readFile(join(result.backgroundJob!.dir, 'stdout.log'), 'utf8')).toBe('completed\n');
+    expect(launches).toBe(1); expect(kills).toBe(0);
+  } finally { await jobs.shutdown('reload'); }
+}, 5000);
+
+test('slow request uploads do not spend the runtime release budget', async () => {
+  const f = await fixture(), terminals = new Map<TerminalAddress, TerminalSummary>();
+  let now = 1000, launches = 0;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const write = f.hc.fileWrite;
+  f.hc.fileWrite = async (on, path, bytes, options) => { await write(on, path, bytes, options); if (path.endsWith('/request.json')) now += 12000; };
+  f.hc.identity = async () => f.owner.terminal;
+  f.hc.machines = async () => [{ id: 'destination-core' as CoreId, name: f.target.on, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }];
+  f.hc.events = () => ({ ready: Promise.resolve(), lookup: async address => terminals.get(address) ?? null, subscribe: () => () => {}, dispose: () => {} });
+  f.hc.run = async request => {
+    const address = `${f.target.on}/t${++launches}` as TerminalAddress;
+    terminals.set(address, { address, parent: null, labels: request.labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null });
+    return { address, coreId: 'destination-core' as CoreId };
+  };
+  f.hc.get = async address => { const terminal = terminals.get(address); if (!terminal) throw Object.assign(new Error('Not found'), { code: 'not_found' }); return terminal; };
+  f.hc.kill = async () => {};
+  f.hc.rm = async address => { terminals.delete(address); };
+  const jobs = createJobMonitor({ hc: f.hc, outputCollector: f.output.outputCollector, journalRoot: join(f.root, 'slow-upload-journal'),
+    observedJobMessages: async () => [], notifier: () => {}, clock: () => now });
+  try {
+    const source = { kind: 'code' as const, language: 'javascript' as const, code: "console.log('uploaded')" };
+    const actual = await jobs.start(() => prepareRemoteProgram(source, f.target), f.owner, f.target.on, {}).then(handle => ({ handle }), error => ({ error }));
+    expect(launches).toBe(1);
+    expect(actual).toHaveProperty('handle');
+    if (!('handle' in actual)) return;
+    expect(JSON.parse(await readFile(join(actual.handle.remoteDirectory, 'release.json'), 'utf8'))).toMatchObject({ jobId: actual.handle.id });
+    expect(JSON.parse(await readFile(join(actual.handle.remoteDirectory, 'request.json'), 'utf8'))).toMatchObject({ releaseWindowMs: 10000 });
+    const journal = await createJobStore(join(f.root, 'slow-upload-journal'), f.owner.sessionId).read();
+    expect(journal.jobs[0].releaseDeadlineAt).toBe(23000);
+  } finally { await jobs.shutdown('reload'); clock.mockRestore(); }
+}, 5000);
 
 test.each([11000, -60000])('production writer and installed runtime release with destination clock skew %i ms', async skew => {
   const f = await fixture(); f.skew(skew);
@@ -412,6 +543,6 @@ test('remote execution strips both local PATH spellings before writing the desti
 
 test('the runtime ignores local PATH overrides embedded in a wire request', async () => {
   const f = await fixture(); const start = f.ports.jobs.start;
-  f.ports.jobs.start = (program, ...rest) => start({ ...program, env: { ...program.env, PATH: '/local-shim', Path: '/local-shim' } }, ...rest);
+  f.ports.jobs.start = (prepare, ...rest) => start(async () => { const program = await prepare(); return { ...program, env: { ...program.env, PATH: '/local-shim', Path: '/local-shim' } }; }, ...rest);
   expect(await f.execute("console.log(process.env.PATH);console.log(process.env.Path ?? 'absent')")).toMatchObject({ outcome: 'exited', stdout: '/usr/bin:/bin\nabsent\n' });
 }, 15000);

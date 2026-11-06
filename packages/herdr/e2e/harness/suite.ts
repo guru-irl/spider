@@ -35,7 +35,7 @@ export interface AppDriver {
   activate(controlId: string): Promise<void>;
   keyToOwnedWindow(key: string): Promise<void>;
 }
-export interface InvokeResult { exitCode: number; stdout: string; stderr: string }
+export interface InvokeResult { exitCode: number; signal?: NodeJS.Signals; stdout: string; stderr: string }
 
 export interface Suite {
   readonly options: SuiteOptions; readonly story: StoryId; readonly root: OwnedPath; readonly directories: FencedDirectories;
@@ -100,8 +100,8 @@ export async function createSuite(options: SuiteOptions): Promise<Suite> {
       proc.child.stdin!.end();
       const out: Buffer[] = [], err: Buffer[] = [];
       proc.child.stdout!.on('data', d => out.push(d)); proc.child.stderr!.on('data', d => err.push(d));
-      const exit = await proc.exited;
-      return { exitCode: exit.code ?? 128, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') };
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => proc.child.once('close', (code, signal) => resolve({ code, signal })));
+      return { exitCode: exit.code ?? 128, ...(exit.signal ? { signal: exit.signal } : {}), stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') };
     };
     const evidenceDirectory = join(ledgerDirectory(), '..', '_evidence', options.story, ledger.id);
     await mkdir(evidenceDirectory, { recursive: true });

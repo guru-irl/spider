@@ -9,6 +9,13 @@ describe("spider AGENTS.md block content", () => {
     expect(SPIDER_BLOCK_BODY).toMatch(/\.spider\/scratch/);
     expect(SPIDER_BLOCK_BODY).toMatch(/never.*\/tmp/i);
   });
+  it("limits the scratch rule to agent files and leaves product temp handling alone", () => {
+    const section = SPIDER_BLOCK_BODY.slice(SPIDER_BLOCK_BODY.indexOf("never /tmp"), SPIDER_BLOCK_BODY.indexOf("## Herdr terminals")).replace(/\s+/g, " ");
+    expect(section).toMatch(/files you create as an agent/);
+    expect(section).toMatch(/Product code and its tests keep their normal temp handling/);
+    expect(section).toMatch(/os\.tmpdir\(\)/);
+    expect(section).toMatch(/No `\.spider` path may appear in a product diff/);
+  });
   it("includes the approved pstack guidance immediately after Skills first", () => {
     const expected = `## pstack skills
 

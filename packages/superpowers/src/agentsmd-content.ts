@@ -123,12 +123,16 @@ Background/\`[auto]\` writes are **staged and fail-closed**; approve or reject v
 **Scope rule:** "Is this true in every repo?" → **global**; otherwise → **repo**.
 Worktree memory was removed; use repo for facts specific to a repository.
 
-## Scratch — never /tmp
+## Agent scratch, never /tmp
 
-Never use \`/tmp\`, \`$TMPDIR\`, or \`/var/tmp\` for scratch, golden data, or
-logs — they are volatile and destroy baselines mid-task. Put all
-scratch/intermediate/golden/log data under the project's \`.spider/scratch/\`
-(or \`~/.pi/agent/spider/scratch/\` for global work).
+This rule covers files you create as an agent: scratch work, golden data and
+logs. Never put them in \`/tmp\`, \`$TMPDIR\` or \`/var/tmp\`, which are volatile
+and can delete baselines mid-task. Use the project's \`.spider/scratch/\`, or
+\`~/.pi/agent/spider/scratch/\` for work that isn't tied to one project.
+
+Product code and its tests keep their normal temp handling, such as
+\`os.tmpdir()\` or the test framework's helper. No \`.spider\` path may appear in
+a product diff.
 
 ## Herdr terminals
 

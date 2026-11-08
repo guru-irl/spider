@@ -99,6 +99,14 @@ describe('space identity assignment', () => {
     }
   });
 
+  it('points the triangle down', async () => {
+    const svg = await readFile(resolve('packages/herdr/assets/agents/space-triangle.svg'), 'utf8');
+    const ys = (svg.match(/<polygon[^>]* points="([^"]+)"/)?.[1] ?? '').trim().split(/\s+/).map(pair => Number(pair.split(',')[1]));
+    const apex = Math.max(...ys);
+    expect(ys.filter(y => y === apex)).toHaveLength(1);
+    expect(ys.filter(y => y === Math.min(...ys))).toHaveLength(2);
+  });
+
   it('ships every space shape as a currentColor outline', async () => {
     for (const shape of SHAPES) {
       const svg = await readFile(resolve(`packages/herdr/assets/agents/space-${shape}.svg`), 'utf8').catch(() => '');

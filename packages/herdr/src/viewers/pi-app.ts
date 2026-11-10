@@ -10,6 +10,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { Container, Editor, Spacer, Text, TruncatedText, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
 import { renderSpiderCall, renderSpiderResult } from '../../../host/src/render-result.js';
+import { restoreExecDetails } from '../../../host/src/exec-session-storage.js';
 import type { SteerReply, RunViewInfo } from '../contracts.js';
 import type { ViewerState } from './program.js';
 import { TranscriptSanitizer } from './transcript.js';
@@ -22,6 +23,20 @@ function sanitize<T>(value: T, depth = 0): T {
   if (Array.isArray(value)) return value.map(item => sanitize(item, depth + 1)) as T;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitize(item, depth + 1)])) as T;
 }
+function restoreForView(result: Json): Json {
+  const restored = restoreExecDetails(result.details, result.content);
+  // The renderer must not recheck references against sanitized content.
+  const consume = (entry: any) => {
+    if (!entry || typeof entry !== 'object' || !('spiderOutputRefs' in entry)) return entry;
+    const copy = { ...entry };
+    if (restored.valid) delete copy.spiderOutputRefs;
+    else copy.spiderOutputRefs = null;
+    return copy;
+  };
+  const details = restored.valid ? restored.details : result.details;
+  return { ...result, details: Array.isArray(details) ? details.map(consume) : consume(details) };
+}
+const isSpider = (name: unknown) => name === 'spider' || name === 'spider_exec';
 // pi keeps its active theme on globalThis so every loader shares one; the root does not export it.
 const THEME_KEY = Symbol.for('@earendil-works/pi-coding-agent:theme');
 const theme = new Proxy({} as Theme, { get: (_target, key) => {
@@ -319,14 +334,22 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
         list = list.slice(-keep);
         hiddenNotice.setText(theme.fg('dim', `Earlier messages are not shown (${hidden} hidden).`));
       }
-      for (const entry of list) if (entry && typeof entry === 'object') addEntry(sanitize(entry));
+      for (const entry of list) if (entry && typeof entry === 'object') {
+        const message = entry.message;
+        const raw = entry.type === 'message' && message?.role === 'toolResult' && isSpider(message.toolName)
+          ? { ...entry, message: restoreForView(message) } : entry;
+        addEntry(sanitize(raw));
+      }
       // Only a bounded overlap can arrive again from live previews and disk.
       for (const keys of [finished, users]) while (keys.size > maxItems * 4) keys.delete(keys.values().next().value!);
       ui.requestRender();
     },
     live(raw) {
       if (!raw || typeof raw !== 'object') return;
-      const event = sanitize(raw as Json);
+      const input = raw as Json;
+      const restored = input.type === 'tool_execution_end' && isSpider(input.toolName) && input.result
+        ? { ...input, result: restoreForView(input.result) } : input;
+      const event = sanitize(restored);
       switch (event.type) {
         case 'message_start': case 'message_update': case 'message_end': {
           const message = event.message as Json; if (message?.role !== 'assistant') return;

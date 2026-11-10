@@ -65,4 +65,13 @@ describe("exec session storage", () => {
     const changed = { ...compact, content: [{ type: "text", text: rewritten }] };
     expect(render(changed, args, true)).toEqual(render(changed, { action: "unknown" }, true));
   });
+
+  it("falls back when a referenced unpaired surrogate changes", () => {
+    const output = "a".repeat(100) + "\ud800" + "b".repeat(100);
+    const original = { role: "toolResult", toolCallId: "call", toolName: "spider", timestamp: 1, isError: false, content: [{ type: "text", text: output }], details: { stdout: output, stderr: "", exitCode: 0 } };
+    const compact = finish(original);
+    expect(compact.details.spiderOutputRefs).toBeDefined();
+    const changed = { ...compact, content: [{ type: "text", text: output.replace("\ud800", "\ud801") }] };
+    expect(render(changed, { action: "exec", code: "sample" }, true)).toEqual(render(changed, { action: "unknown" }, true));
+  });
 });

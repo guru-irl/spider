@@ -101,6 +101,11 @@ test.each([['carriage returns', '\\r\\n'], ['terminal controls', '\\u001b[K\\n']
   expect(liveText).toContain('diagnostic line 0000 recorded');
   expect(liveText).toContain('diagnostic line 0399 recorded');
   expect(liveText).toContain('exit 0');
+  const packedLive = make();
+  packedLive.live({ type: 'message_end', message: call.message });
+  packedLive.live({ type: 'tool_execution_end', toolCallId: 'exec-1', toolName: 'spider', result: packed, isError: false });
+  packedLive.toggleTools();
+  expect(plain(packedLive.render(100))).toBe(liveText);
 
   const dir = mkdtempSync(testScratchPath('viewer-exec-'));
   try {

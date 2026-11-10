@@ -52,4 +52,17 @@ describe("exec session storage", () => {
     expect(resumed.message.content).toEqual(original.content);
     for (const expanded of [false, true]) expect(render(resumed.message, args, expanded)).toEqual(render(original, args, expanded));
   });
+
+  it.each([["stdout", "output", "edited"], ["stderr", "errors", "alerts"]])("shows whole content when rewritten %s no longer matches", async (_stream, before, after) => {
+    const args = { action: "exec", language: "javascript", code: "process.stdout.write('output line\\n'.repeat(30)); process.stderr.write('errors line\\n'.repeat(30))" };
+    const result = toToolResult(await runExec(args, ctx));
+    const original = { role: "toolResult", toolCallId: "call", toolName: "spider", timestamp: 1, ...result };
+    const compact = finish(original);
+    expect(compact.details.spiderOutputRefs).toBeDefined();
+    const rewritten = compact.content[0].text.replace(before, after);
+    expect(rewritten.length).toBe(compact.content[0].text.length);
+    expect(rewritten).toContain(after);
+    const changed = { ...compact, content: [{ type: "text", text: rewritten }] };
+    expect(render(changed, args, true)).toEqual(render(changed, { action: "unknown" }, true));
+  });
 });

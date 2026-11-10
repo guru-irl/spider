@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+
 type Stream = "stdout" | "stderr";
-type Span = [number, number, number];
+type Span = [number, number, number, string];
 type Refs = Partial<Record<Stream, Span[]>>;
+const sliceHash = (text: string) => createHash("sha256").update(text, "utf16le").digest("hex").slice(0, 16);
 
 function packEntry(entry: unknown, content: string): unknown {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
@@ -26,7 +29,7 @@ function packEntry(entry: unknown, content: string): unknown {
       }
       if (!found) break;
       remainder += value.slice(position, found.prefix);
-      spans.push([found.start, found.length, remainder.length]);
+      spans.push([found.start, found.length, remainder.length, sliceHash(content.slice(found.start, found.start + found.length))]);
       position = found.prefix + found.length;
     }
     if (!spans.length) continue;
@@ -52,26 +55,33 @@ export function packExecMessage(message: any): any | undefined {
   return { ...message, details };
 }
 
-/** Restore execution streams for presentation, including old entries without references. */
-export function restoreExecDetails(details: any, content: unknown): any {
+/** Restore execution streams only when every referenced slice still matches. */
+export function restoreExecDetails(details: any, content: unknown): { details: any; valid: boolean } {
   const text = Array.isArray(content) && content.length === 1 && content[0]?.type === "text" && typeof content[0].text === "string" ? content[0].text : "";
+  let valid = true;
   const restore = (entry: any) => {
-    if (!entry?.spiderOutputRefs || typeof entry.spiderOutputRefs !== "object") return entry;
+    if (!entry || typeof entry !== "object" || !("spiderOutputRefs" in entry)) return entry;
+    const refs = entry.spiderOutputRefs;
+    if (!refs || typeof refs !== "object" || Array.isArray(refs)) { valid = false; return entry; }
     const result = { ...entry };
     for (const stream of ["stdout", "stderr"] as const) {
-      const spans = entry.spiderOutputRefs[stream];
+      if (!(stream in refs)) continue;
+      const spans = refs[stream];
       const remainder = typeof entry[stream] === "string" ? entry[stream] : "";
-      if (!Array.isArray(spans)) continue;
+      if (!Array.isArray(spans) || spans.length === 0) { valid = false; return entry; }
       let position = 0;
       let output = "";
       for (const span of spans) {
-        if (!Array.isArray(span) || span.length !== 3 || !span.every(Number.isSafeInteger) || span[0] < 0 || span[1] < 0 || span[2] < position || span[0] + span[1] > text.length || span[2] > remainder.length) { output = ""; position = -1; break; }
-        output += remainder.slice(position, span[2]) + text.slice(span[0], span[0] + span[1]);
+        if (!Array.isArray(span) || span.length !== 4 || !span.slice(0, 3).every(Number.isSafeInteger) || span[0] < 0 || span[1] < 0 || span[2] < position || span[0] + span[1] > text.length || span[2] > remainder.length || typeof span[3] !== "string") { valid = false; return entry; }
+        const slice = text.slice(span[0], span[0] + span[1]);
+        if (sliceHash(slice) !== span[3]) { valid = false; return entry; }
+        output += remainder.slice(position, span[2]) + slice;
         position = span[2];
       }
-      if (position >= 0) result[stream] = output + remainder.slice(position);
+      result[stream] = output + remainder.slice(position);
     }
     return result;
   };
-  return Array.isArray(details) ? details.map(restore) : restore(details);
+  const restored = Array.isArray(details) ? details.map(restore) : restore(details);
+  return { details: restored, valid };
 }

@@ -170,17 +170,17 @@ export interface HostHerdrPorts {
 }
 /** C and D read through one serialized collector and one log sink per durable job. */
 export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
-  const collectors = new Map<JobId, { sink: LogSink; location: RemoteLogLocation; queue: Promise<CollectedLogs | void>; indexSeen: boolean }>();
+  const collectors = new Map<JobId, { sink: LogSink; location: RemoteLogLocation; queue: Promise<void>; indexSeen: boolean }>();
   const get = async (job: JobRecord) => {
     const found = collectors.get(job.id); if (found) return found;
     const bytes = await options.hc.fileRead(job.machine, join(job.remoteDirectory, 'request.json'));
     const request = JSON.parse(bytes.toString()) as RuntimeRequest;
     if (request.version !== 1 || request.jobId !== job.id || ('nonce' in job && job.nonce && request.nonce !== job.nonce)) throw new HerdrError('runtime-request-invalid', 'Journal and runtime identity differ');
     const sink = await createFileLogSink(job.localDirectory);
-    const collector = { sink, location: { on: job.machine, directory: job.remoteDirectory, jobId: job.id, nonce: request.nonce, requestSha256: sha256(bytes) }, queue: Promise.resolve() as Promise<CollectedLogs | void>, indexSeen: false };
+    const collector = { sink, location: { on: job.machine, directory: job.remoteDirectory, jobId: job.id, nonce: request.nonce, requestSha256: sha256(bytes) }, queue: Promise.resolve() as Promise<void>, indexSeen: false };
     collectors.set(job.id, collector); return collector;
   };
-  const collect = async (id: JobId): Promise<CollectedLogs> => {
+  const collect = async (id: JobId, capture = true): Promise<CollectedLogs> => {
     const c = collectors.get(id); if (!c) throw new HerdrError('job-not-owned', 'No collector for this job');
     const transport = new Proxy(options.hc, { get(target, key) {
       if (key !== 'fileRead') { const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value; }
@@ -193,8 +193,9 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
         }
       };
     } });
-    const operation = c.queue.then(() => collectRemoteChunks(transport, c.location, c.sink));
-    c.queue = operation.catch(() => {}); return operation;
+    const operation = c.queue.then(() => collectRemoteChunks(transport, c.location, c.sink, { capture }));
+    // The queue owns ordering, not the previous captured output.
+    c.queue = operation.then(() => {}, () => {}); return operation;
   };
   return {
     outputCollector: {
@@ -211,7 +212,7 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
         return { nonce, program: { ...program, argv: [machine.nodePath ?? 'node', options.runtimePath(job.machine), requestPath] } };
       },
       async collect(job) {
-        await get(job); const result = await collect(job.id);
+        await get(job); const result = await collect(job.id, false);
         const receipt = result.receipt;
         const summary = await noticeSummary(job.localDirectory, result.complete);
         const annotated = receipt?.signalHint ? `Exit ${receipt.exitCode} (${receipt.signalHint} convention).\n${summary}` : summary;

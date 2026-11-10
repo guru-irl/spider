@@ -72,8 +72,8 @@ export interface DigestMsg {
   content: string;
 }
 
-function msgText(m: DigestMsg): string {
-  return typeof m?.content === "string" ? m.content.replace(/\n/g, " ").trim() : "";
+function msgText(m: DigestMsg, limit: number): string {
+  return typeof m?.content === "string" ? m.content.trim().slice(0, limit).replace(/\n/g, " ") : "";
 }
 
 /**
@@ -100,11 +100,11 @@ export function digestHistory(messages: DigestMsg[], tail = 24): DigestMsg[] {
   for (const m of old) {
     if (typeof m !== "object" || m === null) continue;
     const role = m.role;
-    const text = msgText(m);
+    const text = msgText(m, role === "user" ? 300 : 200);
     if (role === "user" && text) {
-      lines.push(`USER: ${text.slice(0, 300)}`);
+      lines.push(`USER: ${text}`);
     } else if (role === "assistant" && text) {
-      lines.push(`ASSISTANT: ${text.slice(0, 200)}`);
+      lines.push(`ASSISTANT: ${text}`);
     }
   }
 

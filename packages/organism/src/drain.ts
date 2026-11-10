@@ -91,7 +91,7 @@ export function drainSession(db: Db, sessionId: string, reason: DrainReason, opt
   if (opts?.transcript !== undefined) {
     transcript = opts.transcript.map(m => ({ role: m.role, content: m.content }));
   } else if (opts?.transcriptPath && existsSync(opts.transcriptPath)) {
-    const normalized = readTranscript(opts.transcriptPath);
+    const normalized = readTranscript(opts.transcriptPath, { roles: ["user", "assistant"] });
     // Tool output is evidence, not a user instruction. Routing's event log
     // supplies tool activity separately; the learning transcript is conversation prose.
     transcript = normalized.messages.flatMap((m): DigestMsg[] =>

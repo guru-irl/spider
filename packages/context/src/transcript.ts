@@ -1,4 +1,5 @@
-import { readFileSync, statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
+import { statSync, readdirSync, openSync, readSync, closeSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { join, basename, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -16,8 +17,10 @@ function extractText(content: unknown): string {
   return "";
 }
 
+type TranscriptOptions = { roles?: readonly string[] };
+
 /** Normalize an already-selected branch. Thinking and non-message metadata are not prose. */
-export function normalizeTranscriptEntries(entries: readonly unknown[]): NormalizedTranscript["messages"] {
+export function normalizeTranscriptEntries(entries: readonly unknown[], options: TranscriptOptions = {}): NormalizedTranscript["messages"] {
   const messages: NormalizedTranscript["messages"] = [];
   for (const raw of entries) {
     if (!raw || typeof raw !== "object") continue;
@@ -26,15 +29,15 @@ export function normalizeTranscriptEntries(entries: readonly unknown[]): Normali
     const message = entry.type === "message" && entry.message && typeof entry.message === "object"
       ? entry.message as Record<string, unknown>
       : entry;
-    if (typeof message.role !== "string") continue;
+    if (typeof message.role !== "string" || (options.roles && !options.roles.includes(message.role))) continue;
     const text = extractText(message.content);
     if (text.trim()) messages.push({ role: message.role, text });
   }
   return messages;
 }
 
-function activeBranch(entries: Record<string, unknown>[]): Record<string, unknown>[] {
-  const byId = new Map<string, Record<string, unknown>>();
+function activeBranch<T extends { id?: unknown; parentId?: unknown }>(entries: T[]): T[] {
+  const byId = new Map<string, T>();
   let leaf: string | undefined;
   for (const entry of entries) {
     if (typeof entry.id === "string" && (entry.parentId === null || typeof entry.parentId === "string")) {
@@ -43,7 +46,7 @@ function activeBranch(entries: Record<string, unknown>[]): Record<string, unknow
     }
   }
   if (!leaf) return entries; // Legacy flat transcripts have no tree metadata.
-  const branch: Record<string, unknown>[] = [];
+  const branch: T[] = [];
   const seen = new Set<string>();
   while (leaf && !seen.has(leaf)) {
     seen.add(leaf);
@@ -55,42 +58,63 @@ function activeBranch(entries: Record<string, unknown>[]): Record<string, unknow
   return branch.reverse();
 }
 
+/** Decode at most one JSONL record at a time, including split UTF-8 sequences. */
+function* transcriptLines(fd: number): Generator<string> {
+  const buffer = Buffer.alloc(64 * 1024);
+  const decoder = new StringDecoder("utf8");
+  let parts: string[] = [];
+  let bytes: number;
+  while ((bytes = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+    const text = decoder.write(buffer.subarray(0, bytes));
+    let start = 0;
+    for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+      const part = text.slice(start, end);
+      if (parts.length) {
+        parts.push(part);
+        yield parts.join("");
+        parts = [];
+      } else yield part;
+      start = end + 1;
+    }
+    if (start < text.length) parts.push(text.slice(start));
+  }
+  parts.push(decoder.end());
+  if (parts.length) yield parts.join("");
+}
+
 /**
  * Read a native pi session's active branch (or a legacy flat transcript).
  * Non-message entries remain in the parent chain but are not conversation text.
  * Tolerant of malformed lines and unreadable files: never throws.
  */
-export function readTranscript(sourcePath: string): NormalizedTranscript {
+export function readTranscript(sourcePath: string, options: TranscriptOptions = {}): NormalizedTranscript {
   const fallbackId = basename(sourcePath).replace(/\.jsonl$/, "");
-  let raw: string;
+  let sessionId = fallbackId;
+  const entries: { id: unknown; parentId: unknown; messages: NormalizedTranscript["messages"] }[] = [];
+  let fd: number | undefined;
   try {
-    raw = readFileSync(sourcePath, "utf8");
+    fd = openSync(sourcePath, "r");
+    for (const line of transcriptLines(fd)) {
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.type === "session" && typeof entry.id === "string") {
+        sessionId = entry.id;
+        continue;
+      }
+      // Branch links survive even when a row contains no selected prose.
+      entries.push({ id: entry.id, parentId: entry.parentId, messages: normalizeTranscriptEntries([entry], options) });
+    }
   } catch {
     return { sessionId: fallbackId, sourcePath, messages: [] };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-
-  let sessionId = fallbackId;
-  const entries: Record<string, unknown>[] = [];
-
-  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
-  for (const line of lines) {
-    let entry: any;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!entry || typeof entry !== "object") continue;
-
-    if (entry.type === "session" && typeof entry.id === "string") {
-      sessionId = entry.id;
-      continue;
-    }
-
-    entries.push(entry);
-  }
-
-  return { sessionId, sourcePath, messages: normalizeTranscriptEntries(activeBranch(entries)) };
+  return { sessionId, sourcePath, messages: activeBranch(entries).flatMap(entry => entry.messages) };
 }
 
 function walk(dir: string, recursive = true): string[] {

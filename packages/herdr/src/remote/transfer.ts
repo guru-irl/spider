@@ -69,7 +69,7 @@ function missing(error: unknown): boolean {
   const e = error as { code?: string; kind?: string; message?: string };
   return e.code === 'not_found' || e.code === 'ENOENT' || e.code === 'file-not-found' || e.kind === 'not_found' || (e.code === 'hc-error' && /not found|No such file/i.test(e.message ?? ''));
 }
-export async function collectRemoteChunks(client: HcClient, location: RemoteLogLocation, sink: LogSink): Promise<CollectedLogs> {
+export async function collectRemoteChunks(client: HcClient, location: RemoteLogLocation, sink: LogSink, options: { capture?: boolean } = {}): Promise<CollectedLogs> {
   const read = (name: string) => client.fileRead(location.on, posix.join(location.directory, name));
   let complete = true; let receipt: RuntimeReceipt | null = null;
   let indexBytes: Buffer | null = null;
@@ -110,10 +110,12 @@ export async function collectRemoteChunks(client: HcClient, location: RemoteLogL
   }
   if (complete && receipt) await sink.finish(receipt);
   const stdoutBytes = sink.position('stdout'), stderrBytes = sink.position('stderr');
+  const metadata = { stdoutBytes, stderrBytes, complete: complete && receipt !== null, capped: stdoutBytes + stderrBytes > sink.maxCaptureBytes, receipt };
+  if (options.capture === false) return { stdout: '', stderr: '', ...metadata };
   const stdout = await sink.read('stdout', sink.maxCaptureBytes);
   const stderr = await sink.read('stderr', Math.max(0, sink.maxCaptureBytes - stdout.length));
   const decode = (bytes: Buffer) => { const decoder = new StringDecoder('utf8'); const text = decoder.write(bytes); return complete && stdoutBytes + stderrBytes <= sink.maxCaptureBytes ? text + decoder.end() : text; };
-  return { stdout: decode(stdout), stderr: decode(stderr), stdoutBytes, stderrBytes, complete: complete && receipt !== null, capped: stdoutBytes + stderrBytes > sink.maxCaptureBytes, receipt };
+  return { stdout: decode(stdout), stderr: decode(stderr), ...metadata };
 }
 /**
  * The job monitor owns one write sink per job. Reactivation restores published offsets and removes only an unpublished crash tail.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { queryObjects } from "node:v8";
 import { openDbAt, type Db } from "@spider/db-core";
 import spiderExtension from "../extension";
 import { getAction, registerAction, clearActions } from "../dispatch";
@@ -40,7 +41,7 @@ function fakePi() {
     registerMessageRenderer: (name: string) => { renderers.add(name); },
     registerEntryRenderer: (name: string) => { renderers.add(name); },
     on: (name: string, fn: (...args: any[]) => unknown) => { hooks.set(name, [...hooks.get(name) ?? [], fn]); },
-    async emit(name: string, ctx?: unknown) { for (const fn of hooks.get(name) ?? []) await fn({}, ctx); },
+    async emit(name: string, ctx?: unknown, event: unknown = {}) { for (const fn of hooks.get(name) ?? []) await fn(event, ctx); },
   };
 }
 let scratch: string;
@@ -82,6 +83,22 @@ it("registers every command, shortcut, tool, renderer and handler on both factor
   expect([...second.tools.keys()]).toEqual([...first.tools.keys()]);
   expect(second.renderers).toEqual(first.renderers);
   expect([...second.hooks].map(([name, fns]) => [name, fns.length])).toEqual([...first.hooks].map(([name, fns]) => [name, fns.length]));
+});
+
+it("repeated reloads release retired session contexts", async () => {
+  class ReloadContext {
+    cwd = scratch;
+    sessionManager = { getSessionId: () => "reload-markers" };
+  }
+  for (let i = 0; i < 4; i++) {
+    await (async () => {
+      const pi = host(), ctx = new ReloadContext();
+      await pi.emit("session_start", ctx);
+      await pi.emit("session_shutdown", ctx, { reason: "reload" });
+    })();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(queryObjects(ReloadContext)).toBe(0);
+  }
 });
 
 it("a shutdown stops the worker and a new activation reloads from the model cache", async () => {

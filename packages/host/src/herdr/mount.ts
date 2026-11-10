@@ -286,13 +286,14 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       else process.stderr.write(plain + '\n');
     },
   };
-  const writeFeed = coalesceFeedWrites(async () => {
+  // Track each write, so one that succeeds ends the outage even when a write queued behind it then fails.
+  const writeFeed = coalesceFeedWrites(() => trackAvailability({ key: 'feed' }, async () => {
     const current = owner, currentSource = source;
     if (!current || !currentSource || stopped) return;
     // Keep the published text and its content hash on the same owner name during a rename.
     const feed = await currentSource.snapshot({ ...current });
     if (owner === current && !stopped) await publishSessionFeed(join(need(config).globalRoot, 'herdr'), feed);
-  });
+  }, context ? availabilityReporter(context) : undefined));
   const publish = () => { publishing = feedResult(writeFeed()); return publishing; };
   const closeFeed = async (final = false, handoff: 'disposed' | 'wrong-generation' = 'disposed') => {
     const current = owner, currentSource = source, currentConfig = config, generation = lifecycle;

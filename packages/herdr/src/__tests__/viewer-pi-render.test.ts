@@ -122,6 +122,27 @@ test.each([['carriage returns', '\\r\\n'], ['terminal controls', '\\u001b[K\\n']
   }
 });
 
+test.each(['saved', 'live'])('the %s viewer falls back when raw content no longer matches', async source => {
+  const args = { action: 'exec', language: 'javascript', code: "for (let i = 0; i < 400; i++) process.stdout.write('compiled line ' + String(i).padStart(4, '0') + ' successfully\\n')" };
+  const result = toToolResult(await runExec(args, { cwd: process.cwd() }));
+  const original = { role: 'toolResult' as const, toolCallId: 'exec-invalid', toolName: 'spider', timestamp: at(73), ...result };
+  const packed = packExecMessage(original);
+  expect(packed?.details.spiderOutputRefs).toBeDefined();
+  const changed = { ...packed, content: [{ type: 'text', text: packed.content[0].text.replace('compiled line 0000', '\rcompiled line 0000') }] };
+  const call = assistant([{ type: 'toolCall', id: 'exec-invalid', name: 'spider', arguments: args }], 72);
+  const view = make();
+  if (source === 'saved') view.addEntries([call, { type: 'message', id: 'r73', parentId: null, timestamp: 't', message: changed }]);
+  else {
+    view.live({ type: 'message_end', message: call.message });
+    view.live({ type: 'tool_execution_end', toolCallId: 'exec-invalid', toolName: 'spider', result: changed, isError: false });
+  }
+  view.toggleTools();
+  const text = plain(view.render(100));
+  expect(text).toContain('compiled line 0000 successfully');
+  expect(text).not.toContain('exit 0');
+  expect(text).not.toContain('compiled line 0399 successfully');
+});
+
 test('a live message and its saved copy count usage once', () => {
   const view = make(); const entry = assistant([{ type: 'text', text: 'once' }], 22);
   view.live({ type: 'message_end', message: entry.message }); view.addEntries([entry]);

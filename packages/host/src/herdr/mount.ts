@@ -44,6 +44,7 @@ import { registerHerdrShortcuts } from '@spider/herdr/shortcuts/register';
 import { regenerateGlobalHerdrTemplates, type TemplatePorts } from '@spider/herdr/templates/register';
 import { snapshot } from '@spider/herdr/setup/backup';
 import { HerdrError } from '@spider/herdr/client/parse';
+import { trackAvailability } from '@spider/herdr/client/availability';
 import { HERDR_NOTICES, herdrErrorNotice, herdrErrorNoticeKey, remoteUnavailableNotice, inactiveHerdrNotice, type InactiveReason } from '@spider/herdr/notices';
 import type { HcClient, HerdrConfig, Owner, Disposable, AuxiliaryPanes, RunId, JobId, JobRecord, MachineName, TerminalAddress, RemoteExecutionPort, ExecutionEnvironmentPolicy, SessionFeed, SteerReply, TerminalIdentity, CoreIdentity } from '@spider/herdr';
 import { createHerdrDataSource } from './data-source.js';
@@ -56,9 +57,13 @@ import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayo
 export type { HostHerdrOptions } from './ports.js';
 
 const INACTIVE_NOTICE = Symbol.for('spider.herdr.inactive-notices.v1');
-interface InactiveNotice { sessions: Set<string>; displayed: boolean; configWarnings?: Set<string>; terminal?: TerminalIdentity; ownershipNotices?: Set<string>; recoveryNotices?: Set<string>; errorNoticeTimes?: Map<string, Map<string, number>>; registryWarnings?: Set<string> }
+interface InactiveNotice { sessions: Set<string>; displayed: boolean; configWarnings?: Set<string>; terminal?: TerminalIdentity; ownershipNotices?: Set<string>; recoveryNotices?: Set<string>; errorNoticeTimes?: Map<string, Map<string, number>>; outages?: Map<string, Set<string>>; registryWarnings?: Set<string> }
 const hostGlobal = globalThis as typeof globalThis & { [INACTIVE_NOTICE]?: WeakMap<object, InactiveNotice> };
 const inactiveNotices = hostGlobal[INACTIVE_NOTICE] ??= new WeakMap<object, InactiveNotice>();
+function availabilityReporter(ctx: ExtensionContext): (key: string) => void {
+  const manager = ctx.sessionManager ?? ctx, session = ctx.sessionManager?.getSessionId?.() ?? '(session)';
+  return key => { inactiveNotices.get(manager)?.outages?.get(session)?.delete(key); };
+}
 function inactiveNotice(ctx: ExtensionContext, mode: unknown, reason: InactiveReason, expected = true, error?: unknown): void {
   const manager = ctx.sessionManager ?? ctx, session = ctx.sessionManager?.getSessionId?.() ?? '(session)';
   let notice = inactiveNotices.get(manager);
@@ -187,8 +192,16 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     const messages = messagesBySession.get(session) ?? new Map<string, number>();
     messagesBySession.set(session, messages);
     const key = herdrErrorNoticeKey(error), now = Date.now(), last = messages.get(key);
-    if (last !== undefined && now >= last && now - last < 60_000) return;
-    messages.set(key, now);
+    if (error instanceof HerdrError && error.code === 'unavailable') {
+      const outages = notice.outages ??= new Map<string, Set<string>>();
+      const active = outages.get(session) ?? new Set<string>(); outages.set(session, active);
+      const scope = error.availability?.key ?? 'unavailable';
+      if (active.has(scope)) return;
+      active.add(scope);
+    } else {
+      if (last !== undefined && now >= last && now - last < 60_000) return;
+      messages.set(key, now);
+    }
     const plain = herdrErrorNotice(error);
     if (ctx.hasUI && ctx.ui?.notify) ctx.ui.notify(plain, 'warning');
     else process.stderr.write(plain + '\n');
@@ -213,7 +226,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     }
     notifyError(ctx, error);
   };
-  const feedResult = (work: Promise<void>): Promise<void> => work.then(() => {
+  const feedResult = (work: Promise<void>): Promise<void> => trackAvailability({ key: 'feed' }, () => work, context ? availabilityReporter(context) : undefined).then(() => {
     feedBusySince = undefined; feedBusyNotified = false;
   }, error => {
     if (!(error instanceof HerdrError) || error.code !== 'lock-occupied') throw error;
@@ -451,7 +464,8 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       disabled('core-down');
       return;
     }
-    client = createHcClient({ binary: config.core.binary, env });
+    const available = availabilityReporter(ctx);
+    client = createHcClient({ binary: config.core.binary, env }, available);
     try {
       const core = await client.identity();
       const inheritedTerminal = { ...core, terminalId: env.HC_TERMINAL_ID as TerminalIdentity['terminalId'], address: env.HC_TERMINAL_ID as TerminalAddress };
@@ -472,9 +486,9 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       epoch = await coreStartedAt(config.core.binary, env);
       owner = { terminal, sessionId: ctx.sessionManager.getSessionId() as Owner['sessionId'], generation: randomBytes(16).toString('hex') as Owner['generation'], cwd: ctx.cwd, sessionFile: (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() ?? null, name: pi.getSessionName?.() ?? null };
       const appOptions = { binary: config.app.binary, env };
-      app = createAppClient(appOptions);
+      app = createAppClient(appOptions, undefined, available);
       observerAbort = new AbortController();
-      panes = createAuxiliaryPanes({ hc, app, automaticSubagentPanes: config.automaticSubagentPanes, placementRoot: join(config.globalRoot, 'herdr/panes'), appIdentity: config.app.home, appForSignal: signal => createAppClient(appOptions, signal), subagentViewer: launcher, discardSubagentViewer: launcher.discard, remoteObserver: openJobObserver, limit: config.limits.auxiliaryPanes, clock: Date.now, reportError: report });
+      panes = createAuxiliaryPanes({ hc, app, automaticSubagentPanes: config.automaticSubagentPanes, placementRoot: join(config.globalRoot, 'herdr/panes'), appIdentity: config.app.home, appForSignal: signal => createAppClient(appOptions, signal, available), subagentViewer: launcher, discardSubagentViewer: launcher.discard, remoteObserver: openJobObserver, limit: config.limits.auxiliaryPanes, clock: Date.now, reportError: report });
       const aliases = Object.fromEntries(config.machines.map(m => [m.name, m.aliases]));
       cache = createMachineCache({ hc, identity: terminal, directory: join(config.globalRoot, 'herdr/ssh'), aliases, reportFailure: report }); await cache.ready;
       policy = createTransportPolicy(createSshPolicy(cache), () => env);
@@ -611,7 +625,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         throw new HerdrError('unavailable', 'The owning session could not stop the target');
     };
     endpoint = await startSessionEndpoint(current, {
-      reportError: report,
+      reportError: report, available: availabilityReporter(context),
       currentOwner: () => owner, liveCapabilities: () => status.currentStatus(current),
       ownsRun: id => withStore(current, store => store.get(id)?.session_id === current.sessionId),
       subscribeRun: (id, cursor, emit, options) => ({ dispose: need(transcript).subscribe(id, cursor, emit, options) }),

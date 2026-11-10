@@ -626,9 +626,10 @@ function renderSpiderResultBody(
             ? (result as any).content.map((c: any) => String(c?.text ?? "")).join("")
             : "")
         : undefined;
-      const execDetails = isPartial ? details : restoreExecDetails(details, result?.content);
-      const d = toExecDetails(action, context?.args, execDetails, partialText);
-      if (expanded && !isPartial) d.expandedOutput = expandedExecTail(action, execDetails);
+      const restored = isPartial ? { details, valid: true } : restoreExecDetails(details, result?.content);
+      if (!restored.valid) return textComponent(result, expanded);
+      const d = toExecDetails(action, context?.args, restored.details, partialText);
+      if (expanded && !isPartial) d.expandedOutput = expandedExecTail(action, restored.details);
       const th = adaptTheme(t);
       return { render: (w: number) => renderExecResult(d, { theme: th, width: w, expanded }), invalidate() {} };
     }

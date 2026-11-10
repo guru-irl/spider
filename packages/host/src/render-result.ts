@@ -20,6 +20,7 @@ import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, ty
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
+import { restoreExecDetails } from "./exec-session-storage";
 const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
 
 interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; }
@@ -625,8 +626,9 @@ function renderSpiderResultBody(
             ? (result as any).content.map((c: any) => String(c?.text ?? "")).join("")
             : "")
         : undefined;
-      const d = toExecDetails(action, context?.args, details, partialText);
-      if (expanded && !isPartial) d.expandedOutput = expandedExecTail(action, details);
+      const execDetails = isPartial ? details : restoreExecDetails(details, result?.content);
+      const d = toExecDetails(action, context?.args, execDetails, partialText);
+      if (expanded && !isPartial) d.expandedOutput = expandedExecTail(action, execDetails);
       const th = adaptTheme(t);
       return { render: (w: number) => renderExecResult(d, { theme: th, width: w, expanded }), invalidate() {} };
     }

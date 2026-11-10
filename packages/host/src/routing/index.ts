@@ -6,6 +6,7 @@ import { guardForegroundSleep } from "./sleep-guard";
 import { processToolContent, sanitizeIntentPayload, scrubToolData } from "./safety";
 import { autoIndexOutput } from "./autoindex";
 import { registerEditWriteOverrides } from "./overrides";
+import { packExecMessage } from "../exec-session-storage";
 
 export interface RoutingConfig {
   tracking: boolean;
@@ -50,6 +51,11 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
     return;
   };
   pi.on("tool_call", routeToolCall);
+
+  pi.on("message_end", (event) => {
+    const message = packExecMessage(event.message);
+    return message ? { message } : undefined;
+  });
 
   pi.on("tool_result", (event: any) => {
     const tool = event?.toolName;

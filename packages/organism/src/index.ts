@@ -115,7 +115,7 @@ export function registerOrganism(
   const capture = (ctx: ExtensionContext, branchEntries?: readonly unknown[]): DrainOpts => {
     const entries = branchEntries ?? ctx.sessionManager.getBranch?.();
     if (entries !== undefined) {
-      return { transcript: normalizeTranscriptEntries(entries).flatMap((m): DigestMsg[] =>
+      return { transcript: normalizeTranscriptEntries(entries, { roles: ["user", "assistant"] }).flatMap((m): DigestMsg[] =>
         m.role === "user" || m.role === "assistant" ? [{ role: m.role, content: m.text }] : [],
       ) };
     }

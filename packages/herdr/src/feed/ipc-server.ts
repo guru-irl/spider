@@ -5,6 +5,7 @@ import { chmod, lstat, rm } from 'node:fs/promises';
 import { paths } from '@spider/db-core';
 import { claimFeedWriter } from './writer.js';
 import { HerdrError } from '../client/parse.js';
+import { trackAvailability } from '../client/availability.js';
 import { sweepSessionIpc } from './cleanup.js';
 import { join } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
@@ -18,6 +19,7 @@ export const MAX_STEER_BYTES: number = 16 * 1024;
 export const MAX_PENDING_BYTES: number = 1024 * 1024;
 export interface SessionEndpointPorts {
   reportError?(error: unknown): void;
+  available?(key: string): void;
   currentOwner(): Owner | null;
   /** Null means no detected live instance; never substitute a module-file inspection. */
   liveCapabilities(): Extract<SessionIpcReply, { op: 'ping' }>['status'] | null;
@@ -97,7 +99,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         socket.setTimeout(OPEN_CLIENT_TIMEOUT_MS + 5000);
         openTimer = setTimeout(() => openAbort.abort(), OPEN_BUDGET_MS);
       }
-      try {
+      const dispatch = async () => {
         switch (request.op) {
           case 'ping': {
             const status = ports.liveCapabilities();
@@ -208,6 +210,9 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         subscription = result;
         if (!live()) end('wrong-generation');
         attached = true; pump();
+      };
+      try {
+        await trackAvailability({ key: `ipc:${request.op}` }, dispatch, ports.available);
       } catch (error) {
         if (live() && !openAbort.signal.aborted) ports.reportError?.(error);
         if ((error as { code?: string } | null)?.code === 'run-not-owned') return fail('not-found');

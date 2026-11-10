@@ -178,6 +178,10 @@ export function herdrErrorNoticeKey(error: unknown): NoticeCode {
 }
 export function herdrErrorNotice(error: unknown): string {
   if (!(error instanceof HerdrError)) return HERDR_NOTICES.generic.text;
+  if (error.code === 'unavailable' && error.availability?.machine) {
+    const machine = error.availability.machine.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 100);
+    return `Spider couldn't reach ${machine}. Spider will keep trying. Local commands and other spider features still work.`;
+  }
   if (error.details && typeof error.details === 'object' && 'releaseNotStarted' in error.details && error.details.releaseNotStarted === true)
     return error.code === 'aborted' ? 'The remote command did not start because launch was cancelled.' : 'The remote command did not start. Check the destination connection and terminal identity before trying again.';
   const known = Object.hasOwn(errors, error.code) ? errors[error.code] : undefined;

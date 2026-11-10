@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { invokeCli as invokeTransport } from './cli-transport.js';
+import { trackAvailability } from './availability.js';
 import childProcess from 'node:child_process';
 import { requireCoreAvailable } from './liveness.js';
 import { realpathSync, existsSync } from 'node:fs';
@@ -53,10 +54,16 @@ export async function processContainsCaller(pid: unknown, env: Readonly<NodeJS.P
   }
   return false;
 }
-export function createHcClient(options: HcClientOptions): HcClient & Disposable {
+export function createHcClient(options: HcClientOptions, available?: (key: string) => void): HcClient & Disposable {
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
   guardTestSocket({ ...options, env });
-  const call = (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions);
+  const call = (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => {
+    const separator = argv.indexOf('--'), flags = separator < 0 ? argv : argv.slice(0, separator);
+    const on = flags.indexOf('--on');
+    const machine = on >= 0 ? flags[on + 1] : ['get', 'read', 'kill', 'rm', 'label'].includes(argv[0]) && argv[1]?.includes('/') ? argv[1].split('/')[0] : undefined;
+    const key = machine ? `machine:${machine}` : `hc:${argv[0]}:${['server', 'machine', 'file'].includes(argv[0]) ? argv[1] : ''}`;
+    return trackAvailability({ key, ...(machine ? { machine } : {}) }, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), available);
+  };
   let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
   const identity: HcClient['identity'] = async () => {
     const core = parseCore(await call(['server', 'status', '--json']), env);

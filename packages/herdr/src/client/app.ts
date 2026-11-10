@@ -3,6 +3,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AppClient, AppClientOptions, AppPaneInspection, AppReply, OwnerPlacement, PaneId, SpaceId, TabId, TerminalAddress } from '../contracts.js';
 import { invokeCli } from './cli-transport.js';
+import { trackAvailability } from './availability.js';
 import { HerdrError, object, text } from './parse.js';
 function placements(value: unknown, address: TerminalAddress): OwnerPlacement[] {
   const doc = object(value);
@@ -20,9 +21,11 @@ function placements(value: unknown, address: TerminalAddress): OwnerPlacement[] 
   }
   return found;
 }
-export function createAppClient(options: AppClientOptions, operationSignal?: AbortSignal): AppClient & AppPaneInspection {
+export function createAppClient(options: AppClientOptions, operationSignal?: AbortSignal, available?: (key: string) => void): AppClient & AppPaneInspection {
   const env = Object.freeze({ ...options.env });
-  const call = (args: readonly string[], signal: AbortSignal | undefined = operationSignal) => invokeCli(options.binary, args, env, undefined, undefined, { signal });
+  const call = (args: readonly string[], signal: AbortSignal | undefined = operationSignal) => trackAvailability(
+    { key: `app:${args[0]}:${args[0] === 'do' ? args[1] : ''}` },
+    () => invokeCli(options.binary, args, env, undefined, undefined, { signal }), available);
   const tab = async (placement: Pick<OwnerPlacement, 'space' | 'tab'>) => {
     const layout = object(await call(['ls']));
     if (!Array.isArray(layout.spaces)) throw new HerdrError('app-disconnected', 'App layout document is unavailable');

@@ -12,7 +12,7 @@ const root = join(process.cwd(), ".spider", "scratch", `native-results-${process
 afterEach(() => { controlConfig("unset", root, "tools.structured", undefined, "global"); setGlobalDbPathForTests(null); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 
 async function runCalls(calls: Array<{ id: string; args: JsonObject; tool?: string }>, options: {
-  structured?: boolean; extend?: (pi: ExtensionAPI) => void; snapshots?: Array<{ prompt: string; tools: unknown }>; partials?: unknown[];
+  structured?: boolean; extend?: (pi: ExtensionAPI) => void; snapshots?: Array<{ prompt: string; tools: unknown }>; partials?: unknown[]; modelResults?: unknown[];
 } = {}) {
   mkdirSync(root, { recursive: true });
   execFileSync("git", ["init", "-q", root]);
@@ -25,7 +25,10 @@ async function runCalls(calls: Array<{ id: string; args: JsonObject; tool?: stri
       options.snapshots?.push({ prompt: getCurrentSystemPrompt(context.messages), tools: getCurrentTools(context.messages) });
       return fauxAssistantMessage(calls.map(c => fauxToolCall(c.tool ?? "spider", c.args, { id: c.id })), { stopReason: "toolUse" });
     },
-    fauxAssistantMessage("Done"),
+    context => {
+      options.modelResults?.push(...context.messages.filter(message => message.role === "toolResult"));
+      return fauxAssistantMessage("Done");
+    },
   ]);
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   runtime.registerNativeProvider(faux.provider);
@@ -58,6 +61,14 @@ it("preserves native error flags for concurrent exec, action and thrown failures
   expect(results.map(r => [r.toolCallId, r.isError])).toEqual([["exit", true], ["action", true], ["throw", true], ["ok", false]]);
   expect(results[0].details).toMatchObject({ exitCode: 7, outcome: "exited" });
   for (const result of results) expect(result.content.some(b => b.type === "text" && b.text.trim())).toBe(true);
+});
+
+it("stores large exec output once without changing the next model input", async () => {
+  const modelResults: unknown[] = [];
+  const [result] = await runCalls([{ id: "large", args: { action: "exec", language: "javascript", code: "process.stdout.write('sample'.repeat(500))" } }], { modelResults });
+  expect(JSON.stringify(result).length).toBeLessThan(3500);
+  expect(result.content).toEqual([{ type: "text", text: "sample".repeat(500) }]);
+  expect((modelResults[0] as any).content).toEqual(result.content);
 });
 
 it("scrubs a native failure in every returned field, not only the model text", async () => {

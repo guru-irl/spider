@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeAll, expect, test } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import { runExec } from '@spider/context';
+import { packExecMessage } from '../../../host/src/exec-session-storage.js';
+import { toToolResult } from '../../../host/src/result.js';
+import { testScratchPath } from '../../../host/src/__tests__/testutil.js';
 import { createPiRunView, type PiRunView } from '../viewers/pi-app.js';
 import { loadBuiltInRenderers, piPackageRoot } from '../viewers/pi-loader.js';
 
@@ -76,6 +82,39 @@ test('live events stream text, show a pending tool, finish it, and the saved ent
   expect(text.split('Streaming the first half and the second')).toHaveLength(2);
   expect(text.split('$ sleep 1')).toHaveLength(2);
   expect(text.split('LIVE_TOOL_DONE')).toHaveLength(2);
+});
+
+test.each([['carriage returns', '\\r\\n'], ['terminal controls', '\\u001b[K\\n']])('saved exec output with %s renders like live output', async (_label, separator) => {
+  const args = { action: 'exec', language: 'javascript', code: `for (let i = 0; i < 400; i++) process.stdout.write('compiled line ' + String(i).padStart(4, '0') + ' successfully${separator}'); for (let i = 0; i < 400; i++) process.stderr.write('diagnostic line ' + String(i).padStart(4, '0') + ' recorded${separator}')` };
+  const result = toToolResult(await runExec(args, { cwd: process.cwd() }));
+  const original = { role: 'toolResult' as const, toolCallId: 'exec-1', toolName: 'spider', timestamp: at(71), ...result };
+  const packed = packExecMessage(original);
+  expect(packed?.details.spiderOutputRefs).toBeDefined();
+  const call = assistant([{ type: 'toolCall', id: 'exec-1', name: 'spider', arguments: args }], 70);
+  const live = make();
+  live.live({ type: 'message_end', message: call.message });
+  live.live({ type: 'tool_execution_end', toolCallId: 'exec-1', result, isError: false });
+  live.toggleTools();
+  const liveText = plain(live.render(100));
+  expect(liveText).toContain('compiled line 0000 successfully');
+  expect(liveText).toContain('compiled line 0399 successfully');
+  expect(liveText).toContain('diagnostic line 0000 recorded');
+  expect(liveText).toContain('diagnostic line 0399 recorded');
+  expect(liveText).toContain('exit 0');
+
+  const dir = mkdtempSync(testScratchPath('viewer-exec-'));
+  try {
+    const session = SessionManager.create(process.cwd(), dir);
+    session.appendMessage(call.message as never);
+    session.appendMessage(packed);
+    const entries = readFileSync(session.getSessionFile()!, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const saved = make();
+    saved.addEntries(entries);
+    saved.toggleTools();
+    expect(plain(saved.render(100))).toBe(liveText);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a live message and its saved copy count usage once', () => {

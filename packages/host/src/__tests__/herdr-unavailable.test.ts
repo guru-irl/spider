@@ -153,7 +153,31 @@ test('feed outages stay quiet until a full feed refresh succeeds', async () => {
   f.store.create({ sessionId: f.owner!.sessionId, agent: 'worker' });
   blocked = false; refresh();
   await vi.waitFor(async () => expect(JSON.parse(await readFile(f.feedPath, 'utf8')).revision).toBeGreaterThan(revision));
-  // Other readers of the blocked config, such as reactions to the new run, may report too.
-  blocked = true; refresh(); await vi.waitFor(() => expect(f.errors.length).toBeGreaterThanOrEqual(3));
+  // Other readers of the blocked config, such as reactions to the new run, may report too, so wait on warnings.
+  blocked = true; refresh(); await vi.waitFor(() => expect(f.notices).toHaveLength(2));
+  const seen = f.errors.length;
+  refresh(); await vi.waitFor(() => expect(f.errors.length).toBeGreaterThan(seen));
   expect(f.notices).toHaveLength(2);
+});
+
+test('a successful feed write ends the outage even when a queued write then fails', async () => {
+  const f = await fixture(), limits = f.config.limits;
+  const { bus } = await import('@spider/db-core');
+  const { HerdrError } = await import('../../../herdr/src/client/parse.js');
+  const refresh = () => bus.emit({ sessionId: f.owner!.sessionId, ts: Date.now(), type: 'status' });
+  let blocked = true, failAfterNextRead = false;
+  Object.defineProperty(f.config, 'limits', { configurable: true, get() {
+    if (blocked) throw new HerdrError('unavailable', 'Synthetic feed data is unavailable');
+    // Each feed snapshot reads the limits once. The refresh lands after this read finishes, so this write
+    // succeeds and the one it queues reads the limits again and fails.
+    if (failAfterNextRead) { failAfterNextRead = false; blocked = true; queueMicrotask(refresh); }
+    return limits;
+  } });
+  cleanups.push(async () => { blocked = false; });
+  refresh(); await vi.waitFor(() => expect(f.errors).toHaveLength(1));
+  expect(f.notices).toHaveLength(1);
+  const seen = f.errors.length;
+  blocked = false; failAfterNextRead = true; refresh();
+  await vi.waitFor(() => expect(f.errors.length).toBeGreaterThan(seen));
+  await vi.waitFor(() => expect(f.notices).toHaveLength(2));
 });

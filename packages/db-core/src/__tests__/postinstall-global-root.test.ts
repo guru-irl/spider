@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -95,6 +96,22 @@ describe("postinstall global DB bootstrap", () => {
     expectBootstrap(resolvedRoot);
     expect(readdirSync(f.home)).toEqual([]);
   });
+
+  it("leaves an existing future core database and its sidecars untouched", () => {
+    const f = fixture();
+    const root = join(f.root, "override");
+    mkdirSync(root);
+    const path = join(root, "spider.db");
+    const db = new Database(path);
+    db.exec("CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('unchanged')");
+    db.pragma("user_version = 15");
+    db.close();
+    const before = createHash("sha256").update(readFileSync(path)).digest("hex");
+    runPostinstall(f, root);
+    expect(existsSync(`${path}-wal`)).toBe(false);
+    expect(existsSync(`${path}-shm`)).toBe(false);
+    expect(createHash("sha256").update(readFileSync(path)).digest("hex")).toBe(before);
+  }, 5000);
 
   it.each(["relative-root", "./x", "C:x", "\\x", "~/override", " ", "\t \n"])("skips non-absolute override %j without writes", async (override) => {
     const f = fixture();

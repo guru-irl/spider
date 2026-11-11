@@ -1,7 +1,12 @@
-import type { Db } from "./db";
+import { backupBeforeMigration, type Db } from "./db";
+import { paths } from "./paths";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
+import { loadMachineIdentity } from "./roam/machine";
+import { validateRoamLayout } from "./roam/layout";
+import { addRoamSchema } from "./roam/schema";
+import type { MachineId } from "./roam/types";
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /** Incremental steps applied to an EXISTING db (user_version>0) to reach SCHEMA_VERSION.
  *  Keyed by the version they bring the db TO. Fresh dbs (user_version 0) get the full schema
@@ -160,14 +165,31 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   6: [], // Version bump only for project scope
 };
 
-export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project"): void {
+export function migrate(
+  db: Db,
+  scope: "global" | "repo" | "worktree" | "project",
+  options?: { machineId: MachineId; globalRoot: string },
+): void {
   // "project" is a deprecated alias for "worktree"
   const actualScope = scope === "project" ? "worktree" : scope;
-  
-  const current = Number(db.pragma("user_version"));
-  if (current >= SCHEMA_VERSION) return;
+
+  const observed = Number(db.pragma("user_version"));
+  if (observed > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${observed}`);
+  const globalRoot = options?.globalRoot ?? paths.globalRoot;
+  const machineId = observed < SCHEMA_VERSION ? options?.machineId ?? loadMachineIdentity(globalRoot) : undefined;
+  if (observed < SCHEMA_VERSION) {
+    const existing = observed > 0 || !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
+    if (existing) backupBeforeMigration(db, actualScope, globalRoot, observed);
+  }
   db.withRetry(() => {
-    const run = db.transaction(() => {
+    const run = db.raw.transaction(() => {
+      const current = Number(db.raw.pragma("user_version", { simple: true }));
+      if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
+      if (current === SCHEMA_VERSION) {
+        validateRoamLayout(db, actualScope);
+        return;
+      }
+      if (current !== observed || machineId === undefined) throw new Error("Core schema changed before its backup");
       if (current === 0) {
         if (actualScope === "global") {
           db.exec(GLOBAL_SCHEMA);
@@ -204,6 +226,7 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
           
           if (v === 12 && actualScope === "repo") ensureSkillReviewReason(db);
           if (v === 13 && actualScope === "repo") ensureSkillReviewReason(db);
+          if (v === 14) addRoamSchema(db, actualScope, machineId);
 
           // IMPORTANT 5: After creating memory_fts (v8), populate it from memory
           if (actualScope === "repo" && v === 8) {
@@ -218,8 +241,10 @@ export function migrate(db: Db, scope: "global" | "repo" | "worktree" | "project
           }
         }
       }
+      if (current === 0) addRoamSchema(db, actualScope, machineId);
+      validateRoamLayout(db, actualScope);
       db.raw.pragma(`user_version = ${SCHEMA_VERSION}`);
     });
-    run();
+    run.immediate();
   });
 }

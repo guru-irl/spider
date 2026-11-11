@@ -3,6 +3,13 @@ import { describe, it, expect, afterEach } from "vitest";
 import { openDb } from "../db";
 import { migrate, SCHEMA_VERSION } from "../migrate";
 import { scratchDbPath, cleanupScratch } from "../testutil";
+import { V1, V4, V5, V10, V11, V13_CHILD_COLUMNS } from "./fixtures/historical-schemas";
+import type { Db } from "../db";
+
+function historical(db: Db, schema: string, version: number): void {
+  db.exec(schema);
+  db.raw.pragma(`user_version = ${version}`);
+}
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
@@ -53,15 +60,16 @@ describe("migrate", () => {
 describe("migrate v13 child routes", () => {
   it("keeps pre-upgrade runs print-only without inventing an intercom target", () => {
     const db = openDb(scratchDbPath("v11-runs")); opened.push(db);
-    db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT); INSERT INTO runs VALUES ('legacy','running')");
-    db.raw.pragma("user_version = 11");
+    historical(db, V11.worktree, 11);
+    db.exec("INSERT INTO runs (id, session_id, agent, status) VALUES ('legacy', 'owner', 'worker', 'running')");
     migrate(db, "worktree");
     expect(db.prepare("SELECT child_mode,intercom_session,pid_start_time,status FROM runs WHERE id='legacy'").get())
       .toEqual({ child_mode: "print", intercom_session: null, pid_start_time: null, status: "running" });
     expect(() => migrate(db, "worktree")).not.toThrow();
   });
   it("adds the locator to an existing global database without copying run contents", () => {
-    const db = openDb(scratchDbPath("v11-routes")); opened.push(db); db.raw.pragma("user_version = 11");
+    const db = openDb(scratchDbPath("v11-routes")); opened.push(db);
+    historical(db, V11.global, 11);
     migrate(db, "global");
     db.prepare("INSERT INTO run_routes (run_id,session_id,db_path) VALUES ('r','owner','fixture.db')").run();
     expect(db.prepare("SELECT session_id,db_path FROM run_routes WHERE run_id='r'").get()).toEqual({ session_id: "owner", db_path: "fixture.db" });
@@ -71,9 +79,12 @@ describe("migrate v13 child routes", () => {
 describe("v13 ladder replay", () => {
   it.each([[], ["child_mode"], ["child_mode", "intercom_session"], ["child_mode", "intercom_session", "pid_start_time"]].map(fields => ({fields})))("conditionally adds missing columns without changing existing values ($fields)", ({fields}) => {
     const db = openDb(scratchDbPath("partial-v13")); opened.push(db);
-    db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT)");
-    for (const field of fields) db.exec(`ALTER TABLE runs ADD COLUMN ${field} TEXT`);
-    db.prepare("INSERT INTO runs (id,status) VALUES ('live','running')").run();
+    historical(db, V11.worktree, 11);
+    // Fault-inject partial application of the exact v13 column definitions.
+    for (const [field, definition] of V13_CHILD_COLUMNS) {
+      if (fields.includes(field)) db.exec(`ALTER TABLE runs ADD COLUMN ${field} ${definition}`);
+    }
+    db.prepare("INSERT INTO runs (id,session_id,agent,status) VALUES ('live','owner','worker','running')").run();
     if (fields.includes("child_mode")) db.prepare("UPDATE runs SET child_mode='rpc'").run();
     db.raw.pragma("user_version = 11");
     expect(() => migrate(db, "worktree")).not.toThrow();
@@ -98,11 +109,8 @@ describe("migrate — v11 provenance columns", () => {
       const expected = fresh.raw.prepare(`PRAGMA table_info(${table})`).all();
 
       const old = openDb(scratchDbPath(`v10-${scope}`)); opened.push(old);
-      migrate(old, scope);
-      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN evidence`);
-      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN justification`);
+      historical(old, V10[scope], 10);
       old.prepare(`INSERT INTO ${table} (uuid, category, content, created_at) VALUES ('old', 'insight', 'existing rule', 1)`).run();
-      old.raw.pragma("user_version = 10");
       migrate(old, scope);
       expect(old.raw.prepare(`PRAGMA table_info(${table})`).all()).toEqual(expected);
       expect(old.prepare(`SELECT content, justification, evidence FROM ${table} WHERE uuid='old'`).get())
@@ -111,13 +119,12 @@ describe("migrate — v11 provenance columns", () => {
 
     it(`${scope} repairs a pre-existing v0 memory table missing the provenance columns`, () => {
       const old = openDb(scratchDbPath(`v0-${scope}`)); opened.push(old);
-      migrate(old, scope);
-      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN evidence`);
-      old.raw.exec(`ALTER TABLE ${table} DROP COLUMN justification`);
-      old.raw.pragma("user_version = 0");
+      // Preserve the unversioned-layout repair case using the actual pre-provenance schema.
+      historical(old, V10[scope], 0);
       migrate(old, scope);
       const columns = old.raw.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-      expect(columns.slice(-2).map(c => c.name)).toEqual(["justification", "evidence"]);
+      expect(columns.slice(-3, -1).map(c => c.name)).toEqual(["justification", "evidence"]);
+      expect(columns.at(-1)?.name).toBe("machine_id");
     });
   }
 });
@@ -125,11 +132,7 @@ describe("migrate — v11 provenance columns", () => {
 describe("migrate — thinking column (v1\u2192v2)", () => {
   it("adds runs.thinking to an existing v1 db without the column", () => {
     const db = openDb(scratchDbPath("mig-v1")); opened.push(db);
-    // Simulate an OLD v1 db: runs table WITHOUT thinking, user_version=1.
-    db.exec(`CREATE TABLE runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent TEXT NOT NULL,
-             status TEXT NOT NULL, phase TEXT, model TEXT, task TEXT, step_count INTEGER DEFAULT 0,
-             token_count INTEGER DEFAULT 0)`);
-    db.raw.pragma("user_version = 1");
+    historical(db, V1.worktree, 1);
     migrate(db, "project");
     const cols = (db.raw.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map((c) => c.name);
     expect(cols).toContain("thinking");
@@ -148,22 +151,7 @@ describe("migrate — schema v5 global/project", () => {
   // Mutation: revert scope selection to `scope === "project" ? ... : []` — global steps never run.
   it("v4 global db migrates to v5, gains delivered_at and read_at columns, preserves existing rows", () => {
     const db = openDb(scratchDbPath("mig-v4-global")); opened.push(db);
-    // Simulate v4 global schema: complete v4 schema including projects table
-    db.exec(`CREATE TABLE projects (
-      project_key TEXT PRIMARY KEY,
-      real_path TEXT NOT NULL,
-      git_common_dir TEXT,
-      db_path TEXT NOT NULL,
-      name TEXT,
-      created_at INTEGER NOT NULL,
-      last_seen_at INTEGER NOT NULL,
-      session_count INTEGER NOT NULL DEFAULT 0,
-      memory_count INTEGER NOT NULL DEFAULT 0
-    )`);
-    db.exec(`CREATE TABLE message_mirror (
-      id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
-      kind TEXT, body TEXT, created_at INTEGER NOT NULL
-    )`);
+    historical(db, V4.global, 4);
     db.prepare("INSERT INTO message_mirror (from_session, to_session, kind, body, created_at) VALUES (?, ?, ?, ?, ?)").run(
       "s1", "s2", "request", "test", Date.now()
     );
@@ -180,14 +168,7 @@ describe("migrate — schema v5 global/project", () => {
   // Mutation: drop the v5 step in PROJECT_MIGRATIONS — project v4→v5 fails.
   it("v4 project db migrates to v5 without error", () => {
     const db = openDb(scratchDbPath("mig-v4-project")); opened.push(db);
-    // Simulate v4 project schema: runs with pid/host_pid
-    db.exec(`CREATE TABLE runs (
-      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent TEXT NOT NULL,
-      status TEXT NOT NULL, phase TEXT, model TEXT, task TEXT, thinking TEXT,
-      step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
-      pid INTEGER, host_pid INTEGER
-    )`);
-    db.raw.pragma("user_version = 4");
+    historical(db, V4.worktree, 4);
     expect(() => migrate(db, "project")).not.toThrow();
     expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
   });
@@ -199,23 +180,7 @@ describe("migrate — schema v5 global/project", () => {
     const freshCols = (fresh.raw.prepare("PRAGMA table_info(message_mirror)").all() as { name: string }[]).map((c) => c.name).sort();
 
     const migrated = openDb(scratchDbPath("mig-v4-parity")); opened.push(migrated);
-    // Complete v4 global schema
-    migrated.exec(`CREATE TABLE projects (
-      project_key TEXT PRIMARY KEY,
-      real_path TEXT NOT NULL,
-      git_common_dir TEXT,
-      db_path TEXT NOT NULL,
-      name TEXT,
-      created_at INTEGER NOT NULL,
-      last_seen_at INTEGER NOT NULL,
-      session_count INTEGER NOT NULL DEFAULT 0,
-      memory_count INTEGER NOT NULL DEFAULT 0
-    )`);
-    migrated.exec(`CREATE TABLE message_mirror (
-      id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
-      kind TEXT, body TEXT, created_at INTEGER NOT NULL
-    )`);
-    migrated.raw.pragma("user_version = 4");
+    historical(migrated, V4.global, 4);
     migrate(migrated, "global");
     const migratedCols = (migrated.raw.prepare("PRAGMA table_info(message_mirror)").all() as { name: string }[]).map((c) => c.name).sort();
 
@@ -235,18 +200,7 @@ describe("migrate — schema v6 global repo_key", () => {
   // Mutation: remove v6 step from GLOBAL_MIGRATIONS → this test fails.
   it("v5 global db migrates to v6, gains repo_key column, preserves existing rows", () => {
     const db = openDb(scratchDbPath("mig-v5-global")); opened.push(db);
-    // Simulate v5 global schema: projects without repo_key
-    db.exec(`CREATE TABLE projects (
-      project_key TEXT PRIMARY KEY,
-      real_path TEXT NOT NULL,
-      git_common_dir TEXT,
-      db_path TEXT NOT NULL,
-      name TEXT,
-      created_at INTEGER NOT NULL,
-      last_seen_at INTEGER NOT NULL,
-      session_count INTEGER NOT NULL DEFAULT 0,
-      memory_count INTEGER NOT NULL DEFAULT 0
-    )`);
+    historical(db, V5.global, 5);
     db.prepare(`INSERT INTO projects (project_key, real_path, db_path, created_at, last_seen_at)
       VALUES (?, ?, ?, ?, ?)`).run(
       "/test/key", "/test/path", "/test/path/.spider/project.db", Date.now(), Date.now()
@@ -267,18 +221,7 @@ describe("migrate — schema v6 global repo_key", () => {
     const freshCols = (fresh.raw.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((c) => c.name).sort();
 
     const migrated = openDb(scratchDbPath("mig-v5-parity")); opened.push(migrated);
-    migrated.exec(`CREATE TABLE projects (
-      project_key TEXT PRIMARY KEY,
-      real_path TEXT NOT NULL,
-      git_common_dir TEXT,
-      db_path TEXT NOT NULL,
-      name TEXT,
-      created_at INTEGER NOT NULL,
-      last_seen_at INTEGER NOT NULL,
-      session_count INTEGER NOT NULL DEFAULT 0,
-      memory_count INTEGER NOT NULL DEFAULT 0
-    )`);
-    migrated.raw.pragma("user_version = 5");
+    historical(migrated, V5.global, 5);
     migrate(migrated, "global");
     const migratedCols = (migrated.raw.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((c) => c.name).sort();
 
@@ -288,13 +231,7 @@ describe("migrate — schema v6 global repo_key", () => {
   // Mutation: drop v6 from PROJECT_MIGRATIONS → project v5→v6 fails.
   it("v5 project db migrates to v6 without error", () => {
     const db = openDb(scratchDbPath("mig-v5-project")); opened.push(db);
-    db.exec(`CREATE TABLE runs (
-      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent TEXT NOT NULL,
-      status TEXT NOT NULL, phase TEXT, model TEXT, task TEXT, thinking TEXT,
-      step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
-      pid INTEGER, host_pid INTEGER
-    )`);
-    db.raw.pragma("user_version = 5");
+    historical(db, V5.worktree, 5);
     expect(() => migrate(db, "project")).not.toThrow();
     expect(Number(db.pragma("user_version"))).toBe(SCHEMA_VERSION);
   });

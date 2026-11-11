@@ -242,7 +242,7 @@ describe("control migrate", () => {
     // Count rows in repo DB after first apply
     const repoDir = join(scratch, "repo");
     const gitCommonDir = join(repoDir, ".git");
-    const repoDb = openDbAt(join(gitCommonDir, "spider", "repo.db"));
+    const repoDb = openDbAt(join(gitCommonDir, "spider", "repo.db"), "repo");
     const memoryCount1 = (repoDb.prepare("SELECT count(*) as n FROM memory").get() as { n: number }).n;
     const skillsCount1 = (repoDb.prepare("SELECT count(*) as n FROM skills").get() as { n: number }).n;
     repoDb.close();
@@ -252,7 +252,7 @@ describe("control migrate", () => {
     console.log("Second result:", JSON.stringify(result2, null, 2));
     
     // Count rows again - should be identical (no duplicates)
-    const repoDb2 = openDbAt(join(gitCommonDir, "spider", "repo.db"));
+    const repoDb2 = openDbAt(join(gitCommonDir, "spider", "repo.db"), "repo");
     const memoryCount2 = (repoDb2.prepare("SELECT count(*) as n FROM memory").get() as { n: number }).n;
     const skillsCount2 = (repoDb2.prepare("SELECT count(*) as n FROM skills").get() as { n: number }).n;
     repoDb2.close();
@@ -287,7 +287,7 @@ describe("control migrate", () => {
     
     // Verify the row was NOT dropped - it should exist in the repo DB
     const gitCommonDir = join(repoDir, ".git");
-    const repoDb = openDbAt(join(gitCommonDir, "spider", "repo.db"));
+    const repoDb = openDbAt(join(gitCommonDir, "spider", "repo.db"), "repo");
     const row = repoDb.prepare("SELECT * FROM memory WHERE uuid = ?").get(ambiguousUuid);
     expect(row).toBeDefined();
     repoDb.close();

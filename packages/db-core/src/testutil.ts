@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 
+export { createReplica } from "./__tests__/roam-fixture";
+export type { ReplicaFixture } from "./__tests__/roam-fixture";
+
 // Scratch DBs live under packages/db-core/.spider/scratch — NEVER /tmp.
 // Each process (vitest runs test files in parallel forks) gets its OWN subdir so
 // one fork's cleanupScratch() cannot delete another fork's live DB (disk I/O error).

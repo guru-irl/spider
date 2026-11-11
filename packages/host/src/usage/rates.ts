@@ -10,7 +10,7 @@ function model(id: string, tiers: readonly RateTier[], aliases: readonly string[
 
 // Apply 2026-10-04 published rates from the 2026-06-01 billing change: https://docs.github.com/en/copilot/reference/copilot-billing/request-based-billing-legacy/what-changed-with-billing.
 // All values are USD per million tokens. No runtime fetch is performed.
-export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
+const PUBLIC_2026_10_04: RateVersion = {
   id: "copilot-public-2026-10-04",
   effectiveFrom: "2026-06-01T00:00:00.000Z",
   sourceAsOf: "2026-10-04",
@@ -20,7 +20,9 @@ export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
     + "Not applicable or absent cache-write prices are represented as 0. "
     + "Includes Claude Opus 4.8 fast mode (preview). "
     + "Gemini 3.7 Flash and Gemini 3.8 Flash promotional prices apply through 2026-12-31 inclusive (UTC); "
-    + "trailing footnote markers are not model IDs.",
+    + "trailing footnote markers are not model IDs. "
+    + "GPT-6.1 Terra, Claude Haiku 5.5, Claude Fable 5.2, Gemini 4 Argon and Gemini 4 Carbon were added on 2026-11-11 "
+    + "from the same table at https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing.",
   models: [
     model("gpt-5-mini", [tier("default", 0, 0.25, 0.025, 0, 2)]),
     model("gpt-5.3-codex", [tier("default", 0, 1.75, 0.175, 0, 14)]),
@@ -62,7 +64,15 @@ export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
       tier("default", 0, 2, 0.1, 2.5, 10),
       tier("long-context", 272000, 4, 0.2, 5, 15),
     ]),
+    model("gpt-6.1-terra", [
+      tier("default", 0, 1, 0.05, 1.25, 5),
+      tier("long-context", 272000, 2, 0.1, 2.5, 7.5),
+    ]),
     model("claude-haiku-4.5", [tier("default", 0, 1, 0.1, 1.25, 5)]),
+    model("claude-haiku-5.5", [
+      tier("default", 0, 0.1, 0.01, 0.125, 0.5),
+      tier("long-context", 100000, 0.5, 0.05, 0.625, 2.5),
+    ]),
     model("claude-sonnet-4", [tier("default", 0, 3, 0.3, 3.75, 15)]),
     model("claude-sonnet-4.6", [tier("default", 0, 3, 0.3, 3.75, 15)]),
     model("claude-opus-4.8", [tier("default", 0, 5, 0.5, 6.25, 25)]),
@@ -74,8 +84,11 @@ export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
     model("claude-opus-4.8-fast", [tier("default", 0, 10, 1, 12.5, 50)]),
     model("claude-fable-5", [tier("default", 0, 10, 1, 12.5, 50)]),
     model("claude-fable-5.1", [tier("default", 0, 10, 0.25, 12.5, 50)]),
+    model("claude-fable-5.2", [tier("default", 0, 8, 0.2, 10, 40)]),
     model("gemini-3.7-flash", [tier("default", 0, 0.75, 0.075, 0, 3.75)], [], "2027-01-01T00:00:00.000Z"),
     model("gemini-3.8-flash", [tier("default", 0, 0.75, 0.075, 0, 3.75)], [], "2027-01-01T00:00:00.000Z"),
+    model("gemini-4-argon", [tier("default", 0, 2, 0.1, 0, 10)]),
+    model("gemini-4-carbon", [tier("default", 0, 2, 0.1, 0, 10)]),
     model("mai-code-1.1-flash", [tier("default", 0, 0.2, 0.02, 0, 1.2)]),
     model("grok-4.5", [
       tier("default", 0, 2, 0.5, 0, 6),
@@ -91,7 +104,26 @@ export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [{
     ]),
     model("kimi-k3", [tier("default", 0, 3, 0.3, 0, 15)]),
   ],
-}];
+};
+
+// The 2026-11-11 table cut Claude Sonnet 5.5 cached input from 0.2 to 0.1. Calls before that date keep the older rate.
+const PUBLIC_2026_11_11: RateVersion = {
+  ...PUBLIC_2026_10_04,
+  id: "copilot-public-2026-11-11",
+  effectiveFrom: "2026-11-11T00:00:00.000Z",
+  sourceAsOf: "2026-11-11",
+  source: "GitHub Docs, Models and pricing for GitHub Copilot: "
+    + "https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing. "
+    + "Same models and rates as copilot-public-2026-10-04 except Claude Sonnet 5.5 cached input. "
+    + "Not applicable or absent cache-write prices are represented as 0. "
+    + "Gemini 3.7 Flash and Gemini 3.8 Flash promotional prices apply through 2026-12-31 inclusive (UTC); "
+    + "trailing footnote markers are not model IDs.",
+  models: PUBLIC_2026_10_04.models.map(rate => rate.id === "claude-sonnet-5.5"
+    ? model("claude-sonnet-5.5", [tier("default", 0, 2, 0.1, 2.5, 10)])
+    : rate),
+};
+
+export const COPILOT_RATE_VERSIONS: readonly RateVersion[] = [PUBLIC_2026_10_04, PUBLIC_2026_11_11];
 
 // Public aliases must retain their canonical identity across versions (tested).
 // For a historical call, priceCall resolves aliases within its effective version.

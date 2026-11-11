@@ -77,7 +77,7 @@ it("counts globally selected calls in UTC today, not raw or future rows", () => 
 
 it("returns complete build and freshness fields with no observations", () => {
   expect(queryStatusV4(context())).toEqual({ lastIngestAt: null, collector: "none", latestCounterAt: null,
-    serverBuild: "fixture-build", rateVersions: ["copilot-public-2026-10-04"] });
+    serverBuild: "fixture-build", rateVersions: ["copilot-public-2026-10-04", "copilot-public-2026-11-11"] });
   f.ledger.apply(dashboardBatch([], { at: now - 60000, states: [{ path: "synthetic/a.jsonl", inode: "a", size: 0, offset: 0,
     mtimeMs: now, parseErrors: 0, generation: 0, prefixHash: "a" }] }));
   f.ledger.insertCounter({ ts: now - 1000, creditsUsed: 17, raw: { secret: "never serialize" } });

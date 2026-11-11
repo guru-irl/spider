@@ -1,5 +1,6 @@
 import type { Db } from "../db";
 import { DESCRIPTORS } from "./descriptors";
+import { GENERATED_TRIGGERS } from "./generated";
 import type { Scope } from "./types";
 
 const COMMON_COLUMNS: Record<string, readonly string[]> = {
@@ -58,6 +59,7 @@ interface Meta {
 }
 interface Index { name: string; unique: number; partial: number }
 interface IndexColumn { name: string | null; coll: string; desc: number }
+interface Trigger { name: string; sql: string; tbl_name: string }
 
 function columns(db: Db, table: string, required: readonly string[]): void {
   const actual = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; pk: number }>;
@@ -131,14 +133,30 @@ export function validateRoamLayout(db: Db, scope: Scope): { captureSafe: boolean
     }
   }
 
-  // Schema 14 capture triggers are introduced by the next migration task.
-  const unexpected = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND substr(name, 1, 5) = 'roam_' ORDER BY name").all() as Array<{ name: string }>;
+  const actual = db.prepare("SELECT name, sql, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").all() as Trigger[];
+  const expected = new Map(GENERATED_TRIGGERS[scope].map(trigger => [trigger.name, trigger.sql.trim().replace(/;$/, "")]));
+  const found = new Map(actual.map(trigger => [trigger.name, trigger.sql]));
+  const drift = new Set<string>();
+  for (const [name, sql] of expected) if (found.get(name) !== sql) drift.add(name);
+  for (const { name } of actual) if (!expected.has(name)) drift.add(name);
   let diagnostic = meta.problem;
-  if (unexpected.length) {
-    const problem = `${TRIGGER_DRIFT}: ${unexpected.map(trigger => trigger.name).join(", ")}`;
-    if (!diagnostic?.includes(TRIGGER_DRIFT)) diagnostic = diagnostic ? `${diagnostic}; ${problem}` : problem;
+  if (drift.size > 0) {
+    const problem = `${TRIGGER_DRIFT}: ${[...drift].sort().join(", ")}`;
+    if (!diagnostic?.includes(problem)) diagnostic = diagnostic ? `${diagnostic}; ${problem}` : problem;
     if (meta.capture_enabled !== 0 || diagnostic !== meta.problem) {
-      db.prepare("UPDATE roam_meta SET capture_enabled = 0, problem = ? WHERE id = 1").run(diagnostic);
+      let changed: number;
+      try {
+        changed = db.prepare("UPDATE roam_meta SET capture_enabled = 0, problem = ? WHERE id = 1").run(diagnostic).changes;
+      } catch (error) {
+        if (actual.some(trigger => trigger.tbl_name === "roam_meta" && drift.has(trigger.name))) {
+          throw new Error(`${problem}; capture could not be disabled: ${String(error)}`, { cause: error });
+        }
+        throw error;
+      }
+      const saved = db.prepare("SELECT capture_enabled, problem FROM roam_meta WHERE id = 1").get() as Pick<Meta, "capture_enabled" | "problem"> | undefined;
+      if (changed !== 1 || saved?.capture_enabled !== 0 || saved.problem !== diagnostic) {
+        throw new Error(`${problem}; capture could not be disabled`);
+      }
     }
   }
   return { captureSafe: meta.roamable === 1 && !diagnostic, diagnostic };

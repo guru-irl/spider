@@ -185,7 +185,12 @@ it('the parent opens a child job from its run journal with session and owner che
   const { createJobStore } = await import('../../../herdr/src/jobs/store.js');
   const { build } = await import('vite');
   const dbPath = join(f.h.root, 'runs.db'), globalPath = join(f.h.root, 'global.db'), db = openDbAt(dbPath, 'worktree'), store = new RunStore(db);
+  const foreignPath = join(f.h.root, 'foreign-runs.db');
+  let resolvedPath = dbPath;
   const run = store.create({ sessionId: f.h.owner!.sessionId, agent: 'worker' }); store.start(run.id);
+  const foreignDb = openDbAt(foreignPath, 'worktree');
+  try { foreignDb.prepare("INSERT INTO runs (id, session_id, agent, status) VALUES (?, 'foreign-session', 'worker', 'done')").run(run.id); }
+  finally { foreignDb.close(); }
   let parent: ReturnType<typeof mountHerdr> | undefined, ipc: ReturnType<typeof createSessionIpcClient> | undefined;
   const hooks = new Map<string, Function[]>();
   const pi = { ...f.pi, on(name: string, fn: Function) { hooks.set(name, [...hooks.get(name) ?? [], fn]); return () => hooks.set(name, (hooks.get(name) ?? []).filter(f => f !== fn)); } };
@@ -203,7 +208,7 @@ it('the parent opens a child job from its run journal with session and owner che
     await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), outDir: join(f.h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'cli.mjs' } } } });
     parent = mountHerdr(pi as never, { packageRoot: f.h.root, actionContext: () => ({}), reportError: error => f.errors.push(error),
       views: { agents: { open: async () => {} }, todos: { handler: async () => {} }, usage: { handler: async () => {} }, memory: async () => {}, loop: { handler: async () => {} } },
-      dataSource: { resolveRunDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), scheduler: { listTriggers: () => [], subscribe: () => () => {} } },
+      dataSource: { resolveRunDb: () => ({ db: openDbAt(resolvedPath, 'worktree'), dbPath: resolvedPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), scheduler: { listTriggers: () => [], subscribe: () => () => {} } },
     });
     await emit('session_start', { reason: 'startup' });
     const feedPath = join(f.config.globalRoot, 'herdr/sessions', f.h.owner!.sessionId, 'session.json'), feed = JSON.parse(await readFile(feedPath, 'utf8'));
@@ -213,9 +218,9 @@ it('the parent opens a child job from its run journal with session and owner che
     if (!opened.ok || opened.op !== 'openJob' || !opened.viewer) throw new Error('No child job viewer');
     expect(await f.h.hc.get(opened.viewer)).toMatchObject({ labels: { 'spider.kind': 'remote-observer', 'spider.session': f.h.owner!.sessionId, 'spider.run': run.id } });
     expect(await readFile(journal.path, 'utf8')).toBe(before);
-    db.prepare('UPDATE runs SET session_id=? WHERE id=?').run('foreign-session', run.id);
+    resolvedPath = foreignPath;
     expect(await ipc.openJob(result.details.remote!.jobId)).toMatchObject({ ok: false });
-    db.prepare('UPDATE runs SET session_id=? WHERE id=?').run(f.h.owner!.sessionId, run.id);
+    resolvedPath = dbPath;
     const foreign = await journal.read(); foreign.jobs[0].owner.terminal.terminalId = 'foreign-terminal' as never; await journal.write(foreign);
     expect(await ipc.openJob(result.details.remote!.jobId)).toMatchObject({ ok: false });
     await writeFile(journal.path, before); expect(f.errors).toEqual([]);

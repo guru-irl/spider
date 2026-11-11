@@ -53,7 +53,7 @@ function data(response: { status: number; body: string }) { expect(response.stat
 it("five authenticated route envelopes expose complete new shapes and resolved periods", async () => {
   seed(); const server = await start(), Cookie = await server.cookie();
   const status = data(await reply(server.port, "/api/status", { Cookie }));
-  expect(status.data).toEqual({ lastIngestAt: null, collector: "none", latestCounterAt: null, serverBuild: "fixture-build", rateVersions: ["copilot-public-2026-10-04"] });
+  expect(status.data).toEqual({ lastIngestAt: null, collector: "none", latestCounterAt: null, serverBuild: "fixture-build", rateVersions: ["copilot-public-2026-10-04", "copilot-public-2026-11-11"] });
   const overview = data(await reply(server.port, "/api/overview?tz=Not%2FAZone", { Cookie }));
   expect(overview.data).toMatchObject({ range: { range: "7d", from: NOW - 7 * D, to: NOW, tz: "UTC", unit: "credits", buckets: [] }, total: { credits: 1, calls: 1 }, sessions: { limit: 10 } });
   expect(overview.period).toEqual({ start: NOW - 7 * D, end: NOW });
@@ -150,7 +150,7 @@ it("budget callback is evaluated live for the next Overview response", async () 
 
 it("status is complete without a ledger and invalid queries still fail", async () => {
   const server = await start({ reader: undefined }), Cookie = await server.cookie();
-  expect(data(await reply(server.port, "/api/status", { Cookie })).data).toEqual({ lastIngestAt: null, collector: "none", latestCounterAt: null, serverBuild: "fixture-build", rateVersions: ["copilot-public-2026-10-04"] });
+  expect(data(await reply(server.port, "/api/status", { Cookie })).data).toEqual({ lastIngestAt: null, collector: "none", latestCounterAt: null, serverBuild: "fixture-build", rateVersions: ["copilot-public-2026-10-04", "copilot-public-2026-11-11"] });
   expect((await reply(server.port, "/api/status?extra=1", { Cookie })).status).toBe(400);
   expect((await reply(server.port, "/api/overview", { Cookie })).status).toBe(503);
 });

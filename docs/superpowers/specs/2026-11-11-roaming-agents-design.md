@@ -6,19 +6,19 @@ A top-level pi session can live on a remote Linux machine and keep working while
 
 The Mac is the hub. It reaches boxes through Herdr. Boxes cannot reach the Mac or each other. Sync and moves require an awake Mac, but an active home continues without it. The hub runs as a launchd user service, independently of pi, with one process lock and a default sync period of two minutes per peer.
 
-Version 1 includes replication, provisioning, unattended restart, and idle-session moves. Children run where their parent runs. Moves refuse running children and unsettled jobs. Acceptance gates Mac-to-box and box-to-Mac moves first.
+Version 1 includes replication, provisioning, restart, and idle moves. Children stay with their parent. Moves refuse unsettled work. Acceptance gates both directions first.
 
-Resume restores conversation and triggers, not suspended execution or a continuation prompt. An idle session waits for input or a trigger. Examples are synthetic. Private inventories, credentials, and test receipts stay outside the repository.
+Resume restores conversation and triggers, not execution or a continuation prompt. Examples are synthetic. Private receipts and credentials stay outside the repository.
 
 ## Ownership and component boundaries
 
-A machine has a random UUID in a private `machine.json`. The routing alias `box-1.invalid` is not that identity. A home is `{sessionId, machineId, epoch}`. Only the hub writes `session_homes`, using compare-and-swap on the expected epoch. Each home change, including rollback, increments the epoch.
+A machine has a random UUID in a private `machine.json`. The routing alias `box-1.invalid` is not that identity. A home is `{sessionId, machineId, epoch}`. Only the hub writes `session_homes`, assigning initial homes and using compare-and-swap for later epochs. Each home change, including rollback, increments the epoch.
 
-Durable local session state is `active`, `frozen`, or `retired`. A session-ID lock prevents duplicate local IDs, while the existing canonical-file lease protects one file. Neither lock crosses machines. Existing file-lease claims check liveness under a process lock (`packages/herdr/src/sessions/lease.ts:75-101`).
+Durable local session state is `active`, `frozen`, or `retired`. For participants, a session-ID lock prevents duplicate local IDs. The existing canonical-file lease protects one file. Neither lock crosses machines. Existing file-lease claims check liveness under a process lock (`packages/herdr/src/sessions/lease.ts:75-101`).
 
-A source acknowledges freeze only after its admission gates and database writers are stopped and its frozen state is durable. Freeze never expires. A frozen or retired copy cannot reactivate from a cached home. An offline active home can continue because the hub cannot move it without that source's fresh freeze acknowledgement. This is the exclusion argument. A timed lease alone would not give that guarantee.
+A source acknowledges freeze only after its admission gates and database writers are stopped and its frozen state is durable. Freeze never expires. A frozen or retired copy cannot reactivate from a cached home. An offline active home can continue because the hub cannot move it without that source's fresh freeze acknowledgement.
 
-After home commit, the hub calls `session start` at epoch `e + 1` to activate the destination. Readiness is durable before ordinary consumers. Once readiness exists, recovery stays there, even with a lost reply. Rollback requires proved launch failure and destination retirement. Explicit lost-machine recovery is the exception to exclusion described below.
+After home commit, the hub calls `session start` at epoch `e + 1`. Persist readiness before consumers. Thereafter recovery stays at destination, even with lost replies. Rollback requires proved launch failure and retirement. Lost-machine recovery is the exclusion exception.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -28,13 +28,13 @@ After home commit, the hub calls `session start` at epoch `e + 1` to activate th
 | `@spider/host` | First-registered admission handler, per-session control socket, lifecycle guards, `/move`, readiness, and usage adapters. |
 | `@spider/subagents` | Local-origin checks for operational run consumers and a read-only blocker inventory. |
 
-Publish `dist/roam/cli.mjs` and `dist/roam/supervisor.mjs`. Add root `bin.spider` and a Mac installation step. The current root has no `bin` (`package.json:1-151`), so building alone does not install a shell command. `/move` is primary. CLI help opens no DB or Herdr connection.
+Publish `dist/roam/cli.mjs` and `dist/roam/supervisor.mjs`, add root `bin.spider`, and install the Mac shell command. The root has no `bin` (`package.json:1-151`). `/move` is primary. Help opens no DB or Herdr connection.
 
-Local configuration contains role, hub identity, peer aliases and executable paths, discovery roots, core unit, sync period, and limits. A box has no outbound peers. Validate inputs at CLI, configuration, SQL, file, and hc boundaries.
+Configuration holds role, hub, peers and executable paths, discovery roots, core unit, sync period, and limits. Boxes have no outbound peers. Validate CLI, configuration, SQL, file, and hc boundaries.
 
 ## Checked starting point
 
-The checked source baseline is `e732fa07`, the parent of the original design commit. Everything proposed below is new work.
+The checked source baseline is `e732fa07`, the parent of the original design commit.
 
 | Existing behavior | Checked source |
 | --- | --- |
@@ -50,7 +50,7 @@ The checked source baseline is `e732fa07`, the parent of the original design com
 | Trigger restore reads `spider-triggers` entries for the same persistent session. | `packages/host/src/loop/index.ts:159-186` |
 | Usage has its own shipped migrations and complete-layout validation. Startup restores unreported run usage. | `packages/host/src/usage/migrate.ts:9-23`, `packages/host/src/usage/migrate.ts:43-68`, `packages/host/src/usage-accounting.ts:90-92` |
 
-Pi citations use `pi/` for the installed coding-agent package at version 1.2.0. Explicit-file open derives runtime cwd from the header, unless an override is passed (`pi/dist/core/session-manager.js:1326-1347`). Missing or empty files can initialize a new session (`pi/dist/core/session-manager.js:665-689`). Loading selects the last physical entry as the leaf (`pi/dist/core/session-manager.js:732-741`). The public API exposes `getLeafId()` (`pi/dist/core/session-manager.d.ts:289-290`). These contracts require header rewriting, exact-file validation, and a leaf-parented marker.
+Pi citations use `pi/` for the installed coding-agent package at version 1.2.0. Explicit-file open derives runtime cwd from the header, unless an override is passed (`pi/dist/core/session-manager.js:1326-1347`). Missing or empty files can initialize a new session (`pi/dist/core/session-manager.js:665-689`). Loading selects the last physical entry as the leaf (`pi/dist/core/session-manager.js:732-741`). The public API exposes `getLeafId()` (`pi/dist/core/session-manager.d.ts:289-290`).
 
 ## Portable identities and reads
 
@@ -93,7 +93,7 @@ Session origin is the creation machine. Run origin is the execution machine. Bot
 
 ### Migration and local state
 
-Raise core schema to 14 with additive migrations and matching fresh DDL for all three scopes. Read `user_version` inside an IMMEDIATE transaction. A newer version fails before application queries. Validate owned columns, indexes, and triggers on writable opens. Do not edit shipped version-13 SQL. Use a private SQLite backup API snapshot or `VACUUM INTO`, not a live `.db` byte copy.
+Raise core schema to 14 with additive migrations and matching fresh DDL for all three scopes. Read `user_version` inside an IMMEDIATE transaction. A newer version fails before application queries. Before migrating each existing core DB, synchronously `VACUUM INTO` one mode-0600 backup under `<globalRoot>/roam/backups/`, after a free-space check. Backup failure refuses migration. Keep the backup after success or failure. Validate owned columns, indexes, and triggers on writable opens. Missing data columns refuse open. Trigger-shape drift disables capture for that store and doctor reports it, never refusing open. Pin generated SQL to schema 14. Do not edit shipped version-13 SQL.
 
 Backfill todo and event UUIDs with `lower(hex(randomblob(16)))`, preserving local integer IDs and FTS rowids. Create unique UUID indexes. Existing session and run origins become the local machine ID. New SQL inserts that omit these fields get plain-SQL after-insert fills. UUID and origin updates are immutable once nonempty. Normalization updates produce only one captured insertion, including on connections with recursive triggers enabled.
 
@@ -101,9 +101,9 @@ Before adding unique `(session_id, seq)` for todos, detect duplicates. If presen
 
 Worktree-local `roam_sessions` has primary key `session_id`, `epoch`, `state`, `move_id`, and freeze barrier sequence. State is `active`, `frozen`, or `retired`. Table membership controls participation. SQL reads state in the writing transaction. Frozen writes raise, rather than silently escape capture. Hub and participant journals record move actions and results. Maps, locations, and supervisor intent stay local.
 
-A session joins replication at its first move preparation or creation on a box. Without a home row, its session origin owns it. The hub records epoch 1 at first sync. Conflicting origins stop admission and require `spider roam claim <session> <machine>`, only for an unassigned initial home with all conflicting machines reachable and competing copies stopped. Existing homes change through moves or explicit lost-machine recovery, never automatic offline takeover.
+A session joins replication at its first move preparation or creation on a box. Without a home row, its session origin owns it. The hub records epoch 1 at first sync after collecting observed origins. Conflicting unassigned origins persist a replicated `session_homes` marker with `machine_id=''`, epoch 1, and no move ID. This is not an assigned home. It blocks admission and requires `spider roam claim <session> <machine>`, only for an unassigned initial home with all conflicting machines reachable and competing copies stopped. Existing homes change through moves or explicit lost-machine recovery, never automatic offline takeover.
 
-At first-move `checked`, add active membership and seed unversioned session rows in bounded, resumable transactions while ordinary capture continues. Sync the seed before freeze. Abort retains membership. Freeze only changes state and ships the delta. Its local journal spans stores, and acknowledgement waits for every store. New box admission records origin, active membership, and seeds before ordinary consumers. Memory seeds once, atomically with enablement, without session freeze because memory uses LWW.
+A first move checks against the synthetic expected home `{origin, epoch: 1}`. Seed and sync must establish that exact owner and epoch before freeze. At first-move `checked`, add active membership and seed unversioned session rows in bounded, resumable transactions while ordinary capture continues. Sync the seed before freeze. Abort retains membership. Freeze only changes state and ships the delta. Its local journal spans stores, and acknowledgement waits for every store. New box admission records origin, active membership, and seeds before ordinary consumers. The first seed chunk sets `store_key` and enables capture. Enable seeds global and mapped repo memory atomically on every machine and enables hub global capture for homes. Memory uses LWW without session freeze.
 
 ### Common replication tables
 
@@ -245,7 +245,7 @@ Cross-session todo edits get one admission check in the todo store. Mutating a p
 
 A handshake checks enrolled machine identity, current core identity, protocol 1, and core schema 14. Reject mismatches before mutation and identify the machine needing repair. A core restart invalidates in-flight observations, not the enrolled machine UUID. There is no downgrade projection or local fallback for a failed remote command.
 
-Export reads a SQLite snapshot and emits immutable UTF-8 NDJSON. The header has protocol, schema, batch ID, sender machine and stream, store key, exclusive `after`, inclusive `through`, and record count. Each record has sender sequence, change ID, entity, row key, operation, original HLC, writer session and epoch, schema, and body. A separate manifest has byte length and SHA-256. Export never holds a writer transaction across transport.
+Export emits immutable UTF-8 NDJSON from a SQLite snapshot. The header has protocol, schema, batch ID, sender machine and stream, store key, exclusive `after`, inclusive `through`, and record count. Each record has sender sequence, change ID, entity, row key, operation, original HLC, writer session and epoch, schema, and body. A separate manifest has byte length and SHA-256. Export never holds a writer transaction across transport.
 
 Sequences order local exports, not conflicts. Forwarding preserves change ID, HLC, and portable body with a new local sequence. Dedupe before log insertion, never with `INSERT OR IGNORE`. Unpruned logs are contiguous. Export requires sequences `after + 1` through `through`; a gap is corruption. Accept only a matching durable cursor or exact receipted replay. Re-export other overlaps. Empty exports return count zero and `through = after`, with no import or receipt.
 
@@ -255,7 +255,7 @@ Compare row versions lexicographically by `(hlc_ms, hlc_count, origin_machine, o
 
 Validate the whole artifact before an IMMEDIATE apply transaction. Append every unseen envelope, including losing versions. A winning put replaces the portable row. A winning delete removes it and retains a tombstone. Equal clocks with different contents or IDs are corruption. Change-ID uniqueness prevents loops. Logs, seen IDs, and tombstones remain indefinitely.
 
-Only hub-origin changes can alter homes. A lower home epoch cannot replace a higher one, and an equal epoch must have the same owner and move ID. Session data does not wait for historical home records. Admission uses the current home. HLC resolves concurrent memory rows, including archive and approval status, without merging fields or rerunning review. Report memory-cap overflow instead of deleting accepted rows.
+Only hub-origin changes alter homes. Reject lower epochs and equal epochs with different owners or move IDs. Session data does not wait for historical home records. Admission uses the current home. HLC resolves concurrent memory rows, including archive and approval status, without merging fields or rerunning review. Report memory-cap overflow instead of deleting accepted rows.
 
 ### Apply receipts and conflicts
 
@@ -265,11 +265,11 @@ Duplicate IDs must have the same canonical envelope. Replays do not allocate ano
 
 On secondary unique conflict, an incoming todo for a non-home session replaces a different-UUID local row at the same `(session_id, seq)` only if the local row has no log entry. Remove its FTS entry transactionally. Otherwise quarantine the batch, preserve the cursor, and report both UUIDs. Never renumber a tracked todo or discard its tombstone.
 
-The hub pulls a peer's available changes before pushing the merged stream back. One transfer runs per peer. Peers progress independently. First sync runs at hub startup. Disconnected peers retry after 30, 60, and then 120 seconds. Sync does not launch or restart the Mac app or core. If either is closed, report the unavailable function. A closed app only delays placement. A closed Mac core prevents box transport.
+The hub pulls a peer's available changes before pushing the merged stream back. One transfer runs per peer. Peers progress independently. First sync runs at hub startup. Disconnected peers retry after 30, 60, and then 120 seconds. Sync does not launch or restart the Mac app or core. If either is closed, report the unavailable function. App closure delays placement. Mac core closure prevents box transport.
 
 ### Derived data and event policy
 
-Apply allocates local IDs and updates todo and active-memory FTS transactionally. Session FTS uses replicated name and summary. Keep imported excerpts local and preserve unrelated imported FTS rows. Memory changes remove stale vectors and enqueue current text transactionally. Embedding completion checks the version before clearing work. Lexical search needs no embedding provider.
+`applyBatch` alone writes base rows and lets SQLite allocate local IDs. It then calls derived effects with the prior rowid and body and the resulting rowid, or NULL for a delete, in the same transaction. Effects update only derived state, including todo and active-memory FTS. Session FTS uses replicated name and summary. Keep imported excerpts local and preserve unrelated imported FTS rows. Memory changes remove stale vectors and enqueue current text transactionally. Embedding completion retains the existing `(id, text, enqueued_at)` guard before clearing work. Lexical search needs no embedding provider.
 
 Apply emits only a post-commit replica invalidation, not operational run events. Foreign runs have all process columns nulled, including intercom identity. Export strips supervisor directories, transcript directories, endpoints, and tokens from known `child_supervisor` and `child_transcript` payloads. `chain_steps` becomes a count and origin-qualified history reference, never executable continuation data.
 
@@ -277,9 +277,9 @@ Unknown event types and versions export unchanged as inert history. A unit test 
 
 Reaper, adoption, kill, completion delivery, run-status mutation, and usage reporting require local run origin. Foreign delivery and accounting sentinels are history only. Preserve local per-run event order when forwarding and allocating replica rowids. There is one execution writer per run, so no extra origin-sequence column is needed. A rebuilt replica has no PIDs or supervisor directories to adopt, even when it receives its own old history.
 
-Use nullable machine IDs rather than alias text because aliases can change. Null applies everywhere. Injection excludes other-machine rows. At enable, doctor lists likely machine-specific entries without rewriting prose. `spider roam memory tag <store-key> <uuid> <machine|all>` changes only that tag, leaving doctor read-only.
+Machine tags use nullable UUIDs, not changeable aliases. NULL applies everywhere. Injection excludes other-machine rows. At enable, doctor lists likely machine-specific entries without rewriting prose. `spider roam memory tag <store-key> <uuid> <machine|all>` changes only that tag, leaving doctor read-only.
 
-Registry placement, bindings, routes, leases, message delivery, usage DBs, skills, curator state, indexed content, routing events, upstream-watch state, native indexes, ownership files, job journals, and backups never replicate. A move reconstructs local placement and bindings. Historical text may retain old paths. Only declared locator fields become `{machineId, repoKey, workspaceId, relativePath}` or opaque origin-qualified references.
+Registry placement, bindings, routes, leases, message delivery, usage DBs, skills, curator state, indexed content, routing events, upstream-watch state, native indexes, ownership files, job journals, and backups never replicate. Moves reconstruct placement and bindings. Only declared locator fields become `{machineId, repoKey, workspaceId, relativePath}` or opaque origin-qualified references.
 
 ## Herdr transport and measured limits
 
@@ -316,11 +316,11 @@ The box spike measured one test box over its Herdr connection while another work
 | Concurrent peer transfers | 2, unmeasured | Never overlap transfers to the same peer. |
 | Chunk retry policy | 3 retries, after 1, 2, and 4 seconds | Reuse immutable chunks and the operation ID. |
 
-The existing client's default deadline is shorter (`packages/herdr/src/client/cli-transport.ts:8-12`). Roaming supplies explicit command deadlines from the table. The model-facing copy action is not the roaming transport and does not impose its single-file cap here.
+Override the shorter client deadline (`packages/herdr/src/client/cli-transport.ts:8-12`) with the table's command deadlines. The model-facing copy cap does not apply here.
 
 Chunks carry artifact ID, index, raw length, and SHA-256. Resolve the machine once per transfer. Write through raw stdin and read through a raw-bytes exec path, not the JSON-parsing client. Manifests order hashes and record length and whole-file hash. Receive into exclusive-create private staging, verify, fsync, then atomically rename. Reuse matching chunks. A conflicting digest or incomplete data cannot install or advance cursors.
 
-Committed transfer artifacts can be removed after receipt verification. Incomplete staging survives service restart and expires after seven days only when no live move or unapplied batch references it. Quota errors name the directory and stop transfers. They never delete source workspaces, database logs, or tombstones. Limits can be lowered locally. Raising them requires an explicit configuration change, not automatic fallback.
+Committed transfer artifacts can be removed after receipt verification. Incomplete staging survives service restart and expires after seven days only when no live move or unapplied batch references it. Quota errors name the directory and stop transfers. They never delete source workspaces, database logs, or tombstones. Lower limits locally. Raising limits requires explicit configuration, never automatic fallback.
 
 ## Provisioning and hosting
 
@@ -334,7 +334,7 @@ Back up overwritten files once. Re-provisioning replaces only selected files and
 
 Authentication is not copied by default. `--include-auth` requires explicit human confirmation for this target and provider list. Credential-bearing settings count as auth. Do not execute secret commands to collect their output. Secret values use a separate private artifact, never logs, labels, or argv, and staging is removed after installation. Without destination sign-in, installation finishes but hosting stays disabled. Ambient Git and CLI credentials remain destination setup.
 
-Doctor probes native modules, extension load, exact-session launch, file modes, core ownership, configured resources, and authentication. Tool probes include `gh auth status`, Git identity, and configured CLIs. Move preflight reports missing tool parity as warnings, for example `This session's loops call gh, but gh is not signed in on box-1.invalid.` These warnings do not block a move. Missing pi authentication or an invalid exact session file does.
+Doctor probes native modules, extension load, exact-session launch, file modes, core ownership, configured resources, and authentication. Tool probes include `gh auth status`, Git identity, and configured CLIs. Move preflight reports missing tool parity as warnings, for example `This session's loops call gh, but gh is not signed in on box-1.invalid.`  Missing pi authentication or an invalid exact session file does.
 
 ### Service limits and core-only mode
 
@@ -342,19 +342,19 @@ The Mac launchd plist runs resolved absolute Node and CLI paths with `RunAtLoad`
 
 Install only a supervisor user unit, enabled under `default.target`. Put `After=`, `Requires=`, and `PartOf=` for the existing core on that unit, with `Restart=on-failure` and a private umask. Core restart then restarts the supervisor. Never edit or restart the core during provisioning or add reverse dependencies. Lingering needs any required administrative permission.
 
-The pi launcher raises its soft file limit to at least 65536, never lowering it, bounded by the inherited hard limit. The test box's core-spawned terminals already allow 1,048,576 open files. If a box's hard limit is low, doctor gives a human the repair command and warns that core restart kills terminals. Provisioning never restarts it. Check inotify floors of 1024 instances and 524288 watches. The test box allows 128 instances, so doctor warns there. Raising them needs administrative consent.
+The shell launcher uses `ulimit -Sn` before executing the provisioned absolute pi path. It raises the soft limit toward 65536, never lowering it or exceeding the hard limit. Node never sets process limits. If a box's hard limit is low, doctor gives a human the repair command and warns that core restart kills terminals. Provisioning never restarts it. Check inotify floors of 1024 instances and 524288 watches. Raising them needs administrative consent.
 
 Add Herdr mode `full` or `core-only`, defaulting to full. Only full mode requires app configuration and AppClient. Core-only retains ownership, presence, status, children, and job monitoring, without app mods, layout, or absent-app warnings. App actions say `This view is available on the Mac.` Unconfigured `on` destinations refuse, never run locally.
 
 ### Supervisor and availability
 
-The supervisor reconciles at startup, on core and home events, and every ten seconds. Launch requires a local home, active state in every affected store, no unfinished local freeze journal, and desired state running. It verifies epoch, exact file, header, cwd, destination authentication, release, and both local locks. A live or uncertain owner blocks launch. Process identity includes Linux `boot_id`, PID, and start time. Stale ownership needs proved absence of that identity.
+The supervisor reconciles at startup, on core and home events, and every ten seconds. Launch requires a local home, or matching origin before first sync, active state in every affected store, no unfinished local freeze journal, and desired state running. It verifies epoch, exact file, header, cwd, destination authentication, release, and both local locks. A live or uncertain owner blocks launch. Process identity includes Linux `boot_id`, PID, and start time. Stale ownership needs proved absence of that identity.
 
-Launch a fresh local-core terminal with background lifetime, no notification, and no parent dependency. Run the leased launcher with exact `pi --session <file>` in the mapped cwd. Inherit only that core's destination HC values. Labels carry session, machine, epoch, and move ID. Readiness reports operation ID, actual session ID, epoch, cwd, file, core, and terminal after admission. A shell or heartbeat is insufficient.
+Launch a fresh local-core terminal with background lifetime, no notification, and no parent dependency. Run the leased launcher with exact `pi --session <file>` in the mapped cwd. Inherit only that core's destination HC values. Labels carry session, machine, epoch, and move ID. Readiness reports operation ID, actual session ID, epoch, cwd, file, core, and terminal after admission.
 
 Restart crashes after 5, 15, 60, and 300 seconds. Five failures in ten minutes suspend and notify the hub. Ten stable minutes clear the count. Missing auth, invalid files, or uncertain ownership suspend immediately. Stop and user quit persist stopped intent. Resume requires doctor. Reload keeps ownership without another terminal.
 
-An existing Windows logon task keeps WSL running without a client. The box owner reports seven days up, including a Mac offline period. WSL updates restart it within seconds, but terminals die, so the supervisor recreates exact-session terminals. Windows reboot leaves WSL down until desktop sign-in. A box cannot sign itself in or power on its host.
+WSL updates restart it within seconds, but terminals die, so the supervisor recreates exact-session terminals. Windows reboot leaves WSL down until desktop sign-in.
 
 Every sync reconciles live session terminals into their machine's Mac app space, including new IDs after restart. Never launch pi for placement. Closed apps defer it. Ten minutes unreachable with homed sessions, or session suspension, produces one Mac notification and Herdr status item. Clear status on recovery. Retain pending status while the app or core is unavailable, without starting either.
 
@@ -364,25 +364,25 @@ Every sync reconciles live session terminals into their machine's Mac app space,
 
 `/move <machine>` on the Mac targets the current persistent top-level session. `spider move <session> <machine>` uses an exact ID, unambiguous prefix, or unambiguous name from the hub catalog. Machine `mac` names the enrolled Mac. Box request rows are deferred because moves require an awake Mac anyway. Box `/move` directs callers there without enqueuing.
 
-Serialize moves per session. A repeated operation ID returns its result. A second destination conflicts with the current move. Same-home moves are verified no-ops. Both machines must be reachable and compatible. Live sources need the guard-capable build. Stopped or suspended sources use the dormant control path. Destination installation, authentication, workspace, and binding maps must be ready.
+Serialize moves per session. Repeat IDs return results. A second destination conflicts. Same-home moves are verified no-ops. Require reachable, compatible machines, a guard-capable live source or dormant control, and ready destination installation, auth, workspace, and binding maps.
 
 Require a settled session with no request, retry, compaction, queued prompt, editor draft, direct shell command, or pending intercom ask. Block queued, running, or paused children, detached durable children, pending pipeline stages, local background jobs, unsettled remote receipts, and unobserved completions. Inspect the owning run DB, local routes, and top-level and child job journals. Return exact blocker IDs without stopping them.
 
-Show tool-readiness warnings and list the live intercom peers the session will lose. Intercom 0.13.0 uses a machine-local broker socket (`intercom/broker/paths.ts:65-74`). Here `intercom/` names the installed package. Pending asks block rather than disappear. The completed move result repeats the lost-peer list. This notice does not promise a relay.
+Show tool-readiness warnings and list the live intercom peers the session will lose. Intercom 0.13.0 uses a machine-local broker socket (`intercom/broker/paths.ts:65-74`). Here `intercom/` names the installed package. Pending asks block rather than disappear. The completed move result repeats the lost-peer list.
 
 Hold a Mac power assertion through preparation, move, and recovery until completion, abort, or rollback. Print `Keep the Mac awake until the move finishes.` Pre-stage the workspace bundle and a complete transcript prefix while the source is active. Freeze then transfers only final changes. A freeze does not expire if the Mac nevertheless sleeps or loses power.
 
 ### Git-native workspace snapshot
 
-Capture the real index with `git write-tree`. Copy it to a private `GIT_INDEX_FILE`, then run `git add -A` to capture working files and nonignored untracked files. Explicitly exclude `.spider` and `.pi-subagents`, refusing tracked local state. Never change the real index's staged content. Create private commits under `refs/spider-roam/<move-id>/`: index commit parented on HEAD, working commit parented on index. Both staged and working content remain reachable. Use immutable per-snapshot refs so final deltas need no forced ref updates. Never push these refs to origin. Use fixed synthetic commit metadata for private snapshots so missing Git identity remains a warning, without changing user configuration.
+Copy the real index to a private `GIT_INDEX_FILE` before `git write-tree`, then run `git add -A` on a second private copy to capture working files and nonignored untracked files. Explicitly exclude `.spider` and `.pi-subagents`, refusing tracked local state. Never change the real index's staged content. Create private commits under `refs/spider-roam/<move-id>/`: index commit parented on HEAD, working commit parented on index. Both staged and working content remain reachable. Use immutable per-snapshot refs so final deltas need no forced ref updates. Never push these refs to origin. Use fixed synthetic commit metadata for private snapshots so missing Git identity remains a warning, without changing user configuration.
 
 Record HEAD object ID, symbolic branch, object format, both tree IDs, relative cwd, sparse-checkout patterns, and per-worktree config. Refuse unresolved indexes, merge or rebase in progress, submodules, escaping symlinks, case-fold collisions, unsupported file types, and unmaterialized LFS content. Another known workspace writer blocks transfer. Custom filters or normalization that cannot round-trip changed file bytes also block. Materialized LFS requires verified content objects available on both sides. No full-workspace byte manifest is built.
 
 During pre-stage, the destination runs `git fetch origin` with its own credentials and advertises fetched commits. Bundle snapshot refs excluding a verified shared merge base and verified pre-stage prerequisites. Missing prerequisites, verification failure, or exceeding the bundle cap refuses with a fetch or setup instruction. Never fall back to full history.
 
-Import refs into the mapped common repository. Reuse the workspace's mapped checkout only if its HEAD, index, and working trees equal its last exported snapshot. Otherwise refuse with a diff summary. Initialize a private index from its last exported working tree and refresh its stat cache. Use that index for `git read-tree -m -u` to update files in place to the incoming working snapshot. With no mapping, create with `git worktree add --detach --no-checkout`, enable per-worktree config, copy the source's sparse-checkout patterns and per-worktree config, then check out. A configured `worktreeCommand` replaces creation but preserves this no-checkout sequence and all checks. Fetch, creation, and checkout finish during pre-stage, including for a virtualized or sparse checkout. After freeze, apply only the final delta. Journal prepared trees so retries recognize their own changes. Abort restores the prior snapshot only if the checkout still matches the prepared trees.
+Import refs into the mapped common repository. Reuse the workspace's mapped checkout only if its HEAD, index, and working trees equal its last exported snapshot. Otherwise refuse with a diff summary. Initialize a private index from its last exported working tree and refresh its stat cache. Use that index for `git read-tree -m -u` to update files in place to the incoming working snapshot. With no mapping, create with `git worktree add --detach --no-checkout`, enable `extensions.worktreeConfig`, which changes shared repository config, copy the source's sparse-checkout patterns and per-worktree config, then check out. A configured `worktreeCommand` replaces creation but preserves this no-checkout sequence and all checks. Fetch, creation, and checkout finish during pre-stage, including for a virtualized or sparse checkout. After freeze, apply only the final delta. Journal prepared trees so retries recognize their own changes. Abort restores the prior snapshot only if the checkout still matches the prepared trees.
 
-Set the index with `git read-tree` to the index tree without updating working files. Restore HEAD to the source HEAD object without checkout or reset. Restore the symbolic branch only if its destination ref matches or can be created without changing another worktree. Otherwise remain detached and report the saved branch name.
+Set the index with `git read-tree` without changing working files. Refresh its stat cache once with `git update-index --refresh`, accepting exit 1 only for expected `needs update` paths. Restore HEAD to the source HEAD object without checkout or reset. Restore the symbolic branch only if its destination ref matches or can be created without changing another worktree. Otherwise remain detached and report the saved branch name.
 
 Compare destination index and temporary-index working trees to the recorded tree IDs. Git's stat cache avoids rehashing unchanged files. Recompute source trees after freeze and before commit. Edits after freeze invalidate preparation. Git preserves binary edits, deletions, renames, modes, and partial staging. Rebuild ignored output locally. Cwd is the destination root plus validated relative cwd. Retain source files and mark their checkout not home after commit.
 
@@ -400,14 +400,16 @@ Usage remains per machine. Append shipped usage migration 7, updating fresh crea
 
 ```sql
 ALTER TABLE calls ADD COLUMN execution_machine TEXT;
-CREATE UNIQUE INDEX idx_calls_execution_entry
-	ON calls(execution_machine, session_id, entry_id)
-	WHERE execution_machine IS NOT NULL AND source_kind = 'transcript';
+ALTER TABLE calls ADD COLUMN managed_entry_key TEXT;
+CREATE UNIQUE INDEX idx_calls_managed_entry
+	ON calls(managed_entry_key) WHERE managed_entry_key IS NOT NULL;
 ```
 
-Backfill `execution_machine` by UPDATE, without rekeying path-based call IDs (`packages/host/src/usage/parse.ts:271-277`) or changing prices and proof. Ingest through the frozen source end. Managed ingest skips foreign segments and existing local `(session_id, entry_id)` pairs. Relocation or header changes reset caches, never managed facts. Persist segment parser state. Discover exact local files, not foreign roots.
+Never backfill, rewrite, or delete historical calls. NULL `execution_machine` means local before roaming. Preserve IDs (`packages/host/src/usage/parse.ts:271-277`), prices, proof, and duplicate-path facts. Only segment-aware participating ingest sets `managed_entry_key` to canonical JSON `[localMachine, transcriptSessionId, entryId]`. Children use their header session ID, not the parent's accounting ID. Other keys stay NULL.
 
-Filter native run usage discovery, event accounting, and `UsageAccounting.unreportedRuns` by local run origin, including its startup restore path. Foreign usage events and reported sentinels cannot generate local charges. A round trip preserves prior local facts and bills only new local entries, including compaction and cache warming. No usage DB or account counter is replicated.
+Ingest through the frozen source end, skipping foreign segments. Already-counted checks treat NULL and local execution machines alike. Match transcript identity, including children's historical source headers. A second local path keeps the first fact and emits a diagnostic without changing old totals. Persist parser state. Relocation resets caches, not facts. Discover exact local files.
+
+Filter native run usage discovery, event accounting, and `UsageAccounting.unreportedRuns` by local run origin, including its startup restore path. Foreign usage events and reported sentinels cannot generate local charges. Round trips retain facts and bill only new local entries, including compaction and cache warming. No usage DB or account counter is replicated.
 
 ### Durable move states
 
@@ -435,13 +437,13 @@ On every sync, the hub pulls each peer-homed session's appended JSONL bytes into
 
 `spider roam forget <machine>` requires typed confirmation that the machine is destroyed. The hub durably revokes its identity and refuses future sync handshakes forever. If it reconnects, a retire-only response tells its supervisor to stop all sessions before any sync. The hub moves affected homes to the Mac at `epoch + 1`, restoring the last mirrored prefix under the session-file validation and segment-marker rules. Hosting waits for a valid local workspace and authentication, then uses `session start` to activate. Interrupted moves reconcile against those new homes.
 
-This is a human assertion, not automatic takeover. If the machine is alive but offline, two copies can run until it reconnects. Conversation after the last mirror sync and untransferred workspace edits are lost. Missing mirrors block restoration and require explicit recovery.
+Forget is a human assertion. A live offline machine can run a second copy until reconnection. Conversation after the last mirror sync and untransferred workspace edits are lost. Missing mirrors block restoration and require explicit recovery.
 
 ## Admission and user controls
 
-Pi awaits event handlers in registration order (`pi/dist/core/extensions/runner.js:813-819`). Register admission first and publish a module-local activation flag that all later spider startup consumers check. Do not build an async coordinator. Check before session upsert, reaping, adoption, triggers, feeds, usage publication, and organism work. Current startup writes and reaping are in `packages/host/src/hooks.ts:148-163`.
+Pi awaits event handlers in registration order (`pi/dist/core/extensions/runner.js:813-819`). Register admission first and publish a module-local activation flag that all later spider startup consumers check. Do not build an async coordinator. Check before session upsert, reaping, adoption, triggers, feeds, usage publication, and organism work. Startup writes and reaping are in `packages/host/src/hooks.ts:148-163`.
 
-Nonparticipating Mac sessions keep their current behavior. Participating admission requires a local home or matching initial origin, active state in every affected store, no unfinished local freeze journal, expected epoch, session-ID lock, and exact-file lease. A frozen source stays alive control-only for recovery. Retired, foreign, or uncertain copies initialize no ordinary spider work. Reload preserves durable frozen state. A process restart cannot clear it.
+Participation requires membership or a home row, including conflict markers. Read with `withRetry`. Nonparticipants take no session-ID lock or gate. Unknown participation on read failure admits and warns once. Known participants block read or lock failures with a plain message. Load affected worktree membership, global homes, and `<globalRoot>/roam/journal.db` freeze state, empty until move control ships. Participating admission requires a local home or matching initial origin, active state in every affected store, no unfinished local freeze journal, expected epoch, session-ID lock, and exact-file lease. A frozen source stays alive control-only for recovery. Retired, foreign, or uncertain copies initialize no ordinary spider work. Reload preserves durable frozen state. A process restart cannot clear it.
 
 Recheck at `input`, `before_agent_start`, `turn_start`, `tool_call`, `user_bash`, scheduler delivery, notices, and cache-warming decisions. Disallowed input is handled with a home message. Agent starts call `ctx.abort()`. Tools and direct shell calls return a block. Freeze also suppresses shutdown consolidation. `ctx.abort()` and pending-message checks are public (`pi/dist/core/extensions/types.d.ts:235-246`), and startup abort precedes the provider request (`pi/dist/core/agent-session.js:709-714`). Test that contract against the pinned pi release.
 
@@ -450,7 +452,7 @@ Recheck at `input`, `before_agent_start`, `turn_start`, `tool_call`, `user_bash`
 | `/move <machine>`, `spider move <session> <machine>` | Ask the Mac hub to move once and stream bounded progress. |
 | `spider roam status [--json]` | Show connections, last sync, homes, backlog, log sizes, suspensions, warnings, and incomplete moves. Distinguish cached status. |
 | `spider roam sync [machine]` | Sync now and report committed cursors or repair needs. |
-| `spider roam enable`, `disable` | Install or stop hub scheduling. Disable refuses an in-progress home change and does not stop boxes or erase homes. |
+| `spider roam enable`, `disable` | Enable checks live top-level process-presence records in the Herdr session registry. Missing or older spider build capability refuses until reload. Install or stop hub scheduling. Disable refuses an in-progress home change and does not stop boxes or erase homes. |
 | `spider roam provision <machine>`, `doctor [machine]` | Install selected files or run read-only readiness checks with repair commands. |
 | `spider roam recover <move-id>`, `cancel <move-id>` | Reconcile, or abort before commit. After commit, cancellation needs the proved rollback conditions. |
 | `spider roam forget <machine>` | Confirm destruction, revoke identity, and restore affected homes from mirrors, accepting the stated split-copy and data-loss costs. |
@@ -463,11 +465,11 @@ Refusals name the home, exact blockers, or missing evidence. For an unknown dest
 
 ## Security and known limits
 
-The trust boundary is one user's enrolled machines and authenticated Herdr transport, not hostile same-user processes. Use 0700 directories and executables, and 0600 files and sockets. Reject foreign-owned or symlink destinations. Batch data cannot select paths or service configuration. Moves carry the selected workspace and conversation, not additional credentials or machine Git identity.
+Trust enrolled machines and authenticated Herdr transport, not hostile same-user processes. Use 0700 directories and executables, and 0600 files and sockets. Reject foreign-owned or symlink destinations. Batch data cannot select paths or service configuration. Moves carry the selected workspace and conversation, not additional credentials or machine Git identity.
 
 ### Known limits and follow-ups
 
-- The hub must be awake for sync and moves. There is no election or automatic partition takeover. Explicit `forget` can lose unsynced data and allow two copies if the destroyed-machine assertion is wrong.
+- Sync and moves need an awake hub. No election or automatic takeover exists. An incorrect `forget` assertion risks unsynced data loss and two copies.
 - Windows reboot requires desktop sign-in before the existing task starts WSL again.
 - Restored or cloned machine disks need a new identity and hub reconciliation before hosting.
 - Resume cannot restore in-flight tools, drafts, extension runtime state, or a pipeline coordinator.
@@ -487,13 +489,13 @@ The trust boundary is one user's enrolled machines and authenticated Herdr trans
 
 ## Verification and delivery
 
-Use disposable SQLite files, independent machine roots, actual migrations, and generated triggers. Fake hc records argv and rejects local fallback. Test isolated cores before a real box. Never manipulate unrelated terminals or production conversations.
+Use disposable SQLite files, independent machine roots, actual migrations, and generated triggers. Fake hc records argv and rejects local fallback. Test isolated cores before a real box. Never manipulate unrelated terminals or production conversations. Unit and integration tests keep a five-second ceiling. Core- or pi-starting stories run serially in their declared Herdr acceptance tiers with existing harness deadlines. Inject launchd, systemd, power, boot-ID, and limit operations. Tests use fakes for these OS operations.
 
 ### Acceptance scenarios
 
 | ID | Scenario and observable result |
 | --- | --- |
-| A1 | Record hc chunk throughput and latency, export and import timing, native-module installation, core-only in-terminal extension load, and inherited file limits. In phase 4, watch a pi terminal survive two hours without a Mac client. Reported seven-day WSL uptime does not prove terminal survival. |
+| A1 | Record hc chunk throughput and latency, export and import timing, native-module installation, core-only in-terminal extension load, and inherited file limits. In phase 4, watch a pi terminal survive two hours without a Mac client. |
 | A2 | Equivalent URLs, including the multi-shape fixture, share a key. Fresh and v13 migration preserves UUIDs and rowids in every scope. Duplicate sequences disable roaming only. Future schema fails before mutation. Root fallback is cached with explicit refresh. |
 | A3 | New, function-free old-build, and sqlite3 CLI connections capture inserts, updates, and deletes atomically, including omitted UUIDs and origins. Cover disabled capture, importing, recursion on and off, rollback, trigger failure, frozen writes, PID-only changes, and unrelated sessions. First foreign-row apply creates retired membership atomically, blocking subsequent non-home CLI inserts, updates, and deletes. |
 | A4 | Disconnected memory and todo edits and deletes converge across three roots in every peer order. Tombstones resist old puts. Idle sync stops log growth. Backward clocks progress logically. Excess future skew leaves batches unapplied. |
@@ -514,10 +516,10 @@ Use disposable SQLite files, independent machine roots, actual migrations, and g
 
 | Phase | Work and verifiable end state |
 | --- | --- |
-| 0. Spike | One box's transfer rates set the measured-limits table. pi 1.2.0 and spider install with prebuilt Linux native modules and no compiler. Spider activates without a Herdr environment, not yet in a core-spawned terminal. The owner reports seven days of WSL uptime without a client. Export and import timing remain for phase 2, core-only in-terminal load for phase 3, and two-hour no-client terminal survival for phase 4. |
+| 0. Spike | One box's transfer rates set the measured-limits table. pi 1.2.0 and spider install with prebuilt Linux native modules and no compiler. Spider activates without a Herdr environment, not yet in a core-spawned terminal. Export and import timing remain for phase 2, core-only in-terminal load for phase 3, and two-hour no-client terminal survival for phase 4. |
 | 1. Local replication | Add identity, schema, SQL capture, HLC, merge, derived data, origin filters, usage migration, and admission fixtures. A2 through A7 pass on disposable roots. Foreign runs cannot reach an unguarded consumer. No remote hosting is enabled. |
 | 2. Transport and hub | Add chunking, durable operation receipts, launchd, sync, unmapped reads, diagnostics, and placement reconciliation. A8 and A9 pass through fake hc and isolated cores. Independent peers converge without pi being open on the Mac. |
 | 3. Box hosting | Add pinned provisioning, consent, core-only mode, launcher limits, and supervisor recovery. A10 and A11 pass under isolated roots. Verify core-only extension activation inside a core-spawned terminal with no app configuration. Opt-in synthetic hosting continues without the Mac. Existing core units remain unchanged. |
 | 4. Moves and real-box acceptance | Add Git snapshots, file markers, barriers, home CAS, rollback, forget, commands, and fault injection. A12 through A16 pass. Repeat applicable A8 through A16 on a real box with a disposable repo and synthetic session. Privately check the real URL pair and which worktree creation path works for the real virtualized or sparse checkout. Complete A1's two-hour no-Mac terminal check before enablement. |
 
-Gate release on typecheck, tests, build, packaged CLI, isolated Herdr acceptance, and private real-box receipts. Inspect session IDs, cwd, homes, leases, trees, ledgers, placement, and unchanged unrelated roots. Keep the feature off until phase 4 passes. Before enabling replication, deploy compatible schemas and reload all consumers, including detached usage workers. Plain SQL preserves old-build writes during migration, not safe foreign-history consumption. Interrupted rollout keeps hosting disabled or retains all admission and origin filters.
+Gate release on typecheck, tests, build, packaged CLI, isolated Herdr acceptance, and private real-box receipts. Inspect session IDs, cwd, homes, leases, trees, ledgers, placement, and unchanged unrelated roots. Keep the feature off until phase 4 passes. Before enabling replication, deploy compatible schemas and reload all consumers, including detached usage workers. Enable mechanically refuses older live top-level builds using Herdr process-presence records. Detached usage workers must reload too. Baseline SQL replay proves actual writers, not just function-free connections. Old usage openers refuse v7 without writes. New ingest later catches up from transcripts. Interrupted rollout keeps hosting disabled or retains all admission and origin filters.

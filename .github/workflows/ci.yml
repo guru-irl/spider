@@ -40,6 +40,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Check generated roaming SQL
+        run: npm run check:roam-sql
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -83,6 +86,9 @@ jobs:
 
       - name: Prepare isolated scratch
         run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
 
       - name: Install
         run: npm ci

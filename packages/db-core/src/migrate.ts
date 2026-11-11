@@ -3,6 +3,7 @@ import { paths } from "./paths";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 import { loadMachineIdentity } from "./roam/machine";
 import { validateRoamLayout } from "./roam/layout";
+import { GENERATED_TRIGGERS } from "./roam/generated";
 import { addRoamSchema } from "./roam/schema";
 import type { MachineId } from "./roam/types";
 
@@ -190,6 +191,7 @@ export function migrate(
         return;
       }
       if (current !== observed || machineId === undefined) throw new Error("Core schema changed before its backup");
+      const hadRoamSchema = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roam_meta'").get();
       if (current === 0) {
         if (actualScope === "global") {
           db.exec(GLOBAL_SCHEMA);
@@ -242,6 +244,12 @@ export function migrate(
         }
       }
       if (current === 0) addRoamSchema(db, actualScope, machineId);
+      if (!hadRoamSchema) {
+        const existingTrigger = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ? COLLATE NOCASE");
+        for (const trigger of GENERATED_TRIGGERS[actualScope]) {
+          if (!existingTrigger.get(trigger.name)) db.exec(trigger.sql);
+        }
+      }
       validateRoamLayout(db, actualScope);
       db.raw.pragma(`user_version = ${SCHEMA_VERSION}`);
     });

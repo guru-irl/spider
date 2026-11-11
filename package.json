@@ -94,6 +94,7 @@
     "typecheck": "tsgo -p tsconfig.json",
     "typecheck:herdr:e2e": "tsgo --noEmit -p packages/herdr/e2e/tsconfig.json",
     "check:lockfile": "node scripts/check-lockfile-registry.mjs",
+    "check:roam-sql": "node scripts/generate-roam-sql.mjs --check",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "node scripts/postinstall.mjs",

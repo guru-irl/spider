@@ -225,7 +225,7 @@ describe("roaming schema migration", () => {
       db.exec("INSERT INTO todos (session_id, seq, text, created_at) VALUES ('ordinary', 1, 'after migration', 1)");
       child.stdin.end("x");
       expect(await closed, errors).toEqual({ code: 0, signal: null });
-      expect(db.prepare("SELECT uuid FROM todos WHERE session_id = 'ordinary'").get()).toEqual({ uuid: null });
+      expect(db.prepare("SELECT uuid FROM todos WHERE session_id = 'ordinary'").get()).toEqual({ uuid: expect.stringMatching(/^[0-9a-f]{32}$/) });
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
       db.close();
@@ -331,7 +331,7 @@ describe("roaming schema migration", () => {
     const db = oldDb(root, "worktree");
     try {
       migrate(db, "worktree", { machineId: MACHINE, globalRoot: root });
-      db.exec("ALTER TABLE sessions DROP COLUMN name");
+      db.exec("DROP TRIGGER roam_sessions_capture_ai; DROP TRIGGER roam_sessions_capture_au; ALTER TABLE sessions DROP COLUMN name");
       expect(() => migrate(db, "worktree", { machineId: MACHINE, globalRoot: root })).toThrow(/sessions.*name|name.*sessions/i);
       expect(db.pragma("user_version")).toBe(14);
     } finally { db.close(); }
@@ -391,6 +391,8 @@ describe("roaming schema migration", () => {
     const db = oldDb(root, "worktree");
     try {
       migrate(db, "worktree", { machineId: MACHINE, globalRoot: root });
+      // Simulate corrupted on-disk metadata even when the clock guard is installed.
+      db.exec("DROP TRIGGER roam_meta_clock_bu");
       db.exec(`UPDATE roam_meta SET ${assignment}`);
       expect(() => migrate(db, "worktree", { machineId: MACHINE, globalRoot: root })).toThrow(/invalid.*roam|roam.*invalid/i);
     } finally { db.close(); }

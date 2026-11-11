@@ -65,8 +65,8 @@ test('the actual viewer entry renders the saved task and markdown with a pi foot
 
 test('the built viewer exits when its owner closes before the run finishes', async () => {
   const f = await fixture(), dbPath = join(f.root, 'runs.db'), db = openDbAt(dbPath, 'worktree'), store = new RunStore(db);
-  const created = store.create({ sessionId: f.owner.sessionId, agent: 'worker' }).id;
-  db.prepare('UPDATE runs SET id=? WHERE id=?').run(f.id, created); store.start(f.id);
+  db.prepare("INSERT INTO runs (id, session_id, agent, status) VALUES (?, ?, 'worker', 'queued')").run(f.id, f.owner.sessionId);
+  store.start(f.id);
   const viewer = f.launch({ SPIDER_VIEWER_PI_ROOT: '/missing/pi' }, ['--run-db', dbPath, '--intent', 'automatic', '--initial-status', 'running']);
   try {
     await vi.waitFor(() => expect(viewer.output()).toContain('[running · rpc]'), { timeout: 5000 });

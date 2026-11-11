@@ -289,11 +289,11 @@ Commands cover inventory, export, import, cursor and receipt inspection, artifac
 
 ### Measured limits
 
-Provisional until the box spike lands. Every value in this table is provisional, not a measured result.
+The box spike measured one test box over its Herdr connection while another workload ran on it. Writes of 384 KiB chunks through `hc file write` took a median of 0.22 seconds (p90 0.70, about 1.2 MiB/s). Byte-exact binary reads through `hc exec --on <machine> -- cat <path>` took a median of 0.18 seconds (p90 0.20, about 2 MiB/s). A no-op `hc exec` took 0.13 seconds. `hc file read --json` refuses binary content, so binary reads use `cat`. Values below derive from those numbers, with margin. At these rates a 200 MiB session artifact takes about three minutes to send, which is why it is pre-staged before freeze.
 
-| Limit | Provisional value | Application |
+| Limit | Value | Application |
 | --- | --- | --- |
-| Raw chunk | 384 KiB | Base64 text plus its metadata must fit the reply budget. |
+| Raw chunk | 384 KiB | Written raw through stdin and read raw through `cat`. The slowest measured call took under 2 seconds. |
 | Single hc reply budget | 1 MiB | Matches the existing client ceiling in `packages/herdr/src/client/limits.ts:2-7`. |
 | Manifest page | 512 KiB | Digest-linked pages describe larger artifacts. |
 | Export batch target | 4 MiB | Adapt downward to the apply-time target. |
@@ -303,7 +303,7 @@ Provisional until the box spike lands. Every value in this table is provisional,
 | Session artifact | 1 GiB | Stream the JSONL, not one buffered reply. |
 | Release or agent-file artifact | 256 MiB | Split selected files into separately bounded artifacts. |
 | Staging quota per peer | 4 GiB | Includes encoded chunks and reconstructed files. |
-| File call deadline | 60 seconds | Each chunk read or write. |
+| File call deadline | 30 seconds | Each chunk read or write, about 15 times the slowest measured call. |
 | Control call deadline | 60 seconds | Inventory, cursor, or session-control call. |
 | Export command deadline | 120 seconds | Separate from ordinary client defaults. |
 | Import command deadline | 600 seconds | Includes FTS work and commit. |
@@ -316,7 +316,7 @@ Provisional until the box spike lands. Every value in this table is provisional,
 
 The existing client's default deadline is shorter (`packages/herdr/src/client/cli-transport.ts:8-12`). Roaming supplies explicit command deadlines from the table. The model-facing copy action is not the roaming transport and does not impose its single-file cap here.
 
-Chunks carry artifact ID, index, raw length, and SHA-256. Use `hc file write` through stdin and `hc file read --json`. Manifests order hashes and record length and whole-file hash. Receive into exclusive-create private staging, verify, fsync, then atomically rename. Reuse matching chunks. A conflicting digest or incomplete data cannot install or advance cursors.
+Chunks carry artifact ID, index, raw length, and SHA-256. Write with `hc file write` through stdin and read with `hc exec --on <machine> -- cat <path>`. Manifests order hashes and record length and whole-file hash. Receive into exclusive-create private staging, verify, fsync, then atomically rename. Reuse matching chunks. A conflicting digest or incomplete data cannot install or advance cursors.
 
 Committed transfer artifacts can be removed after receipt verification. Incomplete staging survives service restart and expires after seven days only when no live move or unapplied batch references it. Quota errors name the directory and stop transfers. They never delete source workspaces, database logs, or tombstones. Limits can be lowered locally. Raising them requires an explicit configuration change, not automatic fallback.
 
@@ -324,7 +324,7 @@ Committed transfer artifacts can be removed after receipt verification. Incomple
 
 ### Installation and readiness
 
-`spider roam provision box-1.invalid` shows the box inventory and selected destinations. Require Linux, Git, systemd user services, an existing hc core, and Node >=22.19.0. Pin pi 1.2.0, intercom 0.13.0, spider tarball hashes, and the tested Node range. Install under a home-directory npm prefix, with Linux native SQLite modules. Never copy Mac binaries or silently install prerequisites with sudo.
+`spider roam provision box-1.invalid` shows the box inventory and selected destinations. Require Linux, Git, systemd user services, an existing hc core, and Node >=22.19.0. Pin pi 1.2.0, intercom 0.13.0, spider tarball hashes, and the tested Node range. Install under a home-directory npm prefix, with Linux native SQLite modules. Set `SPIDER_GLOBAL_ROOT` for the install command as well as for pi, because spider's install script creates the global database. Never copy Mac binaries or silently install prerequisites with sudo.
 
 Copy allowlisted settings, model definitions, keybindings, themes, AGENTS.md, and selected skills with supporting files. Extensions, prompts, MCP configuration, and system-prompt files need explicit selection. Refuse Mac-absolute paths or unsupported credential commands and list affected files. Generate box paths and configuration. Exclude trust decisions, sessions, broker state, and caches.
 
@@ -340,7 +340,7 @@ The Mac launchd plist runs resolved absolute Node and CLI paths with `RunAtLoad`
 
 Install only a supervisor user unit, enabled under `default.target`. Put `After=`, `Requires=`, and `PartOf=` for the existing core on that unit, with `Restart=on-failure` and a private umask. Core restart then restarts the supervisor. Never edit or restart the core during provisioning or add reverse dependencies. Lingering needs any required administrative permission.
 
-The pi launcher raises its soft file limit to 65536, bounded by the inherited hard limit. Probe that hard limit inside a core-spawned terminal. If low, doctor gives a human the repair command and warns that core restart kills terminals. Provisioning never restarts it. Check inotify floors of 1024 instances and 524288 watches. Raising them needs administrative consent.
+The pi launcher raises its soft file limit to 65536, bounded by the inherited hard limit. The test box's core-spawned terminals already allow 1,048,576 open files. If a box's hard limit is low, doctor gives a human the repair command and warns that core restart kills terminals. Provisioning never restarts it. Check inotify floors of 1024 instances and 524288 watches; the test box allows 128 instances, so doctor warns there. Raising them needs administrative consent.
 
 Add Herdr mode `full` or `core-only`, defaulting to full. Only full mode requires app configuration and AppClient. Core-only retains ownership, presence, status, children, and job monitoring, without app mods, layout, or absent-app warnings. App actions say `This view is available on the Mac.` Unconfigured `on` destinations refuse, never run locally.
 
@@ -501,7 +501,7 @@ Use disposable SQLite files, independent machine roots, actual migrations, and g
 
 | Phase | Work and verifiable end state |
 | --- | --- |
-| 0. Spike | Already running separately. Answer A1 before build work. Patch the measured-limits table from its receipts and confirm unattended hosting prerequisites. Do not treat provisional values as measurements. |
+| 0. Spike | Done on one test box. Transfer rates set the measured-limits table. pi 1.2.0 and spider install with prebuilt Linux native modules and no compiler. Spider activates with no Herdr app. WSL and the core stayed up for days with no Mac client. Remaining from A1: export and import timing, measured in phase 2. |
 | 1. Local replication | Add identity, schema, SQL capture, HLC, merge, derived data, origin filters, usage migration, and admission fixtures. A2 through A7 pass on disposable roots. Foreign runs cannot reach an unguarded consumer. No remote hosting is enabled. |
 | 2. Transport and hub | Add chunking, durable operation receipts, launchd, sync, unmapped reads, diagnostics, and placement reconciliation. A8 and A9 pass through fake hc and isolated cores. Independent peers converge without pi being open on the Mac. |
 | 3. Box hosting | Add pinned provisioning, consent, core-only mode, launcher limits, and supervisor recovery. A10 and A11 pass under isolated roots. Opt-in synthetic hosting continues without the Mac. Existing core units remain unchanged. |

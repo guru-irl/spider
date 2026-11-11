@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { openDb } from "../db";
 import { migrate, SCHEMA_VERSION } from "../migrate";
 import { scratchDbPath, cleanupScratch } from "../testutil";
+import { V6 } from "./fixtures/historical-schemas";
 import { resolveProject, openRepo, repoRoot, openProject, openGlobal, setGlobalDbPathForTests } from "../registry";
 
 const opened: { close(): void }[] = [];
@@ -149,17 +150,7 @@ describe("tier split — fresh vs migrated parity", () => {
     const freshCols = tableColumns(fresh, "memory").sort();
     
     const migrated = openDb(scratchDbPath("repo-migrated-parity")); opened.push(migrated);
-    // Simulate v6 project schema with memory table
-    migrated.exec(`CREATE TABLE memory (
-      id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
-      category TEXT NOT NULL,
-      content TEXT NOT NULL, link TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      source TEXT NOT NULL DEFAULT 'user',
-      confidence REAL, session_id TEXT,
-      created_at INTEGER NOT NULL, updated_at INTEGER
-    )`);
-    migrated.exec(`CREATE VIRTUAL TABLE memory_fts USING fts5(uuid UNINDEXED, category, content, link)`);
+    migrated.exec(V6.worktree);
     migrated.raw.pragma("user_version = 6");
     migrate(migrated, "repo");
     const migratedCols = tableColumns(migrated, "memory").sort();
@@ -173,17 +164,7 @@ describe("tier split — fresh vs migrated parity", () => {
     const freshCols = tableColumns(fresh, "runs").sort();
     
     const migrated = openDb(scratchDbPath("worktree-migrated-parity")); opened.push(migrated);
-    // Simulate v6 project schema with runs table
-    migrated.exec(`CREATE TABLE runs (
-      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
-      agent TEXT NOT NULL, role TEXT, name TEXT,
-      status TEXT NOT NULL,
-      phase TEXT, model TEXT, task TEXT, thinking TEXT,
-      started_at INTEGER, ended_at INTEGER,
-      step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
-      result TEXT,
-      pid INTEGER, host_pid INTEGER
-    )`);
+    migrated.exec(V6.worktree);
     migrated.raw.pragma("user_version = 6");
     migrate(migrated, "worktree");
     const migratedCols = tableColumns(migrated, "runs").sort();

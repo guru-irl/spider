@@ -1,5 +1,6 @@
 // Canonical three-tier schema — column/table names are canonical (plans/README.md).
-// Fresh v13 DBs include repo skill review (v12), global run routes and worktree child columns (v13).
+// This v13 base includes repo skill review, global run routes, and worktree child columns.
+// Fresh stores and existing stores both receive the schema 14 additions in roam/schema.ts.
 // Do not rename. `vectors` (vec0) is created at runtime by Db.loadVec(), not here.
 
 export const GLOBAL_SCHEMA = `

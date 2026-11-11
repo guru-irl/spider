@@ -4,7 +4,7 @@
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const warn = (m) => process.stderr.write(`spider postinstall: ${m}\n`);
@@ -61,13 +61,23 @@ if (process.env.CI === "true" || process.env.VITEST) {
       : join(homedir(), ".pi", "agent", "spider");
     mkdirSync(root, { recursive: true });
     if (Database) {
-      const db = new Database(join(root, "spider.db"), { timeout: 30000 });
-      db.pragma("journal_mode = WAL");
-      // DDL must never live in postinstall. db-core.migrate() is the single schema
-      // owner; even an idempotent-looking CREATE TABLE can preserve a partial table
-      // and then cause db-core to stamp that malformed schema as current.
-      db.close();
-      warn("global DB file ready (schema deferred to db-core)");
+      const file = join(root, "spider.db");
+      let created = false;
+      try {
+        closeSync(openSync(file, "wx", 0o600));
+        created = true;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+      }
+      if (created) {
+        const db = new Database(file, { timeout: 30000 });
+        db.pragma("journal_mode = WAL");
+        // Schema creation and migration belong to db-core.
+        db.close();
+        warn("global DB file ready (schema deferred to db-core)");
+      } else {
+        warn("existing global DB left unchanged");
+      }
     } else {
       warn("global DB directory ready (database unavailable)");
     }

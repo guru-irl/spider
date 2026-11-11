@@ -1,9 +1,10 @@
 // packages/db-core/src/index.ts
 export type { Db } from "./db";
-export { openDb, openDbReadOnly, withRetry, assertTestConfigPath } from "./db";
+export { openDb, openDbReadOnly, withRetry, assertTestConfigPath, backupBeforeMigration, snapshotCoreDb } from "./db";
 export { paths, projectRoot, repoRoot } from "./paths";
 export type { Scope } from "./paths";
 export { migrate, SCHEMA_VERSION } from "./migrate";
+export { validateRoamLayout, repairTodoSequenceIndex } from "./roam/layout";
 export { sanitizeQuery, sanitizeTrigramQuery, STOPWORDS } from "./fts-query";
 export { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 export {

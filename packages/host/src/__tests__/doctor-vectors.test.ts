@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, readFileSync, writeFileSync, utimesSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
-import { openRepo, openProject, resolveProject, setGlobalDbPathForTests, openDbReadOnlyAt, commandEnv } from "@spider/db-core";
+import { openRepo, openProject, resolveProject, setGlobalDbPathForTests, openDbReadOnlyAt, commandEnv, SCHEMA_VERSION } from "@spider/db-core";
 import { upsertVector, drainEmbedQueue, enqueueEmbed, getVectorState, addMemory, recordEmbedDrainError, markEmbedDrained, resolveEmbedder, startEmbedderSession, stopEmbedder } from "@spider/memory";
 import { controlDoctor, controlConfig } from "../control";
 vi.mock("node:child_process", async importOriginal => ({
@@ -19,6 +19,8 @@ it.each([true, false])("reads native vector diagnostics without changing snapsho
   const info = resolveProject(root);
   const writer = openRepo(info.repoKey!);
   const path = writer.raw.name;
+  const version = writer.pragma("user_version");
+  expect(version).toBe(SCHEMA_VERSION);
   const v = new Float32Array(384); v[0] = 1;
   try {
     if (native) upsertVector(writer, "memory", "fixture", v, "fixture");
@@ -31,7 +33,7 @@ it.each([true, false])("reads native vector diagnostics without changing snapsho
     reader.loadVec();
     expect(getVectorState(reader)).toEqual({ mapped: 1, indexed: native ? 1 : 0, missing: native ? 0 : 1, pending: 0, retried: 0, dead: 0 });
     expect(!!reader.prepare("SELECT 1 FROM sqlite_master WHERE name = 'vectors'").get()).toBe(native);
-    expect(reader.pragma("user_version")).toBe(13);
+    expect(reader.pragma("user_version")).toBe(version);
   } finally { reader.close(); }
   expect(hash()).toBe(before);
 });

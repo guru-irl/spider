@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { openDb, openDbReadOnly, assertTestDbPath, type Db } from "./db";
-import { migrate } from "./migrate";
+import { migrate, SCHEMA_VERSION } from "./migrate";
 import { paths, type Scope, worktreeRoot, repoRoot, gitCommonDir } from "./paths";
 import { getBinding, bindSession } from "./bindings";
 
@@ -28,9 +28,7 @@ function globalDbPath(): string {
 export { repoRoot } from "./paths";
 
 export function openGlobal(): Db {
-  const db = openDb(globalDbPath());
-  migrate(db, "global");
-  return db;
+  return openDbAt(globalDbPath(), "global");
 }
 
 /** No create, migration, pragma, or checkpoint on snapshot reads. */
@@ -116,21 +114,13 @@ export function openProject(projectKey: string): Db {
   } finally {
     g.close();
   }
-  assertTestDbPath(dbPath);
-  mkdirSync(join(dbPath, ".."), { recursive: true });
-  const db = openDb(dbPath);
-  migrate(db, "worktree");
-  return db;
+  return openDbAt(dbPath, "worktree");
 }
 
 /** Open a repo-tier DB by its repo_key (git common dir). */
 export function openRepo(repoKey: string): Db {
   const dbPath = join(repoKey, "spider", "repo.db");
-  assertTestDbPath(dbPath);
-  mkdirSync(join(dbPath, ".."), { recursive: true });
-  const db = openDb(dbPath);
-  migrate(db, "repo");
-  return db;
+  return openDbAt(dbPath, "repo");
 }
 
 /** Open a WAL Db at an explicit absolute path and migrate it (A3). Scope is inferred
@@ -139,12 +129,17 @@ export function openRepo(repoKey: string): Db {
 export function openDbAt(absPath: string, scope?: Scope): Db {
   assertTestDbPath(absPath);
   mkdirSync(dirname(absPath), { recursive: true });
-  const db = openDb(absPath);
+  const db = openDb(absPath, { maxCoreSchemaVersion: SCHEMA_VERSION });
   const resolved: Scope = scope ?? (absPath === join(paths.globalRoot, "spider.db") ? "global" : "worktree");
   // Map "project" to "worktree" for the deprecated alias
   const actualScope = resolved === "project" ? "worktree" : resolved;
-  migrate(db, actualScope);
-  return db;
+  try {
+    migrate(db, actualScope);
+    return db;
+  } catch (error) {
+    db.raw.close();
+    throw error;
+  }
 }
 
 /** Open a project's DB by its real path (explicit-path open; no registry key needed) (A3). */

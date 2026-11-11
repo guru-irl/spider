@@ -315,6 +315,20 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   } catch (error) { ok = false; lines.push(`- config: FAILED (${String(error)})`); }
   if (drainEnabled === false) lines.push("- embeddings: drain disabled; queue age is informational");
 
+  const checkRoaming = (db: Db, scope: string): void => {
+    try {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roam_meta'").get()) return;
+      const meta = db.prepare("SELECT roamable, problem FROM roam_meta WHERE id = 1").get() as { roamable: number; problem: string | null } | undefined;
+      if (!meta || meta.roamable !== 1 || meta.problem) {
+        ok = false;
+        lines.push(`- roaming (${scope}): ${safeReviewError(meta?.problem ?? "store is not roamable")}`);
+      }
+    } catch (error) {
+      ok = false;
+      lines.push(`- roaming (${scope}): FAILED (${safeReviewError(error)})`);
+    }
+  };
+
   const checkVectors = (db: Db, scope: string): void => {
     try {
       const state = getVectorState(db);
@@ -340,6 +354,7 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
     try {
       lines.push(`- better-sqlite3: loaded (journal_mode=${String(g.pragma("journal_mode"))})`);
       lines.push(`- global DB migrations/schema: user_version=${String(g.pragma("user_version"))}`);
+      checkRoaming(g, "global");
       try { g.loadVec(); vecOk = true; } catch (e) { ok = false; lines.push(`- sqlite-vec: FAILED (${(e as Error).message})`); }
       if (vecOk) {
         lines.push("- sqlite-vec: loaded (vec0 vectors table ready)");
@@ -357,7 +372,7 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
     lines.push(`- registry: project_key=${info.projectKey.slice(0, 24)}… db=${info.dbPath}`);
     const inspect = (db: Db | undefined, scope: string): void => {
       if (!db) { lines.push(`- vector recall (${scope}): DB absent (no queue/index yet)`); return; }
-      try { checkVectors(db, scope); } finally { db.close(); }
+      try { checkRoaming(db, scope); checkVectors(db, scope); } finally { db.close(); }
     };
     inspect(openDbReadOnlyAt(info.dbPath), "worktree");
     inspect(openDbReadOnlyAt(embeddingRepoPath(info)), "repo");

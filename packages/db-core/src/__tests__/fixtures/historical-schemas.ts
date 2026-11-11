@@ -1,0 +1,1047 @@
+// Historical fresh-schema DDL captured verbatim from the indicated revisions.
+// Each revision's migrate.ts applies its schema.ts DDL and stamps that version.
+
+// v1: 6cf7b56a9c32f6e3e3cdbb0aa632917e1ca4bdb5
+export const V1 = {
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+`,
+} as const;
+
+// v4: 1f9f89414aadacd2102cdb08edcaefc4c8dbd7de
+export const V4 = {
+  global: `
+CREATE TABLE IF NOT EXISTS projects (
+  project_key     TEXT PRIMARY KEY,
+  real_path       TEXT NOT NULL,
+  git_common_dir  TEXT,
+  db_path         TEXT NOT NULL,
+  name            TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  memory_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS global_memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS upstream_refs (
+  package TEXT PRIMARY KEY,
+  upstream_repo TEXT NOT NULL, upstream_ref TEXT,
+  last_reviewed_commit TEXT, last_checked_at INTEGER, notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_mirror (
+  id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+  a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+`,
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT,
+  pid INTEGER, host_pid INTEGER
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+} as const;
+
+// v5: 322c3a91e909516e271b4f399f3ad4a04aa511cd
+export const V5 = {
+  global: `
+CREATE TABLE IF NOT EXISTS projects (
+  project_key     TEXT PRIMARY KEY,
+  real_path       TEXT NOT NULL,
+  git_common_dir  TEXT,
+  db_path         TEXT NOT NULL,
+  name            TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  memory_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS global_memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS upstream_refs (
+  package TEXT PRIMARY KEY,
+  upstream_repo TEXT NOT NULL, upstream_ref TEXT,
+  last_reviewed_commit TEXT, last_checked_at INTEGER, notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_mirror (
+  id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL,
+  delivered_at INTEGER, read_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+  a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+`,
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT,
+  pid INTEGER, host_pid INTEGER
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+} as const;
+
+// v6: 5244486133b08c3920712a4e3cf13ef536322dd6
+export const V6 = {
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT,
+  pid INTEGER, host_pid INTEGER
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+} as const;
+
+// v10: d5c30aabc86934b4106fd603b2ff5c0306d385d5
+export const V10 = {
+  global: `
+CREATE TABLE IF NOT EXISTS projects (
+  project_key     TEXT PRIMARY KEY,
+  real_path       TEXT NOT NULL,
+  git_common_dir  TEXT,
+  repo_key        TEXT,
+  db_path         TEXT NOT NULL,
+  name            TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  memory_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS global_memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS upstream_refs (
+  package TEXT PRIMARY KEY,
+  upstream_repo TEXT NOT NULL, upstream_ref TEXT,
+  last_reviewed_commit TEXT, last_checked_at INTEGER, notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_mirror (
+  id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL,
+  delivered_at INTEGER, read_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+  a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_bindings (
+  session_id TEXT PRIMARY KEY,
+  worktree_root TEXT NOT NULL,
+  bound_at INTEGER NOT NULL
+);
+`,
+  repo: `
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+} as const;
+
+// v11: f7665c06631b08a80774a9ca3595768ccc06cf1a
+export const V11 = {
+  global: `
+CREATE TABLE IF NOT EXISTS projects (
+  project_key     TEXT PRIMARY KEY,
+  real_path       TEXT NOT NULL,
+  git_common_dir  TEXT,
+  repo_key        TEXT,
+  db_path         TEXT NOT NULL,
+  name            TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  memory_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS global_memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
+);
+
+CREATE TABLE IF NOT EXISTS upstream_refs (
+  package TEXT PRIMARY KEY,
+  upstream_repo TEXT NOT NULL, upstream_ref TEXT,
+  last_reviewed_commit TEXT, last_checked_at INTEGER, notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_mirror (
+  id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL,
+  delivered_at INTEGER, read_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+  a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_bindings (
+  session_id TEXT PRIMARY KEY,
+  worktree_root TEXT NOT NULL,
+  bound_at INTEGER NOT NULL
+);
+`,
+  repo: `
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT,
+  pid INTEGER, host_pid INTEGER
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+`,
+} as const;
+
+// v12: 9377a13d3ff3b0c9da3a1d5e37820dd3695d78e8
+export const V12 = {
+  global: `
+CREATE TABLE IF NOT EXISTS projects (
+  project_key     TEXT PRIMARY KEY,
+  real_path       TEXT NOT NULL,
+  git_common_dir  TEXT,
+  repo_key        TEXT,
+  db_path         TEXT NOT NULL,
+  name            TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  memory_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS global_memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
+);
+
+CREATE TABLE IF NOT EXISTS upstream_refs (
+  package TEXT PRIMARY KEY,
+  upstream_repo TEXT NOT NULL, upstream_ref TEXT,
+  last_reviewed_commit TEXT, last_checked_at INTEGER, notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_mirror (
+  id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL,
+  delivered_at INTEGER, read_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+  a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_bindings (
+  session_id TEXT PRIMARY KEY,
+  worktree_root TEXT NOT NULL,
+  bound_at INTEGER NOT NULL
+);
+`,
+  repo: `
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  review_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS skill_review_queue (
+  name TEXT PRIMARY KEY,
+  category TEXT, body TEXT NOT NULL, origin TEXT NOT NULL,
+  related TEXT, created_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_review_results (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, verdict TEXT NOT NULL,
+  reason TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_review_lock (
+  id INTEGER PRIMARY KEY CHECK (id=1), token TEXT NOT NULL, lease_until INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT,
+  pid INTEGER, host_pid INTEGER
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+`,
+} as const;
+
+// v13: 2c49867dea8d195a9cb2b6313533f02240a464c2
+export const V13 = {
+  global: `
+CREATE TABLE IF NOT EXISTS projects (
+  project_key     TEXT PRIMARY KEY,
+  real_path       TEXT NOT NULL,
+  git_common_dir  TEXT,
+  repo_key        TEXT,
+  db_path         TEXT NOT NULL,
+  name            TEXT,
+  created_at      INTEGER NOT NULL,
+  last_seen_at    INTEGER NOT NULL,
+  session_count   INTEGER NOT NULL DEFAULT 0,
+  memory_count    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS global_memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL, content TEXT NOT NULL, link TEXT,
+  scope TEXT NOT NULL DEFAULT 'global',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
+);
+
+CREATE TABLE IF NOT EXISTS upstream_refs (
+  package TEXT PRIMARY KEY,
+  upstream_repo TEXT NOT NULL, upstream_ref TEXT,
+  last_reviewed_commit TEXT, last_checked_at INTEGER, notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_mirror (
+  id INTEGER PRIMARY KEY, from_session TEXT, to_session TEXT,
+  kind TEXT, body TEXT, created_at INTEGER NOT NULL,
+  delivered_at INTEGER, read_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+  id INTEGER PRIMARY KEY, kind TEXT NOT NULL,
+  a TEXT, b TEXT, weight REAL, payload TEXT, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_stats (
+  id INTEGER PRIMARY KEY, model TEXT NOT NULL, ms INTEGER, ok INTEGER, tokens INTEGER, ts INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_routes (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  db_path TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_bindings (
+  session_id TEXT PRIMARY KEY,
+  worktree_root TEXT NOT NULL,
+  bound_at INTEGER NOT NULL
+);
+`,
+  repo: `
+CREATE TABLE IF NOT EXISTS memory (
+  id INTEGER PRIMARY KEY, uuid TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  content TEXT NOT NULL, link TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  confidence REAL, session_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  justification TEXT, evidence TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(uuid UNINDEXED, category, content, link);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+  tier TEXT NOT NULL DEFAULT 'project',
+  category TEXT, path TEXT,
+  state TEXT NOT NULL DEFAULT 'active',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'user',
+  pinned INTEGER NOT NULL DEFAULT 0, protected INTEGER NOT NULL DEFAULT 0,
+  use_count INTEGER NOT NULL DEFAULT 0, view_count INTEGER NOT NULL DEFAULT 0, patch_count INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER, last_viewed_at INTEGER, last_patched_at INTEGER,
+  candidate_body TEXT,
+  related TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER,
+  review_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_skills_state ON skills(state, status);
+CREATE TABLE IF NOT EXISTS skill_review_queue (
+  name TEXT PRIMARY KEY,
+  category TEXT, body TEXT NOT NULL, origin TEXT NOT NULL,
+  related TEXT, created_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_review_results (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, verdict TEXT NOT NULL,
+  reason TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS skill_review_lock (
+  id INTEGER PRIMARY KEY CHECK (id=1), token TEXT NOT NULL, lease_until INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS curator_state (
+  scope TEXT PRIMARY KEY,
+  last_run_at INTEGER, paused INTEGER NOT NULL DEFAULT 0
+);
+`,
+  worktree: `
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  parent_session_id TEXT,
+  name TEXT,
+  reason TEXT,
+  started_at INTEGER NOT NULL, ended_at INTEGER,
+  summary TEXT, imported_from TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(id UNINDEXED, name, summary, content);
+
+CREATE TABLE IF NOT EXISTS content (
+  id INTEGER PRIMARY KEY, source TEXT NOT NULL, path TEXT, hash TEXT,
+  heading TEXT, chunk TEXT NOT NULL, is_code INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(source, heading, chunk);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+  text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS todos_fts USING fts5(text, content=todos, content_rowid=id);
+
+CREATE TABLE IF NOT EXISTS runs (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, parent_run_id TEXT,
+  agent TEXT NOT NULL, role TEXT, name TEXT,
+  status TEXT NOT NULL,
+  phase TEXT, model TEXT, task TEXT, thinking TEXT,
+  started_at INTEGER, ended_at INTEGER,
+  step_count INTEGER DEFAULT 0, token_count INTEGER DEFAULT 0,
+  result TEXT,
+  pid INTEGER, host_pid INTEGER,
+  child_mode TEXT NOT NULL DEFAULT 'print',
+  intercom_session TEXT,
+  pid_start_time TEXT
+);
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY, run_id TEXT, session_id TEXT NOT NULL,
+  ts INTEGER NOT NULL, type TEXT NOT NULL,
+  tool TEXT, summary TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+  phase TEXT NOT NULL,
+  tool TEXT NOT NULL, description TEXT, added INTEGER, removed INTEGER,
+  flagged TEXT, payload TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vector_map (
+  rowid INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL,
+  owner_id TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+  embedding BLOB   -- raw little-endian float32[dim]; brute-force cosine + reembed source
+);
+CREATE TABLE IF NOT EXISTS embed_queue (
+  id INTEGER PRIMARY KEY, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL,
+  text TEXT NOT NULL, enqueued_at INTEGER NOT NULL, tries INTEGER DEFAULT 0
+);
+
+`,
+} as const;
+
+// Child-column definitions from migrate.ts at 2c49867dea8d195a9cb2b6313533f02240a464c2.
+export const V13_CHILD_COLUMNS = [["child_mode","TEXT NOT NULL DEFAULT 'print'"],["intercom_session","TEXT"],["pid_start_time","TEXT"]] as const;

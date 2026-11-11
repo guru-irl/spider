@@ -17,8 +17,10 @@ import { mkdirSync, rmSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDbAt } from "../registry";
+import { openDb } from "../db";
 import { migrate, SCHEMA_VERSION } from "../migrate";
-import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "../schema";
+import { V10, V11, V12 } from "./fixtures/historical-schemas";
+import { migrate as migrateV13 } from "./fixtures/historical-v13-migrate";
 import DatabaseConstructor from "better-sqlite3";
 
 const scratch = join(
@@ -60,42 +62,48 @@ function schemaShape(db: ReturnType<typeof openDbAt>) {
   return tables.map(({ name }) => ({ name, columns: db.prepare(`PRAGMA table_info(${name})`).all() }));
 }
 
-// Deployed main v12 has skill review tables, but no routes or child columns.
-// These fixtures use the main DDL shape, not a DB already migrated by this branch.
-const MAIN_SCHEMAS = {
-  global: GLOBAL_SCHEMA.replace(/CREATE TABLE IF NOT EXISTS run_routes \([\s\S]*?\);/, ""),
-  worktree: WORKTREE_SCHEMA.replace(/,\n  child_mode TEXT NOT NULL DEFAULT 'print',\n  intercom_session TEXT,\n  pid_start_time TEXT/, ""),
-  repo: REPO_SCHEMA,
-};
+// These schemas are captured from the matching deployed revisions.
+const MAIN_SCHEMAS = { 11: V11, 12: V12 } as const;
 
 describe("v13 fresh and deployed-main migration parity", () => {
   it.each(TIERS)("fresh %s DB is v13", scope => {
-    const db = openDbAt(join(scratch, `v13-fresh-${scope}.db`), scope);
-    try { expect(Number(db.pragma("user_version"))).toBe(13); }
-    finally { db.close(); }
+    const prior = openDb(join(scratch, `v13-fresh-${scope}.db`));
+    try {
+      migrateV13(prior, scope);
+      expect(Number(prior.pragma("user_version"))).toBe(13);
+    } finally { prior.close(); }
+    const current = openDbAt(join(scratch, `v14-fresh-${scope}.db`), scope);
+    try { expect(Number(current.pragma("user_version"))).toBe(14); }
+    finally { current.close(); }
   });
 
-  it.each(TIERS.flatMap(scope => [11, 12].map(version => ({ scope, version }))))(
+  it.each(TIERS.flatMap(scope => ([11, 12] as const).map(version => ({ scope, version }))))(
     "$scope main v$version reaches v13 with fresh schema and a no-op second migration", ({ scope, version }) => {
-      const fresh = openDbAt(join(scratch, `fresh-${scope}-${version}.db`), scope);
-      const expected = schemaShape(fresh); fresh.close();
+      const freshV13 = openDb(join(scratch, `fresh-v13-${scope}-${version}.db`));
+      migrateV13(freshV13, scope);
+      const expected = schemaShape(freshV13); freshV13.close();
+      const freshV14 = openDbAt(join(scratch, `fresh-v14-${scope}-${version}.db`), scope);
+      const expectedV14 = schemaShape(freshV14); freshV14.close();
       const p = join(scratch, `main-${scope}-${version}.db`);
       const raw = new DatabaseConstructor(p);
-      raw.exec(MAIN_SCHEMAS[scope]);
-      if (scope === "repo" && version === 11) raw.exec("ALTER TABLE skills DROP COLUMN review_reason; DROP TABLE skill_review_queue; DROP TABLE skill_review_results; DROP TABLE skill_review_lock");
+      raw.exec(MAIN_SCHEMAS[version][scope]);
       if (scope === "worktree") raw.exec("INSERT INTO runs (id, session_id, agent, status) VALUES ('legacy', 'owner', 'worker', 'running')");
       if (scope === "global") expect(raw.prepare("SELECT name FROM sqlite_master WHERE name='run_routes'").get()).toBeUndefined();
       if (scope === "worktree") expect((raw.prepare("PRAGMA table_info(runs)").all() as Array<{name:string}>).map(c => c.name)).not.toContain("child_mode");
       raw.pragma(`user_version = ${version}`); raw.close();
-      const db = openDbAt(p, scope);
+      const db = openDb(p);
       try {
+        migrateV13(db, scope);
         expect(schemaShape(db)).toEqual(expected);
         expect(Number(db.pragma("user_version"))).toBe(13);
         if (scope === "worktree") expect(db.prepare("SELECT status, child_mode, intercom_session, pid_start_time FROM runs WHERE id='legacy'").get()).toEqual({ status: "running", child_mode: "print", intercom_session: null, pid_start_time: null });
         const before = { changes: db.prepare("SELECT total_changes() AS count").get(), schemaVersion: db.pragma("schema_version") };
-        migrate(db, scope);
+        migrateV13(db, scope);
         expect(schemaShape(db)).toEqual(expected);
         expect({ changes: db.prepare("SELECT total_changes() AS count").get(), schemaVersion: db.pragma("schema_version") }).toEqual(before);
+        migrate(db, scope);
+        expect(Number(db.pragma("user_version"))).toBe(14);
+        expect(schemaShape(db)).toEqual(expectedV14);
       } finally { db.close(); }
     },
   );
@@ -110,14 +118,17 @@ function fullSchemaShape(raw: DatabaseConstructor.Database) {
 }
 
 it.each([false, true])("repo stamped v12 repairs branch omissions without changing healthy main DBs (healthy=%s)", healthy => {
-  const fresh = openDbAt(join(scratch, `repo-v13-${healthy}.db`), "repo");
+  const fresh = openDb(join(scratch, `repo-v13-${healthy}.db`));
+  migrateV13(fresh, "repo");
   const expected = fullSchemaShape(fresh.raw); fresh.close();
+  const freshV14 = openDbAt(join(scratch, `repo-v14-${healthy}.db`), "repo");
+  const expectedV14 = fullSchemaShape(freshV14.raw); freshV14.close();
   const path = join(scratch, `repo-v12-${healthy}.db`);
   const raw = new DatabaseConstructor(path);
-  raw.exec(REPO_SCHEMA);
+  // The earlier branch stamped the v11 repo layout as v12 before the review tables landed.
+  raw.exec(healthy ? V12.repo : V11.repo);
   raw.exec("INSERT INTO skills (name, created_at) VALUES ('legacy-skill', 123)");
-  if (!healthy) raw.exec("ALTER TABLE skills DROP COLUMN review_reason; DROP TABLE skill_review_queue; DROP TABLE skill_review_results; DROP TABLE skill_review_lock");
-  else {
+  if (healthy) {
     raw.exec("UPDATE skills SET review_reason='retained'; INSERT INTO skill_review_queue (name, body, origin, created_at) VALUES ('pending', 'body', 'agent', 456)");
   }
   raw.pragma("user_version = 12");
@@ -125,8 +136,9 @@ it.each([false, true])("repo stamped v12 repairs branch omissions without changi
   const beforeSchemaVersion = raw.pragma("schema_version", {simple: true});
   const beforeSkills = raw.prepare("SELECT name, created_at FROM skills").all();
   raw.close();
-  const db = openDbAt(path, "repo");
+  const db = openDb(path);
   try {
+    migrateV13(db, "repo");
     expect(Number(db.pragma("user_version"))).toBe(13);
     expect(fullSchemaShape(db.raw)).toEqual(expected);
     expect(db.prepare("SELECT name, created_at FROM skills").all()).toEqual(beforeSkills);
@@ -138,10 +150,13 @@ it.each([false, true])("repo stamped v12 repairs branch omissions without changi
       expect(db.prepare("SELECT name, body, origin, created_at FROM skill_review_queue").all()).toEqual([{name: "pending", body: "body", origin: "agent", created_at: 456}]);
     }
     const before = { changes: db.prepare("SELECT total_changes() AS n").get(), schema: db.pragma("schema_version") };
-    migrate(db, "repo");
-    migrate(db, "repo");
+    migrateV13(db, "repo");
+    migrateV13(db, "repo");
     expect(fullSchemaShape(db.raw)).toEqual(expected);
     expect({ changes: db.prepare("SELECT total_changes() AS n").get(), schema: db.pragma("schema_version") }).toEqual(before);
+    migrate(db, "repo");
+    expect(Number(db.pragma("user_version"))).toBe(14);
+    expect(fullSchemaShape(db.raw)).toEqual(expectedV14);
   } finally { db.close(); }
 });
 
@@ -222,9 +237,8 @@ describe("fresh vs migrated schema parity", () => {
     const fresh = openDbAt(join(scratch, `fresh-${scope}.db`), scope);
     const expected = fresh.raw.prepare(`PRAGMA table_info(${table})`).all();
     fresh.close();
-    const old = openDbAt(join(scratch, `old-${scope}.db`), scope);
-    old.raw.exec(`ALTER TABLE ${table} DROP COLUMN evidence`);
-    old.raw.exec(`ALTER TABLE ${table} DROP COLUMN justification`);
+    const old = openDb(join(scratch, `old-${scope}.db`));
+    old.exec(V10[scope]);
     old.raw.pragma("user_version = 10");
     old.close();
     const migrated = openDbAt(join(scratch, `old-${scope}.db`), scope);

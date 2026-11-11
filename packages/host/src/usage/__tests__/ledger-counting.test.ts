@@ -20,7 +20,7 @@ function row(id: string, overrides: Partial<Fact> = {}): Fact {
     usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 },
     price: { status: "priced", aic: 10, components: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 },
       rateVersion: "fixture", tier: "default", confidence: "verified" },
-    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null,
+    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null, executionMachine: null, managedEntryKey: null,
     sourceKind: overrides.actor === "subagent" && overrides.aggregate && overrides.runId != null ? "report" : "transcript", ...overrides };
 }
 function report(id: string, aic: number, overrides: Partial<Fact> = {}): Fact {

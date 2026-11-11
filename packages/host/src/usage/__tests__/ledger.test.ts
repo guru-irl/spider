@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
 import { migrateUsageLedger } from "../migrate.js";
@@ -23,7 +24,7 @@ function call(overrides: Partial<CallRow> = {}): CallRow {
       status: "priced", aic: 10, components: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
       rateVersion: "fixture-rates", tier: "default", confidence: "estimated"
     },
-    piCost: 0.12, latencyMs: 25, aggregate: false, counted: true, originKey: null,
+    piCost: 0.12, latencyMs: 25, aggregate: false, counted: true, originKey: null, executionMachine: null, managedEntryKey: null,
     sourceKind: overrides.actor === "subagent" && overrides.aggregate && overrides.runId != null ? "report" : "transcript", ...overrides,
   };
 }
@@ -158,7 +159,7 @@ describe("usage ledger", () => {
     });
     migrateUsageLedger(db);
     expect(competingWriteSucceeded).toBe(false);
-    expect(db.pragma("user_version")).toBe(6);
+    expect(db.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
   });
 
   // M23: callers of migrate directly must not overwrite a future schema version.
@@ -301,7 +302,7 @@ describe("usage ledger", () => {
     expect(spider.prepare("SELECT * FROM sqlite_master ORDER BY name").all()).toEqual(before);
     expect(spider.prepare("SELECT value FROM fixture_context").get()).toEqual({ value: "untouched" });
     expect(ledger.health()).toEqual({
-      schemaVersion: 6, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
+      schemaVersion: USAGE_SCHEMA_VERSION, calls: 0, sources: 0, parseErrors: 0, sourceErrors: 0,
       aggregateCalls: 0, lastIngestAt: null,
       unpricedBillingPeriod: { models: [], withoutModel: 0 },
       reprice: { state: "pending", processed: 0, total: 0, repriced: 0 },
@@ -320,7 +321,7 @@ describe("usage ledger", () => {
     first.close();
     const before = readFileSync(file);
     const second = openUsageLedger(file);
-    expect(second.health().schemaVersion).toBe(6);
+    expect(second.health().schemaVersion).toBe(USAGE_SCHEMA_VERSION);
     expect(second.health().calls).toBe(1);
     second.close();
     expect(readFileSync(file)).toEqual(before);
@@ -562,14 +563,14 @@ it("fails loudly when opening a ledger with an unknown layout marker", () => {
   const legacy = new Database(file);
   legacy.exec("DELETE FROM ledger_metadata WHERE key='schema-layout'; DROP VIEW counted_calls; CREATE VIEW counted_calls AS SELECT * FROM calls");
   legacy.close();
-  expect(() => openUsageLedger(file)).toThrow(/schema 6.*layout/i);
+  expect(() => openUsageLedger(file)).toThrow(new RegExp(`schema ${USAGE_SCHEMA_VERSION}.*layout`, "i"));
 });
 it("appends attribution entries without updating historical rows", () => {
   const ledger = track(openUsageLedger(file));
   ledger.apply(batch({
     states: [state({ offset: 200 })], sourceContexts: [{
       path: state().path, context: {
-        header: null, tailHash: "a", entries: [{ byteOffset: 0, json: { type: "metadata", id: "old", parentId: null } }]
+        header: null, segmentState: null, tailHash: "a", entries: [{ byteOffset: 0, json: { type: "metadata", id: "old", parentId: null } }]
       }
     }]
   }));
@@ -578,7 +579,7 @@ it("appends attribution entries without updating historical rows", () => {
   ledger.apply(batch({
     states: [state({ offset: 300, size: 300 })], sourceContexts: [{
       path: state().path, context: {
-        header: null, tailHash: "b", entries: [{ byteOffset: 200, json: { type: "metadata", id: "new", parentId: "old" } }]
+        header: null, segmentState: null, tailHash: "b", entries: [{ byteOffset: 200, json: { type: "metadata", id: "new", parentId: "old" } }]
       }
     }]
   }));

@@ -4,6 +4,7 @@ import { open, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseTranscript, type ParsedCall, type ParsedSource, type SourceInfo as ParserSource } from "./parse.js";
 import { UsageJsonLine } from "./jsonl-projection.js";
+import { readSegment, segmentMachine } from "./segments.js";
 import { SessionMetadataCapture, forgetSessionMetadata } from "./session-metadata.js";
 import { normalizeRunStatus } from "./ledger.js";
 import type { Discovery, SourceInfo } from "./discovery.js";
@@ -41,6 +42,7 @@ type Scan = {
   context: SourceContext;
   partial: boolean;
   session: SessionMeta | null;
+  executionMachines: Map<string, string | null>;
 };
 type Report = {
   runId: string;
@@ -83,7 +85,7 @@ function compact(entry: unknown): unknown {
   const pick = (input: Record<string, unknown>, keys: string[]) => Object.fromEntries(keys.filter(k => k in input).map(k => [k, input[k]]));
   const result = pick(record, [
     "type", "id", "parentId", "timestamp", "cwd", "parentSession", "modelId",
-    "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "durationMs", "api"
+    "thinkingLevel", "kind", "note", "usage", "provider", "model", "responseModel", "latencyMs", "durationMs", "api", "customType", "data"
   ]);
   if (record.type === "compaction" || record.type === "branch_summary")
     result.details = pick(object(record.details), ["summaryModel"]);
@@ -107,6 +109,55 @@ async function checkpoint(file: Awaited<ReturnType<typeof open>>, start: number,
   return digest(buffer);
 }
 
+async function checkSourceStable(file: Awaited<ReturnType<typeof open>>, source: SourceInfo, before: Awaited<ReturnType<typeof stat>>) {
+  const after = await file.stat(), named = await stat(source.path);
+  if (after.size < before.size || named.ino !== before.ino || named.dev !== before.dev
+    || after.size === before.size && after.mtimeMs !== before.mtimeMs)
+    throw Object.assign(new Error("source replaced while reading"), { code: "source-changed" });
+}
+
+async function scanInitialSegment(
+  file: Awaited<ReturnType<typeof open>>, size: number, startOffset: number,
+  savedHeader: Record<string, unknown> | null, origin: string | null, maxBytes: number, signal: AbortSignal,
+): Promise<{ offset: number; header: Record<string, unknown> | null; history: string | null; complete: boolean } | undefined> {
+  let offset = startOffset, readOffset = startOffset, header = savedHeader, history: string | null = null;
+  let line = new UsageJsonLine(), lineBytes = 0, found = false;
+  const chunk = Buffer.alloc(CHUNK);
+  while (readOffset < size && offset - startOffset < maxBytes && !found) {
+    if (signal.aborted) return undefined;
+    const { bytesRead } = await file.read(chunk, 0, Math.min(CHUNK, size - readOffset), readOffset);
+    if (!bytesRead) throw Object.assign(new Error("short read"), { code: "source-changed" });
+    const data = chunk.subarray(0, bytesRead); readOffset += bytesRead;
+    let start = 0, end: number;
+    while ((end = data.indexOf(10, start)) !== -1) {
+      const part = data.subarray(start, end + 1);
+      line.write(part); lineBytes += part.length;
+      const entry = line.finish();
+      // A malformed line could be a segment boundary and cannot be skipped safely.
+      if (entry === undefined) throw Object.assign(new Error("invalid roaming entry"), { code: "invalid-roam-entry" });
+      const value = object(entry);
+      if (value.type === "session" && !header) header = value;
+      const segment = readSegment(entry);
+      if (segment) {
+        if (segment.historyMachine !== segment.previousMachine)
+          throw Object.assign(new Error("invalid roaming history"), { code: "invalid-roam-segment" });
+        history = segment.historyMachine; found = true;
+      }
+      offset += lineBytes; start = end + 1; line = new UsageJsonLine(); lineBytes = 0;
+      if (found || offset - startOffset >= maxBytes) break;
+    }
+    if (found || offset - startOffset >= maxBytes) break;
+    if (start < data.length) { const part = data.subarray(start); line.write(part); lineBytes += part.length; }
+  }
+  const complete = found || offset === size;
+  if (complete) {
+    if (!text(header?.id)) throw Object.assign(new Error("missing transcript identity"), { code: "invalid-roam-header" });
+    history ??= origin;
+    if (!history) throw Object.assign(new Error("missing roaming history"), { code: "missing-roam-history" });
+  }
+  return { offset, header, history, complete };
+}
+
 /** Only bounded checkpoints inspect committed bytes. The body starts at the cursor.
  * Prefix detects replacement; a bounded end checkpoint also detects truncation/regrowth
  * beyond an unchanged header, without hashing or parsing historical transcript bodies.
@@ -120,7 +171,9 @@ async function readTranscript(
     throw Object.assign(new Error("not a file"), { code: "not-file" });
   const inode = `${before.dev}:${before.ino}`;
   if (previous && context && previous.inode === inode && previous.size === before.size
-    && previous.mtimeMs === before.mtimeMs && previous.offset === before.size)
+    && previous.mtimeMs === before.mtimeMs && previous.offset === before.size
+    && (!source.roaming && !context.segmentOwner || source.roaming && context.segmentState && !context.segmentScan
+      && context.segmentOwner === source.roaming.localMachine))
     return undefined;
   const file = await open(source.path, "r");
   try {
@@ -130,13 +183,45 @@ async function readTranscript(
       const tail = await checkpoint(file, Math.max(0, previous.offset - PREFIX), Math.min(PREFIX, previous.offset));
       reset = prefix !== previous.prefixHash || tail !== context!.tailHash;
     }
+    let active = context;
+    if (source.roaming && !text(source.roaming.localMachine))
+      throw Object.assign(new Error("missing local machine identity"), { code: "missing-machine-identity" });
+    if (!source.roaming && context?.segmentOwner)
+      throw Object.assign(new Error("roaming participation unavailable"), { code: "roam-participation-unavailable" });
+    if (source.roaming && context?.segmentOwner && context.segmentOwner !== source.roaming.localMachine)
+      throw Object.assign(new Error("usage machine identity changed"), { code: "roam-machine-changed" });
+    if (source.roaming && (reset || !context?.segmentState || context.segmentScan)) {
+      const continuing = !reset && context?.segmentScan === true && !!previous;
+      const beginning = continuing ? previous!.offset : 0;
+      const result = await scanInitialSegment(file, before.size, beginning, continuing ? context!.header : null,
+        source.roaming.originMachine, maxBytes, signal);
+      if (!result) return undefined;
+      await checkSourceStable(file, source, before);
+      if (!result.complete) {
+        const scanReset = !!previous && !continuing;
+        const prefixHash = await checkpoint(file, 0, Math.min(PREFIX, result.offset));
+        const tailHash = await checkpoint(file, Math.max(0, result.offset - PREFIX), Math.min(PREFIX, result.offset));
+        return {
+          parsed: { sessionId: text(result.header?.id), parentSession: text(result.header?.parentSession), calls: [], errors: [] },
+          lines: [], resume: beginning, reset: scanReset, header: result.header ?? undefined, session: null, partial: true,
+          executionMachines: new Map(),
+          context: { header: result.header, entries: [], tailHash, segmentState: null, segmentOwner: source.roaming.localMachine, segmentScan: true },
+          state: { path: source.path, inode, size: before.size, mtimeMs: before.mtimeMs, offset: result.offset,
+            parseErrors: scanReset ? 0 : previous?.parseErrors ?? 0, generation: (previous?.generation ?? 0) + (scanReset ? 1 : 0), prefixHash },
+        };
+      }
+      active = { header: result.header, entries: [], tailHash: "", segmentOwner: source.roaming.localMachine,
+        segmentState: { executionMachine: result.history, historyMachine: result.history } };
+      // A metadata-only cursor is not a billing cursor. Replay from the header.
+      reset = !!previous;
+    }
     const resume = reset ? 0 : previous?.offset ?? 0;
-    const oldId = context?.header?.id;
+    const oldId = active?.header?.id;
     const saved = reset || typeof oldId !== "string" ? null : sessions.get(oldId) ?? null;
     let capture: SessionMetadataCapture | undefined;
     const metadataCheckpoint = ledger.getMetadataCheckpoint(source.path);
     const coversPrefix = resume === 0 || !!metadataCheckpoint && metadataCheckpoint.generation === previous?.generation && metadataCheckpoint.offset >= resume;
-    try { capture = new SessionMetadataCapture(source, saved, reset ? null : context?.header ?? null, { firstUserSeen: !coversPrefix }); } catch { /* optional metadata never blocks billing */ }
+    try { capture = new SessionMetadataCapture(source, saved, reset ? null : active?.header ?? null, { firstUserSeen: !coversPrefix }); } catch { /* optional metadata never blocks billing */ }
     const lines: Line[] = [];
     let readOffset = resume, committed = resume;
     let line = new UsageJsonLine(), metadataLine = new UsageJsonLine(true);
@@ -155,6 +240,8 @@ async function readTranscript(
         const part = data.subarray(start, end + 1);
         line.write(part); metadataLine.write(part); lineBytes += part.length;
         const projected = line.finish();
+        if (source.roaming && projected === undefined)
+          throw Object.assign(new Error("invalid roaming entry"), { code: "invalid-roam-entry" });
         try { capture?.consume(metadataLine.finish(), committed); } catch { /* optional metadata never blocks billing */ }
         lines.push({ byteOffset: committed, json: projected === undefined ? undefined : compact(projected) });
         committed += lineBytes;
@@ -170,19 +257,29 @@ async function readTranscript(
     }
     const prefixHash = await checkpoint(file, 0, Math.min(PREFIX, committed));
     const tailHash = await checkpoint(file, Math.max(0, committed - PREFIX), Math.min(PREFIX, committed));
-    const after = await file.stat(), named = await stat(source.path);
     // Appends after the snapshot are deliberately left for the next pass.
-    if (after.size < before.size || named.ino !== before.ino || named.dev !== before.dev
-      || after.size === before.size && after.mtimeMs !== before.mtimeMs) {
-      throw Object.assign(new Error("source replaced while reading"), { code: "source-changed" });
+    await checkSourceStable(file, source, before);
+    const executionMachines = new Map<string, string | null>();
+    const segmentState = source.roaming && active?.segmentState ? { ...active.segmentState } : null;
+    if (source.roaming && !segmentState)
+      throw Object.assign(new Error("missing roaming attribution"), { code: "missing-roam-history" });
+    if (segmentState) for (const item of lines) {
+      const segment = readSegment(item.json);
+      if (segment && segment.historyMachine !== segmentState.historyMachine)
+        throw Object.assign(new Error("inconsistent roaming history"), { code: "invalid-roam-segment" });
+      segmentState.executionMachine = segmentMachine(item.json, segmentState.executionMachine);
+      if (!segment) {
+        const id = text(object(item.json).id) ?? `offset:${item.byteOffset}`;
+        if (!executionMachines.has(id)) executionMachines.set(id, segmentState.executionMachine);
+      }
     }
     const roots = lines.flatMap(l => {
       const entry = object(l.json);
       return [text(entry.id) ?? `offset:${l.byteOffset}`, ...(text(entry.parentId) ? [String(entry.parentId)] : [])];
     });
     const prefix = reset ? [] : ledger.getSourceContext(source.path, roots)?.entries ?? [];
-    const seedHeader = !reset && context?.header ? [{ byteOffset: -1, json: context.header }] : [];
-    const header = lines.map(l => object(l.json)).find(e => e.type === "session") ?? (reset ? undefined : context?.header ?? undefined);
+    const seedHeader = !reset && active?.header ? [{ byteOffset: -1, json: active.header }] : [];
+    const header = lines.map(l => object(l.json)).find(e => e.type === "session") ?? (reset ? undefined : active?.header ?? undefined);
     const parsed = parseTranscript([...seedHeader, ...prefix, ...lines], parserSource(source), {
       sessionProviders: ledger.getSessionProviders(text(source.run?.sessionId) ?? text(header?.id), reset ? source.path : undefined),
     });
@@ -190,8 +287,9 @@ async function readTranscript(
     let session: SessionMeta | null = null;
     try { capture?.activity(parsed.calls.map(call => call.ts)); session = await capture?.finish() ?? null; } catch { /* optional metadata never blocks billing */ }
     return {
-      parsed, lines, resume, reset, header, session, partial: lineBytes > 0 || committed < before.size,
-      context: { header: header ?? null, entries, tailHash },
+      parsed, lines, resume, reset, header, session, executionMachines, partial: lineBytes > 0 || committed < before.size,
+      context: { header: header ?? null, entries, tailHash, segmentState,
+        ...(source.roaming ? { segmentOwner: source.roaming.localMachine } : {}) },
       state: {
         path: source.path, inode, size: before.size, mtimeMs: before.mtimeMs, offset: committed,
         parseErrors: (reset ? 0 : previous?.parseErrors ?? 0) + parsed.errors.filter(e => e.byteOffset >= resume).length,
@@ -207,7 +305,7 @@ async function readTranscript(
 function row(call: ParsedCall, generation: number, copied = false, responseId: string | null = null): CallRow {
   const report = call.actor === "subagent" && call.aggregate && call.runId !== null;
   return {
-    ...call, sourceGeneration: generation, counted: true, originKey: null, copied, responseId,
+    ...call, sourceGeneration: generation, counted: true, originKey: null, executionMachine: null, managedEntryKey: null, copied, responseId,
     sourceKind: report ? "report" : "transcript"
   };
 }
@@ -304,6 +402,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
   const calls: CallRow[] = [], states: ImportState[] = [], resets: {
     path: string;
     generation: number;
+    preserveCalls?: boolean;
   }[] = [];
   const errors = [...sharedErrors];
   const sessions: SessionMeta[] = [];
@@ -397,6 +496,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
     }
     const tailGroups = new Set<string>();
     const scannedPaths = new Set<string>();
+    const managedInBatch = new Map<string, string>();
     const selectedPaths = options.sourcePaths ? new Set(options.sourcePaths) : undefined;
     for (const source of discovery.sources) {
       if (selectedPaths && !selectedPaths.has(source.path)) continue;
@@ -404,16 +504,19 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
         return health();
       try {
         const previous = ledger.getImportState(source.path);
+        const context = ledger.getSourceContext(source.path, []);
         // Do not deserialize historical ancestry at all on a no-change pass.
         const info = await stat(source.path);
-        if (previous && persistedContexts.has(source.path) && previous.inode === `${info.dev}:${info.ino}` && previous.size === info.size
+        const attributed = source.roaming ? !!context?.segmentState && !context.segmentScan && context.segmentOwner === source.roaming.localMachine
+          : !context?.segmentOwner;
+        if (attributed && previous && persistedContexts.has(source.path) && previous.inode === `${info.dev}:${info.ino}` && previous.size === info.size
           && previous.mtimeMs === info.mtimeMs && previous.offset === info.size) {
           const header = headers.get(source.path);
           if (source.run && text(header?.id))
             contexts.set(source.run.id, String(header!.id));
           continue;
         }
-        const scan = await readTranscript(source, previous, ledger.getSourceContext(source.path, []), signal, ledger, Math.max(1, options.maxBytes ?? Infinity), savedSessions);
+        const scan = await readTranscript(source, previous, context, signal, ledger, Math.max(1, options.maxBytes ?? Infinity), savedSessions);
         if (!scan)
           continue;
         states.push(scan.state);
@@ -422,7 +525,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
         sourceContexts.push({ path: source.path, context: scan.context });
         headers.set(source.path, scan.header ?? null);
         if (scan.reset) {
-          resets.push({ path: source.path, generation: scan.state.generation });
+          resets.push({ path: source.path, generation: scan.state.generation, ...(source.roaming ? { preserveCalls: true } : {}) });
           if (source.run)
             contexts.delete(source.run.id);
           for (const [k, p] of pending)
@@ -438,6 +541,21 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
           const entry = entries.get(call.entryId), message = object(entry?.message);
           const copied = inherited && call.ts < headerTime;
           const item = row(call, scan.state.generation, copied, text(message.responseId));
+          if (source.roaming) {
+            if (scan.executionMachines.get(call.entryId) !== source.roaming.localMachine) continue;
+            const transcriptId = text(scan.header?.id);
+            if (!transcriptId) throw Object.assign(new Error("missing transcript identity"), { code: "invalid-roam-header" });
+            const key = JSON.stringify([source.roaming.localMachine, transcriptId, call.entryId]);
+            const paths = [...headers].filter(([, header]) => text(header?.id) === transcriptId).map(([path]) => path);
+            const existing = managedInBatch.get(key) ?? ledger.findLocalCall(paths, call.entryId, source.roaming.localMachine);
+            if (existing) {
+              if (existing !== source.path) errors.push({ path: source.path, code: "duplicate-managed-entry" });
+              continue;
+            }
+            managedInBatch.set(key, source.path);
+            item.executionMachine = source.roaming.localMachine;
+            item.managedEntryKey = key;
+          }
           if (item.sourceKind !== "report") {
             const owning = copied ? origin(source, call.ts)?.run : source.run;
             item.agent = owning?.agent ?? null;
@@ -578,7 +696,7 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
         errors.push({ path, code: "runs-db-recreated:facts-retained" });
       const offset = Math.max(size, previous?.offset ?? 0);
       states.push({ path, inode, size: offset, offset, mtimeMs: at, parseErrors, generation: 0, prefixHash });
-      sourceContexts.push({ path, context: { header: { snapshotSize: size }, entries, tailHash: "" } });
+      sourceContexts.push({ path, context: { header: { snapshotSize: size }, entries, tailHash: "", segmentState: null } });
     }
     }
     const resetPaths = new Set(resets.map(s => s.path));

@@ -62,6 +62,7 @@ export type CallRow = {
   toolCallId?: string | null; toolDurationMs?: number | null;
   usage: UsageTokens; price: PriceResult; piCost: number | null; latencyMs: number | null;
   aggregate: boolean; counted: boolean; originKey: string | null;
+  executionMachine: string | null; managedEntryKey: string | null;
   /** Preserved assistant response identity, when the transcript supplies one. */
   responseId?: string | null;
   /** Inherited fork history, never newly billed by the receiving run. Defaults false. */
@@ -92,7 +93,34 @@ export type ResponseMetadataCheckpoint = MetadataCheckpoint & { inode: string; m
 export type ResponseMetadata = Pick<CallRow, "sourceFile" | "entryId" | "sourceGeneration" | "latencyMs"> & {
   thinkingLevel: string | null; providerThinkingLevel: string | null; toolCallId: string | null; toolDurationMs: number | null;
 };
-export type SourceContext = { header: Record<string, unknown> | null; entries: { byteOffset: number; json: unknown }[]; tailHash: string };
+export type SourceContext = {
+  header: Record<string, unknown> | null; entries: { byteOffset: number; json: unknown }[]; tailHash: string;
+  segmentState: { executionMachine: string | null; historyMachine: string | null } | null;
+  segmentOwner?: string;
+  segmentScan?: boolean;
+};
+
+type StoredContext = Pick<SourceContext, "header" | "segmentState" | "segmentOwner" | "segmentScan">;
+function decodeContext(json: string): StoredContext {
+  const value = JSON.parse(json) as Record<string, unknown> | null;
+  if (!value || value.kind !== "spider-usage-source" || value.version !== 1)
+    return { header: value, segmentState: null };
+  const state = value.segmentState as Record<string, unknown> | null;
+  if (state !== null && (!state || typeof state !== "object" ||
+    !(typeof state.executionMachine === "string" || state.executionMachine === null) ||
+    !(typeof state.historyMachine === "string" || state.historyMachine === null)))
+    throw new Error("Invalid usage segment context");
+  return {
+    header: value.header as Record<string, unknown> | null,
+    segmentState: state as StoredContext["segmentState"],
+    ...(typeof value.segmentOwner === "string" ? { segmentOwner: value.segmentOwner } : {}),
+    ...(value.segmentScan === true ? { segmentScan: true } : {}),
+  };
+}
+function encodeContext(context: SourceContext): string {
+  return JSON.stringify({ kind: "spider-usage-source", version: 1, header: context.header,
+    segmentState: context.segmentState ?? null, segmentOwner: context.segmentOwner, segmentScan: context.segmentScan });
+}
 export type PendingReport = { path: string; runId: string; generation: number; firstSeen: number; calls: CallRow[]; partial?: boolean };
 export type ImportState = {
   path: string; inode: string; size: number; mtimeMs: number; offset: number; parseErrors: number;
@@ -134,7 +162,7 @@ export type ImportBatch = {
   backfillState?: "pending" | "running" | "complete" | "failed";
   /** Compatibility only. Selection depends on raw facts, not these old signals. */
   detailedRunIds: readonly string[]; restoreAggregateRunIds: readonly string[];
-  resetSources: readonly { path: string; generation: number }[];
+  resetSources: readonly { path: string; generation: number; preserveCalls?: boolean }[];
   sourceErrors: readonly SourceError[]; at: number;
   sourceContexts?: readonly { path: string; context: SourceContext }[];
   pendingReports?: readonly PendingReport[];
@@ -172,6 +200,7 @@ export interface UsageLedger {
    * An empty roots array reads header/checkpoints only. Omitted roots is a diagnostic full read. */
   getSourceContext(path: string, roots?: readonly string[]): SourceContext | undefined;
   getSourceHeaders(): readonly { path: string; header: Record<string, unknown> | null }[];
+  findLocalCall(paths: readonly string[], entryId: string, machineId: string): string | undefined;
   getSessionProviders(sessionId: string | null, excludeSource?: string): readonly string[];
   getPendingReports(): readonly PendingReport[];
   getIncompleteReports(): readonly { path: string; runId: string }[];
@@ -234,6 +263,7 @@ function callValues(call: CallRow): Record<string, string | number | null> {
     thinking_level: call.thinkingLevel ?? null, provider_thinking_level: call.providerThinkingLevel ?? null,
     tool_call_id: call.toolCallId ?? null, tool_duration_ms: call.toolDurationMs ?? null,
     origin_key: call.originKey, response_id: call.responseId ?? null, copied: Number(call.copied ?? false),
+    execution_machine: call.executionMachine ?? null, managed_entry_key: call.managedEntryKey ?? null,
     // Repricing cannot change historical identity. Infer billing provider without
     // changing the raw attribution used to recognize copied transcript entries.
     fingerprint: fingerprint({ ...canonical, provider: call.rawProvider === undefined ? canonical.provider : call.rawProvider }),
@@ -379,11 +409,16 @@ function createLedger(db: Db): UsageLedger {
     parse_errors AS parseErrors, generation, prefix_hash AS prefixHash FROM import_state WHERE path = ? AND inode IS NOT NULL`);
   const getFence = db.prepare("SELECT generation, offset FROM import_state WHERE path = ?");
   const hasResponseMetadata = Number(db.pragma("user_version")) >= 6;
-  const callColumns = hasResponseMetadata ? [...CALL_COLUMNS, ...RESPONSE_COLUMNS] : CALL_COLUMNS;
+  const hasSegments = Number(db.pragma("user_version")) >= 7;
+  const callColumns = [...CALL_COLUMNS, ...(hasResponseMetadata ? RESPONSE_COLUMNS : []), ...(hasSegments ? ["execution_machine", "managed_entry_key"] : [])];
   const insertCall = db.prepare(`INSERT INTO calls (${callColumns.join(",")})
     VALUES (${callColumns.map(column => `@${column}`).join(",")})
     ON CONFLICT(source_file,entry_id) DO NOTHING
-    ${hasResponseMetadata ? "ON CONFLICT(source_file,tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING" : ""}`);
+    ${hasResponseMetadata ? "ON CONFLICT(source_file,tool_call_id) WHERE tool_call_id IS NOT NULL DO NOTHING" : ""}
+    ${hasSegments ? "ON CONFLICT(managed_entry_key) WHERE managed_entry_key IS NOT NULL DO NOTHING" : ""}`);
+  const localCall = hasSegments ? db.prepare(`SELECT source_file AS sourceFile FROM calls
+    WHERE source_file=? AND entry_id=? AND (execution_machine IS NULL OR execution_machine=?) LIMIT 1`) : undefined;
+  const keyedCall = hasSegments ? db.prepare("SELECT source_file AS sourceFile FROM calls WHERE managed_entry_key=?") : undefined;
   const putResponseMetadata = hasResponseMetadata ? db.prepare(`UPDATE calls SET
     latency_ms=COALESCE(latency_ms,@latencyMs),
     thinking_level=COALESCE(thinking_level,@thinkingLevel),
@@ -545,9 +580,9 @@ function createLedger(db: Db): UsageLedger {
         const metadataResets = [...batch.resetSessionMetadata ?? []];
         for (const source of batch.resetSources) {
           const old = context.get(source.path) as { header: string } | undefined;
-          const id = old ? (JSON.parse(old.header) as { id?: unknown } | null)?.id : null;
+          const id = old ? decodeContext(old.header).header?.id : null;
           metadataResets.push({ path: source.path, sessionId: typeof id === "string" ? id : null });
-          reset.run(source.path, source.generation);
+          if (!source.preserveCalls) reset.run(source.path, source.generation);
           resetPending.run(source.path);
           resetIncomplete.run(source.path);
           resetEntries.run(source.path);
@@ -582,12 +617,20 @@ function createLedger(db: Db): UsageLedger {
         for (const item of batch.responseMetadata ?? []) putResponseMetadata?.run(item);
         for (const checkpoint of batch.responseMetadataCheckpoints ?? [])
           putResponseCheckpoint?.run({ ...checkpoint, complete: Number(checkpoint.complete) });
-        for (const call of batch.calls) insertCall.run(callValues(call));
+        const duplicatePaths = new Set<string>();
+        for (const call of batch.calls) {
+          const inserted = insertCall.run(callValues(call));
+          if (!inserted.changes && call.managedEntryKey) {
+            const existing = keyedCall?.get(call.managedEntryKey) as { sourceFile: string } | undefined;
+            if (existing && existing.sourceFile !== call.sourceFile) duplicatePaths.add(call.sourceFile);
+          }
+        }
         for (const edge of batch.removeCoverageEdges ?? []) removeCoverageEdge.run(edge.reportRunId, edge.includedRunId);
         for (const edge of batch.coverageEdges ?? []) putCoverageEdge.run(edge);
         for (const state of batch.states) putState.run({ ...state, at: batch.at });
+        for (const path of duplicatePaths) putError.run({ path, code: "duplicate-managed-entry", checkedPaths: null, at: batch.at });
         for (const item of batch.sourceContexts ?? []) {
-          putContext.run(item.path, JSON.stringify(item.context.header), item.context.tailHash);
+          putContext.run(item.path, encodeContext(item.context), item.context.tailHash);
           const generation = states.get(item.path)?.generation ?? fence(item.path)?.generation ?? 0;
           let previousId = (lastEntry.get(item.path, generation) as { id: string } | undefined)?.id ?? null;
           for (const entry of item.context.entries) {
@@ -654,7 +697,7 @@ function createLedger(db: Db): UsageLedger {
           { byteOffset: number; json: string; parentId: string | null }[])
           .map(e => ({ byteOffset: e.byteOffset, json: { ...JSON.parse(e.json), parentId: e.parentId } }));
       }
-      return { header: JSON.parse(row.header), entries, tailHash: row.tailHash };
+      return { ...decodeContext(row.header), entries, tailHash: row.tailHash };
     },
     getSessionProviders(sessionId, excludeSource) {
       if (sessionId === null) return [];
@@ -663,7 +706,14 @@ function createLedger(db: Db): UsageLedger {
         .all(sessionId, excludeSource ?? null, excludeSource ?? null) as { provider: string }[]).map(row => row.provider);
     },
     getSourceHeaders() {
-      return (headers.all() as { path: string; header: string }[]).map(row => ({ ...row, header: JSON.parse(row.header) }));
+      return (headers.all() as { path: string; header: string }[]).map(row => ({ ...row, header: decodeContext(row.header).header }));
+    },
+    findLocalCall(paths, entryId, machineId) {
+      for (const path of paths) {
+        const row = localCall?.get(path, entryId, machineId) as { sourceFile: string } | undefined;
+        if (row) return row.sourceFile;
+      }
+      return undefined;
     },
     getPendingReports() {
       return (pending.all() as (Omit<PendingReport, "calls"> & { calls: string })[]).map(row => ({ ...row, ...JSON.parse(row.calls) }));

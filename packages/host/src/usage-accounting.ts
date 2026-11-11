@@ -12,6 +12,15 @@ const pendingKey = Symbol.for("spider.pending-aux-usage");
 const shared = globalThis as typeof globalThis & { [pendingKey]?: Map<string, Usage[]> };
 const pending = shared[pendingKey] ??= new Map<string, Usage[]>();
 
+// Pre-roaming rows have an empty origin. Named foreign origins are never local work.
+function localRunPredicate(db: Db): string {
+  return Number(db.pragma("user_version")) < 14 ? "1" :
+    "(r.origin_machine = '' OR r.origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1))";
+}
+function isLocalRun(db: Db, id: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM runs r WHERE r.id=? AND ${localRunPredicate(db)}`).get(id);
+}
+
 export class UsageAccounting {
   private manager?: SessionManager;
   private sessionId = "";
@@ -39,7 +48,8 @@ export class UsageAccounting {
           const db = openDb(child.dbPath, { fileMustExist: true });
           try {
             const run = new RunStore(db).get(child.runId);
-            if (run?.pid === process.pid && (!child.owner || run.session_id === child.owner)) recordRunUsage(db, child.runId, record, purpose);
+            if (run?.pid === process.pid && (!child.owner || run.session_id === child.owner) && isLocalRun(db, child.runId))
+              recordRunUsage(db, child.runId, record, purpose);
           } finally { db.close(); }
           return;
         }
@@ -62,15 +72,16 @@ export class UsageAccounting {
   }
 
   reportRun(db: Db, run: RunRow): void {
-    if (!this.owns(run.session_id)) return;
-    reportRunUsage(db, run, (row, records) => this.append(row.session_id, "subagent", records, `${row.name ?? row.agent} (${row.id})`));
+    if (!this.owns(run.session_id) || !isLocalRun(db, run.id)) return;
+    reportRunUsage(db, run, (row, records) => isLocalRun(db, row.id) && this.append(row.session_id, "subagent", records, `${row.name ?? row.agent} (${row.id})`));
   }
 
   private unreportedRuns(db: Db, sessionId: string): RunRow[] {
+    const local = localRunPredicate(db);
     const candidates = (db.prepare(`SELECT id, session_id, status, name, agent, COALESCE(events.has_usage, 0) AS has_usage FROM runs r
       LEFT JOIN (SELECT run_id, MAX(type='spider_usage') AS has_usage, MAX(type='spider_usage_reported') AS reported
         FROM run_events WHERE type IN ('spider_usage','spider_usage_reported') AND run_id IS NOT NULL GROUP BY run_id) events ON events.run_id=r.id
-      WHERE session_id=? AND status IN ('done','failed','cancelled') AND COALESCE(events.reported, 0)=0`)
+      WHERE session_id=? AND status IN ('done','failed','cancelled') AND COALESCE(events.reported, 0)=0 AND ${local}`)
       .all(sessionId) as Array<RunRow & { has_usage: number }>).filter(row => !getShared(row.id));
     const legacy = candidates.filter(row => !row.has_usage);
     if (legacy.length) db.transaction(() => {
@@ -78,7 +89,7 @@ export class UsageAccounting {
       // since classification. Newly priced runs stay unmarked for the next pass.
       const insert = db.prepare(`INSERT INTO run_events (run_id, session_id, ts, type)
         SELECT r.id, r.session_id, ?, 'spider_usage_reported' FROM runs r
-        WHERE r.id IN (SELECT value FROM json_each(?))
+        WHERE r.id IN (SELECT value FROM json_each(?)) AND ${local}
           AND r.id NOT IN (SELECT run_id FROM run_events
             WHERE type IN ('spider_usage','spider_usage_reported') AND run_id IS NOT NULL)`);
       const ts = Date.now(), ids = JSON.stringify(legacy.map(row => row.id));
@@ -102,7 +113,7 @@ export class UsageAccounting {
     pending.set(sessionId, items);
     for (const row of rows) {
       reportRunUsage(db, row, (run, records) => {
-        if (!this.owns(run.session_id)) return false;
+        if (!this.owns(run.session_id) || !isLocalRun(db, run.id)) return false;
         if (typeof this.manager?.appendUsage === "function") return this.append(run.session_id, "subagent", records, `${run.name ?? run.agent} (${run.id})`);
         items.push(...records.map(r => r.usage)); return true;
       });

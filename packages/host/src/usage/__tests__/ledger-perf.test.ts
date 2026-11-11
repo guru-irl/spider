@@ -13,7 +13,7 @@ function call(id: string, overrides: Partial<CallRow> = {}): CallRow {
     api: null, usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 },
     price: { status: "priced", aic: 1, components: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 },
       rateVersion: "fixture", tier: "default", confidence: "verified" }, piCost: null, latencyMs: null,
-    aggregate: false, counted: true, originKey: null,
+    aggregate: false, counted: true, originKey: null, executionMachine: null, managedEntryKey: null,
     sourceKind: overrides.actor === "subagent" && overrides.aggregate && overrides.runId != null ? "report" : "transcript", ...overrides };
 }
 function batch(calls: readonly CallRow[], coverageEdges: readonly CoverageEdge[] = []): ImportBatch {

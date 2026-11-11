@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,10 +38,10 @@ it("upgrades a v5 fixture once while preserving call rowids, selection, counters
   expect(calls).toHaveLength(1);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(6);
+  expect(db.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
   expect(db.prepare("SELECT * FROM import_state").all()).toEqual(originalCursors);
   const upgraded = db.prepare("SELECT rowid,* FROM calls ORDER BY rowid").all();
-  expect(upgraded).toEqual(calls.map(call => ({ ...call, thinking_level: null, provider_thinking_level: null, tool_call_id: null, tool_duration_ms: null })));
+  expect(upgraded).toEqual(calls.map(call => ({ ...call, thinking_level: null, provider_thinking_level: null, tool_call_id: null, tool_duration_ms: null, execution_machine: null, managed_entry_key: null })));
   expect(db.prepare("SELECT id,input,aic FROM counted_calls").all()).toEqual(selected);
   expect(db.prepare("SELECT * FROM counter_snapshots").all()).toEqual(counter);
   expect(db.prepare("SELECT value FROM ledger_metadata WHERE key='schema-layout'").get()).toEqual({ value: "v1-ingest-append-1" });
@@ -64,7 +65,7 @@ it("rolls back an interrupted v6 migration without invalidating the historical c
   expect(layout(db)).toEqual(before);
   expect(db.prepare("SELECT * FROM import_state").all()).toEqual(cursors);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(6);
+  expect(db.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
 });
 
 it("a read-only v5 follower neither needs the new columns nor migrates the writer's file", () => {

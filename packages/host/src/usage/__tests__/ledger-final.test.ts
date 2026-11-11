@@ -15,7 +15,7 @@ function call(id: string, value = 20, overrides: Partial<CallRow> = {}): CallRow
     usage: { input: value, output: 0, cacheRead: 0, cacheWrite: 0 },
     price: { status: "priced", aic: value, components: { input: value, output: 0, cacheRead: 0, cacheWrite: 0 },
       rateVersion: "fixture", tier: "default", confidence: "verified" },
-    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null,
+    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null, executionMachine: null, managedEntryKey: null,
     sourceKind: "transcript", ...overrides };
 }
 function report(overrides: Partial<CallRow> = {}): CallRow {

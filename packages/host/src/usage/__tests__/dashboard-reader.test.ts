@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { afterEach, expect, it, vi } from "vitest";
 import * as dbCore from "@spider/db-core";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -118,7 +119,7 @@ it("route status reads its fields in the snapshot transaction", async () => {
   try {
     let schemaVersion: number | undefined;
     expect(() => { schemaVersion = reader.snapshot(ctx => ctx.status()).schemaVersion; }).not.toThrow();
-    expect(schemaVersion).toBe(6);
+    expect(schemaVersion).toBe(USAGE_SCHEMA_VERSION);
   } finally { spy.mockRestore(); }
 });
 
@@ -134,8 +135,8 @@ it("status refreshes schema version after a writable migration", async () => {
   const { openUsageLedger } = await import("../ledger.js");
   const migrated = openUsageLedger(file);
   migrated.close();
-  expect(reader.snapshot(ctx => ctx.status()).schemaVersion).toBe(6);
-  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(6);
+  expect(reader.snapshot(ctx => ctx.status()).schemaVersion).toBe(USAGE_SCHEMA_VERSION);
+  expect(reader.snapshot(ctx => ctx.status().schemaVersion)).toBe(USAGE_SCHEMA_VERSION);
 });
 
 it("reader generations retain the launcher owner prefix and invalidate old cursors", async () => {

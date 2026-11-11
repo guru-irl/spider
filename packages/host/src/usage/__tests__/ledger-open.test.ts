@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fork, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -95,7 +96,7 @@ describe("usage ledger opening", () => {
     const start = performance.now();
     const ledger = openUsageLedger(file);
     ledgers.push(ledger);
-    expect(ledger.health().schemaVersion).toBe(6);
+    expect(ledger.health().schemaVersion).toBe(USAGE_SCHEMA_VERSION);
     expect(performance.now() - start).toBeLessThan(2100);
     expect(await holder.exit).toBe(0);
   });
@@ -110,7 +111,7 @@ describe("usage ledger opening", () => {
       for (const process of group) process.child.send("go");
       const results = await Promise.all(group.map(process => process.result));
       for (const result of results) {
-        expect(result).toMatchObject({ version: 6 });
+        expect(result).toMatchObject({ version: USAGE_SCHEMA_VERSION });
         expect((result as { elapsed: number }).elapsed).toBeLessThan(2100);
       }
       expect(await Promise.all(group.map(process => process.exit))).toEqual([0, 0, 0, 0, 0, 0]);

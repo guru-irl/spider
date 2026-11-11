@@ -1,5 +1,6 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { createHash } from "node:crypto";
-import { withV6Metadata } from "./fixtures/usage-v6-expectations.js";
+import { withV6Metadata, withV7Metadata } from "./fixtures/usage-v6-expectations.js";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -199,7 +200,7 @@ it("upgrades a v4 fixture preserving every earlier row, rowid, index and metadat
     const before = allRows(), rowids = old.prepare("SELECT rowid,id FROM calls ORDER BY rowid").all();
     const objects = old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all();
     migrateUsageLedger(old);
-    expect(old.pragma("user_version")).toBe(6); expect(allRows()).toEqual({ ...withV6Metadata(before), response_metadata_import: [] });
+    expect(old.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION); expect(allRows()).toEqual({ ...withV7Metadata(withV6Metadata(before)), response_metadata_import: [] });
     expect(old.prepare("SELECT rowid,id FROM calls ORDER BY rowid").all()).toEqual(rowids);
     const afterObjects = old.prepare("SELECT type,name,sql FROM sqlite_master WHERE type IN ('index','trigger','view') ORDER BY type,name").all() as { name: string }[];
     expect(afterObjects.filter(row => (objects as { name: string }[]).some(old => old.name === row.name))).toEqual(objects);
@@ -250,7 +251,7 @@ it("rolls back an interrupted v5 rebuild before allowing a clean retry", () => {
     try { expect(() => migrateUsageLedger(old)).toThrow("synthetic-interruption"); } finally { old.raw.exec = exec; }
     expect(old.pragma("user_version")).toBe(4); expect(layout()).toEqual(before);
     expect(old.prepare("SELECT rowid,* FROM calls").all()).toEqual(facts);
-    migrateUsageLedger(old); expect(old.pragma("user_version")).toBe(6);
+    migrateUsageLedger(old); expect(old.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
   } finally { old.close(); }
 });
 
@@ -286,7 +287,7 @@ it("deduplicates newly ingested copies against repriced model-less historical su
   ledger.apply(dashboardBatch([dashboardCall("evidence", { sessionId: "summary-session", provider: "github-copilot" }), legacy("same", { sourceFile: "synthetic/native.jsonl" })]));
   expect(ledger.repriceUnpriced(() => true)).toMatchObject({ changed: 1 });
   const copied = parse(header, select("github-copilot"), summary("same"))[0];
-  ledger.apply(dashboardBatch([{ ...copied, sourceFile: "synthetic/copy.jsonl", sourceGeneration: 0, copied: true, counted: true, originKey: null, sourceKind: "transcript" }]));
+  ledger.apply(dashboardBatch([{ ...copied, sourceFile: "synthetic/copy.jsonl", sourceGeneration: 0, copied: true, counted: true, originKey: null, executionMachine: null, managedEntryKey: null, sourceKind: "transcript" }]));
   expect(rows()).toHaveLength(3);
   expect(ledger.summarize(0, at)).toMatchObject({ aic: 11, pricedCalls: 2 });
 });

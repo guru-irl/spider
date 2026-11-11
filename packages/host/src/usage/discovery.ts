@@ -5,11 +5,15 @@ import { openDbReadOnly, type Db } from "@spider/db-core";
 import { normalizeRunStatus, type RunMeta, type SourceError } from "./ledger.js";
 import type { SourceInfo as ParserSource } from "./parse.js";
 import { summarizeRunEvents, type RunEvent, type RunEventFacts } from "./run-events.js";
+import { UsageJsonLine } from "./jsonl-projection.js";
 export type { RunEvent } from "./run-events.js";
 
 export type UsageRoots = { registryDb: string; sessionsDir: string; ledgerFile: string; authPath: string; leaseDir: string };
 /** Registry metadata can be absent in legacy databases. */
-export type SourceInfo = Omit<ParserSource, "run"> & { run: RunMeta | null };
+export type SourceInfo = Omit<ParserSource, "run"> & {
+  run: RunMeta | null;
+  roaming?: { localMachine: string; originMachine: string | null };
+};
 export type RunState = { dbPath: string; id: string; status: string | null; childMode: string | null };
 export type Discovery = {
   sources: readonly SourceInfo[]; runs: readonly RunMeta[]; errors: readonly SourceError[];
@@ -24,10 +28,26 @@ export type DiscoveryDependencies = {
 };
 // Only compact attribution heads survive discovery. Stamp checks invalidate
 // replacements, truncation and appends; no transcript content or DB handle stays.
-const attributionHeads = new WeakMap<UsageRoots, Map<string, { stamp: string; cwd: string | null }>>();
+const attributionHeads = new WeakMap<UsageRoots, Map<string, { stamp: string; cwd: string | null; sessionId: string | null }>>();
 const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value : null;
 const number = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
 const code = (error: unknown): string => text((error as { code?: unknown })?.code) ?? "source-read-error";
+
+async function sessionHeader(file: Awaited<ReturnType<typeof open>>): Promise<{ cwd: string | null; sessionId: string | null } | null> {
+  const line = new UsageJsonLine(), buffer = Buffer.alloc(64 * 1024);
+  let offset = 0;
+  for (;;) {
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+    if (!bytesRead) return null;
+    const data = buffer.subarray(0, bytesRead), end = data.indexOf(10);
+    line.write(end < 0 ? data : data.subarray(0, end + 1));
+    if (end >= 0) {
+      const header = line.finish() as { type?: unknown; cwd?: unknown; id?: unknown } | null | undefined;
+      return header?.type === "session" ? { cwd: text(header.cwd), sessionId: text(header.id) } : null;
+    }
+    offset += bytesRead;
+  }
+}
 
 /** No registry resolution, registration, migration, git commands or repository walks. */
 export async function discoverUsageSources(roots: UsageRoots, dependencies: DiscoveryDependencies = {}): Promise<Discovery> {
@@ -42,7 +62,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
   const runDbs: string[] = [];
   const runDbIdentities: Record<string, string> = {};
   async function canonical(path: string): Promise<string> { try { return await realpath(path); } catch { return resolve(path); } }
-  async function add(path: string, project: string | null, repo: string | null, run: RunMeta | null) {
+  async function add(path: string, project: string | null, repo: string | null, run: RunMeta | null, roaming?: SourceInfo["roaming"]) {
     const key = await canonical(path);
     try {
       const info = await stat(key);
@@ -51,7 +71,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
     }
     catch (error) { errors.push({ path: key, code: code(error) === "ENOENT" ? "missing-source" : code(error) }); return false; }
     // Native run ownership is more specific than an incidental parent listing.
-    if (!sources.has(key) || run && !sources.get(key)!.run) sources.set(key, { path: key, project, repo, run });
+    if (!sources.has(key) || run && !sources.get(key)!.run) sources.set(key, { path: key, project, repo, run, ...(roaming ? { roaming } : {}) });
     return true;
   }
   const sessions = await canonical(roots.sessionsDir);
@@ -98,15 +118,8 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
       let file: Awaited<ReturnType<typeof open>> | undefined;
       try {
         file = await open(source.path, "r");
-        const buffer = Buffer.alloc(64 * 1024);
-        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-        const end = buffer.subarray(0, bytesRead).indexOf(10);
-        let cwd: string | null = null;
-        if (end >= 0) {
-          try { const h = JSON.parse(buffer.subarray(0, end).toString("utf8")); if (h?.type === "session") cwd = text(h.cwd); }
-          catch { /* malformed headers are diagnosed by ingest */ }
-        }
-        head = { stamp, cwd }; heads.set(source.path, head);
+        const header = await sessionHeader(file);
+        head = { stamp, cwd: header?.cwd ?? null, sessionId: header?.sessionId ?? null }; heads.set(source.path, head);
       } catch (error) { errors.push({ path: source.path, code: code(error) }); }
       finally { await file?.close(); }
     }
@@ -141,18 +154,37 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
       db = openSourceDb(dbPath);
       if (!db) { errors.push({ path: dbPath, code: "missing-db" }); continue; }
       const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(row => row.name));
+      const meta = tables.has("roam_meta") ? db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: unknown } | undefined : undefined;
+      const localMachine = text(meta?.machine_id);
+      const participants = new Map<string, string | null>();
+      if (tables.has("roam_sessions") && tables.has("sessions")) {
+        const sessionColumns = new Set((db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map(column => column.name));
+        const origin = sessionColumns.has("origin_machine") ? "s.origin_machine" : "NULL";
+        for (const row of db.prepare(`SELECT rs.session_id, ${origin} AS origin_machine FROM roam_sessions rs
+          LEFT JOIN sessions s ON s.id=rs.session_id`).all() as { session_id: string; origin_machine: unknown }[])
+          participants.set(row.session_id, text(row.origin_machine));
+        for (const source of sources.values()) {
+          const sessionId = heads.get(source.path)?.sessionId;
+          if (sessionId && participants.has(sessionId))
+            source.roaming = { localMachine: localMachine ?? "", originMachine: participants.get(sessionId) ?? null };
+        }
+      }
       if (!tables.has("runs")) continue; // Repo tiers without runs are normal.
       runDbs.push(dbPath);
       const identity = await stat(dbPath);
       runDbIdentities[dbPath] = `${identity.dev}:${identity.ino}:${identity.birthtimeMs}`;
       const columns = new Set((db.prepare("PRAGMA table_info(runs)").all() as { name: string }[]).map(c => c.name));
       const needed = ["id", "session_id", "parent_run_id", "agent", "role", "name", "model", "thinking", "phase",
-        "started_at", "ended_at", "status", "child_mode"];
+        "started_at", "ended_at", "status", "child_mode", "origin_machine"];
       const projection = needed.filter(c => columns.has(c)).join(",");
+      const localRunIds = new Set<string>();
       for (const row of db.prepare(`SELECT ${projection} FROM runs ORDER BY id`).all() as Record<string, unknown>[]) {
+        const originMachine = typeof row.origin_machine === "string" ? row.origin_machine : "";
+        if (originMachine !== "" && originMachine !== localMachine) continue;
         const id = text(row.id);
         // A DB run id is a path component, never a path supplied by the source.
         if (!id || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) { errors.push({ path: dbPath, code: "invalid-run-id" }); continue; }
+        localRunIds.add(id);
         const owner = owners[0];
         const run: RunMeta = {
           id, dbPath, project: owner.project, repo: owner.repo, sessionId: text(row.session_id),
@@ -168,6 +200,8 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
         for (const r of [...sameRepo, ...uniqueRoots.values()]) {
           if (!rootsToCheck.has(r.scratch)) rootsToCheck.set(r.scratch, r);
         }
+        const roaming = run.sessionId && participants.has(run.sessionId)
+          ? { localMachine: localMachine ?? "", originMachine: originMachine || localMachine } : undefined;
         const checkedPaths: string[] = [];
         let checkedPathCount = 0;
         const rememberPath = (path: string) => {
@@ -183,7 +217,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
           rememberPath(path);
           if (!scratchIndex.get(scratch)?.has(id)) continue;
           const errorStart = errors.length;
-          if (await add(path, candidate.project, candidate.repo, run)) { found = true; break; }
+          if (await add(path, candidate.project, candidate.repo, run, roaming)) { found = true; break; }
           // Keep actionable IO errors, but emit a single missing-source diagnostic below.
           const attempted = errors.splice(errorStart);
           errors.push(...attempted.filter(e => e.code !== "missing-source"));
@@ -197,16 +231,9 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
               rememberPath(forkPath);
               const handle = await open(forkPath, "r");
               let matches = false;
-              try {
-                const buffer = Buffer.alloc(64 * 1024);
-                const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-                const end = buffer.subarray(0, bytesRead).indexOf(10);
-                if (end >= 0) {
-                  try { const header = JSON.parse(buffer.subarray(0, end).toString("utf8")); matches = header?.type === "session" && header.id === id; }
-                  catch { /* a malformed header cannot establish run ownership */ }
-                }
-              } finally { await handle.close(); }
-              if (matches && await add(forkPath, candidate.project, candidate.repo, run)) { found = true; break; }
+              try { matches = (await sessionHeader(handle))?.sessionId === id; }
+              finally { await handle.close(); }
+              if (matches && await add(forkPath, candidate.project, candidate.repo, run, roaming)) { found = true; break; }
             }
           } catch (error) { if (code(error) !== "ENOENT") errors.push({ path: directory, code: code(error) }); }
           if (found) break;
@@ -223,6 +250,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
             for (const row of events.iterate() as IterableIterator<Record<string, unknown>>) {
               const id = number(row.id), runId = text(row.run_id), ts = number(row.ts), type = text(row.type);
               if (id === null || !runId || ts === null || !type) { errors.push({ path: dbPath, code: "invalid-run-event" }); continue; }
+              if (!localRunIds.has(runId)) continue;
               yield { dbPath, id, runId, ts, type, sessionId: text(row.session_id), payload: text(row.payload) };
             }
           }

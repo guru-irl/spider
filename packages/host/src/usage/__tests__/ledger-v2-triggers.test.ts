@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -151,7 +152,7 @@ it("an upgraded v2 ledger reopens after ANALYZE and PRAGMA optimize", () => {
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'sqlite_stat%'").all().length).toBeGreaterThan(0);
   const ledger = openUsageLedger(db.raw.name);
   try {
-    expect(ledger.health().schemaVersion).toBe(6);
+    expect(ledger.health().schemaVersion).toBe(USAGE_SCHEMA_VERSION);
     expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   } finally { ledger.close(); }
 });

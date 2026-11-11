@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { spawnSync } from "node:child_process";
 import { afterEach, expect, test } from "vitest";
 import { openDashboardReader } from "../dashboard-reader.js";
@@ -11,7 +12,7 @@ afterEach(() => { for (const close of closers.splice(0).reverse()) close(); });
 test("all five replacement queries use bounded indexed billing reads", () => {
   const fixture = createDashboardFixture(false); closers.push(fixture.close);
   const seed = seedPlanLedger(fixture.file, 1600);
-  expect(fixture.db.pragma("user_version")).toBe(6);
+  expect(fixture.db.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
   const reader = openDashboardReader(fixture.file, { instanceId: "plans", serverBuild: "fixture", now: () => seed.now, calibrationMode: () => "auto" })!;
   closers.push(() => reader.close());
   for (const request of planRequests(seed.periods[0]!, seed.sessionId, seed.runId)) {

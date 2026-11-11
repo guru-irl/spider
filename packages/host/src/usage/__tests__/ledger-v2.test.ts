@@ -1,9 +1,10 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import * as migrations from "../migrate.js";
-import { withV6Metadata } from "./fixtures/usage-v6-expectations.js";
+import { withV6Metadata, withV7Metadata } from "./fixtures/usage-v6-expectations.js";
 import { assertUsageSchemaVersion, migrateUsageLedger, USAGE_MIGRATIONS } from "../migrate.js";
 import { USAGE_LEASE_SCHEMA } from "../schema.js";
 import { type CallRow, type ImportBatch, type ImportState, type RunMeta, openUsageLedger, openUsageLedgerReadOnly } from "../ledger.js";
@@ -51,9 +52,9 @@ it("v1 upgrades additively and twice is harmless", () => {
   expect(revision(db)).toBe(-1);
   migrateUsageLedger(db);
   migrateUsageLedger(db);
-  expect(db.pragma("user_version")).toBe(6);
+  expect(db.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
   expect(revision(db)).toBe(0);
-  expect(facts(db)).toEqual(withV6Metadata(before));
+  expect(facts(db)).toEqual(withV7Metadata(withV6Metadata(before)));
   const afterDdl = db.prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name").all();
   const stripStatus = (row: unknown) => {
     const object = row as { name: string; sql: string };
@@ -69,16 +70,17 @@ it("v1 upgrades additively and twice is harmless", () => {
     .replace("AND (rate_version = 'pi-reported-cost-v1' OR (", "AND ").replace("AND aic_output IS NOT NULL))", "AND aic_output IS NOT NULL");
   const stripResponseMetadata = (sql: string) => sql.replace(", thinking_level TEXT", "").replace(", provider_thinking_level TEXT", "")
     .replace(", tool_call_id TEXT", "").replace(", tool_duration_ms REAL CHECK (tool_duration_ms >= 0)", "");
-  expect(stripResponseMetadata(stripReportedCost(stripSelection(callsSql)))).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
+  const stripRoamMetadata = (sql: string) => sql.replace(", execution_machine TEXT", "").replace(", managed_entry_key TEXT", "");
+  expect(stripResponseMetadata(stripReportedCost(stripSelection(stripRoamMetadata(callsSql))))).toBe((ddl.find(row => (row as { name: string }).name === "calls") as { sql: string }).sql);
   expect(db.prepare("PRAGMA index_info(runs_meta_session)").all().map(row => (row as { name: string }).name))
     .toEqual(["session_id", "db_path", "id"]);
   expect(db.prepare("SELECT * FROM ledger_metadata WHERE key != 'call-selection-revision' ORDER BY key").all()).toEqual(metadata);
   expect(() => assertUsageSchemaVersion(db)).not.toThrow();
   const writable = track(openUsageLedger(file));
-  expect(writable.health().schemaVersion).toBe(6);
+  expect(writable.health().schemaVersion).toBe(USAGE_SCHEMA_VERSION);
   expect(writable.leases.inspect("ingest", 2000)).toMatchObject({ owner: "fixture-owner", role: "follower", expiresAt: 121000 });
   expect(writable.leases.acquire("ingest", "other-owner", 2000, 120000)).toBeUndefined();
-  expect(facts(db)).toEqual(withV6Metadata(before));
+  expect(facts(db)).toEqual(withV7Metadata(withV6Metadata(before)));
   db.prepare("UPDATE ledger_metadata SET value='17' WHERE key='call-selection-revision'").run();
   migrateUsageLedger(db);
   expect(revision(db)).toBe(17);
@@ -86,9 +88,9 @@ it("v1 upgrades additively and twice is harmless", () => {
   const shipped = v1();
   const shippedFacts = facts(shipped);
   const writer = track(openUsageLedger(file));
-  expect(writer.health().schemaVersion).toBe(6);
+  expect(writer.health().schemaVersion).toBe(USAGE_SCHEMA_VERSION);
   expect(revision(shipped)).toBe(0);
-  expect(facts(shipped)).toEqual(withV6Metadata(shippedFacts));
+  expect(facts(shipped)).toEqual(withV7Metadata(withV6Metadata(shippedFacts)));
 });
 
 // Catches v2 silently blessing a changed durable table even with a known marker,
@@ -139,7 +141,7 @@ function call(overrides: Partial<CallRow> = {}): CallRow {
     usage: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 },
     price: { status: "priced", aic: 10, components: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
       rateVersion: "fixture-rate", tier: "default", confidence: "estimated" },
-    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null,
+    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null, executionMachine: null, managedEntryKey: null,
     sourceKind: "transcript", ...overrides,
   };
 }
@@ -251,9 +253,9 @@ it("coordination and replay leave revision stable", () => {
   stable(() => ledger.apply(batch({ states: [state({ parseErrors: 7 })] })), "parse-error only");
   stable(() => ledger.apply(batch({ states: [state({ inode: "changed-inode", prefixHash: "changed-prefix" })] })), "non-selection source metadata");
   stable(() => ledger.apply(seeded), "entire batch replay");
-  stable(() => ledger.apply(batch({ sourceContexts: [{ path: "fixture.jsonl", context: { header: null, tailHash: "tail",
+  stable(() => ledger.apply(batch({ sourceContexts: [{ path: "fixture.jsonl", context: { header: null, segmentState: null, tailHash: "tail",
     entries: [{ byteOffset: 0, json: { type: "metadata", id: "source-entry" } }] } }] })), "parser context only");
-  stable(() => ledger.apply(batch({ sourceContexts: [{ path: "fixture.jsonl", context: { header: null, tailHash: "new-tail",
+  stable(() => ledger.apply(batch({ sourceContexts: [{ path: "fixture.jsonl", context: { header: null, segmentState: null, tailHash: "new-tail",
     entries: [{ byteOffset: 0, json: { type: "metadata", id: "source-entry" } }] } }] })), "parser context replay");
   stable(() => ledger.apply(batch({ removeCoverageEdges: [{ ...edge, includedRunId: "absent" }], removePendingReports: [{ ...pending, runId: "absent" }],
     completeReports: [{ ...pending, runId: "absent" }] })), "absent removals");
@@ -331,7 +333,7 @@ it("same-generation reset clearing only parser entries leaves revision stable", 
   const ledger = track(openUsageLedger(file));
   const db = track(openDb(file));
   ledger.apply(batch({ calls: [call()], states: [state()], sourceContexts: [{ path: "fixture.jsonl", context: {
-    header: null, tailHash: "tail", entries: [{ byteOffset: 0, json: { type: "metadata", id: "source-entry" } }]
+    header: null, segmentState: null, tailHash: "tail", entries: [{ byteOffset: 0, json: { type: "metadata", id: "source-entry" } }]
   } }] }));
   const before = revision(db);
   expect(db.prepare("SELECT COUNT(*) AS n FROM source_entries").get()).toEqual({ n: 1 });

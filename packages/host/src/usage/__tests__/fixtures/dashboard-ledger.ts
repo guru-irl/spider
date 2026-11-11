@@ -18,7 +18,7 @@ export function dashboardCall(id: string, overrides: Partial<CallRow> = {}): Cal
     usage: { input: 10, cacheRead: 20, cacheWrite: 30, cacheWrite1h: 5, output: 10, reasoning: 4 },
     price: { status: "priced", aic: 1, components: { input: 0.1, cacheRead: 0.2, cacheWrite: 0.3, output: 0.4 },
       rateVersion: "fixture-rate", tier: "fixture-tier", confidence: "estimated" },
-    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null,
+    piCost: null, latencyMs: null, aggregate: false, counted: true, originKey: null, executionMachine: null, managedEntryKey: null,
     sourceKind: "transcript", ...overrides,
   };
 }

@@ -1,3 +1,4 @@
+import { USAGE_SCHEMA_VERSION } from "../schema.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -52,7 +53,7 @@ it.each(["off", "auto"] as const)("replacement aggregates are identical before a
   expect(before.measure.calls).toBe(75); expect(before.measure.unpricedCalls).toBe(2);
   expect(before.warmer.calls).toBe(1);
   expect(before.intervals).toHaveLength(3);
-  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(6);
+  migrateUsageLedger(db); expect(db.pragma("user_version")).toBe(USAGE_SCHEMA_VERSION);
   expect(read(mode, responses)).toEqual(before);
   expect(read(mode, ctx => readUsageCube(ctx, customRange(slice.start, slice.end))).total.calls).toBe(75);
 });

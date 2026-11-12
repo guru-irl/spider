@@ -318,10 +318,12 @@ export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBu
   const checkRoaming = (db: Db, scope: string): void => {
     try {
       if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roam_meta'").get()) return;
-      const meta = db.prepare("SELECT roamable, problem FROM roam_meta WHERE id = 1").get() as { roamable: number; problem: string | null } | undefined;
+      const meta = db.prepare("SELECT store_key, capture_enabled, roamable, problem FROM roam_meta WHERE id = 1").get() as
+        { store_key: string | null; capture_enabled: number; roamable: number; problem: string | null } | undefined;
       if (!meta || meta.roamable !== 1 || meta.problem) {
-        ok = false;
-        lines.push(`- roaming (${scope}): ${safeReviewError(meta?.problem ?? "store is not roamable")}`);
+        const disabled = meta && meta.store_key === null && meta.capture_enabled === 0;
+        if (!disabled) ok = false;
+        lines.push(`- roaming (${scope}): ${disabled ? "disabled; " : ""}${safeReviewError(meta?.problem ?? "store is not roamable")}`);
       }
     } catch (error) {
       ok = false;

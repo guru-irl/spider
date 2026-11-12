@@ -1,9 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { setGlobalDbPathForTests } from "@spider/db-core";
+import { openDb, setGlobalDbPathForTests } from "@spider/db-core";
+import { V13 } from "../../../db-core/src/__tests__/fixtures/historical-schemas";
 import { createReplica } from "@spider/db-core/testutil";
-import { catalogReplica, replicaPath } from "@spider/db-core/roam/catalog";
+import { catalogReplica, recordLocation, replicaPath } from "@spider/db-core/roam/catalog";
 import { applyBatch } from "@spider/db-core/roam/apply";
 import { validateBatch } from "@spider/db-core/roam/codec";
 import { createReplicaEffects } from "@spider/db-core/roam/effects";
@@ -90,6 +91,70 @@ it("session search excludes memory and content", async () => {
     expect(result.details).toEqual([]);
     expect(result.text).not.toMatch(/error|not found/i);
   } finally { f.remote.close(); }
+}, 5000);
+
+it("searches an uncataloged local session without crossing its boundary", async () => {
+  const f = setup();
+  try {
+    addTodo(f.local.db, "local", "needle local todo");
+    const run = new RunStore(f.local.db).create({ sessionId: "local", agent: "worker", task: "needle local run" });
+    emitLog(f.local.db, { runId: run.id, sessionId: "local", summary: "needle local history" });
+    f.local.db.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('local-other','needle unrelated',1)").run();
+    f.local.db.prepare("INSERT INTO sessions_fts(id,name,content) VALUES ('local-other','needle unrelated','needle private')").run();
+    addTodo(f.local.db, "local-other", "needle unrelated todo");
+    const other = new RunStore(f.local.db).create({ sessionId: "local-other", agent: "worker", task: "needle unrelated run" });
+    emitLog(f.local.db, { runId: other.id, sessionId: "local-other", summary: "needle unrelated history" });
+    const result = await runSearch({ query: "needle", session: "local" }, f.ctx);
+    const text = JSON.stringify(result.details);
+    expect(text).toContain("needle local");
+    expect(text).toContain("needle local todo");
+    expect(text).toContain("needle local run");
+    expect(text).toContain("needle local history");
+    expect(text).not.toContain("unrelated");
+    expect(text).not.toContain("selected");
+  } finally { f.remote.close(); }
+}, 5000);
+
+it("finds an uncataloged session represented only by a todo", async () => {
+  const f = setup();
+  try {
+    addTodo(f.local.db, "todo-only", "needle orphan todo");
+    const result = await runSearch({ query: "needle", session: "todo-only" }, f.ctx);
+    expect(result.details).toHaveLength(1);
+    expect(result.text).toContain("needle orphan todo");
+  } finally { f.remote.close(); }
+}, 5000);
+
+it("reports a cataloged but unavailable replica without mislabeling it as unknown", async () => {
+  const f = setup();
+  try {
+    f.local.db.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('missing-replica','needle stale',1)").run();
+    recordLocation(f.global.db, { sessionId: "missing-replica", stores: ["worktree:fixture-repo:missing"], home: null });
+    const result = await runSearch({ query: "needle", session: "missing-replica" }, f.ctx);
+    expect(result.details).toEqual([]);
+    expect(result.text).toMatch(/unavailable/i);
+    expect(result.text).not.toMatch(/not found/i);
+  } finally { f.remote.close(); }
+}, 5000);
+
+it("searches real schema-13 local history without migration or a roaming catalog", async () => {
+  const f = setup();
+  const legacy = openDb(join(f.local.root, "worktree-v13.db")), global = openDb(join(f.local.root, "global-v13.db"));
+  try {
+    legacy.exec(V13.worktree); legacy.raw.pragma("user_version = 13");
+    global.exec(V13.global); global.raw.pragma("user_version = 13");
+    legacy.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('legacy','needle session',1)").run();
+    legacy.prepare("INSERT INTO sessions_fts(id,name,content) VALUES ('legacy','needle session','needle transcript')").run();
+    legacy.prepare("INSERT INTO todos(session_id,seq,text,created_at) VALUES ('legacy',1,'needle todo',1)").run();
+    legacy.prepare("INSERT INTO todos_fts(rowid,text) SELECT id,text FROM todos WHERE session_id='legacy'").run();
+    legacy.prepare("INSERT INTO runs(id,session_id,agent,status,task) VALUES ('legacy-run','legacy','worker','done','needle run')").run();
+    legacy.prepare("INSERT INTO run_events(run_id,session_id,ts,type,summary) VALUES ('legacy-run','legacy',1,'log','needle history')").run();
+    const result = await runSearch({ query: "needle", session: "legacy" }, { ...f.ctx, db: legacy, globalDb: global });
+    const text = JSON.stringify(result.details);
+    expect(text).toContain("needle transcript"); expect(text).toContain("needle todo");
+    expect(text).toContain("needle run"); expect(text).toContain("needle history");
+    expect(legacy.pragma("user_version")).toBe(13); expect(global.pragma("user_version")).toBe(13);
+  } finally { legacy.close(); global.close(); f.remote.close(); }
 }, 5000);
 
 it("unknown session search does not fall back", async () => {

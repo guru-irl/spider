@@ -103,8 +103,10 @@ it("doctor reports a duplicate diagnosis without repairing its index", () => {
       DELETE FROM todos WHERE id = 29;`);
   } finally { db.close(); }
   const report = controlDoctor(root);
-  expect(report.ok).toBe(false);
-  expect(report.lines.join("\n")).toMatch(/roaming \(worktree\).*17,29/i);
+  expect(report.ok).toBe(true);
+  expect(report.lines.filter(line => line.includes("roaming (worktree)"))).toEqual([
+    "- roaming (worktree): disabled; Duplicate todo sequence for row IDs 17,29",
+  ]);
   const after = openDbReadOnlyAt(info.dbPath)!;
   try {
     expect(after.prepare("SELECT roamable, problem FROM roam_meta").get()).toEqual({
@@ -112,4 +114,28 @@ it("doctor reports a duplicate diagnosis without repairing its index", () => {
     });
     expect(after.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_todos_session_seq'").get()).toBeUndefined();
   } finally { after.close(); }
+}, 5000);
+
+it("doctor fails if roaming capture is enabled despite a missing store key", () => {
+  const info = project();
+  const db = openProject(info.projectKey);
+  try { db.exec("UPDATE roam_meta SET store_key=NULL, capture_enabled=1, roamable=0, problem='Corrupt roaming metadata'"); }
+  finally { db.close(); }
+  const report = controlDoctor(root);
+  expect(report.ok).toBe(false);
+  expect(report.lines).toContain("- roaming (worktree): Corrupt roaming metadata");
+}, 5000);
+
+it("doctor fails for a configured roaming store with the same duplicate diagnosis", () => {
+  const info = project();
+  const db = openProject(info.projectKey);
+  try {
+    db.prepare("UPDATE roam_meta SET store_key=?, capture_enabled=0, roamable=0, problem=? WHERE id=1")
+      .run("worktree:fixture:workspace", "Duplicate todo sequence for row IDs 17,29");
+  } finally { db.close(); }
+  const report = controlDoctor(root);
+  expect(report.ok).toBe(false);
+  expect(report.lines.filter(line => line.includes("roaming (worktree)"))).toEqual([
+    "- roaming (worktree): Duplicate todo sequence for row IDs 17,29",
+  ]);
 }, 5000);

@@ -21,6 +21,17 @@ import { contributeSkillPaths } from "./skills-dir.js";
 /** AGENTS.md is written at most once per process (idempotent + best-effort). */
 let agentsMdWritten = false;
 
+/** Prepare machine-level context before Pi loads AGENTS.md; this is not session work. */
+export function prepareManagedGuidance(opts?: { agentsMdPath?: string; skipAgentsMd?: boolean }): void {
+  if (opts?.skipAgentsMd === true || agentsMdWritten) return;
+  try {
+    writeAgentsMd(opts?.agentsMdPath ?? defaultAgentsMdPath());
+    agentsMdWritten = true;
+  } catch {
+    // AGENTS.md write is best-effort; never break activation.
+  }
+}
+
 /**
  * Wire `@spider/superpowers` onto a live host: write the spider-managed AGENTS.md
  * block once (unless `skipAgentsMd`), and return a `skillPaths(cwd)` provider the
@@ -35,13 +46,6 @@ export function registerSuperpowers(
   _pi: unknown,
   opts?: { agentsMdPath?: string; skipAgentsMd?: boolean },
 ): { skillPaths(cwd: string): string[] } {
-  if (opts?.skipAgentsMd !== true && !agentsMdWritten) {
-    try {
-      writeAgentsMd(opts?.agentsMdPath ?? defaultAgentsMdPath());
-      agentsMdWritten = true;
-    } catch {
-      // AGENTS.md write is best-effort; never break activation.
-    }
-  }
+  prepareManagedGuidance(opts);
   return { skillPaths: (cwd: string): string[] => contributeSkillPaths(cwd) };
 }

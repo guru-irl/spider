@@ -1,7 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Home, SessionState } from "@spider/db-core/roam/types";
-import { protectAdmissionApi, registerAdmission, type AdmissionPorts } from "../roam/admission";
+import { AdmissionClosedError, protectAdmissionApi, registerAdmission, type AdmissionPorts } from "../roam/admission";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { appendRunEvent } from "@spider/db-core";
+import { createReplica } from "@spider/db-core/testutil";
+import { RunStore } from "../../../subagents/src/run-store";
+import { adoptReloadedChildren } from "../../../subagents/src/actions/run";
+import { registerShared, releaseShared } from "../../../subagents/src/child-registry";
+import { teardownAll } from "../../../subagents/src/coordinators";
 
 const sessionId = "session-1";
 const local = "origin.invalid";
@@ -75,12 +83,56 @@ it("independent sessions in one process keep separate admission gates", async ()
   const blockedSend = vi.fn(), allowedSend = vi.fn();
   const blockedApi = protectAdmissionApi({ sendMessage: blockedSend } as unknown as ExtensionAPI, blocked.gate);
   const allowedApi = protectAdmissionApi({ sendMessage: allowedSend } as unknown as ExtensionAPI, allowed.gate);
-  blockedApi.sendMessage({ customType: "fixture", content: "blocked", display: true });
+  expect(() => blockedApi.sendMessage({ customType: "fixture", content: "blocked", display: true })).toThrow(AdmissionClosedError);
   allowedApi.sendMessage({ customType: "fixture", content: "allowed", display: true });
   expect(blockedSend).not.toHaveBeenCalled();
   expect(allowedSend).toHaveBeenCalledOnce();
   await blocked.gate.close();
   expect(await allowed.emit("input", { text: "continue" })).toBeUndefined();
+}, 5000);
+
+it("redelivers a supervised completion exactly once after a closed gate reopens", async () => {
+  const f = fixture(snapshot());
+  const machine = "11111111-1111-4111-8111-111111111111";
+  const worktree = createReplica("worktree", machine), global = createReplica("global", machine);
+  const id = "closed-gate-run", directory = join(worktree.root, "supervisor");
+  mkdirSync(directory);
+  worktree.db.prepare("INSERT INTO runs(id,session_id,agent,status,child_mode) VALUES (?, ?, 'worker', 'running', 'rpc')").run(id, sessionId);
+  appendRunEvent(worktree.db, { runId: id, sessionId, ts: Date.now(), type: "child_supervisor", payload: { version: 1, directory } });
+  global.db.prepare("INSERT INTO run_routes(run_id,session_id,db_path) VALUES (?,?,?)").run(id, sessionId, worktree.db.raw.name);
+  const delivered: any[] = [];
+  let signal!: () => void;
+  const completion = new Promise<void>(resolve => { signal = resolve; });
+  const pi = protectAdmissionApi({ sendMessage: (message: any) => { delivered.push(message); signal(); } } as unknown as ExtensionAPI, f.gate);
+  const ctx = { db: worktree.db, globalDb: global.db, sessionId, cwd: worktree.root, runDbPath: worktree.db.raw.name, pi };
+  try {
+    await f.emit("session_start", { reason: "resume" });
+    let exit!: (value: { exitCode: number; result: string }) => void;
+    const outcome = new Promise<{ exitCode: number; result: string }>(resolve => { exit = resolve; });
+    const handle = { durable: true, wait: () => outcome, kill() {}, detach() {} };
+    const entry = registerShared({ runId: id, sessionId, dbPath: worktree.db.raw.name, mode: "rpc", handle, survivable: true });
+    entry.state = "independent";
+    expect(adoptReloadedChildren(ctx)).toEqual({ adopted: [id], refused: [] });
+    await f.gate.close();
+    writeFileSync(join(directory, "exit.json"), JSON.stringify({ exitCode: 0, result: "durable result" }));
+    exit({ exitCode: 0, result: "durable result" });
+    await Promise.resolve();
+    expect(new RunStore(worktree.db).get(id)?.status).toBe("done");
+    expect(delivered).toEqual([]);
+    expect(worktree.db.prepare("SELECT count(*) AS n FROM run_events WHERE run_id=? AND type='completion_delivered'").get(id)).toEqual({ n: 0 });
+    expect(global.db.prepare("SELECT run_id FROM run_routes WHERE run_id=?").get(id)).toEqual({ run_id: id });
+    f.setSnapshot(snapshot());
+    await f.emit("session_start", { reason: "resume" });
+    expect(f.gate.inspect().kind).toBe("ordinary");
+    expect(adoptReloadedChildren(ctx)).toEqual({ adopted: [id], refused: [] });
+    await completion;
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0].content).toContain("durable result");
+    expect(worktree.db.prepare("SELECT count(*) AS n FROM run_events WHERE run_id=? AND type='completion_delivered'").get(id)).toEqual({ n: 1 });
+    expect(global.db.prepare("SELECT run_id FROM run_routes WHERE run_id=?").get(id)).toBeUndefined();
+    adoptReloadedChildren(ctx);
+    expect(delivered).toHaveLength(1);
+  } finally { teardownAll(); releaseShared(id); worktree.close(); global.close(); }
 }, 5000);
 
 it("discovery blocks ordinary work until the owning gate is verified", async () => {
@@ -297,7 +349,7 @@ it("admission read failure on a nonparticipating session admits and logs once", 
   expect(f.gate.inspect().kind).toBe("ordinary");
   expect(f.calls.lock).toBe(0);
   expect(f.calls.local).toBe(0);
-  expect(f.warnings).toHaveLength(1);
+  expect(f.warnings).toEqual(["Cannot verify this session's home. Retry or run /doctor for details."]);
 }, 5000);
 
 it.each(["read", "identity", "lock"] as const)("known participant %s failure blocks plainly", async failure => {
@@ -308,7 +360,7 @@ it.each(["read", "identity", "lock"] as const)("known participant %s failure blo
   await f.emit("session_start", { reason: "resume" });
   expect(f.gate.inspect().kind).toBe("blocked");
   await f.emit("input", { text: "work" });
-  expect(f.messages.join(" ")).toContain("Cannot verify this session's home. Retry or run spider roam doctor.");
+  expect(f.messages.join(" ")).toContain("Cannot verify this session's home. Retry or run /doctor for details.");
   expect(f.gate.inspect().kind === "ordinary").toBe(false);
 }, 5000);
 
@@ -343,6 +395,7 @@ it("a conflicting initial home and incompatible epoch never admit", async () => 
   const f = fixture(snapshot({ initialConflict: true }));
   await f.emit("session_start", { reason: "resume" });
   expect(f.gate.inspect().kind).toBe("blocked");
+  expect(f.gate.inspect().blockers[0]?.detail).toBe("This session has conflicting initial homes. Run /doctor for details.");
   f.setSnapshot(snapshot({ states: [{ ...active, epoch: 2 }] }));
   await f.emit("session_start", { reason: "reload" });
   expect(f.gate.inspect().kind).toBe("blocked");

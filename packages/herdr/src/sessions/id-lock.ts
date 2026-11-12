@@ -20,13 +20,20 @@ interface IdLockRecord {
 
 const execFileAsync = promisify(execFile);
 
-async function localBootId(): Promise<string> {
+export async function localBootId(readers: {
+  platform?: NodeJS.Platform;
+  readLinuxBootId?: () => Promise<string>;
+  readSysctl?: (key: string) => Promise<string>;
+} = {}): Promise<string> {
   try {
-    if (process.platform === 'linux') return (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
-    if (process.platform === 'darwin') return (await execFileAsync('sysctl', ['-n', 'kern.boottime'])).stdout.trim();
+    const platform = readers.platform ?? process.platform;
+    if (platform === 'linux') return (await (readers.readLinuxBootId ?? (() => readFile('/proc/sys/kernel/random/boot_id', 'utf8')))()).trim();
+    if (platform === 'darwin') return (await (readers.readSysctl ?? (async key => (await execFileAsync('sysctl', ['-n', key])).stdout))('kern.bootsessionuuid')).trim();
   } catch { /* Treat unavailable boot identity as unknown. */ }
   return '';
 }
+
+const bootUuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 
 function validIdentity(identity: ProcessIdentity): boolean {
   return !!identity && Number.isSafeInteger(identity.pid) && identity.pid > 0 && typeof identity.startIdentity === 'string' && identity.startIdentity.length > 0;
@@ -83,16 +90,18 @@ export async function claimIdLock(root: string, sessionId: string, identity: Pro
     const previous = await read();
     if (previous) {
       if (!previous.bootId || !bootId) throw new HerdrError('session-id-owner', 'Cannot prove the session ID owner absent');
-      const sameBoot = previous.bootId === bootId;
+      // Old macOS records contain formatted kern.boottime, not a UUID. A format
+      // change alone is not evidence of a reboot; keep probing the prior owner.
+      const sameOrUnknownBoot = previous.bootId === bootId || bootUuid.test(previous.bootId) !== bootUuid.test(bootId);
       const sameIdentity = previous.identity.pid === identity.pid && previous.identity.startIdentity === identity.startIdentity;
-      if (sameBoot && sameIdentity) {
-        if (!previous.adoptionPending) return previous.token;
+      if (sameOrUnknownBoot && sameIdentity) {
+        if (!previous.adoptionPending && previous.bootId === bootId) return previous.token;
         // After handoff, the launcher must not release the adopted owner's lock.
-        const token = randomBytes(32).toString('hex');
-        await writePrivateJson(file, { ...previous, adoptionPending: false, token });
+        const token = previous.adoptionPending ? randomBytes(32).toString('hex') : previous.token;
+        await writePrivateJson(file, { ...previous, bootId, adoptionPending: false, token });
         return token;
       }
-      if (sameBoot && (await probe(previous.identity.pid)).kind !== 'absent') {
+      if (sameOrUnknownBoot && (await probe(previous.identity.pid)).kind !== 'absent') {
         throw new HerdrError('session-id-owner', 'Cannot prove the session ID owner absent');
       }
     }

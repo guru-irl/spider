@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { controlDoctor } from "../control";
 import { createFixtureDashboard, cleanupFixtureDashboards } from "../usage/__tests__/fixtures/dashboard-assets.js";
 import { createFixtureHerdr, fixtureHerdrBoundary } from "../usage/__tests__/fixtures/herdr-assets.js";
+import { createFixtureRoam } from "../usage/__tests__/fixtures/roam-assets.js";
 import * as build from "../../../../scripts/build-id.mjs";
 import * as runtime from "../build-id";
 
@@ -165,6 +166,7 @@ describe("assert-bundle marker gate", () => {
     mkdirSync(dir, { recursive: true });
     createFixtureDashboard(undefined, join(dir, "dashboard"));
     createFixtureHerdr(join(dir, ".."));
+    createFixtureRoam(join(dir, ".."));
     writeFileSync(join(dir, "extension.js"), `// ${marker}\n${fixtureHerdrBoundary}export default { fixture: true };\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
@@ -175,6 +177,7 @@ describe("assert-bundle marker gate", () => {
     mkdirSync(dir, { recursive: true });
     createFixtureDashboard(undefined, join(dir, "dashboard"));
     createFixtureHerdr(join(dir, ".."));
+    createFixtureRoam(join(dir, ".."));
     writeFileSync(join(dir, "extension.js"), `// ${marker}\n${fixtureHerdrBoundary}import { missing } from 'node:fs';\nexport default function spiderExtension() { return missing; }\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(1);
@@ -191,6 +194,7 @@ describe("assert-bundle marker gate", () => {
     mkdirSync(dir, { recursive: true });
     createFixtureDashboard(undefined, join(dir, "dashboard"));
     createFixtureHerdr(join(dir, ".."));
+    createFixtureRoam(join(dir, ".."));
     writeFileSync(join(dir, "extension.js"), `${banner}${fixtureHerdrBoundary}export default function spiderExtension() {}\n`);
     const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
     expect(result.status, result.stderr).toBe(exitCode);

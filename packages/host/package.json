@@ -18,7 +18,8 @@
     "fastembed": "^2.1.0",
     "typebox": "^1.1.38",
     "@spider/subagents": "0.0.0",
-    "@spider/herdr": "0.0.0"
+    "@spider/herdr": "0.0.0",
+    "@spider/roam": "0.0.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.2.0",

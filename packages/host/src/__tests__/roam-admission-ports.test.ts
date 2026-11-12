@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { bindSession, openDb, openDbAt, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import * as dbCore from "@spider/db-core";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
+import { openJournal } from "@spider/roam/journal";
 import { createAdmissionPorts, registerAdmission } from "../roam/admission";
 
 let root = "";
@@ -81,6 +82,20 @@ it("other journal tables never block admission", async () => {
   expect((await f.ports.load("session-1")).unfinishedFreeze).toBe(false);
   const journal = openDb(join(f.globalRoot, "roam", "journal.db")); dbs.push(journal);
   journal.exec("CREATE TABLE operations(session_id TEXT, state TEXT); INSERT INTO operations VALUES ('session-1', 'pending')");
+  expect((await f.ports.load("session-1")).unfinishedFreeze).toBe(false);
+  const hooks = new Map<string, Function>();
+  const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  await hooks.get("session_start")!({ reason: "resume" }, f.ctx);
+  expect(gate.inspect().kind).toBe("ordinary");
+  await gate.close();
+}, 5000);
+
+it("pending operations in the shared journal do not block admission", async () => {
+  const f = fixture();
+  const journal = openJournal(join(f.globalRoot, "roam", "journal.db"));
+  const operation = { id: "op-1", machineId: f.machine, expectedEpoch: 1, kind: "sync", args: { sessionId: "session-1" } };
+  journal.begin(operation);
+  journal.record(operation.id, "started", { pending: true });
   expect((await f.ports.load("session-1")).unfinishedFreeze).toBe(false);
   const hooks = new Map<string, Function>();
   const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);

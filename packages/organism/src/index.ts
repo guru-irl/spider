@@ -100,6 +100,7 @@ export function registerOrganism(
   pi: any,
   deps: OrganismDepsResolver,
   onSetupError?: (phase: string, error: unknown, ctx?: ExtensionContext) => void,
+  admitted: () => boolean = () => true,
 ): void {
   const workers = new WeakMap<WorkerDeps, OrganismWorker>();
   const workerFor = (ctx: ExtensionContext) => {
@@ -127,7 +128,7 @@ export function registerOrganism(
 
   try {
     pi?.on?.("session_start", (_event: unknown, ctx?: ExtensionContext) => {
-      if (process.env.PI_SUBAGENT_CHILD === "1" || !ctx?.sessionManager?.getSessionId?.()) return undefined;
+      if (!admitted() || process.env.PI_SUBAGENT_CHILD === "1" || !ctx?.sessionManager?.getSessionId?.()) return undefined;
       try { workerFor(ctx).startSkillReviews(); } catch (error) { reportSetupError("resolve", error, ctx); }
       return undefined;
     });
@@ -135,7 +136,7 @@ export function registerOrganism(
 
   try {
     pi?.on?.("session_before_compact", (event: any, ctx?: ExtensionContext) => {
-      if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+      if (!admitted() || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = ctx?.sessionManager?.getSessionId?.();
       if (!ctx || !sessionId) {
         reportSetupError("context", new Error("session_before_compact fired without a resolvable context/session id"), ctx);
@@ -146,7 +147,7 @@ export function registerOrganism(
         // change what this particular drain learns from. Never mutate the event.
         const opts = capture(ctx, Array.isArray(event?.branchEntries) ? event.branchEntries : undefined);
         const worker = workerFor(ctx);
-        void worker.runDrain(sessionId, "before_compact", opts).then(() => worker.startSkillReviews()).catch(() => undefined);
+        void worker.runDrain(sessionId, "before_compact", opts).then(() => { if (admitted()) worker.startSkillReviews(); }).catch(() => undefined);
       } catch (e) {
         reportSetupError("resolve", e, ctx);
         /* never block or alter pi's compaction */
@@ -160,7 +161,7 @@ export function registerOrganism(
 
   try {
     pi?.on?.("session_shutdown", async (_event: any, ctx?: ExtensionContext) => {
-      if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+      if (!admitted() || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = ctx?.sessionManager?.getSessionId?.();
       if (!ctx || !sessionId) {
         reportSetupError("context", new Error("session_shutdown fired without a resolvable context/session id"), ctx);
@@ -170,8 +171,9 @@ export function registerOrganism(
         const opts = capture(ctx);
         const worker = workerFor(ctx);
         await worker.stopSkillReviews();
+        if (!admitted()) return undefined;
         await worker.runDrain(sessionId, "shutdown", opts);
-        await worker.runCurate();
+        if (admitted()) await worker.runCurate();
       } catch (e) {
         reportSetupError("resolve", e, ctx);
         /* never break shutdown */

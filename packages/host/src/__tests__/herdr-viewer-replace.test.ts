@@ -124,7 +124,7 @@ test.each(['new', 'resume', 'fork'] as const)('real pi %s replacement ends the m
     if (reason === 'new') await runtime.newSession();
     else if (reason === 'resume') await runtime.switchSession(target.getSessionFile()!);
     else await runtime.fork(f.manager.getEntries().find(entry => entry.type === 'message' && entry.message.role === 'user')!.id);
-    expect(events.map(event => [event.type, event.reason])).toEqual(reason === 'fork' ? [['session_shutdown', reason]] : [['session_before_switch', reason], ['session_shutdown', reason]]);
+    expect(events.map(event => [event.type, event.reason])).toEqual(reason === 'fork' ? [['session_before_fork', undefined], ['session_shutdown', reason]] : [['session_before_switch', reason], ['session_shutdown', reason]]);
     expect(cancelled).toBe(true);
     expect(frames.find(frame => frame.kind === 'end')?.data).toEqual({ reason: 'wrong-generation' });
     expect((await feeds.read())?.lifecycle).toBe('live');

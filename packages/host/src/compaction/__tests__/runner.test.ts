@@ -26,7 +26,7 @@ for (const child of [false, true]) test(`host mounts compaction in ${child ? 'ch
   spiderExtension(api);
   if (child) { expect(ext.handlers.get('turn_end') ?? []).toHaveLength(1); expect(summaryCalls).toHaveLength(0); }
   else {
-    const handlers = ext.handlers.get('session_before_compact'); expect(handlers).toHaveLength(3);
+    const handlers = ext.handlers.get('session_before_compact'); expect(handlers).toHaveLength(4);
     // Configure the isolated project, not the user's real config.
     vi.stubEnv('GIT_CEILING_DIRECTORIES', `${f.ctx.cwd}/..`);
     controlConfig('set', f.ctx.cwd, 'compaction.summaryModel', 'fixture-provider/summary-model');

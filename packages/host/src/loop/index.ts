@@ -136,7 +136,7 @@ export class SessionScheduler {
   private gate?: { sentAt: number; started: boolean };
   running = false;
 
-  constructor(private readonly pi: ExtensionAPI, private readonly time: SchedulerTimeMath) {}
+  constructor(private readonly pi: ExtensionAPI, private readonly time: SchedulerTimeMath, private readonly admitted: () => boolean = () => true) {}
 
   private readonly listeners = new Set<() => void>();
   private lastListing = "[]";
@@ -158,7 +158,7 @@ export class SessionScheduler {
   private context(ctx: ExtensionContext): void { if (!this.activated) this.ctx = ctx; }
   start(event: SessionStartEvent, ctx: ExtensionContext): void {
     this.shutdown(); this.activated = true; this.ctx = ctx;
-    if (process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode === "print" || ctx.mode === "json" || event.reason === "new" || event.reason === "fork") return;
+    if (!this.admitted() || process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode === "print" || ctx.mode === "json" || event.reason === "new" || event.reason === "fork") return;
     try {
       const sessionId = ctx.sessionManager.getSessionId();
       let latest: { data?: unknown } | undefined;
@@ -188,7 +188,7 @@ export class SessionScheduler {
       this.triggers.clear(); this.publishChange(); ctx.ui.notify(`Cannot restore spider triggers snapshot: ${String(error)}`, "error");
     }
   }
-  agentStart(): void { this.running = true; if (this.gate) this.gate.started = true; }
+  agentStart(): void { if (!this.admitted()) return; this.running = true; if (this.gate) this.gate.started = true; }
   private status(): Result {
     const triggers = this.listTriggers();
     const text = triggers.map(t => {
@@ -229,6 +229,7 @@ export class SessionScheduler {
     this.timer = setTimeout(() => { this.timer = undefined; this.reconcile(); }, immediate ? 0 : delay).unref();
   }
   private reconcile(): void {
+    if (!this.admitted()) { this.arm(); return; }
     const ctx = this.ctx;
     const now = Date.now();
     if (this.gate && !this.gate.started && now - this.gate.sentAt >= 5000 && !this.running && ctx?.isIdle()) this.gate = undefined;
@@ -274,6 +275,7 @@ export class SessionScheduler {
   }
 
   async loop(args: LoopArgs, ctx: ExtensionContext): Promise<Result> {
+    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
     assertPersistentSession("loop", ctx); this.context(ctx);
     if (args.prompt !== undefined) assertModelPrompt(args.prompt);
     if (args.at !== undefined) throw new Error("spider loop does not accept at; use spider schedule");
@@ -301,6 +303,7 @@ export class SessionScheduler {
     return { text: (warning ? `Warning: ${warning} ` : "") + (trigger.kind === "self-paced" ? `Self-paced loop started. Re-arm with spider schedule; stop it with spider loop name:${JSON.stringify(name)} stop:true.` : `Loop ${name} scheduled.`), details: { ...this.status().details, ...(warning ? { warning } : {}) } };
   }
   async schedule(args: ScheduleArgs, ctx: ExtensionContext): Promise<Result> {
+    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
     assertPersistentSession("schedule", ctx); this.context(ctx);
     const name = validName(args.name ?? "wakeup");
     if (!args.stop && this.seals.has(name)) {
@@ -334,6 +337,7 @@ export class SessionScheduler {
     return { text: `Wakeup scheduled${seconds === undefined ? "" : ` in ${seconds}s`}, at ${new Date(nextAt).toISOString()}.${replaced ? ` It replaced the trigger named ${name}.` : ""}${warning ? ` Warning: ${warning}` : ""}`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true, ...(warning ? { warning } : {}) } };
   }
   async command(cmd: LoopCommand, ctx: ExtensionContext, origin: PromptOrigin = "user"): Promise<Result> {
+    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
     assertPersistentSession("loop", ctx); this.context(ctx);
     const usage = "Usage: /loop [interval like 5m or 1h] <prompt>, /loop stop [name|all], or /loop to list triggers";
     if (cmd.kind === "list") {
@@ -359,8 +363,8 @@ export class SessionScheduler {
   }
 }
 
-export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath): { scheduler: SessionScheduler; handler(args: string, ctx: ExtensionContext): Promise<void> } {
-  const scheduler = new SessionScheduler(pi, time);
+export function registerLoopSchedule(pi: ExtensionAPI, time: SchedulerTimeMath, admitted: () => boolean = () => true): { scheduler: SessionScheduler; handler(args: string, ctx: ExtensionContext): Promise<void> } {
+  const scheduler = new SessionScheduler(pi, time, admitted);
   pi.on("session_start", (event, ctx) => { scheduler.start(event, ctx); });
   pi.on("agent_start", () => { scheduler.agentStart(); });
   pi.on("agent_settled", () => { scheduler.settled(); });

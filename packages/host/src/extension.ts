@@ -83,6 +83,8 @@ import { mountAgentsUI } from "./agents/mount";
 import { registerAgentsUI } from "./agents/agents-ui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
 import { modelReviewer } from "./memory-reviewer";
+import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
+import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./roam/activation.js";
 
 export { registerGlobalAction as registerAction };
 
@@ -111,7 +113,7 @@ const getEmbedder = async () => getReadyEmbedder();
 // Each loaded extension owns its runtime; manual actions reuse its serialized workers.
 const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
 const usageRuntimes = new WeakMap<object, UsageAccounting>();
-const usageControllers = new WeakMap<object, ReturnType<typeof registerUsage>>();
+const usageServices = new WeakMap<object, ReturnType<typeof registerUsage>>();
 const sessionSchedulers = new WeakMap<object, SessionScheduler>();
 
 // A-M3 (branch-review A-architecture.md): per-pi-instance record of a `registerRouting`
@@ -381,13 +383,13 @@ function renderUpstreamReport(report: {
 
 type DoctorActionCtx = Omit<ActionCtx, "repoDb"> & { repoDb?: Db };
 
-async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string, usageController?: ReturnType<typeof registerUsage>, doctorPi?: PiToolAPI): Promise<unknown> {
+async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnapshot?: InjectionSnapshot, doctorSessionId?: string, usageService?: ReturnType<typeof registerUsage>, doctorPi?: PiToolAPI): Promise<unknown> {
   const command = String(args.command ?? "");
   const cwd = String(args.cwd ?? ctx?.cwd ?? process.cwd());
   const fullCtx: ActionCtx | undefined = ctx?.repoDb ? { ...ctx, repoDb: ctx.repoDb } : undefined;
   switch (command) {
     case "doctor": {
-      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.doctor());
+      const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageService ?? (ctx ? usageServices.get(ctx.pi as object) : undefined))?.doctor());
       report.lines.push(...piSettingsDoctorLines((ctx?.pi ?? doctorPi) as ExtensionAPI, ctx?.parentModel));
       if (ctx) {
         // Routing setup failures remain visible independently of organism diagnostics.
@@ -510,7 +512,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         const r = op === "unset"
           ? applyConfigUnset(cwd, String(args.key), scope)
           : applyConfigEdit(cwd, String(args.key), String(args.value), scope);
-        if (r.ok) (usageController ?? (ctx ? usageControllers.get(ctx.pi as object) : undefined))?.reload();
+        if (r.ok) (usageService ?? (ctx ? usageServices.get(ctx.pi as object) : undefined))?.reload();
         return { details: r };
       }
       const { config, sources, errors } = configValues(cwd);
@@ -785,7 +787,7 @@ export function buildActionCtx(
   if (args.action === "run" && configuredChildMode !== "rpc" && configuredChildMode !== "print") throw new Error("subagents.childMode must be rpc or print");
   const childMode = configuredChildMode === "print" ? "print" : "rpc";
   const accounting = usageRuntimes.get(pi);
-  return { formatRunCost: makeRunCostFormatter(() => usageControllers.get(pi)?.snapshot()), usage: accounting?.factory(sessionId), reportUsage: accounting ? (db, run) => accounting.reportRun(db, run) : undefined, db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, reviewerExcludeTools, subagentOnlyExtensions };
+  return { formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()), usage: accounting?.factory(sessionId), reportUsage: accounting ? (db, run) => accounting.reportRun(db, run) : undefined, db: worktreeDb, runDbPath: sessionRun?.dbPath, repoDb, globalDb: openGlobal(), project, sessionId, cwd, injectionCwd: ctxCwd ?? rawCwd, pi, models, onPartial, modelRegistry, modelDefaults, signal, parentModel, childMode, reviewerExcludeTools, subagentOnlyExtensions };
 }
 
 async function dispatchWithDoctorSnapshot(
@@ -851,24 +853,31 @@ async function dispatchWithDoctorSnapshot(
     return await dispatch(params, actionCtx, ownedActions);
   } catch (e) {
     if (!injectionSnapshot) throw e;
-    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId, usageControllers.get(pi), pi) as { ok: boolean; lines: string[] };
+    const report = await handleControl({ ...params, cwd: params.cwd ?? cwdOf(ctx) ?? process.cwd() }, undefined, injectionSnapshot, sessionId, usageServices.get(pi), pi) as { ok: boolean; lines: string[] };
     report.ok = false;
     report.lines.push(`- action context unavailable: ${safeError(e)}`);
     return report;
   }
 }
 
-export default function spiderExtension(pi: PiToolAPI): void {
-  const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath());
-  sessionSchedulers.set(pi, loopCommand.scheduler);
+export default function spiderExtension(hostPi: PiToolAPI): void {
+  // Admission must be the first session_start registration, before any producer opens a writer.
+  const admission = registerAdmission(hostPi as unknown as ExtensionAPI, createAdmissionPorts());
+  const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
+  const pi = protectAdmissionApi(hostPi as unknown as ExtensionAPI, admission) as unknown as PiToolAPI;
+  const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
+  const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
+  const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);
+  setForHost(sessionSchedulers, loopCommand.scheduler);
   let herdr: HerdrMount | undefined;
   const accounting = new UsageAccounting();
-  usageRuntimes.set(pi, accounting);
+  setForHost(usageRuntimes, accounting);
   const ownedActions = new Map<string, ActionHandler>();
   const registerAction = (name: string, handler: ActionHandler) => {
     // Context packages reuse module-level functions. Wrap even those handlers so
     // registry identity always identifies one activation, not a shared function.
     const invoke: ActionHandler = (args, ctx) => {
+      if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run spider roam doctor.");
       if (args.on !== undefined && !herdr?.enabled()) throw Object.assign(new Error(herdr?.execution().remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text), { code: 'herdr-unavailable' });
       return handler(args, { ...ctx, ...herdr?.execution() });
     };
@@ -880,18 +889,19 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // Only error results need this backstop: empty successful reads are valid, and rewriting
   // them makes pi replace the message list, disrupting prompt caching for ordinary sessions.
   pi.on("context", (event: unknown) => {
+    if (!ordinaryWorkAllowed()) return undefined;
     try { return repairBlankToolResults((event as ContextEvent)?.messages ?? []); }
     catch { return undefined; }
   });
   const organism = new HostOrganismRuntime(getEmbedder, report => {
     const meaningful = report.status === "failed" || report.status === "partial" ||
       report.memoryStaged + report.skillsStaged + (report.skillsQueued ?? 0) + report.todosAdded > 0;
-    if (meaningful) pi.appendEntry?.("spider.organism", report);
-  }, () => piLoadedSkills(pi), sessionId => accounting.factory(sessionId));
-  organismRuntimes.set(pi, organism);
+    if (meaningful && ordinaryWorkAllowed()) pi.appendEntry?.("spider.organism", report);
+  }, () => piLoadedSkills(pi), sessionId => accounting.factory(sessionId), ordinaryWorkAllowed);
+  setForHost(organismRuntimes, organism);
   let currentContext: unknown;
   let currentSessionId = "";
-  const embeddings = new HostEmbeddingRuntime(() => currentContext, resolveEmbedder, { enabled: project => embeddingDrainEnabled(path.dirname(project.dbPath)) });
+  const embeddings = new HostEmbeddingRuntime(() => currentContext, resolveEmbedder, { admitted: ordinaryWorkAllowed, enabled: project => embeddingDrainEnabled(path.dirname(project.dbPath)) });
   // Fence embedding writes before later shutdown hooks await other background work.
   pi.on("session_shutdown", async () => { await embeddings.stop(); });
   const routingDbs = new Map<string, Db>();
@@ -924,7 +934,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
     pi.on("cache_warming_decision", (_event, ctx): CacheWarmingDecisionEventResult | undefined => {
       try {
-        if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+        if (!ordinaryWorkAllowed() || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
         const sessionId = sessionIdOf(ctx);
         if (!sessionId || activeChildCount(sessionId) === 0) return undefined;
         if (controlConfig("get", cwdOf(ctx) ?? process.cwd(), "subagents.keepCacheWarm") !== true) return undefined;
@@ -1125,8 +1135,9 @@ export default function spiderExtension(pi: PiToolAPI): void {
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
-      { ...context, formatRunCost: makeRunCostFormatter(() => usageControllers.get(pi)?.snapshot()) }),
+      { ...context, formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) }),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
+      if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run spider roam doctor.");
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
       // empty update fired before any output exists: it materialises the result section
       // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
@@ -1226,34 +1237,35 @@ export default function spiderExtension(pi: PiToolAPI): void {
       (pi as unknown as ExtensionAPI).sendMessage?.({ customType: "spider.command", content, display: true });
     },
   });
-  registerHooks(pi, event => herdr?.guard(event) ?? Promise.resolve(undefined));
+  registerHooks(pi, event => herdr?.guard(event) ?? Promise.resolve(undefined), ordinaryWorkAllowed);
   pi.on("session_start", (_event: unknown, ctx: unknown) => {
-    if (structuredToolsRegistered || controlConfig("get", cwdOf(ctx) ?? process.cwd(), "tools.structured") !== true) return;
+    if (!ordinaryWorkAllowed() || structuredToolsRegistered || controlConfig("get", cwdOf(ctx) ?? process.cwd(), "tools.structured") !== true) return;
     registerStructuredTools(pi, spiderTool as AdapterTool, (args, callCtx) =>
       readRoutingConfig(String(args.cwd ?? cwdOf(callCtx) ?? process.cwd())));
     structuredToolsRegistered = true;
   });
   const usageCommand = registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
-  const usageController = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url);
-  usageControllers.set(pi, usageController);
+  const usageService = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url, ordinaryWorkAllowed);
+  setForHost(usageServices, usageService);
 
   // Register @spider/superpowers: writes the spider-managed AGENTS.md block once
   // per process (skipped under vitest so tests never mutate the real ~/.pi file),
   // and its skillPaths provider backs hooks.ts's resources_discover contribution.
   // Best-effort — never break extension load.
-  try {
-    registerSuperpowers({ registerAction }, pi, { skipAgentsMd: process.env.VITEST === "true" });
-  } catch {
-    /* superpowers registration is best-effort; never break extension load */
-  }
+  pi.on("session_start", () => {
+    if (!ordinaryWorkAllowed()) return;
+    try { registerSuperpowers({ registerAction }, pi, { skipAgentsMd: process.env.VITEST === "true" }); }
+    catch { /* superpowers registration is best-effort; never break session start */ }
+  });
 
   // Keep the mutable session id fresh: tool_call/tool_result events carry no
   // sessionId, so routing reads it via getSessionId() over this ref. pi.on
   // chains, so hooks.ts's own session_start handler still runs too.
   pi.on("session_start", (_event: any, ctx?: unknown) => {
-    accounting.activate(ctx);
     currentContext = ctx;
     currentSessionId = sessionIdOf(ctx);
+    if (!ordinaryWorkAllowed()) return undefined;
+    accounting.activate(ctx);
     startEmbedderSession();
     embeddings.start();
     if (currentSessionId && process.env.PI_SUBAGENT_CHILD !== "1") {
@@ -1271,8 +1283,8 @@ export default function spiderExtension(pi: PiToolAPI): void {
   let disposeAgentsUI: (() => void) | undefined;
   pi.on("session_start", (_event: any, ctx: any) => {
     try {
-      if (!ctx?.hasUI || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
-      disposeAgentsUI?.();
+      disposeAgentsUI?.(); disposeAgentsUI = undefined;
+      if (!ordinaryWorkAllowed() || !ctx?.hasUI || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const cwd = cwdOf(ctx) ?? process.cwd();
       const sessionId = sessionIdOf(ctx) || currentSessionId;
       const { db } = openSessionRunDb(cwd, sessionId);
@@ -1281,8 +1293,12 @@ export default function spiderExtension(pi: PiToolAPI): void {
         sessionId,
         cwd,
         registration: agentsUI,
-        formatRunCost: makeRunCostFormatter(() => usageControllers.get(pi)?.snapshot()),
-        dispatch: (action, args) => dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions),
+        admitted: ordinaryWorkAllowed,
+        formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()),
+        dispatch: (action, args) => {
+          if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run spider roam doctor.");
+          return dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions);
+        },
       });
     } catch { /* UI mount best-effort; never break the session */ }
     return undefined;
@@ -1292,7 +1308,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // session_start reason and only does work when this session has detached children waiting.
   pi.on("session_start", (_event: any, ctx: any) => {
     try {
-      if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+      if (!ordinaryWorkAllowed() || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = sessionIdOf(ctx);
       if (!sessionId) return undefined;
       const cwd = cwdOf(ctx) ?? process.cwd();
@@ -1321,6 +1337,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
       getCwd: () => routingProject().realPath,
       get config() { return readRoutingConfig(routingProject().realPath); },
       indexLargeOutput: (text, source) => makeIndexer(routingDb())(text, source),
+      admitted: ordinaryWorkAllowed,
     });
   } catch (e) {
     // A-M3: previously fully swallowed with nothing anywhere reporting it. Extension
@@ -1328,19 +1345,20 @@ export default function spiderExtension(pi: PiToolAPI): void {
     // session), but the failure is now recorded per pi-instance and surfaced by
     // doctor above.
     routingSetupError = { message: safeError(e) };
-    routingSetupErrors.set(pi as object, routingSetupError);
+    setForHost(routingSetupErrors, routingSetupError);
   }
 
   // Cancel storage maintenance and reviewers before any shutdown learning drain starts.
   pi.on("session_shutdown", async () => { await organism.stopSkillReviews(); });
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
-    registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx));
+    registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx), ordinaryWorkAllowed);
   }
 
   try {
     herdr = mountHerdr(pi as unknown as ExtensionAPI, {
       ...(process.env.PI_SUBAGENT_CHILD === '1' ? { reportError: (error: unknown, notice?: string) => { process.stderr.write((notice ?? herdrErrorNotice(error)) + '\n'); } } : {}),
       packageRoot: herdrPackageRoot,
+      admitted: ordinaryWorkAllowed,
       actionContext: ctx => buildActionCtx(pi, { action: "message" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)),
       killAction: (ctx, id) => {
         const args: SpiderArgs = { action: "kill", id };
@@ -1360,7 +1378,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
         scheduler: sessionSchedulers.get(pi)!,
         readUsage: async (now, owner) => {
           const budget = controlConfig("get", cwdOf(currentContext) ?? process.cwd(), "usage.monthlyBudget") as number | undefined;
-          const reading = await usageControllers.get(pi)?.readPanel(now, owner.sessionId, budget);
+          const reading = await usageServices.get(pi)?.readPanel(now, owner.sessionId, budget);
           if (!reading) throw new Error('usage-panel-unavailable');
           return reading;
         },
@@ -1382,7 +1400,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
   // register the managed summary after it, for both parent and child activations.
   registerCompaction(pi as unknown as ExtensionAPI, { readConfig: cwd => configValues(cwd).config });
   // Registered LAST: shutdown awaits the worker before closing its resources.
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (event: any) => {
     try {
       await organism.stopSkillReviews();
       organism.dispose();
@@ -1397,13 +1415,16 @@ export default function spiderExtension(pi: PiToolAPI): void {
       // references only after the earlier organism shutdown handler has drained.
       clearActions(ownedActions);
       ownedActions.clear();
-      if (organismRuntimes.get(pi) === organism) organismRuntimes.delete(pi);
-      if (usageRuntimes.get(pi) === accounting) usageRuntimes.delete(pi);
-      if (usageControllers.get(pi) === usageController) usageControllers.delete(pi);
-      if (routingSetupErrors.get(pi) === routingSetupError) routingSetupErrors.delete(pi);
+      clearForHost(organismRuntimes, organism);
+      clearForHost(usageRuntimes, accounting);
+      clearForHost(usageServices, usageService);
+      clearForHost(sessionSchedulers, loopCommand.scheduler);
+      if (routingSetupError) clearForHost(routingSetupErrors, routingSetupError);
       routingDbs.clear();
       currentContext = undefined;
       currentSessionId = "";
+      // /reload hands the exact same process identity to the next activation.
+      if (event?.reason !== "reload") await admission.close();
     }
   });
 }

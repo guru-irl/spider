@@ -416,7 +416,7 @@ describe("production memory injection", () => {
       let toolCallRegistrations = 0;
       spiderExtension({
         registerTool(t: any) { if (t.name === "spider") tool = t; },
-        on(name: string) { if (name === "tool_call" && ++toolCallRegistrations === 2) throw new Error("routing registration failed"); },
+        on(name: string) { if (name === "tool_call" && ++toolCallRegistrations === 3) throw new Error("routing registration failed"); },
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
       } as any);
@@ -441,7 +441,7 @@ describe("production memory injection", () => {
       spiderExtension({
         registerTool(t: any) { if (t.name === "spider") tool = t; },
         on(name: string) {
-          if (name === "session_before_compact" && ++compactRegistrations === 2) throw new Error("organism registration failed");
+          if (name === "session_before_compact" && ++compactRegistrations === 3) throw new Error("organism registration failed");
         },
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
@@ -467,7 +467,7 @@ describe("production memory injection", () => {
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
       } as any);
-      expect(handlers).toHaveLength(3);
+      expect(handlers).toHaveLength(4);
       const badContext = { cwd: f.cwd, sessionManager: { getSessionId: () => "setup-session", getBranch() { throw new Error("capture failed"); } } };
       for (const handler of handlers) { try { await handler({}, badContext); } catch { /* hooks are independent */ } }
       const check = async (sessionId: string) => {

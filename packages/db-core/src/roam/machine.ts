@@ -37,6 +37,14 @@ function readIdentity(file: string): MachineId {
   } finally { closeSync(fd); }
 }
 
+/** Admission must not create a replacement identity when the recorded one is missing. */
+export function readMachineIdentity(globalRoot: string): MachineId {
+  checkDirectory(globalRoot, false);
+  const directory = join(globalRoot, "roam");
+  checkDirectory(directory, true);
+  return readIdentity(join(directory, "machine.json"));
+}
+
 export function loadMachineIdentity(globalRoot: string): MachineId {
   mkdirSync(globalRoot, { recursive: true, mode: 0o700 });
   checkDirectory(globalRoot, false);

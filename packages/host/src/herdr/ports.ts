@@ -40,7 +40,8 @@ import { join, resolve, isAbsolute, dirname } from 'node:path';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createMemoryReviewDbs, decideMemoryReview, listMemoryReview } from './memory-review.js';
 import { createProcessPresence } from '@spider/herdr/sessions/presence';
-import { createSessionLeases, assessSessionLiveness, type ProcessInventoryPorts } from '@spider/herdr/sessions/lease';
+import { createSessionLeases, assessSessionLiveness, type ProcessIdentity, type ProcessInventoryPorts, type ProcessProbe } from '@spider/herdr/sessions/lease';
+import { claimIdLock } from '@spider/herdr/sessions/id-lock';
 import { createTerminalRegistry, readPrivateJson, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { fixtureProcessDomain } from './fixture-process-domain.js';
@@ -98,6 +99,38 @@ export function createProcessInventory(root: string, readOnly = false): ProcessI
       return [{ pid, startIdentity: processStartTime(pid), classification: 'pi' as const }];
     });
   } };
+}
+
+export interface ParticipantLockOptions {
+  identity?: ProcessIdentity;
+  probe?: (pid: number) => Promise<ProcessProbe>;
+  bootId?: () => Promise<string>;
+}
+
+/** Hold both local ownership records until the caller releases them. */
+export async function lockParticipant(root: string, sessionId: string, file: string, options: ParticipantLockOptions = {}): Promise<() => Promise<void>> {
+  const inventory = createProcessInventory(root);
+  const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
+  const probe = options.probe ?? inventory.probe;
+  const id = await claimIdLock(root, sessionId, identity, probe, options.bootId ? { bootId: options.bootId } : {});
+  const isSelf = (value: { pid: number; startIdentity: string | null }) => value.pid === identity.pid && value.startIdentity === identity.startIdentity;
+  const others: ProcessInventoryPorts = {
+    ...inventory, probe,
+    processes: async () => (await inventory.processes()).filter(value => !isSelf(value)),
+    presence: { ...inventory.presence, list: async () => (await inventory.presence.list()).filter(value => !isSelf(value)) },
+    leases: { ...inventory.leases, get: async path => { const lease = await inventory.leases.get(path); return lease && isSelf(lease) ? null : lease; } },
+  };
+  try {
+    const existing = await inventory.leases.get(file);
+    const lease = existing && isSelf(existing) ? existing : await inventory.leases.claim(file, identity, others, { mode: 'switch', sessionId: sessionId as SessionId });
+    return async () => {
+      try { await inventory.leases.release(file, lease.token, { mode: 'switch' }); }
+      finally { await id.release(); }
+    };
+  } catch (error) {
+    await id.release();
+    throw error;
+  }
 }
 
 export function explicitExtensionArguments(argv: readonly string[]): readonly string[] {
@@ -244,6 +277,7 @@ export interface HostHerdrOptions {
   readConfig?(ctx: ExtensionContext): Promise<HerdrConfig | null>;
   dataSource?: Pick<HostDataSourceOptions, 'resolveRunDb' | 'openApprovalDbs' | 'readUsage' | 'scheduler'>;
   reportError?(error: unknown, notice?: string): void;
+  admitted?(): boolean;
 }
 
 export async function readJobJournal(root: string, owner: Owner): Promise<readonly JournalJob[]> {

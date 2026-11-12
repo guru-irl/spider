@@ -23,6 +23,7 @@ export interface MountOpts {
   cwd: string;
   registration?: AgentsUIRegistration;
   formatRunCost?: import("@spider/ui").RunCostFormatter;
+  admitted?: () => boolean;
   // Injectable for tests — defaults to real dispatch that calls into spider action handler
   dispatch?: (action: string, args: Record<string, unknown>) => Promise<unknown>;
 }
@@ -36,8 +37,13 @@ export function mountAgentsUI(
   ctx: { ui: HostUi },
   opts: MountOpts,
 ): () => void {
-  const { db, sessionId, dispatch } = opts;
-  
+  if (opts.admitted?.() === false) return () => {};
+  const { db, sessionId } = opts;
+  const dispatch = opts.dispatch && (async (action: string, args: Record<string, unknown>) => {
+    if (opts.admitted?.() === false) throw new Error("Session ownership is not available; run spider roam doctor.");
+    return opts.dispatch!(action, args);
+  });
+
   return installAgentsUI(pi, ctx, {
     db,
     sessionId,

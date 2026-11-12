@@ -72,6 +72,7 @@ export class HostOrganismRuntime {
     private readonly onDrainReport?: (report: DrainReport) => void,
     private readonly getLoadedSkills?: () => ExistingSkill[],
     private readonly usage?: (sessionId: string) => UsageSinkFactory,
+    private readonly admitted: () => boolean = () => true,
   ) {}
 
   /** False once this instance's own lifecycle-hook registration has failed. */
@@ -124,7 +125,7 @@ export class HostOrganismRuntime {
     };
     if (!sessionId) return; // Never invent a session id; visible only via a future call that has one.
     this.#setupFailures.set(sessionId, report);
-    if (this.#disposed) return; // Disposed runtime stays in-memory-only; no new resources.
+    if (this.#disposed || !this.admitted()) return; // Keep the receipt in memory when writing is unavailable.
     try {
       const cwd = cwdOf(ctx!) ?? process.cwd();
       const worktreeDb = openSessionRunDb(cwd, sessionId).db;
@@ -153,6 +154,7 @@ export class HostOrganismRuntime {
   }
 
   resolve(context: RuntimeContext): OrganismActionDeps {
+    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
     if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     if (this.#disposed) throw new Error("Organism runtime has shut down; reload the session before using it.");
     if (!context.sessionId) throw new Error("Organism needs an active pi session.");

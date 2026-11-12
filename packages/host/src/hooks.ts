@@ -57,7 +57,7 @@ function memoryTargetOf(cwd: string, sessionId: string): string | undefined {
   }
 }
 
-export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard): void {
+export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard, admitted: () => boolean = () => true): void {
   // Instance-local: reloads and subagent processes get independent snapshots.
   // Empty snapshots are frozen too, so the first write cannot change the prefix.
   let frozenMemory: { key: string; target: string; text: string } | undefined;
@@ -89,6 +89,7 @@ export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard): void 
   for (const name of HOOK_NAMES) {
     if (name === "before_agent_start") {
       pi.on(name, (event: any, ctx?: unknown) => {
+        if (!admitted()) return undefined;
         const options = event?.systemPromptOptions as BeforeAgentStartEvent["systemPromptOptions"] | undefined;
         if (!options?.sections) return undefined;
         try {
@@ -128,6 +129,7 @@ export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard): void 
       });
     } else if (name === "session_start") {
       pi.on(name, (event: any, ctx?: unknown) => {
+        if (!admitted()) return undefined;
         const sessionId = sessionIdOf(ctx);
         // No invented "unknown" session: native session events carry no ID.
         if (!sessionId) return undefined;
@@ -185,6 +187,7 @@ export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard): void 
       // Mechanically enforce spider exec over bash. Unknown enforcement state
       // must block bash, not silently permit it.
       pi.on(name, (event: any) => {
+        if (!admitted()) return { block: true, reason: "Session ownership is not available; run spider roam doctor." };
         const enforce = () => {
         try {
           const tool = event?.toolName;

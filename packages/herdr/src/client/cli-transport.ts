@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-// Raw transport for the app CLI and explicit test-owned core bootstrap only.
+// Bounded process transport for JSON and raw byte replies.
 import { spawn } from 'node:child_process';
 import { HerdrError, parseJson, object, text } from './parse.js';
 import { cliReplyByteLimit, SINGLE_REPLY_BYTES } from './limits.js';
 
-export interface CliRequestOptions { timeoutMs?: number; signal?: AbortSignal }
+export interface CliRequestOptions { timeoutMs?: number; signal?: AbortSignal; raw?: boolean; strictInput?: boolean }
 
 export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes: number = cliReplyByteLimit(argv), input?: Buffer, options: CliRequestOptions = {}): Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? 15_000;
@@ -35,21 +35,27 @@ export async function invokeCli(binary: string, argv: readonly string[], env: Re
     options.signal?.addEventListener('abort', aborted, { once: true });
     const overflow = (limit: number, source: 'reply' | 'error-output') => stop(new HerdrError('reply-too-large', `CLI reply exceeded its byte limit (${limit} bytes)`, { pid: child.pid, limit, source }));
     child.stdout.on('data', (bytes: Buffer) => { if (failure) return; size += bytes.length; if (size > maxBytes) overflow(maxBytes, 'reply'); else stdout.push(bytes); });
-    child.stderr.on('data', (bytes: Buffer) => { if (failure) return; errorSize += bytes.length; if (errorSize > Math.min(maxBytes, SINGLE_REPLY_BYTES)) overflow(Math.min(maxBytes, SINGLE_REPLY_BYTES), 'error-output'); else stderr.push(bytes); });
+    const stderrLimit = options.raw ? SINGLE_REPLY_BYTES : Math.min(maxBytes, SINGLE_REPLY_BYTES);
+    child.stderr.on('data', (bytes: Buffer) => { if (failure) return; errorSize += bytes.length; if (errorSize > stderrLimit) overflow(stderrLimit, 'error-output'); else stderr.push(bytes); });
     child.once('error', error => stop(new HerdrError((error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing-hc' : 'spawn-error', error.message, { pid: child.pid })));
     child.once('close', (code, signal) => {
       if (finished) return;
       finished = true; cleanup();
       if (failure) { reject(failure); return; }
       if (code !== 0) {
+        if (options.raw) { reject(new HerdrError('cli-exit', `CLI exited with ${code ?? signal}`, { exitCode: code, signal })); return; }
         try {
           const error = object(object(parseJson(Buffer.concat(stderr))).error);
           reject(new HerdrError(text(error.kind), text(error.message), { exitCode: code, signal, hint: error.hint }));
         } catch { reject(new HerdrError('cli-exit', `CLI exited with ${code ?? signal}`, { exitCode: code, signal, stderr: Buffer.concat(stderr).toString('utf8'), stdout: Buffer.concat(stdout).toString('utf8') })); }
         return;
       }
+      if (options.raw) { resolve(Buffer.concat(stdout)); return; }
       try { resolve(parseJson(Buffer.concat(stdout))); } catch (e) { reject(e); }
     });
-    child.stdin.on('error', () => {}); child.stdin.end(input);
+    child.stdin.on('error', () => {
+      if ((options.raw || options.strictInput) && input !== undefined) stop(new HerdrError('stdin-error', 'CLI could not receive the complete request', { pid: child.pid }));
+    });
+    child.stdin.end(input);
   });
 }

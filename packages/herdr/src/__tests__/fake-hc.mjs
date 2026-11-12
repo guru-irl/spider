@@ -26,6 +26,15 @@ async function withDimensions(terminal) {
   return { cols: Math.floor(320 * (bounds?.width ?? 1)) - (bounds && bounds.width < 1 ? 1 : 0), rows: Math.floor(80 * (bounds?.height ?? 1)) - (bounds && bounds.height < 1 ? 2 : 0), ...terminal };
 }
 const config = JSON.parse(readFileSync(`${root}/core.json`, 'utf8'));
+const roamFile = (on, path) => `${root}/roam-files/${Buffer.from(on).toString('hex')}/${Buffer.from(path).toString('hex')}`;
+function restartCore(on, command, when) {
+  const restart = config.roamFixture?.restart;
+  if (!restart || restart.command !== command || restart.when !== when) return;
+  if (restart.target === 'local') config.coreId = restart.nextCore;
+  else if (restart.remove) config.machines = config.machines.filter(machine => machine.name !== on);
+  else config.machines.find(machine => machine.name === on).id = restart.nextCore;
+  delete config.roamFixture.restart; saveCore(config);
+}
 const argv = process.argv.slice(2);
 appendFileSync(`${root}/calls.jsonl`, JSON.stringify({ argv, pid: process.pid, parentPid: process.ppid, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('HC_') || ['PI_SUBAGENT_CHILD', 'PI_SUBAGENT_RUN_ID'].includes(k))) }) + '\n');
 function nameArgument(args) {
@@ -45,10 +54,31 @@ if (suppliedName !== undefined && (!/^[a-z0-9][a-z0-9_.-]{0,31}$/.test(suppliedN
 }
 if (process.env.HERDR_FAKE_DAEMON === '1') { await daemonMode(); } else {
 if (config.failure) { process.stderr.write(JSON.stringify({ error: config.failure })); process.exit(config.failureExitCode ?? 7); }
-if (config.reply !== undefined) {
+if (config.rawReplyBase64 !== undefined) {
+  process.stdout.write(Buffer.from(config.rawReplyBase64, 'base64'));
+} else if (config.reply !== undefined) {
   const bytes = Buffer.from(config.reply);
   if (config.split) { process.stdout.write(bytes.subarray(0, config.split)); setTimeout(() => process.stdout.end(bytes.subarray(config.split)), 5); }
   else process.stdout.write(bytes);
+} else if (argv[0] === 'exec' && config.roamFixture) {
+  const end = argv.indexOf('--');
+  const flags = end < 0 ? argv : argv.slice(0, end);
+  const on = flags.includes('--on') ? flags[flags.indexOf('--on') + 1] : flags.find(arg => arg.startsWith('--on='))?.slice(5);
+  if (!on || !config.machines.some(machine => machine.name === on)) {
+    console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
+  }
+  const restart = config.roamFixture.restart?.command === 'exec' ? config.roamFixture.restart : null;
+  restartCore(on, 'exec', 'before');
+  const command = end < 0 ? [] : argv.slice(end + 1);
+  let output;
+  if (command[0] === 'cat') output = readFileSync(roamFile(on, command.at(-1)));
+  else if (config.roamFixture.execEchoStdin) {
+    const chunks = [];
+    if (flags.includes('--stdin')) for await (const chunk of process.stdin) chunks.push(chunk);
+    output = Buffer.concat(chunks);
+  } else output = Buffer.from(config.roamFixture.execReplyBase64 ?? '', 'base64');
+  if (restart?.when === 'during') { process.stdout.write(output.subarray(0, 1)); restartCore(on, 'exec', 'during'); process.stdout.write(output.subarray(1)); }
+  else process.stdout.write(output);
 } else if (argv[0] === 'server' && argv[1] === 'status') {
   console.log(JSON.stringify({ core: { id: config.coreId, name: 'fixture' }, version: '0.1.16', pid: process.pid }));
 } else if (argv[0] === 'get') {
@@ -66,10 +96,15 @@ if (config.reply !== undefined) {
   console.log(JSON.stringify({ channel: null, seq: 0, terminals: config.terminals }));
   process.on('SIGTERM', () => { unwatchFile(`${root}/events.jsonl`); process.exit(0); });
  } else if (argv[0] === 'run') {
-  const on = argv.includes('--on') ? argv[argv.indexOf('--on') + 1] : null;
+  const end = argv.indexOf('--'), flags = end < 0 ? argv : argv.slice(0, end);
+  const on = flags.includes('--on') ? flags[flags.indexOf('--on') + 1] : flags.find(arg => arg.startsWith('--on='))?.slice(5) ?? null;
+  if (config.roamFixture && (!on || !config.machines.some(machine => machine.name === on))) {
+    console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
+  }
+  restartCore(on, 'run', 'before');
   const address = (on ? on + '/' : '') + 't2';
   const t = { address, name: suppliedName ?? null, parent: process.env.HC_TERMINAL_ID || null, labels: {}, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null };
-  config.terminals.push(t); saveCore(config); console.log(JSON.stringify({ address, state: 'live', agent: argv[argv.indexOf('--') + 1] || 'node', cwd: root, parent: t.parent, turn: 0 }));
+  config.terminals.push(t); restartCore(on, 'run', 'during'); saveCore(config); console.log(JSON.stringify({ address, state: 'live', agent: argv[argv.indexOf('--') + 1] || 'node', cwd: root, parent: t.parent, turn: 0 }));
 } else if (argv[0] === 'kill' || argv[0] === 'rm') {
   const t = config.terminals.find(t => t.address === argv[1]);
   if (!t) { console.error(JSON.stringify({ error: { kind: 'not_found', message: 'No such terminal' } })); process.exit(3); }
@@ -90,6 +125,20 @@ if (config.reply !== undefined) {
   config.seq = (config.seq || 0) + 1; saveCore(config);
   appendFileSync(`${root}/events.jsonl`, JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: argv[0] === 'label' ? 'labels' : 'keep', seq: config.seq, terminal: t.address, data } }) + '\n');
   console.log(JSON.stringify(t));
+} else if (argv[0] === 'file' && config.roamFixture) {
+  const on = argv.includes('--on') ? argv[argv.indexOf('--on') + 1] : argv.find(arg => arg.startsWith('--on='))?.slice(5);
+  if (!on || !config.machines.some(machine => machine.name === on) || argv[1] !== 'write') {
+    console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine or operation' } })); process.exit(3);
+  }
+  restartCore(on, 'file', 'before');
+  if (config.roamFixture.fileEarlySuccess) { console.log('{}'); process.exit(0); }
+  if (config.roamFixture.fileFailure) {
+    process.stderr.write(JSON.stringify({ error: config.roamFixture.fileFailure })); process.exit(7);
+  }
+  const file = roamFile(on, argv.at(-1));
+  const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
+  mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, Buffer.concat(chunks));
+  restartCore(on, 'file', 'during'); console.log('{}');
 } else if (argv[0] === 'file') {
   const machine = argv[argv.indexOf('--on') + 1];
   const path = argv.at(-1);
@@ -162,6 +211,7 @@ async function daemonMode() {
         const reply = await request(socketPath, { argv, env: process.env, input: input.toString('base64') });
         if (reply.stderr) process.stderr.write(typeof reply.stderr === 'string' ? reply.stderr : JSON.stringify(reply.stderr));
         if (reply.exitCode) process.exitCode = reply.exitCode;
+        else if (typeof reply.bytesBase64 === 'string') process.stdout.write(Buffer.from(reply.bytesBase64, 'base64'));
         else console.log(typeof reply.raw === 'string' ? reply.raw : JSON.stringify(reply.result));
       }
     } catch (e) { console.error(JSON.stringify({ error: { kind: 'server_stopped', message: e.message } })); process.exitCode = 3; }
@@ -220,7 +270,8 @@ async function daemonMode() {
       pending += decoder.write(bytes); const end = pending.indexOf('\n'); if (end < 0) return;
       s.removeAllListeners('data');
       const message = JSON.parse(pending.slice(0, end)); const args = message.argv, env = message.env || {};
-      const option = key => args.includes(key) ? args[args.indexOf(key) + 1] : undefined;
+      const delimiter = args.indexOf('--'), flags = delimiter < 0 ? args : args.slice(0, delimiter);
+      const option = key => flags.includes(key) ? flags[flags.indexOf(key) + 1] : flags.find(arg => arg.startsWith(key + '='))?.slice(key.length + 1);
       try {
         const script = scenario();
         const revision = script.fixtureRevision || JSON.stringify(script.steps || []);
@@ -240,14 +291,16 @@ async function daemonMode() {
         const terminalIndex = args[0] === 'attach' ? attachTerminalIndex(args) : 1;
         const terminal = args[terminalIndex];
         const on = option('--on') || (terminal?.includes('/') && !terminal.startsWith('/') ? terminal.split('/')[0] : undefined);
-        if (on && ['run', 'get', 'kill', 'rm', 'read', 'attach', 'file'].includes(args[0])) {
+        if (on && ['run', 'get', 'kill', 'rm', 'read', 'attach', 'file', 'exec'].includes(args[0])) {
           const machine = state.machines.find(m => m.name === on); if (!machine) throw new Error('Unknown fake machine');
-          const remoteArgs = [...args]; const index = remoteArgs.indexOf('--on'); if (index >= 0) remoteArgs.splice(index, 2);
+          const remoteArgs = [...args]; const index = flags.indexOf('--on');
+          if (index >= 0) remoteArgs.splice(index, 2);
+          else { const equals = flags.findIndex(arg => arg.startsWith('--on=')); if (equals >= 0) remoteArgs.splice(equals, 1); }
           const remoteTerminalIndex = args[0] === 'attach' ? attachTerminalIndex(remoteArgs) : 1;
           if (remoteArgs[remoteTerminalIndex]?.startsWith(on + '/')) remoteArgs[remoteTerminalIndex] = remoteArgs[remoteTerminalIndex].slice(on.length + 1);
           const remoteEnv = { ...env, HC_TERMINAL_ID: env.HC_TERMINAL_ID ? `${state.coreId}/${env.HC_TERMINAL_ID}` : undefined };
           if (args[0] === 'attach') { await request(machine.socket, { argv: remoteArgs, env: remoteEnv }, bytes => s.write(bytes)); s.end(); return; }
-          const result = await request(machine.socket, { ...message, argv: remoteArgs, env: remoteEnv });
+          const result = await request(machine.socket, { ...message, argv: remoteArgs, env: remoteEnv, remoteRoute: true });
           if (result.result?.address) result.result.address = `${on}/${result.result.address}`;
           if (result.result?.parent?.startsWith(state.coreId + '/')) result.result.parent = result.result.parent.slice(state.coreId.length + 1);
           s.end(JSON.stringify(result) + '\n'); return;
@@ -295,6 +348,18 @@ async function daemonMode() {
           else if (args[0] === 'label') { for (const kv of args.slice(2).filter(v => !v.startsWith('--'))) { const at = kv.indexOf('='); if (at < 1) throw new Error('Invalid fixture label'); const key = kv.slice(0, at), value = kv.slice(at + 1); if (value) t.labels[key] = value; else delete t.labels[key]; } save(); emit('labels', t.address, { labels: t.labels }); reply(s, t); }
           else if (args[0] === 'keep') { if (t.state !== 'live') { reply(s, { error: { kind: 'invalid_params', message: 'Only live terminals can be kept' } }); return; } t.keep = !args.includes('--off'); save(); emit('keep', t.address, { keep: t.keep }); reply(s, t); }
           else { state.terminals = state.terminals.filter(row => row !== t); save(); emit('removed', t.address, {}); reply(s, {}); }
+        } else if (args[0] === 'exec') {
+          if (!message.remoteRoute || delimiter < 0) throw new Error('Remote fake exec requires an explicit destination');
+          const command = args.slice(delimiter + 1);
+          let bytes;
+          if (command[0] === 'cat') {
+            const path = command.at(-1), preset = script.files?.[path];
+            const file = path.startsWith(root + '/') ? path : `${root}/files/${Buffer.from(path).toString('hex')}`;
+            bytes = preset !== undefined ? Buffer.from(typeof preset === 'string' ? preset : preset.base64, typeof preset === 'string' ? 'utf8' : 'base64') : readFileSync(file);
+          } else if (script.execEchoStdin) bytes = flags.includes('--stdin') || flags.includes('-i') ? Buffer.from(message.input || '', 'base64') : Buffer.alloc(0);
+          else if (typeof script.execReplyBase64 === 'string') bytes = Buffer.from(script.execReplyBase64, 'base64');
+          else throw new Error('Unsupported fake remote exec');
+          s.end(JSON.stringify({ bytesBase64: bytes.toString('base64') }) + '\n');
         } else if (args[0] === 'file') {
           const path = args.at(-1); const key = path; const preset = script.files?.[key];
           const file = path.startsWith(root + '/') ? path : `${root}/files/${Buffer.from(path).toString('hex')}`;

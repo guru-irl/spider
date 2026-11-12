@@ -415,8 +415,8 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
       path: string;
       context: SourceContext;
     }[] = [];
-    const headers = new Map(ledger.getSourceHeaders().map(s => [s.path, s.header]));
-    const persistedContexts = new Set(headers.keys());
+    const compactContexts = new Map(ledger.getSourceHeaders().map(s => [s.path, s]));
+    const headers = new Map([...compactContexts].map(([path, context]) => [path, context.header]));
     const pending = new Map(ledger.getPendingReports().map(p => [JSON.stringify([p.path, p.runId]), p]));
     const released = new Set<string>();
     for (const item of ledger.getIncompleteReports()) {
@@ -504,18 +504,18 @@ export async function ingestOnce(ledger: UsageLedger, discovery: Discovery, at: 
         return health();
       try {
         const previous = ledger.getImportState(source.path);
-        const context = ledger.getSourceContext(source.path, []);
-        // Do not deserialize historical ancestry at all on a no-change pass.
+        const compact = compactContexts.get(source.path);
         const info = await stat(source.path);
-        const attributed = source.roaming ? !!context?.segmentState && !context.segmentScan && context.segmentOwner === source.roaming.localMachine
-          : !context?.segmentOwner;
-        if (attributed && previous && persistedContexts.has(source.path) && previous.inode === `${info.dev}:${info.ino}` && previous.size === info.size
+        const attributed = source.roaming ? !!compact?.segmentState && !compact.segmentScan && compact.segmentOwner === source.roaming.localMachine
+          : !compact?.segmentOwner;
+        if (attributed && previous && compact && previous.inode === `${info.dev}:${info.ino}` && previous.size === info.size
           && previous.mtimeMs === info.mtimeMs && previous.offset === info.size) {
           const header = headers.get(source.path);
           if (source.run && text(header?.id))
             contexts.set(source.run.id, String(header!.id));
           continue;
         }
+        const context = ledger.getSourceContext(source.path, []);
         const scan = await readTranscript(source, previous, context, signal, ledger, Math.max(1, options.maxBytes ?? Infinity), savedSessions);
         if (!scan)
           continue;

@@ -62,6 +62,22 @@ function callIds(file: string) {
 const withoutSelectionCaches = ({ selection_undercount, selection_shadowed, ...row }: Record<string, unknown>) => row;
 const selectionCaches = (row: Record<string, unknown>) => [row.selection_shadowed, row.selection_undercount];
 
+it("skips unchanged managed sources but diagnoses changed participation", async () => {
+  const item = openLedger("unchanged-managed"), s = source(join(root, "managed", "session.jsonl"), A);
+  write(s.path, [header(), message("a1")]);
+  await scan(item, [s]); reopen(item);
+  const reads = vi.spyOn(item.ledger, "getSourceContext");
+  await scan(item, [s]);
+  expect(reads).not.toHaveBeenCalledWith(s.path, []);
+  expect(callIds(item.file)).toEqual(["a1"]);
+  await scan(item, [source(s.path)]);
+  expect(item.ledger.getSourceErrors().map(e => e.code)).toContain("roam-participation-unavailable");
+  expect(callIds(item.file)).toEqual(["a1"]);
+  await scan(item, [source(s.path, B)]);
+  expect(item.ledger.getSourceErrors().map(e => e.code)).toContain("roam-machine-changed");
+  expect(callIds(item.file)).toEqual(["a1"]);
+}, 5000);
+
 // A and B may see the same history, but each must bill only its own execution.
 it("round trip bills each local entry once", async () => {
   const a = openLedger("a"), b = openLedger("b");

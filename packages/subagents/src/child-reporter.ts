@@ -87,8 +87,9 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
   const store = new RunStore(db);
   // Claim legacy NULL-pid rows atomically before any event can be written.
   // A grandchild with inherited env cannot replace its parent's existing pid.
-  let disabled = !isLocalRun(db, ctx.runId);
+  let disabled = true;
   try {
+    disabled = !isLocalRun(db, ctx.runId);
     if (disabled) throw new Error("Run is not local");
     const hasStart = (db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).some(c => c.name === "pid_start_time");
     const claim = hasStart

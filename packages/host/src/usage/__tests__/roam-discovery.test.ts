@@ -81,6 +81,33 @@ it("native discovery excludes foreign runs without session participation", async
   expect(found.runEvents!.auxiliary.map(item => item.runId).sort()).toEqual(["legacy-run", "local-run"]);
 }, 5000);
 
+it("does not repeat per-source participation lookups for empty stores", async () => {
+  const file = join(roots.sessionsDir, "group", "session.jsonl");
+  write(file, [{ type: "session", id: "owner", cwd: project }]);
+  await discoverUsageSources(roots); // Warm the same header cache for both measurements.
+  const countLookups = async () => {
+    const original = Map.prototype.get;
+    let count = 0;
+    Map.prototype.get = function(key) {
+      if (key === file) count++;
+      return original.call(this, key);
+    };
+    try {
+      const found = await discoverUsageSources(roots);
+      expect(found.sources.map(s => s.path)).toEqual([file]);
+    } finally { Map.prototype.get = original; }
+    return count;
+  };
+  const oneStore = await countLookups();
+  const other = createReplica("worktree", B);
+  try {
+    const secondProject = join(other.root, "project"), secondScratch = join(secondProject, ".spider", "scratch");
+    mkdirSync(join(secondScratch, "subagent-sessions"), { recursive: true });
+    registry.prepare("INSERT INTO projects VALUES (?,?,?,?,?)").run(secondProject, secondProject, null, other.db.raw.name, secondScratch);
+    expect(await countLookups()).toBe(oneStore);
+  } finally { other.close(); }
+}, 5000);
+
 // The ordinary discovery-to-ingest path must carry participation without a new worker API.
 it("discovered participants bill only their local physical segment", async () => {
   addParticipant(A);

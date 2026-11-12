@@ -1,4 +1,5 @@
 import type { Db } from "@spider/db-core";
+import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import type { Blocker } from "@spider/db-core/roam/types";
 
 export interface BlockerOptions {
@@ -8,7 +9,7 @@ export interface BlockerOptions {
 /** The live process may supply its registry; dormant sessions have no pipeline coordinator. */
 export function listSessionBlockers(db: Db, sessionId: string, options: BlockerOptions = {}): readonly Blocker[] {
   const rows = db.prepare(`SELECT r.id, r.status FROM runs r
-    WHERE r.session_id=? AND r.origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND r.origin_machine!=''
+    WHERE r.session_id=? AND ${localRunPredicate(db)}
     AND (r.status IN ('queued','running','paused') OR (
       r.status IN ('done','failed') AND EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.type='child_supervisor')
       AND NOT EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.type='completion_delivered')

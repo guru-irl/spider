@@ -199,7 +199,9 @@ export interface UsageLedger {
   /** With roots, load only their persisted ancestry plus the last linear node.
    * An empty roots array reads header/checkpoints only. Omitted roots is a diagnostic full read. */
   getSourceContext(path: string, roots?: readonly string[]): SourceContext | undefined;
-  getSourceHeaders(): readonly { path: string; header: Record<string, unknown> | null }[];
+  getSourceHeaders(): readonly (Pick<SourceContext, "header" | "segmentOwner" | "segmentScan"> & {
+    path: string; segmentState?: SourceContext["segmentState"];
+  })[];
   findLocalCall(paths: readonly string[], entryId: string, machineId: string): string | undefined;
   getSessionProviders(sessionId: string | null, excludeSource?: string): readonly string[];
   getPendingReports(): readonly PendingReport[];
@@ -706,7 +708,11 @@ function createLedger(db: Db): UsageLedger {
         .all(sessionId, excludeSource ?? null, excludeSource ?? null) as { provider: string }[]).map(row => row.provider);
     },
     getSourceHeaders() {
-      return (headers.all() as { path: string; header: string }[]).map(row => ({ ...row, header: decodeContext(row.header).header }));
+      return (headers.all() as { path: string; header: string }[]).map(row => {
+        const { header, segmentState, segmentOwner, segmentScan } = decodeContext(row.header);
+        return { path: row.path, header, ...(segmentState ? { segmentState } : {}),
+          ...(segmentOwner !== undefined ? { segmentOwner } : {}), ...(segmentScan ? { segmentScan } : {}) };
+      });
     },
     findLocalCall(paths, entryId, machineId) {
       for (const path of paths) {

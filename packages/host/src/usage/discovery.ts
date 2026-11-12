@@ -2,6 +2,7 @@ import { open, readdir, realpath, stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
+import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import { normalizeRunStatus, type RunMeta, type SourceError } from "./ledger.js";
 import type { SourceInfo as ParserSource } from "./parse.js";
 import { summarizeRunEvents, type RunEvent, type RunEventFacts } from "./run-events.js";
@@ -163,7 +164,7 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
         for (const row of db.prepare(`SELECT rs.session_id, ${origin} AS origin_machine FROM roam_sessions rs
           LEFT JOIN sessions s ON s.id=rs.session_id`).all() as { session_id: string; origin_machine: unknown }[])
           participants.set(row.session_id, text(row.origin_machine));
-        for (const source of sources.values()) {
+        if (participants.size) for (const source of sources.values()) {
           const sessionId = heads.get(source.path)?.sessionId;
           if (sessionId && participants.has(sessionId))
             source.roaming = { localMachine: localMachine ?? "", originMachine: participants.get(sessionId) ?? null };
@@ -178,9 +179,8 @@ export async function discoverUsageSources(roots: UsageRoots, dependencies: Disc
         "started_at", "ended_at", "status", "child_mode", "origin_machine"];
       const projection = needed.filter(c => columns.has(c)).join(",");
       const localRunIds = new Set<string>();
-      for (const row of db.prepare(`SELECT ${projection} FROM runs ORDER BY id`).all() as Record<string, unknown>[]) {
+      for (const row of db.prepare(`SELECT ${projection} FROM runs r WHERE ${localRunPredicate(db)} ORDER BY id`).all() as Record<string, unknown>[]) {
         const originMachine = typeof row.origin_machine === "string" ? row.origin_machine : "";
-        if (originMachine !== "" && originMachine !== localMachine) continue;
         const id = text(row.id);
         // A DB run id is a path component, never a path supplied by the source.
         if (!id || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) { errors.push({ path: dbPath, code: "invalid-run-id" }); continue; }

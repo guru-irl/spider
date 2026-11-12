@@ -5,6 +5,7 @@ import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import ts from "typescript";
 import { parseBuildId } from "./build-id.mjs";
+import { assertRoamBundle } from "./check-roam-bundle.mjs";
 import { resolve, dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -65,10 +66,10 @@ if (!existsSync(OUT)) {
 // dashboard, but never extension chunks. Assert the invariant directly
 // instead of assuming it from codeSplitting's presence in the config.
 const distEntries = readdirSync("dist").sort();
-if (distEntries.join() !== "dashboard,extension.js,herdr") {
+if (distEntries.join() !== "dashboard,extension.js,herdr,roam") {
   const found = distEntries.join(", ") || "(empty)";
   console.error(
-    `assert-bundle: expected dist/ to contain exactly dashboard/, extension.js and herdr/, found: ${found}. ` +
+    `assert-bundle: expected dist/ to contain exactly dashboard/, extension.js, herdr/ and roam/, found: ${found}. ` +
     "If a local dynamic import was added, either inline it or update this assertion and the release/CI packaging gates to account for the extra chunk."
   );
   process.exit(1);
@@ -124,6 +125,12 @@ const mustBeExternal = [
 const leaks = mustBeExternal.filter((m) => src.includes(`node_modules/${m}/`));
 if (leaks.length) {
   console.error(`assert-bundle: module(s) inlined (should be external): ${leaks.join(", ")}`);
+  process.exit(1);
+}
+try {
+  assertRoamBundle('.');
+} catch (error) {
+  console.error(`assert-bundle: roaming runtime missing or invalid (${error instanceof Error ? error.message : 'invalid'})`);
   process.exit(1);
 }
 try {

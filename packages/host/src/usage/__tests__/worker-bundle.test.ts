@@ -1,5 +1,6 @@
 import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
 import { createFixtureHerdr } from "./fixtures/herdr-assets.js";
+import { createFixtureRoam } from "./fixtures/roam-assets.js";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -28,6 +29,7 @@ beforeAll(async () => {
   await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--outDir", outDir], options);
   await run(process.execPath, [resolve("node_modules/vite/bin/vite.js"), "build", "--config", prepareDashboardBuild(buildRoot)], options);
   createFixtureHerdr(buildRoot);
+  createFixtureRoam(buildRoot);
   // The real post-build gate resolves dist relative to cwd, including its native import.
   await run(process.execPath, [resolve("scripts/assert-bundle.mjs")], { ...options, cwd: buildRoot });
 }, 150_000);

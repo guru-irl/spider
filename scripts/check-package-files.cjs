@@ -7,7 +7,7 @@ process.stdin.on('data', chunk => { input += chunk; }).on('end', () => {
   const skillDirs = ['packages/superpowers/skills', 'packages/pstack/skills'];
   const skills = skillDirs.flatMap(dir => fs.readdirSync(dir, { recursive: true })
     .filter(file => file === 'SKILL.md' || file.endsWith('/SKILL.md')).map(file => `${dir}/${file}`));
-  const required = ['dist/extension.js', 'dist/dashboard/index.html', 'README.md', 'LICENSE', 'NOTICE.md', 'packages/context/LICENSE', 'packages/pstack/LICENSE', ...skills];
+  const required = ['dist/extension.js', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/supervisor.mjs', 'README.md', 'LICENSE', 'NOTICE.md', 'packages/context/LICENSE', 'packages/pstack/LICENSE', ...skills];
   if (!files.some(file => /^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(file)) || !files.some(file => /^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(file))) throw new Error('dashboard JS/CSS missing');
   if (files.some(file => file.startsWith('dist/') && (file.endsWith('.map') || file.includes('states')))) throw new Error('development dashboard files in tarball');
   const missing = required.filter(file => !files.includes(file));

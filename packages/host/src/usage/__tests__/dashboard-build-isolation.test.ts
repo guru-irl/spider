@@ -1,5 +1,6 @@
 import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
 import { createFixtureHerdr, fixtureHerdrBoundary } from "./fixtures/herdr-assets.js";
+import { createFixtureRoam } from "./fixtures/roam-assets.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { build, createServer, resolveConfig } from "vite";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
@@ -41,6 +42,7 @@ it("two independent builds preserve each other", async () => {
     expect(names.map(n => readFileSync(join(dashboard, "assets", n)))).toEqual(bytes);
   } finally { await watcher.close(); }
   createFixtureHerdr(root);
+  createFixtureRoam(root);
   const guard = () => execFileSync(process.execPath, [resolve("scripts/assert-bundle.mjs")], { cwd: root, encoding: "utf8", stdio: "pipe" });
   expect(guard()).toContain("assert-bundle: OK");
   for (const file of ["dist/extra.js", "dist/dashboard/states.html", "dist/dashboard/assets/app-12345678.js.map", "dist/dashboard/assets/extra.bin"]) {

@@ -1,0 +1,15 @@
+{
+  "name": "@spider/roam",
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@spider/db-core": "0.0.0",
+    "@spider/herdr": "0.0.0"
+  }
+}

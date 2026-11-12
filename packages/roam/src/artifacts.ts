@@ -296,7 +296,7 @@ export async function handleArtifactRequest(input: unknown, stdin: Buffer | unde
     ports.journal.record(operation.id, "done", result);
     return wireReply(doneReply(result, header), ports.limits);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "Artifact request failed";
+    const reason = error instanceof SyntaxError ? "Invalid artifact request" : error instanceof Error ? error.message : "Artifact request failed";
     return wireReply({ code: 1, reason }, ports.limits);
   }
 }

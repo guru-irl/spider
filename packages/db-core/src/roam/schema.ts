@@ -117,6 +117,8 @@ export function addRoamSchema(db: Db, scope: Scope, machineId: MachineId): void 
     db.exec("UPDATE run_events SET uuid = lower(hex(randomblob(16))) WHERE uuid IS NULL OR uuid = ''");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_uuid ON todos(uuid)");
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_uuid ON run_events(uuid)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_runs_session_id ON runs(session_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_run_events_session_id ON run_events(session_id)");
     const duplicate = db.prepare(`SELECT group_concat(id, ',') AS ids FROM todos
       WHERE (session_id, seq) IN (
         SELECT session_id, seq FROM todos GROUP BY session_id, seq HAVING count(*) > 1
@@ -131,6 +133,7 @@ export function addRoamSchema(db: Db, scope: Scope, machineId: MachineId): void 
     if (scope === "worktree") db.exec(WORKTREE);
     db.prepare("INSERT INTO roam_meta (id, machine_id, stream_id) VALUES (1, ?, ?)").run(machineId, randomUUID());
   }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_roam_changes_entity_row_key ON roam_changes(entity, row_key)");
   if (duplicateIds !== null) {
     db.prepare("UPDATE roam_meta SET roamable = 0, problem = ? WHERE id = 1")
       .run(`Duplicate todo sequence for row IDs ${duplicateIds}`);

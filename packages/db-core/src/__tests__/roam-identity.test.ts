@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -7,7 +7,7 @@ import { openDb } from "../db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "../schema";
 import { DESCRIPTORS } from "@spider/db-core/roam/descriptors";
 import { canonicalOrigin, repoIdentity } from "@spider/db-core/roam/identity";
-import { loadMachineIdentity } from "@spider/db-core/roam/machine";
+import { loadMachineIdentity, readMachineIdentity } from "@spider/db-core/roam/machine";
 import type { Entity } from "@spider/db-core/roam/types";
 
 const roots: string[] = [];
@@ -119,7 +119,8 @@ describe("roaming identities", () => {
     writeFileSync(file, JSON.stringify({ machineId: "11111111-1111-4111-8111-111111111111" }));
     expect(loadMachineIdentity(root)).toBe("11111111-1111-4111-8111-111111111111");
     chmodSync(file, 0o644);
-    expect(() => loadMachineIdentity(root)).toThrow();
+    expect(readMachineIdentity(root)).toBe("11111111-1111-4111-8111-111111111111");
+    expect(lstatSync(file).mode & 0o777).toBe(0o600);
     rmSync(file);
     const target = join(root, "target");
     const targetContents = JSON.stringify({ machineId: "11111111-1111-4111-8111-111111111111" });
@@ -128,12 +129,87 @@ describe("roaming identities", () => {
     expect(() => loadMachineIdentity(root)).toThrow();
     expect(readFileSync(target, "utf8")).toBe(targetContents);
     rmSync(file);
+    writeFileSync(file, targetContents, { mode: 0o600 });
     chmodSync(roam, 0o755);
-    expect(() => loadMachineIdentity(root)).toThrow();
-    chmodSync(roam, 0o700);
+    expect(loadMachineIdentity(root)).toBe("11111111-1111-4111-8111-111111111111");
+    expect(lstatSync(roam).mode & 0o777).toBe(0o700);
     const other = fixtureRoot();
     symlinkSync(roam, join(other, "roam"));
     expect(() => loadMachineIdentity(other)).toThrow();
+  }, 5000);
+
+  it("accepts a symlinked global root and preserves the same identity", () => {
+    const parent = fixtureRoot();
+    const root = join(parent, "real-root");
+    mkdirSync(root);
+    const alias = join(parent, "root-alias");
+    symlinkSync(root, alias, "dir");
+    const id = loadMachineIdentity(alias);
+    expect(readMachineIdentity(alias)).toBe(id);
+    expect(loadMachineIdentity(root)).toBe(id);
+    expect(lstatSync(join(root, "roam")).mode & 0o777).toBe(0o700);
+  }, 5000);
+
+  it("refuses a simulated foreign owner without changing its files", () => {
+    const root = fixtureRoot();
+    const id = loadMachineIdentity(root);
+    const uid = lstatSync(root).uid;
+    expect(() => loadMachineIdentity(root, { platform: "linux", uid: uid + 1 })).toThrow(/foreign-owned/i);
+    expect(readMachineIdentity(root)).toBe(id);
+    expect(lstatSync(join(root, "roam", "machine.json")).mode & 0o777).toBe(0o600);
+  }, 5000);
+
+  it.each(["directory", "identity"] as const)("refuses a foreign-owned %s before changing its mode", async kind => {
+    const root = fixtureRoot();
+    const id = loadMachineIdentity(root);
+    const target = kind === "directory" ? join(root, "roam") : join(root, "roam", "machine.json");
+    const wider = kind === "directory" ? 0o755 : 0o644;
+    chmodSync(target, wider);
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const opened = new Map<number, string>();
+    vi.doMock("node:fs", () => ({
+      ...actual,
+      openSync: (file: string, flags: string | number, mode?: number) => {
+        const fd = actual.openSync(file, flags, mode);
+        opened.set(fd, file);
+        return fd;
+      },
+      fstatSync: (fd: number) => {
+        const stat = actual.fstatSync(fd);
+        return opened.get(fd) === target ? Object.assign(Object.create(stat), { uid: stat.uid + 1 }) : stat;
+      },
+    }));
+    vi.resetModules();
+    try {
+      const isolated = await import("../roam/machine");
+      expect(() => isolated.loadMachineIdentity(root, { platform: "linux", uid: lstatSync(root).uid })).toThrow(/foreign-owned/i);
+      expect(lstatSync(target).mode & 0o777).toBe(wider);
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+    chmodSync(target, kind === "directory" ? 0o700 : 0o600);
+    expect(readMachineIdentity(root)).toBe(id);
+  }, 5000);
+
+  it("uses exclusive creation without POSIX owner or mode checks on Windows", () => {
+    const root = fixtureRoot();
+    const roam = join(root, "roam");
+    mkdirSync(roam, { mode: 0o755 });
+    chmodSync(roam, 0o755);
+    const id = loadMachineIdentity(root, { platform: "win32", uid: -1 });
+    const file = join(roam, "machine.json");
+    chmodSync(file, 0o644);
+    expect(readMachineIdentity(root, { platform: "win32", uid: -1 })).toBe(id);
+    expect(loadMachineIdentity(root, { platform: "win32", uid: -1 })).toBe(id);
+    expect(lstatSync(roam).mode & 0o777).toBe(0o755);
+    expect(lstatSync(file).mode & 0o777).toBe(0o644);
+    const target = join(root, "identity-copy.json");
+    writeFileSync(target, readFileSync(file));
+    rmSync(file);
+    symlinkSync(target, file);
+    expect(readMachineIdentity(root, { platform: "win32", uid: -1 })).toBe(id);
+    expect(() => readMachineIdentity(root, { platform: "linux" })).toThrow();
   }, 5000);
 
   it("projects only portable columns", () => {

@@ -176,6 +176,15 @@ export function migrate(
 
   const observed = Number(db.pragma("user_version"));
   if (observed > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${observed}`);
+  if (observed === SCHEMA_VERSION) {
+    const needsWrite = db.withRetry(() => db.raw.transaction(() => {
+      const current = Number(db.raw.pragma("user_version", { simple: true }));
+      if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
+      if (current !== SCHEMA_VERSION) throw new Error("Core schema changed before its backup");
+      return validateRoamLayout(db, actualScope, "inspect").needsWrite;
+    }).deferred());
+    if (!needsWrite) return;
+  }
   const globalRoot = options?.globalRoot ?? paths.globalRoot;
   const machineId = observed < SCHEMA_VERSION ? options?.machineId ?? loadMachineIdentity(globalRoot) : undefined;
   if (observed < SCHEMA_VERSION) {

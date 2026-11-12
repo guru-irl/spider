@@ -105,8 +105,12 @@ function requireIndex(db: Db, table: string, name: string, expected: readonly st
   if (!indexPresent(db, table, name, expected)) throw new Error(`Missing core index ${name}`);
 }
 
+type LayoutStatus = { captureSafe: boolean; diagnostic: string | null };
+
 /** Validate replicated data on open without repairing indexes or triggers. */
-export function validateRoamLayout(db: Db, scope: Scope): { captureSafe: boolean; diagnostic: string | null } {
+export function validateRoamLayout(db: Db, scope: Scope): LayoutStatus;
+export function validateRoamLayout(db: Db, scope: Scope, mode: "inspect"): LayoutStatus & { needsWrite: boolean };
+export function validateRoamLayout(db: Db, scope: Scope, mode?: "inspect"): LayoutStatus & { needsWrite?: boolean } {
   for (const [table, required] of Object.entries(COMMON_COLUMNS)) columns(db, table, required);
   for (const [table, required] of Object.entries(LOCAL_COLUMNS[scope])) columns(db, table, required);
   for (const descriptor of Object.values(DESCRIPTORS)) {
@@ -140,10 +144,12 @@ export function validateRoamLayout(db: Db, scope: Scope): { captureSafe: boolean
   for (const [name, sql] of expected) if (found.get(name) !== sql) drift.add(name);
   for (const { name } of actual) if (!expected.has(name)) drift.add(name);
   let diagnostic = meta.problem;
+  let needsWrite = false;
   if (drift.size > 0) {
     const problem = `${TRIGGER_DRIFT}: ${[...drift].sort().join(", ")}`;
     if (!diagnostic?.includes(problem)) diagnostic = diagnostic ? `${diagnostic}; ${problem}` : problem;
-    if (meta.capture_enabled !== 0 || diagnostic !== meta.problem) {
+    needsWrite = meta.capture_enabled !== 0 || diagnostic !== meta.problem;
+    if (needsWrite && mode !== "inspect") {
       let changed: number;
       try {
         changed = db.prepare("UPDATE roam_meta SET capture_enabled = 0, problem = ? WHERE id = 1").run(diagnostic).changes;
@@ -159,7 +165,8 @@ export function validateRoamLayout(db: Db, scope: Scope): { captureSafe: boolean
       }
     }
   }
-  return { captureSafe: meta.roamable === 1 && !diagnostic, diagnostic };
+  const status = { captureSafe: meta.roamable === 1 && !diagnostic, diagnostic };
+  return mode === "inspect" ? { ...status, needsWrite } : status;
 }
 
 /** Called explicitly after duplicate todo sequences have been repaired. */

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -80,6 +80,25 @@ describe("roaming schema migration", () => {
         old.close();
         fresh.close();
       }
+    }
+  }, 5000);
+
+  it.each([false, true])("indexes session and change lookups after schema migration (existing=%s)", existing => {
+    const root = fixtureRoot();
+    for (const scope of ["global", "repo", "worktree"] as const) {
+      const db = existing ? oldDb(root, scope) : openDb(join(root, `${scope}-fresh.db`));
+      try {
+        migrate(db, scope, { machineId: MACHINE, globalRoot: root });
+        const plan = (sql: string) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>).map(row => row.detail).join(" ");
+        expect(plan("SELECT 1 FROM roam_changes WHERE entity = 'todos' AND row_key = 'key'"))
+          .toContain("idx_roam_changes_entity_row_key");
+        if (scope === "worktree") {
+          expect(plan("SELECT id FROM runs WHERE session_id = 'session' ORDER BY rowid"))
+            .toContain("idx_runs_session_id");
+          expect(plan("SELECT id FROM run_events WHERE session_id = 'session' ORDER BY rowid"))
+            .toContain("idx_run_events_session_id");
+        }
+      } finally { db.close(); }
     }
   }, 5000);
 
@@ -170,6 +189,31 @@ describe("roaming schema migration", () => {
         { id: 44, seq: 2, text: "still writable" },
       ]);
     } finally { db.close(); }
+  }, 5000);
+
+  it("opens a current store without a write while another connection holds the writer", () => {
+    const root = fixtureRoot();
+    const path = join(root, "current.db");
+    const initial = openDb(path);
+    migrate(initial, "worktree", { machineId: MACHINE, globalRoot: root });
+    initial.close();
+
+    const writer = new Database(path);
+    writer.exec("BEGIN IMMEDIATE");
+    let opened: Db | undefined;
+    try {
+      opened = openDb(path, { busyTimeoutMs: 25, checkpointOnClose: false });
+      const noRetry = new Proxy(opened, {
+        get(target, key) { return key === "withRetry" ? (fn: () => unknown) => fn() : Reflect.get(target, key); },
+      });
+      expect(() => migrate(noRetry, "worktree", { machineId: MACHINE, globalRoot: root })).not.toThrow();
+      expect(opened.prepare("SELECT total_changes() AS n").get()).toEqual({ n: 0 });
+      expect(opened.pragma("user_version")).toBe(14);
+    } finally {
+      opened?.close();
+      writer.exec("ROLLBACK");
+      writer.close();
+    }
   }, 5000);
 
   it("concurrent writable opens reread version under IMMEDIATE", async () => {
@@ -529,6 +573,50 @@ describe("roaming schema migration", () => {
     }
   }, 5000);
 
+  it("migrates through a symlinked global root without following inner symlinks", () => {
+    const root = fixtureRoot();
+    const actualRoot = join(root, "actual-global");
+    mkdirSync(actualRoot);
+    const alias = join(root, "global-alias");
+    symlinkSync(actualRoot, alias, "dir");
+    const db = oldDb(root, "global");
+    try {
+      expect(() => migrate(db, "global", { machineId: MACHINE, globalRoot: alias })).not.toThrow();
+      expect(db.pragma("user_version")).toBe(14);
+      expect(readdirSync(join(actualRoot, "roam", "backups")).filter(name => name.endsWith(".db"))).toHaveLength(1);
+    } finally { db.close(); }
+  }, 5000);
+
+  it("allows owner-controlled backup directories with broader permissions", () => {
+    const root = fixtureRoot();
+    const db = oldDb(root, "global");
+    const roam = join(root, "roam");
+    mkdirSync(roam, { mode: 0o755 });
+    chmodSync(roam, 0o755);
+    try {
+      expect(() => migrate(db, "global", { machineId: MACHINE, globalRoot: root })).not.toThrow();
+      expect(lstatSync(roam).mode & 0o777).toBe(0o700);
+      expect(db.pragma("user_version")).toBe(14);
+    } finally { db.close(); }
+  }, 5000);
+
+  it("creates a backup without POSIX directory or owner checks on Windows", async () => {
+    const root = fixtureRoot();
+    const db = oldDb(root, "global");
+    const roam = join(root, "roam");
+    mkdirSync(roam, { mode: 0o755 });
+    chmodSync(roam, 0o755);
+    try {
+      const { backupBeforeMigration } = await import("../db");
+      const backup = backupBeforeMigration(db, "global", root, 13, { platform: "win32", uid: -1 });
+      expect(existsSync(backup)).toBe(true);
+      expect(lstatSync(roam).mode & 0o777).toBe(0o755);
+      const copy = new Database(backup, { readonly: true });
+      try { expect(copy.pragma("user_version", { simple: true })).toBe(13); }
+      finally { copy.close(); }
+    } finally { db.close(); }
+  }, 5000);
+
   it("refuses a symlinked backup directory without changing the source", () => {
     const root = fixtureRoot();
     const db = oldDb(root, "global");
@@ -620,10 +708,67 @@ describe("roaming schema migration", () => {
     renameSync(original, join(root, "global-replaced.db"));
     const replacement = oldDb(root, "global");
     try {
-      expect(() => core.backupBeforeMigration(replacement, "global", root)).toThrow(/identity|store/i);
-      expect(replacement.pragma("user_version")).toBe(13);
+      const replacementBackup = core.backupBeforeMigration(replacement, "global", root);
+      expect(replacementBackup).not.toBe(backupPath);
       expect(existsSync(backupPath!)).toBe(true);
+      expect(existsSync(replacementBackup)).toBe(true);
+      expect(core.backupBeforeMigration(replacement, "global", root)).toBe(replacementBackup);
+      migrate(replacement, "global", { machineId: MACHINE, globalRoot: root });
+      expect(replacement.pragma("user_version")).toBe(14);
     } finally { replacement.close(); }
+  }, 5000);
+
+  it("restores a pre-migration backup and keeps a second verified backup", () => {
+    const root = fixtureRoot();
+    const path = join(root, "global-old.db");
+    const original = oldDb(root, "global");
+    original.exec("INSERT INTO global_memory (uuid, category, content, created_at) VALUES ('restored', 'insight', 'retained', 1)");
+    migrate(original, "global", { machineId: MACHINE, globalRoot: root });
+    original.close();
+    const directory = join(root, "roam", "backups");
+    const [backupName] = readdirSync(directory).filter(name => name.endsWith(".db"));
+    const backupPath = join(directory, backupName);
+    // Replace the inode as a normal restore does, retaining the original backup.
+    renameSync(path, join(root, "migrated.db"));
+    copyFileSync(backupPath, path);
+    const restored = openDb(path);
+    try {
+      expect(() => migrate(restored, "global", { machineId: MACHINE, globalRoot: root })).not.toThrow();
+      expect(restored.pragma("user_version")).toBe(14);
+      expect(restored.prepare("SELECT uuid, content FROM global_memory").all()).toEqual([{ uuid: "restored", content: "retained" }]);
+      const backups = readdirSync(directory).filter(name => name.endsWith(".db"));
+      expect(backups).toHaveLength(2);
+      expect(backups).toContain(backupName);
+      for (const name of backups) {
+        const backup = new Database(join(directory, name), { readonly: true });
+        try {
+          expect(backup.pragma("user_version", { simple: true })).toBe(13);
+          expect(backup.pragma("quick_check", { simple: true })).toBe("ok");
+        } finally { backup.close(); }
+      }
+    } finally { restored.close(); }
+  }, 5000);
+
+  it("keeps a version-mismatched backup and creates a verified replacement", async () => {
+    const root = fixtureRoot();
+    const db = oldDb(root, "global");
+    try {
+      const { backupBeforeMigration } = await import("../db");
+      const oldBackup = backupBeforeMigration(db, "global", root);
+      const manifestPath = `${oldBackup}.json`;
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version: number };
+      manifest.version = 12;
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      const replacement = backupBeforeMigration(db, "global", root);
+      expect(replacement).not.toBe(oldBackup);
+      expect(existsSync(oldBackup)).toBe(true);
+      expect(JSON.parse(readFileSync(manifestPath, "utf8")).version).toBe(12);
+      const backup = new Database(replacement, { readonly: true });
+      try {
+        expect(backup.pragma("user_version", { simple: true })).toBe(13);
+        expect(backup.pragma("quick_check", { simple: true })).toBe("ok");
+      } finally { backup.close(); }
+    } finally { db.close(); }
   }, 5000);
 
   it("refuses a corrupted existing backup", async () => {
@@ -641,7 +786,11 @@ describe("roaming schema migration", () => {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { sha256: string };
       manifest.sha256 = createHash("sha256").update(readFileSync(backupPath)).digest("hex");
       writeFileSync(manifestPath, JSON.stringify(manifest));
-      expect(() => core.backupBeforeMigration(db, "global", root)).toThrow(/version/i);
+      const replacement = core.backupBeforeMigration(db, "global", root);
+      expect(replacement).not.toBe(backupPath);
+      const valid = new Database(replacement, { readonly: true });
+      try { expect(valid.pragma("user_version", { simple: true })).toBe(13); }
+      finally { valid.close(); }
       expect(db.pragma("user_version")).toBe(13);
     } finally { db.close(); }
   }, 5000);

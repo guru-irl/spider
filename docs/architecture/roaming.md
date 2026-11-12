@@ -28,8 +28,9 @@ outside these fences and can bypass them or override cache warming.
 
 ## Compatibility and rollout
 
-Every writer, including the SQLite CLI, needs SQLite 3.42 or newer. Compatible
-consumers use core schema 14. A newer core schema is refused before application
+Every writer, including the SQLite CLI, needs SQLite 3.42 or newer. Even with
+capture disabled, the sqlite3 command line must be 3.38 or newer to write a
+migrated store. Compatible consumers use core schema 14. A newer core schema is refused before application
 queries. Migration backs up each existing core database before changing it and
 refuses migration if the backup fails.
 

@@ -5,6 +5,7 @@ import {
 } from "node:fs";
 import type { Stats } from "node:fs";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { MachineId } from "./types";
 
 export interface MachineIdentityOptions {
@@ -42,7 +43,7 @@ function syncDirectory(path: string, options: MachineIdentityOptions): void {
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-function readIdentity(file: string, options: MachineIdentityOptions): MachineId {
+function readIdentityOnce(file: string, options: MachineIdentityOptions): MachineId {
   const fd = openSync(file, constants.O_RDONLY | (isWindows(options) ? 0 : constants.O_NOFOLLOW));
   try {
     const stat = fstatSync(fd);
@@ -57,6 +58,22 @@ function readIdentity(file: string, options: MachineIdentityOptions): MachineId 
     }
     return value.machineId;
   } finally { closeSync(fd); }
+}
+
+const identityWaiter = new Int32Array(new SharedArrayBuffer(4));
+function readIdentity(file: string, options: MachineIdentityOptions): MachineId {
+  // Windows exclusive creation exposes the file before its first write. A
+  // bounded retry lets a concurrent creator finish without replacing bad data.
+  if (!isWindows(options)) return readIdentityOnce(file, options);
+  const deadline = performance.now() + 1000;
+  for (;;) {
+    try { return readIdentityOnce(file, options); }
+    catch (error) {
+      const remaining = deadline - performance.now();
+      if (!(error instanceof Error) || error.message !== "Invalid machine identity file" || remaining <= 0) throw error;
+      Atomics.wait(identityWaiter, 0, 0, Math.min(20, remaining));
+    }
+  }
 }
 
 /** Admission must not create a replacement identity when the recorded one is missing. */
@@ -94,9 +111,11 @@ export function loadMachineIdentity(globalRoot: string, options: MachineIdentity
       writeFileSync(fd, `${JSON.stringify({ machineId: randomUUID() })}\n`);
       fsyncSync(fd);
     } catch (error) {
+      try { closeSync(fd); } catch { /* preserve the original error */ }
       try { unlinkSync(file); } catch { /* preserve the original error */ }
       throw error;
-    } finally { closeSync(fd); }
+    }
+    closeSync(fd);
     return readIdentity(file, options);
   }
 

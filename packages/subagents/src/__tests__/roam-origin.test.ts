@@ -1,14 +1,18 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { appendRunEvent, bus, type Db } from "@spider/db-core";
+import { appendRunEvent, bus, openDb, openDbReadOnly, type Db } from "@spider/db-core";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { V13 } from "../../../db-core/src/__tests__/fixtures/historical-schemas";
 import { createReplica } from "@spider/db-core/testutil";
 import { RunStore } from "../run-store";
 import { reapOrphanRuns } from "../reaper";
 import { killRun, matchKillTargets } from "../kill";
-import { discoverDurableChildren } from "../durable-adoption";
+import { diagnoseDurableChildren, discoverDurableChildren } from "../durable-adoption";
+import { isLocalRun } from "../roam-origin";
 import { getShared, releaseShared } from "../child-registry";
 import { makeChildReporter } from "../child-reporter";
 import { makeMessageHandler } from "../actions/message";
-import { makeAsyncNotifier, makeRunHandler } from "../actions/run";
+import { adoptReloadedChildren, makeAsyncNotifier, makeRunHandler } from "../actions/run";
 import { freshDb, testScratchPath } from "./helpers/testutil";
 import { reportRunUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
@@ -31,6 +35,115 @@ function insert(db: Db, id: string, origin: string, status = "running", session 
 function event(db: Db, id: string, type: string, payload: unknown) {
   appendRunEvent(db, { runId: id, sessionId: "owner", ts: Date.now(), type, payload });
 }
+
+it("discovers and diagnoses a routed schema-13 store after an unreadable route", () => {
+  const current = fixture();
+  const global = createReplica("global", local); replicas.push(global);
+  const legacyPath = join(current.root, "legacy.db");
+  const legacy = openDb(legacyPath);
+  const legacyDirectory = join(current.root, "legacy-supervisor");
+  const currentDirectory = join(current.root, "current-supervisor");
+  for (const dir of [legacyDirectory, currentDirectory]) {
+    mkdirSync(dir);
+    writeFileSync(join(dir, "exit.json"), JSON.stringify({ exitCode: 0, result: "complete" }));
+  }
+  legacy.exec(V13.worktree);
+  legacy.raw.pragma("user_version = 13");
+  legacy.prepare("INSERT INTO runs (id, session_id, agent, status, child_mode) VALUES ('legacy-routed', 'owner', 'worker', 'running', 'rpc')").run();
+  legacy.prepare("INSERT INTO run_events (run_id, session_id, ts, type, payload) VALUES ('legacy-routed', 'owner', 1, 'child_supervisor', ?)")
+    .run(JSON.stringify({ version: 1, directory: legacyDirectory }));
+  legacy.close();
+  const { id } = current.store.create({ sessionId: "owner", agent: "worker" });
+  current.store.start(id);
+  event(current.db, id, "child_supervisor", { version: 1, directory: currentDirectory });
+  const corrupt = join(current.root, "unreadable.db");
+  writeFileSync(corrupt, "not a database");
+  global.db.prepare("INSERT INTO run_routes(run_id, session_id, db_path) VALUES (?, 'owner', ?)").run("bad-route", corrupt);
+  global.db.prepare("INSERT INTO run_routes(run_id, session_id, db_path) VALUES (?, 'owner', ?)").run("legacy-routed", legacyPath);
+  const ctx = { db: current.db, globalDb: global.db, sessionId: "owner", runDbPath: current.db.raw.name };
+  try {
+    const diagnosed = diagnoseDurableChildren(ctx);
+    expect(diagnosed.map(row => row.runId).sort()).toEqual([id, "legacy-routed"].sort());
+    expect(() => discoverDurableChildren(ctx)).not.toThrow();
+    expect(getShared(id)?.dbPath).toBe(current.db.raw.name);
+    expect(getShared("legacy-routed")?.dbPath).toBe(legacyPath);
+    const untouched = openDbReadOnly(legacyPath)!;
+    try { expect(untouched.pragma("user_version")).toBe(13); }
+    finally { untouched.close(); }
+  } finally { releaseShared(id); releaseShared("legacy-routed"); }
+}, 5000);
+
+it("adopts and delivers a schema-13 routed child without migrating its store", async () => {
+  const current = fixture(), global = createReplica("global", local); replicas.push(global);
+  const legacyPath = join(current.root, "legacy-adoption.db"), dir = join(current.root, "completed-supervisor");
+  mkdirSync(dir);
+  writeFileSync(join(dir, "exit.json"), JSON.stringify({ exitCode: 0, result: "legacy result" }));
+  const legacy = openDb(legacyPath);
+  legacy.exec(V13.worktree); legacy.raw.pragma("user_version = 13");
+  legacy.prepare("INSERT INTO runs (id, session_id, agent, status, child_mode) VALUES ('legacy-adopted', 'owner', 'worker', 'running', 'rpc')").run();
+  legacy.prepare("INSERT INTO run_events (run_id, session_id, ts, type, payload) VALUES ('legacy-adopted', 'owner', 1, 'child_supervisor', ?)")
+    .run(JSON.stringify({ version: 1, directory: dir }));
+  legacy.close();
+  global.db.prepare("INSERT INTO run_routes(run_id, session_id, db_path) VALUES ('legacy-adopted', 'owner', ?)").run(legacyPath);
+  let delivered!: (value: any) => void;
+  const completion = new Promise<any>(resolve => { delivered = resolve; });
+  const ctx = { db: current.db, globalDb: global.db, sessionId: "owner", cwd: current.root,
+    runDbPath: current.db.raw.name, pi: { sendMessage: (value: any) => delivered(value) } };
+  try {
+    const result = adoptReloadedChildren(ctx);
+    expect(result).toEqual({ adopted: ["legacy-adopted"], refused: [] });
+    expect((await completion).content).toContain("legacy result");
+    const untouched = openDbReadOnly(legacyPath)!;
+    try {
+      expect(untouched.pragma("user_version")).toBe(13);
+      expect(untouched.prepare("SELECT status FROM runs WHERE id='legacy-adopted'").get()).toEqual({ status: "done" });
+      expect(untouched.prepare("SELECT count(*) AS n FROM run_events WHERE type='completion_delivered'").get()).toEqual({ n: 1 });
+    } finally { untouched.close(); }
+  } finally { releaseShared("legacy-adopted"); }
+}, 5000);
+
+it("uses local origin for legacy, empty-origin, and foreign runs across schema changes", async () => {
+  const { root } = fixture();
+  const db = openDb(join(root, "origins-v13.db"));
+  try {
+    db.exec(V13.worktree);
+    db.raw.pragma("user_version = 13");
+    db.prepare("INSERT INTO runs(id,session_id,agent,status,host_pid) VALUES ('old','owner','worker','running',10)").run();
+    expect(isLocalRun(db, "old")).toBe(true);
+    expect(isLocalRun(db, "missing")).toBe(false);
+    expect((await reapOrphanRuns({ db, selfPid: 1, alive: () => false })).reaped).toEqual(["old"]);
+    expect(new RunStore(db).get("old")?.status).toBe("cancelled");
+    db.exec("CREATE TABLE roam_meta(id INTEGER PRIMARY KEY, machine_id TEXT NOT NULL)");
+    db.prepare("INSERT INTO roam_meta VALUES (1, ?)").run(local);
+    expect(isLocalRun(db, "old")).toBe(true); // Metadata exists but the origin column does not.
+    db.exec("DROP TABLE roam_meta");
+    db.exec("ALTER TABLE runs ADD COLUMN origin_machine TEXT DEFAULT ''");
+    db.prepare("INSERT INTO runs(id,session_id,agent,status,origin_machine) VALUES ('orphan-meta','owner','worker','queued',?)").run(foreign);
+    expect(isLocalRun(db, "orphan-meta")).toBe(true);
+    db.exec("CREATE TABLE roam_meta(id INTEGER PRIMARY KEY, machine_id TEXT NOT NULL)");
+    db.prepare("INSERT INTO roam_meta VALUES (1, ?)").run(local);
+    db.prepare("INSERT INTO runs(id,session_id,agent,status,origin_machine) VALUES ('empty-origin','owner','worker','queued','')").run();
+    db.prepare("INSERT INTO runs(id,session_id,agent,status,origin_machine) VALUES ('null-origin','owner','worker','queued',NULL)").run();
+    expect(isLocalRun(db, "empty-origin")).toBe(true);
+    expect(isLocalRun(db, "null-origin")).toBe(true);
+    expect(isLocalRun(db, "orphan-meta")).toBe(false);
+    const store = new RunStore(db);
+    store.start("empty-origin"); store.start("orphan-meta");
+    expect(store.get("empty-origin")?.status).toBe("running");
+    expect(store.get("orphan-meta")?.status).toBe("queued");
+  } finally { db.close(); }
+}, 5000);
+
+it("disables a child reporter when its local-origin lookup fails", () => {
+  const { db, store } = fixture();
+  const { id } = store.create({ sessionId: "owner", agent: "worker" });
+  const broken = new Proxy(db, { get(target, key) {
+    if (key === "prepare") return () => { throw new Error("fixture lookup failed"); };
+    return Reflect.get(target, key);
+  } });
+  expect(() => makeChildReporter(broken, { runId: id, sessionId: "owner" })).not.toThrow();
+  expect(store.get(id)?.pid).toBeNull();
+}, 5000);
 
 it("foreign PID and directory collisions cause no operational action", async () => {
   const { db, store, root } = fixture();

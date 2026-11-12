@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { openDbReadOnly, type Db } from '@spider/db-core';
+import { localRunPredicate } from '@spider/db-core/roam/run-origin';
 import { getShared, registerShared } from './child-registry';
 import { connectDurableChild, readSupervisorState, supervisorIsAlive } from './durable-child';
 import { checkProcessIdentity } from './process-identity';
@@ -27,11 +28,12 @@ function directory(payload: string): string | undefined {
  * is a tombstone. It is never registered again, even if a stale socket remains. */
 export function discoverDurableChildren(ctx: DurableContext & { sessionId: string }): void {
   for (const path of durablePaths(ctx)) {
-    const db = path === currentDbPath(ctx) ? ctx.db : openDbReadOnly(path);
-    if (!db) continue; // Removed worktrees can leave old routing records.
+    let db: Db | undefined;
     try {
+      db = path === currentDbPath(ctx) ? ctx.db : openDbReadOnly(path) ?? undefined;
+      if (!db) continue; // Removed worktrees can leave old routing records.
       const rows = db.prepare(`SELECT r.id,r.child_mode,e.payload FROM runs r JOIN run_events e ON e.run_id=r.id AND e.type='child_supervisor'
-        WHERE r.session_id=? AND r.status!='cancelled' AND r.origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND r.origin_machine!=''
+        WHERE r.session_id=? AND r.status!='cancelled' AND ${localRunPredicate(db)}
         AND NOT EXISTS (SELECT 1 FROM run_events delivered WHERE delivered.run_id=r.id AND delivered.type='completion_delivered')
         ORDER BY e.id`).all(ctx.sessionId) as Array<{ id: string; child_mode: 'rpc' | 'print'; payload: string }>;
       for (const row of rows) {
@@ -41,7 +43,8 @@ export function discoverDurableChildren(ctx: DurableContext & { sessionId: strin
         const entry = registerShared({ runId: row.id, sessionId: ctx.sessionId, dbPath: path, mode: row.child_mode, handle, survivable: true });
         entry.state = 'independent';
       }
-    } finally { if (db !== ctx.db) db.close(); }
+    } catch { /* An unreadable routed store must not hide children in other stores. */ }
+    finally { try { if (db && db !== ctx.db) db.close(); } catch { /* Continue with the remaining routes. */ } }
   }
 }
 
@@ -55,11 +58,12 @@ export interface DurableDiagnostic {
 export function diagnoseDurableChildren(ctx: DurableContext): DurableDiagnostic[] {
   const result: DurableDiagnostic[] = [];
   for (const path of durablePaths(ctx)) {
-    const db = path === currentDbPath(ctx) ? ctx.db : openDbReadOnly(path);
-    if (!db) continue;
+    let db: Db | undefined;
     try {
+      db = path === currentDbPath(ctx) ? ctx.db : openDbReadOnly(path) ?? undefined;
+      if (!db) continue;
       const rows = db.prepare(`SELECT r.id,r.status,e.payload FROM runs r JOIN run_events e ON e.run_id=r.id AND e.type='child_supervisor'
-        WHERE r.origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND r.origin_machine!='' ${ctx.sessionId ? 'AND r.session_id=?' : ''} ORDER BY e.id`).all(...(ctx.sessionId ? [ctx.sessionId] : [])) as Array<{ id: string; status: string; payload: string }>;
+        WHERE ${localRunPredicate(db)} ${ctx.sessionId ? 'AND r.session_id=?' : ''} ORDER BY e.id`).all(...(ctx.sessionId ? [ctx.sessionId] : [])) as Array<{ id: string; status: string; payload: string }>;
       for (const row of rows) {
         const pathToSupervisor = directory(row.payload), state = pathToSupervisor ? readSupervisorState(pathToSupervisor) : undefined;
         const supervisorAlive = Boolean(state && supervisorIsAlive(state));
@@ -70,7 +74,8 @@ export function diagnoseDurableChildren(ctx: DurableContext): DurableDiagnostic[
           child: state?.childPid ? childAlive ? 'alive' : 'gone' : 'unknown', owner: state?.ownerPid && isProcessAlive(state.ownerPid) ? 'attached' : 'detached',
           ...(state ? { supervisorPid: state.supervisorPid, childPid: state.childPid } : {}) });
       }
-    } finally { if (db !== ctx.db) db.close(); }
+    } catch { /* Continue diagnosing other routed stores. */ }
+    finally { try { if (db && db !== ctx.db) db.close(); } catch { /* Continue with the remaining routes. */ } }
   }
   return result;
 }

@@ -1,5 +1,6 @@
 import type { UsageSinkFactory } from "@spider/models";
 import { openDb, type Db } from "@spider/db-core";
+import { isLocalRun, localRunPredicate } from "@spider/db-core/roam/run-origin";
 import { recordRunUsage, reportRunUsage, RunStore, sumUsage, getShared, type UsageLike as Usage, type ModelUsage, type RunRow } from "@spider/subagents";
 
 interface SessionManager {
@@ -11,15 +12,6 @@ interface SessionManager {
 const pendingKey = Symbol.for("spider.pending-aux-usage");
 const shared = globalThis as typeof globalThis & { [pendingKey]?: Map<string, Usage[]> };
 const pending = shared[pendingKey] ??= new Map<string, Usage[]>();
-
-// Pre-roaming rows have an empty origin. Named foreign origins are never local work.
-function localRunPredicate(db: Db): string {
-  return Number(db.pragma("user_version")) < 14 ? "1" :
-    "(r.origin_machine = '' OR r.origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1))";
-}
-function isLocalRun(db: Db, id: string): boolean {
-  return !!db.prepare(`SELECT 1 FROM runs r WHERE r.id=? AND ${localRunPredicate(db)}`).get(id);
-}
 
 export class UsageAccounting {
   private manager?: SessionManager;

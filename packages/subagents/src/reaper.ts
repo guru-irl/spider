@@ -1,4 +1,5 @@
 import type { Db } from "@spider/db-core";
+import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import { RunStore, type RunRow } from "./run-store";
 import { isProcessAlive, killProcessGroup } from "./kill-process";
 import { checkProcessIdentity } from "./process-identity";
@@ -31,7 +32,7 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
   let rows: RunRow[];
   try {
     rows = deps.db
-      .prepare(`SELECT * FROM runs WHERE status IN ('queued','running','paused') AND host_pid IS NOT NULL AND origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine!=''`)
+      .prepare(`SELECT r.* FROM runs r WHERE status IN ('queued','running','paused') AND host_pid IS NOT NULL AND ${localRunPredicate(deps.db)}`)
       .all() as RunRow[];
   } catch (err) {
     return { reaped, error: String((err as Error)?.message ?? err) };

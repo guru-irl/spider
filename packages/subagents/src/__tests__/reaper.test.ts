@@ -96,7 +96,13 @@ describe("reapOrphanRuns", () => {
 
   it("returns error when SELECT throws", async () => {
     const db = freshDb();
-    const badDb = { prepare: () => { throw new Error("SQLITE_BUSY"); } } as any;
+    const badDb = new Proxy(db, { get(target, key) {
+      if (key === "prepare") return (sql: string) => {
+        if (sql.includes("FROM runs r WHERE status")) throw new Error("SQLITE_BUSY");
+        return target.prepare(sql);
+      };
+      return Reflect.get(target, key);
+    } });
     const res = await reapOrphanRuns({ db: badDb });
     expect(res.reaped).toEqual([]);
     expect(res.error).toBe("SQLITE_BUSY");

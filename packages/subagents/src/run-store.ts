@@ -1,5 +1,6 @@
 import type { Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
+import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import { emitStatus } from "./run-events";
 import { deriveRunName } from "./self-name";
 import { attachOwnership, rememberOwnedRun } from "./roam-origin";
@@ -66,6 +67,8 @@ function toRow(r: NewRun & { id: string; name: string; status: RunStatus }) {
 export class RunStore {
   constructor(private db: Db, private globalDb?: Db) {}
 
+  private local(): string { return localRunPredicate(this.db, "runs"); }
+
   private removeRoute(id: string): void {
     try { this.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(id); } catch { /* outcome persistence takes priority over locator cleanup */ }
   }
@@ -86,7 +89,7 @@ export class RunStore {
 
   start(id: string): void {
     this.db
-      .prepare(`UPDATE runs SET status = 'running', started_at = @now WHERE id = @id AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != ''`)
+      .prepare(`UPDATE runs SET status = 'running', started_at = @now WHERE id = @id AND ${this.local()}`)
       .run({ id, now: Date.now() });
   }
 
@@ -99,7 +102,7 @@ export class RunStore {
            phase = COALESCE(@phase, phase),
            model = COALESCE(@model, model),
            thinking = COALESCE(@thinking, thinking)
-         WHERE id = @id AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != ''`
+         WHERE id = @id AND ${this.local()}`
       )
       .run({
         id,
@@ -118,7 +121,7 @@ export class RunStore {
            status = @status,
            ended_at = @now,
            result = COALESCE(@result, result)
-         WHERE id = @id AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != '' AND status IN ('queued', 'running', 'paused')`
+         WHERE id = @id AND ${this.local()} AND status IN ('queued', 'running', 'paused')`
       )
       .run({ id, status: patch.status, now: Date.now(), result: patch.result ?? null }).changes;
     if (changed && opts.removeRoute !== false && ["done", "failed", "cancelled"].includes(patch.status)) this.db.afterCommit(() => this.removeRoute(id));
@@ -126,13 +129,13 @@ export class RunStore {
   }
 
   setLaunch(id: string, launch: { childMode: "rpc" | "print"; intercomSession?: string }): void {
-    this.db.prepare("UPDATE runs SET child_mode=?, intercom_session=? WHERE id=? AND origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine!=''")
+    this.db.prepare(`UPDATE runs SET child_mode=?, intercom_session=? WHERE id=? AND ${this.local()}`)
       .run(launch.childMode, launch.intercomSession ?? null, id);
   }
 
   setPid(id: string, pid: number, hostPid: number, startTime?: string | null): void {
     this.db
-      .prepare(`UPDATE runs SET pid = @pid, host_pid = @hostPid, pid_start_time = @startTime WHERE id = @id AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != ''`)
+      .prepare(`UPDATE runs SET pid = @pid, host_pid = @hostPid, pid_start_time = @startTime WHERE id = @id AND ${this.local()}`)
       .run({ id, pid, hostPid, startTime: startTime ?? null });
   }
 
@@ -140,11 +143,12 @@ export class RunStore {
    *  kill racing a natural exit never rewrites the real outcome or fabricates a
    *  cancellation event. Returns whether this call changed the row. */
   cancel(id: string, reason?: string): boolean {
+    const local = this.local();
     const changed = this.db.transaction(() => {
       const result = this.db
         .prepare(
           `UPDATE runs SET status = 'cancelled', ended_at = @now, result = COALESCE(@reason, result)
-           WHERE id = @id AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != '' AND status IN ('queued', 'running', 'paused')`
+           WHERE id = @id AND ${local} AND status IN ('queued', 'running', 'paused')`
         )
         .run({ id, now: Date.now(), reason: reason ?? null });
       if (result.changes === 0) return false;
@@ -169,7 +173,7 @@ export class RunStore {
   listActive(sessionId: string): RunRow[] {
     return this.db
       .prepare(
-        `SELECT * FROM runs WHERE session_id = ? AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != '' AND status IN ('queued', 'running', 'paused')
+        `SELECT * FROM runs WHERE session_id = ? AND ${this.local()} AND status IN ('queued', 'running', 'paused')
          ORDER BY started_at, id`
       )
       .all(sessionId) as RunRow[];
@@ -183,7 +187,7 @@ export class RunStore {
 
   linkChild(childId: string, parentRunId: string): void {
     this.db
-      .prepare(`UPDATE runs SET parent_run_id = @parentRunId WHERE id = @childId AND origin_machine = (SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine != ''`)
+      .prepare(`UPDATE runs SET parent_run_id = @parentRunId WHERE id = @childId AND ${this.local()}`)
       .run({ childId, parentRunId });
   }
 }

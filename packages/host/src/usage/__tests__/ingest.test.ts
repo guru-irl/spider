@@ -250,8 +250,11 @@ it("retains another source's transcript proof when one proving generation is rep
 it("skips unchanged sources without opening them after a ledger restart", async () => {
   const s = source("p"); write(s, [header(), message("one")]); await scan(discovery([s]));
   ledger.close(); ledger = openUsageLedger(join(root, "ledger.db"));
+  const contextReads = vi.spyOn(ledger, "getSourceContext");
   vi.mocked(fs.open).mockClear(); await scan(discovery([s]));
-  expect(fs.open).not.toHaveBeenCalled(); expect(rows()).toHaveLength(1);
+  expect(fs.open).not.toHaveBeenCalled();
+  expect(contextReads).not.toHaveBeenCalledWith(s.path, []);
+  expect(rows()).toHaveLength(1);
 });
 it("prices only new entries on an append after a ledger restart", async () => {
   const s = source("p"); write(s, [header(), { type: "thinking_level_change", id: "effort", thinkingLevel: "high" }, message("one")]);

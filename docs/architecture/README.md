@@ -278,6 +278,7 @@ before you share transcripts.
 
 - [`data-model.md`](./data-model.md): the three database tiers, the tables, migrations,
   and the `run_events` bus.
+- [`roaming.md`](./roaming.md): the replication boundary, local state, and disabled rollout.
 - [`feedback-and-learning-loops.md`](./feedback-and-learning-loops.md): the
   routing, memory, organism, and subagent loops that run on the shared database.
 - [`../../packages/db-core/README.md`](../../packages/db-core/README.md)

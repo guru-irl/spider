@@ -176,7 +176,7 @@ export function applyBatch(
       if (receipt.peer_stream !== header.senderStream || receipt.after_seq !== header.after || receipt.through_seq !== header.through || receipt.sha256 !== batch.sha256) {
         throw new Error("Roaming batch receipt conflicts with this digest or range");
       }
-      return { changed: false, memoryChars: null as number | null };
+      return { kind: "replay" as const };
     }
     if (meta.roamable !== 1 || meta.problem !== null || meta.importing !== 0) throw new Error("Roaming destination store is not ready for this batch");
     for (const change of changes) {
@@ -243,16 +243,19 @@ export function applyBatch(
     const table = header.storeKey === "global" ? "global_memory" : header.storeKey.startsWith("repo:") ? "memory" : null;
     const memoryChars = changedMemory && table
       ? (db.prepare(`SELECT coalesce(sum(length(content)), 0) AS total FROM ${table} WHERE status = 'active'`).get() as { total: number }).total : null;
-    return { changed, memoryChars };
+    return { kind: "applied" as const, changed, memoryChars };
   }).immediate();
 
-  if (outcome.changed) {
-    try { options.effects.committed(header.storeKey); }
-    catch (error) { try { console.error("Post-commit roaming effect failed", error); } catch { /* diagnostic is best effort */ } }
+  if (outcome.kind === "applied") {
+    if (outcome.changed) {
+      try { options.effects.committed(header.storeKey); }
+      catch (error) { try { console.error("Post-commit roaming effect failed", error); } catch { /* diagnostic is best effort */ } }
+    }
+    if (outcome.memoryChars !== null && outcome.memoryChars > DEFAULT_MEMORY_CHAR_CAP) {
+      try { console.warn(`Roaming memory exceeds the default active character cap (${outcome.memoryChars} of ${DEFAULT_MEMORY_CHAR_CAP}) in ${header.storeKey}`); }
+      catch { /* diagnostic is best effort */ }
+    }
   }
-  if (outcome.memoryChars !== null && outcome.memoryChars > DEFAULT_MEMORY_CHAR_CAP) {
-    try { console.warn(`Roaming memory exceeds the default active character cap (${outcome.memoryChars} of ${DEFAULT_MEMORY_CHAR_CAP}) in ${header.storeKey}`); }
-    catch { /* diagnostic is best effort */ }
-  }
-  return { batchId: header.batchId, stream: header.senderStream, through: header.through, sha256: batch.sha256, applyMs: performance.now() - started };
+  return { batchId: header.batchId, stream: header.senderStream, through: header.through, sha256: batch.sha256,
+    applyMs: outcome.kind === "replay" ? null : performance.now() - started };
 }

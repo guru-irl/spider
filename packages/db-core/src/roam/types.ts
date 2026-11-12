@@ -28,7 +28,8 @@ export interface BatchHeader {
 export interface BatchArtifact { file: string; byteLength: number; sha256: string; header: BatchHeader }
 declare const validatedBatchBrand: unique symbol;
 export type ValidatedBatch = BatchArtifact & { readonly [validatedBatchBrand]: true };
-export interface ApplyReceipt { batchId: string; stream: string; through: number; sha256: string; applyMs: number }
+/** `applyMs` is unavailable when replaying a persisted digest receipt. */
+export interface ApplyReceipt { batchId: string; stream: string; through: number; sha256: string; applyMs: number | null }
 export interface StoreBarrier { storeKey: StoreKey; stream: string; through: number }
 export type LocalState = "active" | "frozen" | "retired";
 export interface SessionState { sessionId: string; epoch: number; state: LocalState; moveId: string | null; freezeSeq: number | null }

@@ -442,7 +442,7 @@ export interface StagingStore {
   /** Replace the reconstructed file with the verified validation copy and release its reservation. */
   promoteValidationCopy(manifest: ArtifactManifest, attemptId: string, file: string): string;
   release(id: string, operationId: string): void;
-  sweep(now: number): string[];
+  sweep(now: number, hasJournalReference?: (artifactId: string) => boolean): string[];
   removeAfterReceipt(manifest: ArtifactManifest, receipt: ArtifactReceipt, verifyReceipt: (receipt: ArtifactReceipt) => boolean): void;
   close(): void;
 }
@@ -877,7 +877,7 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
         if (changed.changes) touch(id);
       }).immediate();
     },
-    sweep(now) {
+    sweep(now, hasJournalReference) {
       secure();
       if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid staging cleanup time");
       return db.raw.transaction(() => {
@@ -888,8 +888,14 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
           AND (EXISTS (SELECT 1 FROM staging_versions v WHERE v.artifact = a.id AND v.cleaned = 0)
             OR EXISTS (SELECT 1 FROM staging_allocations x WHERE x.artifact = a.id))
           ORDER BY id`).all(now - limits.retentionMs) as { id: string }[];
-        for (const row of rows) discardFiles(row.id);
-        return rows.map(row => row.id);
+        const orphans = rows.filter(row => {
+          if (!hasJournalReference) return true;
+          const referenced = hasJournalReference(row.id);
+          if (typeof referenced !== "boolean") throw new Error("Incoming journal references are unavailable");
+          return !referenced;
+        });
+        for (const row of orphans) discardFiles(row.id);
+        return orphans.map(row => row.id);
       }).immediate();
     },
     removeAfterReceipt(manifest, receipt, verifyReceipt) {

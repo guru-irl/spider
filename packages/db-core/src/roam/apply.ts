@@ -7,6 +7,7 @@ import type { Db } from "../db";
 import { isRoamUuid } from "./codec";
 import { DESCRIPTORS } from "./descriptors";
 import { compareHlc, observeHlc } from "./hlc";
+import { readLocal, writeLocal } from "./local-state";
 import type { ApplyReceipt, Change, Descriptor, Entity, Hlc, Home, JsonObject, MachineId, RecordChange, ReplicaEffects, StoreKey, ValidatedBatch } from "./types";
 
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -16,6 +17,8 @@ const DEFAULT_MEMORY_CHAR_CAP = 8000;
 // The empty machine is outside the sender UUID namespace and cannot be a receive cursor.
 export const FENCE_MACHINE = "";
 export const FENCE_STREAM = "mapping-fence";
+export const FENCE_TARGET = "mapping-fence-target";
+export interface MappingFenceTarget { file: string; device: string; inode: string; clearOnCancel: boolean }
 
 export class CursorMismatchError extends Error {
   constructor() { super("Roaming cursor does not match the batch sequence"); this.name = "CursorMismatchError"; }
@@ -32,10 +35,19 @@ export class MappingFenceError extends Error {
   }
 }
 
-export function fenceReplicaForMapping(db: Db, storeKey: StoreKey): void {
+export function fenceReplicaForMapping(db: Db, storeKey: StoreKey, target?: MappingFenceTarget): void {
   db.raw.transaction(() => {
     const meta = db.prepare("SELECT store_key FROM roam_meta WHERE id = 1").get() as { store_key: StoreKey | null } | undefined;
     if (!meta || meta.store_key !== storeKey) throw new Error("Mapping fence store does not match the replica");
+    if (target) {
+      const existing = readLocal<unknown>(db, FENCE_TARGET, storeKey);
+      if (existing !== undefined) {
+        if (!existing || typeof existing !== "object" || Array.isArray(existing)) throw new Error("Conflicting mapping fence target");
+        const hint = existing as Partial<MappingFenceTarget>;
+        if (hint.file !== target.file || hint.device !== target.device || hint.inode !== target.inode || typeof hint.clearOnCancel !== "boolean")
+          throw new Error("Conflicting mapping fence target");
+      } else writeLocal(db, FENCE_TARGET, storeKey, target);
+    }
     db.prepare("INSERT OR IGNORE INTO roam_cursors(peer_machine,peer_stream,last_seq) VALUES (?, ?, 0)").run(FENCE_MACHINE, FENCE_STREAM);
   }).immediate();
 }

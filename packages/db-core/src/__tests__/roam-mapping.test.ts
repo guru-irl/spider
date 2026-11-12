@@ -13,8 +13,9 @@ import { validateBatch } from "../roam/codec";
 import { createReplicaEffects } from "../roam/effects";
 import { createExportPolicy } from "../roam/event-policy";
 import { exportBatch } from "../roam/export";
+import { seedSession } from "../roam/seed";
 import { cancelMapping, discoverRepository, mapRepository, mapWorkspace, resolveRepositoryKey, resolveWorkspace, resumePendingMappings } from "../roam/repo-map";
-import { localEntries, writeLocal } from "../roam/local-state";
+import { localEntries, readLocal, writeLocal } from "../roam/local-state";
 
 const local = "11111111-1111-4111-8111-111111111111";
 const remote = "22222222-2222-4222-8222-222222222222";
@@ -262,22 +263,46 @@ it.each(["duplicate diagnosis", "other store key", "import in progress", "foreig
   } finally { target.close(); f.source.close(); }
 }, 5000);
 
-it("stamps the target store key only if mapping publication succeeds", async () => {
+it("resumes after the target commit but before the global publication commit", async () => {
   const f = interruptedFixture();
   try {
     await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
     const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
     try {
-      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
       expect(target.prepare("SELECT text FROM todos").all()).toEqual([{ text: "keep" }]);
     } finally { target.close(); }
     expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBeNull();
+    expect(localEntries(f.global.db, "mapping-intent")).toHaveLength(1);
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
     f.global.db.exec("DROP TRIGGER fail_mapping");
-    await mapWorkspace(f.global.db, f.input);
+    await resumePendingMappings(f.global.db);
     const published = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
-    try { expect(published.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key }); }
-    finally { published.close(); }
+    try {
+      expect(published.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
+      expect(published.prepare("SELECT text FROM todos").all()).toEqual([{ text: "keep" }]);
+    } finally { published.close(); }
     expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBe(f.workspace);
+  } finally { f.source.close(); }
+}, 5000);
+
+it("rolls back the global mapping if redirect publication fails", async () => {
+  const f = interruptedFixture();
+  try {
+    f.global.db.exec("DROP TRIGGER fail_mapping");
+    f.global.db.exec("CREATE TRIGGER fail_redirect BEFORE INSERT ON roam_cursors WHEN NEW.peer_stream LIKE 'spider-local:mapping-redirect:%' BEGIN SELECT RAISE(ABORT, 'redirect failed'); END");
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("redirect failed");
+    expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBeNull();
+    expect(mappingRedirect(f.global.db, key)).toBeNull();
+    expect(localEntries(f.global.db, "mapping-intent")).toHaveLength(1);
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try { expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key }); }
+    finally { target.close(); }
+    f.global.db.exec("DROP TRIGGER fail_redirect");
+    await resumePendingMappings(f.global.db);
+    expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBe(f.workspace);
+    expect(mappingRedirect(f.global.db, key)).toBe(join(f.workspace, ".spider", "project.db"));
+    expect(localEntries(f.global.db, "mapping-intent")).toEqual([]);
   } finally { f.source.close(); }
 }, 5000);
 
@@ -287,7 +312,12 @@ it("cancels a pending mapping and its fence, allowing imports and a different ta
     await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
     expect(localEntries(f.global.db, "mapping-intent")).toHaveLength(1);
     expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
-    cancelMapping(f.global.db, key);
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try {
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
+      cancelMapping(f.global.db, key);
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+    } finally { target.close(); }
     expect(localEntries(f.global.db, "mapping-intent")).toEqual([]);
     expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
     const incoming = await incomingBatch();
@@ -298,8 +328,62 @@ it("cancels a pending mapping and its fence, allowing imports and a different ta
     await mapWorkspace(f.global.db, { ...f.input, path: other });
     expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBe(other);
     expect(() => cancelMapping(f.global.db, key)).toThrow(/published|redirect/i);
+    await resumePendingMappings(f.global.db);
     expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
   } finally { f.source.close(); }
+}, 5000);
+
+it("does not publish an in-flight mapping after cancellation and remapping", async () => {
+  const f = interruptedFixture();
+  try {
+    f.global.db.exec("DROP TRIGGER fail_mapping");
+    const old = mapWorkspace(f.global.db, f.input).then(() => null, error => String(error));
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+    cancelMapping(f.global.db, key);
+    const other = join(f.global.root, "alternate"); mkdirSync(other);
+    const next = mapWorkspace(f.global.db, { ...f.input, path: other });
+    const oldError = await old;
+    await next;
+    expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBe(other);
+    const previous = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try { expect(previous.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null }); }
+    finally { previous.close(); }
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+    expect(oldError).toMatch(/pending mapping disappeared or changed/i);
+  } finally { f.source.close(); }
+}, 5000);
+
+it("does not publish an older attempt after cancellation and a same-path retry", async () => {
+  const f = interruptedFixture();
+  mkdirSync(join(f.workspace, ".spider"), { recursive: true });
+  const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+  const originalPrepare = f.global.db.prepare.bind(f.global.db);
+  let replaced = false;
+  try {
+    target.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(local);
+    f.global.db.exec("DROP TRIGGER fail_mapping");
+    f.global.db.prepare = sql => {
+      const statement = originalPrepare(sql);
+      if (!sql.includes("SELECT peer_stream FROM roam_cursors")) return statement;
+      return new Proxy(statement, { get(real, property) {
+        if (property === "all") return (...args: unknown[]) => {
+          const meta = target.prepare("SELECT store_key FROM roam_meta").get() as { store_key: string | null };
+          if (!replaced && args[2] === "spider-local:mapping-intent:" && meta.store_key === key) {
+            replaced = true;
+            const pending = localEntries<Record<string, unknown>>(f.global.db, "mapping-intent")[0];
+            writeLocal(f.global.db, "mapping-intent", pending.key, { ...pending.value, attempt_id: "replacement-attempt" });
+          }
+          return real.all(...args);
+        };
+        const value = Reflect.get(real, property, real);
+        return typeof value === "function" ? value.bind(real) : value;
+      } });
+    };
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow(/pending mapping.*changed|conflicting pending/i);
+    expect(replaced).toBe(true);
+    expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBeNull();
+    expect(localEntries(f.global.db, "mapping-intent")).toHaveLength(1);
+  } finally { f.global.db.prepare = originalPrepare; target.close(); f.source.close(); }
 }, 5000);
 
 it("can cancel a post-fence todo collision without assigning the target", async () => {
@@ -335,18 +419,229 @@ it("cancels when opening the source failed before fencing", async () => {
   } finally { f.source.close(); }
 }, 5000);
 
-it("retains the pending intent if removing its fence fails", async () => {
+it("cleans an orphan fence at startup after target cleanup committed", async () => {
   const f = interruptedFixture();
   try {
     await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
-    f.source.exec("CREATE TRIGGER fail_unfence BEFORE DELETE ON roam_cursors WHEN OLD.peer_machine='' AND OLD.peer_stream='mapping-fence' BEGIN SELECT RAISE(ABORT, 'unfence failed'); END");
-    expect(() => cancelMapping(f.global.db, key)).toThrow("unfence failed");
-    expect(localEntries(f.global.db, "mapping-intent")).toHaveLength(1);
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try {
+      f.source.exec("CREATE TRIGGER fail_unfence BEFORE DELETE ON roam_cursors WHEN OLD.peer_machine='' AND OLD.peer_stream='mapping-fence' BEGIN SELECT RAISE(ABORT, 'unfence failed'); END");
+      expect(() => cancelMapping(f.global.db, key)).toThrow("unfence failed");
+      expect(localEntries(f.global.db, "mapping-intent")).toEqual([]);
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+      expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+      f.source.exec("DROP TRIGGER fail_unfence");
+      const startup = openDbAt(f.global.db.raw.name, "global");
+      try {
+        await resumePendingMappings(startup);
+        expect(localEntries(startup, "mapping-intent")).toEqual([]);
+        expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+        await resumePendingMappings(startup);
+      } finally { startup.close(); }
+      const incoming = await incomingBatch();
+      expect(() => applyBatch(f.source, incoming, { hubMachine: local, effects: createReplicaEffects(() => {}), now: Date.now(), sessionHome: () => null })).not.toThrow();
+    } finally { target.close(); }
+  } finally { f.source.close(); }
+}, 5000);
+
+it("cleans an orphan target identity and fence at startup after the cancellation commit", async () => {
+  const f = interruptedFixture();
+  try {
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try {
+      target.exec("CREATE TRIGGER fail_unstamp BEFORE UPDATE OF store_key ON roam_meta WHEN NEW.store_key IS NULL BEGIN SELECT RAISE(ABORT, 'unstamp failed'); END");
+      expect(() => cancelMapping(f.global.db, key)).toThrow("unstamp failed");
+      expect(localEntries(f.global.db, "mapping-intent")).toEqual([]);
+      expect(resolveWorkspace(f.global.db, f.input.repoKey, f.input.workspaceId)).toBeNull();
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
+      expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+      target.exec("DROP TRIGGER fail_unstamp");
+      const startup = openDbAt(f.global.db.raw.name, "global");
+      try {
+        await resumePendingMappings(startup);
+        expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+        expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+      } finally { startup.close(); }
+    } finally { target.close(); }
+  } finally { f.source.close(); }
+}, 5000);
+
+it("cleans an orphan fence without a target locator on startup", async () => {
+  const f = interruptedFixture();
+  try {
+    f.source.exec("INSERT INTO roam_cursors(peer_machine,peer_stream,last_seq) VALUES ('','mapping-fence',0)");
+    expect(localEntries(f.global.db, "mapping-intent")).toEqual([]);
+    await resumePendingMappings(f.global.db);
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+    await resumePendingMappings(f.global.db);
+    const incoming = await incomingBatch();
+    expect(() => applyBatch(f.source, incoming, { hubMachine: local, effects: createReplicaEffects(() => {}), now: Date.now(), sessionHome: () => null })).not.toThrow();
+  } finally { f.source.close(); }
+}, 5000);
+
+it("records one failed orphan cleanup and continues cleaning another", async () => {
+  const f = interruptedFixture();
+  const secondKey = "worktree:fixture-repo:second" as const;
+  const secondSource = openDbAt(replicaPath(f.global.db, secondKey), "worktree");
+  try {
+    secondSource.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(remote, secondKey);
+    const second = join(f.global.root, "second-checkout"); mkdirSync(second);
+    const other = { repoKey: "fixture-repo", workspaceId: "second", path: second };
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    await expect(mapWorkspace(f.global.db, other)).rejects.toThrow("interrupted");
+    const firstTarget = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    const secondTarget = openDbAt(join(second, ".spider", "project.db"), "worktree");
+    try {
+      firstTarget.exec("CREATE TRIGGER fail_unstamp BEFORE UPDATE OF store_key ON roam_meta WHEN NEW.store_key IS NULL BEGIN SELECT RAISE(ABORT, 'unstamp failed'); END");
+      secondTarget.exec("CREATE TRIGGER fail_unstamp BEFORE UPDATE OF store_key ON roam_meta WHEN NEW.store_key IS NULL BEGIN SELECT RAISE(ABORT, 'unstamp failed'); END");
+      expect(() => cancelMapping(f.global.db, key)).toThrow("unstamp failed");
+      expect(() => cancelMapping(f.global.db, secondKey)).toThrow("unstamp failed");
+      secondTarget.exec("DROP TRIGGER fail_unstamp");
+      await expect(resumePendingMappings(f.global.db)).resolves.toBeUndefined();
+      expect(firstTarget.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
+      expect(secondTarget.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+      expect(secondSource.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+      const failures = localEntries<{ storeKey: string; error: string }>(f.global.db, "mapping-failure");
+      expect(failures).toHaveLength(1);
+      expect(failures[0].value).toMatchObject({ storeKey: key, error: "unstamp failed" });
+      firstTarget.exec("DROP TRIGGER fail_unstamp");
+      await resumePendingMappings(f.global.db);
+      expect(firstTarget.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+      expect(localEntries(f.global.db, "mapping-failure")).toEqual([]);
+    } finally { firstTarget.close(); secondTarget.close(); }
+  } finally { secondSource.close(); f.source.close(); }
+}, 5000);
+
+it("recovers an interrupted target identity when no replica existed before mapping", async () => {
+  const global = createReplica("global", local); fixtures.push(global);
+  const workspace = join(global.root, "checkout"); mkdirSync(join(workspace, ".spider"), { recursive: true });
+  const target = openDbAt(join(workspace, ".spider", "project.db"), "worktree");
+  const input = { repoKey: "fixture-repo", workspaceId: "fixture-workspace", path: workspace };
+  try {
+    target.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(local);
+    expect(existsSync(replicaPath(global.db, key))).toBe(false);
+    global.db.exec("CREATE TRIGGER fail_mapping BEFORE INSERT ON roam_workspace_maps BEGIN SELECT RAISE(ABORT, 'interrupted'); END");
+    await expect(mapWorkspace(global.db, input)).rejects.toThrow("interrupted");
+    expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
+    expect(resolveWorkspace(global.db, input.repoKey, input.workspaceId)).toBeNull();
+    target.exec("CREATE TRIGGER fail_unstamp BEFORE UPDATE OF store_key ON roam_meta WHEN NEW.store_key IS NULL BEGIN SELECT RAISE(ABORT, 'unstamp failed'); END");
+    expect(() => cancelMapping(global.db, key)).toThrow("unstamp failed");
+    expect(localEntries(global.db, "mapping-intent")).toEqual([]);
+    target.exec("DROP TRIGGER fail_unstamp");
+    await resumePendingMappings(global.db);
+    expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+    const source = openDbAt(replicaPath(global.db, key), "worktree");
+    try { expect(source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined(); }
+    finally { source.close(); }
+  } finally { target.close(); }
+}, 5000);
+
+it.each(["outside the workspace layout", "to a different workspace database"] as const)("refuses an orphan locator %s", async variant => {
+  const f = interruptedFixture();
+  const otherFile = variant === "outside the workspace layout" ? join(f.global.root, "unrelated.db") : join(f.global.root, "other", ".spider", "project.db");
+  const unrelated = openDbAt(otherFile, "worktree");
+  try {
+    unrelated.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(local, key);
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    const original = readLocal<{ file: string; clearOnCancel: boolean }>(f.source, "mapping-fence-target", key)!;
+    writeLocal(f.source, "mapping-fence-target", key, { ...original, file: unrelated.raw.name });
+    expect(() => cancelMapping(f.global.db, key)).toThrow(/invalid|changed mapping fence target/i);
+    expect(unrelated.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
     expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
-    f.source.exec("DROP TRIGGER fail_unfence");
+    writeLocal(f.source, "mapping-fence-target", key, original);
+    await resumePendingMappings(f.global.db);
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+  } finally { unrelated.close(); f.source.close(); }
+}, 5000);
+
+it("retains an orphan fence when its target locator is malformed", async () => {
+  const f = interruptedFixture();
+  try {
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    const original = readLocal(f.source, "mapping-fence-target", key);
+    writeLocal(f.source, "mapping-fence-target", key, null);
+    expect(() => cancelMapping(f.global.db, key)).toThrow(/invalid mapping fence target/i);
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+    writeLocal(f.source, "mapping-fence-target", key, original);
+    await resumePendingMappings(f.global.db);
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try { expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null }); }
+    finally { target.close(); }
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+  } finally { f.source.close(); }
+}, 5000);
+
+it("keeps the fence when the target database is replaced before recovery", async () => {
+  const f = interruptedFixture();
+  const file = join(f.workspace, ".spider", "project.db"), original = `${file}.original`, replacement = `${file}.replacement`;
+  try {
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    renameSync(file, original);
+    const other = openDbAt(file, "worktree");
+    try {
+      other.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(local);
+      f.global.db.exec("DROP TRIGGER fail_mapping");
+      await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow(/mapping fence target/i);
+      expect(() => cancelMapping(f.global.db, key)).toThrow(/changed mapping fence target/i);
+      expect(other.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+      expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+    } finally { other.close(); }
+    renameSync(file, replacement); renameSync(original, file);
+    await resumePendingMappings(f.global.db);
+    const restored = openDbAt(file, "worktree");
+    try { expect(restored.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null }); }
+    finally { restored.close(); }
+    expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+  } finally { f.source.close(); }
+}, 5000);
+
+it("does not remove a target identity that already existed before mapping", async () => {
+  const f = interruptedFixture();
+  mkdirSync(join(f.workspace, ".spider"), { recursive: true });
+  const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+  try {
+    target.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(local, key);
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
     cancelMapping(f.global.db, key);
+    expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
     expect(localEntries(f.global.db, "mapping-intent")).toEqual([]);
     expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+  } finally { target.close(); f.source.close(); }
+}, 5000);
+
+it("preserves a target identity claimed by a local session before cancellation", async () => {
+  const f = interruptedFixture();
+  try {
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try {
+      target.exec("INSERT INTO sessions(id,started_at) VALUES ('local-session',1)");
+      expect(seedSession(target, "local-session", 1, key, 1024 * 1024).complete).toBe(true);
+      cancelMapping(f.global.db, key);
+      expect(target.prepare("SELECT store_key,capture_enabled FROM roam_meta").get()).toEqual({ store_key: key, capture_enabled: 1 });
+      expect(target.prepare("SELECT id FROM sessions WHERE id='local-session'").get()).toEqual({ id: "local-session" });
+      expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+    } finally { target.close(); }
+  } finally { f.source.close(); }
+}, 5000);
+
+it("keeps the target and fence intact when the global cancellation commit fails", async () => {
+  const f = interruptedFixture();
+  try {
+    await expect(mapWorkspace(f.global.db, f.input)).rejects.toThrow("interrupted");
+    const target = openDbAt(join(f.workspace, ".spider", "project.db"), "worktree");
+    try {
+      f.global.db.exec("CREATE TRIGGER fail_cancel BEFORE DELETE ON roam_cursors WHEN OLD.peer_stream LIKE 'spider-local:mapping-intent:%' BEGIN SELECT RAISE(ABORT, 'cancel commit failed'); END");
+      expect(() => cancelMapping(f.global.db, key)).toThrow("cancel commit failed");
+      expect(localEntries(f.global.db, "mapping-intent")).toHaveLength(1);
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: key });
+      expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeDefined();
+      f.global.db.exec("DROP TRIGGER fail_cancel");
+      cancelMapping(f.global.db, key);
+      expect(target.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: null });
+      expect(f.source.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND peer_stream='mapping-fence'").get()).toBeUndefined();
+    } finally { target.close(); }
   } finally { f.source.close(); }
 }, 5000);
 

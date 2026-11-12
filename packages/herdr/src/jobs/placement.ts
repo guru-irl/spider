@@ -63,6 +63,10 @@ function protectedKind(labels: Readonly<Record<string, string>>): string | null 
   if ([HERDR_KINDS.exec, HERDR_KINDS.execFile, HERDR_KINDS.batch].some(value => value === kind)) return 'job-terminal-protected';
   return null;
 }
+export async function placePaneWithoutFocus(hc: HcClient, app: AppClient, viewer: TerminalAddress, placement: OwnerPlacement, displayOptions: PaneAcquireOptions): Promise<OwnerPlacement['pane']> {
+  await hc.setLabels(viewer, { [HERDR_LABELS.space]: placement.space, [HERDR_LABELS.tab]: placement.tab });
+  return app.awaitPane(viewer, placement, displayOptions);
+}
 export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPaneActor {
   const operation = new AsyncLocalStorage<AbortSignal | undefined>();
   const callerSignals = new WeakMap<AbortSignal, AbortSignal | undefined>();
@@ -357,8 +361,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
           occupancy = await occupied(s);
         }
         check(displayOptions.signal); changed(true);
-        await options.hc.setLabels(viewer, { [HERDR_LABELS.space]: s.placement.space, [HERDR_LABELS.tab]: s.placement.tab });
-        const pane = await app.awaitPane(viewer, s.placement, displayOptions);
+        const pane = await placePaneWithoutFocus(options.hc, app, viewer, s.placement, displayOptions);
         if (disposed || !slots.has(token.id)) throw new HerdrError('disposed', 'Reservation ended before its pane was acknowledged');
         if (explicit) await focus(viewer);
         return acknowledged(s, viewer, { ...s.placement, pane });

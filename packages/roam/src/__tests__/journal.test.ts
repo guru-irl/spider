@@ -57,6 +57,20 @@ it("stores the operation identity and expected epoch without raw arguments", () 
   } finally { db.close(); }
 }, 5000);
 
+it("artifact reference checks retain unknown pending work and recorded evidence", () => {
+  const { file } = fixture();
+  const journal = openJournal(file);
+  expect(journal.hasArtifactReference("unrelated")).toBe(false);
+  journal.begin(operation);
+  // Argument digests do not disclose the artifact, so any unfinished operation is uncertain.
+  expect(journal.hasArtifactReference("unrelated")).toBe(true);
+  journal.record(operation.id, "staged", { file: "/fixture/private-snapshot.ndjson", artifactId: "artifact-1" });
+  journal.record(operation.id, "done", { committed: true });
+  expect(journal.hasArtifactReference("artifact-1")).toBe(true);
+  expect(journal.hasArtifactReference("/fixture/private-snapshot.ndjson")).toBe(true);
+  expect(journal.hasArtifactReference("unrelated")).toBe(false);
+}, 5000);
+
 it("changed arguments under one ID refuse before effect", () => {
   const { file } = fixture();
   const journal = openJournal(file);

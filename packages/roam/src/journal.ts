@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync } from "node:fs";
-import { dirname, isAbsolute, join, parse, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { assertTestConfigPath, openDb, withRetry } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
 import type { JsonObject } from "@spider/db-core/roam/types";
@@ -112,8 +112,10 @@ function parseResult(text: string): JsonObject {
 
 type OperationRow = { digest: string; result_json: string | null };
 
+export interface ArtifactJournal extends Journal { hasArtifactReference(value: string): boolean }
+
 /** A local operation journal. Each call closes its SQLite handle after commit. */
-export function openJournal(file: string): Journal {
+export function openJournal(file: string): ArtifactJournal {
   withDatabase(file, db => {
     db.raw.transaction(() => db.exec(`
       CREATE TABLE IF NOT EXISTS roam_operations (
@@ -167,6 +169,22 @@ export function openJournal(file: string): Journal {
       return withDatabase(file, db => {
         const rows = db.prepare("SELECT action, result_json FROM roam_operation_actions WHERE operation_id = ? ORDER BY seq").all(id) as { action: string; result_json: string }[];
         return rows.map(row => ({ action: row.action, result: parseResult(row.result_json) }));
+      });
+    },
+    hasArtifactReference(value) {
+      if (typeof value !== "string" || !value) throw new Error("Invalid artifact reference");
+      return withDatabase(file, db => {
+        // Arguments are only digested. An unfinished operation can reference any artifact.
+        if (db.prepare("SELECT 1 FROM roam_operations WHERE result_json IS NULL LIMIT 1").get()) return true;
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='freeze_journal'").get() &&
+            db.prepare("SELECT 1 FROM freeze_journal WHERE state IS NULL OR state NOT IN ('complete','aborted') LIMIT 1").get()) return true;
+        const name = basename(value).replace(/\.ndjson$/, "");
+        const terms = [...new Set([value, name])].filter(Boolean);
+        const operations = db.prepare("SELECT operation_id,result_json FROM roam_operations").all() as { operation_id: string; result_json: string }[];
+        const actions = db.prepare("SELECT result_json FROM roam_operation_actions").all() as { result_json: string }[];
+        for (const row of [...operations, ...actions]) parseResult(row.result_json);
+        return operations.some(row => terms.some(term => row.operation_id.includes(term) || row.result_json.includes(term))) ||
+          actions.some(row => terms.some(term => row.result_json.includes(term)));
       });
     },
   };

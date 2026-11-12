@@ -174,7 +174,19 @@ export function createStorePort(config: RoamConfig, globalDb: Db): StoreAdapter 
       if (batch.header.count === 0) unlinkSync(batch.file);
       return batch;
     },
-    recoverCatalog() { for (const key of listStoreKeys(globalDb)) { try { catalogReplica(globalDb, key, openStore(key).db); } catch { /* Retry unavailable stores at the next scan. */ } } },
+    recoverCatalog() {
+      for (const key of listStoreKeys(globalDb)) {
+        if (!key.startsWith("worktree:")) continue;
+        let db: Db | undefined;
+        try {
+          db = openRoamStoreReadOnly(globalDb, key);
+          if (!db || Number(db.pragma("user_version")) !== 14) continue;
+          const meta = db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null } | undefined;
+          if (meta?.machine_id === config.machineId && meta.store_key === key) catalogReplica(globalDb, key, db);
+        } catch { /* Retry unavailable stores at the next scan. */ }
+        finally { db?.close(); }
+      }
+    },
     origins() {
       const result = new Map<string, Set<string>>();
       for (const row of localEntries<{ id: string; origin: string }>(globalDb, "observed-origin")) {

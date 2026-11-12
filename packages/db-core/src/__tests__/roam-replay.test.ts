@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { openDb } from "../db";
-import { applyBatch } from "@spider/db-core/roam/apply";
+import { applyBatch, fenceReplicaForMapping } from "@spider/db-core/roam/apply";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { seedSession } from "@spider/db-core/roam/seed";
 import type { ApplyReceipt, BatchArtifact, Change } from "@spider/db-core/roam/types";
@@ -50,6 +50,22 @@ describe("roaming replay and conflicts", () => {
     expect(handlers.notices).toEqual([root.storeKey]);
     expect(rows(root, "roam_changes")).toHaveLength(1);
     expect(rows(root, "roam_receipts")).toHaveLength(1);
+  }, 5000);
+
+  it("returns a committed receipt after a mapping fence but rejects new or conflicting imports", async () => {
+    const root = replica(), handlers = effects();
+    const value = await batch(root, [todo("todo-1", 1, "first")]);
+    const first = apply(root, value, handlers);
+    fenceReplicaForMapping(root.db, root.storeKey);
+    const before = state(root);
+    expect(apply(root, value, handlers)).toEqual({ ...first, applyMs: null });
+    expect(state(root)).toBe(before);
+    expect(handlers.notices).toEqual([root.storeKey]);
+    const different = await batch(root, [todo("todo-1", 1, "changed")]);
+    expect(() => apply(root, different)).toThrow(/receipt|digest/i);
+    const next = await batch(root, [todo("todo-2", 2, "new")], { after: 1, id: "next" });
+    expect(() => apply(root, next)).toThrow(/fenc/i);
+    expect(state(root)).toBe(before);
   }, 5000);
 
   it("replayed receipt after crash has null apply time and identical digest fields", async () => {

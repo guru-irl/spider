@@ -12,27 +12,28 @@ export const EVENT_POLICIES: Readonly<Record<string, "inert" | "supervisor" | "t
 export function createExportPolicy(resolve: (path: string, origin: MachineId) => Locator | HistoryRef): ExportPolicy {
   return {
     encode(entity, body, origin) {
-      if (entity !== "run_events" || typeof body.type !== "string" || typeof body.payload !== "string") return body;
+      if (entity !== "run_events" || typeof body.type !== "string") return body;
       const kind = EVENT_POLICIES[body.type];
       if (kind !== "supervisor" && kind !== "transcript" && kind !== "chain") return body;
       let value: unknown;
-      try { value = JSON.parse(body.payload); } catch { return body; }
-      if (!value || typeof value !== "object" || Array.isArray(value)) return body;
-      const input = value as Record<string, unknown>;
-      let portable: JsonObject;
-      if (kind === "chain") {
-        if ((input.version !== undefined && input.version !== 1) || !Array.isArray(input.remaining)) return body;
+      try { value = typeof body.payload === "string" ? JSON.parse(body.payload) : null; }
+      catch { value = null; }
+      const input = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      // Unknown or malformed versions remain inert, but never carry arbitrary fields.
+      let portable: JsonObject = { ...(typeof input.version === "number" && Number.isSafeInteger(input.version) ? { version: input.version } : {}), history: null };
+      if (kind === "chain" && (input.version === undefined || input.version === 1) && Array.isArray(input.remaining)) {
         // The source retains this event and its UUID identifies the original chain history.
         portable = { count: input.remaining.length, history: { machineId: origin, reference: `run-event:${body.uuid}` } };
-      } else {
-        if (input.version !== 1) return body;
+      } else if (kind !== "chain" && input.version === 1) {
         portable = { version: 1 };
         if (typeof input.directory === "string") {
           const ref = resolve(input.directory, origin);
-          portable.history = { ...ref };
+          portable.history = "reference" in ref ? { machineId: ref.machineId, reference: ref.reference }
+            : { machineId: ref.machineId, repoKey: ref.repoKey, workspaceId: ref.workspaceId, relativePath: ref.relativePath };
         }
       }
-      return { ...body, payload: JSON.stringify(portable) };
+      return { uuid: body.uuid, run_id: body.run_id, session_id: body.session_id, ts: body.ts,
+        type: body.type, tool: null, summary: null, payload: JSON.stringify(portable) };
     },
   };
 }

@@ -14,8 +14,8 @@ const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const DEFAULT_MEMORY_CHAR_CAP = 8000;
 
 // The empty machine is outside the sender UUID namespace and cannot be a receive cursor.
-const FENCE_MACHINE = "";
-const FENCE_STREAM = "mapping-fence";
+export const FENCE_MACHINE = "";
+export const FENCE_STREAM = "mapping-fence";
 
 export class CursorMismatchError extends Error {
   constructor() { super("Roaming cursor does not match the batch sequence"); this.name = "CursorMismatchError"; }
@@ -178,12 +178,19 @@ function writeWinner(db: Db, change: Change, meta: Meta, effects: ReplicaEffects
   effects.winning(db, before, { rowid: after.rowid }, change);
 }
 
+type ApplyOptions = { hubMachine: MachineId; effects: ReplicaEffects; now: number; sessionHome: SessionHome };
+
 /** Apply only validated snapshots, and return a receipt only after their transaction commits. */
-export function applyBatch(
-  db: Db,
-  batch: ValidatedBatch,
-  options: { hubMachine: MachineId; effects: ReplicaEffects; now: number; sessionHome: SessionHome },
-): ApplyReceipt {
+export function applyBatch(db: Db, batch: ValidatedBatch, options: ApplyOptions): ApplyReceipt {
+  return apply(db, batch, options, false);
+}
+
+/** Mapping may stage a merge into an unassigned target; only publication assigns its key. */
+export function applyMappingBatch(db: Db, batch: ValidatedBatch, options: ApplyOptions): ApplyReceipt {
+  return apply(db, batch, options, true);
+}
+
+function apply(db: Db, batch: ValidatedBatch, options: ApplyOptions, unassignedTarget: boolean): ApplyReceipt {
   const started = performance.now();
   if (!Number.isSafeInteger(options.now) || options.now < 0 || !isRoamUuid(options.hubMachine) ||
       typeof options.sessionHome !== "function" || typeof options.effects?.winning !== "function" || typeof options.effects?.committed !== "function") {
@@ -196,10 +203,8 @@ export function applyBatch(
   const outcome = db.raw.transaction(() => {
     const meta = db.prepare("SELECT machine_id, stream_id, store_key, hlc_ms, hlc_count, importing, roamable, problem FROM roam_meta WHERE id = 1")
       .get() as Meta | undefined;
-    if (!meta || meta.store_key !== header.storeKey) throw new Error("Roaming destination store does not match this batch");
-    if (db.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine = ? AND peer_stream = ?").get(FENCE_MACHINE, FENCE_STREAM)) {
-      throw new MappingFenceError(header.storeKey);
-    }
+    if (!meta || (meta.store_key !== header.storeKey && !(unassignedTarget && meta.store_key === null)))
+      throw new Error("Roaming destination store does not match this batch");
     const receipt = db.prepare("SELECT peer_stream, after_seq, through_seq, sha256 FROM roam_receipts WHERE peer_machine = ? AND batch_id = ?")
       .get(header.senderMachine, header.batchId) as { peer_stream: string; after_seq: number; through_seq: number; sha256: string } | undefined;
     if (receipt) {
@@ -207,6 +212,9 @@ export function applyBatch(
         throw new Error("Roaming batch receipt conflicts with this digest or range");
       }
       return { kind: "replay" as const };
+    }
+    if (db.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine = ? AND peer_stream = ?").get(FENCE_MACHINE, FENCE_STREAM)) {
+      throw new MappingFenceError(header.storeKey);
     }
     if (meta.roamable !== 1 || meta.problem !== null || meta.importing !== 0) throw new Error("Roaming destination store is not ready for this batch");
     for (const change of changes) {

@@ -34,12 +34,63 @@ describe("portable run-event history", () => {
     expect(policy.encode("run_events", body, A)).toEqual(body);
   }, 5000);
 
-  it("unknown types and versions remain inert unchanged", () => {
-    for (const body of [event("unknown", { version: 1, value: "keep" }), event("child_supervisor", { version: 2, directory: "/future/dir" }), event("chain_steps", { version: 9, remaining: ["future"] })]) {
-      expect(policy.encode("run_events", body, A)).toEqual(body);
+  it("keeps unknown event types inert while redacting unknown versions of sensitive types", () => {
+    const unknown = event("unknown", { version: 1, value: "keep" });
+    expect(policy.encode("run_events", unknown, A)).toEqual(unknown);
+    for (const type of ["child_supervisor", "child_transcript", "chain_steps"]) {
+      const body = event(type, { version: 9, directory: "/private/future", endpoint: "private-endpoint", token: "private-token", remaining: ["private-step"] });
+      const encoded = policy.encode("run_events", body, A);
+      expect(payload(encoded)).toEqual({ version: 9, history: null });
+      for (const secret of ["/private/future", "private-endpoint", "private-token", "private-step"]) expect(JSON.stringify(encoded)).not.toContain(secret);
     }
     expect(EVENT_POLICIES.child_supervisor).toBe("supervisor");
     expect(EVENT_POLICIES.chain_steps).toBe("chain");
+  }, 5000);
+
+  it.each(["child_supervisor", "child_transcript", "chain_steps"])("redacts malformed and versionless %s payloads", type => {
+    for (const input of [
+      event(type, { directory: "/private/path", token: "private-token", remaining: "private-step" }),
+      event(type, ["/private/path", "private-token"]),
+      { ...event(type, null), payload: '{"directory":"/private/path","token":"private-token"' },
+      { ...event(type, null), payload: { directory: "/private/path", token: "private-token" } },
+      event(type, { version: "/private/path", token: "private-token" }),
+    ]) {
+      const encoded = policy.encode("run_events", input, A);
+      expect(payload(encoded)).toEqual({ history: null });
+      expect(JSON.stringify(encoded)).not.toContain("/private/path");
+      expect(JSON.stringify(encoded)).not.toContain("private-token");
+      expect(JSON.stringify(encoded)).not.toContain("private-step");
+    }
+  }, 5000);
+
+  it.each(["child_supervisor", "child_transcript", "chain_steps"])("does not export extra event fields for %s", type => {
+    const body = { ...event(type, { version: 8, token: "payload-token" }), tool: "tool-token", summary: "/private/summary", unexpected: "extra-token" };
+    const encoded = policy.encode("run_events", body, A);
+    expect(encoded.tool).toBeNull(); expect(encoded.summary).toBeNull();
+    expect(encoded).not.toHaveProperty("unexpected");
+    for (const secret of ["payload-token", "tool-token", "/private/summary", "extra-token"]) expect(JSON.stringify(encoded)).not.toContain(secret);
+  }, 5000);
+
+  it("does not export fields outside a resolved history-reference allowlist", () => {
+    const extra = createExportPolicy((_path, origin) => ({ machineId: origin, reference: "safe-ref", token: "private-token", directory: "/private/path" }));
+    const encoded = extra.encode("run_events", event("child_supervisor", { version: 1, directory: "/private/path" }), A);
+    expect(payload(encoded)).toEqual({ version: 1, history: { machineId: A, reference: "safe-ref" } });
+    expect(JSON.stringify(encoded)).not.toContain("private-token");
+    expect(JSON.stringify(encoded)).not.toContain("/private/path");
+  }, 5000);
+
+  it("writes no sensitive future event fields to the exported wire batch", async () => {
+    const root = replica("worktree", A);
+    seedSession(root.db, SESSION, 1, root.storeKey, 4096);
+    root.db.prepare("INSERT INTO run_events(uuid, session_id, ts, type, payload) VALUES (?, ?, ?, ?, ?)")
+      .run("future-event", SESSION, 1, "child_transcript", JSON.stringify({ version: 7, directory: "/private/future", token: "private-token" }));
+    const artifact = await exportBatch(root.db, { after: 0, targetBytes: 4096, batchId: "future-wire" }, policy);
+    const bytes = readFileSync(artifact.file, "utf8");
+    expect(bytes).not.toContain("/private/future"); expect(bytes).not.toContain("private-token");
+    const record = bytes.trimEnd().split("\n").slice(1).map(line => JSON.parse(line)).find(item => item.rowKey === "future-event");
+    expect(JSON.parse(record.body.payload)).toEqual({ version: 7, history: null });
+    const again = await exportBatch(root.db, { after: 0, targetBytes: 4096, batchId: "future-wire" }, policy);
+    expect(readFileSync(again.file, "utf8")).toBe(bytes);
   }, 5000);
 
   it("wire content is cached once", async () => {

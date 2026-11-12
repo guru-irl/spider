@@ -51,7 +51,7 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openGlobalReadOnly, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
+import { resolveProject, getBinding, openGlobal, openGlobalReadOnly, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
 import {
   stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
   activeCharTotal, listActive, getReadyEmbedder, resolveEmbedder, startEmbedderSession, stopEmbedder,
@@ -806,8 +806,16 @@ async function dispatchWithDoctorSnapshot(
   if (params.action === "search" && params.session !== undefined) {
     if (params.on !== undefined) throw new Error("Session search does not support remote execution");
     const global = openGlobalReadOnly();
-    try { return runSessionSearch(params, global); }
-    finally { global?.close(); }
+    let worktree: Db | undefined;
+    try {
+      return runSessionSearch(params, global, () => {
+        const sessionId = sessionIdOf(ctx), cwd = String(params.cwd ?? cwdOf(ctx) ?? process.cwd());
+        const hasBindings = global?.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_bindings'").get();
+        const bound = !params.cwd && sessionId && hasBindings ? getBinding(global!, sessionId) : undefined;
+        worktree = openDbReadOnlyAt(path.join(paths.projectRoot(bound || cwd), "project.db"));
+        return worktree;
+      });
+    } finally { worktree?.close(); global?.close(); }
   }
   const sessionId = sessionIdOf(ctx);
   if (params.action === "todo" && params.op === "view" && typeof params.session === "string" && params.session.trim() !== "all") {

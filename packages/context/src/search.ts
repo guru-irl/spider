@@ -50,8 +50,11 @@ export function searchSession(db: Db, sessionId: string, opts: { query: string; 
   const kinds = opts.kinds ?? ["session", "todo", "run"];
   const limit = Number.isSafeInteger(opts.limit) && opts.limit! > 0 ? Math.min(opts.limit!, 100) : 10;
   const results: SearchResultRow[] = [];
+  const hasColumn = (table: "sessions" | "todos" | "run_events", name: string) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some(column => column.name === name);
   if (kinds.includes("session")) {
-    const row = db.prepare("SELECT id,parent_session_id,name,reason,started_at,ended_at,summary,origin_machine FROM sessions WHERE id = ?")
+    const origin = hasColumn("sessions", "origin_machine") ? "origin_machine" : "'' AS origin_machine";
+    const row = db.prepare(`SELECT id,parent_session_id,name,reason,started_at,ended_at,summary,${origin} FROM sessions WHERE id = ?`)
       .get(sessionId) as { id: string; parent_session_id: string | null; name: string | null; reason: string | null; started_at: number; ended_at: number | null; summary: string | null; origin_machine: string } | undefined;
     if (row) {
       const lower = terms.map(term => term.toLowerCase());
@@ -69,7 +72,8 @@ export function searchSession(db: Db, sessionId: string, opts: { query: string; 
     }
   }
   if (kinds.includes("todo")) {
-    const rows = db.prepare("SELECT t.uuid,t.text FROM todos_fts JOIN todos t ON t.id = todos_fts.rowid WHERE todos_fts MATCH ? AND t.session_id = ? LIMIT ?")
+    const todoId = hasColumn("todos", "uuid") ? "t.uuid" : "CAST(t.id AS TEXT) AS uuid";
+    const rows = db.prepare(`SELECT ${todoId},t.text FROM todos_fts JOIN todos t ON t.id = todos_fts.rowid WHERE todos_fts MATCH ? AND t.session_id = ? LIMIT ?`)
       .all(query, sessionId, limit) as Array<{ uuid: string; text: string }>;
     for (const row of rows) results.push({ key: `todo:${row.uuid}`, kind: "todo", id: row.uuid, title: row.text, snippet: row.text.slice(0, 300) });
   }
@@ -80,8 +84,9 @@ export function searchSession(db: Db, sessionId: string, opts: { query: string; 
       FROM runs WHERE session_id = ?
     ) WHERE ${condition} LIMIT ?`).all(sessionId, ...terms, limit) as Array<{ id: string; agent: string; name: string | null; task: string | null; result: string | null }>;
     for (const row of runs) results.push({ key: `run:${row.id}`, kind: "run", id: row.id, title: row.name ?? row.agent, snippet: [row.task, row.result].filter(Boolean).join("\n").slice(0, 300) });
+    const eventId = hasColumn("run_events", "uuid") ? "uuid" : "CAST(id AS TEXT) AS uuid";
     const events = db.prepare(`SELECT uuid,type,summary,payload FROM (
-      SELECT uuid,type,summary,payload,coalesce(type,'') || ' ' || coalesce(tool,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(payload,'') AS search_text
+      SELECT ${eventId},type,summary,payload,coalesce(type,'') || ' ' || coalesce(tool,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(payload,'') AS search_text
       FROM run_events WHERE session_id = ?
     ) WHERE ${condition} LIMIT ?`).all(sessionId, ...terms, limit) as Array<{ uuid: string; type: string; summary: string | null; payload: string | null }>;
     for (const row of events) results.push({ key: `run-event:${row.uuid}`, kind: "run", id: row.uuid, title: row.type, snippet: [row.summary, row.payload].filter(Boolean).join("\n").slice(0, 300) });

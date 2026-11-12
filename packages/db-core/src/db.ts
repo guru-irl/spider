@@ -3,12 +3,13 @@ import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync,
-  mkdirSync, openSync, readFileSync, readSync, realpathSync, statfsSync, statSync, unlinkSync, writeFileSync,
+  mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statfsSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import type { Stats } from "node:fs";
 import { dirname, basename, isAbsolute, join, resolve, sep } from "node:path";
 import type BetterSqlite3 from "better-sqlite3";
 import type { Scope } from "./roam/types";
+import type { MachineIdentityOptions } from "./roam/machine";
 
 const require = createRequire(import.meta.url);
 
@@ -110,26 +111,46 @@ function assertTestFixturePath(dbPath: string, label: string): void {
 export function assertTestDbPath(dbPath: string): void { assertTestFixturePath(dbPath, "openDb"); }
 export function assertTestConfigPath(configPath: string): void { assertTestFixturePath(configPath, "config"); }
 
-function checkOwned(stat: Stats, mode: number, kind: "file" | "directory"): void {
-  if ((typeof process.getuid === "function" && stat.uid !== process.getuid()) ||
-      (stat.mode & 0o7777) !== mode ||
-      !(kind === "file" ? stat.isFile() : stat.isDirectory())) {
+function isWindows(options: MachineIdentityOptions): boolean {
+  return (options.platform ?? process.platform) === "win32";
+}
+
+function checkOwned(stat: Stats, mode: number, kind: "file" | "directory", options: MachineIdentityOptions = {}): void {
+  const uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+  if (!(kind === "file" ? stat.isFile() : stat.isDirectory()) ||
+      (!isWindows(options) && ((uid !== undefined && stat.uid !== uid) || (stat.mode & 0o7777) !== mode))) {
     throw new Error(`Unsafe ${kind} for core backup`);
   }
 }
 
-function privateDirectory(path: string): void {
+function repairOwnedFd(fd: number, mode: number, kind: "file" | "directory", options: MachineIdentityOptions): void {
+  const stat = fstatSync(fd);
+  const uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+  if (!(kind === "file" ? stat.isFile() : stat.isDirectory()) ||
+      (!isWindows(options) && uid !== undefined && stat.uid !== uid)) {
+    throw new Error(`Unsafe ${kind} for core backup`);
+  }
+  if (!isWindows(options) && (stat.mode & 0o7777) !== mode) fchmodSync(fd, mode);
+}
+
+function privateDirectory(path: string, options: MachineIdentityOptions): void {
   try { mkdirSync(path, { mode: 0o700 }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  checkOwned(lstatSync(path), 0o700, "directory");
+  if (isWindows(options)) {
+    if (!statSync(path).isDirectory()) throw new Error("Unsafe directory for core backup");
+    return;
+  }
+  if (!lstatSync(path).isDirectory()) throw new Error("Unsafe directory for core backup");
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { repairOwnedFd(fd, 0o700, "directory", options); } finally { closeSync(fd); }
 }
 
-function openPrivateFile(path: string): number {
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+function openPrivateFile(path: string, options: MachineIdentityOptions = {}): number {
+  const noFollow = isWindows(options) ? 0 : constants.O_NOFOLLOW;
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
   try {
-    fchmodSync(fd, 0o600);
-    checkOwned(fstatSync(fd), 0o600, "file");
+    repairOwnedFd(fd, 0o600, "file", options);
     return fd;
   } catch (error) {
     closeSync(fd);
@@ -137,15 +158,16 @@ function openPrivateFile(path: string): number {
   }
 }
 
-function syncDirectory(path: string): void {
+function syncDirectory(path: string, options: MachineIdentityOptions = {}): void {
+  if (isWindows(options)) return;
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-function backupDigest(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+function backupDigest(path: string, options: MachineIdentityOptions): string {
+  const fd = openSync(path, constants.O_RDONLY | (isWindows(options) ? 0 : constants.O_NOFOLLOW));
   try {
-    checkOwned(fstatSync(fd), 0o600, "file");
+    repairOwnedFd(fd, 0o600, "file", options);
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(128 * 1024);
     for (;;) {
@@ -167,63 +189,83 @@ interface BackupIdentity {
 
 interface BackupManifest extends BackupIdentity { sha256: string }
 
-function validateBackup(file: string, identity: BackupIdentity): void {
+class BackupIdentityMismatch extends Error {}
+
+function validateBackup(file: string, identity: BackupIdentity, options: MachineIdentityOptions): void {
   const manifestPath = `${file}.json`;
-  checkOwned(lstatSync(manifestPath), 0o600, "file");
-  const fd = openSync(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(manifestPath, constants.O_RDONLY | (isWindows(options) ? 0 : constants.O_NOFOLLOW));
   let manifest: BackupManifest;
   try {
-    checkOwned(fstatSync(fd), 0o600, "file");
+    repairOwnedFd(fd, 0o600, "file", options);
     manifest = JSON.parse(readFileSync(fd, "utf8")) as BackupManifest;
   } finally { closeSync(fd); }
   if (!manifest || manifest.scope !== identity.scope || manifest.pathHash !== identity.pathHash ||
       manifest.version !== identity.version || manifest.device !== identity.device || manifest.inode !== identity.inode) {
-    throw new Error("Core backup store identity or version does not match");
+    throw new BackupIdentityMismatch("Core backup store identity or version does not match");
   }
-  if (backupDigest(file) !== manifest.sha256) throw new Error("Core backup digest does not match");
+  if (backupDigest(file, options) !== manifest.sha256) throw new Error("Core backup digest does not match");
   const Database = loadDatabase();
   const backup = new Database(file, { readonly: true, fileMustExist: true });
   try {
-    if (backup.pragma("user_version", { simple: true }) !== identity.version ||
-        backup.pragma("quick_check", { simple: true }) !== "ok") {
-      throw new Error("Core backup version or integrity does not match");
+    if (backup.pragma("user_version", { simple: true }) !== identity.version) {
+      throw new BackupIdentityMismatch("Core backup version does not match");
+    }
+    if (backup.pragma("quick_check", { simple: true }) !== "ok") {
+      throw new Error("Core backup integrity does not match");
     }
   } finally { backup.close(); }
 }
 
 /** Create or reuse a verified pre-migration backup of a canonical core store. */
-export function backupBeforeMigration(db: Db, scope: Scope, globalRoot: string, expectedVersion: number = Number(db.pragma("user_version"))): string {
+export function backupBeforeMigration(
+  db: Db, scope: Scope, globalRoot: string, expectedVersion: number = Number(db.pragma("user_version")),
+  options: MachineIdentityOptions = {},
+): string {
   const source = realpathSync(db.raw.name);
   const sourceStat = statSync(source, { bigint: true });
   if (!sourceStat.isFile()) throw new Error("Core backup source is not a file");
   mkdirSync(globalRoot, { recursive: true, mode: 0o700 });
-  const rootStat = lstatSync(globalRoot);
-  if (!rootStat.isDirectory() || (typeof process.getuid === "function" && rootStat.uid !== process.getuid())) {
+  const root = realpathSync(globalRoot);
+  const rootStat = statSync(root);
+  const uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+  if (!rootStat.isDirectory() || (!isWindows(options) && uid !== undefined && rootStat.uid !== uid)) {
     throw new Error("Unsafe core backup root");
   }
-  const roam = join(globalRoot, "roam");
-  privateDirectory(roam);
+  const roam = join(root, "roam");
+  privateDirectory(roam, options);
   const directory = join(roam, "backups");
-  privateDirectory(directory);
+  privateDirectory(directory, options);
   const identity: BackupIdentity = {
     scope, pathHash: createHash("sha256").update(source).digest("hex"), version: expectedVersion,
     device: String(sourceStat.dev), inode: String(sourceStat.ino),
   };
-  const file = join(directory, `${scope}-${identity.pathHash}-v${expectedVersion}.db`);
-  const lockPath = `${file}.lock`;
-  try { closeSync(openPrivateFile(lockPath)); } catch (error) {
+  const stem = `${scope}-${identity.pathHash}-v${expectedVersion}`;
+  const baseFile = join(directory, `${stem}.db`);
+  const lockPath = `${baseFile}.lock`;
+  try { closeSync(openPrivateFile(lockPath, options)); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  checkOwned(lstatSync(lockPath), 0o600, "file");
+  const lockFd = openSync(lockPath, constants.O_RDONLY | (isWindows(options) ? 0 : constants.O_NOFOLLOW));
+  try { repairOwnedFd(lockFd, 0o600, "file", options); } finally { closeSync(lockFd); }
   const Database = loadDatabase();
   const lock = new Database(lockPath, { timeout: BUSY_TIMEOUT_MS, fileMustExist: true });
   try {
     return lock.transaction(() => {
-      if (existsSync(file)) {
-        validateBackup(file, identity);
-        return file;
+      const candidates = [baseFile, ...readdirSync(directory)
+        .filter(name => name.startsWith(`${stem}-`) && name.endsWith(".db"))
+        .map(name => join(directory, name))];
+      for (const candidate of candidates) {
+        if (!existsSync(candidate)) continue;
+        try {
+          validateBackup(candidate, identity, options);
+          return candidate;
+        } catch (error) {
+          if (!(error instanceof BackupIdentityMismatch)) throw error;
+        }
       }
-      if (existsSync(`${file}.json`)) throw new Error("Core backup is incomplete");
+      const file = existsSync(baseFile) || existsSync(`${baseFile}.json`)
+        ? join(directory, `${stem}-${Date.now()}-${randomUUID()}.db`)
+        : baseFile;
       const lockedSource = statSync(source, { bigint: true });
       if (lockedSource.dev !== sourceStat.dev || lockedSource.ino !== sourceStat.ino) {
         throw new Error("Core backup source identity changed");
@@ -236,24 +278,24 @@ export function backupBeforeMigration(db: Db, scope: Scope, globalRoot: string, 
       const temporary = join(directory, `.backup-${randomUUID()}.tmp`);
       const temporaryManifest = `${temporary}.json`;
       try {
-        closeSync(openPrivateFile(temporary));
+        closeSync(openPrivateFile(temporary, options));
         db.raw.prepare("VACUUM INTO ?").run(temporary);
         const sourceAfter = statSync(source, { bigint: true });
         if (sourceAfter.dev !== sourceStat.dev || sourceAfter.ino !== sourceStat.ino) {
           throw new Error("Core backup source identity changed");
         }
-        const temporaryFd = openSync(temporary, constants.O_RDONLY | constants.O_NOFOLLOW);
-        try { checkOwned(fstatSync(temporaryFd), 0o600, "file"); fsyncSync(temporaryFd); }
+        const temporaryFd = openSync(temporary, constants.O_RDONLY | (isWindows(options) ? 0 : constants.O_NOFOLLOW));
+        try { repairOwnedFd(temporaryFd, 0o600, "file", options); fsyncSync(temporaryFd); }
         finally { closeSync(temporaryFd); }
-        const manifest: BackupManifest = { ...identity, sha256: backupDigest(temporary) };
-        const manifestFd = openPrivateFile(temporaryManifest);
+        const manifest: BackupManifest = { ...identity, sha256: backupDigest(temporary, options) };
+        const manifestFd = openPrivateFile(temporaryManifest, options);
         try { writeFileSync(manifestFd, JSON.stringify(manifest)); fsyncSync(manifestFd); }
         finally { closeSync(manifestFd); }
-        validateBackup(temporary, identity);
+        validateBackup(temporary, identity, options);
         linkSync(temporary, file);
         linkSync(temporaryManifest, `${file}.json`);
-        syncDirectory(directory);
-        validateBackup(file, identity);
+        syncDirectory(directory, options);
+        validateBackup(file, identity, options);
         return file;
       } finally {
         try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

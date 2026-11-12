@@ -1,32 +1,54 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync, constants, fchmodSync, fstatSync, fsyncSync, linkSync, mkdirSync, openSync,
+  readFileSync, realpathSync, statSync, unlinkSync, writeFileSync,
+} from "node:fs";
 import type { Stats } from "node:fs";
 import { join } from "node:path";
 import type { MachineId } from "./types";
 
-function checkOwner(stat: Stats): void {
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) throw new Error("Foreign-owned machine identity path");
+export interface MachineIdentityOptions {
+  platform?: NodeJS.Platform;
+  uid?: number;
 }
 
-function checkDirectory(path: string, privateMode: boolean): void {
-  const stat = lstatSync(path);
-  checkOwner(stat);
-  if (!stat.isDirectory() || (privateMode && (stat.mode & 0o7777) !== 0o700)) {
-    throw new Error("Unsafe machine identity directory");
+function isWindows(options: MachineIdentityOptions): boolean {
+  return (options.platform ?? process.platform) === "win32";
+}
+
+function checkOwner(stat: Stats, options: MachineIdentityOptions): void {
+  if (isWindows(options)) return;
+  const uid = options.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+  if (uid !== undefined && stat.uid !== uid) throw new Error("Foreign-owned machine identity path");
+}
+
+function checkDirectory(path: string, privateMode: boolean, options: MachineIdentityOptions): void {
+  if (isWindows(options)) {
+    if (!statSync(path).isDirectory()) throw new Error("Unsafe machine identity directory");
+    return;
   }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    checkOwner(stat, options);
+    if (!stat.isDirectory()) throw new Error("Unsafe machine identity directory");
+    if (privateMode && (stat.mode & 0o7777) !== 0o700) fchmodSync(fd, 0o700);
+  } finally { closeSync(fd); }
 }
 
-function syncDirectory(path: string): void {
+function syncDirectory(path: string, options: MachineIdentityOptions): void {
+  if (isWindows(options)) return;
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
-function readIdentity(file: string): MachineId {
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+function readIdentity(file: string, options: MachineIdentityOptions): MachineId {
+  const fd = openSync(file, constants.O_RDONLY | (isWindows(options) ? 0 : constants.O_NOFOLLOW));
   try {
     const stat = fstatSync(fd);
-    checkOwner(stat);
-    if (!stat.isFile() || (stat.mode & 0o7777) !== 0o600) throw new Error("Unsafe machine identity file");
+    checkOwner(stat, options);
+    if (!stat.isFile()) throw new Error("Unsafe machine identity file");
+    if (!isWindows(options) && (stat.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600);
     let value: unknown;
     try { value = JSON.parse(readFileSync(fd, "utf8")); } catch { throw new Error("Invalid machine identity file"); }
     if (typeof value !== "object" || value === null || !("machineId" in value) ||
@@ -38,33 +60,53 @@ function readIdentity(file: string): MachineId {
 }
 
 /** Admission must not create a replacement identity when the recorded one is missing. */
-export function readMachineIdentity(globalRoot: string): MachineId {
-  checkDirectory(globalRoot, false);
-  const directory = join(globalRoot, "roam");
-  checkDirectory(directory, true);
-  return readIdentity(join(directory, "machine.json"));
+export function readMachineIdentity(globalRoot: string, options: MachineIdentityOptions = {}): MachineId {
+  const root = realpathSync(globalRoot);
+  checkDirectory(root, false, options);
+  const directory = join(root, "roam");
+  checkDirectory(directory, true, options);
+  return readIdentity(join(directory, "machine.json"), options);
 }
 
-export function loadMachineIdentity(globalRoot: string): MachineId {
+export function loadMachineIdentity(globalRoot: string, options: MachineIdentityOptions = {}): MachineId {
   mkdirSync(globalRoot, { recursive: true, mode: 0o700 });
-  checkDirectory(globalRoot, false);
-  const directory = join(globalRoot, "roam");
+  const root = realpathSync(globalRoot);
+  checkDirectory(root, false, options);
+  const directory = join(root, "roam");
   try { mkdirSync(directory, { mode: 0o700 }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-  checkDirectory(directory, true);
-  syncDirectory(globalRoot);
+  checkDirectory(directory, true, options);
+  syncDirectory(root, options);
   const file = join(directory, "machine.json");
-  try { return readIdentity(file); } catch (error) {
+  try { return readIdentity(file, options); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  if (isWindows(options)) {
+    let fd: number;
+    try { fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return readIdentity(file, options);
+      throw error;
+    }
+    try {
+      writeFileSync(fd, `${JSON.stringify({ machineId: randomUUID() })}\n`);
+      fsyncSync(fd);
+    } catch (error) {
+      try { unlinkSync(file); } catch { /* preserve the original error */ }
+      throw error;
+    } finally { closeSync(fd); }
+    return readIdentity(file, options);
   }
 
   const temporary = join(directory, `.machine-${randomUUID()}.tmp`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try {
     const stat = fstatSync(fd);
-    checkOwner(stat);
-    if (!stat.isFile() || (stat.mode & 0o7777) !== 0o600) throw new Error("Unsafe machine identity file");
+    checkOwner(stat, options);
+    if (!stat.isFile()) throw new Error("Unsafe machine identity file");
+    if ((stat.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600);
     writeFileSync(fd, `${JSON.stringify({ machineId: randomUUID() })}\n`);
     fsyncSync(fd);
   } finally { closeSync(fd); }
@@ -72,8 +114,8 @@ export function loadMachineIdentity(globalRoot: string): MachineId {
     try { linkSync(temporary, file); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    syncDirectory(directory);
-    return readIdentity(file);
+    syncDirectory(directory, options);
+    return readIdentity(file, options);
   } finally {
     unlinkSync(temporary);
   }

@@ -8,7 +8,7 @@ export { validateRoamLayout, repairTodoSequenceIndex } from "./roam/layout";
 export { sanitizeQuery, sanitizeTrigramQuery, STOPWORDS } from "./fts-query";
 export { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 export {
-  resolveProject, registerProject, openGlobal, openGlobalReadOnly, openProject, openRepo, openRepoReadOnly, openDbAt, openDbReadOnlyAt, openProjectByPath, setGlobalDbPathForTests, repoRoot as repoRootFromRegistry,
+  resolveProject, registerProject, openGlobal, openGlobalReadOnly, openRoamingCatalogReadOnly, openProject, openRepo, openRepoReadOnly, openDbAt, openDbReadOnlyAt, openProjectByPath, setGlobalDbPathForTests, repoRoot as repoRootFromRegistry,
 } from "./registry";
 export type { ProjectInfo } from "./registry";
 export { bindSession, unbindSession, getBinding } from "./bindings";

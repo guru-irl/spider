@@ -6,6 +6,7 @@ import { openDb, openDbReadOnly, assertTestDbPath, type Db } from "./db";
 import { migrate, SCHEMA_VERSION } from "./migrate";
 import { paths, type Scope, worktreeRoot, repoRoot, gitCommonDir } from "./paths";
 import { getBinding, bindSession } from "./bindings";
+export { openRoamStoreReadOnly, roamReplicaPath } from "./roam/reads";
 
 export interface ProjectInfo {
   projectKey: string;
@@ -33,6 +34,7 @@ export function openGlobal(): Db {
 
 /** No create, migration, pragma, or checkpoint on snapshot reads. */
 export const openGlobalReadOnly = (): Db | undefined => openDbReadOnly(globalDbPath());
+export const openRoamingCatalogReadOnly = (): Db | undefined => openDbReadOnly(globalDbPath());
 export const openRepoReadOnly = (repoKey: string): Db | undefined =>
   openDbReadOnly(join(repoKey, "spider", "repo.db"));
 export const openDbReadOnlyAt = (dbPath: string): Db | undefined => openDbReadOnly(dbPath);

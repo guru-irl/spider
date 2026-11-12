@@ -1,4 +1,5 @@
 import type { Db } from "@spider/db-core";
+import { resolveSessionReplica } from "@spider/db-core/roam/catalog";
 import type { Component } from "@spider/ui";
 import {
   listTodos,
@@ -21,6 +22,24 @@ export interface ActionResult {
   display?: Component | string;
   details: unknown;
   isError?: boolean;
+}
+
+export function viewCatalogSession(globalDb: Db, selector: string, currentSessionId: string): ActionResult | null {
+  if (!globalDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roam_locations'").get()) return null;
+  if (!globalDb.prepare("SELECT 1 FROM roam_locations WHERE session_id = ?").get(selector)) return null;
+  const replica = resolveSessionReplica(globalDb, selector);
+  if (!replica) {
+    const error = `todo view: session "${selector}" replica is unavailable`;
+    return { display: error, details: { error }, isError: true };
+  }
+  try {
+    const groups = viewSession(replica.db, selector, currentSessionId);
+    if (!groups.length || !groups[0].todos.length) {
+      const error = `todo view: session "${selector}" has no todos`;
+      return { display: error, details: { error }, isError: true };
+    }
+    return { display: renderView(groups), details: groups };
+  } finally { replica.db.close(); }
 }
 
 /**
@@ -81,6 +100,10 @@ export function makeTodo(deps?: TodoDeps) {
       case "view": {
         const selector = String(args?.session ?? "all").trim();
         if (!selector.trim()) return fail("todo view: session selector must not be blank");
+        if (selector !== "all" && ctx?.globalDb) {
+          const remote = viewCatalogSession(ctx.globalDb, selector, sessionId);
+          if (remote) return remote;
+        }
         const g = viewSession(db, selector, sessionId);
         if (selector !== "all" && !g.length) return fail(`todo view: session "${selector}" is unresolved or ambiguous`);
         if (selector !== "all" && !g[0].todos.length) return fail(`todo view: session "${g[0].session}" has no todos`);

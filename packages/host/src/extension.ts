@@ -36,7 +36,7 @@ import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
 import { cwdOf, parentModelOf, sessionIdOf } from "./session-context";
 export { cwdOf, sessionIdOf } from "./session-context";
-import { registerContextActions, runImport } from "@spider/context";
+import { registerContextActions, runImport, runSessionSearch } from "@spider/context";
 import { toToolResult, rethrowWithMessage, repairBlankToolResults } from "./result";
 import { registerStructuredTools, type AdapterTool } from "./structured-results";
 import { piSettingsDoctorLines } from "./pi-settings";
@@ -51,13 +51,13 @@ import { registerRouting, DEFAULT_ROUTING_CONFIG, type RoutingConfig } from "./r
 import { ContentStore } from "@spider/context";
 import { enqueueEmbed } from "@spider/memory";
 import * as models from "@spider/models";
-import { resolveProject, openGlobal, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
+import { resolveProject, openGlobal, openGlobalReadOnly, openProject, openRepo, openDbAt, openDbReadOnlyAt, paths, SCHEMA_VERSION, type Db, type ProjectInfo } from "@spider/db-core";
 import {
   stageWrite, reviewedWrite, recall, listPending, approvePending, rejectPending, forgetMemory,
   activeCharTotal, listActive, getReadyEmbedder, resolveEmbedder, startEmbedderSession, stopEmbedder,
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
-import { makeTodo, makeTodosCommand } from "@spider/todo";
+import { makeTodo, makeTodosCommand, viewCatalogSession } from "@spider/todo";
 import { registerSubagentActions, adoptReloadedChildren, adoptableFor, activeChildCount } from "@spider/subagents";
 import {
   registerOrganism,
@@ -77,7 +77,7 @@ import { runUpstreamWatch, markReviewed, registerSuperpowers } from "@spider/sup
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
-import { openSessionRunDb } from "./session-run-db";
+import { openSessionHistoryDb, openSessionRunDb } from "./session-run-db";
 export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
 import { registerAgentsUI } from "./agents/agents-ui";
@@ -213,7 +213,7 @@ export const SPIDER_PARAMETERS = {
     query: { type: "string", description: "Search matches any sanitized term. Repo recall ranks all-word matches first (AND), then fills from any-word matches (OR); FTS operators are ignored, and common words are removed unless all terms are common. Global recall matches the whole query as a substring." },
     category: { type: "string", description: "Memory category (remember) or filter (recall); optional skill category for action='skill' op=add." },
     limit: { type: "number", description: "Max results (search/recall)." },
-    kinds: { type: "array", items: { type: "string", enum: ["memory", "content", "session", "todo"] }, description: "search: restrict results to these kinds; default includes memory, content, session and todo." },
+    kinds: { type: "array", items: { type: "string", enum: ["memory", "content", "session", "todo", "run"] }, description: "search: restrict results to these kinds; run is available for session-scoped search." },
     // remember
     content: { type: "string", description: "Text proposed for action 'remember' (or index/fetch body). Remember is reviewed for durability, overlap and scope before storage; on review failure it stores as requested." },
     justification: { type: "string", description: "Required for remember: state why the fact is durable (still true and useful after the current task ends), how it helps other agents in this project (repo) or in any repo (global), and why the chosen scope is right (global only if true in every repo; otherwise repo)." },
@@ -290,7 +290,7 @@ export const SPIDER_PARAMETERS = {
     kind: { type: "string", description: "message: optional intercom message kind; defaults to 'message'." },
     // todo
     text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate final-format SKILL.md (YAML frontmatter with exactly name and a Use when description, then concise body; agent limit 1500 words/16 KB) for action='skill' op=add; free-form request for action='skill' op=distill." },
-    session: { type: "string", description: "todo op=view/toggle/remove: session id/prefix/name in the same project DB; toggle/remove default to current session; 'all' is rejected for toggle/remove and accepted for view. import: single transcript file path, taking precedence over sessions and select." },
+    session: { type: "string", description: "search: exact session ID for session-owned results. todo op=view/toggle/remove: session id/prefix/name in the same project DB; toggle/remove default to current session; 'all' is rejected for toggle/remove and accepted for view. import: single transcript file path, taking precedence over sessions and select." },
     // exec
     copy: { type: "object", description: "exec: copy a file to or from the on machine in one call. Use absolute paths; preserves file mode and does not overwrite existing files.", properties: { direction: { type: "string", enum: ["to", "from"] }, local: { type: "string" }, remote: { type: "string" } }, required: ["direction", "local", "remote"] },
     code: { type: "string", description: "Code to run for action 'exec'/'exec_file'." },
@@ -801,7 +801,23 @@ async function dispatchWithDoctorSnapshot(
       ? scheduler.loop(params as LoopArgs, ctx as ExtensionContext)
       : scheduler.schedule(params as ScheduleArgs, ctx as ExtensionContext);
   }
+  if (params.action === "search" && params.session !== undefined) {
+    if (params.on !== undefined) throw new Error("Session search does not support remote execution");
+    const global = openGlobalReadOnly();
+    try { return runSessionSearch(params, global); }
+    finally { global?.close(); }
+  }
   const sessionId = sessionIdOf(ctx);
+  if (params.action === "todo" && params.op === "view" && typeof params.session === "string" && params.session.trim() !== "all") {
+    const global = openGlobalReadOnly();
+    try {
+      const result = global ? viewCatalogSession(global, params.session.trim(), sessionId) : null;
+      if (result) {
+        if (params.on !== undefined) throw new Error("Session todo view does not support remote execution");
+        return result;
+      }
+    } finally { global?.close(); }
+  }
   const injectionSnapshot = params.action === "control" && params.command === "doctor"
     ? readInjectionSnapshot(cwdOf(ctx) ?? String(params.cwd ?? process.cwd()), sessionId) : undefined;
   try {
@@ -1339,7 +1355,7 @@ export default function spiderExtension(pi: PiToolAPI): void {
         loop: loopCommand,
       },
       dataSource: {
-        resolveRunDb: owner => openSessionRunDb(owner.cwd, owner.sessionId),
+        resolveRunDb: owner => openSessionHistoryDb(owner.cwd, owner.sessionId),
         openApprovalDbs: owner => { const project = resolveProject(owner.cwd); return { global: openGlobal(), repo: project.repoKey ? { db: openRepo(project.repoKey), repoKey: project.repoKey } : null }; },
         scheduler: sessionSchedulers.get(pi)!,
         readUsage: async (now, owner) => {

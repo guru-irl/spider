@@ -50,7 +50,7 @@ import type { HcClient, HerdrConfig, Owner, Disposable, AuxiliaryPanes, RunId, J
 import { createHerdrDataSource } from './data-source.js';
 import { createRunTranscriptSource } from './run-transcript.js';
 import { createHerdrViews } from './views.js';
-import { openSessionRunDb } from '../session-run-db.js';
+import { openSessionHistoryDb } from '../session-run-db.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
@@ -269,7 +269,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   const inventory = createProcessInventory(root), registry = createTerminalRegistry(root);
   const processIdentity = { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
 
-  const bindDb = (o: Owner) => options.dataSource?.resolveRunDb(o) ?? openSessionRunDb(o.cwd, o.sessionId);
+  const bindDb = (o: Owner) => options.dataSource?.resolveRunDb(o) ?? openSessionHistoryDb(o.cwd, o.sessionId);
   const withStore = <T>(o: Owner, read: (store: RunStore) => T): T => { const { db } = bindDb(o); try { return read(new RunStore(db)); } finally { db.close(); } };
   const journalRoot = () => join(need(config).globalRoot, 'herdr', 'jobs');
   const templatePorts: TemplatePorts = {

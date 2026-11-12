@@ -13,6 +13,33 @@ const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 // Match the memory package's default without making replication enforce write limits.
 const DEFAULT_MEMORY_CHAR_CAP = 8000;
 
+// The empty machine is outside the sender UUID namespace and cannot be a receive cursor.
+const FENCE_MACHINE = "";
+const FENCE_STREAM = "mapping-fence";
+
+export class CursorMismatchError extends Error {
+  constructor() { super("Roaming cursor does not match the batch sequence"); this.name = "CursorMismatchError"; }
+}
+
+export class MappingFenceError extends Error {
+  readonly code = "ROAM_MAPPING_FENCED";
+  readonly retryable = true;
+  readonly storeKey: StoreKey;
+  constructor(storeKey: StoreKey) {
+    super(`Mapping fenced replica ${storeKey}. Re-resolve placement and retry.`);
+    this.name = "MappingFenceError";
+    this.storeKey = storeKey;
+  }
+}
+
+export function fenceReplicaForMapping(db: Db, storeKey: StoreKey): void {
+  db.raw.transaction(() => {
+    const meta = db.prepare("SELECT store_key FROM roam_meta WHERE id = 1").get() as { store_key: StoreKey | null } | undefined;
+    if (!meta || meta.store_key !== storeKey) throw new Error("Mapping fence store does not match the replica");
+    db.prepare("INSERT OR IGNORE INTO roam_cursors(peer_machine,peer_stream,last_seq) VALUES (?, ?, 0)").run(FENCE_MACHINE, FENCE_STREAM);
+  }).immediate();
+}
+
 interface Meta {
   machine_id: string; stream_id: string; store_key: StoreKey | null; hlc_ms: number; hlc_count: number;
   importing: number; roamable: number; problem: string | null;
@@ -170,6 +197,9 @@ export function applyBatch(
     const meta = db.prepare("SELECT machine_id, stream_id, store_key, hlc_ms, hlc_count, importing, roamable, problem FROM roam_meta WHERE id = 1")
       .get() as Meta | undefined;
     if (!meta || meta.store_key !== header.storeKey) throw new Error("Roaming destination store does not match this batch");
+    if (db.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine = ? AND peer_stream = ?").get(FENCE_MACHINE, FENCE_STREAM)) {
+      throw new MappingFenceError(header.storeKey);
+    }
     const receipt = db.prepare("SELECT peer_stream, after_seq, through_seq, sha256 FROM roam_receipts WHERE peer_machine = ? AND batch_id = ?")
       .get(header.senderMachine, header.batchId) as { peer_stream: string; after_seq: number; through_seq: number; sha256: string } | undefined;
     if (receipt) {
@@ -184,7 +214,7 @@ export function applyBatch(
     }
     const cursor = db.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine = ? AND peer_stream = ?")
       .get(header.senderMachine, header.senderStream) as { last_seq: number } | undefined;
-    if ((cursor?.last_seq ?? 0) !== header.after) throw new Error("Roaming cursor does not match the batch sequence");
+    if ((cursor?.last_seq ?? 0) !== header.after) throw new CursorMismatchError();
     db.prepare("UPDATE roam_meta SET importing = 1 WHERE id = 1").run();
     let local: Hlc = { ms: meta.hlc_ms, count: meta.hlc_count, machine: meta.machine_id, stream: meta.stream_id };
     let changed = false;

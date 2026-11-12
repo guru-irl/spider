@@ -16,7 +16,7 @@ import { rrfFuse, proximityRerank } from "./fusion";
 import { sanitizeQuery } from "./fts-query";
 import { getReadyEmbedder, knn } from "@spider/memory";
 
-export type SearchKind = "memory" | "content" | "session" | "todo";
+export type SearchKind = "memory" | "content" | "session" | "todo" | "run";
 
 export interface SearchResultRow {
   key: string;
@@ -41,6 +41,52 @@ interface Item {
 export interface SearchCtx {
   worktreeDb: Db;  // sessions, content, todos, worktree vector_map
   repoDb: Db;      // memory, repo vector_map
+}
+
+export function searchSession(db: Db, sessionId: string, opts: { query: string; limit?: number; kinds?: SearchKind[]; localMachineId?: string }): SearchResultRow[] {
+  const query = sanitizeQuery(opts.query, "OR");
+  const terms = [...query.matchAll(/"([^"]+)"/g)].map(match => match[1]);
+  if (!terms.length) return [];
+  const kinds = opts.kinds ?? ["session", "todo", "run"];
+  const limit = Number.isSafeInteger(opts.limit) && opts.limit! > 0 ? Math.min(opts.limit!, 100) : 10;
+  const results: SearchResultRow[] = [];
+  if (kinds.includes("session")) {
+    const row = db.prepare("SELECT id,parent_session_id,name,reason,started_at,ended_at,summary,origin_machine FROM sessions WHERE id = ?")
+      .get(sessionId) as { id: string; parent_session_id: string | null; name: string | null; reason: string | null; started_at: number; ended_at: number | null; summary: string | null; origin_machine: string } | undefined;
+    if (row) {
+      const lower = terms.map(term => term.toLowerCase());
+      const matches = (value: unknown) => value !== null && value !== undefined && lower.some(term => String(value).toLowerCase().includes(term));
+      const metadataMatch = Object.values(row).some(matches);
+      const hits = db.prepare("SELECT content FROM sessions_fts WHERE sessions_fts MATCH ? AND id = ?").all(query, sessionId) as Array<{ content: string | null }>;
+      const transcript = hits.find(hit => matches(hit.content))?.content;
+      if (metadataMatch || transcript) {
+        const localText = (db.prepare("SELECT 1 FROM sessions_fts WHERE id = ? AND content IS NOT NULL AND content <> '' LIMIT 1").get(sessionId));
+        const note = !localText && row.origin_machine && row.origin_machine !== opts.localMachineId ? "Transcript text lives on the origin machine." : "";
+        const metadata = [row.summary, row.reason].filter(Boolean).join("\n");
+        const details = note ? `${metadata.slice(0, 299 - note.length)}\n${note}` : metadata.slice(0, 300);
+        results.push({ key: `session:${row.id}`, kind: "session", id: row.id, title: row.name ?? row.id, snippet: transcript ? transcript.slice(0, 300) : details });
+      }
+    }
+  }
+  if (kinds.includes("todo")) {
+    const rows = db.prepare("SELECT t.uuid,t.text FROM todos_fts JOIN todos t ON t.id = todos_fts.rowid WHERE todos_fts MATCH ? AND t.session_id = ? LIMIT ?")
+      .all(query, sessionId, limit) as Array<{ uuid: string; text: string }>;
+    for (const row of rows) results.push({ key: `todo:${row.uuid}`, kind: "todo", id: row.uuid, title: row.text, snippet: row.text.slice(0, 300) });
+  }
+  if (kinds.includes("run")) {
+    const condition = terms.map(() => "instr(lower(search_text), lower(?)) > 0").join(" OR ");
+    const runs = db.prepare(`SELECT id,agent,name,task,result FROM (
+      SELECT id,agent,name,task,result,coalesce(agent,'') || ' ' || coalesce(name,'') || ' ' || coalesce(task,'') || ' ' || coalesce(result,'') || ' ' || status AS search_text
+      FROM runs WHERE session_id = ?
+    ) WHERE ${condition} LIMIT ?`).all(sessionId, ...terms, limit) as Array<{ id: string; agent: string; name: string | null; task: string | null; result: string | null }>;
+    for (const row of runs) results.push({ key: `run:${row.id}`, kind: "run", id: row.id, title: row.name ?? row.agent, snippet: [row.task, row.result].filter(Boolean).join("\n").slice(0, 300) });
+    const events = db.prepare(`SELECT uuid,type,summary,payload FROM (
+      SELECT uuid,type,summary,payload,coalesce(type,'') || ' ' || coalesce(tool,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(payload,'') AS search_text
+      FROM run_events WHERE session_id = ?
+    ) WHERE ${condition} LIMIT ?`).all(sessionId, ...terms, limit) as Array<{ uuid: string; type: string; summary: string | null; payload: string | null }>;
+    for (const row of events) results.push({ key: `run-event:${row.uuid}`, kind: "run", id: row.uuid, title: row.type, snippet: [row.summary, row.payload].filter(Boolean).join("\n").slice(0, 300) });
+  }
+  return results.slice(0, limit);
 }
 
 export async function unifiedSearch(

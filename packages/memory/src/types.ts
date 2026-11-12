@@ -17,6 +17,7 @@ export interface MemoryRecord {
   source: MemorySource;
   confidence: number | null;
   sessionId: string | null;
+  machineId?: string;
   createdAt: number;
   updatedAt: number | null;
 }

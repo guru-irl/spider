@@ -69,6 +69,11 @@ export interface HcClientOptions {
 	maxReplyBytes?: number;
 }
 export interface HcCallOptions { signal?: AbortSignal; timeoutMs?: number }
+export interface HcByteOptions { timeoutMs: number; maxBytes: number; stdin?: Buffer; signal?: AbortSignal }
+export interface HcArgvClient {
+  exec(on: string, argv: readonly string[], options: HcByteOptions): Promise<Buffer>;
+  run(on: string, argv: readonly string[], labels: Readonly<Record<string, string>>, options?: { signal?: AbortSignal }): Promise<{ terminal: string }>;
+}
 export interface HcClient {
 	identity(): Promise<CoreIdentity>;
 	caller(env: Readonly<NodeJS.ProcessEnv>): Promise<TerminalIdentity>;

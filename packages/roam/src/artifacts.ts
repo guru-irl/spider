@@ -448,7 +448,7 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
       if (bytes.length !== chunk.rawLength || hash(bytes) !== chunk.sha256) throw new TransferRefused("Corrupt source artifact chunk", 1);
     }
     phase = "remote";
-    const resolved = Object.freeze({ ...await bounded(inFlight.track(ports.transport.resolve(peer)), Math.min(ports.limits.controlMs, remaining())) });
+    const resolved = await bounded(inFlight.track(ports.transport.resolve(peer)), Math.min(ports.limits.controlMs, remaining()));
     if (resolved.machineId !== peer.machineId || resolved.alias !== peer.alias || resolved.globalRoot !== peer.globalRoot) {
       throw new TransferRefused("Resolved peer identity changed", 1);
     }
